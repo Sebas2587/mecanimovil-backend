@@ -1,0 +1,43 @@
+# Core Django and REST Framework
+Django==4.2.7
+djangorestframework==3.14.0
+djangorestframework-gis==1.0
+
+# Fijar setuptools para evitar warning de pkg_resources deprecado
+# coreapi (dependencia transitiva) usa pkg_resources que está deprecado en setuptools >= 81
+setuptools<81.0.0
+psycopg2-binary==2.9.10
+django-cors-headers==4.3.1
+Pillow==10.1.0
+python-decouple==3.8
+django-extensions==3.2.3
+djangorestframework-simplejwt==5.3.0
+PyJWT==2.8.0
+cryptography==41.0.7
+django-filter==23.4
+dj-database-url==2.1.0
+whitenoise==6.6.0
+gunicorn==21.2.0
+celery==5.3.4
+redis==5.0.1
+
+# Django Channels para WebSockets
+channels==4.0.0
+channels-redis==4.1.0
+daphne==4.0.0
+
+# Dependencias para Redis en producción
+django-redis==5.4.0
+redis-py-cluster==2.1.3
+
+# Dependencias para Machine Learning y análisis de datos
+numpy==1.24.3
+pandas==2.0.3
+scikit-learn==1.3.0
+
+# Dependencias para producción
+django-storages==1.14.2
+boto3==1.34.0
+
+# SDK de Mercado Pago
+mercadopago==2.2.0

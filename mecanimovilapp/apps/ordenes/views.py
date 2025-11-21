@@ -1,0 +1,3927 @@
+from rest_framework import viewsets, permissions, filters, status
+from rest_framework.decorators import action, api_view, permission_classes
+from rest_framework.response import Response
+from django.db.models import Q, Avg, Count, Sum
+from django.utils import timezone
+from datetime import datetime, timedelta, time
+from .models import (
+    SolicitudServicio, LineaServicio, 
+    CarritoAgendamiento, ItemCarritoAgendamiento,
+    ConfiguracionPrecio, AuditAccesoCliente,
+    SolicitudServicioPublica, OfertaProveedor, DetalleServicioOferta, ChatSolicitud
+)
+from .serializers import (
+    SolicitudServicioSerializer, LineaServicioSerializer,
+    CarritoAgendamientoSerializer, ItemCarritoAgendamientoSerializer, 
+    AgendamientoDisponibilidadSerializer,
+    ConfirmarAgendamientoSerializer, SolicitudServicioProveedorSerializer,
+    AcceptOrderSerializer, RejectOrderSerializer, UpdateOrderStatusSerializer,
+    OrdenEstadisticasSerializer,
+    SolicitudServicioPublicaSerializer, OfertaProveedorSerializer,
+    DetalleServicioOfertaSerializer, ChatSolicitudSerializer
+)
+from mecanimovilapp.apps.servicios.models import Servicio
+from mecanimovilapp.apps.servicios.serializers import ServicioSerializer
+from .permissions import IsProveedor, IsOrderOwnerForProvider, CanManageOrder
+from rest_framework.permissions import IsAuthenticated
+from django.db import models, transaction
+from collections import defaultdict
+import logging
+from decimal import Decimal
+from channels.layers import get_channel_layer
+from asgiref.sync import async_to_sync
+from mecanimovilapp.apps.usuarios.models import Cliente, Usuario, Taller, MecanicoDomicilio, ConnectionStatus
+from mecanimovilapp.apps.servicios.models import Servicio
+from django.contrib.gis.geos import Point
+from rest_framework import serializers
+from django.core.exceptions import ValidationError
+
+logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# FUNCIONES HELPER PARA INTEGRACIÓN CON CARRITO
+# ============================================================================
+
+def obtener_o_crear_carrito(cliente, vehiculo):
+    """
+    Obtiene o crea un carrito activo para el cliente y vehículo.
+    Si ya existe un carrito activo para ese vehículo, lo retorna.
+    Si no existe, crea uno nuevo.
+    """
+    # CarritoAgendamiento ya está importado al inicio del archivo
+    # Buscar carrito activo para el cliente y vehículo
+    carrito = CarritoAgendamiento.objects.filter(
+        cliente=cliente,
+        vehiculo=vehiculo,
+        activo=True
+    ).first()
+    
+    if carrito:
+        logger.info(f"Carrito existente encontrado: {carrito.id}")
+        return carrito
+    
+    # Si no existe, crear uno nuevo
+    # CRÍTICO: Si hay un carrito activo para otro vehículo, desactivarlo
+    # (solo puede haber un carrito activo por cliente)
+    CarritoAgendamiento.objects.filter(
+        cliente=cliente,
+        activo=True
+    ).update(activo=False)
+    
+    carrito = CarritoAgendamiento.objects.create(
+        cliente=cliente,
+        vehiculo=vehiculo,
+        activo=True
+    )
+    logger.info(f"Carrito nuevo creado: {carrito.id}")
+    
+    return carrito
+
+
+def crear_chat_inicial_oferta(oferta, solicitud):
+    """
+    Crea un mensaje inicial en el chat mostrando la solicitud original.
+    Este mensaje se envía automáticamente cuando se acepta una oferta.
+    """
+    from .models import ChatSolicitud
+    
+    # Obtener información de los servicios solicitados
+    servicios_nombres = list(solicitud.servicios_solicitados.values_list('nombre', flat=True))
+    servicios_texto = ", ".join(servicios_nombres) if servicios_nombres else "Servicios varios"
+    
+    # Construir mensaje con información de la solicitud
+    mensaje_parts = [
+        "¡Hola! He aceptado tu oferta para mi solicitud de servicio.",
+        "",
+        "📋 **Detalles de la solicitud original:**",
+        f"• Descripción: {solicitud.descripcion_servicio or 'Sin descripción adicional'}",
+        f"• Servicios: {servicios_texto}",
+        f"• Ubicación: {solicitud.direccion_servicio_texto or 'Ubicación no especificada'}",
+        f"• Fecha preferida: {solicitud.fecha_preferida.strftime('%d/%m/%Y') if solicitud.fecha_preferida else 'No especificada'}",
+    ]
+    
+    if solicitud.hora_preferida:
+        mensaje_parts.append(f"• Hora preferida: {solicitud.hora_preferida.strftime('%H:%M')}")
+    
+    if solicitud.detalles_ubicacion:
+        mensaje_parts.append(f"• Detalles adicionales: {solicitud.detalles_ubicacion}")
+    
+    mensaje_parts.extend([
+        "",
+        "Puedes contactarme a través de este chat para coordinar los detalles del servicio.",
+    ])
+    
+    mensaje = "\n".join(mensaje_parts)
+    
+    # Crear mensaje del chat (enviado por el cliente)
+    chat_mensaje = ChatSolicitud.objects.create(
+        oferta=oferta,
+        mensaje=mensaje,
+        enviado_por=solicitud.cliente.usuario,
+        es_proveedor=False
+    )
+    
+    logger.info(f"Mensaje inicial del chat creado: {chat_mensaje.id} para oferta: {oferta.id}")
+    
+    return chat_mensaje
+
+
+# DISPONIBILIDADVIEWSET ELIMINADO - REEMPLAZADO POR ENDPOINTS EN USUARIOS APP
+# (Los horarios ahora se manejan desde usuarios/talleres/{id}/horarios_disponibles/ y usuarios/mecanicos-domicilio/{id}/horarios_disponibles/)
+
+class SolicitudServicioViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet para el modelo SolicitudServicio
+    """
+    queryset = SolicitudServicio.objects.all()
+    serializer_class = SolicitudServicioSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [filters.OrderingFilter]
+    ordering_fields = ['fecha_hora_solicitud', 'fecha_servicio', 'total']
+    ordering = ['-fecha_hora_solicitud']
+    
+    def get_queryset(self):
+        """
+        Filtra las solicitudes según los parámetros de consulta
+        """
+        user = self.request.user
+        
+        # Si es admin o staff, puede ver todas las solicitudes
+        if user.is_staff or user.is_superuser:
+            queryset = SolicitudServicio.objects.all()
+        else:
+            # Para usuarios normales, solo sus propias solicitudes
+            try:
+                from mecanimovilapp.apps.usuarios.models import Cliente
+                cliente = Cliente.objects.get(usuario=user)
+                queryset = SolicitudServicio.objects.filter(cliente=cliente)
+            except Cliente.DoesNotExist:
+                queryset = SolicitudServicio.objects.none()
+        
+        # Filtros de solicitud
+        cliente_id = self.request.query_params.get('cliente_id', None)
+        estado = self.request.query_params.get('estado', None)
+        taller_id = self.request.query_params.get('taller_id', None)
+        mecanico_id = self.request.query_params.get('mecanico_id', None)
+        fecha_desde = self.request.query_params.get('fecha_desde', None)
+        fecha_hasta = self.request.query_params.get('fecha_hasta', None)
+        
+        if cliente_id is not None:
+            queryset = queryset.filter(cliente_id=cliente_id)
+        
+        if estado is not None:
+            queryset = queryset.filter(estado=estado)
+            
+        if taller_id is not None:
+            queryset = queryset.filter(taller_id=taller_id)
+        
+        if mecanico_id is not None:
+            queryset = queryset.filter(mecanico_id=mecanico_id)
+            
+        if fecha_desde is not None:
+            queryset = queryset.filter(fecha_servicio__gte=fecha_desde)
+            
+        if fecha_hasta is not None:
+            queryset = queryset.filter(fecha_servicio__lte=fecha_hasta)
+        
+        return queryset.select_related('cliente', 'taller', 'mecanico', 'vehiculo')
+    
+    @action(detail=False, methods=['get'])
+    def activas(self, request):
+        """
+        Obtiene las solicitudes activas del cliente (no completadas ni canceladas)
+        """
+        try:
+            from mecanimovilapp.apps.usuarios.models import Cliente
+            
+            # Obtener el cliente del usuario autenticado
+            cliente = Cliente.objects.get(usuario=request.user)
+            
+            # Estados que se consideran "activos" para el cliente
+            estados_activos = [
+                'pendiente',
+                'pago_validado', 
+                'confirmado',
+                'en_proceso',
+                'pendiente_aceptacion_proveedor',
+                'aceptada_por_proveedor'
+            ]
+            
+            solicitudes_activas = SolicitudServicio.objects.filter(
+                cliente=cliente,
+                estado__in=estados_activos
+            ).select_related(
+                'cliente', 'taller', 'mecanico', 'vehiculo'
+            ).prefetch_related(
+                'lineas__oferta_servicio'
+            ).order_by('fecha_servicio', 'hora_servicio')
+            
+            serializer = self.get_serializer(solicitudes_activas, many=True)
+            return Response(serializer.data)
+            
+        except Cliente.DoesNotExist:
+            return Response(
+                {"error": "No se encontró perfil de cliente para este usuario"}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error obteniendo solicitudes activas: {str(e)}")
+            return Response(
+                {"error": f"Error al obtener solicitudes activas: {str(e)}"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    @action(detail=False, methods=['get'])
+    def historial(self, request):
+        """
+        Obtiene el historial completo de solicitudes del cliente (todas, incluyendo completadas y canceladas)
+        """
+        try:
+            from mecanimovilapp.apps.usuarios.models import Cliente
+            
+            # Obtener el cliente del usuario autenticado
+            cliente = Cliente.objects.get(usuario=request.user)
+            
+            # Obtener todas las solicitudes del cliente
+            queryset = SolicitudServicio.objects.filter(cliente=cliente)
+            
+            # Aplicar filtros opcionales
+            estado = request.query_params.get('estado')
+            fecha_desde = request.query_params.get('fecha_desde')
+            fecha_hasta = request.query_params.get('fecha_hasta')
+            
+            if estado:
+                # Permitir múltiples estados separados por coma
+                estados = estado.split(',')
+                queryset = queryset.filter(estado__in=estados)
+            
+            if fecha_desde:
+                queryset = queryset.filter(fecha_servicio__gte=fecha_desde)
+            
+            if fecha_hasta:
+                queryset = queryset.filter(fecha_servicio__lte=fecha_hasta)
+            
+            # Obtener solicitudes con relaciones optimizadas
+            solicitudes_historial = queryset.select_related(
+                'cliente', 'taller', 'mecanico', 'vehiculo'
+            ).prefetch_related(
+                'lineas__oferta_servicio'
+            ).order_by('-fecha_hora_solicitud')  # Más recientes primero
+            
+            serializer = self.get_serializer(solicitudes_historial, many=True)
+            return Response(serializer.data)
+            
+        except Cliente.DoesNotExist:
+            return Response(
+                {"error": "No se encontró perfil de cliente para este usuario"}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error obteniendo historial de solicitudes: {str(e)}")
+            return Response(
+                {"error": f"Error al obtener historial de solicitudes: {str(e)}"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    @action(detail=True, methods=['post'])
+    def cancelar(self, request, pk=None):
+        """
+        Cancela una solicitud de servicio del cliente
+        """
+        try:
+            from mecanimovilapp.apps.usuarios.models import Cliente
+            from django.utils import timezone
+            
+            # Obtener la solicitud
+            solicitud = self.get_object()
+            
+            # Verificar que el usuario es el dueño de la solicitud
+            cliente = Cliente.objects.get(usuario=request.user)
+            if solicitud.cliente != cliente:
+                return Response(
+                    {"error": "No tienes permisos para cancelar esta solicitud"}, 
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            # Verificar que la solicitud puede ser cancelada
+            if not solicitud.puede_cancelar_directamente():
+                if solicitud.requiere_proceso_cancelacion():
+                    # Cambiar estado a solicitud de cancelación
+                    solicitud.estado = 'solicitud_cancelacion'
+                    solicitud.fecha_cancelacion = timezone.now()
+                    solicitud.motivo_cancelacion = request.data.get('motivo', 'Cancelación solicitada por el cliente')
+                    solicitud.save()
+                    
+                    return Response({
+                        "mensaje": "Se ha enviado tu solicitud de cancelación. Se procesará la devolución correspondiente.",
+                        "estado": solicitud.estado,
+                        "requiere_devolucion": True
+                    })
+                else:
+                    return Response(
+                        {"error": f"No se puede cancelar una solicitud en estado '{solicitud.estado}'"}, 
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+            
+            # Cancelación directa para solicitudes pendientes sin pago validado
+            solicitud.estado = 'cancelado'
+            solicitud.fecha_cancelacion = timezone.now()
+            solicitud.motivo_cancelacion = request.data.get('motivo', 'Cancelación directa por el cliente')
+            solicitud.save()
+            
+            return Response({
+                "mensaje": "Solicitud cancelada exitosamente",
+                "estado": solicitud.estado,
+                "fecha_cancelacion": solicitud.fecha_cancelacion
+            })
+            
+        except Cliente.DoesNotExist:
+            return Response(
+                {"error": "No se encontró perfil de cliente para este usuario"}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except SolicitudServicio.DoesNotExist:
+            return Response(
+                {"error": "Solicitud no encontrada"}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error cancelando solicitud {pk}: {str(e)}")
+            return Response(
+                {"error": f"Error al cancelar solicitud: {str(e)}"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class LineaServicioViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet para el modelo LineaServicio
+    """
+    queryset = LineaServicio.objects.all()
+    serializer_class = LineaServicioSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [filters.OrderingFilter]
+    ordering_fields = ['precio_final']
+    ordering = ['-precio_final']
+
+
+class CarritoAgendamientoViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet para el modelo CarritoAgendamiento
+    """
+    queryset = CarritoAgendamiento.objects.all()
+    serializer_class = CarritoAgendamientoSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [filters.OrderingFilter]
+    ordering_fields = ['fecha_creacion', 'fecha_actualizacion']
+    ordering = ['-fecha_actualizacion']
+    
+    def get_queryset(self):
+        """
+        Filtra los carritos según el cliente autenticado
+        """
+        user = self.request.user
+        
+        # Verificar que el usuario esté autenticado
+        if not user or not user.is_authenticated:
+            return CarritoAgendamiento.objects.none()
+        
+        # Obtener el cliente del usuario autenticado
+        try:
+            from mecanimovilapp.apps.usuarios.models import Cliente
+            cliente = Cliente.objects.get(usuario=user)
+            return CarritoAgendamiento.objects.filter(cliente=cliente).select_related(
+                'cliente', 'vehiculo'
+            ).prefetch_related('items__oferta_servicio')
+        except Cliente.DoesNotExist:
+            # Log para debugging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Usuario {user.username} no tiene perfil de cliente asociado")
+            return CarritoAgendamiento.objects.none()
+        except Exception as e:
+            # Log para debugging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error en get_queryset: {str(e)}")
+            return CarritoAgendamiento.objects.none()
+    
+    @action(detail=False, methods=['get'])
+    def activos(self, request):
+        """
+        Obtiene todos los carritos activos del cliente (solo los que tienen items)
+        """
+        try:
+            # MEJORADO: Solo retornar carritos que realmente tienen servicios
+            carritos_activos = self.get_queryset().filter(activo=True).prefetch_related('items')
+            
+            # Filtrar carritos que tienen al menos un item
+            carritos_con_servicios = []
+            carritos_vacios_para_limpiar = []
+            
+            for carrito in carritos_activos:
+                if carrito.items.exists():
+                    carritos_con_servicios.append(carrito)
+                else:
+                    carritos_vacios_para_limpiar.append(carrito)
+            
+            # NUEVO: Limpiar automáticamente carritos vacíos antiguos (más de 1 hora)
+            from django.utils import timezone
+            from datetime import timedelta
+            
+            hora_limite = timezone.now() - timedelta(hours=1)
+            carritos_vacios_antiguos = [
+                carrito for carrito in carritos_vacios_para_limpiar 
+                if carrito.fecha_actualizacion < hora_limite
+            ]
+            
+            if carritos_vacios_antiguos:
+                logger = logging.getLogger(__name__)
+                logger.info(f"Limpiando {len(carritos_vacios_antiguos)} carritos vacíos antiguos")
+                
+                for carrito in carritos_vacios_antiguos:
+                    carrito.delete()
+            
+            # Serializar solo carritos con servicios
+            serializer = self.get_serializer(carritos_con_servicios, many=True)
+            
+            return Response({
+                "carritos": serializer.data,
+                "total_carritos": len(carritos_con_servicios),
+                "carritos_limpiados": len(carritos_vacios_antiguos)
+            })
+            
+        except Exception as e:
+            # Log del error para debugging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error en carritos activos: {str(e)}")
+            
+            # Respuesta de error en formato JSON
+            return Response(
+                {
+                    "error": "Error obteniendo carritos activos",
+                    "detail": str(e),
+                    "carritos": []
+                }, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    @action(detail=False, methods=['get'])
+    def activo(self, request):
+        """
+        Obtiene el carrito activo para un vehículo específico (solo si tiene items)
+        """
+        vehiculo_id = request.query_params.get('vehiculo_id')
+        if not vehiculo_id:
+            return Response(
+                {"error": "Se requiere vehiculo_id"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            # MEJORADO: Buscar carrito activo con items
+            carrito = self.get_queryset().filter(
+                vehiculo_id=vehiculo_id, 
+                activo=True
+            ).prefetch_related('items').first()
+            
+            if not carrito:
+                return Response(
+                    {"error": "No hay carrito activo para este vehículo"}, 
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
+            # NUEVO: Verificar si el carrito tiene items
+            if not carrito.items.exists():
+                # Carrito vacío - eliminarlo automáticamente si es antiguo
+                from django.utils import timezone
+                from datetime import timedelta
+                
+                hora_limite = timezone.now() - timedelta(minutes=30)  # 30 minutos para carritos individuales
+                
+                if carrito.fecha_actualizacion < hora_limite:
+                    logger = logging.getLogger(__name__)
+                    logger.info(f"Eliminando carrito vacío antiguo {carrito.id} para vehículo {vehiculo_id}")
+                    carrito.delete()
+                
+                return Response(
+                    {"error": "No hay carrito activo para este vehículo"}, 
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
+            # Carrito válido con items
+            serializer = self.get_serializer(carrito)
+            return Response(serializer.data)
+            
+        except CarritoAgendamiento.DoesNotExist:
+            return Response(
+                {"error": "No hay carrito activo para este vehículo"}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error obteniendo carrito activo para vehículo {vehiculo_id}: {str(e)}")
+            
+            return Response(
+                {"error": "Error interno del servidor"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    @action(detail=True, methods=['post'])
+    def agregar_servicio(self, request, pk=None):
+        """
+        Agrega un servicio al carrito
+        """
+        carrito = self.get_object()
+        
+        # Validar datos requeridos
+        oferta_servicio_id = request.data.get('oferta_servicio_id')
+        con_repuestos = request.data.get('con_repuestos', True)
+        cantidad = request.data.get('cantidad', 1)
+        fecha_servicio = request.data.get('fecha_servicio')
+        hora_servicio = request.data.get('hora_servicio')
+        
+        if not oferta_servicio_id:
+            return Response(
+                {"error": "Se requiere oferta_servicio_id"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            from mecanimovilapp.apps.servicios.models import OfertaServicio
+            oferta_servicio = OfertaServicio.objects.get(id=oferta_servicio_id)
+            
+            # Crear o actualizar item del carrito
+            item, created = ItemCarritoAgendamiento.objects.get_or_create(
+                carrito=carrito,
+                oferta_servicio=oferta_servicio,
+                defaults={
+                    'con_repuestos': con_repuestos,
+                    'cantidad': cantidad,
+                    'fecha_servicio': fecha_servicio,
+                    'hora_servicio': hora_servicio,
+                }
+            )
+            
+            if not created:
+                # Actualizar item existente
+                item.con_repuestos = con_repuestos
+                item.cantidad = cantidad
+                if fecha_servicio:
+                    item.fecha_servicio = fecha_servicio
+                if hora_servicio:
+                    item.hora_servicio = hora_servicio
+                item.save()
+            
+            # Serializar y retornar el carrito actualizado
+            serializer = self.get_serializer(carrito)
+            return Response(serializer.data)
+            
+        except OfertaServicio.DoesNotExist:
+            return Response(
+                {"error": "Oferta de servicio no encontrada"}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            return Response(
+                {"error": f"Error al agregar servicio: {str(e)}"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    @action(detail=True, methods=['post'])
+    def remover_servicio(self, request, pk=None):
+        """
+        Remueve un servicio del carrito
+        """
+        carrito = self.get_object()
+        item_id = request.data.get('item_id')
+        
+        if not item_id:
+            return Response(
+                {"error": "Se requiere item_id"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            item = ItemCarritoAgendamiento.objects.get(id=item_id, carrito=carrito)
+            item.delete()
+            
+            # Serializar y retornar el carrito actualizado
+            serializer = self.get_serializer(carrito)
+            return Response(serializer.data)
+            
+        except ItemCarritoAgendamiento.DoesNotExist:
+            return Response(
+                {"error": "Item no encontrado en el carrito"}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+    
+    @action(detail=True, methods=['post'])
+    def seleccionar_fecha_hora(self, request, pk=None):
+        """
+        Selecciona fecha y hora para todos los servicios del carrito
+        """
+        carrito = self.get_object()
+        fecha_servicio = request.data.get('fecha_servicio')
+        hora_servicio = request.data.get('hora_servicio')
+        
+        if not fecha_servicio or not hora_servicio:
+            return Response(
+                {"error": "Se requieren fecha_servicio y hora_servicio"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Actualizar todos los items del carrito
+        carrito.items.update(
+            fecha_servicio=fecha_servicio,
+            hora_servicio=hora_servicio
+        )
+        
+        # Serializar y retornar el carrito actualizado
+        serializer = self.get_serializer(carrito)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=['post'])
+    def confirmar(self, request, pk=None):
+        """
+        Confirma el carrito y crea las solicitudes de servicio
+        """
+        carrito = self.get_object()
+        
+        if not carrito.puede_confirmar():
+            return Response(
+                {"error": "El carrito no puede ser confirmado. Verifique que tenga servicios y fechas/horas seleccionadas."}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+            
+        metodo_pago = request.data.get('metodo_pago', 'transferencia')
+        notas_cliente = request.data.get('notas_cliente', '')
+        
+        try:
+            # Crear una solicitud de servicio por cada item del carrito
+            solicitudes_creadas = []
+            
+            for item in carrito.items.all():
+                # Determinar proveedor
+                taller = item.oferta_servicio.taller
+                mecanico = item.oferta_servicio.mecanico
+                tipo_servicio = 'taller' if taller else 'domicilio'
+                
+                # Si es servicio a domicilio, obtener la dirección del cliente
+                ubicacion_servicio = None
+                if tipo_servicio == 'domicilio':
+                    try:
+                        from mecanimovilapp.apps.usuarios.models import DireccionUsuario
+                        # Buscar dirección principal del cliente
+                        direccion_principal = DireccionUsuario.objects.filter(
+                            usuario=carrito.cliente.usuario,
+                            es_principal=True
+                        ).first()
+                        
+                        if direccion_principal:
+                            # Construir dirección completa con detalles si existen
+                            ubicacion_completa = direccion_principal.direccion
+                            if direccion_principal.detalles:
+                                ubicacion_completa += f", {direccion_principal.detalles}"
+                            if direccion_principal.etiqueta:
+                                ubicacion_completa += f" ({direccion_principal.etiqueta})"
+                            ubicacion_servicio = ubicacion_completa
+                        else:
+                            # Si no hay principal, buscar la más reciente
+                            direccion_reciente = DireccionUsuario.objects.filter(
+                                usuario=carrito.cliente.usuario
+                            ).order_by('-es_principal', '-fecha_actualizacion').first()
+                            
+                            if direccion_reciente:
+                                ubicacion_completa = direccion_reciente.direccion
+                                if direccion_reciente.detalles:
+                                    ubicacion_completa += f", {direccion_reciente.detalles}"
+                                if direccion_reciente.etiqueta:
+                                    ubicacion_completa += f" ({direccion_reciente.etiqueta})"
+                                ubicacion_servicio = ubicacion_completa
+                    except Exception as e:
+                        logger = logging.getLogger(__name__)
+                        logger.warning(f"No se pudo obtener dirección del cliente para servicio a domicilio: {e}")
+                
+                # ✅ CAMBIO: Estado inicial 'confirmado'
+                # Si el carrito proviene de una oferta aceptada (nuevo flujo de solicitudes públicas),
+                # la orden se crea directamente como 'confirmado' sin requerir aceptación del proveedor.
+                # Esto es porque el proveedor ya aceptó implícitamente al enviar la oferta.
+                
+                # Crear solicitud
+                solicitud = SolicitudServicio.objects.create(
+                    cliente=carrito.cliente,
+                    vehiculo=carrito.vehiculo,
+                    tipo_servicio=tipo_servicio,
+                    taller=taller,
+                    mecanico=mecanico,
+                    fecha_servicio=item.fecha_servicio,
+                    hora_servicio=item.hora_servicio,
+                    metodo_pago=metodo_pago,
+                    total=item.precio_estimado,
+                    estado='confirmado',  # ✅ Directamente confirmado (el proveedor ya ofreció)
+                    notas_cliente=notas_cliente,
+                    ubicacion_servicio=ubicacion_servicio,
+                    comprobante_validado=False,
+                    devolucion_procesada=False,
+                    requiere_devolucion=False
+                )
+                
+                # Crear línea de servicio
+                linea_data = {
+                    'solicitud': solicitud,
+                    'oferta_servicio': item.oferta_servicio,
+                    'con_repuestos': item.con_repuestos,
+                    'cantidad': item.cantidad,
+                    'precio_unitario': item.precio_estimado / Decimal(item.cantidad),
+                    'precio_final': item.precio_estimado
+                }
+                
+                LineaServicio.objects.create(**linea_data)
+                
+                solicitudes_creadas.append(solicitud)
+            
+            # Marcar carrito como inactivo
+            carrito.activo = False
+            carrito.save()
+            
+            # Serializar solicitudes creadas
+            solicitudes_data = SolicitudServicioSerializer(solicitudes_creadas, many=True).data
+            
+            return Response({
+                "mensaje": f"Se crearon {len(solicitudes_creadas)} solicitudes de servicio",
+                "solicitudes": solicitudes_data
+            })
+            
+        except Exception as e:
+            return Response(
+                {"error": f"Error al confirmar carrito: {str(e)}"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=False, methods=['post'])
+    def limpiar_vacios(self, request):
+        """
+        Limpia carritos vacíos (sin items) para un vehículo específico
+        """
+        vehiculo_id = request.data.get('vehiculo_id')
+        if not vehiculo_id:
+            return Response(
+                {"error": "Se requiere vehiculo_id"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            # Buscar carritos activos vacíos para este vehículo del usuario autenticado
+            carritos_vacios = self.get_queryset().filter(
+                vehiculo_id=vehiculo_id,
+                activo=True,
+                items__isnull=True
+            ).distinct()
+            
+            carritos_eliminados = 0
+            for carrito in carritos_vacios:
+                # Verificar que realmente no tiene items
+                if not carrito.items.exists():
+                    logger = logging.getLogger(__name__)
+                    logger.info(f"Eliminando carrito vacío {carrito.id} para vehículo {vehiculo_id}")
+                    carrito.delete()
+                    carritos_eliminados += 1
+            
+            return Response({
+                "mensaje": f"Se eliminaron {carritos_eliminados} carritos vacíos",
+                "carritos_eliminados": carritos_eliminados
+            })
+            
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error limpiando carritos vacíos para vehículo {vehiculo_id}: {str(e)}")
+            
+            return Response(
+                {"error": f"Error al limpiar carritos vacíos: {str(e)}"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    def create(self, request, *args, **kwargs):
+        """
+        Crea un nuevo carrito de agendamiento
+        NUEVO: Implementa UN SOLO CARRITO TEMPORAL POR CLIENTE
+        """
+        try:
+            from mecanimovilapp.apps.usuarios.models import Cliente
+            cliente = Cliente.objects.get(usuario=request.user)
+            
+            # NUEVA LÓGICA: UN SOLO CARRITO TEMPORAL POR CLIENTE
+            # Eliminar cualquier carrito activo existente del cliente
+            carritos_existentes = CarritoAgendamiento.objects.filter(
+                cliente=cliente, 
+                activo=True
+            )
+            
+            if carritos_existentes.exists():
+                logger = logging.getLogger(__name__)
+                logger.info(f"Eliminando {carritos_existentes.count()} carritos activos existentes del cliente {cliente.id} para crear nuevo carrito temporal")
+                carritos_existentes.delete()
+            
+            # CORRECCIÓN: Agregar cliente a los datos ANTES de la validación
+            data = request.data.copy()
+            data['cliente'] = cliente.id
+            
+            # Crear el nuevo carrito (único para el cliente)
+            serializer = self.get_serializer(data=data)
+            serializer.is_valid(raise_exception=True)
+            
+            # Ya no necesitamos asignar cliente aquí porque está en los datos validados
+            carrito = serializer.save()
+            
+            logger = logging.getLogger(__name__)
+            logger.info(f"Nuevo carrito temporal {carrito.id} creado para cliente {cliente.id}")
+            
+            return Response(
+                self.get_serializer(carrito).data, 
+                status=status.HTTP_201_CREATED
+            )
+            
+        except Cliente.DoesNotExist:
+            return Response(
+                {"error": "Usuario no tiene perfil de cliente asociado"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error creando carrito: {str(e)}")
+            return Response(
+                {"error": f"Error creando carrito: {str(e)}"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class AgendamientoViewSet(viewsets.ViewSet):
+    """
+    ViewSet para operaciones de agendamiento
+    NOTA: Algunas operaciones se mantienen para compatibilidad pero 
+    ahora usan HorarioProveedor en lugar de Disponibilidad
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    @action(detail=False, methods=['get'])
+    def disponibilidad_taller(self, request):
+        """
+        Obtiene la disponibilidad de un taller específico
+        DEPRECADO: Usar /api/usuarios/talleres/{id}/horarios_disponibles/ en su lugar
+        """
+        serializer = AgendamientoDisponibilidadSerializer(data=request.query_params)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        data = serializer.validated_data
+        taller_id = data['taller_id']
+        fecha_inicio = data['fecha_inicio']
+        fecha_fin = data['fecha_fin']
+        duracion_servicio = data['duracion_servicio']
+        
+        # NUEVA IMPLEMENTACIÓN: Usar HorarioProveedor
+        try:
+            from mecanimovilapp.apps.usuarios.models import Taller, HorarioProveedor
+            
+            taller = Taller.objects.get(id=taller_id)
+        
+            slots_disponibles = []
+            fecha_actual = fecha_inicio
+            
+            while fecha_actual <= fecha_fin:
+                dia_semana = fecha_actual.weekday()
+                
+                try:
+                    horario = HorarioProveedor.objects.get(
+                        taller=taller,
+                        dia_semana=dia_semana,
+                        activo=True
+                    )
+                    
+                    # Generar slots para este día
+                    slots_dia = horario.generar_slots_disponibles(fecha_actual)
+                    
+                    # Verificar disponibilidad real vs citas existentes
+                    for slot in slots_dia:
+                        slot_ocupado = SolicitudServicio.objects.filter(
+                            taller=taller,
+                            fecha_servicio=fecha_actual,
+                            hora_servicio=slot['hora_inicio'],
+                            estado__in=['pendiente', 'confirmado', 'en_proceso']
+                        ).exists()
+                        
+                        if not slot_ocupado:
+                            slots_disponibles.append({
+                                'fecha': fecha_actual,
+                                'hora_inicio': slot['hora_inicio'],
+                                'hora_fin': slot['hora_fin'],
+                                'disponible': True
+                            })
+                
+                except HorarioProveedor.DoesNotExist:
+                    # No hay horario configurado para este día
+                    pass
+                
+                fecha_actual += timedelta(days=1)
+        
+            return Response({
+                'taller_id': taller_id,
+                'fecha_inicio': fecha_inicio,
+                'fecha_fin': fecha_fin,
+                'slots_disponibles': slots_disponibles,
+                'mensaje': 'DEPRECADO: Use /api/usuarios/talleres/{id}/horarios_disponibles/ en su lugar'
+            })
+            
+        except Taller.DoesNotExist:
+            return Response(
+                {"error": "Taller no encontrado"}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            return Response(
+                {"error": f"Error obteniendo disponibilidad: {str(e)}"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    @action(detail=False, methods=['post'])
+    def confirmar_agendamiento(self, request):
+        """
+        Confirma un agendamiento desde carrito
+        """
+        serializer = ConfirmarAgendamientoSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        data = serializer.validated_data
+        carrito_id = data['carrito_id']
+        metodo_pago = data['metodo_pago']
+        notas_cliente = data.get('notas_cliente', '')
+        
+        try:
+            carrito = CarritoAgendamiento.objects.get(id=carrito_id, activo=True)
+            
+            # Verificar que el carrito puede ser confirmado
+            if not carrito.puede_confirmar():
+                return Response(
+                    {"error": "El carrito no puede ser confirmado. Verifique que tenga servicios y fechas/horas seleccionadas."}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Lógica de confirmación directa (sin usar ViewSet)
+            solicitudes_creadas = []
+            
+            for item in carrito.items.all():
+                # Determinar proveedor
+                taller = item.oferta_servicio.taller
+                mecanico = item.oferta_servicio.mecanico
+                tipo_servicio = 'taller' if taller else 'domicilio'
+                
+                # Si es servicio a domicilio, obtener la dirección del cliente
+                ubicacion_servicio = None
+                if tipo_servicio == 'domicilio':
+                    try:
+                        from mecanimovilapp.apps.usuarios.models import DireccionUsuario
+                        # Buscar dirección principal del cliente
+                        direccion_principal = DireccionUsuario.objects.filter(
+                            usuario=carrito.cliente.usuario,
+                            es_principal=True
+                        ).first()
+                        
+                        if direccion_principal:
+                            # Construir dirección completa con detalles si existen
+                            ubicacion_completa = direccion_principal.direccion
+                            if direccion_principal.detalles:
+                                ubicacion_completa += f", {direccion_principal.detalles}"
+                            if direccion_principal.etiqueta:
+                                ubicacion_completa += f" ({direccion_principal.etiqueta})"
+                            ubicacion_servicio = ubicacion_completa
+                        else:
+                            # Si no hay principal, buscar la más reciente
+                            direccion_reciente = DireccionUsuario.objects.filter(
+                                usuario=carrito.cliente.usuario
+                            ).order_by('-es_principal', '-fecha_actualizacion').first()
+                            
+                            if direccion_reciente:
+                                ubicacion_completa = direccion_reciente.direccion
+                                if direccion_reciente.detalles:
+                                    ubicacion_completa += f", {direccion_reciente.detalles}"
+                                if direccion_reciente.etiqueta:
+                                    ubicacion_completa += f" ({direccion_reciente.etiqueta})"
+                                ubicacion_servicio = ubicacion_completa
+                    except Exception as e:
+                        logger = logging.getLogger(__name__)
+                        logger.warning(f"No se pudo obtener dirección del cliente para servicio a domicilio: {e}")
+                
+                # ✅ CAMBIO: Estado inicial 'confirmado'
+                # Similar al método 'confirmar', las órdenes del nuevo flujo de solicitudes públicas
+                # se crean directamente como 'confirmado' sin requerir aceptación del proveedor.
+                
+                # Crear solicitud
+                solicitud = SolicitudServicio.objects.create(
+                    cliente=carrito.cliente,
+                    vehiculo=carrito.vehiculo,
+                    tipo_servicio=tipo_servicio,
+                    taller=taller,
+                    mecanico=mecanico,
+                    fecha_servicio=item.fecha_servicio,
+                    hora_servicio=item.hora_servicio,
+                    metodo_pago=metodo_pago,
+                    total=item.precio_estimado,
+                    estado='confirmado',  # ✅ Directamente confirmado (el proveedor ya ofreció)
+                    notas_cliente=notas_cliente,
+                    ubicacion_servicio=ubicacion_servicio,
+                    comprobante_validado=False,
+                    devolucion_procesada=False,
+                    requiere_devolucion=False
+                )
+                
+                # Crear línea de servicio
+                linea_data = {
+                    'solicitud': solicitud,
+                    'oferta_servicio': item.oferta_servicio,
+                    'con_repuestos': item.con_repuestos,
+                    'cantidad': item.cantidad,
+                    'precio_unitario': item.precio_estimado / Decimal(item.cantidad),
+                    'precio_final': item.precio_estimado
+                }
+                
+                LineaServicio.objects.create(**linea_data)
+                
+                solicitudes_creadas.append(solicitud)
+            
+            # Marcar carrito como inactivo
+            carrito.activo = False
+            carrito.save()
+            
+            # Serializar solicitudes creadas
+            solicitudes_data = SolicitudServicioSerializer(solicitudes_creadas, many=True).data
+            
+            return Response({
+                "mensaje": f"Se crearon {len(solicitudes_creadas)} solicitudes de servicio",
+                "solicitudes": solicitudes_data
+            })
+            
+        except CarritoAgendamiento.DoesNotExist:
+            return Response(
+                {"error": "Carrito no encontrado o no está activo"}, 
+                status=status.HTTP_404_NOT_FOUND
+            ) 
+        except Exception as e:
+            return Response(
+                {"error": f"Error al confirmar carrito: {str(e)}"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=False, methods=['post'])
+    def confirmar_agendamiento_debug(self, request):
+        """
+        Endpoint temporal para diagnosticar problemas en confirmar_agendamiento
+        """
+        print("🔍 DEBUG: Iniciando confirmación de agendamiento")
+        print(f"🔍 DEBUG: Datos recibidos: {request.data}")
+        
+        # Validar datos básicos
+        carrito_id = request.data.get('carrito_id')
+        metodo_pago = request.data.get('metodo_pago')
+        acepta_terminos = request.data.get('acepta_terminos', True)
+        notas_cliente = request.data.get('notas_cliente', '')
+        
+        print(f"🔍 DEBUG: carrito_id={carrito_id}, metodo_pago={metodo_pago}")
+        
+        if not carrito_id:
+            return Response(
+                {"error": "carrito_id es requerido"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not metodo_pago:
+            return Response(
+                {"error": "metodo_pago es requerido"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            # Obtener carrito
+            print(f"🔍 DEBUG: Buscando carrito {carrito_id}")
+            carrito = CarritoAgendamiento.objects.get(id=carrito_id, activo=True)
+            print(f"🔍 DEBUG: Carrito encontrado: {carrito}")
+            
+            # Verificar items
+            items = carrito.items.all()
+            print(f"🔍 DEBUG: Items en carrito: {items.count()}")
+            
+            for item in items:
+                print(f"🔍 DEBUG: Item {item.id}:")
+                print(f"   - Servicio: {item.oferta_servicio.servicio.nombre}")
+                print(f"   - Fecha: {item.fecha_servicio}")
+                print(f"   - Hora: {item.hora_servicio}")
+                print(f"   - Precio: {item.precio_estimado}")
+                print(f"   - Taller: {item.oferta_servicio.taller}")
+                print(f"   - Mecánico: {item.oferta_servicio.mecanico}")
+            
+            # Verificar si puede confirmar
+            print(f"🔍 DEBUG: Verificando si puede confirmar...")
+            puede_confirmar = carrito.puede_confirmar()
+            print(f"🔍 DEBUG: Puede confirmar: {puede_confirmar}")
+            
+            if not puede_confirmar:
+                # Diagnóstico detallado
+                print("❌ DEBUG: Carrito no puede ser confirmado")
+                print(f"   - Activo: {carrito.activo}")
+                print(f"   - Tiene items: {carrito.items.exists()}")
+                
+                items_sin_fecha_hora = []
+                for item in items:
+                    if not item.fecha_servicio or not item.hora_servicio:
+                        items_sin_fecha_hora.append(item.id)
+                
+                print(f"   - Items sin fecha/hora: {items_sin_fecha_hora}")
+                
+                return Response({
+                    "error": "El carrito no puede ser confirmado",
+                    "debug": {
+                        "activo": carrito.activo,
+                        "tiene_items": carrito.items.exists(),
+                        "items_sin_fecha_hora": items_sin_fecha_hora
+                    }
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Procesar confirmación
+            print(f"🔍 DEBUG: Iniciando proceso de confirmación...")
+            solicitudes_creadas = []
+            
+            for item in items:
+                print(f"🔍 DEBUG: Procesando item {item.id}")
+                
+                # Determinar proveedor
+                taller = item.oferta_servicio.taller
+                mecanico = item.oferta_servicio.mecanico
+                tipo_servicio = 'taller' if taller else 'domicilio'
+                
+                print(f"   - Tipo servicio: {tipo_servicio}")
+                print(f"   - Taller: {taller}")
+                print(f"   - Mecánico: {mecanico}")
+                
+                # Si es servicio a domicilio, obtener la dirección del cliente
+                ubicacion_servicio = None
+                if tipo_servicio == 'domicilio':
+                    try:
+                        from mecanimovilapp.apps.usuarios.models import DireccionUsuario
+                        # Buscar dirección principal del cliente
+                        direccion_principal = DireccionUsuario.objects.filter(
+                            usuario=carrito.cliente.usuario,
+                            es_principal=True
+                        ).first()
+                        
+                        if direccion_principal:
+                            # Construir dirección completa con detalles si existen
+                            ubicacion_completa = direccion_principal.direccion
+                            if direccion_principal.detalles:
+                                ubicacion_completa += f", {direccion_principal.detalles}"
+                            if direccion_principal.etiqueta:
+                                ubicacion_completa += f" ({direccion_principal.etiqueta})"
+                            ubicacion_servicio = ubicacion_completa
+                        else:
+                            # Si no hay principal, buscar la más reciente
+                            direccion_reciente = DireccionUsuario.objects.filter(
+                                usuario=carrito.cliente.usuario
+                            ).order_by('-es_principal', '-fecha_actualizacion').first()
+                            
+                            if direccion_reciente:
+                                ubicacion_completa = direccion_reciente.direccion
+                                if direccion_reciente.detalles:
+                                    ubicacion_completa += f", {direccion_reciente.detalles}"
+                                if direccion_reciente.etiqueta:
+                                    ubicacion_completa += f" ({direccion_reciente.etiqueta})"
+                                ubicacion_servicio = ubicacion_completa
+                    except Exception as e:
+                        logger = logging.getLogger(__name__)
+                        logger.warning(f"No se pudo obtener dirección del cliente para servicio a domicilio: {e}")
+                
+                # Crear solicitud
+                print(f"🔍 DEBUG: Creando solicitud...")
+                solicitud_data = {
+                    'cliente': carrito.cliente,
+                    'vehiculo': carrito.vehiculo,
+                    'tipo_servicio': tipo_servicio,
+                    'taller': taller,
+                    'mecanico': mecanico,
+                    'fecha_servicio': item.fecha_servicio,
+                    'hora_servicio': item.hora_servicio,
+                    'metodo_pago': metodo_pago,
+                    'total': item.precio_estimado,
+                    'estado': 'pendiente',
+                    'notas_cliente': notas_cliente,
+                    'ubicacion_servicio': ubicacion_servicio,
+                    'comprobante_validado': False,
+                    'devolucion_procesada': False,
+                    'requiere_devolucion': False
+                }
+                print(f"   - Datos solicitud: {solicitud_data}")
+                
+                solicitud = SolicitudServicio.objects.create(**solicitud_data)
+                print(f"   - Solicitud creada: {solicitud.id}")
+                
+                # Crear línea de servicio
+                print(f"🔍 DEBUG: Creando línea de servicio...")
+                linea_data = {
+                    'solicitud': solicitud,
+                    'oferta_servicio': item.oferta_servicio,
+                    'con_repuestos': item.con_repuestos,
+                    'cantidad': item.cantidad,
+                    'precio_unitario': item.precio_estimado / Decimal(item.cantidad),
+                    'precio_final': item.precio_estimado
+                }
+                print(f"   - Datos línea: {linea_data}")
+                
+                LineaServicio.objects.create(**linea_data)
+                
+                solicitudes_creadas.append(solicitud)
+            
+            # Marcar carrito como inactivo
+            print(f"🔍 DEBUG: Marcando carrito como inactivo...")
+            carrito.activo = False
+            carrito.save()
+            print(f"🔍 DEBUG: Carrito marcado como inactivo")
+            
+            # Serializar respuesta
+            print(f"🔍 DEBUG: Creando respuesta...")
+            solicitudes_data = SolicitudServicioSerializer(solicitudes_creadas, many=True).data
+            
+            response = {
+                "mensaje": f"Se crearon {len(solicitudes_creadas)} solicitudes de servicio",
+                "solicitudes": solicitudes_data,
+                "debug": "Proceso completado exitosamente"
+            }
+            
+            print(f"✅ DEBUG: Proceso completado: {len(solicitudes_creadas)} solicitudes creadas")
+            return Response(response)
+            
+        except CarritoAgendamiento.DoesNotExist:
+            print(f"❌ DEBUG: Carrito {carrito_id} no encontrado")
+            return Response(
+                {"error": "Carrito no encontrado o no está activo"}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            print(f"❌ DEBUG: Error inesperado: {e}")
+            import traceback
+            traceback.print_exc()
+            return Response(
+                {"error": f"Error al confirmar carrito: {str(e)}", "debug": "Ver logs del servidor"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def validar_disponibilidad_taller(request):
+    """
+    Valida si un taller está disponible en una fecha y hora específica
+    ACTUALIZADO: Usa HorarioProveedor en lugar de Disponibilidad
+    """
+    taller_id = request.GET.get('taller_id')
+    fecha_servicio = request.GET.get('fecha_servicio')
+    hora_servicio = request.GET.get('hora_servicio')
+    
+    if not all([taller_id, fecha_servicio, hora_servicio]):
+        return Response(
+            {
+                'disponible': False,
+                'error': 'Se requieren taller_id, fecha_servicio y hora_servicio'
+            }, 
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    try:
+        from mecanimovilapp.apps.usuarios.models import Taller, HorarioProveedor
+        from datetime import datetime
+        
+        # Validar que el taller existe
+        taller = Taller.objects.get(id=taller_id)
+        
+        # Convertir fecha string a objeto date
+        fecha_obj = datetime.strptime(fecha_servicio, '%Y-%m-%d').date()
+        hora_obj = datetime.strptime(hora_servicio, '%H:%M').time()
+        
+        # Obtener día de la semana (0=Lunes, 6=Domingo)
+        dia_semana = fecha_obj.weekday()
+        
+        # Verificar si el taller tiene horario configurado para ese día
+        try:
+            horario = HorarioProveedor.objects.get(
+            taller=taller,
+            dia_semana=dia_semana,
+            activo=True
+            )
+            
+            # Verificar si la hora está dentro del rango de atención
+            if not (horario.hora_inicio <= hora_obj <= horario.hora_fin):
+                return Response({
+                    'disponible': False,
+                    'error': f'La hora {hora_servicio} está fuera del horario de atención ({horario.hora_inicio}-{horario.hora_fin})'
+                })
+            
+        except HorarioProveedor.DoesNotExist:
+            return Response({
+                'disponible': False,
+                'error': 'El taller no atiende este día de la semana'
+            })
+        
+        # Verificar si ya tiene una cita a esa hora
+        cita_existente = SolicitudServicio.objects.filter(
+            taller=taller,
+            fecha_servicio=fecha_obj,
+            hora_servicio=hora_obj,
+            estado__in=['pendiente', 'confirmado', 'en_proceso']
+        ).exists()
+        
+        if cita_existente:
+            return Response({
+                'disponible': False,
+                'error': 'El taller ya tiene una cita programada a esa hora'
+            })
+        
+        return Response({
+            'disponible': True,
+            'mensaje': 'Horario disponible',
+            'taller': taller.nombre,
+            'horario_configurado': {
+                'hora_inicio': horario.hora_inicio,
+                'hora_fin': horario.hora_fin,
+                'duracion_slot': horario.duracion_slot
+            }
+        })
+        
+    except Taller.DoesNotExist:
+            return Response(
+                {
+                    'disponible': False,
+                'error': 'Taller no encontrado'
+                }, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+    except ValueError as e:
+            return Response(
+                {
+                    'disponible': False,
+                'error': f'Error en formato de fecha/hora: {str(e)}'
+            }, 
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    except Exception as e:
+        return Response(
+            {
+                'disponible': False,
+                'error': f'Error validando disponibilidad: {str(e)}'
+            }, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def validar_disponibilidad_mecanico(request):
+    """
+    Valida si un mecánico está disponible en una fecha y hora específica
+    ACTUALIZADO: Usa HorarioProveedor en lugar de validación básica
+    """
+    mecanico_id = request.GET.get('mecanico_id')
+    fecha_servicio = request.GET.get('fecha_servicio')
+    hora_servicio = request.GET.get('hora_servicio')
+    
+    if not all([mecanico_id, fecha_servicio, hora_servicio]):
+        return Response(
+            {
+                'disponible': False,
+                'error': 'Se requieren mecanico_id, fecha_servicio y hora_servicio'
+            }, 
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    try:
+        from mecanimovilapp.apps.usuarios.models import MecanicoDomicilio, HorarioProveedor
+        from datetime import datetime
+        
+        # Validar que el mecánico existe
+        mecanico = MecanicoDomicilio.objects.get(id=mecanico_id)
+        
+        # Convertir fecha string a objeto date
+        fecha_obj = datetime.strptime(fecha_servicio, '%Y-%m-%d').date()
+        hora_obj = datetime.strptime(hora_servicio, '%H:%M').time()
+        
+        # Obtener día de la semana (0=Lunes, 6=Domingo)
+        dia_semana = fecha_obj.weekday()
+        
+        # Verificar si el mecánico tiene horario configurado para ese día
+        try:
+            horario = HorarioProveedor.objects.get(
+                mecanico=mecanico,
+            dia_semana=dia_semana,
+            activo=True
+            )
+            
+            # Verificar si la hora está dentro del rango de atención
+            if not (horario.hora_inicio <= hora_obj <= horario.hora_fin):
+                return Response({
+                    'disponible': False,
+                    'error': f'La hora {hora_servicio} está fuera del horario de atención ({horario.hora_inicio}-{horario.hora_fin})'
+                })
+            
+        except HorarioProveedor.DoesNotExist:
+            return Response({
+                'disponible': False,
+                'error': 'El mecánico no atiende este día de la semana'
+            })
+        
+        # Verificar si ya tiene una cita a esa hora
+        cita_existente = SolicitudServicio.objects.filter(
+            mecanico=mecanico,
+            fecha_servicio=fecha_obj,
+            hora_servicio=hora_obj,
+            estado__in=['pendiente', 'confirmado', 'en_proceso']
+        ).exists()
+        
+        if cita_existente:
+            return Response({
+                'disponible': False,
+                'error': 'El mecánico ya tiene una cita programada a esa hora'
+            })
+        
+        return Response({
+            'disponible': True,
+            'mensaje': 'Horario disponible',
+            'mecanico': mecanico.nombre,
+            'horario_configurado': {
+                'hora_inicio': horario.hora_inicio,
+                'hora_fin': horario.hora_fin,
+                'duracion_slot': horario.duracion_slot
+            }
+        })
+        
+    except MecanicoDomicilio.DoesNotExist:
+        return Response(
+                {
+                    'disponible': False,
+                'error': 'Mecánico no encontrado'
+                }, 
+            status=status.HTTP_404_NOT_FOUND
+        )
+    except ValueError as e:
+        return Response(
+                {
+                    'disponible': False,
+                'error': f'Error en formato de fecha/hora: {str(e)}'
+            }, 
+            status=status.HTTP_400_BAD_REQUEST
+        ) 
+    except Exception as e:
+        return Response(
+            {
+                'disponible': False,
+                'error': f'Error validando disponibilidad: {str(e)}'
+            }, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def obtener_configuracion_precio(request):
+    """
+    Obtiene la configuración activa de precios (IVA y tarifa de servicio)
+    """
+    try:
+        config = ConfiguracionPrecio.objects.filter(activo=True).first()
+        
+        if not config:
+            # Crear configuración por defecto si no existe
+            config = ConfiguracionPrecio.objects.create(
+                iva_porcentaje=19.0,
+                tarifa_servicio_porcentaje=3.0,
+                activo=True
+            )
+        
+        return Response({
+            'iva_porcentaje': float(config.iva_porcentaje),
+            'tarifa_servicio_porcentaje': float(config.tarifa_servicio_porcentaje),
+            'activo': config.activo
+        })
+        
+    except Exception as e:
+        return Response(
+            {'error': f'Error obteniendo configuración: {str(e)}'}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def calcular_precio_detallado(request):
+    """
+    Calcula el desglose detallado de precios (subtotal, IVA, tarifa de servicio, total)
+    """
+    subtotal = request.data.get('subtotal')
+        
+    if not subtotal:
+        return Response(
+            {'error': 'Se requiere el subtotal'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+    try:
+        # Obtener configuración activa
+        config = ConfiguracionPrecio.objects.filter(activo=True).first()
+        
+        if not config:
+            config = ConfiguracionPrecio.objects.create(
+                iva_porcentaje=19.0,
+                tarifa_servicio_porcentaje=3.0,
+                activo=True
+            )
+        
+        # Convertir a Decimal para precisión
+        subtotal_decimal = Decimal(str(subtotal))
+        
+        # Calcular tarifa de servicio sobre el subtotal
+        tarifa_servicio = subtotal_decimal * (config.tarifa_servicio_porcentaje / Decimal('100'))
+        
+        # Calcular IVA sobre subtotal + tarifa
+        base_iva = subtotal_decimal + tarifa_servicio
+        iva = base_iva * (config.iva_porcentaje / Decimal('100'))
+        
+        # Total final
+        total = subtotal_decimal + tarifa_servicio + iva
+        
+        return Response({
+            'subtotal': float(subtotal_decimal.quantize(Decimal('0.01'))),
+            'tarifa_servicio': float(tarifa_servicio.quantize(Decimal('0.01'))),
+            'iva': float(iva.quantize(Decimal('0.01'))),
+            'total': float(total.quantize(Decimal('0.01'))),
+            'iva_porcentaje': float(config.iva_porcentaje),
+            'tarifa_porcentaje': float(config.tarifa_servicio_porcentaje)
+        })
+        
+    except (ValueError, TypeError) as e:
+        return Response(
+            {'error': f'Error en el subtotal proporcionado: {str(e)}'}, 
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    except Exception as e:
+        return Response(
+            {'error': f'Error calculando precios: {str(e)}'}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    ViewSet para que los proveedores gestionen sus órdenes con protección de datos
+    """
+    serializer_class = SolicitudServicioProveedorSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_queryset(self):
+        """
+        Filtrar órdenes para el proveedor autenticado
+        """
+        user = self.request.user
+        
+        # Determinar si es taller o mecánico
+        try:
+            if hasattr(user, 'taller'):
+                return SolicitudServicio.objects.filter(
+                    taller=user.taller
+                ).select_related(
+                    'cliente', 'cliente__usuario', 'vehiculo', 'taller', 'mecanico'
+                ).prefetch_related('lineas__oferta_servicio__servicio')
+            elif hasattr(user, 'mecanico_domicilio'):
+                return SolicitudServicio.objects.filter(
+                    mecanico=user.mecanico_domicilio
+                ).select_related(
+                    'cliente', 'cliente__usuario', 'vehiculo', 'taller', 'mecanico'
+                ).prefetch_related('lineas__oferta_servicio__servicio')
+            else:
+                return SolicitudServicio.objects.none()
+        except:
+            return SolicitudServicio.objects.none()
+    
+    def list(self, request, *args, **kwargs):
+        """
+        Lista órdenes con filtros opcionales de estado
+        """
+        queryset = self.get_queryset()
+        
+        # Aplicar filtro de estado si se proporciona
+        estado = request.query_params.get('estado')
+        if estado:
+            queryset = queryset.filter(estado=estado)
+        
+        # Ordenar por fecha de servicio
+        queryset = queryset.order_by('fecha_servicio', 'hora_servicio')
+        
+        # Aplicar paginación
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['get'])
+    def pendientes(self, request):
+        """
+        Obtiene las órdenes pendientes de aceptación
+        """
+        ordenes = self.get_queryset().filter(
+            estado='pendiente_aceptacion_proveedor'
+        ).order_by('fecha_hora_solicitud')
+        
+        serializer = self.get_serializer(ordenes, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['get'])
+    def activas(self, request):
+        """
+        Obtiene las órdenes activas (aceptadas y en proceso)
+        """
+        ordenes = self.get_queryset().filter(
+            estado__in=['aceptada_por_proveedor', 'servicio_iniciado', 'checklist_en_progreso', 'checklist_completado', 'en_proceso']
+        ).order_by('fecha_servicio', 'hora_servicio')
+        
+        serializer = self.get_serializer(ordenes, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['get'])
+    def completadas(self, request):
+        """
+        Obtiene las órdenes completadas del proveedor (con restricciones de tiempo)
+        """
+        # Solo mostrar órdenes completadas de los últimos 30 días
+        fecha_limite = timezone.now() - timezone.timedelta(days=30)
+        
+        ordenes = self.get_queryset().filter(
+            estado='completado',
+            fecha_respuesta_proveedor__gte=fecha_limite
+        ).order_by('-fecha_servicio')
+        
+        serializer = self.get_serializer(ordenes, many=True)
+        return Response(serializer.data)
+    
+    def _inicializar_servicio_y_crear_checklist(self, orden):
+        """
+        Función auxiliar para inicializar el servicio y crear el checklist automáticamente
+        """
+        logger = logging.getLogger(__name__)
+        
+        try:
+            # Refrescar la orden con las relaciones necesarias para asegurar que las líneas estén cargadas
+            orden.refresh_from_db()
+            # Prefechar las líneas con sus relaciones
+            from django.db.models import Prefetch
+            from .models import LineaServicio
+            orden = SolicitudServicio.objects.prefetch_related(
+                Prefetch('lineas', queryset=LineaServicio.objects.select_related('oferta_servicio__servicio'))
+            ).get(id=orden.id)
+            
+            # Obtener el servicio de la primera línea de la orden
+            primera_linea = orden.lineas.first()
+            if not primera_linea or not primera_linea.oferta_servicio or not primera_linea.oferta_servicio.servicio:
+                logger.warning(f'⚠️ No se pudo obtener servicio de la orden {orden.id}')
+                return False
+            
+            servicio = primera_linea.oferta_servicio.servicio
+            
+            # Intentar importar modelos de checklist
+            try:
+                from mecanimovilapp.apps.checklists.models import ChecklistTemplate, ChecklistInstance
+                
+                # Buscar template activo para este servicio
+                template = ChecklistTemplate.objects.filter(
+                    servicio=servicio,
+                    activo=True
+                ).first()
+                
+                if template:
+                    # Verificar que no exista ya una instancia para esta orden
+                    existing_instance = ChecklistInstance.objects.filter(orden=orden).first()
+                    if not existing_instance:
+                        # Crear automáticamente la instancia de checklist
+                        checklist_instance = ChecklistInstance.objects.create(
+                            orden=orden,
+                            checklist_template=template,
+                            estado='PENDIENTE'
+                        )
+                        logger.info(f'✅ Checklist creado automáticamente: {checklist_instance.id} para orden {orden.id} con template {template.id}')
+                        
+                        # Cambiar estado de orden a checklist_en_progreso
+                        orden.estado = 'checklist_en_progreso'
+                        orden.save()
+                        return True
+                    else:
+                        logger.info(f'⚠️ Ya existe checklist para orden {orden.id}: {existing_instance.id}')
+                        # Si ya existe checklist, cambiar a checklist_en_progreso
+                        orden.estado = 'checklist_en_progreso'
+                        orden.save()
+                        return True
+                else:
+                    logger.info(f'💭 No hay template de checklist para servicio: {servicio.nombre} - manteniendo estado actual')
+                    # Si no hay template, cambiar estado a servicio_iniciado
+                    orden.estado = 'servicio_iniciado'
+                    orden.save()
+                    return True
+            except ImportError:
+                logger.warning('⚠️ App de checklists no disponible')
+                # Si no hay app de checklists, cambiar estado a servicio_iniciado
+                orden.estado = 'servicio_iniciado'
+                orden.save()
+                return True
+        except Exception as e:
+            logger.error(f'⚠️ Error procesando checklist para orden {orden.id}: {str(e)}', exc_info=True)
+            # En caso de error, al menos cambiar a servicio_iniciado
+            orden.estado = 'servicio_iniciado'
+            orden.save()
+            return False
+
+    @action(detail=True, methods=['post'])
+    def aceptar(self, request, pk=None):
+        """
+        Permite al proveedor aceptar una orden
+        NOTA: La inicialización del servicio es manual, se debe llamar a iniciar_servicio después
+        """
+        orden = self.get_object()
+        
+        # Verificar que la orden puede ser aceptada
+        if orden.estado != 'pendiente_aceptacion_proveedor':
+            return Response(
+                {'error': 'Esta orden no puede ser aceptada en su estado actual'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        serializer = AcceptOrderSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        with transaction.atomic():
+            # Actualizar estado y notas
+            orden.estado = 'aceptada_por_proveedor'
+            orden.fecha_respuesta_proveedor = timezone.now()
+            orden.notas_proveedor = serializer.validated_data.get('notas', '')
+            orden.save()
+        
+        # Retornar orden actualizada
+        response_serializer = self.get_serializer(orden)
+        return Response({
+            'message': 'Orden aceptada exitosamente',
+            'orden': response_serializer.data
+        })
+    
+    @action(detail=True, methods=['post'])
+    def rechazar(self, request, pk=None):
+        """
+        Permite al proveedor rechazar una orden
+        """
+        orden = self.get_object()
+        
+        # Verificar que la orden puede ser rechazada
+        if orden.estado != 'pendiente_aceptacion_proveedor':
+            return Response(
+                {'error': 'Esta orden no puede ser rechazada en su estado actual'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        serializer = RejectOrderSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        with transaction.atomic():
+            # Actualizar estado y motivo
+            orden.estado = 'rechazada_por_proveedor'
+            orden.fecha_respuesta_proveedor = timezone.now()
+            orden.motivo_rechazo = serializer.validated_data['motivo_rechazo']
+            orden.notas_proveedor = serializer.validated_data.get('notas', '')
+            orden.save()
+        
+        # Retornar confirmación
+        return Response({
+            'message': 'Orden rechazada exitosamente'
+        })
+    
+    @action(detail=False, methods=['get'])
+    def estadisticas(self, request):
+        """
+        Retorna estadísticas del proveedor
+        """
+        queryset = self.get_queryset()
+        
+        # Calcular estadísticas básicas
+        total_ordenes = queryset.count()
+        ordenes_pendientes = queryset.filter(estado='pendiente_aceptacion_proveedor').count()
+        ordenes_completadas = queryset.filter(estado='completado').count()
+        ordenes_rechazadas = queryset.filter(estado='rechazada_por_proveedor').count()
+        
+        # Calcular ingresos del mes actual
+        mes_actual = timezone.now().replace(day=1)
+        ingresos_mes = queryset.filter(
+            estado='completado',
+            fecha_respuesta_proveedor__gte=mes_actual
+        ).aggregate(total=Sum('total'))['total'] or 0
+        
+        estadisticas = {
+            'total_ordenes': total_ordenes,
+            'ordenes_pendientes': ordenes_pendientes,
+            'ordenes_completadas': ordenes_completadas,
+            'ordenes_rechazadas': ordenes_rechazadas,
+            'ingresos_mes_actual': ingresos_mes,
+            'calificacion_promedio': 4.5  # Placeholder - implementar sistema de calificaciones
+        }
+        
+        serializer = OrdenEstadisticasSerializer(estadisticas)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=['post'])
+    def iniciar_servicio(self, request, pk=None):
+        """
+        Permite al proveedor iniciar el servicio después de aceptar la orden
+        Al inicializar, se crea automáticamente el checklist asociado al servicio
+        """
+        orden = self.get_object()
+        
+        # Verificar que la orden puede iniciarse
+        if orden.estado != 'aceptada_por_proveedor':
+            return Response(
+                {'error': f'El servicio no puede iniciarse desde el estado actual: {orden.estado}'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        checklist_creado = False
+        checklist_id = None
+        tiene_checklist = False
+        
+        with transaction.atomic():
+            # Usar la función auxiliar para inicializar y crear checklist
+            resultado = self._inicializar_servicio_y_crear_checklist(orden)
+            
+            # Verificar si se creó un checklist
+            try:
+                from mecanimovilapp.apps.checklists.models import ChecklistInstance
+                checklist_instance = ChecklistInstance.objects.filter(orden=orden).first()
+                if checklist_instance:
+                    tiene_checklist = True
+                    checklist_id = checklist_instance.id
+                    checklist_creado = True
+            except ImportError:
+                pass
+        
+        # Retornar orden actualizada con información del checklist
+        response_serializer = self.get_serializer(orden)
+        response_data = {
+            'message': 'Servicio iniciado exitosamente',
+            'orden': response_serializer.data,
+            'checklist_creado': checklist_creado,
+            'tiene_checklist': tiene_checklist,
+        }
+        
+        if checklist_id:
+            response_data['checklist_id'] = checklist_id
+            response_data['aviso'] = 'Debe completar el checklist asociado al servicio antes de continuar'
+        
+        return Response(response_data)
+    
+    @action(detail=True, methods=['post'])
+    def actualizar_estado(self, request, pk=None):
+        """
+        Permite actualizar el estado de una orden
+        """
+        orden = self.get_object()
+        nuevo_estado = request.data.get('estado')
+        
+        if not nuevo_estado:
+            return Response(
+                {'error': 'Se requiere el campo estado'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validar transiciones de estado válidas
+        transiciones_validas = {
+            'pendiente_aceptacion_proveedor': ['aceptada_por_proveedor', 'rechazada_por_proveedor'],
+            'aceptada_por_proveedor': ['servicio_iniciado', 'cancelado'],
+            'servicio_iniciado': ['checklist_en_progreso', 'en_proceso'],
+            'checklist_en_progreso': ['checklist_completado', 'pausado'],
+            'checklist_completado': ['en_proceso'],
+            'en_proceso': ['completado', 'pausado'],
+            'pausado': ['en_proceso', 'checklist_en_progreso'],
+        }
+        
+        estados_validos = transiciones_validas.get(orden.estado, [])
+        
+        if nuevo_estado not in estados_validos:
+            return Response(
+                {
+                    'error': f'Transición inválida de {orden.estado} a {nuevo_estado}',
+                    'estados_validos': estados_validos
+                }, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        with transaction.atomic():
+            orden.estado = nuevo_estado
+            orden.save()
+        
+        response_serializer = self.get_serializer(orden)
+        return Response({
+            'message': f'Estado actualizado a {nuevo_estado}',
+            'orden': response_serializer.data
+        })
+    
+    @action(detail=True, methods=['post'])
+    def finalizar_servicio(self, request, pk=None):
+        """
+        Permite finalizar el servicio
+        """
+        orden = self.get_object()
+        
+        # Verificar que el servicio puede finalizarse
+        if orden.estado not in ['en_proceso', 'checklist_completado']:
+            return Response(
+                {'error': f'El servicio no puede finalizarse desde el estado: {orden.estado}'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Si hay checklist, verificar que esté completado
+        try:
+            from mecanimovilapp.apps.checklists.models import ChecklistInstance
+            checklist = ChecklistInstance.objects.filter(orden=orden).first()
+            
+            if checklist and checklist.estado != 'COMPLETADO':
+                return Response(
+                    {'error': 'No se puede finalizar el servicio sin completar el checklist'}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        except ImportError:
+            pass  # Si no hay app de checklists, continuar
+        
+        with transaction.atomic():
+            orden.estado = 'completado'
+            orden.fecha_finalizacion = timezone.now()
+            
+            # Agregar notas si se proporcionan
+            notas = request.data.get('notas')
+            if notas:
+                orden.notas_proveedor = (orden.notas_proveedor or '') + f'\nNotas de finalización: {notas}'
+            
+            orden.save()
+        
+        response_serializer = self.get_serializer(orden)
+        return Response({
+            'message': 'Servicio finalizado exitosamente',
+            'orden': response_serializer.data
+        })
+
+
+# ============================================================================
+# VIEWSETS DEL SISTEMA DE POSTULACIONES
+# ============================================================================
+
+class SolicitudPublicaViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet para gestionar solicitudes públicas de servicios
+    """
+    queryset = SolicitudServicioPublica.objects.all()
+    serializer_class = SolicitudServicioPublicaSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [filters.OrderingFilter, filters.SearchFilter]
+    ordering_fields = ['fecha_creacion', 'fecha_expiracion', 'total_ofertas']
+    ordering = ['-fecha_creacion']
+    search_fields = ['descripcion_problema', 'direccion_servicio_texto']
+    
+    def get_queryset(self):
+        """
+        Filtra solicitudes según el rol del usuario
+        - Cliente: solo sus propias solicitudes
+        - Proveedor: solicitudes disponibles para ofertar
+        - Admin: todas
+        """
+        user = self.request.user
+        
+        if user.is_staff or user.is_superuser:
+            return SolicitudServicioPublica.objects.select_related(
+                'cliente', 'cliente__usuario', 'vehiculo', 'direccion_usuario'
+            ).prefetch_related('servicios_solicitados', 'proveedores_dirigidos', 'ofertas')
+        
+        # Cliente viendo sus solicitudes
+        if hasattr(user, 'cliente'):
+            return SolicitudServicioPublica.objects.filter(
+                cliente=user.cliente
+            ).select_related(
+                'cliente', 'cliente__usuario', 'vehiculo', 'direccion_usuario'
+            ).prefetch_related('servicios_solicitados', 'proveedores_dirigidos', 'ofertas')
+        
+        # Proveedor viendo solicitudes disponibles
+        # IMPORTANTE: Las solicitudes dirigidas SOLO deben aparecer para el proveedor seleccionado
+        # Las solicitudes globales aparecen para todos los proveedores que atienden la marca
+        
+        # Obtener marcas atendidas del proveedor
+        marcas_atendidas = []
+        if hasattr(user, 'taller') and user.taller:
+            marcas_atendidas = list(user.taller.marcas_atendidas.values_list('id', flat=True))
+        elif hasattr(user, 'mecanico_domicilio') and user.mecanico_domicilio:
+            marcas_atendidas = list(user.mecanico_domicilio.marcas_atendidas.values_list('id', flat=True))
+        
+        # Construir query usando Q objects para evitar problemas al combinar querysets
+        from django.db.models import Q
+        
+        # Iniciar con una query imposible (que no devuelve nada)
+        query = Q(pk=None)
+        
+        # 1. Solicitudes GLOBALES: filtradas por marca del vehículo y no vencidas
+        if marcas_atendidas:
+            query |= Q(
+                estado__in=['publicada', 'con_ofertas'],
+                fecha_expiracion__gt=timezone.now(),
+                tipo_solicitud='global',
+                vehiculo__marca__id__in=marcas_atendidas
+            )
+        
+        # 2. Solicitudes DIRIGIDAS: SOLO para este proveedor específico y no vencidas
+        query |= Q(
+            proveedores_dirigidos=user,
+            estado__in=['publicada', 'con_ofertas'],
+            fecha_expiracion__gt=timezone.now(),
+            tipo_solicitud='dirigida'
+        )
+        
+        # 3. ✅ INCLUIR solicitudes donde el proveedor ya tiene una oferta (incluso vencidas)
+        # Esto permite que el proveedor pueda ver el detalle de solicitudes donde ya ofertó
+        query |= Q(
+            ofertas__proveedor=user,
+            ofertas__estado__in=['enviada', 'vista', 'en_chat', 'aceptada', 'pendiente_pago', 'pagada']
+        )
+        
+        # Excluir la condición imposible y aplicar distinct para evitar duplicados
+        queryset = SolicitudServicioPublica.objects.filter(query).exclude(pk=None).distinct()
+        
+        return queryset.select_related(
+            'cliente', 'cliente__usuario', 'vehiculo', 'vehiculo__marca', 'direccion_usuario'
+        ).prefetch_related('servicios_solicitados', 'proveedores_dirigidos', 'ofertas')
+    
+    def perform_create(self, serializer):
+        """Asocia la solicitud con el cliente autenticado"""
+        if not hasattr(self.request.user, 'cliente'):
+            raise permissions.PermissionDenied("Solo los clientes pueden crear solicitudes")
+        
+        try:
+            # El serializer ya debería tener fecha_expiracion establecida
+            # Solo asociamos el cliente
+            serializer.save(cliente=self.request.user.cliente)
+        except Exception as e:
+            logger.error(f"Error creando solicitud pública: {str(e)}", exc_info=True)
+            logger.error(f"Datos del serializer: {serializer.validated_data if hasattr(serializer, 'validated_data') else 'No validated_data'}")
+            raise
+    
+    @action(detail=True, methods=['post'])
+    def sugerir_servicios(self, request, pk=None):
+        """
+        Sugiere servicios basados en el vehículo y descripción del problema
+        """
+        try:
+            solicitud = self.get_object()
+            
+            # Validar permisos
+            if not hasattr(request.user, 'cliente'):
+                return Response(
+                    {'error': 'Solo los clientes pueden solicitar sugerencias'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            if solicitud.cliente != request.user.cliente:
+                return Response(
+                    {'error': 'No tienes permiso para esta acción'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            # Obtener servicios compatibles con el vehículo
+            vehiculo = solicitud.vehiculo
+            if not vehiculo:
+                return Response(
+                    {'error': 'La solicitud no tiene un vehículo asociado'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Obtener el modelo del vehículo
+            modelo = vehiculo.modelo
+            if not modelo:
+                return Response(
+                    {'error': 'El vehículo no tiene un modelo asociado'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Buscar servicios compatibles con el modelo del vehículo
+            # El modelo Servicio tiene modelos_compatibles, no marcas_compatibles
+            servicios_compatibles = Servicio.objects.filter(
+                modelos_compatibles=modelo
+            ).distinct()
+            
+            # Si no hay servicios compatibles por modelo, obtener todos los servicios disponibles
+            if not servicios_compatibles.exists():
+                servicios_compatibles = Servicio.objects.all()[:50]
+            
+            # Filtrar por palabras clave en la descripción (búsqueda simple)
+            descripcion_problema = solicitud.descripcion_problema or ''
+            descripcion_lower = descripcion_problema.lower()
+            palabras_clave = [palabra for palabra in descripcion_lower.split() if len(palabra) > 2]  # Filtrar palabras muy cortas
+            
+            servicios_sugeridos = []
+            
+            # Si hay palabras clave, filtrar por ellas
+            if palabras_clave:
+                for servicio in servicios_compatibles:
+                    # Buscar coincidencias en nombre o descripción del servicio
+                    nombre_lower = servicio.nombre.lower()
+                    descripcion_servicio = (servicio.descripcion or '').lower()
+                    
+                    # Puntuación simple basada en coincidencias
+                    puntuacion = 0
+                    for palabra in palabras_clave:
+                        if palabra in nombre_lower or palabra in descripcion_servicio:
+                            puntuacion += 1
+                    
+                    if puntuacion > 0:
+                        servicios_sugeridos.append({
+                            'servicio': ServicioSerializer(servicio, context={'request': request}).data,
+                            'relevancia': puntuacion
+                        })
+            else:
+                # Si no hay palabras clave, devolver todos los servicios compatibles
+                for servicio in servicios_compatibles[:20]:
+                    servicios_sugeridos.append({
+                        'servicio': ServicioSerializer(servicio, context={'request': request}).data,
+                        'relevancia': 1
+                    })
+            
+            # Ordenar por relevancia
+            servicios_sugeridos.sort(key=lambda x: x['relevancia'], reverse=True)
+            
+            return Response({
+                'servicios_sugeridos': [s['servicio'] for s in servicios_sugeridos[:20]],
+                'total_encontrados': len(servicios_sugeridos)
+            })
+        except SolicitudServicioPublica.DoesNotExist:
+            return Response(
+                {'error': 'Solicitud no encontrada'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            logger.error(f"Error en sugerir_servicios: {str(e)}", exc_info=True)
+            return Response(
+                {'error': f'Error al sugerir servicios: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    @action(detail=True, methods=['post'])
+    def agregar_servicios(self, request, pk=None):
+        """
+        Agrega servicios seleccionados a la solicitud
+        """
+        solicitud = self.get_object()
+        
+        if solicitud.cliente != request.user.cliente:
+            return Response(
+                {'error': 'No tienes permiso para esta acción'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        servicios_ids = request.data.get('servicios', [])
+        if not servicios_ids:
+            return Response(
+                {'error': 'Debes proporcionar al menos un servicio'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        servicios = Servicio.objects.filter(id__in=servicios_ids)
+        if servicios.count() != len(servicios_ids):
+            return Response(
+                {'error': 'Algunos servicios no existen'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        solicitud.servicios_solicitados.set(servicios)
+        # No cambiar el estado, el estado se mantiene como 'creada' hasta que se publique
+        solicitud.save()
+        
+        serializer = self.get_serializer(solicitud)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=['post'])
+    def publicar(self, request, pk=None):
+        """
+        Publica la solicitud para que los proveedores puedan ofertar
+        """
+        solicitud = self.get_object()
+        
+        if solicitud.cliente != request.user.cliente:
+            return Response(
+                {'error': 'No tienes permiso para esta acción'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        if solicitud.estado not in ['creada', 'seleccionando_servicios']:
+            return Response(
+                {'error': f'No se puede publicar una solicitud en estado: {solicitud.estado}'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not solicitud.servicios_solicitados.exists():
+            return Response(
+                {'error': 'Debes seleccionar al menos un servicio antes de publicar'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Publicar solicitud
+        solicitud.estado = 'publicada'
+        solicitud.fecha_publicacion = timezone.now()
+        solicitud.save()
+        
+        # Notificar a proveedores elegibles vía WebSocket
+        self._publicar_solicitud(solicitud)
+        
+        serializer = self.get_serializer(solicitud)
+        return Response(serializer.data)
+    
+    def _publicar_solicitud(self, solicitud):
+        """
+        Notifica a proveedores elegibles sobre la nueva solicitud
+        """
+        try:
+            channel_layer = get_channel_layer()
+            
+            # Determinar proveedores a notificar
+            if solicitud.tipo_solicitud == 'dirigida':
+                # Solo a proveedores específicos
+                proveedores = solicitud.proveedores_dirigidos.all()
+            else:
+                # A todos los proveedores que atienden la marca del vehículo
+                # TODO: Filtrar por zona de cobertura también
+                proveedores = Usuario.objects.filter(
+                    Q(taller__marcas_atendidas=solicitud.vehiculo.marca) |
+                    Q(mecanico_domicilio__marcas_atendidas=solicitud.vehiculo.marca)
+                ).select_related('taller', 'mecanico_domicilio').distinct()
+            
+            # Enviar notificación a cada proveedor
+            for proveedor in proveedores:
+                async_to_sync(channel_layer.group_send)(
+                    f"proveedor_{proveedor.id}",
+                    {
+                        'type': 'nueva_solicitud',
+                        'solicitud_id': str(solicitud.id),
+                        'vehiculo': f"{solicitud.vehiculo.marca} {solicitud.vehiculo.modelo}",
+                        'descripcion': solicitud.descripcion_problema[:100],
+                        'urgencia': solicitud.urgencia,
+                        'fecha_expiracion': solicitud.fecha_expiracion.isoformat()
+                    }
+                )
+        except Exception as e:
+            logger.error(f"Error enviando notificación WebSocket: {e}")
+    
+    @action(detail=True, methods=['post'])
+    def rechazar(self, request, pk=None):
+        """
+        Permite a un proveedor rechazar una solicitud con un motivo específico
+        """
+        from .serializers import RechazoSolicitudSerializer
+        from .models import RechazoSolicitud
+        
+        solicitud = self.get_object()
+        user = request.user
+        
+        # Verificar que sea proveedor
+        if not (hasattr(user, 'taller') or hasattr(user, 'mecanico_domicilio')):
+            return Response(
+                {'error': 'Solo los proveedores pueden rechazar solicitudes'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Verificar que la solicitud esté disponible
+        if solicitud.estado not in ['publicada', 'con_ofertas']:
+            return Response(
+                {'error': 'Esta solicitud ya no está disponible para rechazo'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Preparar datos para el serializer
+        data = request.data.copy()
+        data['solicitud'] = solicitud.id
+        
+        # Crear el rechazo usando el serializer
+        serializer = RechazoSolicitudSerializer(
+            data=data,
+            context={'request': request}
+        )
+        
+        if serializer.is_valid():
+            # Determinar tipo de proveedor
+            tipo_proveedor = 'taller' if hasattr(user, 'taller') else 'mecanico'
+            
+            # Guardar el rechazo
+            rechazo = serializer.save(
+                solicitud=solicitud,
+                proveedor=user,
+                tipo_proveedor=tipo_proveedor
+            )
+            
+            # Actualizar contador de rechazos
+            solicitud.total_rechazos = solicitud.rechazos.count()
+            solicitud.save(update_fields=['total_rechazos'])
+            
+            # Notificar al cliente
+            self._notificar_rechazo(solicitud, rechazo)
+            
+            logger.info(f"Rechazo registrado - Solicitud: {solicitud.id}, Proveedor: {user.id}, Motivo: {rechazo.motivo}")
+            
+            return Response(
+                {
+                    'message': 'Solicitud rechazada exitosamente',
+                    'rechazo': RechazoSolicitudSerializer(rechazo, context={'request': request}).data
+                },
+                status=status.HTTP_201_CREATED
+            )
+        
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    @action(detail=True, methods=['post'])
+    def reenviar(self, request, pk=None):
+        """
+        Permite al cliente reenviar una solicitud que no tiene ofertas pero tiene rechazos
+        """
+        solicitud = self.get_object()
+        user = request.user
+        
+        # Verificar que sea el cliente dueño
+        if not hasattr(user, 'cliente') or solicitud.cliente != user.cliente:
+            return Response(
+                {'error': 'No tienes permiso para reenviar esta solicitud'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Verificar que pueda reenviar
+        if not solicitud.puede_reenviar():
+            return Response(
+                {
+                    'error': 'Esta solicitud no puede ser reenviada',
+                    'motivo': 'Solo se pueden reenviar solicitudes sin ofertas que tengan al menos un rechazo'
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Resetear la solicitud
+        solicitud.estado = 'publicada'
+        solicitud.fecha_expiracion = timezone.now() + timedelta(hours=48)
+        solicitud.fecha_publicacion = timezone.now()
+        solicitud.total_rechazos = 0
+        solicitud.save(update_fields=['estado', 'fecha_expiracion', 'fecha_publicacion', 'total_rechazos'])
+        
+        # Eliminar rechazos anteriores
+        solicitud.rechazos.all().delete()
+        
+        # Publicar nuevamente
+        self._publicar_solicitud(solicitud)
+        
+        logger.info(f"Solicitud reenviada - Solicitud: {solicitud.id}, Cliente: {user.id}")
+        
+        serializer = self.get_serializer(solicitud)
+        return Response({
+            'message': 'Solicitud reenviada exitosamente. Expira en 48 horas.',
+            'solicitud': serializer.data
+        })
+    
+    def _notificar_rechazo(self, solicitud, rechazo):
+        """
+        Notifica al cliente sobre el rechazo de un proveedor
+        """
+        try:
+            channel_layer = get_channel_layer()
+            
+            # Determinar nombre del proveedor
+            if rechazo.tipo_proveedor == 'taller' and hasattr(rechazo.proveedor, 'taller'):
+                proveedor_nombre = rechazo.proveedor.taller.nombre
+            elif rechazo.tipo_proveedor == 'mecanico' and hasattr(rechazo.proveedor, 'mecanico_domicilio'):
+                proveedor_nombre = f"{rechazo.proveedor.first_name} {rechazo.proveedor.last_name}"
+            else:
+                proveedor_nombre = rechazo.proveedor.get_full_name()
+            
+            # Enviar notificación al cliente
+            async_to_sync(channel_layer.group_send)(
+                f"cliente_{solicitud.cliente.usuario.id}",
+                {
+                    'type': 'rechazo_solicitud',
+                    'solicitud_id': str(solicitud.id),
+                    'proveedor_nombre': proveedor_nombre,
+                    'motivo': rechazo.get_motivo_display(),
+                    'detalle': rechazo.detalle_motivo
+                }
+            )
+            logger.info(f"Notificación de rechazo enviada - Cliente: {solicitud.cliente.usuario.id}")
+        except Exception as e:
+            logger.error(f"Error enviando notificación de rechazo: {e}")
+    
+    @action(detail=True, methods=['post'])
+    def seleccionar_oferta(self, request, pk=None):
+        """
+        Selecciona una oferta y crea una SolicitudServicio tradicional
+        """
+        try:
+            solicitud = self.get_object()
+            logger.info(f"Seleccionando oferta - Solicitud: {solicitud.id}, Usuario: {request.user.id}")
+            
+            if solicitud.cliente != request.user.cliente:
+                logger.warning(f"Intento de seleccionar oferta sin permiso - Solicitud: {solicitud.id}, Usuario: {request.user.id}")
+                return Response(
+                    {'error': 'No tienes permiso para esta acción'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            oferta_id = request.data.get('oferta_id')
+            if not oferta_id:
+                logger.error("No se proporcionó oferta_id en la solicitud")
+                return Response(
+                    {'error': 'Debes proporcionar oferta_id'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            logger.info(f"Buscando oferta: {oferta_id} para solicitud: {solicitud.id}")
+            try:
+                oferta = OfertaProveedor.objects.select_related(
+                    'solicitud', 'proveedor', 'solicitud__cliente', 'solicitud__vehiculo',
+                    'proveedor__taller', 'proveedor__mecanico_domicilio',
+                    'solicitud__direccion_usuario'
+                ).prefetch_related('detalles_servicios__servicio').get(id=oferta_id, solicitud=solicitud)
+                logger.info(f"Oferta encontrada: {oferta.id}, Proveedor: {oferta.proveedor.id}, Tipo: {oferta.tipo_proveedor}")
+            except OfertaProveedor.DoesNotExist:
+                logger.error(f"Oferta no encontrada: {oferta_id} para solicitud: {solicitud.id}")
+                return Response(
+                    {'error': 'Oferta no encontrada'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
+            if solicitud.estado in ['adjudicada', 'cancelada', 'expirada']:
+                logger.warning(f"No se puede seleccionar oferta - Solicitud en estado: {solicitud.estado}")
+                mensaje_error = {
+                    'adjudicada': 'Esta solicitud ya tiene una oferta aceptada. No se pueden aceptar más ofertas.',
+                    'cancelada': 'Esta solicitud ha sido cancelada. No se pueden aceptar ofertas.',
+                    'expirada': 'Esta solicitud ha expirado. No se pueden aceptar ofertas.'
+                }.get(solicitud.estado, f'No se puede seleccionar oferta en estado: {solicitud.estado}')
+                return Response(
+                    {'error': mensaje_error},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Validar que el proveedor tenga taller o mecánico asociado
+            if oferta.tipo_proveedor == 'taller':
+                if not hasattr(oferta.proveedor, 'taller') or not oferta.proveedor.taller:
+                    logger.error(f"Proveedor {oferta.proveedor.id} no tiene taller asociado")
+                    return Response(
+                        {'error': 'El proveedor no tiene un taller asociado'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                taller = oferta.proveedor.taller
+                mecanico = None
+            else:
+                if not hasattr(oferta.proveedor, 'mecanico_domicilio') or not oferta.proveedor.mecanico_domicilio:
+                    logger.error(f"Proveedor {oferta.proveedor.id} no tiene mecánico asociado")
+                    return Response(
+                        {'error': 'El proveedor no tiene un mecánico asociado'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                mecanico = oferta.proveedor.mecanico_domicilio
+                taller = None
+            
+            logger.info(f"Proveedor validado - Taller: {taller.id if taller else None}, Mecánico: {mecanico.id if mecanico else None}")
+            
+            # Validar que haya detalles de servicios
+            detalles_servicios = list(oferta.detalles_servicios.all())
+            if not detalles_servicios:
+                logger.error(f"Oferta {oferta.id} no tiene detalles de servicios")
+                return Response(
+                    {'error': 'La oferta no tiene servicios asociados'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            logger.info(f"Oferta tiene {len(detalles_servicios)} servicios")
+            
+            # Variable para almacenar el ID del carrito fuera de la transacción
+            carrito_id = None
+            
+            with transaction.atomic():
+                # Marcar oferta como aceptada
+                logger.info("Marcando oferta como aceptada")
+                oferta.estado = 'aceptada'
+                oferta.fecha_respuesta_cliente = timezone.now()
+                oferta.save(update_fields=['estado', 'fecha_respuesta_cliente'])
+                
+                # Actualizar solicitud
+                logger.info("Actualizando solicitud")
+                solicitud.estado = 'adjudicada'
+                solicitud.oferta_seleccionada = oferta
+                solicitud.save(update_fields=['estado', 'oferta_seleccionada'])
+                
+                # Rechazar otras ofertas
+                logger.info("Rechazando otras ofertas")
+                ofertas_rechazadas = OfertaProveedor.objects.filter(
+                    solicitud=solicitud,
+                    estado__in=['enviada', 'vista', 'en_chat']
+                ).exclude(id=oferta.id).update(
+                    estado='rechazada',
+                    fecha_respuesta_cliente=timezone.now()
+                )
+                logger.info(f"Rechazadas {ofertas_rechazadas} ofertas")
+                
+                # Obtener o crear carrito para el cliente y vehículo
+                logger.info("Obteniendo o creando carrito para cliente y vehículo")
+                try:
+                    # Obtener o crear carrito (CarritoAgendamiento ya está importado al inicio del archivo)
+                    carrito = obtener_o_crear_carrito(solicitud.cliente, solicitud.vehiculo)
+                    logger.info(f"Carrito obtenido/creado: {carrito.id}")
+                    
+                    # Copiar notas de la solicitud al carrito (si existen y el carrito no tiene notas)
+                    if solicitud.descripcion_servicio and not carrito.notas:
+                        carrito.notas = solicitud.descripcion_servicio
+                        carrito.fecha_programada = oferta.fecha_disponible
+                        carrito.hora_programada = oferta.hora_disponible
+                        carrito.save(update_fields=['notas', 'fecha_programada', 'hora_programada'])
+                        logger.info(f"Notas copiadas al carrito: {carrito.id}")
+                except Exception as e:
+                    logger.error(f"Error obteniendo/creando carrito: {e}", exc_info=True)
+                    return Response(
+                        {'error': f'Error al obtener o crear el carrito: {str(e)}'},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    )
+                
+                # Agregar servicios al carrito
+                logger.info("Agregando servicios al carrito")
+                from mecanimovilapp.apps.servicios.models import OfertaServicio
+                
+                # Obtener tipo_proveedor correcto para usar en OfertaServicio
+                # CRÍTICO: Usar el tipo_proveedor de la oferta directamente, no inferirlo
+                tipo_proveedor_servicio = oferta.tipo_proveedor
+                logger.info(f"Tipo de proveedor para OfertaServicio: {tipo_proveedor_servicio} (de oferta: {oferta.id})")
+                
+                # Validar que tipo_proveedor_servicio coincida con taller/mecanico
+                if tipo_proveedor_servicio == 'taller' and not taller:
+                    logger.error(f"Inconsistencia: tipo_proveedor='taller' pero taller es None")
+                    raise ValueError("Inconsistencia: tipo_proveedor es 'taller' pero no hay taller asociado")
+                elif tipo_proveedor_servicio == 'mecanico' and not mecanico:
+                    logger.error(f"Inconsistencia: tipo_proveedor='mecanico' pero mecanico es None")
+                    raise ValueError("Inconsistencia: tipo_proveedor es 'mecanico' pero no hay mecánico asociado")
+                elif tipo_proveedor_servicio not in ['taller', 'mecanico']:
+                    logger.error(f"Tipo de proveedor inválido: {tipo_proveedor_servicio}")
+                    raise ValueError(f"Tipo de proveedor inválido: {tipo_proveedor_servicio}")
+                
+                for detalle in detalles_servicios:
+                    try:
+                        logger.info(f"Procesando detalle de servicio: {detalle.servicio.id}, Precio: {detalle.precio_servicio}")
+                        
+                        # Buscar o crear OfertaServicio correspondiente
+                        # CRÍTICO: Incluir tipo_proveedor en la búsqueda para evitar ambigüedades
+                        try:
+                            oferta_servicio = OfertaServicio.objects.get(
+                                servicio=detalle.servicio,
+                                tipo_proveedor=tipo_proveedor_servicio,
+                                taller=taller,
+                                mecanico=mecanico
+                            )
+                            logger.info(f"OfertaServicio encontrada: {oferta_servicio.id}")
+                        except OfertaServicio.DoesNotExist:
+                            # Crear OfertaServicio temporal
+                            logger.info("Creando OfertaServicio temporal")
+                            
+                            # IMPORTANTE: El modelo OfertaServicio tiene un método save() que llama a calcular_precios()
+                            # calcular_precios() calcula precios basándose en costo_mano_de_obra_sin_iva y costo_repuestos_sin_iva
+                            # El precio que viene de detalle.precio_servicio es el precio final que el proveedor ofreció
+                            # Necesitamos trabajar hacia atrás para calcular los costos sin IVA
+                            
+                            from decimal import Decimal
+                            precio_ofrecido = Decimal(str(detalle.precio_servicio))
+                            
+                            # El precio_ofrecido es el precio final que el cliente pagará (con IVA)
+                            # Necesitamos calcular los costos sin IVA que resulten en ese precio
+                            # Fórmula: precio_final = (costo_mano_de_obra + costo_repuestos) * 1.19
+                            # Por lo tanto: costo_total_sin_iva = precio_ofrecido / 1.19
+                            IVA_RATE = Decimal('0.19')
+                            costo_total_sin_iva = precio_ofrecido / (Decimal('1') + IVA_RATE)
+                            
+                            # Dividir el costo total entre mano de obra y repuestos
+                            if oferta.incluye_repuestos:
+                                # Si incluye repuestos, dividir aproximadamente 70% mano de obra, 30% repuestos
+                                costo_mano_de_obra = costo_total_sin_iva * Decimal('0.7')
+                                costo_repuestos = costo_total_sin_iva * Decimal('0.3')
+                                tipo_servicio = 'con_repuestos'
+                            else:
+                                # Si no incluye repuestos, todo es mano de obra
+                                costo_mano_de_obra = costo_total_sin_iva
+                                costo_repuestos = Decimal('0')
+                                tipo_servicio = 'sin_repuestos'
+                            
+                            logger.info(f"Creando OfertaServicio: tipo_proveedor={tipo_proveedor_servicio}, taller={taller.id if taller else None}, mecanico={mecanico.id if mecanico else None}")
+                            logger.info(f"  Precio ofrecido: {precio_ofrecido}, Costo total sin IVA: {costo_total_sin_iva}")
+                            logger.info(f"  Costo mano de obra: {costo_mano_de_obra}, Costo repuestos: {costo_repuestos}, Tipo: {tipo_servicio}")
+                            
+                            try:
+                                # CRÍTICO: Validar que tipo_proveedor coincida con taller/mecanico ANTES de crear
+                                if tipo_proveedor_servicio == 'taller':
+                                    if not taller:
+                                        raise ValueError(f"Inconsistencia: tipo_proveedor='taller' pero taller es None")
+                                    if mecanico:
+                                        raise ValueError(f"Inconsistencia: tipo_proveedor='taller' pero mecanico no es None")
+                                elif tipo_proveedor_servicio == 'mecanico':
+                                    if not mecanico:
+                                        raise ValueError(f"Inconsistencia: tipo_proveedor='mecanico' pero mecanico es None")
+                                    if taller:
+                                        raise ValueError(f"Inconsistencia: tipo_proveedor='mecanico' pero taller no es None")
+                                else:
+                                    raise ValueError(f"Tipo de proveedor inválido: {tipo_proveedor_servicio}")
+                                
+                                # Crear OfertaServicio con los costos correctos
+                                # CRÍTICO: Asegurar que taller y mecanico se establezcan correctamente según tipo_proveedor
+                                # El modelo valida que tipo_proveedor=='taller' implica taller!=None y mecanico==None
+                                # Y que tipo_proveedor=='mecanico' implica mecanico!=None y taller==None
+                                
+                                taller_final = taller if tipo_proveedor_servicio == 'taller' else None
+                                mecanico_final = mecanico if tipo_proveedor_servicio == 'mecanico' else None
+                                
+                                logger.info(f"Valores finales para OfertaServicio:")
+                                logger.info(f"  tipo_proveedor: '{tipo_proveedor_servicio}' (type: {type(tipo_proveedor_servicio)})")
+                                logger.info(f"  taller: {taller_final.id if taller_final else None}")
+                                logger.info(f"  mecanico: {mecanico_final.id if mecanico_final else None}")
+                                logger.info(f"  servicio: {detalle.servicio.id}")
+                                logger.info(f"  costo_mano_de_obra: {costo_mano_de_obra}, costo_repuestos: {costo_repuestos}")
+                                
+                                # Crear instancia sin guardar primero para validar
+                                oferta_servicio = OfertaServicio(
+                                    servicio=detalle.servicio,
+                                    tipo_proveedor=str(tipo_proveedor_servicio).strip(),  # Asegurar que sea string y sin espacios
+                                    taller=taller_final,
+                                    mecanico=mecanico_final,
+                                    costo_mano_de_obra_sin_iva=costo_mano_de_obra,
+                                    costo_repuestos_sin_iva=costo_repuestos,
+                                    tipo_servicio=tipo_servicio
+                                )
+                                
+                                # Llamar a clean() manualmente para validar antes de guardar
+                                logger.info(f"Validando OfertaServicio antes de guardar...")
+                                try:
+                                    oferta_servicio.clean()
+                                    logger.info(f"Validación exitosa")
+                                except ValidationError as ve:
+                                    logger.error(f"Error de validación en clean(): {ve}", exc_info=True)
+                                    logger.error(f"Estado del objeto: tipo_proveedor='{oferta_servicio.tipo_proveedor}', taller={oferta_servicio.taller}, mecanico={oferta_servicio.mecanico}")
+                                    raise
+                                
+                                # Guardar (calcular_precios() se ejecutará automáticamente en save())
+                                logger.info(f"Guardando OfertaServicio...")
+                                try:
+                                    oferta_servicio.save()
+                                except Exception as e:
+                                    logger.error(f"Error en save() de OfertaServicio: {e}", exc_info=True)
+                                    raise
+                                
+                                logger.info(f"OfertaServicio creada exitosamente: {oferta_servicio.id}")
+                                logger.info(f"  Precios calculados: con_repuestos={oferta_servicio.precio_con_repuestos}, sin_repuestos={oferta_servicio.precio_sin_repuestos}")
+                                logger.info(f"  Precio publicado cliente: {oferta_servicio.precio_publicado_cliente}")
+                            except ValidationError as ve:
+                                logger.error(f"Error de validación creando OfertaServicio: {ve}", exc_info=True)
+                                logger.error(f"Datos intentados: tipo_proveedor={tipo_proveedor_servicio}, taller={taller.id if taller else None}, mecanico={mecanico.id if mecanico else None}")
+                                logger.error(f"  servicio={detalle.servicio.id}, costo_mano_de_obra={costo_mano_de_obra}, costo_repuestos={costo_repuestos}")
+                                raise
+                            except Exception as e:
+                                logger.error(f"Error creando OfertaServicio: {e}", exc_info=True)
+                                logger.error(f"Datos intentados: tipo_proveedor={tipo_proveedor_servicio}, taller={taller}, mecanico={mecanico}")
+                                logger.error(f"  servicio={detalle.servicio.id}, costo_mano_de_obra={costo_mano_de_obra}, costo_repuestos={costo_repuestos}")
+                                raise
+                        
+                        # Crear línea de servicio
+                        # Usar el precio calculado de oferta_servicio (después de calcular_precios())
+                        # Si incluye_repuestos, usar precio_con_repuestos, sino precio_sin_repuestos
+                        precio_unitario_linea = oferta_servicio.precio_con_repuestos if oferta.incluye_repuestos else oferta_servicio.precio_sin_repuestos
+                        
+                        logger.info(f"Agregando servicio al carrito: precio_unitario={precio_unitario_linea}, con_repuestos={oferta.incluye_repuestos}")
+                        
+                        # Crear o actualizar item del carrito
+                        item_carrito, created = ItemCarritoAgendamiento.objects.get_or_create(
+                            carrito=carrito,
+                            oferta_servicio=oferta_servicio,
+                            defaults={
+                                'con_repuestos': oferta.incluye_repuestos,
+                                'cantidad': 1,
+                                'fecha_servicio': oferta.fecha_disponible,
+                                'hora_servicio': oferta.hora_disponible,
+                            }
+                        )
+                        
+                        if not created:
+                            # Si el item ya existe, actualizar información
+                            item_carrito.con_repuestos = oferta.incluye_repuestos
+                            item_carrito.fecha_servicio = oferta.fecha_disponible
+                            item_carrito.hora_servicio = oferta.hora_disponible
+                            item_carrito.save(update_fields=['con_repuestos', 'fecha_servicio', 'hora_servicio'])
+                            logger.info(f"Item del carrito actualizado: {item_carrito.id}")
+                        else:
+                            logger.info(f"Item del carrito creado: {item_carrito.id}, precio_estimado={item_carrito.precio_estimado}")
+                    except Exception as e:
+                        logger.error(f"Error agregando servicio al carrito para {detalle.servicio.id}: {e}", exc_info=True)
+                        # Re-lanzar la excepción para que se revierta la transacción
+                        raise
+                
+                logger.info(f"Total de servicios agregados al carrito: {len(detalles_servicios)}")
+                
+                # Crear mensaje inicial en el chat
+                logger.info("Creando mensaje inicial en el chat")
+                try:
+                    chat_mensaje = crear_chat_inicial_oferta(oferta, solicitud)
+                    logger.info(f"Mensaje inicial del chat creado: {chat_mensaje.id}")
+                except Exception as e:
+                    logger.error(f"Error creando mensaje inicial en el chat: {e}", exc_info=True)
+                    # No fallar la operación si falla la creación del chat, pero loguear el error
+                
+                # Notificar al proveedor vía WebSocket
+                try:
+                    channel_layer = get_channel_layer()
+                    if channel_layer:
+                        async_to_sync(channel_layer.group_send)(
+                            f"proveedor_{oferta.proveedor.id}",
+                            {
+                                'type': 'oferta_aceptada',
+                                'oferta_id': str(oferta.id),
+                                'solicitud_id': str(solicitud.id),
+                                'carrito_id': carrito.id,
+                                'mensaje': '¡Tu oferta fue aceptada! El cliente procederá con el pago.',
+                                'estado_oferta': 'aceptada',
+                                'monto_total': float(oferta.precio_total_ofrecido),
+                                'timestamp': timezone.now().isoformat()
+                            }
+                        )
+                        logger.info(f"Notificación WebSocket 'oferta_aceptada' enviada al proveedor: {oferta.proveedor.id}")
+                except Exception as e:
+                    logger.error(f"Error enviando notificación WebSocket: {e}", exc_info=True)
+                    # No fallar la operación si falla la notificación
+                
+                # Guardar el ID del carrito para usar después de la transacción
+                carrito_id = carrito.id
+                logger.info(f"Carrito ID guardado: {carrito_id}")
+            
+            # Validar que tenemos un carrito_id antes de continuar
+            if not carrito_id:
+                logger.error("No se pudo obtener el ID del carrito después de la transacción")
+                return Response(
+                    {'error': 'Error al obtener el ID del carrito después de agregar los servicios'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+            
+            # Recargar el carrito con relaciones para serialización (después de la transacción)
+            try:
+                carrito = CarritoAgendamiento.objects.select_related(
+                    'cliente', 'vehiculo'
+                ).prefetch_related(
+                    'items__oferta_servicio__servicio',
+                    'items__oferta_servicio__taller',
+                    'items__oferta_servicio__mecanico'
+                ).get(id=carrito_id)
+                
+                logger.info(f"Oferta seleccionada exitosamente - Carrito: {carrito.id}, Total items: {carrito.cantidad_items}, Total: ${carrito.total}")
+            except CarritoAgendamiento.DoesNotExist:
+                logger.error(f"Carrito {carrito_id} no encontrado después de la transacción")
+                return Response(
+                    {'error': 'Error al recargar el carrito después de agregar los servicios'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+            except Exception as e:
+                logger.error(f"Error recargando carrito: {e}", exc_info=True)
+                return Response(
+                    {'error': f'Error al recargar el carrito: {str(e)}'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+            
+            # Serializar carrito y solicitud
+            try:
+                carrito_serializer = CarritoAgendamientoSerializer(carrito, context={'request': request})
+                solicitud_serializer = SolicitudServicioPublicaSerializer(solicitud, context={'request': request})
+                
+                return Response({
+                    'message': 'Oferta agregada al carrito exitosamente',
+                    'carrito': carrito_serializer.data,
+                    'solicitud': solicitud_serializer.data
+                })
+            except Exception as e:
+                logger.error(f"Error serializando carrito o solicitud: {e}", exc_info=True)
+                return Response(
+                    {'error': f'Error al serializar la respuesta: {str(e)}'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+            
+        except Exception as e:
+            logger.error(f"Error en seleccionar_oferta: {e}", exc_info=True)
+            return Response(
+                {'error': f'Error al seleccionar la oferta: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    @action(detail=True, methods=['post'])
+    def pagar_solicitud_adjudicada(self, request, pk=None):
+        """
+        Procesa el pago de una solicitud adjudicada sin usar carrito.
+        Crea directamente la SolicitudServicio y retorna datos para el pago.
+        """
+        logger = logging.getLogger(__name__)
+        logger.info(f"Iniciando pago directo para solicitud {pk}")
+        
+        try:
+            solicitud = self.get_object()
+            
+            # Validaciones
+            if solicitud.cliente.usuario != request.user:
+                logger.warning(f"Usuario no autorizado intenta pagar solicitud {pk}")
+                return Response(
+                    {'error': 'No está autorizado para pagar esta solicitud'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            if solicitud.estado not in ['adjudicada', 'pendiente_pago']:
+                logger.warning(f"Intento de pagar solicitud en estado {solicitud.estado}")
+                mensaje_error = {
+                    'publicada': 'Debe seleccionar una oferta antes de pagar',
+                    'con_ofertas': 'Debe seleccionar una oferta antes de pagar',
+                    'cancelada': 'Esta solicitud ha sido cancelada',
+                    'expirada': 'Esta solicitud ha expirado',
+                    'pagada': 'Esta solicitud ya ha sido pagada'
+                }.get(solicitud.estado, f'No se puede pagar una solicitud en estado: {solicitud.estado}')
+                
+                return Response(
+                    {'error': mensaje_error},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            if not solicitud.oferta_seleccionada:
+                logger.error(f"Solicitud {pk} adjudicada sin oferta seleccionada")
+                return Response(
+                    {'error': 'No hay oferta seleccionada'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Obtener datos del request
+            metodo_pago = request.data.get('metodo_pago', 'mercadopago')
+            notas_cliente = request.data.get('notas_cliente', solicitud.descripcion_servicio or '')
+            
+            logger.info(f"Datos de pago - Método: {metodo_pago}")
+            
+            # Obtener oferta seleccionada
+            oferta = solicitud.oferta_seleccionada
+            
+            # Determinar proveedor
+            if oferta.tipo_proveedor == 'taller':
+                taller = oferta.taller
+                mecanico = None
+                tipo_servicio = 'taller'
+                ubicacion_servicio = taller.direccion if taller else None
+            else:
+                taller = None
+                mecanico = oferta.mecanico_domicilio
+                tipo_servicio = 'domicilio'
+                ubicacion_servicio = solicitud.direccion_servicio_texto
+            
+            logger.info(f"Proveedor - Tipo: {tipo_servicio}, Taller: {taller.id if taller else None}, Mecánico: {mecanico.id if mecanico else None}")
+            
+            with transaction.atomic():
+                # ✅ PASO 1: Actualizar estados a 'pendiente_pago' (cliente está procesando el pago)
+                oferta.estado = 'pendiente_pago'
+                oferta.save(update_fields=['estado'])
+                
+                solicitud.estado = 'pendiente_pago'
+                solicitud.save(update_fields=['estado'])
+                
+                logger.info(f"Estados actualizados: oferta y solicitud → 'pendiente_pago'")
+                
+                # ✅ Notificar al proveedor que el cliente está pagando
+                try:
+                    channel_layer = get_channel_layer()
+                    if channel_layer:
+                        async_to_sync(channel_layer.group_send)(
+                            f"proveedor_{oferta.proveedor.id}",
+                            {
+                                'type': 'pago_en_proceso',
+                                'oferta_id': str(oferta.id),
+                                'solicitud_id': str(solicitud.id),
+                                'mensaje': 'El cliente está procesando el pago de tu oferta.',
+                                'estado_oferta': 'pendiente_pago',
+                                'monto_total': float(oferta.precio_total_ofrecido),
+                                'timestamp': timezone.now().isoformat()
+                            }
+                        )
+                        logger.info(f"Notificación 'pago_en_proceso' enviada al proveedor: {oferta.proveedor.id}")
+                except Exception as e:
+                    logger.error(f"Error enviando notificación WebSocket: {e}", exc_info=True)
+                
+                # ✅ PASO 2: Crear SolicitudServicio con estado 'confirmado' (ya no requiere aceptación del proveedor)
+                solicitud_servicio = SolicitudServicio.objects.create(
+                    cliente=solicitud.cliente,
+                    vehiculo=solicitud.vehiculo,
+                    tipo_servicio=tipo_servicio,
+                    taller=taller,
+                    mecanico=mecanico,
+                    fecha_servicio=oferta.fecha_disponible or timezone.now().date(),
+                    hora_servicio=oferta.hora_disponible or timezone.now().time(),
+                    metodo_pago=metodo_pago,
+                    total=oferta.precio_total_ofrecido,
+                    estado='confirmado',  # ✅ Directamente confirmado (no requiere aceptación del proveedor)
+                    notas_cliente=notas_cliente,
+                    ubicacion_servicio=ubicacion_servicio,
+                    comprobante_validado=False,
+                    devolucion_procesada=False,
+                    requiere_devolucion=False
+                )
+                
+                logger.info(f"SolicitudServicio creada: {solicitud_servicio.id} con estado 'confirmado'")
+                
+                # Obtener detalles de servicios de la oferta
+                from mecanimovilapp.apps.servicios.models import OfertaServicio
+                detalles_servicios = list(oferta.detalles_servicios.all())
+                
+                if not detalles_servicios:
+                    logger.error(f"Oferta {oferta.id} no tiene detalles de servicios")
+                    raise ValueError('La oferta no tiene servicios asociados')
+                
+                logger.info(f"Procesando {len(detalles_servicios)} servicios")
+                
+                # Tipo de proveedor para OfertaServicio
+                tipo_proveedor_servicio = oferta.tipo_proveedor
+                
+                # Crear líneas de servicio
+                for detalle in detalles_servicios:
+                    logger.info(f"Procesando servicio: {detalle.servicio.nombre}, Precio: {detalle.precio_servicio}")
+                    
+                    # Buscar o crear OfertaServicio
+                    try:
+                        oferta_servicio = OfertaServicio.objects.get(
+                            servicio=detalle.servicio,
+                            tipo_proveedor=tipo_proveedor_servicio,
+                            taller=taller,
+                            mecanico=mecanico
+                        )
+                        logger.info(f"OfertaServicio encontrada: {oferta_servicio.id}")
+                    except OfertaServicio.DoesNotExist:
+                        # Crear OfertaServicio temporal
+                        logger.info("Creando OfertaServicio temporal para línea de servicio")
+                        
+                        # Calcular costos desde el precio ofrecido
+                        precio_ofrecido = detalle.precio_servicio
+                        precio_sin_iva = precio_ofrecido / Decimal('1.19')
+                        
+                        # Si incluye repuestos, dividir 70/30
+                        if oferta.incluye_repuestos:
+                            costo_mano_de_obra = precio_sin_iva * Decimal('0.70')
+                            costo_repuestos = precio_sin_iva * Decimal('0.30')
+                        else:
+                            costo_mano_de_obra = precio_sin_iva
+                            costo_repuestos = Decimal('0')
+                        
+                        oferta_servicio = OfertaServicio.objects.create(
+                            servicio=detalle.servicio,
+                            tipo_proveedor=tipo_proveedor_servicio,
+                            taller=taller,
+                            mecanico=mecanico,
+                            costo_mano_de_obra_sin_iva=costo_mano_de_obra,
+                            costo_repuestos_sin_iva=costo_repuestos,
+                            activo=True
+                        )
+                        logger.info(f"OfertaServicio temporal creada: {oferta_servicio.id}")
+                    
+                    # Crear línea de servicio
+                    precio_unitario = detalle.precio_servicio
+                    
+                    LineaServicio.objects.create(
+                        solicitud=solicitud_servicio,
+                        oferta_servicio=oferta_servicio,
+                        con_repuestos=oferta.incluye_repuestos,
+                        cantidad=1,
+                        precio_unitario=precio_unitario,
+                        precio_final=precio_unitario
+                    )
+                    
+                    logger.info(f"Línea de servicio creada para {detalle.servicio.nombre}")
+                
+                # ✅ PASO 3: Actualizar estados a 'pagada' (pago completado exitosamente)
+                oferta.estado = 'pagada'
+                oferta.save(update_fields=['estado'])
+                
+                solicitud.estado = 'pagada'
+                solicitud.save(update_fields=['estado'])
+                
+                logger.info(f"Estados actualizados: oferta y solicitud → 'pagada'")
+                
+                # ✅ Notificar al proveedor que el pago fue completado
+                try:
+                    channel_layer = get_channel_layer()
+                    if channel_layer:
+                        async_to_sync(channel_layer.group_send)(
+                            f"proveedor_{oferta.proveedor.id}",
+                            {
+                                'type': 'pago_completado',
+                                'solicitud_id': str(solicitud.id),
+                                'solicitud_servicio_id': str(solicitud_servicio.id),
+                                'oferta_id': str(oferta.id),
+                                'mensaje': '¡Pago completado! El servicio ha sido confirmado.',
+                                'estado_oferta': 'pagada',
+                                'monto_total': float(solicitud_servicio.total),
+                                'fecha_servicio': str(solicitud_servicio.fecha_servicio),
+                                'hora_servicio': str(solicitud_servicio.hora_servicio),
+                                'timestamp': timezone.now().isoformat()
+                            }
+                        )
+                        logger.info(f"Notificación 'pago_completado' enviada al proveedor: {oferta.proveedor.id}")
+                except Exception as e:
+                    logger.error(f"Error enviando notificación WebSocket: {e}", exc_info=True)
+            
+            # Retornar datos para el pago
+            from .serializers import SolicitudServicioSerializer
+            solicitud_servicio_serializer = SolicitudServicioSerializer(solicitud_servicio)
+            
+            # Datos del resumen para el pago
+            resumen_pago = {
+                'solicitud_servicio_id': solicitud_servicio.id,
+                'solicitud_publica_id': solicitud.id,
+                'oferta_id': oferta.id,
+                'monto_total': float(solicitud_servicio.total),
+                'metodo_pago': metodo_pago,
+                'proveedor': {
+                    'id': oferta.proveedor.id,
+                    'nombre': oferta.nombre_proveedor,
+                    'tipo': tipo_servicio
+                },
+                'servicios': [
+                    {
+                        'nombre': detalle.servicio.nombre,
+                        'precio': float(detalle.precio_servicio),
+                        'tiempo_estimado': str(detalle.tiempo_estimado_horas) if detalle.tiempo_estimado_horas else None
+                    }
+                    for detalle in detalles_servicios
+                ],
+                'fecha_servicio': str(solicitud_servicio.fecha_servicio),
+                'hora_servicio': str(solicitud_servicio.hora_servicio),
+                'ubicacion': ubicacion_servicio
+            }
+            
+            logger.info(f"Pago procesado exitosamente - SolicitudServicio: {solicitud_servicio.id}")
+            
+            return Response({
+                'mensaje': 'Solicitud lista para pago',
+                'solicitud_servicio': solicitud_servicio_serializer.data,
+                'resumen_pago': resumen_pago
+            }, status=status.HTTP_200_OK)
+            
+        except ValueError as e:
+            logger.error(f"Error de validación: {e}")
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        except Exception as e:
+            logger.error(f"Error procesando pago de solicitud {pk}: {e}", exc_info=True)
+            return Response(
+                {'error': f'Error al procesar el pago: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    @action(detail=False, methods=['get'])
+    def activas(self, request):
+        """
+        Lista solicitudes activas del cliente
+        """
+        if not hasattr(request.user, 'cliente'):
+            return Response(
+                {'error': 'Solo los clientes pueden ver sus solicitudes activas'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        solicitudes = SolicitudServicioPublica.objects.filter(
+            cliente=request.user.cliente,
+            estado__in=['publicada', 'con_ofertas', 'seleccionando_servicios']
+        ).select_related('cliente', 'vehiculo').prefetch_related('ofertas')
+        
+        serializer = self.get_serializer(solicitudes, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['get'])
+    def disponibles(self, request):
+        """
+        Lista solicitudes disponibles para que los proveedores oferten
+        Filtradas por marca del vehículo que el proveedor atiende
+        Excluye solicitudes donde el proveedor ya tiene una oferta (excepto rechazadas/retiradas)
+        Excluye solicitudes que el proveedor ya rechazó
+        """
+        user = request.user
+        
+        # IMPORTANTE: Las solicitudes dirigidas SOLO deben aparecer para el proveedor seleccionado
+        # Las solicitudes globales aparecen para todos los proveedores que atienden la marca
+        
+        # Obtener marcas atendidas del proveedor
+        marcas_atendidas = []
+        if hasattr(user, 'taller') and user.taller:
+            marcas_atendidas = list(user.taller.marcas_atendidas.values_list('id', flat=True))
+        elif hasattr(user, 'mecanico_domicilio') and user.mecanico_domicilio:
+            marcas_atendidas = list(user.mecanico_domicilio.marcas_atendidas.values_list('id', flat=True))
+        
+        # Separar solicitudes globales y dirigidas
+        # Solicitudes GLOBALES: filtradas por marca del vehículo
+        solicitudes_globales = SolicitudServicioPublica.objects.filter(
+            estado__in=['publicada', 'con_ofertas'],
+            fecha_expiracion__gt=timezone.now(),
+            tipo_solicitud='global'
+        )
+        
+        # Filtrar solicitudes globales por marca del vehículo
+        if marcas_atendidas:
+            solicitudes_globales = solicitudes_globales.filter(vehiculo__marca__id__in=marcas_atendidas)
+        else:
+            # Si el proveedor no tiene marcas configuradas, no mostrar solicitudes globales
+            solicitudes_globales = solicitudes_globales.none()
+        
+        # Solicitudes DIRIGIDAS: SOLO para este proveedor específico
+        solicitudes_dirigidas = SolicitudServicioPublica.objects.filter(
+            proveedores_dirigidos=user,
+            estado__in=['publicada', 'con_ofertas'],
+            fecha_expiracion__gt=timezone.now(),
+            tipo_solicitud='dirigida'
+        )
+        
+        # Combinar ambas (OR)
+        queryset = solicitudes_globales | solicitudes_dirigidas
+        
+        # Excluir solicitudes donde el proveedor ya tiene una oferta activa
+        # (permitir si la oferta está rechazada o retirada, para que pueda volver a ofertar)
+        ofertas_proveedor = OfertaProveedor.objects.filter(
+            proveedor=user,
+            estado__in=['enviada', 'vista', 'en_chat', 'aceptada', 'expirada']
+        ).values_list('solicitud_id', flat=True)
+        
+        if ofertas_proveedor:
+            queryset = queryset.exclude(id__in=ofertas_proveedor)
+        
+        # Excluir solicitudes que el proveedor ya rechazó
+        from .models import RechazoSolicitud
+        rechazos_proveedor = RechazoSolicitud.objects.filter(
+            proveedor=user
+        ).values_list('solicitud_id', flat=True)
+        
+        if rechazos_proveedor:
+            queryset = queryset.exclude(id__in=rechazos_proveedor)
+        
+        queryset = queryset.distinct().select_related(
+            'cliente', 'cliente__usuario', 'vehiculo', 'vehiculo__marca', 'direccion_usuario'
+        ).prefetch_related('servicios_solicitados', 'proveedores_dirigidos', 'ofertas')
+        
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+    
+    def destroy(self, request, *args, **kwargs):
+        """
+        Cancela una solicitud (soft delete)
+        """
+        solicitud = self.get_object()
+        
+        if solicitud.cliente != request.user.cliente:
+            return Response(
+                {'error': 'No tienes permiso para esta acción'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        if solicitud.estado == 'adjudicada':
+            return Response(
+                {'error': 'No se puede cancelar una solicitud adjudicada'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        with transaction.atomic():
+            solicitud.estado = 'cancelada'
+            solicitud.save()
+            
+            # Rechazar todas las ofertas pendientes
+            OfertaProveedor.objects.filter(
+                solicitud=solicitud,
+                estado__in=['enviada', 'vista', 'en_chat']
+            ).update(
+                estado='rechazada',
+                fecha_respuesta_cliente=timezone.now()
+            )
+            
+            # Notificar a proveedores
+            try:
+                channel_layer = get_channel_layer()
+                for oferta in solicitud.ofertas.filter(estado__in=['enviada', 'vista', 'en_chat']):
+                    async_to_sync(channel_layer.group_send)(
+                        f"proveedor_{oferta.proveedor.id}",
+                        {
+                            'type': 'solicitud_cancelada',
+                            'solicitud_id': str(solicitud.id)
+                        }
+                    )
+            except Exception as e:
+                logger.error(f"Error enviando notificación WebSocket: {e}")
+        
+        return Response({'message': 'Solicitud cancelada exitosamente'}, status=status.HTTP_204_NO_CONTENT)
+
+
+class OfertaProveedorViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet para gestionar ofertas de proveedores
+    """
+    queryset = OfertaProveedor.objects.all()
+    serializer_class = OfertaProveedorSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [filters.OrderingFilter]
+    ordering_fields = ['precio_total_ofrecido', 'fecha_envio']
+    ordering = ['precio_total_ofrecido']
+    
+    def get_queryset(self):
+        """
+        Filtra ofertas según el rol del usuario
+        - Cliente: ofertas de sus solicitudes
+        - Proveedor: sus propias ofertas
+        - Admin: todas
+        """
+        user = self.request.user
+        
+        if user.is_staff or user.is_superuser:
+            queryset = OfertaProveedor.objects.select_related(
+                'solicitud', 'solicitud__cliente', 'proveedor'
+            ).prefetch_related('detalles_servicios', 'mensajes_chat')
+        # Cliente viendo ofertas de sus solicitudes
+        elif hasattr(user, 'cliente'):
+            queryset = OfertaProveedor.objects.filter(
+                solicitud__cliente=user.cliente
+            ).select_related(
+                'solicitud', 'solicitud__cliente', 'proveedor'
+            ).prefetch_related('detalles_servicios', 'mensajes_chat')
+        # Proveedor viendo sus ofertas
+        else:
+            queryset = OfertaProveedor.objects.filter(
+                proveedor=user
+            ).select_related(
+                'solicitud', 'solicitud__cliente', 'proveedor'
+            ).prefetch_related('detalles_servicios', 'mensajes_chat')
+        
+        # ✅ FILTRAR POR SOLICITUD si viene en query params
+        # Compatible con WSGIRequest (query_params) y ASGIRequest (GET)
+        query_params = getattr(self.request, 'query_params', self.request.GET)
+        solicitud_id = query_params.get('solicitud')
+        if solicitud_id:
+            try:
+                queryset = queryset.filter(solicitud_id=solicitud_id)
+                logger.info(f"Filtrando ofertas por solicitud_id: {solicitud_id}")
+            except (ValueError, TypeError):
+                logger.warning(f"ID de solicitud inválido en query params: {solicitud_id}")
+        
+        return queryset
+    
+    def perform_create(self, serializer):
+        """
+        Crea una oferta y valida permisos
+        """
+        try:
+            logger.info(f"Creando oferta - Usuario: {self.request.user.id}")
+            logger.info(f"Datos recibidos (raw): {self.request.data}")
+            logger.info(f"Datos validados: {serializer.validated_data}")
+            
+            # Solo proveedores pueden crear ofertas
+            if hasattr(self.request.user, 'cliente'):
+                raise permissions.PermissionDenied("Solo los proveedores pueden crear ofertas")
+            
+            # Verificar que el usuario es proveedor
+            if not (hasattr(self.request.user, 'taller') or hasattr(self.request.user, 'mecanico_domicilio')):
+                raise permissions.PermissionDenied("Debes ser un proveedor para crear ofertas")
+            
+            # Validar que la solicitud esté en validated_data
+            if 'solicitud' not in serializer.validated_data:
+                logger.error("❌ 'solicitud' no está en validated_data")
+                logger.error(f"validated_data keys: {list(serializer.validated_data.keys())}")
+                raise serializers.ValidationError({
+                    'solicitud': 'La solicitud es requerida'
+                })
+            
+            solicitud = serializer.validated_data['solicitud']
+            logger.info(f"Oferta - Solicitud validada: {solicitud.id}")
+            
+            # Validar que la solicitud puede recibir ofertas
+            if not solicitud.puede_recibir_ofertas:
+                raise serializers.ValidationError(
+                    "Esta solicitud ya no puede recibir ofertas"
+                )
+            
+            # Validar que el proveedor no haya enviado ya una oferta para esta solicitud
+            oferta_existente = OfertaProveedor.objects.filter(
+                solicitud=solicitud,
+                proveedor=self.request.user
+            ).first()
+            
+            if oferta_existente:
+                # Si la oferta existente fue rechazada o retirada, permitir una nueva oferta
+                if oferta_existente.estado in ['rechazada', 'retirada']:
+                    logger.info(f"Oferta anterior {oferta_existente.id} está {oferta_existente.estado}, permitiendo nueva oferta")
+                else:
+                    # Obtener nombre del estado
+                    estado_nombres = {
+                        'enviada': 'Enviada',
+                        'vista': 'Vista por Cliente',
+                        'en_chat': 'En Conversación',
+                        'aceptada': 'Aceptada',
+                        'rechazada': 'Rechazada',
+                        'retirada': 'Retirada',
+                        'expirada': 'Expirada',
+                    }
+                    estado_display = estado_nombres.get(oferta_existente.estado, oferta_existente.estado)
+                    
+                    logger.warning(f"Intento de crear oferta duplicada para solicitud {solicitud.id} por proveedor {self.request.user.id}. Oferta existente: {oferta_existente.id} ({oferta_existente.estado})")
+                    raise serializers.ValidationError({
+                        'solicitud': [f'Ya has enviado una oferta para esta solicitud. Estado actual: {estado_display}']
+                    })
+            
+            # Validar que el proveedor esté en la lista de proveedores dirigidos (si aplica)
+            if solicitud.tipo_solicitud == 'dirigida':
+                if self.request.user not in solicitud.proveedores_dirigidos.all():
+                    raise permissions.PermissionDenied(
+                        "No estás autorizado para ofertar en esta solicitud dirigida"
+                    )
+            
+            # Determinar tipo_proveedor antes de crear la oferta
+            tipo_proveedor = None
+            if hasattr(self.request.user, 'taller') and self.request.user.taller:
+                tipo_proveedor = 'taller'
+            elif hasattr(self.request.user, 'mecanico_domicilio') and self.request.user.mecanico_domicilio:
+                tipo_proveedor = 'mecanico'
+            else:
+                raise serializers.ValidationError("El usuario no es un proveedor válido")
+            
+            # Crear la oferta
+            try:
+                oferta = serializer.save(proveedor=self.request.user, tipo_proveedor=tipo_proveedor)
+                logger.info(f"Oferta creada exitosamente: {oferta.id}")
+            except Exception as e:
+                logger.error(f"Error creando oferta: {str(e)}", exc_info=True)
+                logger.error(f"Datos del serializer: {serializer.validated_data}")
+                raise
+            
+            # Crear detalles de servicios
+            detalles_data = self.request.data.get('detalles_servicios', [])
+            logger.info(f"Detalles de servicios recibidos: {detalles_data}")
+            if not detalles_data:
+                raise serializers.ValidationError(
+                    "Debes incluir al menos un servicio en detalles_servicios"
+                )
+            
+            for detalle_data in detalles_data:
+                try:
+                    # Validar campos requeridos
+                    if 'servicio' not in detalle_data:
+                        raise serializers.ValidationError(
+                            "Cada detalle de servicio debe incluir el campo 'servicio'"
+                        )
+                    if 'precio_servicio' not in detalle_data:
+                        raise serializers.ValidationError(
+                            "Cada detalle de servicio debe incluir el campo 'precio_servicio'"
+                        )
+                    
+                    # Obtener tiempo estimado (puede venir como tiempo_estimado_horas o tiempo_estimado)
+                    tiempo_horas = detalle_data.get('tiempo_estimado_horas')
+                    if tiempo_horas is None:
+                        # Intentar parsear desde tiempo_estimado si viene como string
+                        tiempo_estimado_str = detalle_data.get('tiempo_estimado')
+                        if tiempo_estimado_str:
+                            # Si viene como "HH:MM:SS", parsearlo
+                            if isinstance(tiempo_estimado_str, str) and ':' in tiempo_estimado_str:
+                                parts = tiempo_estimado_str.split(':')
+                                if len(parts) >= 2:
+                                    horas = float(parts[0]) + (float(parts[1]) / 60)
+                                    tiempo_horas = horas
+                                else:
+                                    tiempo_horas = float(tiempo_estimado_str)
+                            else:
+                                tiempo_horas = float(tiempo_estimado_str)
+                        else:
+                            tiempo_horas = 1  # Default
+                    
+                    # Convertir a timedelta
+                    tiempo_estimado = timedelta(hours=float(tiempo_horas))
+                    
+                    # Convertir precio_servicio a Decimal
+                    try:
+                        precio_servicio = Decimal(str(detalle_data['precio_servicio']))
+                    except (ValueError, TypeError) as e:
+                        raise serializers.ValidationError(
+                            f"Precio inválido para servicio {detalle_data.get('servicio', 'desconocido')}: {str(e)}"
+                        )
+                    
+                    detalle = DetalleServicioOferta.objects.create(
+                        oferta=oferta,
+                        servicio_id=detalle_data['servicio'],
+                        precio_servicio=precio_servicio,
+                        tiempo_estimado=tiempo_estimado,
+                        notas=detalle_data.get('notas', '')
+                    )
+                    logger.info(f"Detalle de servicio creado: servicio_id={detalle.servicio_id}, precio={precio_servicio}, tiempo={tiempo_estimado}")
+                except (ValueError, TypeError, KeyError) as e:
+                    logger.error(f"Error creando detalle de servicio: {e}")
+                    logger.error(f"Datos del detalle: {detalle_data}")
+                    raise serializers.ValidationError(
+                        f"Error en detalle de servicio: {str(e)}"
+                    )
+            
+            # Actualizar la relación many-to-many servicios_ofertados
+            # Esto se hace automáticamente al crear DetalleServicioOferta, pero lo hacemos explícito
+            servicios_ids = [detalle_data['servicio'] for detalle_data in detalles_data]
+            oferta.servicios_ofertados.set(servicios_ids)
+            logger.info(f"Servicios ofertados asignados: {servicios_ids}")
+            
+            # ✅ INCREMENTAR CONTADOR DE OFERTAS EN LA SOLICITUD
+            solicitud.incrementar_ofertas()
+            logger.info(f"Contador de ofertas incrementado para solicitud {solicitud.id}. Total: {solicitud.total_ofertas}")
+            
+            # Notificar al cliente vía WebSocket
+            try:
+                if solicitud.cliente and solicitud.cliente.usuario:
+                    channel_layer = get_channel_layer()
+                    async_to_sync(channel_layer.group_send)(
+                        f"cliente_{solicitud.cliente.usuario.id}",
+                        {
+                            'type': 'nueva_oferta',
+                            'oferta_id': str(oferta.id),
+                            'solicitud_id': str(solicitud.id),
+                            'proveedor_nombre': oferta.nombre_proveedor,
+                            'precio': str(oferta.precio_total_ofrecido)
+                        }
+                    )
+                else:
+                    logger.warning(f"No se pudo enviar notificación WebSocket: cliente o usuario no disponible para solicitud {solicitud.id}")
+            except Exception as e:
+                logger.error(f"Error enviando notificación WebSocket: {e}")
+        except Exception as e:
+            logger.error(f"Error en perform_create: {str(e)}", exc_info=True)
+            raise
+    
+    @action(detail=False, methods=['get'])
+    def mis_ofertas(self, request):
+        """
+        Lista las ofertas del proveedor autenticado
+        """
+        if hasattr(request.user, 'cliente'):
+            return Response(
+                {'error': 'Solo los proveedores pueden ver sus ofertas'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        estado_filter = request.query_params.get('estado')
+        queryset = OfertaProveedor.objects.filter(proveedor=request.user)
+        
+        if estado_filter:
+            queryset = queryset.filter(estado=estado_filter)
+        
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['get'])
+    def estadisticas(self, request):
+        """
+        Estadísticas de ofertas del proveedor
+        """
+        if hasattr(request.user, 'cliente'):
+            return Response(
+                {'error': 'Solo los proveedores pueden ver estadísticas'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        ofertas = OfertaProveedor.objects.filter(proveedor=request.user)
+        
+        return Response({
+            'total_ofertas': ofertas.count(),
+            'ofertas_aceptadas': ofertas.filter(estado='aceptada').count(),
+            'ofertas_rechazadas': ofertas.filter(estado='rechazada').count(),
+            'ofertas_pendientes': ofertas.filter(estado__in=['enviada', 'vista', 'en_chat']).count(),
+            'tasa_aceptacion': (
+                ofertas.filter(estado='aceptada').count() / ofertas.count() * 100
+                if ofertas.count() > 0 else 0
+            )
+        })
+    
+    def destroy(self, request, *args, **kwargs):
+        """
+        Retira una oferta (soft delete)
+        """
+        oferta = self.get_object()
+        
+        if oferta.proveedor != request.user:
+            return Response(
+                {'error': 'No tienes permiso para esta acción'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        if oferta.estado == 'aceptada':
+            return Response(
+                {'error': 'No se puede retirar una oferta aceptada'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        oferta.estado = 'retirada'
+        oferta.save()
+        
+        return Response({'message': 'Oferta retirada exitosamente'}, status=status.HTTP_204_NO_CONTENT)
+
+
+class ChatSolicitudViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet para gestionar mensajes de chat entre cliente y proveedor
+    """
+    queryset = ChatSolicitud.objects.all()
+    serializer_class = ChatSolicitudSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [filters.OrderingFilter]
+    ordering_fields = ['fecha_envio']
+    ordering = ['fecha_envio']
+    
+    def get_queryset(self):
+        """
+        Filtra mensajes donde el usuario es cliente o proveedor
+        """
+        user = self.request.user
+        
+        if user.is_staff or user.is_superuser:
+            return ChatSolicitud.objects.select_related(
+                'oferta', 'oferta__solicitud', 'oferta__proveedor', 'enviado_por'
+            )
+        
+        # Cliente viendo mensajes de sus ofertas
+        if hasattr(user, 'cliente'):
+            return ChatSolicitud.objects.filter(
+                oferta__solicitud__cliente=user.cliente
+            ).select_related(
+                'oferta', 'oferta__solicitud', 'oferta__proveedor', 'enviado_por'
+            )
+        
+        # Proveedor viendo mensajes de sus ofertas
+        return ChatSolicitud.objects.filter(
+            oferta__proveedor=user
+        ).select_related(
+            'oferta', 'oferta__solicitud', 'oferta__proveedor', 'enviado_por'
+        )
+    
+    def perform_create(self, serializer):
+        """
+        Crea un mensaje y valida permisos
+        """
+        oferta = serializer.validated_data['oferta']
+        user = self.request.user
+        
+        # Determinar si es proveedor o cliente
+        es_proveedor = not hasattr(user, 'cliente')
+        
+        # Validar que el usuario puede enviar mensajes en esta oferta
+        if hasattr(user, 'cliente'):
+            if oferta.solicitud.cliente != user.cliente:
+                raise permissions.PermissionDenied(
+                    "No tienes permiso para enviar mensajes en esta oferta"
+                )
+        else:
+            if oferta.proveedor != user:
+                raise permissions.PermissionDenied(
+                    "No tienes permiso para enviar mensajes en esta oferta"
+                )
+        
+        # Guardar el mensaje con los campos automáticos
+        mensaje = serializer.save(
+            enviado_por=user,
+            es_proveedor=es_proveedor
+        )
+        
+        # Marcar mensajes anteriores como leídos (del otro usuario)
+        ChatSolicitud.objects.filter(
+            oferta=oferta,
+            es_proveedor=not mensaje.es_proveedor,
+            leido=False
+        ).update(
+            leido=True,
+            fecha_lectura=timezone.now()
+        )
+        
+        # Notificar al destinatario vía WebSocket
+        try:
+            channel_layer = get_channel_layer()
+            
+            # Determinar destinatario
+            if mensaje.es_proveedor:
+                # Mensaje del proveedor, notificar al cliente
+                if not oferta.solicitud.cliente or not oferta.solicitud.cliente.usuario:
+                    logger.warning(f"No se pudo enviar notificación: cliente o usuario no disponible para oferta {oferta.id}")
+                    return Response({'error': 'Cliente o usuario no disponible'}, status=status.HTTP_400_BAD_REQUEST)
+                destinatario_id = oferta.solicitud.cliente.usuario.id
+                grupo = f"cliente_{destinatario_id}"
+            else:
+                # Mensaje del cliente, notificar al proveedor
+                destinatario_id = oferta.proveedor.id
+                grupo = f"proveedor_{destinatario_id}"
+            
+            async_to_sync(channel_layer.group_send)(
+                grupo,
+                {
+                    'type': 'nuevo_mensaje_chat',
+                    'mensaje_id': str(mensaje.id),
+                    'oferta_id': str(oferta.id),
+                    'solicitud_id': str(oferta.solicitud.id),
+                    'enviado_por': mensaje.enviado_por.get_full_name(),
+                    'mensaje': mensaje.mensaje[:100],
+                    'es_proveedor': mensaje.es_proveedor
+                }
+            )
+        except Exception as e:
+            logger.error(f"Error enviando notificación WebSocket: {e}")
+    
+    @action(detail=True, methods=['post'])
+    def marcar_leido(self, request, pk=None):
+        """
+        Marca un mensaje como leído
+        """
+        mensaje = self.get_object()
+        
+        # Validar que el usuario puede marcar este mensaje como leído
+        oferta = mensaje.oferta
+        user = request.user
+        
+        if hasattr(user, 'cliente'):
+            if oferta.solicitud.cliente != user.cliente:
+                return Response(
+                    {'error': 'No tienes permiso para esta acción'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+        else:
+            if oferta.proveedor != user:
+                return Response(
+                    {'error': 'No tienes permiso para esta acción'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+        
+        mensaje.marcar_como_leido()
+        
+        return Response({'message': 'Mensaje marcado como leído'})
+    
+    @action(detail=False, methods=['get'], url_path='por_oferta/(?P<oferta_id>[^/.]+)')
+    def por_oferta(self, request, oferta_id=None):
+        """
+        Obtiene todos los mensajes de una oferta específica
+        """
+        try:
+            oferta = OfertaProveedor.objects.get(id=oferta_id)
+        except OfertaProveedor.DoesNotExist:
+            return Response(
+                {'error': 'Oferta no encontrada'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Validar permisos
+        user = request.user
+        if hasattr(user, 'cliente'):
+            if oferta.solicitud.cliente != user.cliente:
+                return Response(
+                    {'error': 'No tienes permiso para ver estos mensajes'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+        else:
+            if oferta.proveedor != user:
+                return Response(
+                    {'error': 'No tienes permiso para ver estos mensajes'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+        
+        # Obtener mensajes ordenados por fecha de envío (más antiguos primero)
+        mensajes = ChatSolicitud.objects.filter(oferta=oferta).order_by('fecha_envio')
+        
+        # Marcar mensajes del otro usuario como leídos
+        if hasattr(user, 'cliente'):
+            # Cliente viendo: marcar mensajes del proveedor como leídos
+            ChatSolicitud.objects.filter(
+                oferta=oferta,
+                es_proveedor=True,
+                leido=False
+            ).update(leido=True, fecha_lectura=timezone.now())
+        else:
+            # Proveedor viendo: marcar mensajes del cliente como leídos
+            ChatSolicitud.objects.filter(
+                oferta=oferta,
+                es_proveedor=False,
+                leido=False
+            ).update(leido=True, fecha_lectura=timezone.now())
+        
+        # Asegurar que el contexto del request se pase al serializer
+        serializer = self.get_serializer(mensajes, many=True, context={'request': request})
+        
+        # Log para debug: verificar que proveedor_info y cliente_info están presentes
+        if serializer.data and len(serializer.data) > 0:
+            primer_mensaje = serializer.data[0]
+            logger.info(f"📩 Primer mensaje del chat - Keys: {primer_mensaje.keys()}")
+            logger.info(f"📩 proveedor_info presente: {'proveedor_info' in primer_mensaje}")
+            logger.info(f"📩 cliente_info presente: {'cliente_info' in primer_mensaje}")
+            if 'proveedor_info' in primer_mensaje:
+                logger.info(f"📩 proveedor_info data: {primer_mensaje['proveedor_info']}")
+        
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['get'], url_path='lista-chats')
+    def lista_chats(self, request):
+        """
+        Obtiene lista de todos los chats del usuario con metadata:
+        - Último mensaje
+        - Contador de mensajes no leídos
+        - Información del cliente/proveedor
+        - Ordenado por fecha del último mensaje
+        """
+        from django.db.models import Max, Count, Q, Prefetch
+        
+        user = request.user
+        
+        # Obtener ofertas con mensajes del usuario
+        if hasattr(user, 'cliente'):
+            # Cliente: ofertas de sus solicitudes que tienen mensajes
+            ofertas_con_mensajes = OfertaProveedor.objects.filter(
+                solicitud__cliente=user.cliente,
+                mensajes_chat__isnull=False
+            ).distinct().select_related(
+                'solicitud', 'solicitud__cliente', 'solicitud__cliente__usuario',
+                'solicitud__vehiculo', 'solicitud__vehiculo__marca', 
+                'solicitud__vehiculo__modelo', 'proveedor'
+            ).prefetch_related(
+                Prefetch(
+                    'mensajes_chat',
+                    queryset=ChatSolicitud.objects.order_by('-fecha_envio')
+                )
+            ).annotate(
+                ultimo_mensaje_fecha=Max('mensajes_chat__fecha_envio'),
+                mensajes_no_leidos=Count(
+                    'mensajes_chat',
+                    filter=Q(mensajes_chat__leido=False, mensajes_chat__es_proveedor=True)
+                )
+            ).order_by('-ultimo_mensaje_fecha')
+        else:
+            # Proveedor: sus ofertas que tienen mensajes
+            ofertas_con_mensajes = OfertaProveedor.objects.filter(
+                proveedor=user,
+                mensajes_chat__isnull=False
+            ).distinct().select_related(
+                'solicitud', 'solicitud__cliente', 'solicitud__cliente__usuario',
+                'solicitud__vehiculo', 'solicitud__vehiculo__marca',
+                'solicitud__vehiculo__modelo', 'proveedor'
+            ).prefetch_related(
+                Prefetch(
+                    'mensajes_chat',
+                    queryset=ChatSolicitud.objects.order_by('-fecha_envio')
+                )
+            ).annotate(
+                ultimo_mensaje_fecha=Max('mensajes_chat__fecha_envio'),
+                mensajes_no_leidos=Count(
+                    'mensajes_chat',
+                    filter=Q(mensajes_chat__leido=False, mensajes_chat__es_proveedor=False)
+                )
+            ).order_by('-ultimo_mensaje_fecha')
+        
+        # Construir respuesta con metadata
+        chats_list = []
+        for oferta in ofertas_con_mensajes:
+            ultimo_mensaje = oferta.mensajes_chat.first()
+            if not ultimo_mensaje:
+                continue
+            
+            # Obtener info del cliente/proveedor según quien consulte
+            if hasattr(user, 'cliente'):
+                # Cliente viendo: mostrar info del proveedor
+                try:
+                    foto_url = None
+                    if oferta.proveedor and oferta.proveedor.foto_perfil:
+                        if request:
+                            foto_url = request.build_absolute_uri(oferta.proveedor.foto_perfil.url)
+                        else:
+                            import socket
+                            hostname = socket.gethostname()
+                            ip_address = socket.gethostbyname(hostname)
+                            foto_url = f"http://{ip_address}:8000{oferta.proveedor.foto_perfil.url}"
+                except (AttributeError, ValueError):
+                    foto_url = None
+                
+                # Obtener estado de conexión del proveedor desde ConnectionStatus
+                esta_conectado = False
+                if oferta.proveedor:
+                    try:
+                        if oferta.tipo_proveedor == 'mecanico':
+                            # Para mecánicos, verificar en ConnectionStatus
+                            try:
+                                mecanico = oferta.proveedor.mecanico_domicilio
+                                if mecanico:
+                                    connection_status = ConnectionStatus.objects.filter(proveedor=mecanico).first()
+                                    if connection_status:
+                                        esta_conectado = connection_status.esta_conectado or connection_status.is_online
+                                    else:
+                                        # Fallback: verificar campo en el modelo
+                                        esta_conectado = getattr(mecanico, 'esta_conectado', False)
+                            except (AttributeError, Exception):
+                                esta_conectado = False
+                        elif oferta.tipo_proveedor == 'taller':
+                            # Para talleres, verificar en ConnectionStatus
+                            try:
+                                taller = oferta.proveedor.taller
+                                if taller:
+                                    connection_status = ConnectionStatus.objects.filter(taller=taller).first()
+                                    if connection_status:
+                                        esta_conectado = connection_status.esta_conectado or connection_status.is_online
+                                    else:
+                                        # Fallback: verificar campo en el modelo
+                                        esta_conectado = getattr(taller, 'esta_conectado', False)
+                            except (AttributeError, Exception):
+                                esta_conectado = False
+                    except Exception:
+                        # Si hay algún error, usar fallback a los campos del modelo
+                        try:
+                            if oferta.tipo_proveedor == 'mecanico':
+                                mecanico = oferta.proveedor.mecanico_domicilio
+                                esta_conectado = getattr(mecanico, 'esta_conectado', False) if mecanico else False
+                            elif oferta.tipo_proveedor == 'taller':
+                                taller = oferta.proveedor.taller
+                                esta_conectado = getattr(taller, 'esta_conectado', False) if taller else False
+                        except:
+                            esta_conectado = False
+                
+                otra_persona = {
+                    'id': oferta.proveedor.id if oferta.proveedor else None,
+                    'nombre': oferta.nombre_proveedor or 'Proveedor',
+                    'foto': foto_url,
+                    'tipo': oferta.tipo_proveedor,
+                    'esta_conectado': esta_conectado,
+                }
+            else:
+                # Proveedor viendo: mostrar info del cliente
+                try:
+                    foto_url = None
+                    cliente = oferta.solicitud.cliente
+                    if cliente and cliente.usuario and cliente.usuario.foto_perfil:
+                        if request:
+                            foto_url = request.build_absolute_uri(cliente.usuario.foto_perfil.url)
+                        else:
+                            import socket
+                            hostname = socket.gethostname()
+                            ip_address = socket.gethostbyname(hostname)
+                            foto_url = f"http://{ip_address}:8000{cliente.usuario.foto_perfil.url}"
+                except (AttributeError, ValueError):
+                    foto_url = None
+                
+                nombre_cliente = 'Cliente'
+                try:
+                    if cliente and cliente.usuario:
+                        nombre_cliente = cliente.usuario.get_full_name()
+                except:
+                    pass
+                
+                otra_persona = {
+                    'id': cliente.id if cliente else None,
+                    'nombre': nombre_cliente,
+                    'foto': foto_url,
+                }
+            
+            # Agregar info del vehículo
+            vehiculo_info = None
+            try:
+                vehiculo = oferta.solicitud.vehiculo
+                if vehiculo:
+                    vehiculo_info = {
+                        'marca': vehiculo.marca.nombre if vehiculo.marca else None,
+                        'modelo': vehiculo.modelo.nombre if vehiculo.modelo else None,
+                        'year': vehiculo.year,
+                        'patente': vehiculo.patente,
+                    }
+            except:
+                pass
+            
+            chat_data = {
+                'oferta_id': str(oferta.id),
+                'solicitud_id': str(oferta.solicitud.id),
+                'otra_persona': otra_persona,
+                'vehiculo': vehiculo_info,
+                'ultimo_mensaje': {
+                    'id': str(ultimo_mensaje.id),
+                    'mensaje': ultimo_mensaje.mensaje,
+                    'fecha_envio': ultimo_mensaje.fecha_envio,
+                    'es_propio': (
+                        (hasattr(user, 'cliente') and not ultimo_mensaje.es_proveedor) or
+                        (not hasattr(user, 'cliente') and ultimo_mensaje.es_proveedor)
+                    ),
+                    'leido': ultimo_mensaje.leido,
+                },
+                'mensajes_no_leidos': oferta.mensajes_no_leidos,
+                'estado_oferta': oferta.estado,
+            }
+            chats_list.append(chat_data)
+        
+        return Response(chats_list)
