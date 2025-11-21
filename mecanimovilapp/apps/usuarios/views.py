@@ -139,33 +139,95 @@ class UsuarioViewSet(viewsets.ModelViewSet):
         """
         Crea un nuevo usuario estableciendo la contraseña correctamente
         """
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        logger.info(f"👤 Creando usuario - Data recibida: {{'username': {request.data.get('username')}, 'email': {request.data.get('email')}}}")
         
-        # Extraer datos para crear el usuario manualmente
-        user_data = serializer.validated_data.copy()
-        password = request.data.get('password')
-        
-        # Crear usuario
-        user = Usuario(
-            username=user_data.get('username'),
-            email=user_data.get('email'),
-            first_name=user_data.get('first_name', ''),
-            last_name=user_data.get('last_name', ''),
-            telefono=user_data.get('telefono', ''),
-            direccion=user_data.get('direccion', ''),
-            es_mecanico=user_data.get('es_mecanico', False)
-        )
-        
-        # Establecer contraseña correctamente
-        if password:
-            user.set_password(password)
-        user.save()
-        
-        # Serializar y devolver respuesta
-        serializer = self.get_serializer(user)
-        headers = self.get_success_headers(serializer.data)
-        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+        try:
+            serializer = self.get_serializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            
+            # Extraer datos para crear el usuario manualmente
+            user_data = serializer.validated_data.copy()
+            password = request.data.get('password')
+            
+            # Validar que hay contraseña
+            if not password:
+                logger.warning("❌ UsuarioViewSet.create: No se proporcionó contraseña")
+                return Response(
+                    {"error": "La contraseña es requerida"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Verificar si el usuario ya existe
+            username = user_data.get('username')
+            email = user_data.get('email')
+            
+            if username and Usuario.objects.filter(username=username).exists():
+                logger.warning(f"⚠️ Usuario con username '{username}' ya existe")
+                return Response(
+                    {"error": f"El usuario '{username}' ya está registrado"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            if email and Usuario.objects.filter(email=email).exists():
+                logger.warning(f"⚠️ Usuario con email '{email}' ya existe")
+                return Response(
+                    {"error": f"El email '{email}' ya está registrado"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Crear usuario
+            user = Usuario(
+                username=user_data.get('username'),
+                email=user_data.get('email'),
+                first_name=user_data.get('first_name', ''),
+                last_name=user_data.get('last_name', ''),
+                telefono=user_data.get('telefono', ''),
+                direccion=user_data.get('direccion', ''),
+                es_mecanico=user_data.get('es_mecanico', False)
+            )
+            
+            # Establecer contraseña correctamente
+            if password:
+                user.set_password(password)
+            
+            try:
+                user.save()
+                logger.info(f"✅ Usuario creado exitosamente: {user.username} (ID: {user.id})")
+            except IntegrityError as e:
+                logger.error(f"❌ Error de integridad al crear usuario: {str(e)}")
+                if 'unique constraint' in str(e).lower() or 'duplicate key' in str(e).lower():
+                    if 'username' in str(e).lower():
+                        return Response(
+                            {"error": f"El usuario '{username}' ya está registrado"},
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
+                    elif 'email' in str(e).lower():
+                        return Response(
+                            {"error": f"El email '{email}' ya está registrado"},
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
+                return Response(
+                    {"error": "Error al crear el usuario. Por favor, verifica los datos."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Serializar y devolver respuesta
+            serializer = self.get_serializer(user)
+            headers = self.get_success_headers(serializer.data)
+            return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+            
+        except ValidationError as e:
+            logger.error(f"❌ Error de validación al crear usuario: {str(e)}")
+            return Response(
+                {"error": "Datos de usuario inválidos", "details": str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        except Exception as e:
+            logger.error(f"❌ Error inesperado al crear usuario: {str(e)}", exc_info=True)
+            return Response(
+                {"error": f"Error interno del servidor: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 
 class ClienteViewSet(viewsets.ModelViewSet):
@@ -191,10 +253,13 @@ class ClienteViewSet(viewsets.ModelViewSet):
         """
         Crea un nuevo cliente asociado a un usuario existente
         """
+        logger.info(f"👤 Creando cliente - Data recibida: {request.data}")
+        
         try:
             # Obtener el usuario
             usuario_id = request.data.get('usuario')
             if not usuario_id:
+                logger.warning("❌ ClienteViewSet.create: No se proporcionó usuario_id")
                 return Response(
                     {"error": "Se requiere un ID de usuario válido"},
                     status=status.HTTP_400_BAD_REQUEST
@@ -202,7 +267,9 @@ class ClienteViewSet(viewsets.ModelViewSet):
             
             try:
                 usuario = Usuario.objects.get(id=usuario_id)
+                logger.info(f"✅ Usuario encontrado: {usuario.username} (ID: {usuario_id})")
             except Usuario.DoesNotExist:
+                logger.warning(f"❌ Usuario con ID {usuario_id} no existe")
                 return Response(
                     {"error": f"El usuario con ID {usuario_id} no existe"},
                     status=status.HTTP_404_NOT_FOUND
@@ -210,35 +277,91 @@ class ClienteViewSet(viewsets.ModelViewSet):
             
             # Verificar si ya existe un cliente para este usuario
             if Cliente.objects.filter(usuario=usuario).exists():
+                logger.warning(f"⚠️ Usuario {usuario.username} ya tiene un perfil de cliente")
+                cliente_existente = Cliente.objects.get(usuario=usuario)
+                serializer = self.get_serializer(cliente_existente)
+                return Response(serializer.data, status=status.HTTP_200_OK)
+            
+            # Verificar si el email ya está en uso por otro cliente
+            email = request.data.get('email', usuario.email)
+            if email and Cliente.objects.filter(email=email).exclude(usuario=usuario).exists():
+                logger.warning(f"⚠️ Email {email} ya está en uso por otro cliente")
                 return Response(
-                    {"error": "Este usuario ya tiene un perfil de cliente"},
+                    {"error": f"El email {email} ya está registrado"},
                     status=status.HTTP_400_BAD_REQUEST
                 )
             
-            # Obtener datos para crear el cliente
-            data = request.data.copy()
-            data['usuario'] = usuario
-            data['nombre'] = data.get('nombre', usuario.first_name)
-            data['apellido'] = data.get('apellido', usuario.last_name)
-            data['email'] = data.get('email', usuario.email)
-            data['telefono'] = data.get('telefono', usuario.telefono)
-            data['direccion'] = data.get('direccion', usuario.direccion)
+            # Preparar datos para crear el cliente
+            data = {
+                'usuario': usuario,
+                'nombre': request.data.get('nombre') or usuario.first_name or '',
+                'apellido': request.data.get('apellido') or usuario.last_name or '',
+                'email': email or usuario.email or '',
+                'telefono': request.data.get('telefono') or usuario.telefono or '',
+                'direccion': request.data.get('direccion') or usuario.direccion or '',
+            }
+            
+            # Validar campos requeridos
+            if not data['nombre']:
+                logger.warning("❌ Nombre es requerido pero está vacío")
+                return Response(
+                    {"error": "El nombre es requerido"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            if not data['email']:
+                logger.warning("❌ Email es requerido pero está vacío")
+                return Response(
+                    {"error": "El email es requerido"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
             
             # Convertir ubicación a Point si se proporcionan coordenadas
             lat = request.data.get('lat')
             lng = request.data.get('lng')
             if lat and lng:
-                data['ubicacion'] = Point(float(lng), float(lat), srid=4326)
+                try:
+                    data['ubicacion'] = Point(float(lng), float(lat), srid=4326)
+                    logger.info(f"📍 Ubicación configurada: lat={lat}, lng={lng}")
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"⚠️ Error al procesar ubicación: {str(e)}")
+                    # Continuar sin ubicación si hay error
             
             # Crear el cliente
-            cliente = Cliente.objects.create(**data)
-            serializer = self.get_serializer(cliente)
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
+            try:
+                cliente = Cliente.objects.create(**data)
+                logger.info(f"✅ Cliente creado exitosamente: {cliente.nombre} {cliente.apellido} (ID: {cliente.id})")
+                serializer = self.get_serializer(cliente)
+                return Response(serializer.data, status=status.HTTP_201_CREATED)
+            except IntegrityError as e:
+                logger.error(f"❌ Error de integridad al crear cliente: {str(e)}")
+                if 'unique constraint' in str(e).lower() or 'duplicate key' in str(e).lower():
+                    if 'email' in str(e).lower():
+                        return Response(
+                            {"error": f"El email {data.get('email')} ya está registrado"},
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
+                    elif 'usuario' in str(e).lower():
+                        # Cliente ya existe para este usuario
+                        cliente_existente = Cliente.objects.get(usuario=usuario)
+                        serializer = self.get_serializer(cliente_existente)
+                        return Response(serializer.data, status=status.HTTP_200_OK)
+                return Response(
+                    {"error": "Error al crear el cliente. Por favor, verifica los datos."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
             
-        except Exception as e:
+        except ValidationError as e:
+            logger.error(f"❌ Error de validación al crear cliente: {str(e)}")
             return Response(
-                {"error": str(e)},
+                {"error": "Datos de cliente inválidos", "details": str(e)},
                 status=status.HTTP_400_BAD_REQUEST
+            )
+        except Exception as e:
+            logger.error(f"❌ Error inesperado al crear cliente: {str(e)}", exc_info=True)
+            return Response(
+                {"error": f"Error interno del servidor: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
 
