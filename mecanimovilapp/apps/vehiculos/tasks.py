@@ -156,6 +156,9 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
     Actualiza salud cuando se completa un checklist
     Se ejecuta automáticamente vía signal
     
+    IMPORTANTE: Esta función puede ejecutarse tanto con Celery (.delay()) 
+    como directamente (sincrónicamente) como fallback.
+    
     Args:
         checklist_id: ID del checklist completado
         vehicle_id: ID del vehículo
@@ -176,31 +179,101 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
             logger.error(f"Checklist {checklist_id} o vehículo {vehicle_id} no encontrado")
             return
         
+        # ============================================
+        # 1. ACTUALIZAR KILOMETRAJE DEL VEHÍCULO
+        # ============================================
+        # Buscar respuestas de tipo KILOMETER_INPUT en el checklist
+        kilometraje_checklist = None
+        for respuesta in checklist.respuestas.all():
+            if respuesta.item_template.catalog_item and \
+               respuesta.item_template.catalog_item.tipo_pregunta == 'KILOMETER_INPUT' and \
+               respuesta.respuesta_numero is not None:
+                kilometraje_checklist = int(float(respuesta.respuesta_numero))
+                break
+        
+        # Si se encontró kilometraje en el checklist, actualizar el vehículo
+        if kilometraje_checklist is not None:
+            kilometraje_anterior = vehiculo.kilometraje
+            diferencia_km = abs(kilometraje_checklist - kilometraje_anterior)
+            
+            # Actualizar si hay diferencia significativa (más de 1 km)
+            if diferencia_km > 1:
+                # Si el kilometraje del checklist es mayor, actualizar automáticamente
+                if kilometraje_checklist > kilometraje_anterior:
+                    vehiculo.kilometraje = kilometraje_checklist
+                    vehiculo.save(update_fields=['kilometraje', 'fecha_actualizacion'])
+                    logger.info(
+                        f"✅ Kilometraje actualizado para vehículo {vehicle_id}: "
+                        f"{kilometraje_anterior} km → {kilometraje_checklist} km "
+                        f"(diferencia: +{diferencia_km} km)"
+                    )
+                else:
+                    # Si el kilometraje del checklist es menor, crear alerta
+                    logger.warning(
+                        f"⚠️ Kilometraje del checklist ({kilometraje_checklist} km) es menor "
+                        f"que el actual del vehículo ({kilometraje_anterior} km). "
+                        f"No se actualiza automáticamente."
+                    )
+                    
+                    # Crear alerta de mantenimiento si la diferencia es grande (>100 km)
+                    if diferencia_km > 100:
+                        try:
+                            from .models_health import AlertaMantenimiento
+                            
+                            # Verificar si ya existe una alerta similar reciente
+                            alerta_existente = AlertaMantenimiento.objects.filter(
+                                vehiculo=vehiculo,
+                                tipo_alerta='MANTENCION_POR_KM',
+                                activa=True,
+                                titulo__icontains='Kilometraje'
+                            ).first()
+                            
+                            if not alerta_existente:
+                                AlertaMantenimiento.objects.create(
+                                    vehiculo=vehiculo,
+                                    tipo_alerta='MANTENCION_POR_KM',
+                                    titulo='⚠️ Discrepancia en Kilometraje Detectada',
+                                    descripcion=(
+                                        f"El kilometraje registrado en el checklist ({kilometraje_checklist:,} km) "
+                                        f"es significativamente menor que el kilometraje actual del vehículo "
+                                        f"({kilometraje_anterior:,} km). Diferencia: {diferencia_km:,} km. "
+                                        f"Por favor, verifica y actualiza el kilometraje del vehículo si es necesario."
+                                    ),
+                                    prioridad=3,
+                                    activa=True
+                                )
+                                logger.info(f"Alerta de discrepancia de kilometraje creada para vehículo {vehicle_id}")
+                        except Exception as e:
+                            logger.warning(f"Error creando alerta de kilometraje: {str(e)}")
+        
         # Mapeo de items del checklist a componentes de salud
+        # La clave es el nombre del ComponenteSaludConfig (debe coincidir exactamente)
         mapeo_componentes = {
-            'aceite_motor': ['Cambio de Aceite', 'Nivel de aceite', 'Aceite motor'],
-            'filtro_aire': ['Filtro de Aire', 'Filtro aire'],
-            'filtro_aceite': ['Filtro de Aceite', 'Filtro aceite'],
-            'bujias': ['Bujías', 'Bujias', 'Cambio de bujías'],
-            'bateria': ['Batería', 'Bateria', 'Cambio de batería'],
-            'neumaticos': ['Neumáticos', 'Neumaticos', 'Llantas', 'Cambio de neumáticos'],
-            'pastillas_freno': ['Pastillas de Freno', 'Pastillas freno'],
-            'discos_freno': ['Discos de Freno', 'Discos freno'],
-            'amortiguadores': ['Amortiguadores', 'Suspensión'],
-            'correa_distribucion': ['Correa de Distribución', 'Correa distribución'],
-            'liquido_frenos': ['Líquido de Frenos', 'Liquido frenos'],
-            'refrigerante': ['Refrigerante', 'Líquido refrigerante'],
+            'Aceite Motor': ['Cambio de Aceite', 'Nivel de aceite', 'Aceite motor'],
+            'Filtro de Aire': ['Filtro de Aire', 'Filtro aire'],
+            'Filtro de Aceite': ['Filtro de Aceite', 'Filtro aceite'],
+            'Bujías': ['Bujías', 'Bujias', 'Cambio de bujías'],
+            'Batería': ['Batería', 'Bateria', 'Cambio de batería'],
+            'Neumáticos': ['Neumáticos', 'Neumaticos', 'Llantas', 'Cambio de neumáticos'],
+            'Pastillas de Freno': ['Pastillas de Freno', 'Pastillas freno'],
+            'Discos de Freno': ['Discos de Freno', 'Discos freno'],
+            'Amortiguadores': ['Amortiguadores', 'Suspensión'],
+            'Correa de Distribución': ['Correa de Distribución', 'Correa distribución'],
+            'Líquido de Frenos': ['Líquido de Frenos', 'Liquido frenos'],
+            'Refrigerante': ['Refrigerante', 'Líquido refrigerante'],
         }
         
         # Actualizar componentes basados en el checklist
         for respuesta in checklist.respuestas.all():
             item_nombre = respuesta.item_template.catalog_item.nombre if respuesta.item_template.catalog_item else ''
             
-            for componente_key, items_relacionados in mapeo_componentes.items():
+            for nombre_config, items_relacionados in mapeo_componentes.items():
                 if any(item.lower() in item_nombre.lower() for item in items_relacionados):
                     try:
+                        # Buscar el config por su nombre exacto
                         config = ComponenteSaludConfig.objects.filter(
-                            nombre__icontains=componente_key
+                            nombre=nombre_config,
+                            activo=True
                         ).first()
                         
                         if config:
@@ -208,7 +281,7 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
                                 vehiculo=vehiculo,
                                 componente_config=config,
                                 defaults={
-                                    'km_ultimo_servicio': vehiculo.kilometraje,
+                                    'km_ultimo_servicio': kilometraje_checklist if kilometraje_checklist else vehiculo.kilometraje,
                                     'fecha_ultimo_servicio': checklist.fecha_finalizacion or timezone.now(),
                                     'checklist_ultimo_servicio': checklist,
                                     'salud_porcentaje': 100,
@@ -217,16 +290,62 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
                             )
                             
                             if not created:
-                                comp_salud.km_ultimo_servicio = vehiculo.kilometraje
+                                # Usar el kilometraje del checklist si está disponible, sino el del vehículo
+                                km_para_servicio = kilometraje_checklist if kilometraje_checklist else vehiculo.kilometraje
+                                comp_salud.km_ultimo_servicio = km_para_servicio
                                 comp_salud.fecha_ultimo_servicio = checklist.fecha_finalizacion or timezone.now()
                                 comp_salud.checklist_ultimo_servicio = checklist
                             
                             comp_salud.calcular_salud()
                     except Exception as e:
-                        logger.warning(f"Error actualizando componente {componente_key}: {str(e)}")
+                        logger.warning(f"Error actualizando componente {nombre_config}: {str(e)}")
         
         # Recalcular de forma asíncrona
         calcular_salud_vehiculo_async.delay(vehicle_id, force_recalculate=True)
+        
+        # Obtener usuario del vehículo para notificaciones
+        usuario = None
+        try:
+            if vehiculo.cliente and vehiculo.cliente.usuario:
+                usuario = vehiculo.cliente.usuario
+        except Exception as e:
+            logger.warning(f"No se pudo obtener usuario del vehículo {vehicle_id}: {e}")
+        
+        # Enviar notificaciones WebSocket y Push
+        if usuario:
+            try:
+                from channels.layers import get_channel_layer
+                from asgiref.sync import async_to_sync
+                
+                channel_layer = get_channel_layer()
+                if channel_layer:
+                    # Obtener información del vehículo para el mensaje
+                    vehiculo_info = f"{vehiculo.marca} {vehiculo.modelo}" if vehiculo.marca else f"Vehículo {vehicle_id}"
+                    
+                    # Contar componentes actualizados
+                    componentes_actualizados = sum(
+                        1 for respuesta in checklist.respuestas.all()
+                        for nombre_config, items_relacionados in mapeo_componentes.items()
+                        if any(item.lower() in (respuesta.item_template.catalog_item.nombre if respuesta.item_template.catalog_item else '').lower() 
+                               for item in items_relacionados)
+                    )
+                    
+                    # Enviar notificación WebSocket
+                    async_to_sync(channel_layer.group_send)(
+                        f"cliente_{usuario.id}",
+                        {
+                            'type': 'salud_vehiculo_actualizada',
+                            'vehicle_id': str(vehicle_id),
+                            'checklist_id': str(checklist_id),
+                            'vehiculo_info': vehiculo_info,
+                            'componentes_actualizados': componentes_actualizados,
+                            'mensaje': f'Las métricas de salud de tu {vehiculo_info} han sido actualizadas',
+                            'timestamp': timezone.now().isoformat()
+                        }
+                    )
+                    logger.info(f"Notificación WebSocket enviada al usuario {usuario.id} para vehículo {vehicle_id}")
+            except Exception as e:
+                logger.error(f"Error enviando notificación WebSocket: {e}", exc_info=True)
         
         logger.info(f"Salud de vehículo {vehicle_id} actualizada desde checklist {checklist_id}")
         
@@ -234,12 +353,14 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
         logger.error(f"Error actualizando salud desde checklist: {str(e)}")
 
 
-@shared_task
+@shared_task(queue='heavy', time_limit=600, soft_time_limit=300)
 def recalcular_salud_vehiculos_batch():
     """
     Tarea periódica para recalcular salud de vehículos
     Se ejecuta cada 6 horas (no en cada request)
     Solo recalcula vehículos con actividad reciente
+    
+    TAREA PESADA: Asignada a cola 'heavy' con límites de tiempo
     """
     from .models import Vehiculo
     
@@ -262,4 +383,307 @@ def recalcular_salud_vehiculos_batch():
     except Exception as e:
         logger.error(f"Error en recálculo batch: {str(e)}")
         return 0
+
+
+@shared_task(queue='heavy', time_limit=1200, soft_time_limit=900)
+def procesar_checklists_historicos_batch(vehicle_ids=None, batch_size=10):
+    """
+    Procesa checklists históricos para múltiples vehículos en lotes
+    
+    TAREA PESADA: Asignada a cola 'heavy' con límites de tiempo extendidos
+    
+    Args:
+        vehicle_ids: Lista de IDs de vehículos a procesar. Si es None, procesa todos.
+        batch_size: Tamaño del lote para procesamiento
+    
+    Returns:
+        dict: Estadísticas del procesamiento
+    """
+    from .models import Vehiculo
+    from ..checklists.models import ChecklistInstance
+    
+    try:
+        logger.info(f"🔄 Iniciando procesamiento batch de checklists históricos")
+        
+        # Determinar vehículos a procesar
+        if vehicle_ids:
+            vehiculos = Vehiculo.objects.filter(id__in=vehicle_ids)
+        else:
+            # Obtener todos los vehículos que tienen checklists completados
+            checklists_completados = ChecklistInstance.objects.filter(
+                estado='COMPLETADO',
+                orden__isnull=False
+            ).values_list('orden__vehiculo_id', flat=True).distinct()
+            
+            vehiculos = Vehiculo.objects.filter(id__in=checklists_completados).distinct()
+        
+        total_vehiculos = vehiculos.count()
+        logger.info(f"📋 Encontrados {total_vehiculos} vehículos para procesar")
+        
+        if total_vehiculos == 0:
+            return {
+                'vehiculos_procesados': 0,
+                'checklists_procesados': 0,
+                'componentes_actualizados': 0,
+                'errores': 0
+            }
+        
+        # Procesar en lotes
+        total_procesados = 0
+        total_errores = 0
+        total_checklists = 0
+        total_componentes = 0
+        
+        for i in range(0, total_vehiculos, batch_size):
+            batch = vehiculos[i:i + batch_size]
+            
+            for vehiculo in batch:
+                try:
+                    resultado = procesar_checklists_historicos_vehiculo(vehiculo.id)
+                    if resultado:
+                        total_checklists += resultado.get('checklists_procesados', 0)
+                        total_componentes += resultado.get('componentes_actualizados', 0)
+                        total_procesados += 1
+                    else:
+                        total_errores += 1
+                except Exception as e:
+                    total_errores += 1
+                    logger.error(f"Error procesando vehículo {vehiculo.id}: {str(e)}")
+        
+        logger.info(
+            f"✅ Procesamiento batch completado: {total_procesados} vehículos, "
+            f"{total_checklists} checklists, {total_componentes} componentes actualizados"
+        )
+        
+        return {
+            'vehiculos_procesados': total_procesados,
+            'checklists_procesados': total_checklists,
+            'componentes_actualizados': total_componentes,
+            'errores': total_errores
+        }
+        
+    except Exception as e:
+        logger.error(f"Error en procesamiento batch: {str(e)}", exc_info=True)
+        return {
+            'vehiculos_procesados': 0,
+            'checklists_procesados': 0,
+            'componentes_actualizados': 0,
+            'errores': 1,
+            'error': str(e)
+        }
+
+
+def _procesar_checklists_historicos_vehiculo_interno(vehicle_id):
+    """
+    Función interna que procesa checklists históricos.
+    Esta función NO está decorada con @shared_task para poder ejecutarse
+    directamente sin problemas cuando Celery está disponible.
+    
+    Args:
+        vehicle_id: ID del vehículo
+    
+    Returns:
+        dict: Resultado del procesamiento con estadísticas
+    """
+    try:
+        from .models_health import ComponenteSaludVehiculo, ComponenteSaludConfig
+        from .models import Vehiculo
+        from ..checklists.models import ChecklistInstance
+        from ..ordenes.models import SolicitudServicio
+        
+        logger.info(f"🔄 Iniciando procesamiento de checklists históricos para vehículo {vehicle_id}")
+        
+        # Obtener vehículo
+        try:
+            vehiculo = Vehiculo.objects.get(id=vehicle_id)
+        except Vehiculo.DoesNotExist:
+            logger.error(f"Vehículo {vehicle_id} no encontrado")
+            return {
+                'checklists_procesados': 0,
+                'componentes_actualizados': 0,
+                'kilometraje_actualizado': False,
+                'error': 'Vehículo no encontrado'
+            }
+        
+        # Obtener todas las órdenes completadas del vehículo
+        ordenes_completadas = SolicitudServicio.objects.filter(
+            vehiculo=vehiculo,
+            estado='completado'
+        ).order_by('fecha_servicio')
+        
+        # Obtener checklists completados asociados a esas órdenes
+        checklists_completados = ChecklistInstance.objects.filter(
+            orden__in=ordenes_completadas,
+            estado='COMPLETADO'
+        ).select_related('orden', 'checklist_template').prefetch_related(
+            'respuestas__item_template__catalog_item'
+        ).order_by('fecha_finalizacion')
+        
+        checklists_count = checklists_completados.count()
+        logger.info(f"📋 Encontrados {checklists_count} checklists completados para procesar")
+        
+        # Si no hay checklists, retornar resultado vacío pero válido
+        if checklists_count == 0:
+            logger.info(f"⚠️ No hay checklists completados para procesar en vehículo {vehicle_id}")
+            return {
+                'checklists_procesados': 0,
+                'componentes_actualizados': 0,
+                'kilometraje_actualizado': False
+            }
+        
+        # Mapeo de items del checklist a componentes de salud
+        # La clave es el nombre del ComponenteSaludConfig (debe coincidir exactamente)
+        mapeo_componentes = {
+            'Aceite Motor': ['Cambio de Aceite', 'Nivel de aceite', 'Aceite motor'],
+            'Filtro de Aire': ['Filtro de Aire', 'Filtro aire'],
+            'Filtro de Aceite': ['Filtro de Aceite', 'Filtro aceite'],
+            'Bujías': ['Bujías', 'Bujias', 'Cambio de bujías'],
+            'Batería': ['Batería', 'Bateria', 'Cambio de batería'],
+            'Neumáticos': ['Neumáticos', 'Neumaticos', 'Llantas', 'Cambio de neumáticos'],
+            'Pastillas de Freno': ['Pastillas de Freno', 'Pastillas freno'],
+            'Discos de Freno': ['Discos de Freno', 'Discos freno'],
+            'Amortiguadores': ['Amortiguadores', 'Suspensión'],
+            'Correa de Distribución': ['Correa de Distribución', 'Correa distribución'],
+            'Líquido de Frenos': ['Líquido de Frenos', 'Liquido frenos'],
+            'Refrigerante': ['Refrigerante', 'Líquido refrigerante'],
+        }
+        
+        componentes_actualizados = 0
+        kilometraje_maximo_encontrado = vehiculo.kilometraje
+        
+        # Procesar cada checklist en orden cronológico
+        for checklist in checklists_completados:
+            # Extraer kilometraje del checklist si está disponible
+            kilometraje_checklist = None
+            for respuesta in checklist.respuestas.all():
+                if respuesta.item_template.catalog_item and \
+                   respuesta.item_template.catalog_item.tipo_pregunta == 'KILOMETER_INPUT' and \
+                   respuesta.respuesta_numero is not None:
+                    kilometraje_checklist = int(float(respuesta.respuesta_numero))
+                    if kilometraje_checklist > kilometraje_maximo_encontrado:
+                        kilometraje_maximo_encontrado = kilometraje_checklist
+                    break
+            
+            # Procesar componentes del checklist
+            for respuesta in checklist.respuestas.all():
+                item_nombre = respuesta.item_template.catalog_item.nombre if respuesta.item_template.catalog_item else ''
+                
+                for nombre_config, items_relacionados in mapeo_componentes.items():
+                    if any(item.lower() in item_nombre.lower() for item in items_relacionados):
+                        try:
+                            # Buscar el config por su nombre exacto
+                            config = ComponenteSaludConfig.objects.filter(
+                                nombre=nombre_config,
+                                activo=True
+                            ).first()
+                            
+                            if config:
+                                # Usar kilometraje del checklist si está disponible, sino el del vehículo
+                                km_para_servicio = kilometraje_checklist if kilometraje_checklist else vehiculo.kilometraje
+                                
+                                # Obtener o crear componente
+                                comp_salud, created = ComponenteSaludVehiculo.objects.get_or_create(
+                                    vehiculo=vehiculo,
+                                    componente_config=config,
+                                    defaults={
+                                        'km_ultimo_servicio': km_para_servicio,
+                                        'fecha_ultimo_servicio': checklist.fecha_finalizacion or timezone.now(),
+                                        'checklist_ultimo_servicio': checklist,
+                                        'salud_porcentaje': 100,
+                                        'nivel_alerta': 'OPTIMO',
+                                    }
+                                )
+                                
+                                # Si el componente ya existía, actualizar solo si este checklist es más reciente
+                                if not created:
+                                    # Verificar si este checklist es más reciente que el último servicio registrado
+                                    from datetime import datetime as dt
+                                    fecha_ultimo = comp_salud.fecha_ultimo_servicio or timezone.make_aware(dt.min)
+                                    fecha_checklist = checklist.fecha_finalizacion or timezone.now()
+                                    
+                                    if fecha_checklist >= fecha_ultimo:
+                                        comp_salud.km_ultimo_servicio = km_para_servicio
+                                        comp_salud.fecha_ultimo_servicio = fecha_checklist
+                                        comp_salud.checklist_ultimo_servicio = checklist
+                                        comp_salud.save()
+                                        componentes_actualizados += 1
+                                        logger.info(
+                                            f"✅ Componente {config.nombre} actualizado desde checklist histórico "
+                                            f"{checklist.id} (km: {km_para_servicio}, fecha: {fecha_checklist})"
+                                        )
+                        except Exception as e:
+                            logger.warning(f"Error procesando componente {nombre_config} del checklist {checklist.id}: {str(e)}")
+        
+        # Actualizar kilometraje del vehículo si se encontró uno mayor en los checklists
+        kilometraje_actualizado = False
+        if kilometraje_maximo_encontrado > vehiculo.kilometraje:
+            diferencia = kilometraje_maximo_encontrado - vehiculo.kilometraje
+            kilometraje_anterior = vehiculo.kilometraje
+            vehiculo.kilometraje = kilometraje_maximo_encontrado
+            vehiculo.save(update_fields=['kilometraje', 'fecha_actualizacion'])
+            kilometraje_actualizado = True
+            logger.info(
+                f"✅ Kilometraje del vehículo actualizado desde checklists históricos: "
+                f"{kilometraje_anterior} km → {kilometraje_maximo_encontrado} km "
+                f"(diferencia: +{diferencia} km)"
+            )
+        
+        # Recalcular salud de todos los componentes
+        componentes = ComponenteSaludVehiculo.objects.filter(vehiculo=vehiculo)
+        for comp in componentes:
+            comp.calcular_salud()
+        
+        # Recalcular estado general (usar Celery si está disponible, sino calcular directamente)
+        try:
+            if CELERY_AVAILABLE:
+                calcular_salud_vehiculo_async.delay(vehicle_id, force_recalculate=True)
+            else:
+                # Si Celery no está disponible, calcular directamente
+                calcular_estado_salud_interno(vehicle_id)
+        except Exception as e:
+            logger.warning(f"Error recalculando salud del vehículo {vehicle_id}: {str(e)}")
+            # Intentar calcular directamente como fallback
+            try:
+                calcular_estado_salud_interno(vehicle_id)
+            except Exception as e2:
+                logger.error(f"Error calculando salud directamente: {str(e2)}")
+        
+        logger.info(
+            f"✅ Procesamiento de checklists históricos completado para vehículo {vehicle_id}. "
+            f"Componentes actualizados: {componentes_actualizados}"
+        )
+        
+        return {
+            'checklists_procesados': checklists_completados.count(),
+            'componentes_actualizados': componentes_actualizados,
+            'kilometraje_actualizado': kilometraje_actualizado
+        }
+        
+    except Exception as e:
+        logger.error(f"Error procesando checklists históricos para vehículo {vehicle_id}: {str(e)}", exc_info=True)
+        return {
+            'checklists_procesados': 0,
+            'componentes_actualizados': 0,
+            'kilometraje_actualizado': False,
+            'error': str(e)
+        }
+
+
+@shared_task(queue='heavy', time_limit=600, soft_time_limit=300)
+def procesar_checklists_historicos_vehiculo(vehicle_id):
+    """
+    Tarea Celery que procesa todos los checklists completados históricos de un vehículo.
+    
+    TAREA PESADA: Asignada a cola 'heavy' con límites de tiempo
+    
+    Esta función está decorada con @shared_task para ejecutarse con Celery.
+    Internamente llama a _procesar_checklists_historicos_vehiculo_interno().
+    
+    Args:
+        vehicle_id: ID del vehículo
+    
+    Returns:
+        dict: Resultado del procesamiento con estadísticas
+    """
+    return _procesar_checklists_historicos_vehiculo_interno(vehicle_id)
 

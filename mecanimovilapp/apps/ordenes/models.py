@@ -158,6 +158,17 @@ class SolicitudServicio(models.Model):
         help_text=_('Notas adicionales del proveedor sobre la orden')
     )
     
+    # Relación con oferta de proveedor (para solicitudes públicas)
+    oferta_proveedor = models.ForeignKey(
+        'OfertaProveedor',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='solicitudes_servicio',
+        help_text='Oferta de proveedor que originó esta solicitud',
+        verbose_name='Oferta Proveedor'
+    )
+    
     class Meta:
         verbose_name = _('solicitud de servicio')
         verbose_name_plural = _('solicitudes de servicio')
@@ -650,6 +661,13 @@ class SolicitudServicioPublica(models.Model):
         verbose_name='Urgencia'
     )
     
+    # Requiere repuestos
+    requiere_repuestos = models.BooleanField(
+        default=True,
+        help_text='Indica si la solicitud requiere repuestos o solo mano de obra',
+        verbose_name='Requiere Repuestos'
+    )
+    
     # Tipo de solicitud (global vs dirigida)
     tipo_solicitud = models.CharField(
         max_length=20,
@@ -734,7 +752,9 @@ class SolicitudServicioPublica(models.Model):
             ('con_ofertas', 'Con Ofertas Recibidas'),
             ('adjudicada', 'Adjudicada a Proveedor'),
             ('pendiente_pago', 'Cliente Procesando Pago'),
-            ('pagada', 'Pago Completado'),
+            ('pagada', 'Pago Completado - Listo para Iniciar'),
+            ('en_ejecucion', 'Servicio en Progreso'),
+            ('completada', 'Servicio Finalizado'),
             ('expirada', 'Expirada Sin Ofertas'),
             ('cancelada', 'Cancelada por Cliente'),
         ],
@@ -759,6 +779,13 @@ class SolicitudServicioPublica(models.Model):
     fecha_expiracion = models.DateTimeField(
         help_text='Fecha límite para recibir ofertas',
         verbose_name='Fecha de Expiración'
+    )
+    
+    fecha_limite_pago = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='Fecha límite para pagar después de adjudicar (fecha del servicio)',
+        verbose_name='Fecha Límite de Pago'
     )
     
     fecha_actualizacion = models.DateTimeField(
@@ -874,6 +901,52 @@ class SolicitudServicioPublica(models.Model):
             self.total_ofertas == 0 and 
             self.estado in ['publicada', 'expirada']
         )
+    
+    def puede_pagar(self):
+        """
+        Verifica si el cliente puede pagar la solicitud adjudicada.
+        Solo puede pagar si la fecha actual es anterior a fecha_limite_pago.
+        """
+        if self.estado not in ['adjudicada', 'pendiente_pago']:
+            return False
+        
+        if not self.fecha_limite_pago:
+            # Si no hay fecha límite, permitir pago (compatibilidad con datos antiguos)
+            return True
+        
+        return timezone.now() < self.fecha_limite_pago
+    
+    def tiempo_restante_pago(self):
+        """
+        Calcula el tiempo restante hasta la fecha límite de pago.
+        Retorna None si no hay fecha límite o si ya expiró.
+        """
+        if not self.fecha_limite_pago:
+            return None
+        
+        delta = self.fecha_limite_pago - timezone.now()
+        if delta.total_seconds() < 0:
+            return None
+        
+        return delta
+    
+    def debe_mostrar_alerta_cliente(self):
+        """
+        Verifica si se debe mostrar alerta al cliente.
+        Se muestra cuando faltan 6 horas o menos para la fecha límite de pago.
+        """
+        if self.estado not in ['adjudicada', 'pendiente_pago']:
+            return False
+        
+        if not self.fecha_limite_pago:
+            return False
+        
+        tiempo_restante = self.tiempo_restante_pago()
+        if not tiempo_restante:
+            return False
+        
+        # 6 horas = 21600 segundos
+        return tiempo_restante.total_seconds() <= 21600
 
 
 class OfertaProveedor(models.Model):
@@ -973,7 +1046,10 @@ class OfertaProveedor(models.Model):
             ('en_chat', 'En Conversación'),
             ('aceptada', 'Aceptada por Cliente'),
             ('pendiente_pago', 'Cliente Procesando Pago'),
-            ('pagada', 'Pagada - Servicio Confirmado'),
+            ('pagada_parcialmente', 'Pagada Parcialmente - Pendiente Saldo'),
+            ('pagada', 'Pagada - Listo para Iniciar'),
+            ('en_ejecucion', 'En Ejecución - Servicio en Progreso'),
+            ('completada', 'Completada - Servicio Finalizado'),
             ('rechazada', 'Rechazada'),
             ('retirada', 'Retirada por Proveedor'),
             ('expirada', 'Expirada'),
@@ -1011,27 +1087,156 @@ class OfertaProveedor(models.Model):
         verbose_name='Tiempo de Respuesta del Proveedor'
     )
     
+    # Campos para ofertas secundarias (servicios adicionales)
+    oferta_original = models.ForeignKey(
+        'self',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='ofertas_secundarias',
+        help_text='Oferta original a la que está asociada esta oferta secundaria',
+        verbose_name='Oferta Original'
+    )
+    
+    es_oferta_secundaria = models.BooleanField(
+        default=False,
+        help_text='Indica si esta es una oferta secundaria (servicio adicional)',
+        verbose_name='Es Oferta Secundaria'
+    )
+    
+    motivo_servicio_adicional = models.TextField(
+        blank=True,
+        help_text='Explicación del proveedor sobre por qué se requiere este servicio adicional',
+        verbose_name='Motivo del Servicio Adicional'
+    )
+    
+    # =========================================================================
+    # CAMPOS PARA DESGLOSE DE COSTOS (Repuestos + Mano de Obra)
+    # =========================================================================
+    
+    costo_repuestos = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text='Costo total de los repuestos cotizados (sin IVA)',
+        verbose_name='Costo Repuestos'
+    )
+    
+    costo_mano_obra = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text='Costo de mano de obra del servicio (sin IVA)',
+        verbose_name='Costo Mano de Obra'
+    )
+    
+    costo_gestion_compra = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text='Costo de gestión y traslado para compra de repuestos (sin IVA). Aplica solo cuando incluye_repuestos=True',
+        verbose_name='Costo Gestión de Compra'
+    )
+    
+    foto_cotizacion_repuestos = models.URLField(
+        max_length=500,
+        null=True,
+        blank=True,
+        help_text='URL de la foto de la cotización de repuestos de la casa de repuestos',
+        verbose_name='Foto Cotización Repuestos'
+    )
+    
+    # Método de pago elegido por el cliente
+    METODO_PAGO_CLIENTE_CHOICES = [
+        ('repuestos_adelantado', 'Repuestos Adelantado + Servicio al Final'),
+        ('todo_adelantado', 'Todo Adelantado'),
+        ('pendiente', 'Pendiente de Selección'),
+    ]
+    metodo_pago_cliente = models.CharField(
+        max_length=25,
+        choices=METODO_PAGO_CLIENTE_CHOICES,
+        default='pendiente',
+        help_text='Método de pago elegido por el cliente para esta oferta',
+        verbose_name='Método de Pago Cliente'
+    )
+    
+    # Estado del pago de repuestos (cuando el cliente elige pagar repuestos adelantado)
+    ESTADO_PAGO_REPUESTOS_CHOICES = [
+        ('no_aplica', 'No Aplica (Sin Repuestos o Todo Adelantado)'),
+        ('pendiente', 'Pendiente de Pago'),
+        ('pagado', 'Repuestos Pagados'),
+    ]
+    estado_pago_repuestos = models.CharField(
+        max_length=20,
+        choices=ESTADO_PAGO_REPUESTOS_CHOICES,
+        default='no_aplica',
+        help_text='Estado del pago de repuestos',
+        verbose_name='Estado Pago Repuestos'
+    )
+    
+    # Estado del pago de mano de obra
+    ESTADO_PAGO_SERVICIO_CHOICES = [
+        ('pendiente', 'Pendiente de Pago'),
+        ('pagado', 'Servicio Pagado'),
+    ]
+    estado_pago_servicio = models.CharField(
+        max_length=20,
+        choices=ESTADO_PAGO_SERVICIO_CHOICES,
+        default='pendiente',
+        help_text='Estado del pago del servicio/mano de obra',
+        verbose_name='Estado Pago Servicio'
+    )
+    
     class Meta:
         verbose_name = 'Oferta de Proveedor'
         verbose_name_plural = 'Ofertas de Proveedores'
         ordering = ['precio_total_ofrecido', '-fecha_envio']
-        unique_together = [['solicitud', 'proveedor']]
+        # Removemos unique_together para permitir ofertas secundarias del mismo proveedor
+        # La validación se hará en el ViewSet
         indexes = [
             models.Index(fields=['solicitud', 'estado']),
             models.Index(fields=['proveedor', 'estado']),
             models.Index(fields=['precio_total_ofrecido']),
+            models.Index(fields=['oferta_original', 'es_oferta_secundaria']),
         ]
     
     def __str__(self):
         return f"Oferta de {self.proveedor.get_full_name()} - ${self.precio_total_ofrecido}"
     
+    def clean(self):
+        """Validación personalizada para ofertas secundarias"""
+        from django.core.exceptions import ValidationError
+        
+        # Si es oferta secundaria, validar que tenga oferta_original
+        if self.es_oferta_secundaria and not self.oferta_original:
+            raise ValidationError({
+                'oferta_original': 'Las ofertas secundarias deben tener una oferta original asociada'
+            })
+        
+        # Si tiene oferta_original, debe ser secundaria
+        if self.oferta_original and not self.es_oferta_secundaria:
+            self.es_oferta_secundaria = True
+        
+        # Validar que no sea una oferta original que se referencia a sí misma
+        if self.oferta_original and self.oferta_original.id == self.id:
+            raise ValidationError({
+                'oferta_original': 'Una oferta no puede ser su propia oferta original'
+            })
+    
     def save(self, *args, **kwargs):
+        # Ejecutar validación clean antes de guardar
+        self.clean()
+        
         # Establecer tipo de proveedor automáticamente
         if not self.tipo_proveedor:
             if hasattr(self.proveedor, 'taller') and self.proveedor.taller:
                 self.tipo_proveedor = 'taller'
             elif hasattr(self.proveedor, 'mecanico_domicilio') and self.proveedor.mecanico_domicilio:
                 self.tipo_proveedor = 'mecanico'
+        
+        # Si tiene oferta_original, establecer es_oferta_secundaria automáticamente
+        if self.oferta_original and not self.es_oferta_secundaria:
+            self.es_oferta_secundaria = True
         
         # Calcular tiempo de respuesta del proveedor
         if not self.tiempo_respuesta_proveedor and self.solicitud.fecha_publicacion:
@@ -1042,9 +1247,9 @@ class OfertaProveedor(models.Model):
         
         super().save(*args, **kwargs)
         
-        # Actualizar contador en la solicitud solo si es nueva oferta
-        # Esto evita loops infinitos ya que incrementar_ofertas también llama a save
-        if es_nueva and self.estado == 'enviada':
+        # Actualizar contador en la solicitud solo si es nueva oferta y no es secundaria
+        # Las ofertas secundarias no incrementan el contador de ofertas de la solicitud
+        if es_nueva and self.estado == 'enviada' and not self.es_oferta_secundaria:
             # Actualizar directamente sin llamar al método que hace save
             self.solicitud.total_ofertas += 1
             if self.solicitud.estado == 'publicada':
@@ -1113,6 +1318,14 @@ class DetalleServicioOferta(models.Model):
         blank=True,
         help_text='Notas adicionales sobre este servicio',
         verbose_name='Notas'
+    )
+    
+    # Repuestos seleccionados para este servicio en la oferta
+    repuestos_seleccionados = models.JSONField(
+        default=list,
+        blank=True,
+        help_text='Lista de repuestos seleccionados para este servicio en formato JSON',
+        verbose_name='Repuestos Seleccionados'
     )
     
     class Meta:
@@ -1315,4 +1528,57 @@ class RechazoSolicitud(models.Model):
             elif hasattr(self.proveedor, 'mecanico_domicilio') and self.proveedor.mecanico_domicilio:
                 self.tipo_proveedor = 'mecanico'
         
-        super().save(*args, **kwargs) 
+        super().save(*args, **kwargs)
+
+
+class AlertaDescartada(models.Model):
+    """
+    Modelo para almacenar alertas descartadas por usuarios.
+    Permite que las alertas no vuelvan a aparecer después de ser descartadas.
+    """
+    TIPO_ALERTA_CHOICES = [
+        ('pago_proximo', 'Pago Próximo'),
+        ('pago_expirado', 'Pago Expirado'),
+    ]
+    
+    # Usuario que descartó la alerta
+    usuario = models.ForeignKey(
+        Usuario,
+        on_delete=models.CASCADE,
+        related_name='alertas_descartadas',
+        verbose_name='Usuario'
+    )
+    
+    # Solicitud relacionada con la alerta
+    solicitud = models.ForeignKey(
+        SolicitudServicioPublica,
+        on_delete=models.CASCADE,
+        related_name='alertas_descartadas',
+        verbose_name='Solicitud'
+    )
+    
+    # Tipo de alerta descartada
+    tipo_alerta = models.CharField(
+        max_length=20,
+        choices=TIPO_ALERTA_CHOICES,
+        verbose_name='Tipo de Alerta'
+    )
+    
+    # Fecha cuando se descartó
+    fecha_descarte = models.DateTimeField(
+        auto_now_add=True,
+        verbose_name='Fecha de Descarte'
+    )
+    
+    class Meta:
+        verbose_name = 'Alerta Descartada'
+        verbose_name_plural = 'Alertas Descartadas'
+        unique_together = [['usuario', 'solicitud', 'tipo_alerta']]
+        ordering = ['-fecha_descarte']
+        indexes = [
+            models.Index(fields=['usuario', 'solicitud', 'tipo_alerta']),
+            models.Index(fields=['fecha_descarte']),
+        ]
+    
+    def __str__(self):
+        return f"Alerta {self.get_tipo_alerta_display()} descartada por {self.usuario.get_full_name()} - Solicitud {self.solicitud.id}"

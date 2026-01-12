@@ -20,6 +20,7 @@ router.register(r'taller-direcciones', views.TallerDireccionViewSet, basename='t
 urlpatterns = [
     # URLs personalizadas primero (tienen prioridad)
     path('login/', views.custom_login, name='custom_login'),
+    path('login-proveedor/', views.login_proveedor, name='login_proveedor'),  # Login exclusivo para proveedores
     path('estado-proveedor/', views.EstadoProveedorView.as_view(), name='estado-proveedor'),
     path('proveedores/conectar/', views.actualizar_estado_conexion_generico, name='conectar-proveedor'),
     path('proveedores/desconectar/', views.desconectar_generico, name='desconectar-proveedor'),
@@ -34,6 +35,9 @@ urlpatterns = [
     path('actualizar-especialidades/', views.actualizar_especialidades, name='actualizar-especialidades'),
     path('actualizar-marcas-taller/', views.actualizar_marcas_taller, name='actualizar-marcas-taller'),
     path('actualizar-marcas-mecanico/', views.actualizar_marcas_mecanico, name='actualizar-marcas-mecanico'),
+    # Endpoints para onboarding de proveedores
+    path('inicializar-onboarding/', views.inicializar_onboarding, name='inicializar-onboarding'),
+    path('completar-onboarding/', views.completar_onboarding, name='completar-onboarding'),
     # Router al final
     path('', include(router.urls)),
 ] 

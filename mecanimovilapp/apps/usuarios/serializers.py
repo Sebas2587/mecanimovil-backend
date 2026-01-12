@@ -45,26 +45,39 @@ class UsuarioSerializer(serializers.ModelSerializer):
     """
     Serializador para el modelo Usuario
     """
-    password = serializers.CharField(write_only=True, required=False)
+    password = serializers.CharField(write_only=True, required=True, allow_blank=False, min_length=8)
     is_client = serializers.SerializerMethodField()
     
     class Meta:
         model = Usuario
         fields = ('id', 'username', 'email', 'password', 'first_name', 'last_name', 
                   'es_mecanico', 'telefono', 'direccion', 'foto_perfil', 'is_client')
-        extra_kwargs = {'password': {'write_only': True}}
+        extra_kwargs = {
+            'password': {'write_only': True},
+            'username': {'required': True},
+            'email': {'required': True}
+        }
     
     def get_is_client(self, obj):
         """Determina si el usuario tiene un perfil de cliente"""
         return hasattr(obj, 'cliente')
     
+    def validate_password(self, value):
+        """Validar que la contraseña tenga al menos 8 caracteres"""
+        if not value:
+            raise serializers.ValidationError("La contraseña es requerida")
+        if len(value) < 8:
+            raise serializers.ValidationError("La contraseña debe tener al menos 8 caracteres")
+        return value
+    
     def create(self, validated_data):
         logger.info(f"Creando usuario con datos: {validated_data}")
         password = validated_data.pop('password', None)
+        if not password:
+            raise serializers.ValidationError({"password": "La contraseña es requerida"})
         instance = self.Meta.model(**validated_data)
-        if password is not None:
-            instance.set_password(password)
-            logger.info(f"Contraseña establecida para usuario: {validated_data.get('username', '')}")
+        instance.set_password(password)
+        logger.info(f"Contraseña establecida para usuario: {validated_data.get('username', '')}")
         instance.save()
         return instance
     
@@ -116,37 +129,40 @@ class ClienteSerializer(serializers.ModelSerializer):
 class UserProfileSerializer(serializers.ModelSerializer):
     """
     Serializador para visualizar y actualizar la información del perfil de usuario.
+    El modelo Usuario hereda de AbstractUser, por lo que first_name, last_name y email
+    son campos directos del modelo, no necesitan 'source'.
     """
-    first_name = serializers.CharField(source='usuario.first_name', required=False)
-    last_name = serializers.CharField(source='usuario.last_name', required=False)
-    email = serializers.EmailField(source='usuario.email', required=False)
+    # NOTA: first_name, last_name y email son campos directos de AbstractUser/Usuario
+    # No usar source='usuario.xxx' porque el modelo ya es Usuario
+    first_name = serializers.CharField(required=False, allow_blank=True)
+    last_name = serializers.CharField(required=False, allow_blank=True)
+    email = serializers.EmailField(read_only=True)  # Email es solo lectura para seguridad
     foto_perfil = serializers.ImageField(required=False)
     
     class Meta:
         model = Usuario
         fields = ['id', 'username', 'first_name', 'last_name', 'email', 
                   'telefono', 'direccion', 'foto_perfil', 'es_mecanico']
-        read_only_fields = ['id', 'username', 'es_mecanico']
+        read_only_fields = ['id', 'username', 'email', 'es_mecanico']  # Email no editable
         
     def update(self, instance, validated_data):
-        # Actualizar campos del modelo Usuario
-        usuario_data = validated_data.pop('usuario', {})
+        # Actualizar campos del modelo Usuario directamente
+        # Los campos first_name, last_name son campos directos de AbstractUser
+        # Email está marcado como read_only, no se actualiza aquí
         
         # Actualizar first_name si existe en los datos validados
-        if 'first_name' in usuario_data:
-            instance.first_name = usuario_data.get('first_name', instance.first_name)
+        if 'first_name' in validated_data:
+            instance.first_name = validated_data.get('first_name', instance.first_name)
             
         # Actualizar last_name si existe en los datos validados
-        if 'last_name' in usuario_data:
-            instance.last_name = usuario_data.get('last_name', instance.last_name)
-            
-        # Actualizar email si existe en los datos validados
-        if 'email' in usuario_data:
-            instance.email = usuario_data.get('email', instance.email)
+        if 'last_name' in validated_data:
+            instance.last_name = validated_data.get('last_name', instance.last_name)
             
         # Actualizar campos adicionales del perfil
-        instance.telefono = validated_data.get('telefono', instance.telefono)
-        instance.direccion = validated_data.get('direccion', instance.direccion)
+        if 'telefono' in validated_data:
+            instance.telefono = validated_data.get('telefono', instance.telefono)
+        if 'direccion' in validated_data:
+            instance.direccion = validated_data.get('direccion', instance.direccion)
         
         if 'foto_perfil' in validated_data:
             instance.foto_perfil = validated_data.get('foto_perfil')

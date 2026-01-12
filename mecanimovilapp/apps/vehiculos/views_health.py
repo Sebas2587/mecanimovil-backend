@@ -255,4 +255,78 @@ class VehicleHealthViewSet(viewsets.ReadOnlyModelViewSet):
             'page_size': page_size,
             'has_more': len(data) == page_size
         })
+    
+    @action(detail=False, methods=['post'], url_path='vehicle/(?P<vehicle_id>[^/.]+)/procesar-historicos')
+    def procesar_checklists_historicos(self, request, vehicle_id=None):
+        """
+        Procesa todos los checklists completados históricos de un vehículo
+        para actualizar las métricas de salud retroactivamente.
+        
+        Útil cuando:
+        - Se agrega un nuevo componente de salud al sistema
+        - Se quiere recalcular métricas basándose en historial completo
+        - Se detectan discrepancias en los datos
+        """
+        try:
+            # Validar permisos
+            user = request.user
+            from .models import Vehiculo
+            
+            if not hasattr(user, 'cliente'):
+                return Response(
+                    {'error': 'Usuario no tiene un cliente asociado'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            try:
+                vehiculo = Vehiculo.objects.get(
+                    id=vehicle_id,
+                    cliente=user.cliente
+                )
+            except Vehiculo.DoesNotExist:
+                return Response(
+                    {'error': 'Vehículo no encontrado o no tienes permisos'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
+            # Importar tarea
+            try:
+                from .tasks import procesar_checklists_historicos_vehiculo
+                
+                # Ejecutar en background (Celery) o sincrónicamente
+                if CELERY_AVAILABLE:
+                    procesar_checklists_historicos_vehiculo.delay(vehicle_id)
+                    return Response({
+                        'message': 'Procesamiento de checklists históricos iniciado en background',
+                        'vehicle_id': vehicle_id,
+                        'status': 'processing'
+                    }, status=status.HTTP_202_ACCEPTED)
+                else:
+                    # Ejecutar sincrónicamente si Celery no está disponible
+                    resultado = procesar_checklists_historicos_vehiculo(vehicle_id)
+                    if resultado:
+                        return Response({
+                            'message': 'Checklists históricos procesados exitosamente',
+                            'vehicle_id': vehicle_id,
+                            'resultado': resultado
+                        }, status=status.HTTP_200_OK)
+                    else:
+                        return Response({
+                            'error': 'Error procesando checklists históricos'
+                        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            except ImportError:
+                return Response(
+                    {'error': 'Función de procesamiento no disponible'},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE
+                )
+                
+        except Exception as e:
+            logger.error(f"Error procesando checklists históricos: {str(e)}", exc_info=True)
+            return Response(
+                {
+                    'error': 'Error al procesar checklists históricos',
+                    'detail': str(e) if settings.DEBUG else None
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 

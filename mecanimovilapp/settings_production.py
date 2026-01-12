@@ -1,96 +1,143 @@
 """
-Configuración de Django para producción
+Configuración de Django para producción en Render
+Este archivo extiende settings.py con configuraciones específicas para producción.
 """
 
 import os
 from .settings import *
 
-# Configuración para producción
+# ============================================
+# CONFIGURACIÓN BASE PARA PRODUCCIÓN
+# ============================================
 DEBUG = False
 
 # Configuración de hosts permitidos para producción
-ALLOWED_HOSTS = [
-    'api.mecanimovil.com',
-    'mecanimovil.com', 
-    'www.mecanimovil.com',
-    'localhost',
-    '127.0.0.1'
-]
+# Se configura desde variable de entorno ALLOWED_HOSTS
+ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '').split(',')
+ALLOWED_HOSTS = [host.strip() for host in ALLOWED_HOSTS if host.strip()]
 
-# Configuración de CORS para producción
+# Agregar hosts de Render automáticamente
+RENDER_EXTERNAL_HOSTNAME = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
+if RENDER_EXTERNAL_HOSTNAME:
+    ALLOWED_HOSTS.append(RENDER_EXTERNAL_HOSTNAME)
+
+# ============================================
+# CONFIGURACIÓN DE CORS PARA PRODUCCIÓN
+# ============================================
 CORS_ALLOW_ALL_ORIGINS = False
-CORS_ALLOWED_ORIGINS = [
-    "https://mecanimovilapp.com",
-    "https://app.mecanimovil.com",
-    "https://proveedores.mecanimovil.com",
-]
+CORS_ALLOWED_ORIGINS = os.environ.get(
+    'CORS_ALLOWED_ORIGINS',
+    'https://mecanimovilapp.com,https://app.mecanimovil.com,https://proveedores.mecanimovil.com'
+).split(',')
+CORS_ALLOWED_ORIGINS = [origin.strip() for origin in CORS_ALLOWED_ORIGINS if origin.strip()]
 
-# Configuración de seguridad
-SECURE_SSL_REDIRECT = True
-SECURE_HSTS_SECONDS = 31536000
+# ============================================
+# CONFIGURACIÓN DE SEGURIDAD
+# ============================================
+SECURE_SSL_REDIRECT = os.environ.get('SECURE_SSL_REDIRECT', 'True').lower() == 'true'
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+# HSTS (HTTP Strict Transport Security)
+SECURE_HSTS_SECONDS = 31536000  # 1 año
 SECURE_HSTS_INCLUDE_SUBDOMAINS = True
 SECURE_HSTS_PRELOAD = True
+
+# Protección contra XSS y clickjacking
 SECURE_BROWSER_XSS_FILTER = True
 SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = 'DENY'
 
-# Configuración de sesiones
+# Cookies seguras
 SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True
 SESSION_COOKIE_HTTPONLY = True
 CSRF_COOKIE_HTTPONLY = True
 
-# Configuración de Redis para producción
-REDIS_HOST = os.environ.get('REDIS_HOST', 'localhost')
-REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
-REDIS_DB = int(os.environ.get('REDIS_DB', 0))
-REDIS_PASSWORD = os.environ.get('REDIS_PASSWORD', None)
+# Proxy headers (para Render)
+USE_X_FORWARDED_HOST = True
+USE_X_FORWARDED_PORT = True
 
-# Configuración de Django Channels con Redis para producción
+# ============================================
+# CONFIGURACIÓN DE BASE DE DATOS
+# ============================================
+import dj_database_url
+
+DATABASE_URL = os.environ.get('DATABASE_URL')
+
+if DATABASE_URL:
+    DATABASES = {
+        'default': dj_database_url.config(
+            default=DATABASE_URL,
+            engine='django.contrib.gis.db.backends.postgis',
+            conn_max_age=600,
+            conn_health_checks=True,
+        )
+    }
+
+# ============================================
+# CONFIGURACIÓN DE REDIS
+# ============================================
+REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379')
+
+# Django Channels con Redis
 CHANNEL_LAYERS = {
     'default': {
         'BACKEND': 'channels_redis.core.RedisChannelLayer',
         'CONFIG': {
-            "hosts": [{
-                "host": REDIS_HOST,
-                "port": REDIS_PORT,
-                "db": REDIS_DB,
-                "password": REDIS_PASSWORD,
-            }],
-            "capacity": 1500,  # Número máximo de mensajes en cola
-            "expiry": 10,      # Tiempo de expiración en segundos
+            "hosts": [REDIS_URL],
+            "capacity": 1500,
+            "expiry": 10,
         },
     },
 }
 
-# Configuración de caché con Redis
+# Cache con Redis
 CACHES = {
     'default': {
         'BACKEND': 'django_redis.cache.RedisCache',
-        'LOCATION': f'redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}',
+        'LOCATION': f'{REDIS_URL}/1',
         'OPTIONS': {
             'CLIENT_CLASS': 'django_redis.client.DefaultClient',
-            'PASSWORD': REDIS_PASSWORD,
-        }
-    }
-}
-
-# Configuración de base de datos para producción
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.contrib.gis.db.backends.postgis',
-        'NAME': os.environ.get('DB_NAME', 'mecanimovil'),
-        'USER': os.environ.get('DB_USER', 'mecanimovil'),
-        'PASSWORD': os.environ.get('DB_PASSWORD', ''),
-        'HOST': os.environ.get('DB_HOST', 'localhost'),
-        'PORT': os.environ.get('DB_PORT', '5432'),
-        'OPTIONS': {
-            'sslmode': 'require',
+            'IGNORE_EXCEPTIONS': True,
         },
+        'KEY_PREFIX': 'mecanimovil',
+        'TIMEOUT': 300,
     }
 }
 
-# Configuración de logging para producción
+# Celery con Redis
+CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', f'{REDIS_URL}/2')
+CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', f'{REDIS_URL}/2')
+
+# ============================================
+# CONFIGURACIÓN DE ARCHIVOS ESTÁTICOS
+# ============================================
+# WhiteNoise para servir archivos estáticos
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+
+# ============================================
+# CONFIGURACIÓN DE MERCADO PAGO
+# ============================================
+MERCADOPAGO_MODE = os.environ.get('MERCADOPAGO_MODE', 'production')
+MERCADOPAGO_ACCESS_TOKEN = os.environ.get('MERCADOPAGO_ACCESS_TOKEN', '')
+MERCADOPAGO_WEBHOOK_SECRET = os.environ.get('MERCADOPAGO_WEBHOOK_SECRET', '')
+MERCADOPAGO_PUBLIC_KEY_PROD = os.environ.get('MERCADOPAGO_PUBLIC_KEY_PROD', '')
+MERCADOPAGO_PUBLIC_KEY = MERCADOPAGO_PUBLIC_KEY_PROD
+
+# ============================================
+# CONFIGURACIÓN DE EMAIL
+# ============================================
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = os.environ.get('EMAIL_HOST', 'smtp.gmail.com')
+EMAIL_PORT = int(os.environ.get('EMAIL_PORT', 587))
+EMAIL_USE_TLS = True
+EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
+DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'noreply@mecanimovil.com')
+
+# ============================================
+# LOGGING PARA PRODUCCIÓN
+# ============================================
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
@@ -105,58 +152,48 @@ LOGGING = {
         },
     },
     'handlers': {
-        'file': {
-            'level': 'INFO',
-            'class': 'logging.FileHandler',
-            'filename': '/var/log/mecanimovil/django.log',
-            'formatter': 'verbose',
-        },
         'console': {
             'level': 'INFO',
             'class': 'logging.StreamHandler',
-            'formatter': 'simple',
+            'formatter': 'verbose',
         },
     },
     'loggers': {
         'django': {
-            'handlers': ['file', 'console'],
+            'handlers': ['console'],
             'level': 'INFO',
             'propagate': True,
         },
+        'django.request': {
+            'handlers': ['console'],
+            'level': 'WARNING',
+            'propagate': False,
+        },
         'channels': {
-            'handlers': ['file', 'console'],
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': True,
+        },
+        'celery': {
+            'handlers': ['console'],
             'level': 'INFO',
             'propagate': True,
         },
         'mecanimovilapp': {
-            'handlers': ['file', 'console'],
+            'handlers': ['console'],
             'level': 'INFO',
             'propagate': True,
         },
     },
 }
 
-# Configuración de archivos estáticos
-STATIC_ROOT = '/var/www/mecanimovil/static/'
-MEDIA_ROOT = '/var/www/mecanimovil/media/'
-
-# Configuración de email para producción
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = os.environ.get('EMAIL_HOST', 'smtp.gmail.com')
-EMAIL_PORT = int(os.environ.get('EMAIL_PORT', 587))
-EMAIL_USE_TLS = True
-EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
-EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
-
-# Configuración de Celery para producción (si se usa)
-CELERY_BROKER_URL = f'redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}'
-CELERY_RESULT_BACKEND = f'redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}'
-CELERY_ACCEPT_CONTENT = ['json']
-CELERY_TASK_SERIALIZER = 'json'
-CELERY_RESULT_SERIALIZER = 'json'
-CELERY_TIMEZONE = 'America/Santiago'
-
-# Configuración de seguridad adicional
-SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
-USE_X_FORWARDED_HOST = True
-USE_X_FORWARDED_PORT = True 
+# ============================================
+# OPTIMIZACIONES DE CELERY PARA PRODUCCIÓN
+# ============================================
+CELERY_WORKER_CONCURRENCY = int(os.environ.get('CELERY_WORKER_CONCURRENCY', 2))
+CELERY_WORKER_POOL = 'prefork'
+CELERY_TASK_COMPRESSION = 'gzip'
+CELERY_BROKER_POOL_LIMIT = 10
+CELERY_TASK_IGNORE_RESULT = False
+CELERY_TASK_STORE_EAGER_RESULT = True
+CELERY_TASK_ALWAYS_EAGER = False

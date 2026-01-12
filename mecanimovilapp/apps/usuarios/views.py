@@ -70,41 +70,78 @@ def custom_login(request):
         # Intentar autenticar con la función authenticate de Django 
         user_auth = authenticate(username=username_to_auth, password=password)
         
+        # Variable para determinar si la autenticación fue exitosa
+        autenticacion_exitosa = False
+        
         if user_auth is not None:
-            # Autenticación exitosa
+            autenticacion_exitosa = True
+        else:
+            # Si authenticate falló pero el usuario existe, verificar manualmente
+            if user.check_password(password):
+                autenticacion_exitosa = True
+        
+        if autenticacion_exitosa:
+            # CRÍTICO: Validar que el usuario NO sea un proveedor antes de permitir login
+            # Los proveedores solo pueden iniciar sesión en la app de proveedores, no en la app de usuarios
+            # Verificar si el usuario es proveedor usando múltiples indicadores
+            
+            es_proveedor = False
+            tipo_proveedor = None
+            
+            # PRIMERA VERIFICACIÓN: Verificar si el campo es_mecanico indica que es proveedor
+            if user.es_mecanico:
+                es_proveedor = True
+                logger.warning(f"⚠️ Intento de login de proveedor en app de usuarios rechazado (es_mecanico=True): {username}")
+            
+            # SEGUNDA VERIFICACIÓN: Verificar si tiene perfil de mecánico a domicilio
+            if not es_proveedor:
+                try:
+                    mecanico = MecanicoDomicilio.objects.get(usuario=user)
+                    es_proveedor = True
+                    tipo_proveedor = 'mecánico'
+                    logger.warning(f"⚠️ Intento de login de proveedor (mecánico) en app de usuarios rechazado: {username}")
+                except MecanicoDomicilio.DoesNotExist:
+                    pass
+            
+            # TERCERA VERIFICACIÓN: Verificar si tiene perfil de taller
+            if not es_proveedor:
+                try:
+                    taller = Taller.objects.get(usuario=user)
+                    es_proveedor = True
+                    tipo_proveedor = 'taller'
+                    logger.warning(f"⚠️ Intento de login de proveedor (taller) en app de usuarios rechazado: {username}")
+                except Taller.DoesNotExist:
+                    pass
+            
+            # Si el usuario es proveedor, rechazar el login con mensaje amigable
+            if es_proveedor:
+                logger.warning(f"❌ Login rechazado: Usuario {username} es proveedor ({tipo_proveedor or 'mecánico/taller'}) y no puede iniciar sesión en app de usuarios")
+                return Response(
+                    {
+                        'non_field_errors': ['Esta cuenta es de proveedor. Por favor, utiliza la aplicación de proveedores para iniciar sesión.']
+                    },
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            # Si llegamos aquí, el usuario NO es proveedor, continuar con el login normal
             # Obtener o crear token
             token, created = Token.objects.get_or_create(user=user)
             
             # Serializar usuario para respuesta
             user_data = UsuarioSerializer(user).data
             
-            logger.info(f"🔐 Login exitoso para usuario: {username}")
+            logger.info(f"✅ Login exitoso para cliente: {username}")
             
             return Response({
                 'token': token.key,
                 'user': user_data
             })
         else:
-            # Si authenticate falló pero el usuario existe, verificar manualmente
-            if user.check_password(password):
-                # Obtener o crear token
-                token, created = Token.objects.get_or_create(user=user)
-                
-                # Serializar usuario para respuesta
-                user_data = UsuarioSerializer(user).data
-                
-                logger.info(f"🔐 Login exitoso (método alternativo) para usuario: {username}")
-                
-                return Response({
-                    'token': token.key,
-                    'user': user_data
-                })
-            else:
-                logger.warning(f"🔐 Contraseña incorrecta para usuario: {username}")
-                return Response(
-                    {'non_field_errors': ['No puede iniciar sesión con las credenciales proporcionadas.']},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+            logger.warning(f"🔐 Contraseña incorrecta para usuario: {username}")
+            return Response(
+                {'non_field_errors': ['No puede iniciar sesión con las credenciales proporcionadas.']},
+                status=status.HTTP_400_BAD_REQUEST
+            )
             
     except Usuario.DoesNotExist:
         logger.warning(f"Intento de login con usuario inexistente: {username}")
@@ -118,6 +155,127 @@ def custom_login(request):
             {'error': f'Error de servidor: {str(e)}'},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+
+
+@api_view(['POST'])
+@permission_classes([permissions.AllowAny])
+def login_proveedor(request):
+    """
+    Vista de login exclusiva para proveedores (Talleres y Mecánicos a Domicilio).
+    Solo permite el acceso a usuarios que sean proveedores registrados.
+    Incluye email en la respuesta para mostrar en el perfil.
+    """
+    logger.info(f"🔐 login_proveedor llamado con método: {request.method}")
+    
+    username = request.data.get('username')
+    password = request.data.get('password')
+    
+    logger.info(f"🔐 Intento de login proveedor con usuario: {username}")
+    
+    if not username or not password:
+        return Response(
+            {'error': 'Se requiere nombre de usuario y contraseña'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    try:
+        # Intentar encontrar usuario por username o email
+        if '@' in username:
+            user = Usuario.objects.get(email=username)
+            username_to_auth = user.username
+        else:
+            user = Usuario.objects.get(username=username)
+            username_to_auth = username
+        
+        logger.info(f"🔐 Usuario encontrado: {user.username}")
+        
+        # Intentar autenticar
+        user_auth = authenticate(username=username_to_auth, password=password)
+        
+        autenticacion_exitosa = False
+        if user_auth is not None:
+            autenticacion_exitosa = True
+        else:
+            if user.check_password(password):
+                autenticacion_exitosa = True
+        
+        if autenticacion_exitosa:
+            # VALIDAR que el usuario SÍ sea un proveedor
+            es_proveedor = False
+            tipo_proveedor = None
+            
+            # Verificar si es mecánico a domicilio
+            try:
+                mecanico = MecanicoDomicilio.objects.get(usuario=user)
+                es_proveedor = True
+                tipo_proveedor = 'mecanico'
+                logger.info(f"✅ Usuario {username} es mecánico a domicilio")
+            except MecanicoDomicilio.DoesNotExist:
+                pass
+            
+            # Verificar si es taller
+            if not es_proveedor:
+                try:
+                    taller = Taller.objects.get(usuario=user)
+                    es_proveedor = True
+                    tipo_proveedor = 'taller'
+                    logger.info(f"✅ Usuario {username} es taller")
+                except Taller.DoesNotExist:
+                    pass
+            
+            # Si el usuario NO es proveedor, rechazar el login
+            if not es_proveedor:
+                logger.warning(f"❌ Login rechazado: Usuario {username} NO es proveedor")
+                return Response(
+                    {
+                        'non_field_errors': ['Esta cuenta no es de proveedor. Por favor, utiliza la aplicación de usuarios para iniciar sesión.']
+                    },
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            # Si llegamos aquí, el usuario ES proveedor, continuar con el login
+            token, created = Token.objects.get_or_create(user=user)
+            
+            # Construir respuesta con datos del usuario incluyendo email
+            user_data = {
+                'id': user.id,
+                'username': user.username,
+                'email': user.email,  # ✅ Incluir email explícitamente
+                'first_name': user.first_name,
+                'last_name': user.last_name,
+                'telefono': user.telefono,
+                'direccion': user.direccion,
+                'foto_perfil': user.foto_perfil.url if user.foto_perfil else None,
+                'es_mecanico': user.es_mecanico,
+                'tipo_proveedor': tipo_proveedor,
+            }
+            
+            logger.info(f"✅ Login exitoso para proveedor: {username} (email: {user.email})")
+            
+            return Response({
+                'token': token.key,
+                'user': user_data
+            })
+        else:
+            logger.warning(f"🔐 Contraseña incorrecta para usuario: {username}")
+            return Response(
+                {'non_field_errors': ['No puede iniciar sesión con las credenciales proporcionadas.']},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+            
+    except Usuario.DoesNotExist:
+        logger.warning(f"Intento de login con usuario inexistente: {username}")
+        return Response(
+            {'non_field_errors': ['No puede iniciar sesión con las credenciales proporcionadas.']},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    except Exception as e:
+        logger.error(f"Error en login proveedor: {str(e)}")
+        return Response(
+            {'error': f'Error de servidor: {str(e)}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
 
 class UsuarioViewSet(viewsets.ModelViewSet):
     """
@@ -139,7 +297,7 @@ class UsuarioViewSet(viewsets.ModelViewSet):
         """
         Crea un nuevo usuario estableciendo la contraseña correctamente
         """
-        logger.info(f"👤 Creando usuario - Data recibida: {{'username': {request.data.get('username')}, 'email': {request.data.get('email')}}}")
+        logger.info(f"👤 Creando usuario - Data recibida: username={request.data.get('username')}, email={request.data.get('email')}")
         
         try:
             serializer = self.get_serializer(data=request.data)
@@ -218,14 +376,23 @@ class UsuarioViewSet(viewsets.ModelViewSet):
             
         except ValidationError as e:
             logger.error(f"❌ Error de validación al crear usuario: {str(e)}")
+            error_details = str(e)
+            if hasattr(e, 'detail'):
+                error_details = e.detail
+            elif hasattr(e, 'message_dict'):
+                error_details = e.message_dict
             return Response(
-                {"error": "Datos de usuario inválidos", "details": str(e)},
+                {"error": "Datos de usuario inválidos", "details": error_details},
                 status=status.HTTP_400_BAD_REQUEST
             )
         except Exception as e:
             logger.error(f"❌ Error inesperado al crear usuario: {str(e)}", exc_info=True)
+            error_message = str(e)
+            # Si es un error de validación del serializer, extraer detalles
+            if hasattr(e, 'detail'):
+                error_message = str(e.detail)
             return Response(
-                {"error": f"Error interno del servidor: {str(e)}"},
+                {"error": f"Error interno del servidor: {error_message}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
@@ -1419,6 +1586,14 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
                     'error': 'No se encontró perfil de mecánico para este usuario'
                 }, status=status.HTTP_404_NOT_FOUND)
             
+            # Validar experiencia_anos si viene en el request
+            experiencia_raw = request.data.get('experiencia_anos')
+            if experiencia_raw is not None:
+                # Convertir a int si viene como string
+                if isinstance(experiencia_raw, str):
+                    experiencia_raw = int(experiencia_raw) if experiencia_raw.strip() else None
+                request.data['experiencia_anos'] = experiencia_raw
+            
             # Actualizar el mecánico con los datos proporcionados
             serializer = self.get_serializer(mecanico, data=request.data, partial=True)
             serializer.is_valid(raise_exception=True)
@@ -2096,10 +2271,11 @@ def inicializar_onboarding(request):
                 mecanico = usuario.mecanico_domicilio
                 
                 # Actualizar mecánico con datos del request
+                experiencia_raw = request.data.get('experiencia_anos', mecanico.experiencia_anos)
                 mecanico.nombre = request.data.get('nombre', mecanico.nombre)
                 mecanico.telefono = request.data.get('telefono', mecanico.telefono)
                 mecanico.dni = request.data.get('dni', mecanico.dni)
-                mecanico.experiencia_anos = request.data.get('experiencia_anos', mecanico.experiencia_anos)
+                mecanico.experiencia_anos = experiencia_raw if isinstance(experiencia_raw, int) else (int(experiencia_raw) if experiencia_raw and str(experiencia_raw).strip() else mecanico.experiencia_anos)
                 mecanico.descripcion = request.data.get('descripcion', mecanico.descripcion)
                 mecanico.onboarding_iniciado = True
                 mecanico.save()
@@ -2112,12 +2288,14 @@ def inicializar_onboarding(request):
                 })
             else:
                 # Crear mecánico básico con datos del request
+                experiencia_raw = request.data.get('experiencia_anos', 0)
+                experiencia_final = experiencia_raw if isinstance(experiencia_raw, int) else (int(experiencia_raw) if experiencia_raw and str(experiencia_raw).strip() else 0)
                 mecanico = MecanicoDomicilio.objects.create(
                     usuario=usuario,
                     nombre=request.data.get('nombre', f"{usuario.first_name} {usuario.last_name}".strip() or usuario.username),
                     telefono=request.data.get('telefono', usuario.telefono or ''),
                     dni=request.data.get('dni', ''),
-                    experiencia_anos=request.data.get('experiencia_anos', 0),
+                    experiencia_anos=experiencia_final,
                     descripcion=request.data.get('descripcion', f"Mecánico a domicilio"),
                     ubicacion=Point(-70.6693, -33.4489),  # Santiago por defecto
                     onboarding_iniciado=True
@@ -2131,10 +2309,24 @@ def inicializar_onboarding(request):
                 })
                 
     except Exception as e:
+        error_message = str(e)
         print(f"   ❌ Error en inicializar_onboarding: {str(e)}")
-        logger.error(f"Error al inicializar onboarding: {str(e)}")
+        logger.error(f"Error al inicializar onboarding: {str(e)}", exc_info=True)
+        # Si es un error de integridad, proporcionar mensaje más claro
+        if 'unique constraint' in error_message.lower() or 'duplicate key' in error_message.lower() or isinstance(e, IntegrityError):
+            if 'taller' in error_message.lower() or tipo_proveedor == 'taller':
+                return Response({
+                    'error': 'Ya existe un taller asociado a este usuario',
+                    'codigo': 'TALLER_DUPLICADO'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            elif 'mecanico' in error_message.lower() or 'mecánico' in error_message.lower() or tipo_proveedor == 'mecanico':
+                return Response({
+                    'error': 'Ya existe un mecánico asociado a este usuario',
+                    'codigo': 'MECANICO_DUPLICADO'
+                }, status=status.HTTP_400_BAD_REQUEST)
         return Response({
-            'error': f'Error al inicializar onboarding: {str(e)}'
+            'error': f'Error al inicializar onboarding: {error_message}',
+            'details': str(e) if str(e) != error_message else None
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
@@ -2654,7 +2846,8 @@ def completar_onboarding(request):
     if tipo_proveedor == 'mecanico':
         if not proveedor.dni:
             errores.append('DNI es requerido para mecánicos')
-        if not proveedor.experiencia_anos:
+        experiencia_anos = getattr(proveedor, 'experiencia_anos', None)
+        if not experiencia_anos and experiencia_anos != 0:
             errores.append('Años de experiencia son requeridos para mecánicos')
     
     # Validar que tenga al menos un documento básico (OPCIONAL)
@@ -2682,12 +2875,18 @@ def completar_onboarding(request):
         print(f"📋 {tipo_proveedor} {proveedor.nombre} completó onboarding - quedará pendiente de revisión manual")
         
         # 🎯 NUEVO: Crear ofertas automáticas basadas en especialidades
-        if proveedor.especialidades.count() > 0:
-            print(f"🔧 Creando ofertas automáticas para {proveedor.nombre}...")
-            ofertas_creadas = crear_ofertas_automaticas(proveedor, tipo_proveedor)
-            print(f"✅ {ofertas_creadas} ofertas automáticas creadas para {proveedor.nombre}")
-        else:
-            print(f"⚠️ {proveedor.nombre} no tiene especialidades - sin ofertas automáticas")
+        ofertas_creadas = 0
+        try:
+            if proveedor.especialidades.count() > 0:
+                print(f"🔧 Creando ofertas automáticas para {proveedor.nombre}...")
+                ofertas_creadas = crear_ofertas_automaticas(proveedor, tipo_proveedor)
+                print(f"✅ {ofertas_creadas} ofertas automáticas creadas para {proveedor.nombre}")
+            else:
+                print(f"⚠️ {proveedor.nombre} no tiene especialidades - sin ofertas automáticas")
+        except Exception as e:
+            # No fallar el onboarding si hay error creando ofertas automáticas
+            logger.warning(f"⚠️ Error creando ofertas automáticas para {proveedor.nombre}: {str(e)}")
+            print(f"⚠️ Error creando ofertas automáticas (no crítico): {str(e)}")
         
         # Verificar datos para mensaje informativo al usuario
         puede_verificar_automaticamente = True
@@ -2733,8 +2932,16 @@ def completar_onboarding(request):
         })
         
     except Exception as e:
+        logger.error(f"❌ Error al completar onboarding: {str(e)}", exc_info=True)
+        error_message = str(e)
+        # Proporcionar mensajes de error más específicos
+        if 'IntegrityError' in str(type(e)) or isinstance(e, IntegrityError):
+            error_message = 'Error de integridad en la base de datos. Por favor, verifica los datos.'
+        elif 'ValidationError' in str(type(e)) or isinstance(e, ValidationError):
+            error_message = f'Error de validación: {str(e)}'
         return Response({
-            'error': f'Error al completar onboarding: {str(e)}'
+            'error': f'Error al completar onboarding: {error_message}',
+            'details': str(e) if str(e) != error_message else None
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 

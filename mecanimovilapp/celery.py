@@ -1,5 +1,10 @@
 """
 Configuración de Celery para tareas asíncronas
+Optimizado para prevenir sobrecarga de memoria mediante:
+- Colas separadas para tareas pesadas
+- Límites de workers y memoria
+- Prefetch limit para evitar acumulación de tareas
+- Timeouts para evitar tareas infinitas
 """
 import os
 from celery import Celery
@@ -14,6 +19,52 @@ app = Celery('mecanimovilapp')
 # Cargar configuración desde settings de Django
 app.config_from_object('django.conf:settings', namespace='CELERY')
 
+# ============================================
+# CONFIGURACIÓN DE COLAS SEPARADAS
+# ============================================
+# Separar tareas pesadas de tareas ligeras para mejor gestión de recursos
+app.conf.task_routes = {
+    # Tareas pesadas van a la cola 'heavy'
+    'mecanimovilapp.apps.vehiculos.tasks.procesar_checklists_historicos_batch': {'queue': 'heavy'},
+    'mecanimovilapp.apps.vehiculos.tasks.procesar_checklists_historicos_vehiculo': {'queue': 'heavy'},
+    'mecanimovilapp.apps.vehiculos.tasks.recalcular_salud_vehiculos_batch': {'queue': 'heavy'},
+    # Tareas ligeras van a la cola 'default' (o se puede omitir)
+    'mecanimovilapp.apps.vehiculos.tasks.calcular_salud_vehiculo_async': {'queue': 'default'},
+    'mecanimovilapp.apps.vehiculos.tasks.actualizar_salud_desde_checklist': {'queue': 'default'},
+}
+
+# ============================================
+# OPTIMIZACIONES DE MEMORIA Y RENDIMIENTO
+# ============================================
+# Prefetch limit: reduce el número de tareas pre-fetchadas por worker
+# Esto previene que los workers carguen muchas tareas en memoria
+# Valor recomendado: 1-4 para tareas pesadas, 4-8 para tareas ligeras
+app.conf.worker_prefetch_multiplier = 4  # Cada worker pre-fetcha máximo 4 tareas
+
+# Worker max tasks per child: reinicia workers después de N tareas
+# Esto previene memory leaks acumulativos
+# Valor recomendado: 50-100 tareas antes de reiniciar el worker
+app.conf.worker_max_tasks_per_child = 100
+
+# Worker max memory per child: reinicia worker si excede memoria (en KB)
+# Previene workers que consumen demasiada memoria
+# Valor recomendado: 512MB = 512000 KB (ajustar según tu servidor)
+app.conf.worker_max_memory_per_child = 512000  # 512 MB
+
+# Task time limits: previene tareas infinitas
+app.conf.task_soft_time_limit = 300  # 5 minutos - lanza SoftTimeLimitExceeded
+app.conf.task_time_limit = 600  # 10 minutos - mata el worker si excede
+
+# Result expiration: limpia resultados antiguos automáticamente
+app.conf.result_expires = 3600  # 1 hora
+
+# Task acknowledge late: solo confirma tarea cuando termina (no cuando la recibe)
+# Previene pérdida de tareas si worker muere
+app.conf.task_acks_late = True
+
+# Task reject on worker lost: reintenta tareas si el worker muere
+app.conf.task_reject_on_worker_lost = True
+
 # Autodescubrir tareas en todas las apps instaladas
 app.autodiscover_tasks()
 
@@ -24,6 +75,7 @@ app.conf.beat_schedule = {
     'recalcular-salud-vehiculos': {
         'task': 'mecanimovilapp.apps.vehiculos.tasks.recalcular_salud_vehiculos_batch',
         'schedule': crontab(hour='*/6', minute=0),  # Cada 6 horas
+        'options': {'queue': 'heavy'},  # Asignar a cola heavy
     },
 }
 

@@ -702,6 +702,152 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
                 status=500
             )
 
+    @action(detail=False, methods=['get'])
+    def para_solicitud(self, request):
+        """
+        Obtiene el servicio configurado del proveedor para una solicitud específica.
+        Busca OfertaServicio que coincida con el servicio solicitado y la marca del vehículo.
+        
+        Parámetros:
+        - solicitud_id: UUID de la solicitud pública
+        - servicio_id: ID del servicio solicitado
+        
+        Retorna el servicio configurado con toda la información (repuestos, precios, tipo)
+        o null si no existe un servicio configurado para esa combinación.
+        """
+        from mecanimovilapp.apps.ordenes.models import SolicitudServicioPublica
+        from django.shortcuts import get_object_or_404
+        
+        try:
+            import logging
+            logger = logging.getLogger(__name__)
+            
+            solicitud_id = request.query_params.get('solicitud_id')
+            servicio_id_str = request.query_params.get('servicio_id')
+            
+            if not solicitud_id or not servicio_id_str:
+                return Response(
+                    {'error': 'Debe especificar solicitud_id y servicio_id'},
+                    status=400
+                )
+            
+            # Convertir servicio_id a entero
+            try:
+                servicio_id = int(servicio_id_str)
+            except (ValueError, TypeError):
+                logger.error(f'Error: servicio_id no es un número válido: {servicio_id_str}')
+                return Response(
+                    {'error': f'servicio_id debe ser un número válido, recibido: {servicio_id_str}'},
+                    status=400
+                )
+            
+            logger.info(f'🔍 Buscando servicio configurado - solicitud_id: {solicitud_id}, servicio_id: {servicio_id}, usuario: {request.user.username}')
+            
+            # Obtener la solicitud y validar que existe
+            try:
+                solicitud = SolicitudServicioPublica.objects.select_related(
+                    'vehiculo', 'vehiculo__marca'
+                ).get(id=solicitud_id)
+            except SolicitudServicioPublica.DoesNotExist:
+                logger.error(f'❌ Solicitud no encontrada: {solicitud_id}')
+                return Response(
+                    {'error': 'Solicitud no encontrada'},
+                    status=404
+                )
+            
+            # Obtener la marca del vehículo
+            marca_vehiculo = solicitud.vehiculo.marca if solicitud.vehiculo and solicitud.vehiculo.marca else None
+            
+            if not marca_vehiculo:
+                logger.error(f'❌ El vehículo de la solicitud no tiene marca asociada')
+                return Response(
+                    {'error': 'El vehículo de la solicitud no tiene marca asociada'},
+                    status=400
+                )
+            
+            logger.info(f'📋 Solicitud encontrada - Vehículo: {solicitud.vehiculo.modelo if solicitud.vehiculo else "N/A"}, Marca: {marca_vehiculo.nombre} (ID: {marca_vehiculo.id})')
+            
+            # Obtener información del proveedor autenticado
+            proveedor_data = self._get_proveedor_data(request.user)
+            if not proveedor_data['proveedor']:
+                logger.error(f'❌ No se encontró información del proveedor para usuario: {request.user.username}')
+                return Response(
+                    {'error': 'No se encontró información del proveedor'},
+                    status=404
+                )
+            
+            proveedor = proveedor_data['proveedor']
+            logger.info(f'👤 Proveedor: {proveedor.nombre if hasattr(proveedor, "nombre") else "N/A"} (Tipo: {proveedor_data["tipo"]})')
+            
+            # Buscar OfertaServicio que coincida:
+            # 1. Servicio solicitado
+            # 2. Marca del vehículo (o NULL para servicios genéricos)
+            # 3. Proveedor autenticado
+            
+            queryset = self.get_queryset()
+            total_ofertas = queryset.count()
+            logger.info(f'📊 Total de ofertas del proveedor: {total_ofertas}')
+            
+            # Log de todas las ofertas del proveedor para debug
+            todas_ofertas = queryset.values('id', 'servicio_id', 'servicio__nombre', 'marca_vehiculo_seleccionada_id', 'marca_vehiculo_seleccionada__nombre')
+            logger.info(f'📋 Ofertas del proveedor: {list(todas_ofertas)}')
+            
+            # Buscar primero por marca específica
+            oferta_servicio = queryset.filter(
+                servicio_id=servicio_id,
+                marca_vehiculo_seleccionada=marca_vehiculo
+            ).select_related(
+                'servicio', 'marca_vehiculo_seleccionada'
+            ).prefetch_related(
+                'servicio__categorias'
+            ).first()
+            
+            logger.info(f'🔎 Búsqueda por marca específica ({marca_vehiculo.id}): {"✅ Encontrado" if oferta_servicio else "❌ No encontrado"}')
+            
+            # Si no se encuentra, buscar servicio genérico (sin marca específica)
+            if not oferta_servicio:
+                oferta_servicio = queryset.filter(
+                    servicio_id=servicio_id,
+                    marca_vehiculo_seleccionada__isnull=True
+                ).select_related(
+                    'servicio'
+                ).prefetch_related(
+                    'servicio__categorias'
+                ).first()
+                
+                logger.info(f'🔎 Búsqueda genérica (sin marca): {"✅ Encontrado" if oferta_servicio else "❌ No encontrado"}')
+            
+            # Si no se encuentra ningún servicio configurado, retornar null con información de debug
+            if not oferta_servicio:
+                logger.warning(f'⚠️ No se encontró servicio configurado - servicio_id: {servicio_id}, marca_id: {marca_vehiculo.id}')
+                return Response({
+                    'servicio_configurado': None,
+                    'mensaje': 'No se encontró un servicio configurado para esta combinación',
+                    'debug_info': {
+                        'servicio_id_buscado': servicio_id,
+                        'marca_id_buscada': marca_vehiculo.id,
+                        'marca_nombre': marca_vehiculo.nombre,
+                        'total_ofertas_proveedor': total_ofertas,
+                        'ofertas_disponibles': list(todas_ofertas)
+                    }
+                })
+            
+            # Serializar el servicio configurado
+            serializer = self.get_serializer(oferta_servicio)
+            return Response({
+                'servicio_configurado': serializer.data,
+                'mensaje': 'Servicio configurado encontrado'
+            })
+            
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f'Error obteniendo servicio para solicitud: {str(e)}', exc_info=True)
+            return Response(
+                {'error': f'Error obteniendo servicio configurado: {str(e)}'},
+                status=500
+            )
+
 
 class RepuestoViewSet(viewsets.ReadOnlyModelViewSet):
     """

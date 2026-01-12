@@ -214,14 +214,24 @@ redirect_stderr=true
 stdout_logfile=$LOG_DIR/daphne.log
 environment=DJANGO_SETTINGS_MODULE="mecanimovilapp.settings_production"
 
-[program:mecanimovil_celery]
-command=$VENV_DIR/bin/celery -A mecanimovilapp worker --loglevel=info
+[program:mecanimovil_celery_default]
+command=$VENV_DIR/bin/celery -A mecanimovilapp worker --loglevel=info --queues=default --concurrency=4 --max-tasks-per-child=100 --max-memory-per-child=512000 --prefetch-multiplier=4 --hostname=worker-default@%h
 directory=$BACKEND_DIR
 user=www-data
 autostart=true
 autorestart=true
 redirect_stderr=true
-stdout_logfile=$LOG_DIR/celery.log
+stdout_logfile=$LOG_DIR/celery_default.log
+environment=DJANGO_SETTINGS_MODULE="mecanimovilapp.settings_production"
+
+[program:mecanimovil_celery_heavy]
+command=$VENV_DIR/bin/celery -A mecanimovilapp worker --loglevel=info --queues=heavy --concurrency=2 --max-tasks-per-child=50 --max-memory-per-child=512000 --prefetch-multiplier=2 --hostname=worker-heavy@%h
+directory=$BACKEND_DIR
+user=www-data
+autostart=true
+autorestart=true
+redirect_stderr=true
+stdout_logfile=$LOG_DIR/celery_heavy.log
 environment=DJANGO_SETTINGS_MODULE="mecanimovilapp.settings_production"
 
 [program:mecanimovil_celery_beat]
@@ -243,10 +253,13 @@ EOF
     supervisorctl reread
     supervisorctl update
     supervisorctl start mecanimovil_backend
-    supervisorctl start mecanimovil_celery
+    supervisorctl start mecanimovil_celery_default
+    supervisorctl start mecanimovil_celery_heavy
     supervisorctl start mecanimovil_celery_beat
     
-    print_status "Supervisor configurado"
+    print_status "Supervisor configurado con workers optimizados"
+    print_status "  - Worker 'default': 4 procesos, tareas ligeras"
+    print_status "  - Worker 'heavy': 2 procesos, tareas pesadas"
 }
 
 # Función para configurar SSL

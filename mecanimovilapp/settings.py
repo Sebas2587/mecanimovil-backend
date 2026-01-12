@@ -14,6 +14,7 @@ from pathlib import Path
 import os
 import warnings
 from decouple import config
+import dj_database_url
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -23,10 +24,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-k#t34sc+!o_g&y#d^f-jxfh%7u*6ya!rco%v8!c6(0ot8*6u@^'
+# En producción, usar variable de entorno SECRET_KEY
+SECRET_KEY = config('SECRET_KEY', default='django-insecure-k#t34sc+!o_g&y#d^f-jxfh%7u*6ya!rco%v8!c6(0ot8*6u@^')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = config('DEBUG', default=True, cast=bool)
 
 # Suprimir warnings conocidos en desarrollo
 # El warning de pkg_resources viene de coreapi (dependencia transitiva de djangorestframework)
@@ -35,12 +37,14 @@ if DEBUG:
     warnings.filterwarnings('ignore', message='.*pkg_resources is deprecated.*', category=UserWarning)
     warnings.filterwarnings('ignore', message='.*The pkg_resources package is slated for removal.*', category=UserWarning)
 
-# Para desarrollo: permitir cualquier IP local de la red
-if DEBUG:
-    ALLOWED_HOSTS = ['*']  # Solo para desarrollo local
-else:
-    # Para producción: especificar dominios exactos
-    ALLOWED_HOSTS = ['api.mecanimovil.com', 'mecanimovil.com', 'www.mecanimovil.com']
+# Configuración de hosts permitidos
+# Soporta lista separada por comas desde variable de entorno
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='*' if DEBUG else '').split(',')
+# Limpiar espacios y valores vacíos
+ALLOWED_HOSTS = [host.strip() for host in ALLOWED_HOSTS if host.strip()]
+# En desarrollo, permitir todo si no hay hosts configurados
+if DEBUG and not ALLOWED_HOSTS:
+    ALLOWED_HOSTS = ['*']
 
 
 # Application definition
@@ -68,6 +72,7 @@ INSTALLED_APPS = [
     'mecanimovilapp.apps.personalizacion',  # Nueva app de personalización
     'mecanimovilapp.apps.checklists',  # App de checklist correctamente ubicada
     'mecanimovilapp.apps.pagos',  # App de pagos con Mercado Pago
+    'mecanimovilapp.apps.suscripciones',  # App de suscripciones freemium + planes
 ]
 
 # Configuración del modelo de usuario personalizado
@@ -75,6 +80,7 @@ AUTH_USER_MODEL = 'usuarios.Usuario'
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',  # Servir archivos estáticos en producción
     'django.contrib.sessions.middleware.SessionMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -108,38 +114,39 @@ WSGI_APPLICATION = 'mecanimovilapp.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
-# Configuración para PostgreSQL con PostGIS (ahora activa)
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.contrib.gis.db.backends.postgis',
-        'NAME': 'mecanimovil',
-        'USER': 'sebastianm',  # Usuario específico
-        'PASSWORD': '',  # Contraseña vacía para desarrollo local
-        'HOST': 'localhost',
-        'PORT': '5432',
+# Configuración de base de datos
+# Usa DATABASE_URL si está disponible (producción), sino usa configuración local
+DATABASE_URL = config('DATABASE_URL', default=None)
+
+if DATABASE_URL:
+    # Producción: usar DATABASE_URL con PostGIS
+    DATABASES = {
+        'default': dj_database_url.config(
+            default=DATABASE_URL,
+            engine='django.contrib.gis.db.backends.postgis',
+            conn_max_age=600,  # Conexiones persistentes
+            conn_health_checks=True,
+        )
     }
-}
+else:
+    # Desarrollo local: PostgreSQL con PostGIS
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.contrib.gis.db.backends.postgis',
+            'NAME': config('DB_NAME', default='mecanimovil'),
+            'USER': config('DB_USER', default='sebastianm'),
+            'PASSWORD': config('DB_PASSWORD', default=''),
+            'HOST': config('DB_HOST', default='localhost'),
+            'PORT': config('DB_PORT', default='5432'),
+        }
+    }
 
-# Configuración con SQLite estándar (para desarrollo sin GIS)
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.sqlite3',
-#         'NAME': BASE_DIR / 'db.sqlite3',
-#     }
-# }
-
-# Configuración para desarrollo con GeoDjango/SpatiaLite
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.contrib.gis.db.backends.spatialite',
-#         'NAME': BASE_DIR / 'db.sqlite3',
-#     }
-# }
-
-# Rutas a las bibliotecas espaciales (necesarias para SpatiaLite/GDAL)
-SPATIALITE_LIBRARY_PATH = '/opt/homebrew/lib/mod_spatialite.dylib'
-GDAL_LIBRARY_PATH = '/opt/homebrew/lib/libgdal.dylib'
-GEOS_LIBRARY_PATH = '/opt/homebrew/lib/libgeos_c.dylib'
+# Rutas a las bibliotecas espaciales (necesarias para SpatiaLite/GDAL en desarrollo local)
+# En producción (Render), estas se configuran automáticamente
+if DEBUG:
+    SPATIALITE_LIBRARY_PATH = '/opt/homebrew/lib/mod_spatialite.dylib'
+    GDAL_LIBRARY_PATH = '/opt/homebrew/lib/libgdal.dylib'
+    GEOS_LIBRARY_PATH = '/opt/homebrew/lib/libgeos_c.dylib'
 
 
 # Password validation
@@ -199,34 +206,71 @@ STATIC_URL = '/static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 
 # Directorios adicionales para archivos estáticos
-STATICFILES_DIRS = [
-    os.path.join(BASE_DIR, 'static'),
-]
+# Solo agregar si el directorio existe (evita errores en producción)
+_static_dir = os.path.join(BASE_DIR, 'static')
+if os.path.exists(_static_dir):
+    STATICFILES_DIRS = [_static_dir]
+else:
+    STATICFILES_DIRS = []
 
-# Configuración para servir archivos estáticos en desarrollo
-if DEBUG:
-    STATICFILES_FINDERS = [
-        'django.contrib.staticfiles.finders.FileSystemFinder',
-        'django.contrib.staticfiles.finders.AppDirectoriesFinder',
-    ]
+# Configuración de WhiteNoise para archivos estáticos en producción
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+
+STATICFILES_FINDERS = [
+    'django.contrib.staticfiles.finders.FileSystemFinder',
+    'django.contrib.staticfiles.finders.AppDirectoriesFinder',
+]
 
 # Media files (uploads)
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+
+# Configuración de almacenamiento en la nube (S3) para producción
+# Descomentar y configurar cuando se use S3 para archivos media
+# if not DEBUG:
+#     DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
+#     AWS_ACCESS_KEY_ID = config('AWS_ACCESS_KEY_ID', default='')
+#     AWS_SECRET_ACCESS_KEY = config('AWS_SECRET_ACCESS_KEY', default='')
+#     AWS_STORAGE_BUCKET_NAME = config('AWS_STORAGE_BUCKET_NAME', default='mecanimovil-media')
+#     AWS_S3_REGION_NAME = config('AWS_S3_REGION_NAME', default='us-east-1')
+#     AWS_S3_FILE_OVERWRITE = False
+#     AWS_DEFAULT_ACL = None
+#     AWS_S3_CUSTOM_DOMAIN = f'{AWS_STORAGE_BUCKET_NAME}.s3.amazonaws.com'
+#     MEDIA_URL = f'https://{AWS_S3_CUSTOM_DOMAIN}/'
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# Configuración de CORS para desarrollo
-CORS_ALLOW_ALL_ORIGINS = True
+# Configuración de CORS
+if DEBUG:
+    # Desarrollo: permitir todos los orígenes
+    CORS_ALLOW_ALL_ORIGINS = True
+else:
+    # Producción: solo orígenes permitidos
+    CORS_ALLOW_ALL_ORIGINS = False
+    CORS_ALLOWED_ORIGINS = config(
+        'CORS_ALLOWED_ORIGINS',
+        default='https://mecanimovilapp.com,https://app.mecanimovil.com'
+    ).split(',')
+    CORS_ALLOWED_ORIGINS = [origin.strip() for origin in CORS_ALLOWED_ORIGINS if origin.strip()]
 
-# Configuración de CORS para producción
-# CORS_ALLOW_ALL_ORIGINS = False
-# CORS_ALLOWED_ORIGINS = [
-#     "https://mecanimovilapp.com",
-# ]
+# Headers permitidos para CORS
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
+]
+
+# Permitir credenciales en CORS
+CORS_ALLOW_CREDENTIALS = True
 
 # Admin site configuration
 ADMIN_SITE_HEADER = "MecaniMovil Admin"
@@ -236,17 +280,38 @@ ADMIN_SITE_INDEX_TITLE = "Bienvenido al portal de administración de MecaniMovil
 # Configuración para almacenamiento de archivos
 FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10 MB
 
+# ============================================
+# CONFIGURACIÓN DE REDIS
+# ============================================
+# Usa REDIS_URL si está disponible (producción), sino usa localhost
+REDIS_URL = config('REDIS_URL', default='redis://127.0.0.1:6379')
+
 # Configuración de Django Channels
 ASGI_APPLICATION = 'mecanimovilapp.asgi.application'
 
 # Configuración de canales para WebSockets
-CHANNEL_LAYERS = {
-    'default': {
-        'BACKEND': 'channels.layers.InMemoryChannelLayer',
-    },
-}
+# En producción usa Redis, en desarrollo usa InMemoryChannelLayer
+if DEBUG:
+    CHANNEL_LAYERS = {
+        'default': {
+            'BACKEND': 'channels.layers.InMemoryChannelLayer',
+        },
+    }
+else:
+    CHANNEL_LAYERS = {
+        'default': {
+            'BACKEND': 'channels_redis.core.RedisChannelLayer',
+            'CONFIG': {
+                "hosts": [REDIS_URL],
+                "capacity": 1500,
+                "expiry": 10,
+            },
+        },
+    }
 
-# Configuración de Mercado Pago Checkout Pro
+# ============================================
+# CONFIGURACIÓN DE MERCADO PAGO
+# ============================================
 MERCADOPAGO_ACCESS_TOKEN = config('MERCADOPAGO_ACCESS_TOKEN', default='APP_USR-8802724849942781-110307-59fe720c1df9cf8be417c6acee855ee7-2959448913')
 MERCADOPAGO_MODE = config('MERCADOPAGO_MODE', default='test')  # 'test' o 'production'
 MERCADOPAGO_WEBHOOK_SECRET = config('MERCADOPAGO_WEBHOOK_SECRET', default='a7934fae72aca801d2bd08aeaa79b0d650c7900c0def8aa559583934d9de44ee')
@@ -261,14 +326,17 @@ if MERCADOPAGO_MODE == 'production':
 else:
     MERCADOPAGO_PUBLIC_KEY = MERCADOPAGO_PUBLIC_KEY_TEST
 
-# Configuración de Cache con Redis (DB 1, diferente a WebSockets)
+# ============================================
+# CONFIGURACIÓN DE CACHE CON REDIS
+# ============================================
+# Configuración de Cache con Redis
 # Si django-redis no está disponible, usar cache local en memoria
 try:
     import django_redis
     CACHES = {
         'default': {
             'BACKEND': 'django_redis.cache.RedisCache',
-            'LOCATION': 'redis://127.0.0.1:6379/1',  # DB diferente a WebSockets
+            'LOCATION': f'{REDIS_URL}/1',  # DB 1 para cache
             'OPTIONS': {
                 'CLIENT_CLASS': 'django_redis.client.DefaultClient',
                 'COMPRESSOR': 'django_redis.compressors.zlib.ZlibCompressor',
@@ -288,12 +356,112 @@ except ImportError:
         }
     }
 
-# Configuración de Celery (DB 2 para resultados)
-CELERY_BROKER_URL = 'redis://127.0.0.1:6379/2'
-CELERY_RESULT_BACKEND = 'redis://127.0.0.1:6379/2'
+# Configuración de Celery
+CELERY_BROKER_URL = config('CELERY_BROKER_URL', default=f'{REDIS_URL}/2')
+CELERY_RESULT_BACKEND = config('CELERY_RESULT_BACKEND', default=f'{REDIS_URL}/2')
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_ALWAYS_EAGER = False  # IMPORTANTE: usar async, no ejecutar sincrónicamente
 CELERY_TASK_EAGER_PROPAGATES = True
+
+# ============================================
+# OPTIMIZACIONES ADICIONALES DE CELERY
+# ============================================
+# Worker concurrency: número de procesos worker por instancia
+# Valor recomendado: 2-4 para desarrollo, CPU cores - 1 para producción
+# Por defecto usa número de CPUs, lo cual puede ser demasiado
+CELERY_WORKER_CONCURRENCY = 4  # Máximo 4 workers por instancia
+
+# Pool: tipo de pool de workers
+# 'prefork' es el default y funciona bien para la mayoría de casos
+CELERY_WORKER_POOL = 'prefork'
+
+# Task compression: comprimir mensajes grandes
+CELERY_TASK_COMPRESSION = 'gzip'
+
+# Broker connection pool limit: limitar conexiones a Redis
+CELERY_BROKER_POOL_LIMIT = 10
+
+# Task ignore result: no guardar resultados si no se necesitan (ahorra memoria)
+# Se puede configurar por tarea, aquí es el default
+CELERY_TASK_IGNORE_RESULT = False  # Mantener True si necesitas resultados
+
+# Task store eager result: guardar resultados incluso en modo eager
+CELERY_TASK_STORE_EAGER_RESULT = True
+
+# ============================================
+# CONFIGURACIÓN DE SEGURIDAD PARA PRODUCCIÓN
+# ============================================
+if not DEBUG:
+    # HTTPS
+    SECURE_SSL_REDIRECT = config('SECURE_SSL_REDIRECT', default=True, cast=bool)
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    
+    # HSTS (HTTP Strict Transport Security)
+    SECURE_HSTS_SECONDS = 31536000  # 1 año
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+    
+    # Cookies seguras
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SESSION_COOKIE_HTTPONLY = True
+    CSRF_COOKIE_HTTPONLY = True
+    
+    # Protección adicional
+    SECURE_BROWSER_XSS_FILTER = True
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    X_FRAME_OPTIONS = 'DENY'
+    
+    # Proxy headers (para Render y otros servicios)
+    USE_X_FORWARDED_HOST = True
+    USE_X_FORWARDED_PORT = True
+
+# ============================================
+# LOGGING
+# ============================================
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {message}',
+            'style': '{',
+        },
+        'simple': {
+            'format': '{levelname} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'level': 'INFO',
+            'class': 'logging.StreamHandler',
+            'formatter': 'simple',
+        },
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': True,
+        },
+        'channels': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': True,
+        },
+        'celery': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': True,
+        },
+        'mecanimovilapp': {
+            'handlers': ['console'],
+            'level': 'DEBUG' if DEBUG else 'INFO',
+            'propagate': True,
+        },
+    },
+}

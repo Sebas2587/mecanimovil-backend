@@ -138,6 +138,7 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
     """
     servicio_info = serializers.SerializerMethodField(read_only=True)
     repuestos_info = serializers.SerializerMethodField(read_only=True)
+    repuestos_info_detallado = serializers.SerializerMethodField(read_only=True)
     desglose_precios = serializers.SerializerMethodField(read_only=True)
     marca_vehiculo_info = serializers.SerializerMethodField(read_only=True)
     
@@ -147,7 +148,7 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
             'id', 'servicio', 'servicio_info', 'marca_vehiculo_seleccionada', 'marca_vehiculo_info',
             'disponible', 'duracion_estimada', 'incluye_garantia', 'duracion_garantia', 'detalles_adicionales',
             # Campos específicos para proveedores
-            'tipo_servicio', 'repuestos_seleccionados', 'repuestos_info',
+            'tipo_servicio', 'repuestos_seleccionados', 'repuestos_info', 'repuestos_info_detallado',
             'costo_mano_de_obra_sin_iva', 'costo_repuestos_sin_iva', 'fotos_urls',
             'precio_publicado_cliente', 'comision_mecanmovil', 'iva_sobre_comision', 
             'ganancia_neta_proveedor', 'desglose_precios',
@@ -189,6 +190,47 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
                 repuestos = Repuesto.objects.filter(id__in=repuestos_ids)
                 return RepuestoSerializer(repuestos, many=True).data
         return []
+    
+    def get_repuestos_info_detallado(self, obj):
+        """
+        Retorna información detallada de los repuestos seleccionados incluyendo cantidad estimada y precio personalizado.
+        Este campo es específico para usar en la creación de ofertas desde solicitudes.
+        """
+        if not obj.repuestos_seleccionados:
+            return []
+        
+        repuestos_detallados = []
+        
+        # Procesar cada repuesto seleccionado
+        for repuesto_data in obj.repuestos_seleccionados:
+            repuesto_id = repuesto_data.get('id')
+            cantidad_estimada = repuesto_data.get('cantidad', 1)  # Cantidad por defecto es 1
+            precio_personalizado = repuesto_data.get('precio')  # Precio personalizado del proveedor
+            
+            if repuesto_id:
+                try:
+                    repuesto = Repuesto.objects.get(id=repuesto_id)
+                    repuesto_info = {
+                        'id': repuesto.id,
+                        'nombre': repuesto.nombre,
+                        'descripcion': repuesto.descripcion or '',
+                        'precio_referencia': float(repuesto.precio_referencia) if repuesto.precio_referencia else 0.0,
+                        'cantidad_estimada': cantidad_estimada,
+                        'marca': repuesto.marca or '',
+                        'categoria_repuesto': repuesto.categoria_repuesto or '',
+                        'codigo_fabricante': repuesto.codigo_fabricante or '',
+                        'foto': repuesto.foto.url if repuesto.foto else None,
+                        # Incluir precio personalizado si existe
+                        'precio': float(precio_personalizado) if precio_personalizado is not None else None
+                    }
+                    repuestos_detallados.append(repuesto_info)
+                except Repuesto.DoesNotExist:
+                    # Si el repuesto no existe, omitirlo pero registrar el error
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.warning(f'Repuesto con ID {repuesto_id} no encontrado en OfertaServicio {obj.id}')
+        
+        return repuestos_detallados
     
     def get_desglose_precios(self, obj):
         """Retorna desglose completo de precios para el proveedor"""
@@ -233,6 +275,7 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         """Crear nueva oferta asignándola al proveedor autenticado"""
         user = self.context['request'].user
+        servicio = validated_data.get('servicio')
         
         # Determinar si es taller o mecánico
         from mecanimovilapp.apps.usuarios.models import MecanicoDomicilio, Taller
@@ -241,15 +284,48 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
             mecanico = MecanicoDomicilio.objects.get(usuario=user)
             validated_data['mecanico'] = mecanico
             validated_data['tipo_proveedor'] = 'mecanico'
+            
+            # Verificar que no exista ya una oferta para este servicio
+            if servicio and OfertaServicio.objects.filter(mecanico=mecanico, servicio=servicio).exists():
+                raise serializers.ValidationError({
+                    'servicio': 'Ya tienes una oferta configurada para este servicio. No puedes crear ofertas duplicadas para el mismo servicio.'
+                })
         except MecanicoDomicilio.DoesNotExist:
             try:
                 taller = Taller.objects.get(usuario=user)
                 validated_data['taller'] = taller
                 validated_data['tipo_proveedor'] = 'taller'
+                
+                # Verificar que no exista ya una oferta para este servicio
+                if servicio and OfertaServicio.objects.filter(taller=taller, servicio=servicio).exists():
+                    raise serializers.ValidationError({
+                        'servicio': 'Ya tienes una oferta configurada para este servicio. No puedes crear ofertas duplicadas para el mismo servicio.'
+                    })
             except Taller.DoesNotExist:
                 raise serializers.ValidationError('Usuario no tiene perfil de proveedor')
         
         return super().create(validated_data)
+    
+    def update(self, instance, validated_data):
+        """Actualizar oferta existente"""
+        # Si se está intentando cambiar el servicio, verificar que no exista duplicado
+        nuevo_servicio = validated_data.get('servicio')
+        if nuevo_servicio and nuevo_servicio != instance.servicio:
+            # Verificar si ya existe una oferta para este servicio
+            filtro = {'servicio': nuevo_servicio}
+            if instance.mecanico:
+                filtro['mecanico'] = instance.mecanico
+            elif instance.taller:
+                filtro['taller'] = instance.taller
+            
+            # Excluir la instancia actual de la búsqueda
+            existe = OfertaServicio.objects.filter(**filtro).exclude(id=instance.id).exists()
+            if existe:
+                raise serializers.ValidationError({
+                    'servicio': 'Ya tienes una oferta configurada para este servicio. No puedes tener ofertas duplicadas para el mismo servicio.'
+                })
+        
+        return super().update(instance, validated_data)
 
 
 class ServicioListSerializer(serializers.ModelSerializer):
@@ -286,7 +362,10 @@ class ServicioListSerializer(serializers.ModelSerializer):
         if ofertas.exists():
             precio_min_con = ofertas.aggregate(min_precio=models.Min('precio_con_repuestos'))['min_precio']
             precio_min_sin = ofertas.aggregate(min_precio=models.Min('precio_sin_repuestos'))['min_precio']
-            return min(filter(None, [precio_min_con, precio_min_sin]))
+            # Filtrar valores None y obtener el mínimo solo si hay precios válidos
+            precios_validos = list(filter(None, [precio_min_con, precio_min_sin]))
+            if precios_validos:
+                return min(precios_validos)
         return obj.precio_referencia
     
     def get_precio_maximo(self, obj):
@@ -295,7 +374,10 @@ class ServicioListSerializer(serializers.ModelSerializer):
         if ofertas.exists():
             precio_max_con = ofertas.aggregate(max_precio=models.Max('precio_con_repuestos'))['max_precio']
             precio_max_sin = ofertas.aggregate(max_precio=models.Max('precio_sin_repuestos'))['max_precio']
-            return max(filter(None, [precio_max_con, precio_max_sin]))
+            # Filtrar valores None y obtener el máximo solo si hay precios válidos
+            precios_validos = list(filter(None, [precio_max_con, precio_max_sin]))
+            if precios_validos:
+                return max(precios_validos)
         return obj.precio_referencia
     
     def get_taller_principal(self, obj):

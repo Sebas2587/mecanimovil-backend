@@ -17,7 +17,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-
 class SolicitudServicioSerializer(serializers.ModelSerializer):
     """
     Serializador para el modelo SolicitudServicio
@@ -27,6 +26,7 @@ class SolicitudServicioSerializer(serializers.ModelSerializer):
     mecanico_detail = MecanicoDomicilioSerializer(source='mecanico', read_only=True)
     vehiculo_detail = VehiculoSerializer(source='vehiculo', read_only=True)
     lineas_detail = serializers.SerializerMethodField()
+    oferta_proveedor_id = serializers.SerializerMethodField()
     
     class Meta:
         model = SolicitudServicio
@@ -38,7 +38,7 @@ class SolicitudServicioSerializer(serializers.ModelSerializer):
             'comprobante_pago', 'comprobante_validado', 'fecha_validacion',
             'notas_cliente', 'notas_admin', 'motivo_cancelacion', 'fecha_cancelacion',
             'fecha_devolucion', 'fecha_respuesta_proveedor', 'motivo_rechazo',
-            'notas_proveedor', 'lineas_detail'
+            'notas_proveedor', 'lineas_detail', 'oferta_proveedor', 'oferta_proveedor_id'
         )
         extra_kwargs = {
             'cliente': {'write_only': True},
@@ -51,6 +51,12 @@ class SolicitudServicioSerializer(serializers.ModelSerializer):
         """Retorna las líneas de servicio con detalles"""
         lineas = obj.lineas.all()
         return LineaServicioSerializer(lineas, many=True).data
+    
+    def get_oferta_proveedor_id(self, obj):
+        """Retorna el ID de la oferta de proveedor asociada"""
+        if obj.oferta_proveedor:
+            return str(obj.oferta_proveedor.id)
+        return None
 
     def validate(self, data):
         # Validar que al menos un taller o mecánico se especifique
@@ -62,7 +68,6 @@ class SolicitudServicioSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("No puede especificar tanto taller como mecánico para el mismo servicio.")
         
         return data
-
 
 class LineaServicioSerializer(serializers.ModelSerializer):
     """
@@ -82,7 +87,6 @@ class LineaServicioSerializer(serializers.ModelSerializer):
             'solicitud': {'write_only': True},
             'oferta_servicio': {'write_only': True},
         }
-
 
 class CarritoAgendamientoSerializer(serializers.ModelSerializer):
     """
@@ -130,7 +134,6 @@ class CarritoAgendamientoSerializer(serializers.ModelSerializer):
                 return MecanicoDomicilioSerializer(item.oferta_servicio.mecanico).data
         return None
 
-
 class ItemCarritoAgendamientoSerializer(serializers.ModelSerializer):
     """
     Serializador para el modelo ItemCarritoAgendamiento
@@ -175,7 +178,6 @@ class ItemCarritoAgendamientoSerializer(serializers.ModelSerializer):
             return obj.oferta_servicio.mecanico.nombre if hasattr(obj.oferta_servicio.mecanico, 'nombre') else 'Mecánico a domicilio'
         return None
 
-
 class AgendamientoDisponibilidadSerializer(serializers.Serializer):
     """
     Serializador para consultar disponibilidad de agendamiento
@@ -195,7 +197,6 @@ class AgendamientoDisponibilidadSerializer(serializers.Serializer):
             raise serializers.ValidationError("La fecha fin no puede ser anterior a la fecha inicio")
         
         return data
-
 
 class ConfirmarAgendamientoSerializer(serializers.Serializer):
     """
@@ -221,7 +222,6 @@ class ConfirmarAgendamientoSerializer(serializers.Serializer):
         except CarritoAgendamiento.DoesNotExist:
             raise serializers.ValidationError("Carrito no encontrado o no está activo.")
         return value
-
 
 class ClienteProtegidoSerializer(serializers.ModelSerializer):
     """
@@ -312,7 +312,6 @@ class ClienteProtegidoSerializer(serializers.ModelSerializer):
             logger.error(f"❌ Error obteniendo foto_perfil del cliente {obj.id}: {e}", exc_info=True)
         return None
 
-
 class ClienteCompletoSerializer(ClienteSerializer):
     """
     Serializador completo del cliente para cuando está autorizado
@@ -375,7 +374,6 @@ class ClienteCompletoSerializer(ClienteSerializer):
             logger.error(f"❌ Error obteniendo foto_perfil del cliente {obj.id}: {e}", exc_info=True)
         return None
 
-
 class VehiculoProtegidoSerializer(serializers.ModelSerializer):
     """
     Serializador de vehículo con información básica
@@ -386,7 +384,6 @@ class VehiculoProtegidoSerializer(serializers.ModelSerializer):
     class Meta:
         model = Vehiculo
         fields = ('marca', 'modelo', 'year', 'patente')
-
 
 class SolicitudServicioProveedorSeguroSerializer(serializers.ModelSerializer):
     """
@@ -402,6 +399,7 @@ class SolicitudServicioProveedorSeguroSerializer(serializers.ModelSerializer):
     ubicacion_servicio_segura = serializers.SerializerMethodField()
     tiempo_respuesta_requerido = serializers.SerializerMethodField()
     informacion_disponible = serializers.SerializerMethodField()
+    oferta_proveedor_id = serializers.SerializerMethodField()
     
     class Meta:
         model = SolicitudServicio
@@ -411,7 +409,7 @@ class SolicitudServicioProveedorSeguroSerializer(serializers.ModelSerializer):
             'metodo_pago', 'total', 'estado', 'estado_display',
             'notas_cliente', 'notas_proveedor', 'motivo_rechazo', 
             'lineas_detail', 'lineas', 'puede_gestionar', 'tiempo_respuesta_requerido',
-            'informacion_disponible'
+            'informacion_disponible', 'oferta_proveedor_id'
         )
     
     def get_cliente_detail(self, obj):
@@ -554,6 +552,12 @@ class SolicitudServicioProveedorSeguroSerializer(serializers.ModelSerializer):
             return "Información no disponible para órdenes cerradas o expiradas"
         return None
     
+    def get_oferta_proveedor_id(self, obj):
+        """Retorna el ID de la oferta de proveedor asociada"""
+        if obj.oferta_proveedor:
+            return str(obj.oferta_proveedor.id)
+        return None
+    
     def get_lineas_detail(self, obj):
         """Retorna las líneas de servicio con detalles para proveedores"""
         lineas = obj.lineas.all()
@@ -605,7 +609,6 @@ class SolicitudServicioProveedorSeguroSerializer(serializers.ModelSerializer):
         ]
         return obj.estado in estados_gestionables
 
-
 class AcceptOrderSerializer(serializers.Serializer):
     """
     Serializador para aceptar una orden por parte del proveedor
@@ -616,7 +619,6 @@ class AcceptOrderSerializer(serializers.Serializer):
         allow_blank=True,
         help_text="Notas adicionales del proveedor"
     )
-
 
 class RejectOrderSerializer(serializers.Serializer):
     """
@@ -632,7 +634,6 @@ class RejectOrderSerializer(serializers.Serializer):
         allow_blank=True,
         help_text="Notas adicionales del proveedor"
     )
-
 
 class UpdateOrderStatusSerializer(serializers.Serializer):
     """
@@ -651,7 +652,6 @@ class UpdateOrderStatusSerializer(serializers.Serializer):
         help_text="Notas sobre el cambio de estado"
     )
 
-
 class OrdenEstadisticasSerializer(serializers.Serializer):
     """
     Serializador para estadísticas de órdenes del proveedor
@@ -661,7 +661,6 @@ class OrdenEstadisticasSerializer(serializers.Serializer):
     ordenes_completadas = serializers.IntegerField()
     ingresos_mes_actual = serializers.DecimalField(max_digits=10, decimal_places=2)
     calificacion_promedio = serializers.DecimalField(max_digits=3, decimal_places=2)
-
 
 class SolicitudServicioProveedorLegacySerializer(serializers.ModelSerializer):
     """
@@ -733,10 +732,8 @@ class SolicitudServicioProveedorLegacySerializer(serializers.ModelSerializer):
         ]
         return obj.estado in estados_gestionables
 
-
 # Alias para compatibilidad - USAR EL SEGURO POR DEFECTO
 SolicitudServicioProveedorSerializer = SolicitudServicioProveedorSeguroSerializer
-
 
 # ============================================================================
 # SERIALIZERS DEL SISTEMA DE POSTULACIONES
@@ -745,14 +742,59 @@ SolicitudServicioProveedorSerializer = SolicitudServicioProveedorSeguroSerialize
 class DetalleServicioOfertaSerializer(serializers.ModelSerializer):
     """Serializer para detalles de servicios en ofertas"""
     servicio_nombre = serializers.CharField(source='servicio.nombre', read_only=True)
+    repuestos_info = serializers.SerializerMethodField(read_only=True)
     
     class Meta:
         model = DetalleServicioOferta
         fields = [
             'id', 'servicio', 'servicio_nombre', 'precio_servicio',
-            'tiempo_estimado', 'notas'
+            'tiempo_estimado', 'notas', 'repuestos_seleccionados', 'repuestos_info'
         ]
-
+    
+    def get_repuestos_info(self, obj):
+        """Retorna información detallada de los repuestos seleccionados"""
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        if not obj.repuestos_seleccionados:
+            logger.debug(f"DetalleServicioOferta {obj.id}: No tiene repuestos_seleccionados")
+            return []
+        
+        from mecanimovilapp.apps.servicios.models import Repuesto
+        from mecanimovilapp.apps.servicios.serializers import RepuestoSerializer
+        
+        logger.debug(f"DetalleServicioOferta {obj.id}: Procesando {len(obj.repuestos_seleccionados)} repuestos")
+        
+        repuestos_info = []
+        for repuesto_data in obj.repuestos_seleccionados:
+            repuesto_id = repuesto_data.get('id')
+            cantidad = repuesto_data.get('cantidad', 1)
+            # CORRECCIÓN: Incluir precio personalizado del proveedor si existe
+            precio_personalizado = repuesto_data.get('precio')
+            
+            if repuesto_id:
+                try:
+                    repuesto = Repuesto.objects.get(id=repuesto_id)
+                    # Pasar el contexto del request si está disponible
+                    request = self.context.get('request')
+                    repuesto_serializer = RepuestoSerializer(repuesto, context={'request': request} if request else {})
+                    
+                    repuesto_info = {
+                        **repuesto_serializer.data,
+                        'cantidad': cantidad,
+                        # CORRECCIÓN: Incluir precio personalizado del proveedor (si difiere del precio_referencia)
+                        'precio': precio_personalizado
+                    }
+                    repuestos_info.append(repuesto_info)
+                    logger.debug(f"Repuesto {repuesto_id} agregado con cantidad {cantidad}, precio personalizado: {precio_personalizado}")
+                except Repuesto.DoesNotExist:
+                    logger.warning(f"Repuesto con ID {repuesto_id} no encontrado")
+                    continue
+            else:
+                logger.warning(f"Repuesto sin ID válido: {repuesto_data}")
+        
+        logger.debug(f"DetalleServicioOferta {obj.id}: Retornando {len(repuestos_info)} repuestos con información completa")
+        return repuestos_info
 
 class OfertaProveedorSerializer(serializers.ModelSerializer):
     """Serializer completo para ofertas de proveedores"""
@@ -774,20 +816,37 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
     proveedor_verificado = serializers.SerializerMethodField()
     solicitud_detail = serializers.SerializerMethodField()
     proveedor_foto = serializers.SerializerMethodField()
+    ofertas_secundarias = serializers.SerializerMethodField()
+    oferta_original_info = serializers.SerializerMethodField()
+    solicitud_servicio_id = serializers.SerializerMethodField()
+    solicitud_estado = serializers.CharField(source='solicitud.estado', read_only=True)
+    rechazada_por_expiracion = serializers.SerializerMethodField()
+    fecha_limite_pago = serializers.SerializerMethodField()
+    tiempo_restante_pago = serializers.SerializerMethodField()
+    
+    # Campos para información de pago directo al proveedor
+    proveedor_puede_recibir_pagos = serializers.SerializerMethodField()
     
     class Meta:
         model = OfertaProveedor
         fields = [
-            'id', 'solicitud', 'solicitud_detail', 'proveedor', 'proveedor_id_detail', 'tipo_proveedor', 'nombre_proveedor',
+            'id', 'solicitud', 'solicitud_detail', 'solicitud_estado', 'proveedor', 'proveedor_id_detail', 'tipo_proveedor', 'nombre_proveedor',
             'rating_proveedor', 'precio_total_ofrecido', 'incluye_repuestos',
             'tiempo_estimado_total', 'descripcion_oferta', 'garantia_ofrecida',
             'fecha_disponible', 'hora_disponible', 'estado', 'fecha_envio',
             'fecha_visualizacion_cliente', 'detalles_servicios', 'servicios_ofertados',
             'total_mensajes_chat', 'mensajes_no_leidos', 'tiempo_restante_solicitud',
             'antiguedad_proveedor', 'servicios_realizados_proveedor', 'proveedor_verificado',
-            'proveedor_foto'
+            'proveedor_foto', 'oferta_original', 'es_oferta_secundaria', 'motivo_servicio_adicional',
+            'ofertas_secundarias', 'oferta_original_info', 'solicitud_servicio_id', 'rechazada_por_expiracion',
+            # Campos de desglose de costos
+            'costo_repuestos', 'costo_mano_obra', 'costo_gestion_compra', 'foto_cotizacion_repuestos',
+            'metodo_pago_cliente', 'estado_pago_repuestos', 'estado_pago_servicio',
+            'proveedor_puede_recibir_pagos',
+            # Campos de tiempo para pago
+            'fecha_limite_pago', 'tiempo_restante_pago'
         ]
-        read_only_fields = ['estado', 'fecha_envio', 'fecha_visualizacion_cliente', 'proveedor', 'tipo_proveedor']
+        read_only_fields = ['estado', 'fecha_envio', 'fecha_visualizacion_cliente', 'proveedor', 'tipo_proveedor', 'es_oferta_secundaria']
     
     def get_nombre_proveedor(self, obj):
         return obj.nombre_proveedor
@@ -890,6 +949,133 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
             return None
         except Exception:
             return None
+    
+    def get_proveedor_puede_recibir_pagos(self, obj):
+        """
+        Verifica si el proveedor tiene su cuenta de Mercado Pago configurada
+        y puede recibir pagos directos.
+        """
+        try:
+            from mecanimovilapp.apps.pagos.models import CuentaMercadoPagoProveedor
+            
+            # Verificar si el proveedor tiene cuenta de Mercado Pago conectada
+            cuenta = CuentaMercadoPagoProveedor.objects.filter(
+                usuario=obj.proveedor,
+                estado='conectada'
+            ).first()
+            
+            if cuenta and cuenta.access_token:
+                return True
+            return False
+        except Exception:
+            return False
+    
+    def get_ofertas_secundarias(self, obj):
+        """Retorna las ofertas secundarias relacionadas si esta es una oferta original"""
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        logger.info(f"🔍 OfertaProveedorSerializer.get_ofertas_secundarias - Oferta ID: {obj.id}, es_oferta_secundaria: {obj.es_oferta_secundaria}")
+        
+        if obj.es_oferta_secundaria:
+            logger.info(f"  - Es oferta secundaria, retornando []")
+            return []
+        
+        ofertas_secundarias = obj.ofertas_secundarias.all()
+        logger.info(f"  - Ofertas secundarias encontradas: {ofertas_secundarias.count()}")
+        for oferta_sec in ofertas_secundarias:
+            logger.info(f"    - Oferta secundaria ID: {oferta_sec.id}, Estado: {oferta_sec.estado}, es_oferta_secundaria: {oferta_sec.es_oferta_secundaria}")
+        
+        resultado = OfertaProveedorSerializer(ofertas_secundarias, many=True, context=self.context).data
+        logger.info(f"  - Resultado serializado: {len(resultado)} ofertas")
+        return resultado
+    
+    def get_solicitud_servicio_id(self, obj):
+        """Retorna el ID de la SolicitudServicio asociada a esta oferta"""
+        try:
+            solicitud_servicio = obj.solicitudes_servicio.first()
+            if solicitud_servicio:
+                return solicitud_servicio.id
+            return None
+        except Exception:
+            return None
+    
+    def get_rechazada_por_expiracion(self, obj):
+        """
+        Determina si la oferta fue rechazada por expiración de pago (no por selección de otra oferta).
+        Retorna True si:
+        - La oferta está rechazada
+        - La solicitud está cancelada
+        - Y (la fecha_limite_pago pasó O han pasado más de 48 horas desde fecha_respuesta_cliente)
+        """
+        from django.utils import timezone
+        from datetime import timedelta
+        
+        if obj.estado != 'rechazada':
+            return False
+        
+        solicitud = obj.solicitud
+        if not solicitud:
+            return False
+        
+        # Si la solicitud está cancelada, verificar si fue por expiración
+        if solicitud.estado == 'cancelada':
+            ahora = timezone.now()
+            PLAZO_MAXIMO_PAGO_HORAS = 48
+            plazo_maximo_pago = timedelta(hours=PLAZO_MAXIMO_PAGO_HORAS)
+            
+            # Verificar si fue rechazada por expiración de fecha límite
+            if solicitud.fecha_limite_pago and solicitud.fecha_limite_pago < ahora:
+                return True
+            
+            # Verificar si fue rechazada por plazo de 48 horas desde aceptación
+            if obj.fecha_respuesta_cliente:
+                fecha_limite_aceptacion = obj.fecha_respuesta_cliente + plazo_maximo_pago
+                if ahora > fecha_limite_aceptacion:
+                    return True
+        
+        return False
+    
+    def get_fecha_limite_pago(self, obj):
+        """Retorna la fecha límite de pago de la solicitud asociada"""
+        if obj.solicitud and obj.solicitud.fecha_limite_pago:
+            return obj.solicitud.fecha_limite_pago.isoformat()
+        return None
+    
+    def get_tiempo_restante_pago(self, obj):
+        """Retorna el tiempo restante para pagar en formato legible"""
+        if not obj.solicitud:
+            return None
+        
+        tiempo_restante = obj.solicitud.tiempo_restante_pago()
+        if not tiempo_restante:
+            return None
+        
+        total_seconds = tiempo_restante.total_seconds()
+        horas = int(total_seconds // 3600)
+        
+        if horas < 1:
+            minutos = int((total_seconds % 3600) // 60)
+            return f"{minutos} minutos"
+        elif horas < 24:
+            return f"{horas} horas"
+        else:
+            dias = horas // 24
+            horas_restantes = horas % 24
+            if horas_restantes > 0:
+                return f"{dias}d {horas_restantes}h"
+            return f"{dias} días"
+    
+    def get_oferta_original_info(self, obj):
+        """Retorna información de la oferta original si esta es una oferta secundaria"""
+        if not obj.es_oferta_secundaria or not obj.oferta_original:
+            return None
+        return {
+            'id': str(obj.oferta_original.id),
+            'precio_total_ofrecido': str(obj.oferta_original.precio_total_ofrecido),
+            'fecha_envio': obj.oferta_original.fecha_envio.isoformat() if obj.oferta_original.fecha_envio else None,
+            'estado': obj.oferta_original.estado,
+        }
     
     def get_solicitud_detail(self, obj):
         """Retorna información detallada de la solicitud, cliente y vehículo"""
@@ -1042,6 +1228,21 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
                 'descripcion_oferta': 'La descripción de la oferta no puede estar vacía'
             })
         
+        # Validación para ofertas secundarias
+        oferta_original = attrs.get('oferta_original')
+        motivo_servicio_adicional = attrs.get('motivo_servicio_adicional', '')
+        
+        if oferta_original:
+            # Si tiene oferta_original, debe ser secundaria
+            if not attrs.get('es_oferta_secundaria', False):
+                attrs['es_oferta_secundaria'] = True
+            
+            # Validar que el motivo sea proporcionado
+            if not motivo_servicio_adicional or motivo_servicio_adicional.strip() == '':
+                raise serializers.ValidationError({
+                    'motivo_servicio_adicional': 'El motivo del servicio adicional es obligatorio para ofertas secundarias'
+                })
+        
         return attrs
     
     def create(self, validated_data):
@@ -1054,7 +1255,6 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
             validated_data['tiempo_respuesta_proveedor'] = timezone.now() - solicitud.fecha_publicacion
         
         return super().create(validated_data)
-
 
 class RechazoSolicitudSerializer(serializers.ModelSerializer):
     """Serializer para rechazos de solicitudes por proveedores"""
@@ -1126,7 +1326,6 @@ class RechazoSolicitudSerializer(serializers.ModelSerializer):
         
         return attrs
 
-
 class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
     """Serializer para solicitudes públicas con soporte geoespacial"""
     servicios_solicitados_detail = serializers.SerializerMethodField()
@@ -1141,6 +1340,7 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
     total_ofertas = serializers.IntegerField(read_only=True, default=0)
     total_rechazos = serializers.IntegerField(read_only=True, default=0)
     ofertas = serializers.SerializerMethodField()
+    ofertas_secundarias = serializers.SerializerMethodField()
     rechazos = serializers.SerializerMethodField()
     oferta_seleccionada_detail = serializers.SerializerMethodField()
     puede_reenviar = serializers.SerializerMethodField()
@@ -1150,19 +1350,19 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
         geo_field = 'ubicacion_servicio'
         fields = [
             'id', 'cliente', 'cliente_nombre', 'cliente_info', 'vehiculo', 'vehiculo_info',
-            'descripcion_problema', 'urgencia', 'tipo_solicitud',
+            'descripcion_problema', 'urgencia', 'requiere_repuestos', 'tipo_solicitud',
             'proveedores_dirigidos', 'proveedores_dirigidos_detail',
             'servicios_solicitados', 'servicios_solicitados_detail',
             'direccion_usuario', 'direccion_usuario_info',
             'ubicacion_servicio', 'direccion_servicio_texto', 'detalles_ubicacion',
             'fecha_preferida', 'hora_preferida', 'estado', 'fecha_creacion',
-            'fecha_publicacion', 'fecha_expiracion', 'tiempo_restante',
+            'fecha_publicacion', 'fecha_expiracion', 'fecha_limite_pago', 'tiempo_restante',
             'puede_recibir_ofertas', 'puede_ver_datos_cliente', 'total_ofertas', 'total_visualizaciones',
             'total_rechazos', 'oferta_seleccionada', 'oferta_seleccionada_detail', 'ofertas',
-            'rechazos', 'puede_reenviar'
+            'ofertas_secundarias', 'rechazos', 'puede_reenviar'
         ]
         read_only_fields = [
-            'estado', 'fecha_creacion', 'fecha_publicacion',
+            'estado', 'fecha_creacion', 'fecha_publicacion', 'fecha_limite_pago',
             'total_ofertas', 'total_visualizaciones', 'total_rechazos'
         ]
         extra_kwargs = {
@@ -1247,13 +1447,63 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
         return obj.puede_recibir_ofertas
     
     def get_ofertas(self, obj):
-        # Solo incluir ofertas si el usuario es el cliente o admin
+        # Solo incluir ofertas originales (no secundarias) si el usuario es el cliente o admin
         request = self.context.get('request')
         if request and request.user:
             if hasattr(request.user, 'cliente') and request.user.cliente == obj.cliente:
-                return OfertaProveedorSerializer(obj.ofertas.all(), many=True, context=self.context).data
+                # Filtrar solo ofertas originales (no secundarias)
+                ofertas_originales = obj.ofertas.filter(es_oferta_secundaria=False)
+                return OfertaProveedorSerializer(ofertas_originales, many=True, context=self.context).data
             elif request.user.is_staff:
-                return OfertaProveedorSerializer(obj.ofertas.all(), many=True, context=self.context).data
+                ofertas_originales = obj.ofertas.filter(es_oferta_secundaria=False)
+                return OfertaProveedorSerializer(ofertas_originales, many=True, context=self.context).data
+        return []
+    
+    def get_ofertas_secundarias(self, obj):
+        """Retorna todas las ofertas secundarias de la solicitud"""
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        request = self.context.get('request')
+        logger.info(f"🔍 get_ofertas_secundarias - Solicitud ID: {obj.id}")
+        logger.info(f"🔍 get_ofertas_secundarias - Request existe: {request is not None}")
+        logger.info(f"🔍 get_ofertas_secundarias - User existe: {request and request.user is not None if request else False}")
+        
+        if request and request.user:
+            logger.info(f"🔍 get_ofertas_secundarias - User ID: {request.user.id}, Username: {request.user.username}")
+            logger.info(f"🔍 get_ofertas_secundarias - Tiene cliente: {hasattr(request.user, 'cliente')}")
+            
+            if hasattr(request.user, 'cliente'):
+                logger.info(f"🔍 get_ofertas_secundarias - Cliente user: {request.user.cliente.id}, Cliente obj: {obj.cliente.id}")
+                logger.info(f"🔍 get_ofertas_secundarias - Clientes coinciden: {request.user.cliente == obj.cliente}")
+                
+            if hasattr(request.user, 'cliente') and request.user.cliente == obj.cliente:
+                # Obtener todas las ofertas secundarias de todas las ofertas originales
+                ofertas_secundarias = OfertaProveedor.objects.filter(
+                    solicitud=obj,
+                    es_oferta_secundaria=True
+                )
+                logger.info(f"🔍 get_ofertas_secundarias - Ofertas secundarias encontradas (cliente): {ofertas_secundarias.count()}")
+                for oferta in ofertas_secundarias:
+                    logger.info(f"  - Oferta secundaria ID: {oferta.id}, Estado: {oferta.estado}, es_oferta_secundaria: {oferta.es_oferta_secundaria}")
+                
+                resultado = OfertaProveedorSerializer(ofertas_secundarias, many=True, context=self.context).data
+                logger.info(f"🔍 get_ofertas_secundarias - Resultado serializado (cliente): {len(resultado)} ofertas")
+                return resultado
+            elif request.user.is_staff:
+                ofertas_secundarias = OfertaProveedor.objects.filter(
+                    solicitud=obj,
+                    es_oferta_secundaria=True
+                )
+                logger.info(f"🔍 get_ofertas_secundarias - Ofertas secundarias encontradas (staff): {ofertas_secundarias.count()}")
+                resultado = OfertaProveedorSerializer(ofertas_secundarias, many=True, context=self.context).data
+                logger.info(f"🔍 get_ofertas_secundarias - Resultado serializado (staff): {len(resultado)} ofertas")
+                return resultado
+            else:
+                logger.warning(f"🔍 get_ofertas_secundarias - Usuario no es cliente ni staff, retornando []")
+        else:
+            logger.warning(f"🔍 get_ofertas_secundarias - No hay request o user, retornando []")
+        
         return []
     
     def get_oferta_seleccionada_detail(self, obj):
@@ -1571,7 +1821,6 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
             solicitud.proveedores_dirigidos.set(proveedores)
         
         return solicitud
-
 
 class ChatSolicitudSerializer(serializers.ModelSerializer):
     """Serializer para mensajes de chat"""

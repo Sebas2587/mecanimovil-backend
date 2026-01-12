@@ -19,9 +19,8 @@ class MercadoPagoService:
     
     def __init__(self):
         """Inicializa el cliente de Mercado Pago con credenciales frescas"""
-        # Credenciales de prueba desde el MCP server test
-        # Access Token: APP_USR-8802724849942781-110307-59fe720c1df9cf8be417c6acee855ee7-2959448913
-        access_token = config('MERCADOPAGO_ACCESS_TOKEN', default='APP_USR-8802724849942781-110307-59fe720c1df9cf8be417c6acee855ee7-2959448913')
+        access_token = config('MERCADOPAGO_ACCESS_TOKEN', default='')
+        modo = config('MERCADOPAGO_MODE', default='test')
         
         if not access_token:
             logger.error("MERCADOPAGO_ACCESS_TOKEN no configurado")
@@ -29,9 +28,10 @@ class MercadoPagoService:
         
         logger.info(f"🔑 Inicializando MercadoPagoService")
         logger.info(f"   - Access Token: {access_token[:50]}...")
-        logger.info(f"   - Modo: TEST (modo prueba)")
+        logger.info(f"   - Modo: {modo.upper()}")
         
         self.mp = mercadopago.SDK(access_token)
+        self.modo = modo
     
     def get_public_key(self):
         """
@@ -70,13 +70,25 @@ class MercadoPagoService:
                 logger.info(f"✅ Preferencia creada exitosamente: {preference.get('id')}")
                 logger.info(f"   - Init Point: {preference.get('init_point', 'N/A')}")
                 logger.info(f"   - Sandbox Init Point: {preference.get('sandbox_init_point', 'N/A')}")
+                logger.info(f"   - Modo configurado: {self.modo.upper()}")
+                
+                # Mercado Pago genera ambas URLs, pero init_point es la correcta según el token usado
+                # Si el token es de producción, init_point será la URL de producción
+                # Si el token es de prueba, init_point será la URL de sandbox
+                init_point = preference.get('init_point')
+                sandbox_init_point = preference.get('sandbox_init_point')
+                
+                if self.modo == 'production':
+                    logger.info(f"   - 🚀 MODO PRODUCCIÓN: Usar init_point para pagos reales")
+                else:
+                    logger.info(f"   - 🧪 MODO TEST: Usar init_point (o sandbox_init_point si está disponible)")
                 
                 return {
                     'success': True,
                     'preference': preference,
                     'preference_id': preference.get('id'),
-                    'init_point': preference.get('init_point'),
-                    'sandbox_init_point': preference.get('sandbox_init_point'),
+                    'init_point': init_point,
+                    'sandbox_init_point': sandbox_init_point,
                 }
             else:
                 error_message = preference_response.get('response', {}).get('message', 'Error desconocido')
@@ -162,6 +174,57 @@ class MercadoPagoService:
         except Exception as e:
             logger.error(f"❌ Excepción obteniendo URL del comprobante: {str(e)}")
             return None
+    
+    def search_payments_by_external_reference(self, external_reference):
+        """
+        Busca pagos por external_reference usando la API de Mercado Pago.
+        
+        Args:
+            external_reference: Referencia externa (ej: "creditos_123")
+        
+        Returns:
+            Diccionario con los pagos encontrados
+        """
+        try:
+            logger.info(f"🔍 Buscando pagos con external_reference: {external_reference}")
+            
+            # Usar la API de búsqueda de pagos
+            filters = {
+                'external_reference': external_reference
+            }
+            
+            search_response = self.mp.payment().search(filters)
+            
+            if search_response.get('status') in [200, 201]:
+                results = search_response.get('response', {}).get('results', [])
+                total = search_response.get('response', {}).get('paging', {}).get('total', 0)
+                
+                logger.info(f"✅ Búsqueda exitosa: {total} pago(s) encontrado(s)")
+                
+                # Ordenar por fecha de creación (más reciente primero)
+                results.sort(key=lambda x: x.get('date_created', ''), reverse=True)
+                
+                return {
+                    'success': True,
+                    'payments': results,
+                    'total': total
+                }
+            else:
+                error_message = search_response.get('response', {}).get('message', 'Error desconocido')
+                logger.error(f"❌ Error en búsqueda: {error_message}")
+                return {
+                    'success': False,
+                    'error': error_message,
+                    'payments': []
+                }
+        
+        except Exception as e:
+            logger.error(f"❌ Excepción buscando pagos: {str(e)}")
+            return {
+                'success': False,
+                'error': f'Error al buscar pagos: {str(e)}',
+                'payments': []
+            }
     
     def process_webhook(self, webhook_data):
         """

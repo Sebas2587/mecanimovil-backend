@@ -40,6 +40,7 @@ urlpatterns = [
     path('api/personalizacion/', include('mecanimovilapp.apps.personalizacion.urls')),  # URLs de personalización
     path('api/checklists/', include('mecanimovilapp.apps.checklists.urls')),  # URLs de checklist correctamente ubicadas
     path('api/mercadopago/', include('mecanimovilapp.apps.pagos.urls')),  # URLs de pagos con Mercado Pago Checkout Pro
+    path('api/suscripciones/', include('mecanimovilapp.apps.suscripciones.urls')),  # URLs de suscripciones
     
     # Endpoint para prueba de conexión
     path('api/hello/', hello_api, name='hello_api'),

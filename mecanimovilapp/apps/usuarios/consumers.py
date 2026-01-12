@@ -1162,6 +1162,34 @@ class ClientStatusConsumer(AsyncWebsocketConsumer):
             'timestamp': timezone.now().isoformat()
         }))
     
+    async def alerta_pago_proximo(self, event):
+        """
+        Notifica al cliente que se está acercando la fecha límite de pago (6h antes)
+        """
+        await self.send(text_data=json.dumps({
+            'type': 'alerta_pago_proximo',
+            'solicitud_id': event['solicitud_id'],
+            'oferta_id': event.get('oferta_id'),
+            'mensaje': event.get('mensaje', 'Se está acercando la fecha límite para pagar esta solicitud.'),
+            'tiempo_restante_horas': event.get('tiempo_restante_horas'),
+            'tiempo_restante_minutos': event.get('tiempo_restante_minutos'),
+            'fecha_limite_pago': event.get('fecha_limite_pago'),
+            'timestamp': event.get('timestamp', timezone.now().isoformat())
+        }))
+    
+    async def pago_expirado(self, event):
+        """
+        Notifica al cliente que el pago expiró sin completarse
+        """
+        await self.send(text_data=json.dumps({
+            'type': 'pago_expirado',
+            'solicitud_id': event['solicitud_id'],
+            'oferta_id': event.get('oferta_id'),
+            'mensaje': event.get('mensaje', 'El plazo para pagar ha expirado.'),
+            'fecha_limite_pago': event.get('fecha_limite_pago'),
+            'timestamp': event.get('timestamp', timezone.now().isoformat())
+        }))
+    
     async def nuevo_mensaje_chat(self, event):
         """
         Notifica al cliente sobre un nuevo mensaje en el chat
@@ -1175,6 +1203,20 @@ class ClientStatusConsumer(AsyncWebsocketConsumer):
             'mensaje': event['mensaje'],
             'es_proveedor': event['es_proveedor'],
             'timestamp': timezone.now().isoformat()
+        }))
+    
+    async def salud_vehiculo_actualizada(self, event):
+        """
+        Notifica al cliente sobre actualización de salud del vehículo
+        """
+        await self.send(text_data=json.dumps({
+            'type': 'salud_vehiculo_actualizada',
+            'vehicle_id': event['vehicle_id'],
+            'checklist_id': event['checklist_id'],
+            'vehiculo_info': event.get('vehiculo_info', 'Vehículo'),
+            'componentes_actualizados': event.get('componentes_actualizados', 0),
+            'mensaje': event.get('mensaje', 'Las métricas de salud de tu vehículo han sido actualizadas'),
+            'timestamp': event.get('timestamp', timezone.now().isoformat())
         }))
     
     @database_sync_to_async
