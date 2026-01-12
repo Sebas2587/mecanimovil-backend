@@ -28,16 +28,18 @@ if RENDER_EXTERNAL_HOSTNAME:
 # Si CORS_ALLOW_ALL_ORIGINS=True, se ignoran CORS_ALLOWED_ORIGINS
 CORS_ALLOW_ALL_ORIGINS = os.environ.get('CORS_ALLOW_ALL_ORIGINS', 'False').lower() == 'true'
 
-# Si no se permite todos los orígenes, usar la lista específica
-if not CORS_ALLOW_ALL_ORIGINS:
+# Configurar CORS_ALLOWED_ORIGINS según la configuración
+if CORS_ALLOW_ALL_ORIGINS:
+    # Si se permite todos los orígenes, no definir CORS_ALLOWED_ORIGINS
+    # django-cors-headers manejará esto automáticamente
+    pass
+else:
+    # Si no se permite todos los orígenes, usar la lista específica
     CORS_ALLOWED_ORIGINS = os.environ.get(
         'CORS_ALLOWED_ORIGINS',
         'https://mecanimovilapp.com,https://app.mecanimovil.com,https://proveedores.mecanimovil.com'
     ).split(',')
     CORS_ALLOWED_ORIGINS = [origin.strip() for origin in CORS_ALLOWED_ORIGINS if origin.strip()]
-else:
-    # Si se permite todos los orígenes, inicializar lista vacía (django-cors-headers lo maneja)
-    CORS_ALLOWED_ORIGINS = []
 
 # ============================================
 # CONFIGURACIÓN DE SEGURIDAD
