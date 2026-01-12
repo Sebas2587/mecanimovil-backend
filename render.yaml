@@ -67,7 +67,7 @@ services:
     runtime: python
     plan: free  # Planes: free, starter ($7/mes), standard ($25/mes)
     region: oregon
-    buildCommand: pip install -r requirements.txt
+    buildCommand: ./build_worker.sh
     startCommand: celery -A mecanimovilapp worker -l info -Q default,heavy --concurrency=2
     envVars:
       - key: PYTHON_VERSION
@@ -99,7 +99,7 @@ services:
     runtime: python
     plan: free  # Planes: free, starter ($7/mes), standard ($25/mes)
     region: oregon
-    buildCommand: pip install -r requirements.txt
+    buildCommand: ./build_worker.sh
     startCommand: celery -A mecanimovilapp beat -l info
     envVars:
       - key: PYTHON_VERSION
