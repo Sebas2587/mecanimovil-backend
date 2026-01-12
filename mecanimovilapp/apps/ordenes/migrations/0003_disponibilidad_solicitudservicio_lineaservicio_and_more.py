@@ -54,15 +54,15 @@ class Migration(migrations.Migration):
                 'verbose_name_plural': 'solicitudes de servicio',
             },
         ),
+        # MODIFICADO: Los campos precio_servicio_mecanico, precio_servicio_taller y servicio
+        # no se crean porque los modelos PrecioServicioMecanico y PrecioServicioTaller
+        # fueron eliminados. Estos campos se eliminaban en 0004 de todos modos.
         migrations.CreateModel(
             name='LineaServicio',
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
                 ('con_repuestos', models.BooleanField(default=False)),
                 ('precio_final', models.DecimalField(decimal_places=2, max_digits=10, validators=[django.core.validators.MinValueValidator(0)])),
-                ('precio_servicio_mecanico', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='lineas', to='servicios.precioserviciomecanico')),
-                ('precio_servicio_taller', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='lineas', to='servicios.precioserviciotaller')),
-                ('servicio', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='lineas', to='servicios.servicio')),
                 ('solicitud', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='lineas', to='ordenes.solicitudservicio')),
             ],
             options={
