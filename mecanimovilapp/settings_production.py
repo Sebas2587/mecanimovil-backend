@@ -24,23 +24,29 @@ if RENDER_EXTERNAL_HOSTNAME:
 # ============================================
 # CONFIGURACIÓN DE CORS PARA PRODUCCIÓN
 # ============================================
+# IMPORTANTE: Sobrescribir completamente la configuración de CORS de settings.py
 # Permitir todos los orígenes si está configurado (útil para apps móviles)
-# Si CORS_ALLOW_ALL_ORIGINS=True, se ignoran CORS_ALLOWED_ORIGINS
 CORS_ALLOW_ALL_ORIGINS = os.environ.get('CORS_ALLOW_ALL_ORIGINS', 'False').lower() == 'true'
 
 # Configurar CORS_ALLOWED_ORIGINS según la configuración
-# IMPORTANTE: Sobrescribir explícitamente para evitar conflictos con settings.py
+# SIEMPRE sobrescribir para evitar conflictos con settings.py
 if CORS_ALLOW_ALL_ORIGINS:
     # Si se permite todos los orígenes, definir lista vacía explícitamente
     # django-cors-headers usará CORS_ALLOW_ALL_ORIGINS cuando esta lista esté vacía
     CORS_ALLOWED_ORIGINS = []
 else:
     # Si no se permite todos los orígenes, usar la lista específica
-    CORS_ALLOWED_ORIGINS = os.environ.get(
+    # Leer directamente de os.environ para evitar conflictos con config() de settings.py
+    cors_origins_str = os.environ.get(
         'CORS_ALLOWED_ORIGINS',
         'https://mecanimovilapp.com,https://app.mecanimovil.com,https://proveedores.mecanimovil.com'
-    ).split(',')
-    CORS_ALLOWED_ORIGINS = [origin.strip() for origin in CORS_ALLOWED_ORIGINS if origin.strip()]
+    )
+    # Filtrar valores inválidos como 'True', 'False', etc.
+    CORS_ALLOWED_ORIGINS = [
+        origin.strip() 
+        for origin in cors_origins_str.split(',') 
+        if origin.strip() and origin.strip().lower() not in ('true', 'false') and '://' in origin.strip()
+    ]
 
 # ============================================
 # CONFIGURACIÓN DE SEGURIDAD
