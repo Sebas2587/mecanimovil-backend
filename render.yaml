@@ -3,11 +3,18 @@
 
 databases:
   # Base de datos PostgreSQL con PostGIS
+  # Planes disponibles:
+  # - free (gratis, expira en 30 días, 1GB storage)
+  # - basic-256mb, basic-1gb, basic-4gb (planes básicos)
+  # - pro-4gb, pro-8gb, pro-16gb, etc. (planes profesionales)
+  # - accelerated-16gb, accelerated-32gb, etc. (planes acelerados)
   - name: mecanimovil-db
-    plan: starter  # Cambiar a 'standard' para producción real
+    plan: free  # Cambiar a 'basic-1gb' o 'pro-4gb' para producción
     databaseName: mecanimovil
     user: mecanimovil
     postgresMajorVersion: "15"
+    diskSizeGB: 1  # Mínimo 1GB para free, múltiplos de 5 para planes pagos
+    region: oregon
     # PostGIS se habilita automáticamente en Render PostgreSQL
 
 services:
@@ -17,7 +24,7 @@ services:
   - type: web
     name: mecanimovil-api
     runtime: python
-    plan: starter  # Cambiar a 'standard' para producción real
+    plan: free  # Planes: free, starter ($7/mes), standard ($25/mes)
     region: oregon  # Cambiar según tu ubicación preferida
     buildCommand: ./build.sh
     startCommand: daphne -b 0.0.0.0 -p $PORT mecanimovilapp.asgi:application
@@ -58,7 +65,7 @@ services:
   - type: worker
     name: mecanimovil-celery-worker
     runtime: python
-    plan: starter
+    plan: free  # Planes: free, starter ($7/mes), standard ($25/mes)
     region: oregon
     buildCommand: pip install -r requirements.txt
     startCommand: celery -A mecanimovilapp worker -l info -Q default,heavy --concurrency=2
@@ -90,7 +97,7 @@ services:
   - type: worker
     name: mecanimovil-celery-beat
     runtime: python
-    plan: starter
+    plan: free  # Planes: free, starter ($7/mes), standard ($25/mes)
     region: oregon
     buildCommand: pip install -r requirements.txt
     startCommand: celery -A mecanimovilapp beat -l info
@@ -121,7 +128,7 @@ services:
   # ============================================
   - type: redis
     name: mecanimovil-redis
-    plan: starter  # Cambiar a 'standard' para producción real
+    plan: free  # Planes: free (25MB), starter ($10/mes), standard ($20/mes)
     region: oregon
     maxmemoryPolicy: allkeys-lru
     ipAllowList: []  # Permite conexiones solo desde servicios Render
