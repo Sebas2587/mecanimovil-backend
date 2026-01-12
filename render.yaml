@@ -37,10 +37,7 @@ services:
       - key: DEBUG
         value: "False"
       - key: SECRET_KEY
-        fromService:
-          name: mecanimovil-api
-          type: web
-          envVarKey: SECRET_KEY
+        generateValue: true
       - key: ALLOWED_HOSTS
         value: ".onrender.com,.mecanimovil.com"
       - key: DATABASE_URL
@@ -82,10 +79,7 @@ services:
       - key: DEBUG
         value: "False"
       - key: SECRET_KEY
-        fromService:
-          name: mecanimovil-api
-          type: web
-          envVarKey: SECRET_KEY
+        generateValue: true
       - key: DATABASE_URL
         fromDatabase:
           name: mecanimovil-db
@@ -116,10 +110,7 @@ services:
       - key: DEBUG
         value: "False"
       - key: SECRET_KEY
-        fromService:
-          name: mecanimovil-api
-          type: web
-          envVarKey: SECRET_KEY
+        generateValue: true
       - key: DATABASE_URL
         fromDatabase:
           name: mecanimovil-db
