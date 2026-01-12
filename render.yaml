@@ -13,8 +13,8 @@ databases:
     databaseName: mecanimovil
     user: mecanimovil
     postgresMajorVersion: "15"
-    diskSizeGB: 1  # Mínimo 1GB para free, múltiplos de 5 para planes pagos
     region: oregon
+    # diskSizeGB: solo para planes pagos (ej: 15 para basic, 100 para pro)
     # PostGIS se habilita automáticamente en Render PostgreSQL
 
 services:
