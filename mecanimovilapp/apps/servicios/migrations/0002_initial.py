@@ -56,11 +56,8 @@ class Migration(migrations.Migration):
             name='servicios_relacionados',
             field=models.ManyToManyField(blank=True, related_name='servicios_que_me_relacionan', to='servicios.servicio'),
         ),
-        migrations.AddField(
-            model_name='servicio',
-            name='marcas_compatibles',
-            field=models.ManyToManyField(blank=True, related_name='servicios_compatibles', to='vehiculos.marca'),
-        ),
+        # NOTA: marcas_compatibles NO se crea aquí porque se reemplaza por
+        # modelos_compatibles en 0008. Crear y eliminar causa errores.
         # Campos para modelos 'through' que se eliminarán después
         # (se mantienen para no romper la cadena de migraciones, pero no se usan)
         migrations.AddField(

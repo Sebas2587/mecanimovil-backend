@@ -47,11 +47,8 @@ class Migration(migrations.Migration):
             name='categorias',
             field=models.ManyToManyField(related_name='servicios', to='servicios.categoriaservicio'),
         ),
-        migrations.AlterField(
-            model_name='servicio',
-            name='marcas_compatibles',
-            field=models.ManyToManyField(related_name='servicios_compatibles', to='vehiculos.marca'),
-        ),
+        # NOTA: marcas_compatibles NO existe en 0002_initial.py modificado
+        # Se reemplaza por modelos_compatibles en 0008
         migrations.AlterField(
             model_name='servicio',
             name='servicios_relacionados',
