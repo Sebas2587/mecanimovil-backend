@@ -29,10 +29,11 @@ if RENDER_EXTERNAL_HOSTNAME:
 CORS_ALLOW_ALL_ORIGINS = os.environ.get('CORS_ALLOW_ALL_ORIGINS', 'False').lower() == 'true'
 
 # Configurar CORS_ALLOWED_ORIGINS según la configuración
+# IMPORTANTE: Sobrescribir explícitamente para evitar conflictos con settings.py
 if CORS_ALLOW_ALL_ORIGINS:
-    # Si se permite todos los orígenes, no definir CORS_ALLOWED_ORIGINS
-    # django-cors-headers manejará esto automáticamente
-    pass
+    # Si se permite todos los orígenes, definir lista vacía explícitamente
+    # django-cors-headers usará CORS_ALLOW_ALL_ORIGINS cuando esta lista esté vacía
+    CORS_ALLOWED_ORIGINS = []
 else:
     # Si no se permite todos los orígenes, usar la lista específica
     CORS_ALLOWED_ORIGINS = os.environ.get(
