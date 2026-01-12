@@ -37,7 +37,10 @@ services:
       - key: DEBUG
         value: "False"
       - key: SECRET_KEY
-        generateValue: true
+        fromService:
+          name: mecanimovil-api
+          type: web
+          envVarKey: SECRET_KEY
       - key: ALLOWED_HOSTS
         value: ".onrender.com,.mecanimovil.com"
       - key: DATABASE_URL
@@ -62,10 +65,12 @@ services:
   # ============================================
   # WORKER DE CELERY (Tareas asíncronas)
   # ============================================
+  # NOTA: Los Background Workers requieren plan starter o superior
+  # El plan 'free' NO soporta workers
   - type: worker
     name: mecanimovil-celery-worker
     runtime: python
-    plan: free  # Planes: free, starter ($7/mes), standard ($25/mes)
+    plan: starter  # Mínimo requerido: starter ($7/mes). También: standard ($25/mes)
     region: oregon
     buildCommand: ./build_worker.sh
     startCommand: celery -A mecanimovilapp worker -l info -Q default,heavy --concurrency=2
@@ -94,10 +99,12 @@ services:
   # ============================================
   # CELERY BEAT (Tareas programadas)
   # ============================================
+  # NOTA: Los Background Workers requieren plan starter o superior
+  # El plan 'free' NO soporta workers
   - type: worker
     name: mecanimovil-celery-beat
     runtime: python
-    plan: free  # Planes: free, starter ($7/mes), standard ($25/mes)
+    plan: starter  # Mínimo requerido: starter ($7/mes). También: standard ($25/mes)
     region: oregon
     buildCommand: ./build_worker.sh
     startCommand: celery -A mecanimovilapp beat -l info
