@@ -18,14 +18,9 @@ class Migration(migrations.Migration):
             model_name='servicio',
             name='duracion_estimada',
         ),
-        migrations.RemoveField(
-            model_name='servicio',
-            name='mecanicos',
-        ),
-        migrations.RemoveField(
-            model_name='servicio',
-            name='talleres',
-        ),
+        # Los campos 'mecanicos' y 'talleres' nunca se crearon en 0002_initial.py
+        # porque los ManyToMany se crearon sin 'through' directamente.
+        # No es necesario eliminarlos.
         migrations.AddField(
             model_name='servicio',
             name='duracion_estimada_base',
@@ -41,6 +36,8 @@ class Migration(migrations.Migration):
             name='requiere_repuestos',
             field=models.BooleanField(default=True, help_text='Indica si el servicio normalmente requiere repuestos'),
         ),
+        # Estos campos ya se crearon sin 'through' en 0002_initial.py
+        # Los AlterField son redundantes pero no causan problemas
         migrations.AlterField(
             model_name='servicio',
             name='categorias',
