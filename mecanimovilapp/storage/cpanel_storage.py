@@ -71,26 +71,10 @@ class CPanelStorage(Storage):
     def _connect_ftp(self):
         """Establece conexión FTP con el servidor cPanel."""
         try:
-            # Conectar al servidor FTP con el puerto especificado
             ftp = ftplib.FTP()
             ftp.connect(self.ftp_host, self.ftp_port)
             ftp.login(self.ftp_user, self.ftp_password)
-            ftp.set_pasv(True)  # Modo pasivo (recomendado para la mayoría de servidores)
-            
-            # Verificar el directorio actual después de conectarse
-            try:
-                current_dir = ftp.pwd()
-                logger.warning(f"🔍 [CPanelStorage._connect_ftp] Directorio actual después de conexión: {current_dir}")
-                
-                # Listar TODO el contenido del directorio raíz
-                try:
-                    all_items = ftp.nlst()
-                    logger.warning(f"🔍 [CPanelStorage._connect_ftp] Contenido del directorio raíz: {all_items}")
-                except:
-                    pass
-            except:
-                logger.warning(f"🔍 [CPanelStorage._connect_ftp] No se pudo obtener directorio actual")
-            
+            ftp.set_pasv(True)  # Modo pasivo
             return ftp
         except Exception as e:
             logger.error(f"❌ [CPanelStorage] Error conectando a FTP: {e}")
@@ -155,6 +139,8 @@ class CPanelStorage(Storage):
         """
         Guarda un archivo en el servidor cPanel vía FTP.
         
+        VERSIÓN OPTIMIZADA: Reduce logs y navegación innecesaria para mejor rendimiento.
+        
         Args:
             name: Nombre del archivo (ej: 'vehiculos/vehicle_123.jpg')
             content: Objeto File de Django con el contenido
@@ -162,280 +148,76 @@ class CPanelStorage(Storage):
         Returns:
             str: Nombre del archivo guardado
         """
-        logger.warning(f"🔄 [CPanelStorage._save] INICIANDO - Guardando archivo: {name}")
-        logger.warning(f"🔄 [CPanelStorage._save] location: {self.location}")
-        logger.warning(f"🔄 [CPanelStorage._save] ftp_host: {self.ftp_host}")
-        logger.warning(f"🔄 [CPanelStorage._save] ftp_user: {self.ftp_user}")
-        
         if not all([self.ftp_host, self.ftp_user, self.ftp_password]):
-            logger.error("❌ [CPanelStorage._save] Configuración FTP incompleta. No se puede guardar archivo.")
+            logger.error("❌ [CPanelStorage] Configuración FTP incompleta")
             raise ValueError("Configuración FTP incompleta. Verifica CPANEL_FTP_* en settings.")
         
-        # Construir la ruta completa en el servidor
-        # Si location es absoluta (empieza con /), usar join normal
-        # Si location es relativa, también usar join normal (funciona para ambos casos)
+        # Construir la ruta remota
         remote_path = os.path.join(self.location, name).replace('\\', '/')
-        # Normalizar: eliminar dobles slashes pero mantener el / inicial si existe
         if remote_path.startswith('//'):
             remote_path = '/' + remote_path.lstrip('/')
         
-        logger.warning(f"🔄 [CPanelStorage._save] Ruta remota construida: {remote_path}")
-        
         # Guardar temporalmente en disco local
         temp_file = None
+        ftp = None
+        
         try:
-            # Crear archivo temporal
+            # Crear archivo temporal y escribir contenido
             temp_file = tempfile.NamedTemporaryFile(delete=False)
-            
-            # Escribir contenido al archivo temporal
             for chunk in content.chunks():
                 temp_file.write(chunk)
             temp_file.close()
             
-            # Subir vía FTP
-            ftp = None
-            try:
-                ftp = self._connect_ftp()
-                
-                # Obtener el directorio raíz de la cuenta FTP
-                try:
-                    ftp_root_dir = ftp.pwd()
-                    logger.warning(f"🔍 [CPanelStorage._save] Directorio raíz de cuenta FTP: {ftp_root_dir}")
-                except:
-                    ftp_root_dir = None
-                    logger.warning(f"⚠️ [CPanelStorage._save] No se pudo obtener directorio raíz")
-                
-                # Ajustar la ruta según el directorio raíz de la cuenta FTP
-                # Si location contiene "public_html/", necesitamos determinar si la cuenta FTP
-                # ya está dentro de public_html o no
-                
-                # Si remote_path empieza con public_html/, verificar si estamos ya dentro de public_html
-                if remote_path.startswith('public_html/'):
-                    # Si el directorio raíz ya contiene public_html, remover public_html/ de la ruta
-                    if ftp_root_dir and 'public_html' in ftp_root_dir:
-                        remote_path = remote_path.replace('public_html/', '', 1)
-                        logger.warning(f"🔍 [CPanelStorage._save] Ruta ajustada (removido public_html/ porque ya estamos en public_html): {remote_path}")
-                    else:
-                        # No estamos en public_html, mantener la ruta pero navegar primero a public_html
-                        logger.warning(f"🔍 [CPanelStorage._save] Ruta contiene public_html/, navegaremos a public_html/ primero")
-                
-                # Obtener directorio actual para navegación
-                current = ftp.pwd()
-                logger.warning(f"🔍 [CPanelStorage._save] Directorio actual: {current}")
-                
-                # Listar contenido del directorio actual
-                try:
-                    items_here = ftp.nlst()
-                    items_here = [item for item in items_here if item not in ['.', '..']]
-                    logger.warning(f"🔍 [CPanelStorage._save] Contenido del directorio actual: {items_here}")
-                except:
-                    pass
-                
-                # Si remote_path todavía empieza con public_html/ y no estamos en public_html, navegar allí
-                if remote_path.startswith('public_html/'):
-                    try:
-                        ftp.cwd('public_html')
-                        logger.warning(f"✅ [CPanelStorage._save] Navegado a public_html/")
-                        remote_path = remote_path.replace('public_html/', '', 1)
-                        logger.warning(f"🔍 [CPanelStorage._save] Ruta ajustada después de navegar: {remote_path}")
-                    except ftplib.error_perm as e:
-                        logger.warning(f"⚠️ [CPanelStorage._save] No se pudo navegar a public_html/: {e}")
-                        # Remover public_html/ de la ruta de todas formas
-                        remote_path = remote_path.replace('public_html/', '', 1)
-                        logger.warning(f"🔍 [CPanelStorage._save] Ruta ajustada (removido public_html/): {remote_path}")
-                
-                # Navegar al directorio del archivo (images/mecanimovil-app-media)
-                # remote_path ya está ajustado (sin public_html/), solo contiene images/mecanimovil-app-media/archivo.jpg
-                remote_dir = os.path.dirname(remote_path)
-                if remote_dir:
-                    logger.warning(f"🔍 [CPanelStorage._save] Navegando a directorio: {remote_dir}")
-                    dir_parts = remote_dir.split('/')
-                    dir_parts = [p for p in dir_parts if p]  # Eliminar partes vacías
-                    logger.warning(f"🔍 [CPanelStorage._save] Partes del directorio a navegar: {dir_parts}")
-                    
-                    for part in dir_parts:
-                        logger.warning(f"🔍 [CPanelStorage._save] Intentando navegar a: '{part}'")
-                        
-                        # PRIMERO: Listar directorios actuales para ver qué existe
-                        try:
-                            current_dir = ftp.pwd()
-                            logger.warning(f"🔍 [CPanelStorage._save] Directorio actual antes de navegar a '{part}': {current_dir}")
-                            
-                            # Listar TODO (incluyendo . y ..)
-                            all_items = ftp.nlst()
-                            logger.warning(f"🔍 [CPanelStorage._save] TODOS los items (incluyendo . y ..): {all_items}")
-                            
-                            # Filtrar . y ..
-                            files_and_dirs = [item for item in all_items if item not in ['.', '..']]
-                            logger.warning(f"🔍 [CPanelStorage._save] Contenido del directorio (sin . y ..): {files_and_dirs}")
-                            
-                            # Intentar usar MLSD para obtener información detallada
-                            try:
-                                logger.warning(f"🔍 [CPanelStorage._save] Intentando MLSD para detalles...")
-                                detailed_items = []
-                                for item in ftp.mlsd():
-                                    detailed_items.append((item[0], item[1].get('type', 'unknown')))
-                                logger.warning(f"🔍 [CPanelStorage._save] Items con MLSD: {detailed_items}")
-                                
-                                # Buscar directorios
-                                dirs_only = [name for name, item_type in detailed_items if item_type == 'dir']
-                                logger.warning(f"🔍 [CPanelStorage._save] SOLO directorios encontrados: {dirs_only}")
-                            except Exception as mlsd_error:
-                                logger.warning(f"⚠️ [CPanelStorage._save] MLSD no disponible: {mlsd_error}")
-                            
-                            # Buscar el directorio usando MLSD si está disponible (más eficiente)
-                            matching_dir = None
-                            
-                            # Primero intentar usar MLSD para distinguir archivos de directorios
-                            try:
-                                detailed_items = []
-                                for item_info in ftp.mlsd():
-                                    detailed_items.append((item_info[0], item_info[1].get('type', 'unknown')))
-                                
-                                # Filtrar solo directorios
-                                dirs_only = [name for name, item_type in detailed_items if item_type == 'dir']
-                                logger.warning(f"🔍 [CPanelStorage._save] SOLO directorios encontrados: {dirs_only}")
-                                
-                                # Buscar coincidencia en directorios
-                                for dir_name in dirs_only:
-                                    if dir_name.lower() == part.lower() or dir_name == part:
-                                        matching_dir = dir_name
-                                        logger.warning(f"✅ [CPanelStorage._save] Coincidencia encontrada: '{dir_name}' == '{part}'")
-                                        break
-                            except Exception as mlsd_error:
-                                logger.warning(f"⚠️ [CPanelStorage._save] MLSD no disponible, usando método alternativo: {mlsd_error}")
-                                # Fallback: verificar cada item intentando navegar
-                                for item in files_and_dirs:
-                                    try:
-                                        original_dir = ftp.pwd()
-                                        try:
-                                            ftp.cwd(item)
-                                            ftp.cwd(original_dir)  # Volver
-                                            # Si llegamos aquí, es un directorio
-                                            if item.lower() == part.lower() or item == part:
-                                                matching_dir = item
-                                                break
-                                        except:
-                                            # No es un directorio
-                                            continue
-                                    except:
-                                        continue
-                            
-                            if matching_dir and matching_dir != part:
-                                logger.warning(f"⚠️ [CPanelStorage._save] Directorio encontrado con nombre diferente: '{matching_dir}' (buscando '{part}')")
-                                part = matching_dir
-                            elif not matching_dir:
-                                logger.warning(f"⚠️ [CPanelStorage._save] NO se encontró directorio '{part}' en la lista")
-                        except Exception as e:
-                            logger.error(f"❌ [CPanelStorage._save] Error listando directorio: {e}")
-                            import traceback
-                            logger.error(traceback.format_exc())
-                        
-                        try:
-                            # Intentar navegar (el directorio ya existe)
-                            ftp.cwd(part)
-                            logger.warning(f"✅ [CPanelStorage._save] Navegado a: {part}")
-                        except ftplib.error_perm as e:
-                            # Si no existe, intentar crearlo
-                            logger.warning(f"⚠️ [CPanelStorage._save] Directorio '{part}' no encontrado, intentando crear...")
-                            try:
-                                # Verificar permisos antes de crear
-                                current_before_create = ftp.pwd()
-                                logger.warning(f"🔍 [CPanelStorage._save] Creando '{part}' en: {current_before_create}")
-                                
-                                ftp.mkd(part)
-                                logger.warning(f"✅ [CPanelStorage._save] Directorio '{part}' creado exitosamente")
-                                
-                                # Verificar que se creó listando de nuevo
-                                files_after = ftp.nlst()
-                                files_after = [item for item in files_after if item not in ['.', '..']]
-                                logger.warning(f"🔍 [CPanelStorage._save] Contenido después de crear: {files_after}")
-                                
-                                ftp.cwd(part)
-                                logger.warning(f"✅ [CPanelStorage._save] Navegado a directorio creado: {part}")
-                            except ftplib.error_perm as e2:
-                                # Error de permisos al crear
-                                logger.error(f"❌ [CPanelStorage._save] Error de permisos creando directorio '{part}': {e2}")
-                                logger.error(f"❌ [CPanelStorage._save] La cuenta FTP puede no tener permisos para crear directorios")
-                                # Listar de nuevo para debug
-                                try:
-                                    current_dir = ftp.pwd()
-                                    files_and_dirs = ftp.nlst()
-                                    files_and_dirs = [item for item in files_and_dirs if item not in ['.', '..']]
-                                    logger.error(f"❌ [CPanelStorage._save] Directorio actual: {current_dir}")
-                                    logger.error(f"❌ [CPanelStorage._save] Directorios/archivos disponibles: {files_and_dirs}")
-                                except:
-                                    pass
-                                # NO continuar - fallar explícitamente
-                                raise Exception(f"No se pudo crear el directorio '{part}'. La cuenta FTP puede no tener permisos. Error: {e2}")
-                            except Exception as e2:
-                                logger.error(f"❌ [CPanelStorage._save] Error inesperado creando directorio '{part}': {e2}")
-                                # Listar de nuevo para debug
-                                try:
-                                    current_dir = ftp.pwd()
-                                    files_and_dirs = ftp.nlst()
-                                    files_and_dirs = [item for item in files_and_dirs if item not in ['.', '..']]
-                                    logger.error(f"❌ [CPanelStorage._save] Directorio actual: {current_dir}")
-                                    logger.error(f"❌ [CPanelStorage._save] Directorios/archivos disponibles: {files_and_dirs}")
-                                except:
-                                    pass
-                                raise
-                else:
-                    logger.warning(f"🔍 [CPanelStorage._save] No hay subdirectorio, subiendo a directorio actual")
-                
-                # Verificar el directorio actual antes de subir
-                try:
-                    final_dir = ftp.pwd()
-                    logger.warning(f"🔍 [CPanelStorage._save] Directorio final antes de subir: {final_dir}")
-                except:
-                    final_dir = "No se pudo obtener"
-                    logger.warning(f"⚠️ [CPanelStorage._save] No se pudo obtener directorio final")
-                
-                # Subir el archivo
-                filename = os.path.basename(remote_path)
-                logger.warning(f"🔄 [CPanelStorage._save] Subiendo archivo vía FTP: {filename}")
-                logger.warning(f"🔄 [CPanelStorage._save] Directorio destino: {remote_dir or 'raíz'}")
-                logger.warning(f"🔄 [CPanelStorage._save] Ruta completa remota: {remote_path}")
-                
-                try:
-                    with open(temp_file.name, 'rb') as f:
-                        result = ftp.storbinary(f'STOR {filename}', f)
-                        logger.warning(f"🔍 [CPanelStorage._save] Resultado de STOR: {result}")
-                    
-                    # Verificar que el archivo existe después de subirlo
-                    try:
-                        ftp.retrbinary(f'RETR {filename}', lambda x: None)
-                        logger.warning(f"✅ [CPanelStorage._save] ARCHIVO VERIFICADO - Existe en servidor: {filename}")
-                    except Exception as e:
-                        logger.error(f"❌ [CPanelStorage._save] ARCHIVO NO VERIFICADO - Error al verificar: {e}")
-                    
-                    # Listar archivos en el directorio actual para confirmar
-                    try:
-                        files = ftp.nlst()
-                        logger.warning(f"🔍 [CPanelStorage._save] Archivos en directorio actual: {files[:10]}")  # Primeros 10
-                        if filename in files:
-                            logger.warning(f"✅ [CPanelStorage._save] ARCHIVO ENCONTRADO en listado: {filename}")
-                        else:
-                            logger.error(f"❌ [CPanelStorage._save] ARCHIVO NO ENCONTRADO en listado del directorio")
-                    except Exception as e:
-                        logger.warning(f"⚠️ [CPanelStorage._save] No se pudo listar archivos: {e}")
-                    
-                    logger.warning(f"✅ [CPanelStorage._save] ARCHIVO SUBIDO EXITOSAMENTE: {remote_path}")
-                    logger.warning(f"✅ [CPanelStorage._save] Archivo disponible en: https://www.mecanimovil.cl/images/mecanimovil-app-media/{name}")
-                except Exception as e:
-                    logger.error(f"❌ [CPanelStorage._save] ERROR al subir archivo: {e}")
-                    raise
-                
-            finally:
-                if ftp:
-                    try:
-                        ftp.quit()
-                    except:
-                        ftp.close()
+            # Conectar FTP
+            ftp = self._connect_ftp()
             
+            # Ajustar ruta si contiene public_html/
+            if remote_path.startswith('public_html/'):
+                try:
+                    ftp.cwd('public_html')
+                    remote_path = remote_path.replace('public_html/', '', 1)
+                except ftplib.error_perm:
+                    remote_path = remote_path.replace('public_html/', '', 1)
+            
+            # Navegar al directorio destino (optimizado: ir directo)
+            remote_dir = os.path.dirname(remote_path)
+            if remote_dir:
+                dir_parts = [p for p in remote_dir.split('/') if p]
+                for part in dir_parts:
+                    try:
+                        ftp.cwd(part)
+                    except ftplib.error_perm:
+                        # Directorio no existe, crearlo
+                        try:
+                            ftp.mkd(part)
+                            ftp.cwd(part)
+                        except ftplib.error_perm as e:
+                            logger.error(f"❌ [CPanelStorage] No se pudo crear directorio '{part}': {e}")
+                            raise
+            
+            # Subir el archivo
+            filename = os.path.basename(remote_path)
+            with open(temp_file.name, 'rb') as f:
+                ftp.storbinary(f'STOR {filename}', f)
+            
+            logger.info(f"✅ [CPanelStorage] Archivo subido: {remote_path}")
             return name
             
+        except Exception as e:
+            logger.error(f"❌ [CPanelStorage] Error subiendo archivo: {e}")
+            raise
+            
         finally:
+            # Cerrar conexión FTP
+            if ftp:
+                try:
+                    ftp.quit()
+                except:
+                    try:
+                        ftp.close()
+                    except:
+                        pass
+            
             # Eliminar archivo temporal
             if temp_file and os.path.exists(temp_file.name):
                 try:
