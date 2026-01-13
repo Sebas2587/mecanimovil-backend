@@ -231,8 +231,29 @@ class CPanelStorage(Storage):
                     
                     for part in dir_parts:
                         logger.warning(f"🔍 [CPanelStorage._save] Intentando navegar a: '{part}'")
+                        
+                        # PRIMERO: Listar directorios actuales para ver qué existe
                         try:
-                            # Primero intentar navegar (el directorio ya existe)
+                            current_dir = ftp.pwd()
+                            logger.warning(f"🔍 [CPanelStorage._save] Directorio actual antes de navegar: {current_dir}")
+                            files_and_dirs = ftp.nlst()
+                            logger.warning(f"🔍 [CPanelStorage._save] Contenido del directorio actual: {files_and_dirs}")
+                            
+                            # Buscar el directorio (puede tener diferente capitalización)
+                            matching_dir = None
+                            for item in files_and_dirs:
+                                if item.lower() == part.lower() or item == part:
+                                    matching_dir = item
+                                    break
+                            
+                            if matching_dir and matching_dir != part:
+                                logger.warning(f"⚠️ [CPanelStorage._save] Directorio encontrado con nombre diferente: '{matching_dir}' (buscando '{part}')")
+                                part = matching_dir
+                        except Exception as e:
+                            logger.warning(f"⚠️ [CPanelStorage._save] No se pudo listar directorio: {e}")
+                        
+                        try:
+                            # Intentar navegar (el directorio ya existe)
                             ftp.cwd(part)
                             logger.warning(f"✅ [CPanelStorage._save] Navegado a: {part}")
                         except ftplib.error_perm as e:
@@ -245,7 +266,14 @@ class CPanelStorage(Storage):
                                 logger.warning(f"✅ [CPanelStorage._save] Navegado a directorio creado: {part}")
                             except Exception as e2:
                                 logger.error(f"❌ [CPanelStorage._save] Error con directorio '{part}': {e2}")
-                                # Último intento: puede que el directorio exista pero con otro nombre o permisos
+                                # Listar de nuevo para debug
+                                try:
+                                    current_dir = ftp.pwd()
+                                    files_and_dirs = ftp.nlst()
+                                    logger.error(f"❌ [CPanelStorage._save] Directorio actual: {current_dir}")
+                                    logger.error(f"❌ [CPanelStorage._save] Directorios disponibles: {files_and_dirs}")
+                                except:
+                                    pass
                                 raise
                 else:
                     logger.warning(f"🔍 [CPanelStorage._save] No hay subdirectorio, subiendo a directorio actual")
