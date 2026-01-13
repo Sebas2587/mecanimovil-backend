@@ -108,14 +108,18 @@ class VehiculoViewSet(viewsets.ModelViewSet):
             logger.warning(f"🔄 [VehiculoViewSet.perform_create] Creando vehículo para cliente {user.cliente.id}")
             
             # Forzar el uso del storage configurado si hay una foto
-            if 'foto' in serializer.validated_data and serializer.validated_data.get('foto'):
+            foto_file = serializer.validated_data.get('foto') or serializer.validated_data.get('foto_upload')
+            if foto_file:
                 storage_class = getattr(settings, 'DEFAULT_FILE_STORAGE', None)
                 if storage_class:
                     from django.utils.module_loading import import_string
                     try:
                         correct_storage = import_string(storage_class)()
                         logger.warning(f"📸 [VehiculoViewSet.perform_create] Forzando uso de storage: {type(correct_storage).__name__}")
-                        serializer.validated_data['foto'].storage = correct_storage
+                        if 'foto' in serializer.validated_data:
+                            serializer.validated_data['foto'].storage = correct_storage
+                        if 'foto_upload' in serializer.validated_data:
+                            serializer.validated_data['foto_upload'].storage = correct_storage
                     except (ImportError, AttributeError) as e:
                         logger.error(f"❌ [VehiculoViewSet.perform_create] Error cargando storage: {e}")
             
@@ -141,8 +145,9 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         
         logger.warning(f"🔄 [VehiculoViewSet.perform_update] Actualizando vehículo {serializer.instance.id}")
         
-        # Verificar si hay una nueva foto en los datos
-        if 'foto' in serializer.validated_data:
+        # Verificar si hay una nueva foto en los datos (puede venir como 'foto' o 'foto_upload')
+        foto_file = serializer.validated_data.get('foto') or serializer.validated_data.get('foto_upload')
+        if foto_file:
             logger.warning(f"📸 [VehiculoViewSet.perform_update] Nueva foto detectada para vehículo {serializer.instance.id}")
             
             # Forzar el uso del storage configurado en settings
@@ -153,7 +158,10 @@ class VehiculoViewSet(viewsets.ModelViewSet):
                     correct_storage = import_string(storage_class)()
                     logger.warning(f"📸 [VehiculoViewSet.perform_update] Forzando uso de storage: {type(correct_storage).__name__}")
                     # Asignar el storage correcto al campo foto antes de guardar
-                    serializer.validated_data['foto'].storage = correct_storage
+                    if 'foto' in serializer.validated_data:
+                        serializer.validated_data['foto'].storage = correct_storage
+                    if 'foto_upload' in serializer.validated_data:
+                        serializer.validated_data['foto_upload'].storage = correct_storage
                 except (ImportError, AttributeError) as e:
                     logger.error(f"❌ [VehiculoViewSet.perform_update] Error cargando storage: {e}")
         

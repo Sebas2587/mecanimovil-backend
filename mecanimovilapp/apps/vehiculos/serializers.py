@@ -48,7 +48,10 @@ class VehiculoSerializer(serializers.ModelSerializer):
     color = serializers.SerializerMethodField()
     numero_motor = serializers.SerializerMethodField()
     numero_chasis = serializers.SerializerMethodField()
-    foto = serializers.SerializerMethodField()  # Cambiar a SerializerMethodField para devolver URL completa
+    
+    # Campo foto: acepta archivos para escritura, devuelve URL completa para lectura
+    foto_upload = serializers.ImageField(source='foto', write_only=True, required=False, allow_null=True)
+    foto = serializers.SerializerMethodField()  # Para lectura: devuelve URL completa
     
     def __init__(self, *args, **kwargs):
         """Inicialización del serializer con logging"""
@@ -61,7 +64,7 @@ class VehiculoSerializer(serializers.ModelSerializer):
         model = Vehiculo
         fields = (
             'id', 'marca', 'modelo', 'cilindraje', 'tipo_motor', 
-            'year', 'año', 'patente', 'placa', 'kilometraje', 'foto', 'cliente',
+            'year', 'año', 'patente', 'placa', 'kilometraje', 'foto', 'foto_upload', 'cliente',
             'cliente_detail', 'marca_nombre', 'modelo_nombre',
             'color', 'numero_motor', 'numero_chasis',
             'fecha_creacion', 'fecha_actualizacion'
