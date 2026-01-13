@@ -57,8 +57,15 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         """
         Pasa el request al serializer para que pueda construir URLs completas
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        
         context = super().get_serializer_context()
         context['request'] = self.request
+        
+        # Log para verificar que el serializer se está ejecutando
+        logger.info(f"🔍 [VehiculoViewSet] get_serializer_context llamado para acción: {self.action}")
+        
         return context
     
     def get_permissions(self):

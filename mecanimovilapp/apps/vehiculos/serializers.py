@@ -50,6 +50,13 @@ class VehiculoSerializer(serializers.ModelSerializer):
     numero_chasis = serializers.SerializerMethodField()
     foto = serializers.SerializerMethodField()  # Cambiar a SerializerMethodField para devolver URL completa
     
+    def __init__(self, *args, **kwargs):
+        """Inicialización del serializer con logging"""
+        super().__init__(*args, **kwargs)
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning("🔄 [VehiculoSerializer.__init__] Serializer inicializado - Código actualizado con soporte cPanel")
+    
     class Meta:
         model = Vehiculo
         fields = (
@@ -68,17 +75,24 @@ class VehiculoSerializer(serializers.ModelSerializer):
         import logging
         logger = logging.getLogger(__name__)
         
+        # Log muy visible para verificar que el método se ejecuta
+        logger.warning(f"🖼️ [VehiculoSerializer.get_foto] INICIANDO para vehículo {obj.id}")
+        
         if obj.foto:
             from django.conf import settings
             
             # Verificar el tipo de storage configurado
             storage_type = getattr(settings, 'STORAGE_TYPE', 'local')
             default_storage = getattr(settings, 'DEFAULT_FILE_STORAGE', None)
+            cpanel_media_url = getattr(settings, 'CPANEL_MEDIA_URL', '')
+            cpanel_ftp_host = getattr(settings, 'CPANEL_FTP_HOST', '')
             
-            logger.info(f"🔍 [VehiculoSerializer] Vehículo {obj.id} - STORAGE_TYPE: {storage_type}")
-            logger.info(f"🔍 [VehiculoSerializer] Vehículo {obj.id} - DEFAULT_FILE_STORAGE: {default_storage}")
-            logger.info(f"🔍 [VehiculoSerializer] Vehículo {obj.id} - Foto name: {obj.foto.name}")
-            logger.info(f"🔍 [VehiculoSerializer] Vehículo {obj.id} - Foto storage: {type(obj.foto.storage).__name__}")
+            logger.warning(f"🖼️ [VehiculoSerializer.get_foto] Vehículo {obj.id} - STORAGE_TYPE: {storage_type}")
+            logger.warning(f"🖼️ [VehiculoSerializer.get_foto] Vehículo {obj.id} - DEFAULT_FILE_STORAGE: {default_storage}")
+            logger.warning(f"🖼️ [VehiculoSerializer.get_foto] Vehículo {obj.id} - CPANEL_MEDIA_URL: {cpanel_media_url}")
+            logger.warning(f"🖼️ [VehiculoSerializer.get_foto] Vehículo {obj.id} - CPANEL_FTP_HOST: {cpanel_ftp_host}")
+            logger.warning(f"🖼️ [VehiculoSerializer.get_foto] Vehículo {obj.id} - Foto name: {obj.foto.name}")
+            logger.warning(f"🖼️ [VehiculoSerializer.get_foto] Vehículo {obj.id} - Foto storage: {type(obj.foto.storage).__name__}")
             
             # Obtener la URL del storage
             try:
@@ -92,17 +106,19 @@ class VehiculoSerializer(serializers.ModelSerializer):
                     cpanel_media_url = getattr(settings, 'CPANEL_MEDIA_URL', '')
                     cpanel_ftp_host = getattr(settings, 'CPANEL_FTP_HOST', '')
                     
+                    logger.warning(f"🖼️ [VehiculoSerializer.get_foto] Vehículo {obj.id} - Verificando cPanel: CPANEL_MEDIA_URL={bool(cpanel_media_url)}, CPANEL_FTP_HOST={bool(cpanel_ftp_host)}")
+                    
                     # Si hay configuración de cPanel, usarla siempre
                     if cpanel_media_url:
                         # Construir URL completa de cPanel
                         relative_path = foto_url.replace('/media/', '')
                         full_url = f"{cpanel_media_url.rstrip('/')}/{relative_path}"
-                        logger.info(f"📸 [VehiculoSerializer] Vehículo {obj.id} - URL construida de cPanel: {full_url}")
-                        logger.info(f"📸 [VehiculoSerializer] Vehículo {obj.id} - STORAGE_TYPE: {storage_type}, pero usando cPanel por configuración disponible")
+                        logger.warning(f"✅ [VehiculoSerializer.get_foto] Vehículo {obj.id} - URL CONSTRUIDA DE CPANEL: {full_url}")
+                        logger.warning(f"✅ [VehiculoSerializer.get_foto] Vehículo {obj.id} - STORAGE_TYPE: {storage_type}, pero usando cPanel por configuración disponible")
                         return full_url
                     elif cpanel_ftp_host:
                         # Si hay FTP configurado pero no MEDIA_URL, intentar construirla
-                        logger.warning(f"⚠️ [VehiculoSerializer] Vehículo {obj.id} - CPANEL_FTP_HOST configurado pero CPANEL_MEDIA_URL no. Verifica variables de entorno.")
+                        logger.warning(f"⚠️ [VehiculoSerializer.get_foto] Vehículo {obj.id} - CPANEL_FTP_HOST configurado pero CPANEL_MEDIA_URL no. Verifica variables de entorno.")
                     
                     # PRIORIDAD 2: Si STORAGE_TYPE es cpanel pero no hay CPANEL_MEDIA_URL
                     if storage_type == 'cpanel' and not cpanel_media_url:
@@ -112,8 +128,8 @@ class VehiculoSerializer(serializers.ModelSerializer):
                     request = self.context.get('request')
                     if request:
                         absolute_url = request.build_absolute_uri(foto_url)
-                        logger.info(f"📸 [VehiculoSerializer] Vehículo {obj.id} - URL absoluta construida (Render/local): {absolute_url}")
-                        logger.warning(f"⚠️ [VehiculoSerializer] Vehículo {obj.id} - Usando URL de Render. Las imágenes no persistirán. Configura STORAGE_TYPE=cpanel y CPANEL_MEDIA_URL.")
+                        logger.warning(f"⚠️ [VehiculoSerializer.get_foto] Vehículo {obj.id} - URL absoluta construida (Render/local): {absolute_url}")
+                        logger.warning(f"❌ [VehiculoSerializer.get_foto] Vehículo {obj.id} - ⚠️ USANDO URL DE RENDER. Las imágenes NO persistirán. Configura STORAGE_TYPE=cpanel y CPANEL_MEDIA_URL.")
                         return absolute_url
                     else:
                         # Fallback: usar MEDIA_URL
