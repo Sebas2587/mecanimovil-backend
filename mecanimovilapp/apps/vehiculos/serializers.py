@@ -87,23 +87,33 @@ class VehiculoSerializer(serializers.ModelSerializer):
                 
                 # Si la URL es relativa (empieza con /media), necesitamos construirla
                 if foto_url and foto_url.startswith('/media/'):
-                    # Verificar si tenemos configuración de cPanel
-                    if storage_type == 'cpanel':
-                        cpanel_media_url = getattr(settings, 'CPANEL_MEDIA_URL', '')
-                        if cpanel_media_url:
-                            # Construir URL completa de cPanel
-                            relative_path = foto_url.replace('/media/', '')
-                            full_url = f"{cpanel_media_url.rstrip('/')}/{relative_path}"
-                            logger.info(f"📸 [VehiculoSerializer] Vehículo {obj.id} - URL construida de cPanel: {full_url}")
-                            return full_url
-                        else:
-                            logger.warning(f"⚠️ [VehiculoSerializer] Vehículo {obj.id} - STORAGE_TYPE=cpanel pero CPANEL_MEDIA_URL no está configurado")
+                    # PRIORIDAD 1: Verificar si tenemos configuración de cPanel disponible
+                    # (incluso si STORAGE_TYPE no está configurado, pero hay variables de entorno)
+                    cpanel_media_url = getattr(settings, 'CPANEL_MEDIA_URL', '')
+                    cpanel_ftp_host = getattr(settings, 'CPANEL_FTP_HOST', '')
                     
-                    # Si no es cPanel o no está configurado, usar request para construir URL
+                    # Si hay configuración de cPanel, usarla siempre
+                    if cpanel_media_url:
+                        # Construir URL completa de cPanel
+                        relative_path = foto_url.replace('/media/', '')
+                        full_url = f"{cpanel_media_url.rstrip('/')}/{relative_path}"
+                        logger.info(f"📸 [VehiculoSerializer] Vehículo {obj.id} - URL construida de cPanel: {full_url}")
+                        logger.info(f"📸 [VehiculoSerializer] Vehículo {obj.id} - STORAGE_TYPE: {storage_type}, pero usando cPanel por configuración disponible")
+                        return full_url
+                    elif cpanel_ftp_host:
+                        # Si hay FTP configurado pero no MEDIA_URL, intentar construirla
+                        logger.warning(f"⚠️ [VehiculoSerializer] Vehículo {obj.id} - CPANEL_FTP_HOST configurado pero CPANEL_MEDIA_URL no. Verifica variables de entorno.")
+                    
+                    # PRIORIDAD 2: Si STORAGE_TYPE es cpanel pero no hay CPANEL_MEDIA_URL
+                    if storage_type == 'cpanel' and not cpanel_media_url:
+                        logger.warning(f"⚠️ [VehiculoSerializer] Vehículo {obj.id} - STORAGE_TYPE=cpanel pero CPANEL_MEDIA_URL no está configurado")
+                    
+                    # PRIORIDAD 3: Si no hay cPanel, usar request para construir URL de Render
                     request = self.context.get('request')
                     if request:
                         absolute_url = request.build_absolute_uri(foto_url)
-                        logger.info(f"📸 [VehiculoSerializer] Vehículo {obj.id} - URL absoluta construida: {absolute_url}")
+                        logger.info(f"📸 [VehiculoSerializer] Vehículo {obj.id} - URL absoluta construida (Render/local): {absolute_url}")
+                        logger.warning(f"⚠️ [VehiculoSerializer] Vehículo {obj.id} - Usando URL de Render. Las imágenes no persistirán. Configura STORAGE_TYPE=cpanel y CPANEL_MEDIA_URL.")
                         return absolute_url
                     else:
                         # Fallback: usar MEDIA_URL

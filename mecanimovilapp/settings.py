@@ -237,28 +237,42 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 STORAGE_TYPE = config('STORAGE_TYPE', default='local')  # 'local', 'cpanel', 's3'
 
 if not DEBUG:
-    if STORAGE_TYPE == 'cpanel':
+    # Verificar si hay configuración de cPanel disponible (incluso si STORAGE_TYPE no está configurado)
+    cpanel_ftp_host = config('CPANEL_FTP_HOST', default='')
+    cpanel_ftp_user = config('CPANEL_FTP_USER', default='')
+    cpanel_ftp_password = config('CPANEL_FTP_PASSWORD', default='')
+    cpanel_ftp_root = config('CPANEL_FTP_ROOT', default='')
+    cpanel_media_url = config('CPANEL_MEDIA_URL', default='')
+    
+    # Si hay configuración de cPanel completa, usarla automáticamente
+    has_cpanel_config = all([cpanel_ftp_host, cpanel_ftp_user, cpanel_ftp_password, cpanel_ftp_root])
+    
+    if STORAGE_TYPE == 'cpanel' or (has_cpanel_config and STORAGE_TYPE != 's3'):
         # ============================================
         # Configuración para cPanel (FTP)
         # ============================================
         DEFAULT_FILE_STORAGE = 'mecanimovilapp.storage.cpanel_storage.CPanelStorage'
         
         # Credenciales FTP de cPanel
-        CPANEL_FTP_HOST = config('CPANEL_FTP_HOST', default='')
-        CPANEL_FTP_USER = config('CPANEL_FTP_USER', default='')
-        CPANEL_FTP_PASSWORD = config('CPANEL_FTP_PASSWORD', default='')
+        CPANEL_FTP_HOST = cpanel_ftp_host
+        CPANEL_FTP_USER = cpanel_ftp_user
+        CPANEL_FTP_PASSWORD = cpanel_ftp_password
         
         # Ruta en el servidor cPanel donde se guardarán los archivos
-        # Ejemplo: '/public_html/media' o '/home/usuario/public_html/media'
-        CPANEL_FTP_ROOT = config('CPANEL_FTP_ROOT', default='/public_html/media')
+        CPANEL_FTP_ROOT = cpanel_ftp_root
         
         # URL pública donde se servirán los archivos
-        # Ejemplo: 'https://tudominio.com/media/' o 'https://media.tudominio.com/'
-        CPANEL_MEDIA_URL = config('CPANEL_MEDIA_URL', default='')
+        CPANEL_MEDIA_URL = cpanel_media_url
         
         # Usar la URL de cPanel como MEDIA_URL
         if CPANEL_MEDIA_URL:
             MEDIA_URL = CPANEL_MEDIA_URL
+        
+        # Log para debugging
+        import logging
+        logger = logging.getLogger(__name__)
+        if STORAGE_TYPE != 'cpanel' and has_cpanel_config:
+            logger.info("🔍 [Settings] STORAGE_TYPE no configurado, pero detectada configuración de cPanel. Usando cPanel automáticamente.")
         
     elif STORAGE_TYPE == 's3':
         # ============================================
