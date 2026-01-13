@@ -202,24 +202,40 @@ class CPanelStorage(Storage):
                 # Navegar a public_html si no estamos ahí
                 try:
                     current = ftp.pwd()
-                    logger.warning(f"🔍 [CPanelStorage._save] Directorio actual: {current}")
+                    logger.warning(f"🔍 [CPanelStorage._save] Directorio actual ANTES de navegar: {current}")
+                    
+                    # Listar contenido del directorio actual
+                    try:
+                        items_here = ftp.nlst()
+                        items_here = [item for item in items_here if item not in ['.', '..']]
+                        logger.warning(f"🔍 [CPanelStorage._save] Contenido del directorio actual: {items_here}")
+                    except:
+                        pass
                     
                     # Si no estamos en public_html, intentar navegar
                     if 'public_html' not in current:
                         try:
                             ftp.cwd('public_html')
                             logger.warning(f"✅ [CPanelStorage._save] Navegado a public_html/")
-                        except ftplib.error_perm:
+                            # Listar contenido de public_html
+                            try:
+                                items_public = ftp.nlst()
+                                items_public = [item for item in items_public if item not in ['.', '..']]
+                                logger.warning(f"🔍 [CPanelStorage._save] Contenido de public_html/: {items_public}")
+                            except:
+                                pass
+                        except ftplib.error_perm as e:
                             # Si no existe public_html, puede que estemos en la raíz de la cuenta FTP
-                            # Intentar navegar directamente a images
-                            logger.warning(f"⚠️ [CPanelStorage._save] public_html/ no encontrado, intentando navegar directamente")
-                except:
+                            logger.warning(f"⚠️ [CPanelStorage._save] public_html/ no encontrado: {e}")
+                            logger.warning(f"⚠️ [CPanelStorage._save] Intentando navegar directamente a images")
+                except Exception as e:
+                    logger.warning(f"⚠️ [CPanelStorage._save] Error obteniendo directorio: {e}")
                     # Si no podemos obtener el directorio actual, intentar navegar a public_html
                     try:
                         ftp.cwd('public_html')
                         logger.warning(f"✅ [CPanelStorage._save] Navegado a public_html/")
-                    except:
-                        pass
+                    except Exception as e2:
+                        logger.warning(f"⚠️ [CPanelStorage._save] No se pudo navegar a public_html/: {e2}")
                 
                 # Navegar al directorio del archivo (images/mecanimovil-app-media)
                 remote_dir = os.path.dirname(remote_path)
@@ -235,11 +251,29 @@ class CPanelStorage(Storage):
                         # PRIMERO: Listar directorios actuales para ver qué existe
                         try:
                             current_dir = ftp.pwd()
-                            logger.warning(f"🔍 [CPanelStorage._save] Directorio actual antes de navegar: {current_dir}")
-                            files_and_dirs = ftp.nlst()
+                            logger.warning(f"🔍 [CPanelStorage._save] Directorio actual antes de navegar a '{part}': {current_dir}")
+                            
+                            # Listar TODO (incluyendo . y ..)
+                            all_items = ftp.nlst()
+                            logger.warning(f"🔍 [CPanelStorage._save] TODOS los items (incluyendo . y ..): {all_items}")
+                            
                             # Filtrar . y ..
-                            files_and_dirs = [item for item in files_and_dirs if item not in ['.', '..']]
-                            logger.warning(f"🔍 [CPanelStorage._save] Contenido del directorio actual: {files_and_dirs}")
+                            files_and_dirs = [item for item in all_items if item not in ['.', '..']]
+                            logger.warning(f"🔍 [CPanelStorage._save] Contenido del directorio (sin . y ..): {files_and_dirs}")
+                            
+                            # Intentar usar MLSD para obtener información detallada
+                            try:
+                                logger.warning(f"🔍 [CPanelStorage._save] Intentando MLSD para detalles...")
+                                detailed_items = []
+                                for item in ftp.mlsd():
+                                    detailed_items.append((item[0], item[1].get('type', 'unknown')))
+                                logger.warning(f"🔍 [CPanelStorage._save] Items con MLSD: {detailed_items}")
+                                
+                                # Buscar directorios
+                                dirs_only = [name for name, item_type in detailed_items if item_type == 'dir']
+                                logger.warning(f"🔍 [CPanelStorage._save] SOLO directorios encontrados: {dirs_only}")
+                            except Exception as mlsd_error:
+                                logger.warning(f"⚠️ [CPanelStorage._save] MLSD no disponible: {mlsd_error}")
                             
                             # Buscar el directorio (puede tener diferente capitalización)
                             matching_dir = None
@@ -252,20 +286,28 @@ class CPanelStorage(Storage):
                                         ftp.cwd(item)
                                         ftp.cwd(original_dir)  # Volver
                                         # Si llegamos aquí, es un directorio
+                                        logger.warning(f"🔍 [CPanelStorage._save] '{item}' es un directorio")
                                         if item.lower() == part.lower() or item == part:
                                             matching_dir = item
+                                            logger.warning(f"✅ [CPanelStorage._save] Coincidencia encontrada: '{item}' == '{part}'")
                                             break
-                                    except:
+                                    except Exception as cwd_error:
                                         # No es un directorio o no se puede acceder
+                                        logger.warning(f"⚠️ [CPanelStorage._save] '{item}' NO es un directorio accesible: {cwd_error}")
                                         continue
-                                except:
+                                except Exception as e:
+                                    logger.warning(f"⚠️ [CPanelStorage._save] Error verificando '{item}': {e}")
                                     continue
                             
                             if matching_dir and matching_dir != part:
                                 logger.warning(f"⚠️ [CPanelStorage._save] Directorio encontrado con nombre diferente: '{matching_dir}' (buscando '{part}')")
                                 part = matching_dir
+                            elif not matching_dir:
+                                logger.warning(f"⚠️ [CPanelStorage._save] NO se encontró directorio '{part}' en la lista")
                         except Exception as e:
-                            logger.warning(f"⚠️ [CPanelStorage._save] No se pudo listar directorio: {e}")
+                            logger.error(f"❌ [CPanelStorage._save] Error listando directorio: {e}")
+                            import traceback
+                            logger.error(traceback.format_exc())
                         
                         try:
                             # Intentar navegar (el directorio ya existe)
