@@ -225,18 +225,57 @@ STATICFILES_FINDERS = [
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
-# Configuración de almacenamiento en la nube (S3) para producción
-# Descomentar y configurar cuando se use S3 para archivos media
-# if not DEBUG:
-#     DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
-#     AWS_ACCESS_KEY_ID = config('AWS_ACCESS_KEY_ID', default='')
-#     AWS_SECRET_ACCESS_KEY = config('AWS_SECRET_ACCESS_KEY', default='')
-#     AWS_STORAGE_BUCKET_NAME = config('AWS_STORAGE_BUCKET_NAME', default='mecanimovil-media')
-#     AWS_S3_REGION_NAME = config('AWS_S3_REGION_NAME', default='us-east-1')
-#     AWS_S3_FILE_OVERWRITE = False
-#     AWS_DEFAULT_ACL = None
-#     AWS_S3_CUSTOM_DOMAIN = f'{AWS_STORAGE_BUCKET_NAME}.s3.amazonaws.com'
-#     MEDIA_URL = f'https://{AWS_S3_CUSTOM_DOMAIN}/'
+# ============================================
+# Configuración de almacenamiento de archivos
+# ============================================
+# Opciones disponibles:
+# 1. cPanel (FTP) - Para usar servidor cPanel existente
+# 2. AWS S3 - Para producción escalable (recomendado a largo plazo)
+# 3. Local - Solo para desarrollo (no funciona en Render)
+
+# Seleccionar el tipo de almacenamiento
+STORAGE_TYPE = config('STORAGE_TYPE', default='local')  # 'local', 'cpanel', 's3'
+
+if not DEBUG:
+    if STORAGE_TYPE == 'cpanel':
+        # ============================================
+        # Configuración para cPanel (FTP)
+        # ============================================
+        DEFAULT_FILE_STORAGE = 'mecanimovilapp.storage.cpanel_storage.CPanelStorage'
+        
+        # Credenciales FTP de cPanel
+        CPANEL_FTP_HOST = config('CPANEL_FTP_HOST', default='')
+        CPANEL_FTP_USER = config('CPANEL_FTP_USER', default='')
+        CPANEL_FTP_PASSWORD = config('CPANEL_FTP_PASSWORD', default='')
+        
+        # Ruta en el servidor cPanel donde se guardarán los archivos
+        # Ejemplo: '/public_html/media' o '/home/usuario/public_html/media'
+        CPANEL_FTP_ROOT = config('CPANEL_FTP_ROOT', default='/public_html/media')
+        
+        # URL pública donde se servirán los archivos
+        # Ejemplo: 'https://tudominio.com/media/' o 'https://media.tudominio.com/'
+        CPANEL_MEDIA_URL = config('CPANEL_MEDIA_URL', default='')
+        
+        # Usar la URL de cPanel como MEDIA_URL
+        if CPANEL_MEDIA_URL:
+            MEDIA_URL = CPANEL_MEDIA_URL
+        
+    elif STORAGE_TYPE == 's3':
+        # ============================================
+        # Configuración para AWS S3
+        # ============================================
+        DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
+        AWS_ACCESS_KEY_ID = config('AWS_ACCESS_KEY_ID', default='')
+        AWS_SECRET_ACCESS_KEY = config('AWS_SECRET_ACCESS_KEY', default='')
+        AWS_STORAGE_BUCKET_NAME = config('AWS_STORAGE_BUCKET_NAME', default='mecanimovil-media')
+        AWS_S3_REGION_NAME = config('AWS_S3_REGION_NAME', default='us-east-1')
+        AWS_S3_FILE_OVERWRITE = False
+        AWS_DEFAULT_ACL = None
+        AWS_S3_CUSTOM_DOMAIN = f'{AWS_STORAGE_BUCKET_NAME}.s3.amazonaws.com'
+        MEDIA_URL = f'https://{AWS_S3_CUSTOM_DOMAIN}/'
+    
+    # Si STORAGE_TYPE es 'local' o no está configurado, se usa almacenamiento local
+    # (solo para desarrollo, no funciona en Render)
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
