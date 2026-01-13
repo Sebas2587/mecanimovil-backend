@@ -286,29 +286,43 @@ class CPanelStorage(Storage):
                             except Exception as mlsd_error:
                                 logger.warning(f"⚠️ [CPanelStorage._save] MLSD no disponible: {mlsd_error}")
                             
-                            # Buscar el directorio (puede tener diferente capitalización)
+                            # Buscar el directorio usando MLSD si está disponible (más eficiente)
                             matching_dir = None
-                            for item in files_and_dirs:
-                                # Verificar si es un directorio (no un archivo)
-                                try:
-                                    # Intentar cambiar al directorio para verificar que es un directorio
-                                    original_dir = ftp.pwd()
+                            
+                            # Primero intentar usar MLSD para distinguir archivos de directorios
+                            try:
+                                detailed_items = []
+                                for item_info in ftp.mlsd():
+                                    detailed_items.append((item_info[0], item_info[1].get('type', 'unknown')))
+                                
+                                # Filtrar solo directorios
+                                dirs_only = [name for name, item_type in detailed_items if item_type == 'dir']
+                                logger.warning(f"🔍 [CPanelStorage._save] SOLO directorios encontrados: {dirs_only}")
+                                
+                                # Buscar coincidencia en directorios
+                                for dir_name in dirs_only:
+                                    if dir_name.lower() == part.lower() or dir_name == part:
+                                        matching_dir = dir_name
+                                        logger.warning(f"✅ [CPanelStorage._save] Coincidencia encontrada: '{dir_name}' == '{part}'")
+                                        break
+                            except Exception as mlsd_error:
+                                logger.warning(f"⚠️ [CPanelStorage._save] MLSD no disponible, usando método alternativo: {mlsd_error}")
+                                # Fallback: verificar cada item intentando navegar
+                                for item in files_and_dirs:
                                     try:
-                                        ftp.cwd(item)
-                                        ftp.cwd(original_dir)  # Volver
-                                        # Si llegamos aquí, es un directorio
-                                        logger.warning(f"🔍 [CPanelStorage._save] '{item}' es un directorio")
-                                        if item.lower() == part.lower() or item == part:
-                                            matching_dir = item
-                                            logger.warning(f"✅ [CPanelStorage._save] Coincidencia encontrada: '{item}' == '{part}'")
-                                            break
-                                    except Exception as cwd_error:
-                                        # No es un directorio o no se puede acceder
-                                        logger.warning(f"⚠️ [CPanelStorage._save] '{item}' NO es un directorio accesible: {cwd_error}")
+                                        original_dir = ftp.pwd()
+                                        try:
+                                            ftp.cwd(item)
+                                            ftp.cwd(original_dir)  # Volver
+                                            # Si llegamos aquí, es un directorio
+                                            if item.lower() == part.lower() or item == part:
+                                                matching_dir = item
+                                                break
+                                        except:
+                                            # No es un directorio
+                                            continue
+                                    except:
                                         continue
-                                except Exception as e:
-                                    logger.warning(f"⚠️ [CPanelStorage._save] Error verificando '{item}': {e}")
-                                    continue
                             
                             if matching_dir and matching_dir != part:
                                 logger.warning(f"⚠️ [CPanelStorage._save] Directorio encontrado con nombre diferente: '{matching_dir}' (buscando '{part}')")
