@@ -55,8 +55,6 @@ class Vehiculo(models.Model):
     TIPO_MOTOR_CHOICES = [
         ('Gasolina', 'Gasolina'),
         ('Diésel', 'Diésel'),
-        ('Eléctrico', 'Eléctrico'),
-        ('Híbrido', 'Híbrido'),
     ]
     
     marca = models.ForeignKey(

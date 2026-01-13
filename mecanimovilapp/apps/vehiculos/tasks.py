@@ -53,8 +53,26 @@ def calcular_estado_salud_interno(vehicle_id):
         logger.error(f"Vehículo {vehicle_id} no encontrado")
         raise
     
-    # Obtener o crear componentes de salud para todos los configs activos
-    configs = ComponenteSaludConfig.objects.filter(activo=True)
+    # Determinar el tipo de motor del vehículo para filtrar componentes
+    tipo_motor = vehiculo.tipo_motor
+    
+    # Mapear tipo de motor del vehículo a tipo de motor de componentes
+    if tipo_motor and 'diesel' in tipo_motor.lower() or tipo_motor == 'Diésel':
+        tipo_motor_filtro = 'DIESEL'
+    else:
+        tipo_motor_filtro = 'GASOLINA'
+    
+    logger.info(f"Calculando salud para vehículo {vehicle_id} con motor: {tipo_motor} -> filtro: {tipo_motor_filtro}")
+    
+    # Obtener configs activos que aplican a este tipo de motor
+    # Incluir: TODOS + tipo específico del vehículo
+    configs = ComponenteSaludConfig.objects.filter(
+        activo=True
+    ).filter(
+        Q(tipo_motor_aplicable='TODOS') | Q(tipo_motor_aplicable=tipo_motor_filtro)
+    )
+    
+    logger.info(f"Se encontraron {configs.count()} componentes aplicables para tipo motor {tipo_motor_filtro}")
     
     for config in configs:
         ComponenteSaludVehiculo.objects.get_or_create(

@@ -19,8 +19,20 @@ class ComponenteSaludConfig(models.Model):
         ('MIXTO', 'Kilometraje y Tiempo'),
     ]
     
-    nombre = models.CharField(max_length=100, unique=True)
+    TIPO_MOTOR_CHOICES = [
+        ('TODOS', 'Todos los motores'),
+        ('GASOLINA', 'Solo Gasolina'),
+        ('DIESEL', 'Solo Diésel'),
+    ]
+    
+    nombre = models.CharField(max_length=100)  # Ya no es unique, puede haber variantes por tipo motor
     descripcion = models.TextField(blank=True, null=True)
+    tipo_motor_aplicable = models.CharField(
+        max_length=20,
+        choices=TIPO_MOTOR_CHOICES,
+        default='TODOS',
+        help_text='Tipo de motor al que aplica este componente'
+    )
     tipo_medicion = models.CharField(
         max_length=20, 
         choices=TIPO_MEDICION_CHOICES, 
@@ -81,8 +93,11 @@ class ComponenteSaludConfig(models.Model):
         verbose_name = 'Componente de Salud'
         verbose_name_plural = 'Componentes de Salud'
         ordering = ['orden_visualizacion', 'nombre']
+        unique_together = ['nombre', 'tipo_motor_aplicable']
     
     def __str__(self):
+        if self.tipo_motor_aplicable != 'TODOS':
+            return f"{self.nombre} ({self.get_tipo_motor_aplicable_display()})"
         return self.nombre
 
 
