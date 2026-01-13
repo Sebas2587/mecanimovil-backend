@@ -237,14 +237,29 @@ class CPanelStorage(Storage):
                             current_dir = ftp.pwd()
                             logger.warning(f"🔍 [CPanelStorage._save] Directorio actual antes de navegar: {current_dir}")
                             files_and_dirs = ftp.nlst()
+                            # Filtrar . y ..
+                            files_and_dirs = [item for item in files_and_dirs if item not in ['.', '..']]
                             logger.warning(f"🔍 [CPanelStorage._save] Contenido del directorio actual: {files_and_dirs}")
                             
                             # Buscar el directorio (puede tener diferente capitalización)
                             matching_dir = None
                             for item in files_and_dirs:
-                                if item.lower() == part.lower() or item == part:
-                                    matching_dir = item
-                                    break
+                                # Verificar si es un directorio (no un archivo)
+                                try:
+                                    # Intentar cambiar al directorio para verificar que es un directorio
+                                    original_dir = ftp.pwd()
+                                    try:
+                                        ftp.cwd(item)
+                                        ftp.cwd(original_dir)  # Volver
+                                        # Si llegamos aquí, es un directorio
+                                        if item.lower() == part.lower() or item == part:
+                                            matching_dir = item
+                                            break
+                                    except:
+                                        # No es un directorio o no se puede acceder
+                                        continue
+                                except:
+                                    continue
                             
                             if matching_dir and matching_dir != part:
                                 logger.warning(f"⚠️ [CPanelStorage._save] Directorio encontrado con nombre diferente: '{matching_dir}' (buscando '{part}')")
@@ -260,18 +275,44 @@ class CPanelStorage(Storage):
                             # Si no existe, intentar crearlo
                             logger.warning(f"⚠️ [CPanelStorage._save] Directorio '{part}' no encontrado, intentando crear...")
                             try:
+                                # Verificar permisos antes de crear
+                                current_before_create = ftp.pwd()
+                                logger.warning(f"🔍 [CPanelStorage._save] Creando '{part}' en: {current_before_create}")
+                                
                                 ftp.mkd(part)
-                                logger.warning(f"✅ [CPanelStorage._save] Directorio '{part}' creado")
+                                logger.warning(f"✅ [CPanelStorage._save] Directorio '{part}' creado exitosamente")
+                                
+                                # Verificar que se creó listando de nuevo
+                                files_after = ftp.nlst()
+                                files_after = [item for item in files_after if item not in ['.', '..']]
+                                logger.warning(f"🔍 [CPanelStorage._save] Contenido después de crear: {files_after}")
+                                
                                 ftp.cwd(part)
                                 logger.warning(f"✅ [CPanelStorage._save] Navegado a directorio creado: {part}")
-                            except Exception as e2:
-                                logger.error(f"❌ [CPanelStorage._save] Error con directorio '{part}': {e2}")
+                            except ftplib.error_perm as e2:
+                                # Error de permisos al crear
+                                logger.error(f"❌ [CPanelStorage._save] Error de permisos creando directorio '{part}': {e2}")
+                                logger.error(f"❌ [CPanelStorage._save] La cuenta FTP puede no tener permisos para crear directorios")
                                 # Listar de nuevo para debug
                                 try:
                                     current_dir = ftp.pwd()
                                     files_and_dirs = ftp.nlst()
+                                    files_and_dirs = [item for item in files_and_dirs if item not in ['.', '..']]
                                     logger.error(f"❌ [CPanelStorage._save] Directorio actual: {current_dir}")
-                                    logger.error(f"❌ [CPanelStorage._save] Directorios disponibles: {files_and_dirs}")
+                                    logger.error(f"❌ [CPanelStorage._save] Directorios/archivos disponibles: {files_and_dirs}")
+                                except:
+                                    pass
+                                # NO continuar - fallar explícitamente
+                                raise Exception(f"No se pudo crear el directorio '{part}'. La cuenta FTP puede no tener permisos. Error: {e2}")
+                            except Exception as e2:
+                                logger.error(f"❌ [CPanelStorage._save] Error inesperado creando directorio '{part}': {e2}")
+                                # Listar de nuevo para debug
+                                try:
+                                    current_dir = ftp.pwd()
+                                    files_and_dirs = ftp.nlst()
+                                    files_and_dirs = [item for item in files_and_dirs if item not in ['.', '..']]
+                                    logger.error(f"❌ [CPanelStorage._save] Directorio actual: {current_dir}")
+                                    logger.error(f"❌ [CPanelStorage._save] Directorios/archivos disponibles: {files_and_dirs}")
                                 except:
                                     pass
                                 raise
