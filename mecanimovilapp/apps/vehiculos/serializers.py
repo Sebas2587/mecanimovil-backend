@@ -227,9 +227,12 @@ class VehiculoSerializer(serializers.ModelSerializer):
                     logger.warning(f"📸 [VehiculoSerializer.create] Usando storage: {type(storage).__name__}")
                     # Guardar el archivo usando el storage correcto
                     filename = storage.save(foto_file.name, foto_file)
-                    vehiculo.foto = filename
+                    # Asignar el storage explícitamente al campo
+                    vehiculo.foto.name = filename
+                    vehiculo.foto.storage = storage
                     vehiculo.save()
                     logger.warning(f"✅ [VehiculoSerializer.create] Foto guardada: {filename}")
+                    logger.warning(f"✅ [VehiculoSerializer.create] Storage asignado al campo: {type(vehiculo.foto.storage).__name__}")
                 except Exception as e:
                     logger.error(f"❌ [VehiculoSerializer.create] Error guardando foto: {e}")
                     # Fallback: guardar normalmente
@@ -281,8 +284,11 @@ class VehiculoSerializer(serializers.ModelSerializer):
                     logger.warning(f"📸 [VehiculoSerializer.update] Usando storage: {type(storage).__name__}")
                     # Guardar el archivo usando el storage correcto
                     filename = storage.save(foto_file.name, foto_file)
-                    instance.foto = filename
+                    # Asignar el storage explícitamente al campo
+                    instance.foto.name = filename
+                    instance.foto.storage = storage
                     logger.warning(f"✅ [VehiculoSerializer.update] Foto guardada: {filename}")
+                    logger.warning(f"✅ [VehiculoSerializer.update] Storage asignado al campo: {type(instance.foto.storage).__name__}")
                 except Exception as e:
                     logger.error(f"❌ [VehiculoSerializer.update] Error guardando foto: {e}")
                     # Fallback: guardar normalmente
