@@ -19,6 +19,8 @@ from django.urls import path, include
 from django.http import JsonResponse
 from django.conf import settings
 from django.conf.urls.static import static
+from django.views.static import serve
+import os
 # from rest_framework.documentation import include_docs_urls
 
 # Personalizar el admin
@@ -29,6 +31,16 @@ admin.site.index_title = "Bienvenido al portal de administración de MecaniMovil
 # Vista simple para el endpoint /api/hello/
 def hello_api(request):
     return JsonResponse({"message": "¡Hola desde el backend de MecaniMovil!"})
+
+# Vista para servir archivos media en producción
+def serve_media(request, path):
+    """
+    Vista para servir archivos media en producción
+    """
+    file_path = os.path.join(settings.MEDIA_ROOT, path)
+    if os.path.exists(file_path):
+        return serve(request, path, document_root=settings.MEDIA_ROOT)
+    return JsonResponse({"error": "File not found"}, status=404)
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -52,3 +64,8 @@ urlpatterns = [
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
     urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
+else:
+    # En producción, servir archivos media manualmente
+    urlpatterns += [
+        path('media/<path:path>', serve_media, name='serve_media'),
+    ]

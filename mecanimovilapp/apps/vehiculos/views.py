@@ -53,6 +53,14 @@ class VehiculoViewSet(viewsets.ModelViewSet):
     serializer_class = VehiculoSerializer
     permission_classes = [permissions.IsAuthenticated]
     
+    def get_serializer_context(self):
+        """
+        Pasa el request al serializer para que pueda construir URLs completas
+        """
+        context = super().get_serializer_context()
+        context['request'] = self.request
+        return context
+    
     def get_permissions(self):
         """
         Permitir acceso público al endpoint de marcas

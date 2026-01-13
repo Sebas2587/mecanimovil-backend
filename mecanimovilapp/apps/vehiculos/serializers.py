@@ -48,6 +48,7 @@ class VehiculoSerializer(serializers.ModelSerializer):
     color = serializers.SerializerMethodField()
     numero_motor = serializers.SerializerMethodField()
     numero_chasis = serializers.SerializerMethodField()
+    foto = serializers.SerializerMethodField()  # Cambiar a SerializerMethodField para devolver URL completa
     
     class Meta:
         model = Vehiculo
@@ -61,6 +62,18 @@ class VehiculoSerializer(serializers.ModelSerializer):
         extra_kwargs = {
             'cliente': {'write_only': True}
         }
+    
+    def get_foto(self, obj):
+        """Retorna la URL completa de la foto del vehículo"""
+        if obj.foto:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.foto.url)
+            # Fallback si no hay request (por ejemplo, en tests)
+            from django.conf import settings
+            if hasattr(settings, 'MEDIA_URL'):
+                return f"{settings.MEDIA_URL}{obj.foto.name}"
+        return None
     
     def get_color(self, obj):
         """Retorna el color del vehículo si está disponible"""
