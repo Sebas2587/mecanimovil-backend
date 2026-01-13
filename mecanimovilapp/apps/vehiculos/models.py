@@ -77,7 +77,7 @@ class Vehiculo(models.Model):
     patente = models.CharField(max_length=20, unique=True)
     kilometraje = models.PositiveIntegerField(default=0)
     foto = models.ImageField(
-        upload_to='vehiculos/', 
+        upload_to='',  # Guardar directamente en la raíz del storage (mecanimovil-app-media/)
         blank=True, 
         null=True
     )

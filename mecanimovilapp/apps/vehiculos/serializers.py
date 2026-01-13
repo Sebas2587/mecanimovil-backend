@@ -223,7 +223,7 @@ class VehiculoSerializer(serializers.ModelSerializer):
                     storage = import_string(storage_class)()
                     logger.warning(f"📸 [VehiculoSerializer.create] Usando storage: {type(storage).__name__}")
                     # Guardar el archivo usando el storage correcto
-                    filename = storage.save(f'vehiculos/{foto_file.name}', foto_file)
+                    filename = storage.save(foto_file.name, foto_file)
                     vehiculo.foto = filename
                     vehiculo.save()
                     logger.warning(f"✅ [VehiculoSerializer.create] Foto guardada: {filename}")
@@ -274,7 +274,7 @@ class VehiculoSerializer(serializers.ModelSerializer):
                     storage = import_string(storage_class)()
                     logger.warning(f"📸 [VehiculoSerializer.update] Usando storage: {type(storage).__name__}")
                     # Guardar el archivo usando el storage correcto
-                    filename = storage.save(f'vehiculos/{foto_file.name}', foto_file)
+                    filename = storage.save(foto_file.name, foto_file)
                     instance.foto = filename
                     logger.warning(f"✅ [VehiculoSerializer.update] Foto guardada: {filename}")
                 except Exception as e:
