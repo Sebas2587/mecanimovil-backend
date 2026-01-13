@@ -69,36 +69,62 @@ class VehiculoSerializer(serializers.ModelSerializer):
         logger = logging.getLogger(__name__)
         
         if obj.foto:
-            # Cuando se usa cPanel storage, obj.foto.url ya retorna la URL completa de cPanel
-            # Cuando se usa S3, obj.foto.url también retorna la URL completa de S3
-            # Solo en desarrollo local necesitamos construir la URL con request
             from django.conf import settings
             
-            # Verificar si estamos usando cPanel o S3 (storage personalizado)
+            # Verificar el tipo de storage configurado
             storage_type = getattr(settings, 'STORAGE_TYPE', 'local')
+            default_storage = getattr(settings, 'DEFAULT_FILE_STORAGE', None)
             
-            if storage_type in ['cpanel', 's3']:
-                # El storage backend ya construye la URL completa
+            logger.info(f"🔍 [VehiculoSerializer] Vehículo {obj.id} - STORAGE_TYPE: {storage_type}")
+            logger.info(f"🔍 [VehiculoSerializer] Vehículo {obj.id} - DEFAULT_FILE_STORAGE: {default_storage}")
+            logger.info(f"🔍 [VehiculoSerializer] Vehículo {obj.id} - Foto name: {obj.foto.name}")
+            logger.info(f"🔍 [VehiculoSerializer] Vehículo {obj.id} - Foto storage: {type(obj.foto.storage).__name__}")
+            
+            # Obtener la URL del storage
+            try:
                 foto_url = obj.foto.url
-                logger.info(f"📸 [VehiculoSerializer] Vehículo {obj.id} - Foto URL desde storage ({storage_type}): {foto_url}")
-                logger.info(f"📸 [VehiculoSerializer] Vehículo {obj.id} - Foto name: {obj.foto.name}")
-                return foto_url
-            else:
-                # Desarrollo local: construir URL con request
+                logger.info(f"📸 [VehiculoSerializer] Vehículo {obj.id} - URL desde storage: {foto_url}")
+                
+                # Si la URL es relativa (empieza con /media), necesitamos construirla
+                if foto_url and foto_url.startswith('/media/'):
+                    # Verificar si tenemos configuración de cPanel
+                    if storage_type == 'cpanel':
+                        cpanel_media_url = getattr(settings, 'CPANEL_MEDIA_URL', '')
+                        if cpanel_media_url:
+                            # Construir URL completa de cPanel
+                            relative_path = foto_url.replace('/media/', '')
+                            full_url = f"{cpanel_media_url.rstrip('/')}/{relative_path}"
+                            logger.info(f"📸 [VehiculoSerializer] Vehículo {obj.id} - URL construida de cPanel: {full_url}")
+                            return full_url
+                        else:
+                            logger.warning(f"⚠️ [VehiculoSerializer] Vehículo {obj.id} - STORAGE_TYPE=cpanel pero CPANEL_MEDIA_URL no está configurado")
+                    
+                    # Si no es cPanel o no está configurado, usar request para construir URL
+                    request = self.context.get('request')
+                    if request:
+                        absolute_url = request.build_absolute_uri(foto_url)
+                        logger.info(f"📸 [VehiculoSerializer] Vehículo {obj.id} - URL absoluta construida: {absolute_url}")
+                        return absolute_url
+                    else:
+                        # Fallback: usar MEDIA_URL
+                        media_url = getattr(settings, 'MEDIA_URL', '/media/')
+                        fallback_url = f"{media_url.rstrip('/')}/{obj.foto.name}"
+                        logger.warning(f"⚠️ [VehiculoSerializer] Vehículo {obj.id} - Sin request, usando fallback: {fallback_url}")
+                        return fallback_url
+                else:
+                    # La URL ya es completa (de cPanel o S3)
+                    logger.info(f"✅ [VehiculoSerializer] Vehículo {obj.id} - URL completa desde storage: {foto_url}")
+                    return foto_url
+                    
+            except Exception as e:
+                logger.error(f"❌ [VehiculoSerializer] Vehículo {obj.id} - Error obteniendo URL: {e}")
+                # Fallback: construir URL manualmente
                 request = self.context.get('request')
                 if request:
-                    # Construir URL completa usando el dominio de Render/local
-                    foto_url = obj.foto.url  # Esto devuelve algo como '/media/vehiculos/vehicle_xxx.jpg'
-                    absolute_url = request.build_absolute_uri(foto_url)
-                    logger.info(f"📸 [VehiculoSerializer] Vehículo {obj.id} - Foto URL relativa: {foto_url}")
-                    logger.info(f"📸 [VehiculoSerializer] Vehículo {obj.id} - Foto URL absoluta: {absolute_url}")
-                    logger.info(f"📸 [VehiculoSerializer] Vehículo {obj.id} - Foto name: {obj.foto.name}")
-                    return absolute_url
-                # Fallback si no hay request (por ejemplo, en tests)
-                if hasattr(settings, 'MEDIA_URL'):
-                    fallback_url = f"{settings.MEDIA_URL}{obj.foto.name}"
-                    logger.warning(f"⚠️ [VehiculoSerializer] Vehículo {obj.id} - Sin request, usando fallback: {fallback_url}")
+                    fallback_url = request.build_absolute_uri(f'/media/{obj.foto.name}')
+                    logger.warning(f"⚠️ [VehiculoSerializer] Vehículo {obj.id} - Usando fallback con request: {fallback_url}")
                     return fallback_url
+                return None
         else:
             logger.info(f"ℹ️ [VehiculoSerializer] Vehículo {obj.id} - No tiene foto")
         return None

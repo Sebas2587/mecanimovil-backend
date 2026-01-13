@@ -55,8 +55,16 @@ class CPanelStorage(Storage):
         self.ftp_user = getattr(settings, 'CPANEL_FTP_USER', None)
         self.ftp_password = getattr(settings, 'CPANEL_FTP_PASSWORD', None)
         
+        # Log para debugging
+        logger.info(f"🔍 [CPanelStorage.__init__] location: {self.location}")
+        logger.info(f"🔍 [CPanelStorage.__init__] base_url: {self.base_url}")
+        logger.info(f"🔍 [CPanelStorage.__init__] ftp_host: {self.ftp_host}")
+        
         if not all([self.ftp_host, self.ftp_user, self.ftp_password]):
             logger.warning("⚠️ [CPanelStorage] Configuración FTP incompleta. Verifica CPANEL_FTP_* en settings.")
+        
+        if not self.base_url:
+            logger.warning("⚠️ [CPanelStorage] CPANEL_MEDIA_URL no está configurado. Las URLs se construirán manualmente en el serializer.")
     
     def _connect_ftp(self):
         """Establece conexión FTP con el servidor cPanel."""
@@ -255,19 +263,30 @@ class CPanelStorage(Storage):
         Retorna la URL pública del archivo en cPanel.
         
         Args:
-            name: Nombre del archivo
+            name: Nombre del archivo (ej: 'vehiculos/vehicle_xxx.jpg')
             
         Returns:
             str: URL completa del archivo
         """
+        # Si no hay base_url configurado, intentar obtenerlo de settings
         if not self.base_url:
+            from django.conf import settings
+            self.base_url = getattr(settings, 'CPANEL_MEDIA_URL', '')
+            logger.debug(f"🔍 [CPanelStorage.url] base_url obtenido de settings: {self.base_url}")
+        
+        if not self.base_url:
+            logger.warning(f"⚠️ [CPanelStorage.url] base_url no configurado para archivo: {name}")
+            # Retornar None para que Django use el comportamiento por defecto
+            # El serializer manejará esto y construirá la URL manualmente
             return None
         
         # Asegurar que base_url termina con /
         base = self.base_url.rstrip('/') + '/'
         
         # Construir URL completa
+        # name ya viene como 'vehiculos/vehicle_xxx.jpg' (sin /media/)
         url = base + name.lstrip('/')
+        logger.info(f"✅ [CPanelStorage.url] URL construida para {name}: {url}")
         return url
     
     def delete(self, name):
