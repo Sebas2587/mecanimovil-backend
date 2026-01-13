@@ -262,6 +262,12 @@ if not DEBUG:
         CPANEL_FTP_ROOT = cpanel_ftp_root
         
         # URL pública donde se servirán los archivos
+        # Normalizar URL: agregar www. si no está presente y es mecanimovil.cl
+        if cpanel_media_url:
+            if 'mecanimovil.cl' in cpanel_media_url and 'www.' not in cpanel_media_url:
+                cpanel_media_url = cpanel_media_url.replace('https://mecanimovil.cl', 'https://www.mecanimovil.cl')
+                cpanel_media_url = cpanel_media_url.replace('http://mecanimovil.cl', 'http://www.mecanimovil.cl')
+        
         CPANEL_MEDIA_URL = cpanel_media_url
         
         # Usar la URL de cPanel como MEDIA_URL

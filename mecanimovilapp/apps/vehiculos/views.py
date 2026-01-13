@@ -97,15 +97,42 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         """
         Asigna automáticamente el cliente (usuario actual) al vehiculo creado
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        
         user = self.request.user
         
         if hasattr(user, 'cliente'):
-            serializer.save(cliente=user.cliente)
+            logger.warning(f"🔄 [VehiculoViewSet.perform_create] Creando vehículo para cliente {user.cliente.id}")
+            vehiculo = serializer.save(cliente=user.cliente)
+            logger.warning(f"✅ [VehiculoViewSet.perform_create] Vehículo {vehiculo.id} creado. Foto: {vehiculo.foto.name if vehiculo.foto else 'Sin foto'}")
+            if vehiculo.foto:
+                logger.warning(f"📸 [VehiculoViewSet.perform_create] Storage usado: {type(vehiculo.foto.storage).__name__}")
         else:
             # Si el usuario no tiene un cliente asociado, lanzar error
             raise permissions.PermissionDenied(
                 "Solo los clientes pueden crear vehículos."
             )
+    
+    def perform_update(self, serializer):
+        """
+        Log para verificar actualización de vehículo
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        logger.warning(f"🔄 [VehiculoViewSet.perform_update] Actualizando vehículo {serializer.instance.id}")
+        
+        # Verificar si hay una nueva foto en los datos
+        if 'foto' in serializer.validated_data:
+            logger.warning(f"📸 [VehiculoViewSet.perform_update] Nueva foto detectada para vehículo {serializer.instance.id}")
+            logger.warning(f"📸 [VehiculoViewSet.perform_update] Storage configurado: {type(serializer.instance.foto.storage).__name__ if serializer.instance.foto else 'N/A'}")
+        
+        vehiculo = serializer.save()
+        
+        if vehiculo.foto:
+            logger.warning(f"✅ [VehiculoViewSet.perform_update] Vehículo {vehiculo.id} actualizado. Foto: {vehiculo.foto.name}")
+            logger.warning(f"📸 [VehiculoViewSet.perform_update] Storage usado: {type(vehiculo.foto.storage).__name__}")
     
     @action(detail=False, methods=['get'], url_path='marcas')
     def get_marcas(self, request):
