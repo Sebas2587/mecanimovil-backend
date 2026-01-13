@@ -11,6 +11,9 @@ from django.contrib.gis.geos import Point
 import logging
 from django.db.models import Avg, Count
 
+# Helper para URLs de archivos en cPanel
+from mecanimovilapp.storage.utils import get_image_url
+
 
 # Configurar logger
 logger = logging.getLogger(__name__)
@@ -47,11 +50,12 @@ class UsuarioSerializer(serializers.ModelSerializer):
     """
     password = serializers.CharField(write_only=True, required=True, allow_blank=False, min_length=8)
     is_client = serializers.SerializerMethodField()
+    foto_perfil_url = serializers.SerializerMethodField()
     
     class Meta:
         model = Usuario
         fields = ('id', 'username', 'email', 'password', 'first_name', 'last_name', 
-                  'es_mecanico', 'telefono', 'direccion', 'foto_perfil', 'is_client')
+                  'es_mecanico', 'telefono', 'direccion', 'foto_perfil', 'foto_perfil_url', 'is_client')
         extra_kwargs = {
             'password': {'write_only': True},
             'username': {'required': True},
@@ -61,6 +65,11 @@ class UsuarioSerializer(serializers.ModelSerializer):
     def get_is_client(self, obj):
         """Determina si el usuario tiene un perfil de cliente"""
         return hasattr(obj, 'cliente')
+    
+    def get_foto_perfil_url(self, obj):
+        """Retorna la URL completa de la foto de perfil usando cPanel si está configurado"""
+        request = self.context.get('request')
+        return get_image_url(obj.foto_perfil, request)
     
     def validate_password(self, value):
         """Validar que la contraseña tenga al menos 8 caracteres"""
@@ -138,34 +147,58 @@ class UserProfileSerializer(serializers.ModelSerializer):
     last_name = serializers.CharField(required=False, allow_blank=True)
     email = serializers.EmailField(read_only=True)  # Email es solo lectura para seguridad
     foto_perfil = serializers.ImageField(required=False)
+    foto_perfil_url = serializers.SerializerMethodField()
     
     class Meta:
         model = Usuario
         fields = ['id', 'username', 'first_name', 'last_name', 'email', 
-                  'telefono', 'direccion', 'foto_perfil', 'es_mecanico']
+                  'telefono', 'direccion', 'foto_perfil', 'foto_perfil_url', 'es_mecanico']
         read_only_fields = ['id', 'username', 'email', 'es_mecanico']  # Email no editable
+    
+    def get_foto_perfil_url(self, obj):
+        """Retorna la URL completa de la foto de perfil usando cPanel si está configurado"""
+        request = self.context.get('request')
+        return get_image_url(obj.foto_perfil, request)
         
     def update(self, instance, validated_data):
-        # Actualizar campos del modelo Usuario directamente
-        # Los campos first_name, last_name son campos directos de AbstractUser
-        # Email está marcado como read_only, no se actualiza aquí
+        """
+        Actualizar perfil de usuario, guardando foto en cPanel si está configurado
+        """
+        from django.conf import settings
         
-        # Actualizar first_name si existe en los datos validados
+        # Extraer foto si existe
+        foto_file = validated_data.pop('foto_perfil', None)
+        
+        # Actualizar campos del modelo Usuario directamente
         if 'first_name' in validated_data:
             instance.first_name = validated_data.get('first_name', instance.first_name)
             
-        # Actualizar last_name si existe en los datos validados
         if 'last_name' in validated_data:
             instance.last_name = validated_data.get('last_name', instance.last_name)
             
-        # Actualizar campos adicionales del perfil
         if 'telefono' in validated_data:
             instance.telefono = validated_data.get('telefono', instance.telefono)
         if 'direccion' in validated_data:
             instance.direccion = validated_data.get('direccion', instance.direccion)
         
-        if 'foto_perfil' in validated_data:
-            instance.foto_perfil = validated_data.get('foto_perfil')
+        # Guardar foto usando storage configurado (cPanel o local)
+        if foto_file:
+            storage_class = getattr(settings, 'DEFAULT_FILE_STORAGE', None)
+            if storage_class:
+                from django.utils.module_loading import import_string
+                try:
+                    storage = import_string(storage_class)()
+                    # Generar nombre con prefijo de perfil
+                    import time
+                    filename = f"perfiles/profile_{instance.id}_{int(time.time() * 1000)}.{foto_file.name.split('.')[-1]}"
+                    saved_name = storage.save(filename, foto_file)
+                    instance.foto_perfil = saved_name
+                    logger.info(f"✅ Foto de perfil guardada en storage: {saved_name}")
+                except Exception as e:
+                    logger.error(f"❌ Error guardando foto de perfil en storage: {e}")
+                    instance.foto_perfil = foto_file
+            else:
+                instance.foto_perfil = foto_file
             
         instance.save()
         return instance
@@ -429,6 +462,9 @@ class TallerSerializer(serializers.ModelSerializer):
     # NUEVO: Campo para dirección física del taller
     direccion_fisica = TallerDireccionSerializer(read_only=True)
     
+    # NUEVO: URL de foto de perfil compatible con cPanel
+    foto_perfil_url = serializers.SerializerMethodField()
+    
     class Meta:
         model = Taller
         fields = ('id', 'usuario', 'nombre', 'telefono', 'ubicacion',
@@ -436,18 +472,24 @@ class TallerSerializer(serializers.ModelSerializer):
                   'especialidades', 'especialidades_nombres',
                   'marcas_atendidas', 'marcas_atendidas_nombres',
                   'descripcion', 'calificacion_promedio', 'numero_de_calificaciones', 'activo',
+                  'foto_perfil', 'foto_perfil_url',  # NUEVO: foto de perfil
                   'estado_verificacion', 'estado_verificacion_display', 
                   'verificado', 'onboarding_completado', 'onboarding_iniciado', 'fecha_verificacion',
                   'fecha_registro', 'ultima_actualizacion', 'distance',
-                  'ultima_conexion', 'esta_conectado', 'status', 'total_resenas',  # AGREGADO: total_resenas
-                  'servicios_completados', 'comunas_atendidas',  # NUEVO: servicios completados y comunas
-                  'latitud', 'longitud', 'direccion_fisica')  # NUEVO: incluir coordenadas para entrada
+                  'ultima_conexion', 'esta_conectado', 'status', 'total_resenas',
+                  'servicios_completados', 'comunas_atendidas',
+                  'latitud', 'longitud', 'direccion_fisica')
         read_only_fields = ('fecha_registro', 'ultima_actualizacion', 'fecha_verificacion', 
                             'verificado', 'estado_verificacion', 'onboarding_completado', 'onboarding_iniciado',
-                            'distance')  # AGREGADO: distance como read-only
+                            'distance')
         extra_kwargs = {
             'ubicacion': {'required': False}  # Hacer opcional durante el onboarding
         }
+    
+    def get_foto_perfil_url(self, obj):
+        """Retorna la URL completa de la foto de perfil usando cPanel si está configurado"""
+        request = self.context.get('request')
+        return get_image_url(obj.foto_perfil, request)
     
     def get_especialidades_nombres(self, obj):
         """Devuelve los nombres de las especialidades"""
@@ -658,25 +700,33 @@ class MecanicoDomicilioSerializer(serializers.ModelSerializer):
     # NUEVO: Campo para dirección legible basada en zonas de servicio
     direccion = serializers.SerializerMethodField()
     
+    # NUEVO: URL de foto de perfil compatible con cPanel
+    foto_perfil_url = serializers.SerializerMethodField()
+    
     class Meta:
         model = MecanicoDomicilio
         fields = ('id', 'usuario', 'nombre', 'telefono', 'ubicacion', 'disponible', 
                   'especialidades', 'especialidades_nombres', 
                   'marcas_atendidas', 'marcas_atendidas_nombres',
-                  'disponibilidad', 'foto_perfil', 'distance',  # NUEVO: incluir distance
+                  'disponibilidad', 'foto_perfil', 'foto_perfil_url', 'distance',
                   'radio_cobertura', 'calificacion_promedio', 'numero_de_calificaciones', 'activo',
                   'descripcion', 'dni', 'experiencia_anos',
                   'estado_verificacion', 'estado_verificacion_display', 
                   'verificado', 'onboarding_completado', 'onboarding_iniciado', 'fecha_verificacion',
-                  'fecha_registro', 'ultima_actualizacion', 'zonas_servicio',  # NUEVO: incluir zonas_servicio
-                  'ultima_conexion', 'esta_conectado', 'status', 'total_resenas',  # NUEVO: incluir total_resenas
-                  'servicios_completados',  # NUEVO: servicios completados
-                  'latitud', 'longitud', 'direccion')  # NUEVO: incluir coordenadas para entrada y dirección
+                  'fecha_registro', 'ultima_actualizacion', 'zonas_servicio',
+                  'ultima_conexion', 'esta_conectado', 'status', 'total_resenas',
+                  'servicios_completados',
+                  'latitud', 'longitud', 'direccion')
         read_only_fields = ('fecha_registro', 'ultima_actualizacion', 'fecha_verificacion', 
                             'verificado', 'estado_verificacion', 'onboarding_completado', 'onboarding_iniciado')
         extra_kwargs = {
             'ubicacion': {'required': False}  # Hacer opcional durante el onboarding
         }
+    
+    def get_foto_perfil_url(self, obj):
+        """Retorna la URL completa de la foto de perfil usando cPanel si está configurado"""
+        request = self.context.get('request')
+        return get_image_url(obj.foto_perfil, request)
     
     def get_especialidades_nombres(self, obj):
         """Devuelve los nombres de las especialidades"""
@@ -1097,13 +1147,9 @@ class DocumentoOnboardingSerializer(serializers.ModelSerializer):
         return obj.get_tipo_documento_display()
     
     def get_archivo_url(self, obj):
-        """Devuelve la URL completa del archivo"""
-        if obj.archivo:
-            request = self.context.get('request')
-            if request:
-                return request.build_absolute_uri(obj.archivo.url)
-            return obj.archivo.url
-        return None
+        """Devuelve la URL completa del archivo usando cPanel si está configurado"""
+        request = self.context.get('request')
+        return get_image_url(obj.archivo, request)
     
     def validate(self, data):
         """Validar que se especifique un taller o mecánico, pero no ambos"""

@@ -52,12 +52,6 @@ class VehiculoSerializer(serializers.ModelSerializer):
     # Campo foto: usar el campo del modelo directamente para escritura
     # Sobrescribir to_representation para devolver URL completa en lectura
     
-    def __init__(self, *args, **kwargs):
-        """Inicialización del serializer con logging"""
-        super().__init__(*args, **kwargs)
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.warning("🔄 [VehiculoSerializer.__init__] Serializer inicializado - Código actualizado con soporte cPanel")
     
     class Meta:
         model = Vehiculo
@@ -83,89 +77,11 @@ class VehiculoSerializer(serializers.ModelSerializer):
         return representation
     
     def get_foto(self, obj):
-        """Retorna la URL completa de la foto del vehículo"""
-        import logging
-        logger = logging.getLogger(__name__)
-        
-        # Log muy visible para verificar que el método se ejecuta
-        logger.warning(f"🖼️ [VehiculoSerializer.get_foto] INICIANDO para vehículo {obj.id}")
-        
-        if obj.foto:
-            from django.conf import settings
-            
-            # Verificar el tipo de storage configurado
-            storage_type = getattr(settings, 'STORAGE_TYPE', 'local')
-            default_storage = getattr(settings, 'DEFAULT_FILE_STORAGE', None)
-            cpanel_media_url = getattr(settings, 'CPANEL_MEDIA_URL', '')
-            cpanel_ftp_host = getattr(settings, 'CPANEL_FTP_HOST', '')
-            
-            logger.warning(f"🖼️ [VehiculoSerializer.get_foto] Vehículo {obj.id} - STORAGE_TYPE: {storage_type}")
-            logger.warning(f"🖼️ [VehiculoSerializer.get_foto] Vehículo {obj.id} - DEFAULT_FILE_STORAGE: {default_storage}")
-            logger.warning(f"🖼️ [VehiculoSerializer.get_foto] Vehículo {obj.id} - CPANEL_MEDIA_URL: {cpanel_media_url}")
-            logger.warning(f"🖼️ [VehiculoSerializer.get_foto] Vehículo {obj.id} - CPANEL_FTP_HOST: {cpanel_ftp_host}")
-            logger.warning(f"🖼️ [VehiculoSerializer.get_foto] Vehículo {obj.id} - Foto name: {obj.foto.name}")
-            logger.warning(f"🖼️ [VehiculoSerializer.get_foto] Vehículo {obj.id} - Foto storage: {type(obj.foto.storage).__name__}")
-            
-            # Obtener la URL del storage
-            try:
-                foto_url = obj.foto.url
-                logger.info(f"📸 [VehiculoSerializer] Vehículo {obj.id} - URL desde storage: {foto_url}")
-                
-                # Si la URL es relativa (empieza con /media), necesitamos construirla
-                if foto_url and foto_url.startswith('/media/'):
-                    # PRIORIDAD 1: Verificar si tenemos configuración de cPanel disponible
-                    # (incluso si STORAGE_TYPE no está configurado, pero hay variables de entorno)
-                    cpanel_media_url = getattr(settings, 'CPANEL_MEDIA_URL', '')
-                    cpanel_ftp_host = getattr(settings, 'CPANEL_FTP_HOST', '')
-                    
-                    logger.warning(f"🖼️ [VehiculoSerializer.get_foto] Vehículo {obj.id} - Verificando cPanel: CPANEL_MEDIA_URL={bool(cpanel_media_url)}, CPANEL_FTP_HOST={bool(cpanel_ftp_host)}")
-                    
-                    # Si hay configuración de cPanel, usarla siempre
-                    if cpanel_media_url:
-                        # Construir URL completa de cPanel
-                        relative_path = foto_url.replace('/media/', '')
-                        full_url = f"{cpanel_media_url.rstrip('/')}/{relative_path}"
-                        logger.warning(f"✅ [VehiculoSerializer.get_foto] Vehículo {obj.id} - URL CONSTRUIDA DE CPANEL: {full_url}")
-                        logger.warning(f"✅ [VehiculoSerializer.get_foto] Vehículo {obj.id} - STORAGE_TYPE: {storage_type}, pero usando cPanel por configuración disponible")
-                        return full_url
-                    elif cpanel_ftp_host:
-                        # Si hay FTP configurado pero no MEDIA_URL, intentar construirla
-                        logger.warning(f"⚠️ [VehiculoSerializer.get_foto] Vehículo {obj.id} - CPANEL_FTP_HOST configurado pero CPANEL_MEDIA_URL no. Verifica variables de entorno.")
-                    
-                    # PRIORIDAD 2: Si STORAGE_TYPE es cpanel pero no hay CPANEL_MEDIA_URL
-                    if storage_type == 'cpanel' and not cpanel_media_url:
-                        logger.warning(f"⚠️ [VehiculoSerializer] Vehículo {obj.id} - STORAGE_TYPE=cpanel pero CPANEL_MEDIA_URL no está configurado")
-                    
-                    # PRIORIDAD 3: Si no hay cPanel, usar request para construir URL de Render
-                    request = self.context.get('request')
-                    if request:
-                        absolute_url = request.build_absolute_uri(foto_url)
-                        logger.warning(f"⚠️ [VehiculoSerializer.get_foto] Vehículo {obj.id} - URL absoluta construida (Render/local): {absolute_url}")
-                        logger.warning(f"❌ [VehiculoSerializer.get_foto] Vehículo {obj.id} - ⚠️ USANDO URL DE RENDER. Las imágenes NO persistirán. Configura STORAGE_TYPE=cpanel y CPANEL_MEDIA_URL.")
-                        return absolute_url
-                    else:
-                        # Fallback: usar MEDIA_URL
-                        media_url = getattr(settings, 'MEDIA_URL', '/media/')
-                        fallback_url = f"{media_url.rstrip('/')}/{obj.foto.name}"
-                        logger.warning(f"⚠️ [VehiculoSerializer] Vehículo {obj.id} - Sin request, usando fallback: {fallback_url}")
-                        return fallback_url
-                else:
-                    # La URL ya es completa (de cPanel o S3)
-                    logger.info(f"✅ [VehiculoSerializer] Vehículo {obj.id} - URL completa desde storage: {foto_url}")
-                    return foto_url
-                    
-            except Exception as e:
-                logger.error(f"❌ [VehiculoSerializer] Vehículo {obj.id} - Error obteniendo URL: {e}")
-                # Fallback: construir URL manualmente
-                request = self.context.get('request')
-                if request:
-                    fallback_url = request.build_absolute_uri(f'/media/{obj.foto.name}')
-                    logger.warning(f"⚠️ [VehiculoSerializer] Vehículo {obj.id} - Usando fallback con request: {fallback_url}")
-                    return fallback_url
-                return None
-        else:
-            logger.info(f"ℹ️ [VehiculoSerializer] Vehículo {obj.id} - No tiene foto")
-        return None
+        """Retorna la URL completa de la foto del vehículo usando cPanel si está configurado"""
+        # Usar el helper centralizado para construir URLs
+        from mecanimovilapp.storage.utils import get_image_url
+        request = self.context.get('request')
+        return get_image_url(obj.foto, request)
     
     def get_color(self, obj):
         """Retorna el color del vehículo si está disponible"""
@@ -198,51 +114,35 @@ class VehiculoSerializer(serializers.ModelSerializer):
     
     def create(self, validated_data):
         """
-        Crear vehículo asegurando que la foto use el storage correcto
+        Crear vehículo asegurando que la foto use el storage correcto (cPanel)
         """
         import logging
         from django.conf import settings
         
         logger = logging.getLogger(__name__)
-        logger.warning(f"🔄 [VehiculoSerializer.create] MÉTODO CREATE LLAMADO")
-        logger.warning(f"🔄 [VehiculoSerializer.create] validated_data keys: {list(validated_data.keys())}")
         
         # Extraer la foto si existe
         foto_file = validated_data.pop('foto', None)
-        logger.warning(f"🔄 [VehiculoSerializer.create] foto_file extraído: {foto_file is not None}")
         
         # Crear el vehículo sin la foto primero
         vehiculo = Vehiculo.objects.create(**validated_data)
         
         # Si hay una foto, guardarla usando el storage correcto
         if foto_file:
-            logger.warning(f"📸 [VehiculoSerializer.create] Guardando foto para vehículo {vehiculo.id}")
-            
-            # Obtener el storage configurado
             storage_class = getattr(settings, 'DEFAULT_FILE_STORAGE', None)
             if storage_class:
                 from django.utils.module_loading import import_string
                 try:
                     storage = import_string(storage_class)()
-                    logger.warning(f"📸 [VehiculoSerializer.create] Usando storage: {type(storage).__name__}")
-                    # Guardar el archivo usando el storage correcto
                     filename = storage.save(foto_file.name, foto_file)
-                    # Asignar el nombre del archivo directamente
                     vehiculo.foto = filename
                     vehiculo.save()
-                    
-                    # Verificar que se guardó correctamente
-                    vehiculo.refresh_from_db()
-                    logger.warning(f"✅ [VehiculoSerializer.create] Foto guardada: {filename}")
-                    logger.warning(f"✅ [VehiculoSerializer.create] Foto en BD después de save: {vehiculo.foto.name if vehiculo.foto else 'None'}")
-                    logger.warning(f"✅ [VehiculoSerializer.create] Storage del campo: {type(vehiculo.foto.storage).__name__ if vehiculo.foto else 'None'}")
+                    logger.info(f"✅ Foto de vehículo {vehiculo.id} guardada en storage: {filename}")
                 except Exception as e:
-                    logger.error(f"❌ [VehiculoSerializer.create] Error guardando foto: {e}")
-                    # Fallback: guardar normalmente
+                    logger.error(f"❌ Error guardando foto de vehículo: {e}")
                     vehiculo.foto = foto_file
                     vehiculo.save()
             else:
-                # Sin storage personalizado, guardar normalmente
                 vehiculo.foto = foto_file
                 vehiculo.save()
         
@@ -250,18 +150,15 @@ class VehiculoSerializer(serializers.ModelSerializer):
     
     def update(self, instance, validated_data):
         """
-        Actualizar vehículo asegurando que la foto use el storage correcto
+        Actualizar vehículo asegurando que la foto use el storage correcto (cPanel)
         """
         import logging
         from django.conf import settings
         
         logger = logging.getLogger(__name__)
-        logger.warning(f"🔄 [VehiculoSerializer.update] MÉTODO UPDATE LLAMADO para vehículo {instance.id}")
-        logger.warning(f"🔄 [VehiculoSerializer.update] validated_data keys: {list(validated_data.keys())}")
         
         # Extraer la foto si existe
         foto_file = validated_data.pop('foto', None)
-        logger.warning(f"🔄 [VehiculoSerializer.update] foto_file extraído: {foto_file is not None}")
         
         # Actualizar otros campos
         for attr, value in validated_data.items():
@@ -269,8 +166,6 @@ class VehiculoSerializer(serializers.ModelSerializer):
         
         # Si hay una nueva foto, guardarla usando el storage correcto
         if foto_file:
-            logger.warning(f"📸 [VehiculoSerializer.update] Guardando nueva foto para vehículo {instance.id}")
-            
             # Eliminar la foto anterior si existe
             if instance.foto:
                 try:
@@ -278,31 +173,19 @@ class VehiculoSerializer(serializers.ModelSerializer):
                 except:
                     pass
             
-            # Obtener el storage configurado
             storage_class = getattr(settings, 'DEFAULT_FILE_STORAGE', None)
             if storage_class:
                 from django.utils.module_loading import import_string
                 try:
                     storage = import_string(storage_class)()
-                    logger.warning(f"📸 [VehiculoSerializer.update] Usando storage: {type(storage).__name__}")
-                    # Guardar el archivo usando el storage correcto
                     filename = storage.save(foto_file.name, foto_file)
-                    # Asignar el nombre del archivo directamente
                     instance.foto = filename
-                    instance.save()
-                    
-                    # Verificar que se guardó correctamente
-                    instance.refresh_from_db()
-                    logger.warning(f"✅ [VehiculoSerializer.update] Foto guardada: {filename}")
-                    logger.warning(f"✅ [VehiculoSerializer.update] Foto en BD después de save: {instance.foto.name if instance.foto else 'None'}")
-                    logger.warning(f"✅ [VehiculoSerializer.update] Storage del campo: {type(instance.foto.storage).__name__ if instance.foto else 'None'}")
+                    logger.info(f"✅ Foto de vehículo {instance.id} actualizada: {filename}")
                 except Exception as e:
-                    logger.error(f"❌ [VehiculoSerializer.update] Error guardando foto: {e}")
-                    # Fallback: guardar normalmente
+                    logger.error(f"❌ Error actualizando foto de vehículo: {e}")
                     instance.foto = foto_file
             else:
-                # Sin storage personalizado, guardar normalmente
                 instance.foto = foto_file
         
         instance.save()
-        return instance 
+        return instance

@@ -15,6 +15,9 @@ from datetime import timedelta, datetime, date
 from django.contrib.gis.geos import Point
 import logging
 
+# Helper para URLs de archivos en cPanel
+from mecanimovilapp.storage.utils import get_image_url
+
 logger = logging.getLogger(__name__)
 
 class SolicitudServicioSerializer(serializers.ModelSerializer):
@@ -48,7 +51,7 @@ class SolicitudServicioSerializer(serializers.ModelSerializer):
         }
     
     def get_lineas_detail(self, obj):
-        """Retorna las líneas de servicio con detalles"""
+        """Retorna las l?neas de servicio con detalles"""
         lineas = obj.lineas.all()
         return LineaServicioSerializer(lineas, many=True).data
     
@@ -59,13 +62,13 @@ class SolicitudServicioSerializer(serializers.ModelSerializer):
         return None
 
     def validate(self, data):
-        # Validar que al menos un taller o mecánico se especifique
+        # Validar que al menos un taller o mec?nico se especifique
         if not data.get('taller') and not data.get('mecanico'):
-            raise serializers.ValidationError("Debe especificar un taller o un mecánico para el servicio.")
+            raise serializers.ValidationError("Debe especificar un taller o un mec?nico para el servicio.")
         
         # Validar que no se especifiquen ambos
         if data.get('taller') and data.get('mecanico'):
-            raise serializers.ValidationError("No puede especificar tanto taller como mecánico para el mismo servicio.")
+            raise serializers.ValidationError("No puede especificar tanto taller como mec?nico para el mismo servicio.")
         
         return data
 
@@ -119,7 +122,7 @@ class CarritoAgendamientoSerializer(serializers.ModelSerializer):
         return ItemCarritoAgendamientoSerializer(items, many=True).data
     
     def get_taller_detail(self, obj):
-        """Obtiene información del taller si hay items que requieren taller"""
+        """Obtiene informaci?n del taller si hay items que requieren taller"""
         # Buscar el primer item que tenga taller
         for item in obj.items.all():
             if item.oferta_servicio.taller:
@@ -127,8 +130,8 @@ class CarritoAgendamientoSerializer(serializers.ModelSerializer):
         return None
     
     def get_mecanico_detail(self, obj):
-        """Obtiene información del mecánico si hay items que requieren mecánico"""
-        # Buscar el primer item que tenga mecánico
+        """Obtiene informaci?n del mec?nico si hay items que requieren mec?nico"""
+        # Buscar el primer item que tenga mec?nico
         for item in obj.items.all():
             if item.oferta_servicio.mecanico:
                 return MecanicoDomicilioSerializer(item.oferta_servicio.mecanico).data
@@ -167,27 +170,27 @@ class ItemCarritoAgendamientoSerializer(serializers.ModelSerializer):
         return None
     
     def get_taller_direccion(self, obj):
-        """Retorna la dirección del taller si el item es de taller"""
+        """Retorna la direcci?n del taller si el item es de taller"""
         if obj.oferta_servicio.taller:
-            return "Dirección del taller"  # Placeholder ya que el campo direccion fue eliminado
+            return "Direcci?n del taller"  # Placeholder ya que el campo direccion fue eliminado
         return None
     
     def get_mecanico_nombre(self, obj):
-        """Retorna el nombre del mecánico si el item es de mecánico"""
+        """Retorna el nombre del mec?nico si el item es de mec?nico"""
         if obj.oferta_servicio.mecanico:
-            return obj.oferta_servicio.mecanico.nombre if hasattr(obj.oferta_servicio.mecanico, 'nombre') else 'Mecánico a domicilio'
+            return obj.oferta_servicio.mecanico.nombre if hasattr(obj.oferta_servicio.mecanico, 'nombre') else 'Mec?nico a domicilio'
         return None
 
 class AgendamientoDisponibilidadSerializer(serializers.Serializer):
     """
     Serializador para consultar disponibilidad de agendamiento
     NOTA: Este serializer se mantiene para compatibilidad con APIs existentes
-    pero internamente usará HorarioProveedor en lugar de Disponibilidad
+    pero internamente usar? HorarioProveedor en lugar de Disponibilidad
     """
     taller_id = serializers.IntegerField()
     fecha_inicio = serializers.DateField()
     fecha_fin = serializers.DateField(required=False)
-    duracion_servicio = serializers.IntegerField(default=60, help_text="Duración en minutos")
+    duracion_servicio = serializers.IntegerField(default=60, help_text="Duraci?n en minutos")
     
     def validate(self, data):
         if not data.get('fecha_fin'):
@@ -214,19 +217,19 @@ class ConfirmarAgendamientoSerializer(serializers.Serializer):
     )
     
     def validate_carrito_id(self, value):
-        """Valida que el carrito existe y está activo"""
+        """Valida que el carrito existe y est? activo"""
         try:
             carrito = CarritoAgendamiento.objects.get(id=value, activo=True)
             if not carrito.items.exists():
-                raise serializers.ValidationError("El carrito está vacío.")
+                raise serializers.ValidationError("El carrito est? vac?o.")
         except CarritoAgendamiento.DoesNotExist:
-            raise serializers.ValidationError("Carrito no encontrado o no está activo.")
+            raise serializers.ValidationError("Carrito no encontrado o no est? activo.")
         return value
 
 class ClienteProtegidoSerializer(serializers.ModelSerializer):
     """
-    Serializador de cliente con información protegida según el contexto
-    Incluye la foto del perfil ya que es información visual básica no sensible
+    Serializador de cliente con informaci?n protegida seg?n el contexto
+    Incluye la foto del perfil ya que es informaci?n visual b?sica no sensible
     """
     nombre_ofuscado = serializers.SerializerMethodField()
     telefono_ofuscado = serializers.SerializerMethodField()
@@ -252,37 +255,37 @@ class ClienteProtegidoSerializer(serializers.ModelSerializer):
         return "Cliente"
     
     def get_telefono_ofuscado(self, obj):
-        """Retorna teléfono parcialmente ofuscado"""
+        """Retorna tel?fono parcialmente ofuscado"""
         telefono = obj.telefono or ""
         if len(telefono) >= 8:
-            # Mostrar solo los últimos 4 dígitos
+            # Mostrar solo los ?ltimos 4 d?gitos
             return f"***-***-{telefono[-4:]}"
         return "***-****"
     
     def get_foto_perfil(self, obj):
         """Retorna la URL completa de la foto de perfil del cliente"""
         try:
-            logger.info(f"🔍 get_foto_perfil llamado para cliente {obj.id}")
+            logger.info(f"?? get_foto_perfil llamado para cliente {obj.id}")
             
             # Verificar si el cliente tiene usuario asociado
             if not hasattr(obj, 'usuario') or not obj.usuario:
-                logger.warning(f"⚠️ Cliente {obj.id} no tiene usuario asociado")
+                logger.warning(f"?? Cliente {obj.id} no tiene usuario asociado")
                 return None
             
-            logger.info(f"✅ Cliente {obj.id} tiene usuario: {obj.usuario.id}")
+            logger.info(f"? Cliente {obj.id} tiene usuario: {obj.usuario.id}")
             
-            # Verificar si el usuario tiene foto_perfil (verificar que existe y no está vacío)
+            # Verificar si el usuario tiene foto_perfil (verificar que existe y no est? vac?o)
             if not hasattr(obj.usuario, 'foto_perfil') or not obj.usuario.foto_perfil:
-                logger.warning(f"⚠️ Usuario {obj.usuario.id} no tiene foto_perfil")
+                logger.warning(f"?? Usuario {obj.usuario.id} no tiene foto_perfil")
                 return None
             
-            # Verificar que el campo tiene un valor válido (no string vacío)
+            # Verificar que el campo tiene un valor v?lido (no string vac?o)
             foto_perfil_value = obj.usuario.foto_perfil
             if not foto_perfil_value or str(foto_perfil_value).strip() == '':
-                logger.warning(f"⚠️ Usuario {obj.usuario.id} tiene foto_perfil vacío o None")
+                logger.warning(f"?? Usuario {obj.usuario.id} tiene foto_perfil vac?o o None")
                 return None
             
-            logger.info(f"✅ Usuario {obj.usuario.id} tiene foto_perfil: {foto_perfil_value}")
+            logger.info(f"? Usuario {obj.usuario.id} tiene foto_perfil: {foto_perfil_value}")
             
             # Obtener request del contexto
             request = self.context.get('request')
@@ -290,31 +293,31 @@ class ClienteProtegidoSerializer(serializers.ModelSerializer):
                 try:
                     # Construir URL absoluta usando el request
                     foto_url = request.build_absolute_uri(foto_perfil_value.url)
-                    logger.info(f"✅ URL construida: {foto_url}")
+                    logger.info(f"? URL construida: {foto_url}")
                     return foto_url
                 except (AttributeError, ValueError) as e:
-                    logger.error(f"❌ Error construyendo URL absoluta: {e}")
+                    logger.error(f"? Error construyendo URL absoluta: {e}")
                     # Fallback: intentar con URL relativa
                     try:
                         return foto_perfil_value.url
                     except (AttributeError, ValueError):
-                        logger.error(f"❌ Error obteniendo URL relativa de foto_perfil")
+                        logger.error(f"? Error obteniendo URL relativa de foto_perfil")
                         return None
             else:
                 # Fallback: construir URL relativa
-                logger.warning(f"⚠️ No hay request en contexto, usando URL relativa")
+                logger.warning(f"?? No hay request en contexto, usando URL relativa")
                 try:
                     return foto_perfil_value.url
                 except (AttributeError, ValueError) as e:
-                    logger.error(f"❌ Error obteniendo URL relativa: {e}")
+                    logger.error(f"? Error obteniendo URL relativa: {e}")
                     return None
         except Exception as e:
-            logger.error(f"❌ Error obteniendo foto_perfil del cliente {obj.id}: {e}", exc_info=True)
+            logger.error(f"? Error obteniendo foto_perfil del cliente {obj.id}: {e}", exc_info=True)
         return None
 
 class ClienteCompletoSerializer(ClienteSerializer):
     """
-    Serializador completo del cliente para cuando está autorizado
+    Serializador completo del cliente para cuando est? autorizado
     """
     foto_perfil = serializers.SerializerMethodField()
     
@@ -324,27 +327,27 @@ class ClienteCompletoSerializer(ClienteSerializer):
     def get_foto_perfil(self, obj):
         """Retorna la URL completa de la foto de perfil del cliente"""
         try:
-            logger.info(f"🔍 get_foto_perfil (ClienteCompleto) llamado para cliente {obj.id}")
+            logger.info(f"?? get_foto_perfil (ClienteCompleto) llamado para cliente {obj.id}")
             
             # Verificar si el cliente tiene usuario asociado
             if not hasattr(obj, 'usuario') or not obj.usuario:
-                logger.warning(f"⚠️ Cliente {obj.id} no tiene usuario asociado")
+                logger.warning(f"?? Cliente {obj.id} no tiene usuario asociado")
                 return None
             
-            logger.info(f"✅ Cliente {obj.id} tiene usuario: {obj.usuario.id}")
+            logger.info(f"? Cliente {obj.id} tiene usuario: {obj.usuario.id}")
             
             # Verificar si el usuario tiene foto_perfil
             if not hasattr(obj.usuario, 'foto_perfil') or not obj.usuario.foto_perfil:
-                logger.warning(f"⚠️ Usuario {obj.usuario.id} no tiene foto_perfil")
+                logger.warning(f"?? Usuario {obj.usuario.id} no tiene foto_perfil")
                 return None
             
-            # Verificar que el campo tiene un valor válido (no string vacío)
+            # Verificar que el campo tiene un valor v?lido (no string vac?o)
             foto_perfil_value = obj.usuario.foto_perfil
             if not foto_perfil_value or str(foto_perfil_value).strip() == '':
-                logger.warning(f"⚠️ Usuario {obj.usuario.id} tiene foto_perfil vacío o None")
+                logger.warning(f"?? Usuario {obj.usuario.id} tiene foto_perfil vac?o o None")
                 return None
             
-            logger.info(f"✅ Usuario {obj.usuario.id} tiene foto_perfil: {foto_perfil_value}")
+            logger.info(f"? Usuario {obj.usuario.id} tiene foto_perfil: {foto_perfil_value}")
             
             # Obtener request del contexto
             request = self.context.get('request')
@@ -352,31 +355,31 @@ class ClienteCompletoSerializer(ClienteSerializer):
                 try:
                     # Construir URL absoluta usando el request
                     foto_url = request.build_absolute_uri(foto_perfil_value.url)
-                    logger.info(f"✅ URL construida (ClienteCompleto): {foto_url}")
+                    logger.info(f"? URL construida (ClienteCompleto): {foto_url}")
                     return foto_url
                 except (AttributeError, ValueError) as e:
-                    logger.error(f"❌ Error construyendo URL absoluta: {e}")
+                    logger.error(f"? Error construyendo URL absoluta: {e}")
                     # Fallback: intentar con URL relativa
                     try:
                         return foto_perfil_value.url
                     except (AttributeError, ValueError):
-                        logger.error(f"❌ Error obteniendo URL relativa de foto_perfil")
+                        logger.error(f"? Error obteniendo URL relativa de foto_perfil")
                         return None
             else:
                 # Fallback: construir URL relativa
-                logger.warning(f"⚠️ No hay request en contexto, usando URL relativa")
+                logger.warning(f"?? No hay request en contexto, usando URL relativa")
                 try:
                     return foto_perfil_value.url
                 except (AttributeError, ValueError) as e:
-                    logger.error(f"❌ Error obteniendo URL relativa: {e}")
+                    logger.error(f"? Error obteniendo URL relativa: {e}")
                     return None
         except Exception as e:
-            logger.error(f"❌ Error obteniendo foto_perfil del cliente {obj.id}: {e}", exc_info=True)
+            logger.error(f"? Error obteniendo foto_perfil del cliente {obj.id}: {e}", exc_info=True)
         return None
 
 class VehiculoProtegidoSerializer(serializers.ModelSerializer):
     """
-    Serializador de vehículo con información básica
+    Serializador de veh?culo con informaci?n b?sica
     """
     marca = serializers.StringRelatedField()
     modelo = serializers.StringRelatedField()
@@ -387,7 +390,7 @@ class VehiculoProtegidoSerializer(serializers.ModelSerializer):
 
 class SolicitudServicioProveedorSeguroSerializer(serializers.ModelSerializer):
     """
-    Serializador SEGURO para proveedores con protección progresiva de datos
+    Serializador SEGURO para proveedores con protecci?n progresiva de datos
     """
     cliente_detail = serializers.SerializerMethodField()
     vehiculo_detail = VehiculoProtegidoSerializer(source='vehiculo', read_only=True)
@@ -414,11 +417,11 @@ class SolicitudServicioProveedorSeguroSerializer(serializers.ModelSerializer):
     
     def get_cliente_detail(self, obj):
         """
-        Retorna información del cliente según el nivel de autorización
+        Retorna informaci?n del cliente seg?n el nivel de autorizaci?n
         """
         nivel_acceso = self._determinar_nivel_acceso(obj)
-        logger.info(f"🔍 get_cliente_detail para orden {obj.id} - nivel_acceso: {nivel_acceso}")
-        logger.info(f"🔍 Contexto disponible: {bool(self.context.get('request'))}")
+        logger.info(f"?? get_cliente_detail para orden {obj.id} - nivel_acceso: {nivel_acceso}")
+        logger.info(f"?? Contexto disponible: {bool(self.context.get('request'))}")
         
         if nivel_acceso == 'completo':
             serializer = ClienteCompletoSerializer(obj.cliente, context=self.context)
@@ -426,15 +429,15 @@ class SolicitudServicioProveedorSeguroSerializer(serializers.ModelSerializer):
             serializer = ClienteProtegidoSerializer(obj.cliente, context=self.context)
         
         data = serializer.data
-        logger.info(f"📸 Datos serializados del cliente {obj.cliente.id}: {list(data.keys())}")
-        logger.info(f"📸 foto_perfil en datos: {data.get('foto_perfil')}")
+        logger.info(f"?? Datos serializados del cliente {obj.cliente.id}: {list(data.keys())}")
+        logger.info(f"?? foto_perfil en datos: {data.get('foto_perfil')}")
         return data
     
     def get_ubicacion_servicio(self, obj):
         """
-        Retorna la dirección completa SOLO si la orden está aceptada (dato sensible)
+        Retorna la direcci?n completa SOLO si la orden est? aceptada (dato sensible)
         """
-        # Solo devolver la dirección si la orden está aceptada
+        # Solo devolver la direcci?n si la orden est? aceptada
         estados_aceptados = [
             'aceptada_por_proveedor',
             'servicio_iniciado',
@@ -447,32 +450,32 @@ class SolicitudServicioProveedorSeguroSerializer(serializers.ModelSerializer):
         if obj.estado in estados_aceptados and obj.ubicacion_servicio:
             return obj.ubicacion_servicio
         
-        # Si la orden no está aceptada, no devolver la dirección (null)
+        # Si la orden no est? aceptada, no devolver la direcci?n (null)
         return None
     
     def get_ubicacion_servicio_segura(self, obj):
         """
-        Retorna ubicación según el nivel de acceso (usado para mostrar mensajes informativos)
+        Retorna ubicaci?n seg?n el nivel de acceso (usado para mostrar mensajes informativos)
         """
         nivel_acceso = self._determinar_nivel_acceso(obj)
         
         if nivel_acceso == 'completo':
-            # La dirección completa se devuelve en ubicacion_servicio si está aceptada
+            # La direcci?n completa se devuelve en ubicacion_servicio si est? aceptada
             return None  # Ya se maneja en get_ubicacion_servicio
         elif nivel_acceso == 'parcial':
-            # Para órdenes pendientes, no mostrar información de dirección
+            # Para ?rdenes pendientes, no mostrar informaci?n de direcci?n
             return None
         else:
             return None
     
     def get_tiempo_respuesta_requerido(self, obj):
         """
-        Calcula tiempo restante para responder (solo para órdenes pendientes)
+        Calcula tiempo restante para responder (solo para ?rdenes pendientes)
         """
         if obj.estado != 'pendiente_aceptacion_proveedor':
             return None
         
-        # Configurar tiempo límite (ejemplo: 4 horas desde la solicitud)
+        # Configurar tiempo l?mite (ejemplo: 4 horas desde la solicitud)
         tiempo_limite = obj.fecha_hora_solicitud + timedelta(hours=4)
         tiempo_restante = tiempo_limite - timezone.now()
         
@@ -492,7 +495,7 @@ class SolicitudServicioProveedorSeguroSerializer(serializers.ModelSerializer):
     
     def get_informacion_disponible(self, obj):
         """
-        Indica qué nivel de información está disponible
+        Indica qu? nivel de informaci?n est? disponible
         """
         nivel = self._determinar_nivel_acceso(obj)
         return {
@@ -503,7 +506,7 @@ class SolicitudServicioProveedorSeguroSerializer(serializers.ModelSerializer):
     
     def _determinar_nivel_acceso(self, obj):
         """
-        Determina el nivel de acceso a la información del cliente
+        Determina el nivel de acceso a la informaci?n del cliente
         """
         # Estados donde se permite acceso completo
         estados_acceso_completo = [
@@ -520,36 +523,36 @@ class SolicitudServicioProveedorSeguroSerializer(serializers.ModelSerializer):
             'pendiente_aceptacion_proveedor'
         ]
         
-        # Estados donde NO se permite acceso (órdenes cerradas)
+        # Estados donde NO se permite acceso (?rdenes cerradas)
         estados_sin_acceso = [
             'cancelado', 
             'rechazada_por_proveedor'
         ]
         
-        # Determinar nivel según estado (verificar acceso completo primero)
+        # Determinar nivel seg?n estado (verificar acceso completo primero)
         if obj.estado in estados_acceso_completo:
             return 'completo'
         elif obj.estado in estados_acceso_parcial:
             return 'parcial'
         elif obj.estado in estados_sin_acceso:
-            # Verificar si la orden fue cancelada/rechazada hace más de 24 horas
+            # Verificar si la orden fue cancelada/rechazada hace m?s de 24 horas
             if obj.fecha_respuesta_proveedor:
                 tiempo_transcurrido = timezone.now() - obj.fecha_respuesta_proveedor
                 if tiempo_transcurrido > timedelta(hours=24):
                     return 'restringido'
-            # Si no ha pasado 24 horas, puede ver información parcial
+            # Si no ha pasado 24 horas, puede ver informaci?n parcial
             return 'parcial'
         else:
             return 'restringido'
     
     def _get_razon_restriccion(self, obj, nivel):
         """
-        Explica por qué la información está restringida
+        Explica por qu? la informaci?n est? restringida
         """
         if nivel == 'parcial':
-            return "Información completa disponible después de aceptar la orden"
+            return "Informaci?n completa disponible despu?s de aceptar la orden"
         elif nivel == 'restringido':
-            return "Información no disponible para órdenes cerradas o expiradas"
+            return "Informaci?n no disponible para ?rdenes cerradas o expiradas"
         return None
     
     def get_oferta_proveedor_id(self, obj):
@@ -559,12 +562,12 @@ class SolicitudServicioProveedorSeguroSerializer(serializers.ModelSerializer):
         return None
     
     def get_lineas_detail(self, obj):
-        """Retorna las líneas de servicio con detalles para proveedores"""
+        """Retorna las l?neas de servicio con detalles para proveedores"""
         lineas = obj.lineas.all()
         return LineaServicioSerializer(lineas, many=True).data
     
     def get_lineas(self, obj):
-        """Retorna las líneas de servicio en formato simplificado para el frontend"""
+        """Retorna las l?neas de servicio en formato simplificado para el frontend"""
         lineas = obj.lineas.all()
         return [
             {
@@ -584,10 +587,10 @@ class SolicitudServicioProveedorSeguroSerializer(serializers.ModelSerializer):
             'en_proceso': 'En Proceso',
             'completado': 'Completado',
             'cancelado': 'Cancelado',
-            'solicitud_cancelacion': 'Solicitud de Cancelación',
-            'pendiente_devolucion': 'Pendiente de Devolución',
+            'solicitud_cancelacion': 'Solicitud de Cancelaci?n',
+            'pendiente_devolucion': 'Pendiente de Devoluci?n',
             'devuelto': 'Devuelto',
-            'pendiente_aceptacion_proveedor': 'Pendiente de Aceptación',
+            'pendiente_aceptacion_proveedor': 'Pendiente de Aceptaci?n',
             'aceptada_por_proveedor': 'Aceptada',
             'rechazada_por_proveedor': 'Rechazada',
             'checklist_en_progreso': 'Checklist en Progreso',
@@ -598,8 +601,8 @@ class SolicitudServicioProveedorSeguroSerializer(serializers.ModelSerializer):
     def get_puede_gestionar(self, obj):
         """Determina si el proveedor puede gestionar esta orden"""
         # Un proveedor puede gestionar la orden si:
-        # 1. La orden está asignada a su taller/perfil
-        # 2. El estado permite gestión
+        # 1. La orden est? asignada a su taller/perfil
+        # 2. El estado permite gesti?n
         estados_gestionables = [
             'pendiente_aceptacion_proveedor',
             'aceptada_por_proveedor', 
@@ -654,7 +657,7 @@ class UpdateOrderStatusSerializer(serializers.Serializer):
 
 class OrdenEstadisticasSerializer(serializers.Serializer):
     """
-    Serializador para estadísticas de órdenes del proveedor
+    Serializador para estad?sticas de ?rdenes del proveedor
     """
     total_ordenes = serializers.IntegerField()
     ordenes_pendientes = serializers.IntegerField()
@@ -664,8 +667,8 @@ class OrdenEstadisticasSerializer(serializers.Serializer):
 
 class SolicitudServicioProveedorLegacySerializer(serializers.ModelSerializer):
     """
-    Serializador LEGACY específico para la vista de proveedores (SIN PROTECCIONES)
-    Mantener solo para compatibilidad con código existente
+    Serializador LEGACY espec?fico para la vista de proveedores (SIN PROTECCIONES)
+    Mantener solo para compatibilidad con c?digo existente
     """
     cliente_detail = ClienteSerializer(source='cliente', read_only=True)
     vehiculo_detail = VehiculoProtegidoSerializer(source='vehiculo', read_only=True)
@@ -685,12 +688,12 @@ class SolicitudServicioProveedorLegacySerializer(serializers.ModelSerializer):
         )
     
     def get_lineas_detail(self, obj):
-        """Retorna las líneas de servicio con detalles para proveedores"""
+        """Retorna las l?neas de servicio con detalles para proveedores"""
         lineas = obj.lineas.all()
         return LineaServicioSerializer(lineas, many=True).data
     
     def get_lineas(self, obj):
-        """Retorna las líneas de servicio en formato simplificado para el frontend"""
+        """Retorna las l?neas de servicio en formato simplificado para el frontend"""
         lineas = obj.lineas.all()
         return [
             {
@@ -710,10 +713,10 @@ class SolicitudServicioProveedorLegacySerializer(serializers.ModelSerializer):
             'en_proceso': 'En Proceso',
             'completado': 'Completado',
             'cancelado': 'Cancelado',
-            'solicitud_cancelacion': 'Solicitud de Cancelación',
-            'pendiente_devolucion': 'Pendiente de Devolución',
+            'solicitud_cancelacion': 'Solicitud de Cancelaci?n',
+            'pendiente_devolucion': 'Pendiente de Devoluci?n',
             'devuelto': 'Devuelto',
-            'pendiente_aceptacion_proveedor': 'Pendiente de Aceptación',
+            'pendiente_aceptacion_proveedor': 'Pendiente de Aceptaci?n',
             'aceptada_por_proveedor': 'Aceptada',
             'rechazada_por_proveedor': 'Rechazada',
             'checklist_en_progreso': 'Checklist en Progreso',
@@ -752,7 +755,7 @@ class DetalleServicioOfertaSerializer(serializers.ModelSerializer):
         ]
     
     def get_repuestos_info(self, obj):
-        """Retorna información detallada de los repuestos seleccionados"""
+        """Retorna informaci?n detallada de los repuestos seleccionados"""
         import logging
         logger = logging.getLogger(__name__)
         
@@ -769,20 +772,20 @@ class DetalleServicioOfertaSerializer(serializers.ModelSerializer):
         for repuesto_data in obj.repuestos_seleccionados:
             repuesto_id = repuesto_data.get('id')
             cantidad = repuesto_data.get('cantidad', 1)
-            # CORRECCIÓN: Incluir precio personalizado del proveedor si existe
+            # CORRECCI?N: Incluir precio personalizado del proveedor si existe
             precio_personalizado = repuesto_data.get('precio')
             
             if repuesto_id:
                 try:
                     repuesto = Repuesto.objects.get(id=repuesto_id)
-                    # Pasar el contexto del request si está disponible
+                    # Pasar el contexto del request si est? disponible
                     request = self.context.get('request')
                     repuesto_serializer = RepuestoSerializer(repuesto, context={'request': request} if request else {})
                     
                     repuesto_info = {
                         **repuesto_serializer.data,
                         'cantidad': cantidad,
-                        # CORRECCIÓN: Incluir precio personalizado del proveedor (si difiere del precio_referencia)
+                        # CORRECCI?N: Incluir precio personalizado del proveedor (si difiere del precio_referencia)
                         'precio': precio_personalizado
                     }
                     repuestos_info.append(repuesto_info)
@@ -791,9 +794,9 @@ class DetalleServicioOfertaSerializer(serializers.ModelSerializer):
                     logger.warning(f"Repuesto con ID {repuesto_id} no encontrado")
                     continue
             else:
-                logger.warning(f"Repuesto sin ID válido: {repuesto_data}")
+                logger.warning(f"Repuesto sin ID v?lido: {repuesto_data}")
         
-        logger.debug(f"DetalleServicioOferta {obj.id}: Retornando {len(repuestos_info)} repuestos con información completa")
+        logger.debug(f"DetalleServicioOferta {obj.id}: Retornando {len(repuestos_info)} repuestos con informaci?n completa")
         return repuestos_info
 
 class OfertaProveedorSerializer(serializers.ModelSerializer):
@@ -803,7 +806,7 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
         child=serializers.IntegerField(),
         write_only=True,
         required=False,
-        help_text='Lista de IDs de servicios ofertados (se usa para validación, pero se crean a través de detalles_servicios)'
+        help_text='Lista de IDs de servicios ofertados (se usa para validaci?n, pero se crean a trav?s de detalles_servicios)'
     )
     nombre_proveedor = serializers.SerializerMethodField()
     rating_proveedor = serializers.SerializerMethodField()
@@ -824,7 +827,7 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
     fecha_limite_pago = serializers.SerializerMethodField()
     tiempo_restante_pago = serializers.SerializerMethodField()
     
-    # Campos para información de pago directo al proveedor
+    # Campos para informaci?n de pago directo al proveedor
     proveedor_puede_recibir_pagos = serializers.SerializerMethodField()
     
     class Meta:
@@ -855,7 +858,7 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
         return obj.rating_proveedor
     
     def get_proveedor_id_detail(self, obj):
-        """Retorna el ID del taller o mecánico (no del usuario) para navegación"""
+        """Retorna el ID del taller o mec?nico (no del usuario) para navegaci?n"""
         if obj.tipo_proveedor == 'taller' and hasattr(obj.proveedor, 'taller'):
             return obj.proveedor.taller.id
         elif obj.tipo_proveedor == 'mecanico' and hasattr(obj.proveedor, 'mecanico_domicilio'):
@@ -869,19 +872,19 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
         return obj.mensajes_chat.count()
     
     def get_mensajes_no_leidos(self, obj):
-        # Contar mensajes no leídos del proveedor (para el cliente)
+        # Contar mensajes no le?dos del proveedor (para el cliente)
         request = self.context.get('request')
         if request and request.user:
             if hasattr(request.user, 'cliente'):
-                # Cliente viendo: contar mensajes del proveedor no leídos
+                # Cliente viendo: contar mensajes del proveedor no le?dos
                 return obj.mensajes_chat.filter(es_proveedor=True, leido=False).count()
             else:
-                # Proveedor viendo: contar mensajes del cliente no leídos
+                # Proveedor viendo: contar mensajes del cliente no le?dos
                 return obj.mensajes_chat.filter(es_proveedor=False, leido=False).count()
         return 0
     
     def get_antiguedad_proveedor(self, obj):
-        """Retorna la antigüedad del proveedor en días desde fecha_registro"""
+        """Retorna la antig?edad del proveedor en d?as desde fecha_registro"""
         try:
             if obj.tipo_proveedor == 'taller' and hasattr(obj.proveedor, 'taller'):
                 fecha_registro = obj.proveedor.taller.fecha_registro
@@ -898,7 +901,7 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
             return 0
     
     def get_servicios_realizados_proveedor(self, obj):
-        """Retorna el número de servicios completados por el proveedor"""
+        """Retorna el n?mero de servicios completados por el proveedor"""
         try:
             from mecanimovilapp.apps.ordenes.models import SolicitudServicio
             
@@ -921,7 +924,7 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
             return 0
     
     def get_proveedor_verificado(self, obj):
-        """Retorna si el proveedor está verificado"""
+        """Retorna si el proveedor est? verificado"""
         try:
             if obj.tipo_proveedor == 'taller' and hasattr(obj.proveedor, 'taller'):
                 return obj.proveedor.taller.verificado
@@ -932,20 +935,12 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
             return False
     
     def get_proveedor_foto(self, obj):
-        """Retorna la foto del perfil del proveedor"""
+        """Retorna la foto del perfil del proveedor usando cPanel si est? configurado"""
         try:
             request = self.context.get('request')
             proveedor = obj.proveedor
-            
             if proveedor and proveedor.foto_perfil:
-                try:
-                    if request:
-                        return request.build_absolute_uri(proveedor.foto_perfil.url)
-                    else:
-                        # Si no hay request, devolver la ruta relativa
-                        return proveedor.foto_perfil.url
-                except (AttributeError, ValueError):
-                    return None
+                return get_image_url(proveedor.foto_perfil, request)
             return None
         except Exception:
             return None
@@ -975,7 +970,7 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
         import logging
         logger = logging.getLogger(__name__)
         
-        logger.info(f"🔍 OfertaProveedorSerializer.get_ofertas_secundarias - Oferta ID: {obj.id}, es_oferta_secundaria: {obj.es_oferta_secundaria}")
+        logger.info(f"?? OfertaProveedorSerializer.get_ofertas_secundarias - Oferta ID: {obj.id}, es_oferta_secundaria: {obj.es_oferta_secundaria}")
         
         if obj.es_oferta_secundaria:
             logger.info(f"  - Es oferta secundaria, retornando []")
@@ -1002,11 +997,11 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
     
     def get_rechazada_por_expiracion(self, obj):
         """
-        Determina si la oferta fue rechazada por expiración de pago (no por selección de otra oferta).
+        Determina si la oferta fue rechazada por expiraci?n de pago (no por selecci?n de otra oferta).
         Retorna True si:
-        - La oferta está rechazada
-        - La solicitud está cancelada
-        - Y (la fecha_limite_pago pasó O han pasado más de 48 horas desde fecha_respuesta_cliente)
+        - La oferta est? rechazada
+        - La solicitud est? cancelada
+        - Y (la fecha_limite_pago pas? O han pasado m?s de 48 horas desde fecha_respuesta_cliente)
         """
         from django.utils import timezone
         from datetime import timedelta
@@ -1018,17 +1013,17 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
         if not solicitud:
             return False
         
-        # Si la solicitud está cancelada, verificar si fue por expiración
+        # Si la solicitud est? cancelada, verificar si fue por expiraci?n
         if solicitud.estado == 'cancelada':
             ahora = timezone.now()
             PLAZO_MAXIMO_PAGO_HORAS = 48
             plazo_maximo_pago = timedelta(hours=PLAZO_MAXIMO_PAGO_HORAS)
             
-            # Verificar si fue rechazada por expiración de fecha límite
+            # Verificar si fue rechazada por expiraci?n de fecha l?mite
             if solicitud.fecha_limite_pago and solicitud.fecha_limite_pago < ahora:
                 return True
             
-            # Verificar si fue rechazada por plazo de 48 horas desde aceptación
+            # Verificar si fue rechazada por plazo de 48 horas desde aceptaci?n
             if obj.fecha_respuesta_cliente:
                 fecha_limite_aceptacion = obj.fecha_respuesta_cliente + plazo_maximo_pago
                 if ahora > fecha_limite_aceptacion:
@@ -1037,7 +1032,7 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
         return False
     
     def get_fecha_limite_pago(self, obj):
-        """Retorna la fecha límite de pago de la solicitud asociada"""
+        """Retorna la fecha l?mite de pago de la solicitud asociada"""
         if obj.solicitud and obj.solicitud.fecha_limite_pago:
             return obj.solicitud.fecha_limite_pago.isoformat()
         return None
@@ -1064,10 +1059,10 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
             horas_restantes = horas % 24
             if horas_restantes > 0:
                 return f"{dias}d {horas_restantes}h"
-            return f"{dias} días"
+            return f"{dias} d?as"
     
     def get_oferta_original_info(self, obj):
-        """Retorna información de la oferta original si esta es una oferta secundaria"""
+        """Retorna informaci?n de la oferta original si esta es una oferta secundaria"""
         if not obj.es_oferta_secundaria or not obj.oferta_original:
             return None
         return {
@@ -1078,7 +1073,7 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
         }
     
     def get_solicitud_detail(self, obj):
-        """Retorna información detallada de la solicitud, cliente y vehículo"""
+        """Retorna informaci?n detallada de la solicitud, cliente y veh?culo"""
         try:
             solicitud = obj.solicitud
             request = self.context.get('request')
@@ -1089,18 +1084,11 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
             try:
                 if solicitud.cliente and solicitud.cliente.usuario:
                     cliente_nombre = solicitud.cliente.usuario.get_full_name()
-                    if solicitud.cliente.usuario.foto_perfil:
-                        try:
-                            if request:
-                                cliente_foto = request.build_absolute_uri(solicitud.cliente.usuario.foto_perfil.url)
-                            else:
-                                cliente_foto = solicitud.cliente.usuario.foto_perfil.url
-                        except (AttributeError, ValueError):
-                            cliente_foto = None
+                    cliente_foto = get_image_url(solicitud.cliente.usuario.foto_perfil, request)
             except (AttributeError, Exception):
                 pass
             
-            # Información del vehículo
+            # Informaci?n del veh?culo
             vehiculo_info = None
             try:
                 if solicitud.vehiculo:
@@ -1128,14 +1116,14 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
                         'id': solicitud.vehiculo.id,
                         'marca': marca_nombre,
                         'modelo': modelo_nombre,
-                        'año': getattr(solicitud.vehiculo, 'year', None),
+                        'a?o': getattr(solicitud.vehiculo, 'year', None),
                         'patente': getattr(solicitud.vehiculo, 'patente', '') or '',
                         'kilometraje': getattr(solicitud.vehiculo, 'kilometraje', None),
                     }
             except (AttributeError, Exception):
                 pass
             
-            # Información de servicios solicitados
+            # Informaci?n de servicios solicitados
             servicios_solicitados = []
             try:
                 for servicio in solicitud.servicios_solicitados.all():
@@ -1160,7 +1148,7 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
                 'detalles_ubicacion': solicitud.detalles_ubicacion or '',
             }
         except Exception as e:
-            # En caso de error, retornar estructura mínima
+            # En caso de error, retornar estructura m?nima
             return {
                 'id': None,
                 'cliente_nombre': 'Cliente',
@@ -1194,7 +1182,7 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
                         # DRF espera formato "DD HH:MM:SS" o "HH:MM:SS"
                         data['tiempo_estimado_total'] = str(td)
                     else:
-                        # Si viene como número de horas
+                        # Si viene como n?mero de horas
                         horas = float(tiempo_str)
                         td = timedelta(hours=horas)
                         data['tiempo_estimado_total'] = str(td)
@@ -1206,14 +1194,14 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
     
     def validate(self, attrs):
         """
-        Validación adicional para la oferta
+        Validaci?n adicional para la oferta
         """
         # Validar campos requeridos
         campos_requeridos = {
             'solicitud': 'La solicitud es requerida',
             'precio_total_ofrecido': 'El precio total es requerido',
             'tiempo_estimado_total': 'El tiempo estimado total es requerido',
-            'descripcion_oferta': 'La descripción de la oferta es requerida',
+            'descripcion_oferta': 'La descripci?n de la oferta es requerida',
             'fecha_disponible': 'La fecha disponible es requerida',
             'hora_disponible': 'La hora disponible es requerida'
         }
@@ -1222,13 +1210,13 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
             if campo not in attrs or not attrs.get(campo):
                 raise serializers.ValidationError({campo: mensaje})
         
-        # Validar que descripcion_oferta no esté vacía
+        # Validar que descripcion_oferta no est? vac?a
         if attrs.get('descripcion_oferta', '').strip() == '':
             raise serializers.ValidationError({
-                'descripcion_oferta': 'La descripción de la oferta no puede estar vacía'
+                'descripcion_oferta': 'La descripci?n de la oferta no puede estar vac?a'
             })
         
-        # Validación para ofertas secundarias
+        # Validaci?n para ofertas secundarias
         oferta_original = attrs.get('oferta_original')
         motivo_servicio_adicional = attrs.get('motivo_servicio_adicional', '')
         
@@ -1246,7 +1234,7 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
         return attrs
     
     def create(self, validated_data):
-        # Remover servicios_ofertados si está presente (no es un campo del modelo, se maneja en perform_create)
+        # Remover servicios_ofertados si est? presente (no es un campo del modelo, se maneja en perform_create)
         validated_data.pop('servicios_ofertados', None)
         
         # Calcular tiempo de respuesta
@@ -1283,7 +1271,7 @@ class RechazoSolicitudSerializer(serializers.ModelSerializer):
         return obj.proveedor.get_full_name()
     
     def get_proveedor_info(self, obj):
-        """Retorna información del proveedor"""
+        """Retorna informaci?n del proveedor"""
         if obj.tipo_proveedor == 'taller' and hasattr(obj.proveedor, 'taller'):
             return {
                 'id': obj.proveedor.taller.id,
@@ -1327,7 +1315,7 @@ class RechazoSolicitudSerializer(serializers.ModelSerializer):
         return attrs
 
 class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
-    """Serializer para solicitudes públicas con soporte geoespacial"""
+    """Serializer para solicitudes p?blicas con soporte geoespacial"""
     servicios_solicitados_detail = serializers.SerializerMethodField()
     proveedores_dirigidos_detail = serializers.SerializerMethodField()
     cliente_nombre = serializers.SerializerMethodField()
@@ -1392,20 +1380,20 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
                 if puede_ver:
                     return obj.cliente.usuario.get_full_name() if obj.cliente.usuario else f"{obj.cliente.nombre} {obj.cliente.apellido}"
                 else:
-                    return "Cliente"  # Nombre genérico si no puede ver datos
+                    return "Cliente"  # Nombre gen?rico si no puede ver datos
         return obj.cliente.usuario.get_full_name() if obj.cliente.usuario else f"{obj.cliente.nombre} {obj.cliente.apellido}"
     
     def get_cliente_info(self, obj):
-        """Retorna información del cliente incluyendo nombre y foto de perfil"""
+        """Retorna informaci?n del cliente incluyendo nombre y foto de perfil"""
         request = self.context.get('request')
         nombre = "Cliente"  # Valor por defecto
         foto_perfil = None
         
-        # Los proveedores pueden ver nombre y foto cuando están viendo solicitudes públicas
-        # para decidir si ofertar. Solo se oculta información sensible (teléfono, email, dirección exacta)
+        # Los proveedores pueden ver nombre y foto cuando est?n viendo solicitudes p?blicas
+        # para decidir si ofertar. Solo se oculta informaci?n sensible (tel?fono, email, direcci?n exacta)
         puede_ver_info_basica = False
         if request and request.user:
-            # Cliente propio, admin, o cualquier proveedor puede ver info básica
+            # Cliente propio, admin, o cualquier proveedor puede ver info b?sica
             if hasattr(request.user, 'cliente') and request.user.cliente == obj.cliente:
                 puede_ver_info_basica = True
             elif request.user.is_staff:
@@ -1421,11 +1409,7 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
         # Obtener foto de perfil si existe
         if puede_ver_info_basica:
             try:
-                if obj.cliente and obj.cliente.usuario and obj.cliente.usuario.foto_perfil:
-                    if request:
-                        foto_perfil = request.build_absolute_uri(obj.cliente.usuario.foto_perfil.url)
-                    else:
-                        foto_perfil = obj.cliente.usuario.foto_perfil.url
+                foto_perfil = get_image_url(obj.cliente.usuario.foto_perfil, request) if obj.cliente and obj.cliente.usuario else None
             except (AttributeError, ValueError):
                 foto_perfil = None
         
@@ -1465,17 +1449,17 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
         logger = logging.getLogger(__name__)
         
         request = self.context.get('request')
-        logger.info(f"🔍 get_ofertas_secundarias - Solicitud ID: {obj.id}")
-        logger.info(f"🔍 get_ofertas_secundarias - Request existe: {request is not None}")
-        logger.info(f"🔍 get_ofertas_secundarias - User existe: {request and request.user is not None if request else False}")
+        logger.info(f"?? get_ofertas_secundarias - Solicitud ID: {obj.id}")
+        logger.info(f"?? get_ofertas_secundarias - Request existe: {request is not None}")
+        logger.info(f"?? get_ofertas_secundarias - User existe: {request and request.user is not None if request else False}")
         
         if request and request.user:
-            logger.info(f"🔍 get_ofertas_secundarias - User ID: {request.user.id}, Username: {request.user.username}")
-            logger.info(f"🔍 get_ofertas_secundarias - Tiene cliente: {hasattr(request.user, 'cliente')}")
+            logger.info(f"?? get_ofertas_secundarias - User ID: {request.user.id}, Username: {request.user.username}")
+            logger.info(f"?? get_ofertas_secundarias - Tiene cliente: {hasattr(request.user, 'cliente')}")
             
             if hasattr(request.user, 'cliente'):
-                logger.info(f"🔍 get_ofertas_secundarias - Cliente user: {request.user.cliente.id}, Cliente obj: {obj.cliente.id}")
-                logger.info(f"🔍 get_ofertas_secundarias - Clientes coinciden: {request.user.cliente == obj.cliente}")
+                logger.info(f"?? get_ofertas_secundarias - Cliente user: {request.user.cliente.id}, Cliente obj: {obj.cliente.id}")
+                logger.info(f"?? get_ofertas_secundarias - Clientes coinciden: {request.user.cliente == obj.cliente}")
                 
             if hasattr(request.user, 'cliente') and request.user.cliente == obj.cliente:
                 # Obtener todas las ofertas secundarias de todas las ofertas originales
@@ -1483,26 +1467,26 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
                     solicitud=obj,
                     es_oferta_secundaria=True
                 )
-                logger.info(f"🔍 get_ofertas_secundarias - Ofertas secundarias encontradas (cliente): {ofertas_secundarias.count()}")
+                logger.info(f"?? get_ofertas_secundarias - Ofertas secundarias encontradas (cliente): {ofertas_secundarias.count()}")
                 for oferta in ofertas_secundarias:
                     logger.info(f"  - Oferta secundaria ID: {oferta.id}, Estado: {oferta.estado}, es_oferta_secundaria: {oferta.es_oferta_secundaria}")
                 
                 resultado = OfertaProveedorSerializer(ofertas_secundarias, many=True, context=self.context).data
-                logger.info(f"🔍 get_ofertas_secundarias - Resultado serializado (cliente): {len(resultado)} ofertas")
+                logger.info(f"?? get_ofertas_secundarias - Resultado serializado (cliente): {len(resultado)} ofertas")
                 return resultado
             elif request.user.is_staff:
                 ofertas_secundarias = OfertaProveedor.objects.filter(
                     solicitud=obj,
                     es_oferta_secundaria=True
                 )
-                logger.info(f"🔍 get_ofertas_secundarias - Ofertas secundarias encontradas (staff): {ofertas_secundarias.count()}")
+                logger.info(f"?? get_ofertas_secundarias - Ofertas secundarias encontradas (staff): {ofertas_secundarias.count()}")
                 resultado = OfertaProveedorSerializer(ofertas_secundarias, many=True, context=self.context).data
-                logger.info(f"🔍 get_ofertas_secundarias - Resultado serializado (staff): {len(resultado)} ofertas")
+                logger.info(f"?? get_ofertas_secundarias - Resultado serializado (staff): {len(resultado)} ofertas")
                 return resultado
             else:
-                logger.warning(f"🔍 get_ofertas_secundarias - Usuario no es cliente ni staff, retornando []")
+                logger.warning(f"?? get_ofertas_secundarias - Usuario no es cliente ni staff, retornando []")
         else:
-            logger.warning(f"🔍 get_ofertas_secundarias - No hay request o user, retornando []")
+            logger.warning(f"?? get_ofertas_secundarias - No hay request o user, retornando []")
         
         return []
     
@@ -1538,12 +1522,12 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
             'id': obj.vehiculo.id,
             'marca': obj.vehiculo.marca_nombre if hasattr(obj.vehiculo, 'marca_nombre') else str(obj.vehiculo.marca),
             'modelo': obj.vehiculo.modelo_nombre if hasattr(obj.vehiculo, 'modelo_nombre') else str(obj.vehiculo.modelo),
-            'año': obj.vehiculo.year if hasattr(obj.vehiculo, 'year') else None,
+            'a?o': obj.vehiculo.year if hasattr(obj.vehiculo, 'year') else None,
             'patente': obj.vehiculo.patente if hasattr(obj.vehiculo, 'patente') else None
         }
     
     def get_direccion_usuario_info(self, obj):
-        """Retorna información de dirección, pero oculta datos sensibles si el proveedor no puede verlos"""
+        """Retorna informaci?n de direcci?n, pero oculta datos sensibles si el proveedor no puede verlos"""
         request = self.context.get('request')
         puede_ver = True
         
@@ -1566,7 +1550,7 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
                     'detalles': obj.direccion_usuario.detalles
                 }
             else:
-                # Solo mostrar dirección de texto (ya está en direccion_servicio_texto)
+                # Solo mostrar direcci?n de texto (ya est? en direccion_servicio_texto)
                 return {
                     'id': None,
                     'direccion': obj.direccion_servicio_texto,
@@ -1608,23 +1592,23 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
             # Ocultar campo cliente si no puede ver datos
             if not puede_ver:
                 data['cliente'] = None
-                # También ocultar direccion_usuario (ID) pero mantener direccion_usuario_info con datos limitados
+                # Tambi?n ocultar direccion_usuario (ID) pero mantener direccion_usuario_info con datos limitados
                 data['direccion_usuario'] = None
         
         return data
     
     def validate_proveedores_dirigidos(self, value):
-        """Validar máximo 5 proveedores para solicitud dirigida"""
+        """Validar m?ximo 5 proveedores para solicitud dirigida"""
         if len(value) > 5:
             raise serializers.ValidationError(
-                "No puedes seleccionar más de 5 proveedores para una solicitud dirigida."
+                "No puedes seleccionar m?s de 5 proveedores para una solicitud dirigida."
             )
         return value
     
     def validate_fecha_expiracion(self, value):
         """
-        Validar fecha_expiracion: si no está presente o es None, establecer automáticamente (48 horas)
-        Este método se ejecuta después de to_internal_value() pero antes de validate()
+        Validar fecha_expiracion: si no est? presente o es None, establecer autom?ticamente (48 horas)
+        Este m?todo se ejecuta despu?s de to_internal_value() pero antes de validate()
         """
         if value is None:
             return timezone.now() + timedelta(hours=48)
@@ -1633,23 +1617,23 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
     def to_internal_value(self, data):
         """
         Convertir ubicacion_servicio a formato GeoJSON Geometry y establecer fecha_expiracion
-        antes de la validación. GeoFeatureModelSerializer espera formato: {"type": "Point", "coordinates": [lng, lat]}
+        antes de la validaci?n. GeoFeatureModelSerializer espera formato: {"type": "Point", "coordinates": [lng, lat]}
         """
-        # Establecer fecha_expiracion automáticamente si no está presente (48 horas desde ahora)
-        # Esto debe hacerse ANTES de la validación para que DRF no falle
+        # Establecer fecha_expiracion autom?ticamente si no est? presente (48 horas desde ahora)
+        # Esto debe hacerse ANTES de la validaci?n para que DRF no falle
         # Usar formato ISO 8601 que DRF puede parsear correctamente
         if isinstance(data, dict):
             if 'fecha_expiracion' not in data or not data.get('fecha_expiracion'):
                 fecha_expiracion = timezone.now() + timedelta(hours=48)
-                # Formato ISO 8601 estándar que DRF puede parsear correctamente
+                # Formato ISO 8601 est?ndar que DRF puede parsear correctamente
                 data['fecha_expiracion'] = fecha_expiracion.isoformat()
         
         # Si viene como dict con longitude/latitude, convertir a GeoJSON Geometry
-        # GeoFeatureModelSerializer espera formato GeoJSON estándar
+        # GeoFeatureModelSerializer espera formato GeoJSON est?ndar
         if isinstance(data, dict) and 'ubicacion_servicio' in data:
             ubicacion = data['ubicacion_servicio']
             if isinstance(ubicacion, dict):
-                # Si ya está en formato GeoJSON Geometry, validarlo y asegurar que sea correcto
+                # Si ya est? en formato GeoJSON Geometry, validarlo y asegurar que sea correcto
                 if ubicacion.get('type') == 'Point' and 'coordinates' in ubicacion:
                     coords = ubicacion['coordinates']
                     if isinstance(coords, list) and len(coords) >= 2:
@@ -1660,7 +1644,7 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
                             # Validar rango de coordenadas
                             if not (-180 <= lng <= 180) or not (-90 <= lat <= 90):
                                 raise serializers.ValidationError({
-                                    'ubicacion_servicio': 'Coordenadas fuera de rango válido'
+                                    'ubicacion_servicio': 'Coordenadas fuera de rango v?lido'
                                 })
                             # Asegurar formato GeoJSON correcto
                             data['ubicacion_servicio'] = {
@@ -1669,7 +1653,7 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
                             }
                         except (ValueError, TypeError, IndexError) as e:
                             raise serializers.ValidationError({
-                                'ubicacion_servicio': f'Coordenadas inválidas: {str(e)}'
+                                'ubicacion_servicio': f'Coordenadas inv?lidas: {str(e)}'
                             })
                 else:
                     # Intentar convertir desde longitude/latitude
@@ -1683,7 +1667,7 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
                             # Validar rango de coordenadas
                             if not (-180 <= lng <= 180) or not (-90 <= lat <= 90):
                                 raise serializers.ValidationError({
-                                    'ubicacion_servicio': 'Coordenadas fuera de rango válido'
+                                    'ubicacion_servicio': 'Coordenadas fuera de rango v?lido'
                                 })
                             # Convertir a formato GeoJSON Geometry
                             data['ubicacion_servicio'] = {
@@ -1696,21 +1680,21 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
                             })
                     else:
                         raise serializers.ValidationError({
-                            'ubicacion_servicio': 'Formato de ubicación inválido. Se espera GeoJSON Point o {longitude, latitude}'
+                            'ubicacion_servicio': 'Formato de ubicaci?n inv?lido. Se espera GeoJSON Point o {longitude, latitude}'
                         })
         
         return super().to_internal_value(data)
     
     def validate(self, attrs):
         """
-        Validación adicional antes de crear la solicitud
+        Validaci?n adicional antes de crear la solicitud
         """
         # Validar campos requeridos
         campos_requeridos = {
             'cliente': 'El cliente es requerido',
-            'vehiculo': 'El vehículo es requerido',
-            'descripcion_problema': 'La descripción del problema es requerida',
-            'ubicacion_servicio': 'La ubicación del servicio es requerida',
+            'vehiculo': 'El veh?culo es requerido',
+            'descripcion_problema': 'La descripci?n del problema es requerida',
+            'ubicacion_servicio': 'La ubicaci?n del servicio es requerida',
             'fecha_preferida': 'La fecha preferida es requerida'
         }
         
@@ -1718,43 +1702,43 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
             if campo not in attrs or not attrs.get(campo):
                 raise serializers.ValidationError({campo: mensaje})
         
-        # Validar que descripcion_problema no esté vacía
+        # Validar que descripcion_problema no est? vac?a
         if attrs.get('descripcion_problema', '').strip() == '':
             raise serializers.ValidationError({
-                'descripcion_problema': 'La descripción del problema no puede estar vacía'
+                'descripcion_problema': 'La descripci?n del problema no puede estar vac?a'
             })
         
-        # Validar que fecha_expiracion esté presente (ya establecida en to_internal_value)
+        # Validar que fecha_expiracion est? presente (ya establecida en to_internal_value)
         if 'fecha_expiracion' not in attrs or not attrs.get('fecha_expiracion'):
-            # Establecer automáticamente si no está presente
+            # Establecer autom?ticamente si no est? presente
             attrs['fecha_expiracion'] = timezone.now() + timedelta(hours=48)
         
-        # Validar que direccion_servicio_texto esté presente
-        # Si no está presente, intentar obtenerlo de direccion_usuario si existe
+        # Validar que direccion_servicio_texto est? presente
+        # Si no est? presente, intentar obtenerlo de direccion_usuario si existe
         direccion_texto = attrs.get('direccion_servicio_texto')
         if not direccion_texto or (isinstance(direccion_texto, str) and direccion_texto.strip() == ''):
             if 'direccion_usuario' in attrs and attrs.get('direccion_usuario'):
-                # Si hay una direccion_usuario, intentar obtener su dirección
+                # Si hay una direccion_usuario, intentar obtener su direcci?n
                 try:
                     from mecanimovilapp.apps.usuarios.models import DireccionUsuario
                     direccion_usuario_id = attrs['direccion_usuario']
                     if isinstance(direccion_usuario_id, int):
                         direccion_usuario = DireccionUsuario.objects.get(id=direccion_usuario_id)
-                        attrs['direccion_servicio_texto'] = direccion_usuario.direccion or 'Dirección no especificada'
+                        attrs['direccion_servicio_texto'] = direccion_usuario.direccion or 'Direcci?n no especificada'
                     elif hasattr(direccion_usuario_id, 'direccion'):
-                        attrs['direccion_servicio_texto'] = direccion_usuario_id.direccion or 'Dirección no especificada'
+                        attrs['direccion_servicio_texto'] = direccion_usuario_id.direccion or 'Direcci?n no especificada'
                 except Exception as e:
                     # Si no se puede obtener, usar valor por defecto
-                    logger.warning(f"No se pudo obtener dirección de direccion_usuario: {str(e)}")
-                    attrs['direccion_servicio_texto'] = 'Dirección no especificada'
+                    logger.warning(f"No se pudo obtener direcci?n de direccion_usuario: {str(e)}")
+                    attrs['direccion_servicio_texto'] = 'Direcci?n no especificada'
             else:
-                # Si no hay direccion_usuario, validar que ubicacion_servicio tenga coordenadas válidas
+                # Si no hay direccion_usuario, validar que ubicacion_servicio tenga coordenadas v?lidas
                 if 'ubicacion_servicio' in attrs and attrs.get('ubicacion_servicio'):
-                    # Si hay ubicación pero no texto, usar un valor por defecto
-                    attrs['direccion_servicio_texto'] = 'Dirección no especificada'
+                    # Si hay ubicaci?n pero no texto, usar un valor por defecto
+                    attrs['direccion_servicio_texto'] = 'Direcci?n no especificada'
                 else:
                     raise serializers.ValidationError({
-                        'direccion_servicio_texto': 'La dirección del servicio es requerida'
+                        'direccion_servicio_texto': 'La direcci?n del servicio es requerida'
                     })
         
         # Validar que fecha_preferida sea una fecha futura o presente
@@ -1766,7 +1750,7 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
                     attrs['fecha_preferida'] = fecha_preferida
                 except ValueError:
                     raise serializers.ValidationError({
-                        'fecha_preferida': 'Formato de fecha inválido. Use YYYY-MM-DD'
+                        'fecha_preferida': 'Formato de fecha inv?lido. Use YYYY-MM-DD'
                     })
             
             if isinstance(fecha_preferida, (datetime, date)):
@@ -1786,18 +1770,18 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
         servicios = validated_data.pop('servicios_solicitados', [])
         proveedores = validated_data.pop('proveedores_dirigidos', [])
         
-        # fecha_expiracion ya debería estar establecida en to_internal_value() y validate()
-        # Si por alguna razón no está, establecerla como respaldo
+        # fecha_expiracion ya deber?a estar establecida en to_internal_value() y validate()
+        # Si por alguna raz?n no est?, establecerla como respaldo
         if 'fecha_expiracion' not in validated_data or not validated_data.get('fecha_expiracion'):
             validated_data['fecha_expiracion'] = timezone.now() + timedelta(hours=48)
         
-        # El campo ubicacion_servicio debería estar en formato GeoJSON Geometry
-        # GeoFeatureModelSerializer lo convertirá automáticamente a Point
-        # No necesitamos hacer conversión manual aquí, GeoFeatureModelSerializer lo maneja
+        # El campo ubicacion_servicio deber?a estar en formato GeoJSON Geometry
+        # GeoFeatureModelSerializer lo convertir? autom?ticamente a Point
+        # No necesitamos hacer conversi?n manual aqu?, GeoFeatureModelSerializer lo maneja
         
         # Crear solicitud
-        # Nota: El modelo tiene un método save() que también establece fecha_expiracion si no está presente
-        # Esto es una capa adicional de protección
+        # Nota: El modelo tiene un m?todo save() que tambi?n establece fecha_expiracion si no est? presente
+        # Esto es una capa adicional de protecci?n
         try:
             solicitud = super().create(validated_data)
         except Exception as e:
@@ -1839,11 +1823,11 @@ class ChatSolicitudSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'enviado_por', 'enviado_por_nombre', 'fecha_envio', 'es_proveedor', 'leido', 'fecha_lectura', 'solicitud_detail', 'proveedor_info', 'cliente_info']
     
     def get_solicitud_detail(self, obj):
-        """Retorna información básica de la solicitud original asociada a la oferta"""
+        """Retorna informaci?n b?sica de la solicitud original asociada a la oferta"""
         solicitud = obj.oferta.solicitud
         servicios_nombres = list(solicitud.servicios_solicitados.values_list('nombre', flat=True))
         
-        # Obtener información del modelo de manera segura
+        # Obtener informaci?n del modelo de manera segura
         modelo_nombre = None
         if solicitud.vehiculo and solicitud.vehiculo.modelo:
             if hasattr(solicitud.vehiculo.modelo, 'nombre'):
@@ -1853,7 +1837,7 @@ class ChatSolicitudSerializer(serializers.ModelSerializer):
         
         return {
             'id': str(solicitud.id),
-            'descripcion_problema': solicitud.descripcion_problema or '',  # ✅ Corregido
+            'descripcion_problema': solicitud.descripcion_problema or '',  # ? Corregido
             'servicios_solicitados': servicios_nombres,
             'direccion_servicio_texto': solicitud.direccion_servicio_texto,
             'detalles_ubicacion': solicitud.detalles_ubicacion or '',
@@ -1869,7 +1853,7 @@ class ChatSolicitudSerializer(serializers.ModelSerializer):
         }
     
     def get_proveedor_info(self, obj):
-        """Retorna información del proveedor de la oferta"""
+        """Retorna informaci?n del proveedor de la oferta"""
         import logging
         logger = logging.getLogger(__name__)
         
@@ -1878,28 +1862,13 @@ class ChatSolicitudSerializer(serializers.ModelSerializer):
             proveedor = oferta.proveedor
             request = self.context.get('request')
             
-            logger.info(f"🔍 get_proveedor_info - Oferta ID: {oferta.id}")
-            logger.info(f"🔍 Proveedor: {proveedor}")
-            logger.info(f"🔍 Nombre proveedor: {oferta.nombre_proveedor}")
-            logger.info(f"🔍 Request presente: {request is not None}")
+            logger.info(f"?? get_proveedor_info - Oferta ID: {oferta.id}")
+            logger.info(f"?? Proveedor: {proveedor}")
+            logger.info(f"?? Nombre proveedor: {oferta.nombre_proveedor}")
+            logger.info(f"?? Request presente: {request is not None}")
             
-            # Obtener foto del proveedor
-            foto_url = None
-            try:
-                if proveedor and proveedor.foto_perfil:
-                    if request:
-                        foto_url = request.build_absolute_uri(proveedor.foto_perfil.url)
-                    else:
-                        # Si no hay request, construir URL manualmente con la IP del servidor
-                        import socket
-                        hostname = socket.gethostname()
-                        ip_address = socket.gethostbyname(hostname)
-                        foto_url = f"http://{ip_address}:8000{proveedor.foto_perfil.url}"
-                    logger.info(f"✅ Foto URL construida: {foto_url}")
-                else:
-                    logger.info(f"⚠️ Proveedor no tiene foto_perfil")
-            except (AttributeError, ValueError) as e:
-                logger.error(f"❌ Error construyendo foto URL: {e}")
+            # Obtener foto del proveedor usando helper de cPanel
+            foto_url = get_image_url(proveedor.foto_perfil, request) if proveedor else None
             
             resultado = {
                 'id': proveedor.id if proveedor else None,
@@ -1907,10 +1876,10 @@ class ChatSolicitudSerializer(serializers.ModelSerializer):
                 'foto': foto_url,
                 'tipo': oferta.tipo_proveedor,
             }
-            logger.info(f"✅ proveedor_info resultado: {resultado}")
+            logger.info(f"? proveedor_info resultado: {resultado}")
             return resultado
         except Exception as e:
-            logger.error(f"❌ Error en get_proveedor_info: {e}")
+            logger.error(f"? Error en get_proveedor_info: {e}")
             return {
                 'id': None,
                 'nombre': 'Proveedor',
@@ -1919,26 +1888,14 @@ class ChatSolicitudSerializer(serializers.ModelSerializer):
             }
     
     def get_cliente_info(self, obj):
-        """Retorna información del cliente de la solicitud"""
+        """Retorna informaci?n del cliente de la solicitud"""
         try:
             solicitud = obj.oferta.solicitud
             cliente = solicitud.cliente
             request = self.context.get('request')
             
-            # Obtener foto del cliente
-            foto_url = None
-            try:
-                if cliente and cliente.usuario and cliente.usuario.foto_perfil:
-                    if request:
-                        foto_url = request.build_absolute_uri(cliente.usuario.foto_perfil.url)
-                    else:
-                        # Si no hay request, construir URL manualmente con la IP del servidor
-                        import socket
-                        hostname = socket.gethostname()
-                        ip_address = socket.gethostbyname(hostname)
-                        foto_url = f"http://{ip_address}:8000{cliente.usuario.foto_perfil.url}"
-            except (AttributeError, ValueError):
-                pass
+            # Obtener foto del cliente usando helper de cPanel
+            foto_url = get_image_url(cliente.usuario.foto_perfil, request) if cliente and cliente.usuario else None
             
             # Obtener nombre del cliente
             nombre = 'Cliente'
@@ -1963,7 +1920,7 @@ class ChatSolicitudSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         mensaje = super().create(validated_data)
         
-        # TODO: Enviar notificación push al destinatario
+        # TODO: Enviar notificaci?n push al destinatario
         # TODO: Enviar evento WebSocket
         
         return mensaje 

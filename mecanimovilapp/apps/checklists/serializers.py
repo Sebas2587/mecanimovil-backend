@@ -4,6 +4,9 @@ from .models import (
     ChecklistInstance, ChecklistItemResponse, ChecklistPhoto
 )
 
+# Helper para URLs de archivos en cPanel
+from mecanimovilapp.storage.utils import get_image_url
+
 
 class ChecklistItemCatalogSerializer(serializers.ModelSerializer):
     """Serializer para items del catálogo"""
@@ -71,14 +74,20 @@ class ChecklistTemplateSerializer(serializers.ModelSerializer):
 
 class ChecklistPhotoSerializer(serializers.ModelSerializer):
     """Serializer para fotos de checklist"""
+    imagen_url = serializers.SerializerMethodField()
     
     class Meta:
         model = ChecklistPhoto
         fields = [
-            'id', 'imagen', 'descripcion', 'orden_en_respuesta',
+            'id', 'imagen', 'imagen_url', 'descripcion', 'orden_en_respuesta',
             'fecha_captura'
         ]
         read_only_fields = ['fecha_captura']
+    
+    def get_imagen_url(self, obj):
+        """Retorna la URL completa de la imagen usando cPanel si está configurado"""
+        request = self.context.get('request')
+        return get_image_url(obj.imagen, request)
 
 
 class ChecklistItemResponseSerializer(serializers.ModelSerializer):

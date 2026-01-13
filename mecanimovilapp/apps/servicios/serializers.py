@@ -6,6 +6,9 @@ from mecanimovilapp.apps.usuarios.serializers import TallerSerializer, MecanicoD
 from mecanimovilapp.apps.vehiculos.serializers import MarcaSerializer, ModeloSerializer
 from django.db import models
 
+# Helper para URLs de archivos en cPanel
+from mecanimovilapp.storage.utils import get_image_url
+
 
 class CategoriaServicioBasicSerializer(serializers.ModelSerializer):
     """
@@ -75,13 +78,9 @@ class FotoServicioSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'fecha_subida']
     
     def get_imagen_url(self, obj):
-        """Retorna la URL completa de la imagen"""
-        if obj.imagen:
-            request = self.context.get('request')
-            if request:
-                return request.build_absolute_uri(obj.imagen.url)
-            return obj.imagen.url
-        return None
+        """Retorna la URL completa de la imagen usando cPanel si está configurado"""
+        request = self.context.get('request')
+        return get_image_url(obj.imagen, request)
 
 
 class FotoServicioUploadSerializer(serializers.ModelSerializer):
@@ -124,11 +123,12 @@ class OfertaServicioSerializer(serializers.ModelSerializer):
     
     def get_servicio_info(self, obj):
         """Retorna información básica del servicio"""
+        request = self.context.get('request')
         return {
             'id': obj.servicio.id,
             'nombre': obj.servicio.nombre,
             'descripcion': obj.servicio.descripcion,
-            'foto': obj.servicio.foto.url if obj.servicio.foto else None
+            'foto': get_image_url(obj.servicio.foto, request)
         }
 
 
@@ -162,23 +162,25 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
     
     def get_servicio_info(self, obj):
         """Retorna información del servicio con repuestos asociados"""
+        request = self.context.get('request')
         if obj.servicio:
             return {
                 'id': obj.servicio.id,
                 'nombre': obj.servicio.nombre,
                 'descripcion': obj.servicio.descripcion,
                 'requiere_repuestos': obj.servicio.requiere_repuestos,
-                'foto': obj.servicio.foto.url if obj.servicio.foto else None
+                'foto': get_image_url(obj.servicio.foto, request)
             }
         return None
     
     def get_marca_vehiculo_info(self, obj):
         """Retorna información de la marca de vehículo seleccionada por el proveedor"""
+        request = self.context.get('request')
         if obj.marca_vehiculo_seleccionada:
             return {
                 'id': obj.marca_vehiculo_seleccionada.id,
                 'nombre': obj.marca_vehiculo_seleccionada.nombre,
-                'logo': obj.marca_vehiculo_seleccionada.logo.url if obj.marca_vehiculo_seleccionada.logo else None
+                'logo': get_image_url(obj.marca_vehiculo_seleccionada.logo, request)
             }
         return None
     
@@ -199,6 +201,7 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
         if not obj.repuestos_seleccionados:
             return []
         
+        request = self.context.get('request')
         repuestos_detallados = []
         
         # Procesar cada repuesto seleccionado
@@ -219,7 +222,7 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
                         'marca': repuesto.marca or '',
                         'categoria_repuesto': repuesto.categoria_repuesto or '',
                         'codigo_fabricante': repuesto.codigo_fabricante or '',
-                        'foto': repuesto.foto.url if repuesto.foto else None,
+                        'foto': get_image_url(repuesto.foto, request),
                         # Incluir precio personalizado si existe
                         'precio': float(precio_personalizado) if precio_personalizado is not None else None
                     }
