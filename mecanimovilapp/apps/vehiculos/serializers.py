@@ -227,12 +227,15 @@ class VehiculoSerializer(serializers.ModelSerializer):
                     logger.warning(f"📸 [VehiculoSerializer.create] Usando storage: {type(storage).__name__}")
                     # Guardar el archivo usando el storage correcto
                     filename = storage.save(foto_file.name, foto_file)
-                    # Asignar el storage explícitamente al campo
-                    vehiculo.foto.name = filename
-                    vehiculo.foto.storage = storage
+                    # Asignar el nombre del archivo directamente
+                    vehiculo.foto = filename
                     vehiculo.save()
+                    
+                    # Verificar que se guardó correctamente
+                    vehiculo.refresh_from_db()
                     logger.warning(f"✅ [VehiculoSerializer.create] Foto guardada: {filename}")
-                    logger.warning(f"✅ [VehiculoSerializer.create] Storage asignado al campo: {type(vehiculo.foto.storage).__name__}")
+                    logger.warning(f"✅ [VehiculoSerializer.create] Foto en BD después de save: {vehiculo.foto.name if vehiculo.foto else 'None'}")
+                    logger.warning(f"✅ [VehiculoSerializer.create] Storage del campo: {type(vehiculo.foto.storage).__name__ if vehiculo.foto else 'None'}")
                 except Exception as e:
                     logger.error(f"❌ [VehiculoSerializer.create] Error guardando foto: {e}")
                     # Fallback: guardar normalmente
@@ -284,11 +287,15 @@ class VehiculoSerializer(serializers.ModelSerializer):
                     logger.warning(f"📸 [VehiculoSerializer.update] Usando storage: {type(storage).__name__}")
                     # Guardar el archivo usando el storage correcto
                     filename = storage.save(foto_file.name, foto_file)
-                    # Asignar el storage explícitamente al campo
-                    instance.foto.name = filename
-                    instance.foto.storage = storage
+                    # Asignar el nombre del archivo directamente
+                    instance.foto = filename
+                    instance.save()
+                    
+                    # Verificar que se guardó correctamente
+                    instance.refresh_from_db()
                     logger.warning(f"✅ [VehiculoSerializer.update] Foto guardada: {filename}")
-                    logger.warning(f"✅ [VehiculoSerializer.update] Storage asignado al campo: {type(instance.foto.storage).__name__}")
+                    logger.warning(f"✅ [VehiculoSerializer.update] Foto en BD después de save: {instance.foto.name if instance.foto else 'None'}")
+                    logger.warning(f"✅ [VehiculoSerializer.update] Storage del campo: {type(instance.foto.storage).__name__ if instance.foto else 'None'}")
                 except Exception as e:
                     logger.error(f"❌ [VehiculoSerializer.update] Error guardando foto: {e}")
                     # Fallback: guardar normalmente
