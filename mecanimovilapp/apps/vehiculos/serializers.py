@@ -204,9 +204,12 @@ class VehiculoSerializer(serializers.ModelSerializer):
         from django.conf import settings
         
         logger = logging.getLogger(__name__)
+        logger.warning(f"🔄 [VehiculoSerializer.create] MÉTODO CREATE LLAMADO")
+        logger.warning(f"🔄 [VehiculoSerializer.create] validated_data keys: {list(validated_data.keys())}")
         
         # Extraer la foto si existe
         foto_file = validated_data.pop('foto', None)
+        logger.warning(f"🔄 [VehiculoSerializer.create] foto_file extraído: {foto_file is not None}")
         
         # Crear el vehículo sin la foto primero
         vehiculo = Vehiculo.objects.create(**validated_data)
@@ -247,9 +250,12 @@ class VehiculoSerializer(serializers.ModelSerializer):
         from django.conf import settings
         
         logger = logging.getLogger(__name__)
+        logger.warning(f"🔄 [VehiculoSerializer.update] MÉTODO UPDATE LLAMADO para vehículo {instance.id}")
+        logger.warning(f"🔄 [VehiculoSerializer.update] validated_data keys: {list(validated_data.keys())}")
         
         # Extraer la foto si existe
         foto_file = validated_data.pop('foto', None)
+        logger.warning(f"🔄 [VehiculoSerializer.update] foto_file extraído: {foto_file is not None}")
         
         # Actualizar otros campos
         for attr, value in validated_data.items():
