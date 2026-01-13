@@ -72,6 +72,14 @@ class CPanelStorage(Storage):
             ftp = ftplib.FTP(self.ftp_host)
             ftp.login(self.ftp_user, self.ftp_password)
             ftp.set_pasv(True)  # Modo pasivo (recomendado para la mayoría de servidores)
+            
+            # Verificar el directorio actual después de conectarse
+            try:
+                current_dir = ftp.pwd()
+                logger.warning(f"🔍 [CPanelStorage._connect_ftp] Directorio actual después de conexión: {current_dir}")
+            except:
+                logger.warning(f"🔍 [CPanelStorage._connect_ftp] No se pudo obtener directorio actual")
+            
             return ftp
         except Exception as e:
             logger.error(f"❌ [CPanelStorage] Error conectando a FTP: {e}")
@@ -178,6 +186,31 @@ class CPanelStorage(Storage):
             try:
                 ftp = self._connect_ftp()
                 
+                # Verificar el directorio actual
+                try:
+                    current_dir = ftp.pwd()
+                    logger.warning(f"🔍 [CPanelStorage._save] Directorio actual FTP: {current_dir}")
+                except:
+                    current_dir = None
+                
+                # Ajustar la ruta según el directorio actual
+                # Si location empieza con public_html/ pero estamos ya en public_html/, quitar public_html/
+                if current_dir and 'public_html' in current_dir and remote_path.startswith('public_html/'):
+                    # Ya estamos en public_html/, usar ruta relativa
+                    adjusted_path = remote_path.replace('public_html/', '', 1)
+                    logger.warning(f"🔍 [CPanelStorage._save] Ruta ajustada (estamos en public_html): {adjusted_path}")
+                    remote_path = adjusted_path
+                elif current_dir and remote_path.startswith('public_html/'):
+                    # Estamos en otro directorio, intentar navegar a public_html/
+                    try:
+                        ftp.cwd('public_html')
+                        logger.warning(f"🔍 [CPanelStorage._save] Navegado a public_html/")
+                        # Ajustar ruta para quitar public_html/
+                        adjusted_path = remote_path.replace('public_html/', '', 1)
+                        remote_path = adjusted_path
+                    except Exception as e:
+                        logger.warning(f"⚠️ [CPanelStorage._save] No se pudo navegar a public_html/: {e}")
+                
                 # Asegurar que el directorio existe
                 self._ensure_directory_exists(ftp, remote_path)
                 
@@ -186,8 +219,16 @@ class CPanelStorage(Storage):
                 if remote_dir:
                     try:
                         ftp.cwd(remote_dir)
-                    except:
-                        pass
+                        logger.warning(f"🔍 [CPanelStorage._save] Navegado a directorio: {remote_dir}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ [CPanelStorage._save] No se pudo cambiar a directorio {remote_dir}: {e}")
+                        # Intentar crear el directorio si no existe
+                        try:
+                            ftp.mkd(remote_dir)
+                            ftp.cwd(remote_dir)
+                            logger.warning(f"✅ [CPanelStorage._save] Directorio creado y navegado: {remote_dir}")
+                        except:
+                            pass
                 
                 # Subir el archivo
                 filename = os.path.basename(remote_path)
