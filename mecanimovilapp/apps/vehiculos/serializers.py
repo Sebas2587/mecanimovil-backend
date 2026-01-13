@@ -194,4 +194,96 @@ class VehiculoSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {"modelo": "El modelo seleccionado no pertenece a la marca indicada."}
                 )
-        return data 
+        return data
+    
+    def create(self, validated_data):
+        """
+        Crear vehículo asegurando que la foto use el storage correcto
+        """
+        import logging
+        from django.conf import settings
+        
+        logger = logging.getLogger(__name__)
+        
+        # Extraer la foto si existe
+        foto_file = validated_data.pop('foto', None)
+        
+        # Crear el vehículo sin la foto primero
+        vehiculo = Vehiculo.objects.create(**validated_data)
+        
+        # Si hay una foto, guardarla usando el storage correcto
+        if foto_file:
+            logger.warning(f"📸 [VehiculoSerializer.create] Guardando foto para vehículo {vehiculo.id}")
+            
+            # Obtener el storage configurado
+            storage_class = getattr(settings, 'DEFAULT_FILE_STORAGE', None)
+            if storage_class:
+                from django.utils.module_loading import import_string
+                try:
+                    storage = import_string(storage_class)()
+                    logger.warning(f"📸 [VehiculoSerializer.create] Usando storage: {type(storage).__name__}")
+                    # Guardar el archivo usando el storage correcto
+                    filename = storage.save(f'vehiculos/{foto_file.name}', foto_file)
+                    vehiculo.foto = filename
+                    vehiculo.save()
+                    logger.warning(f"✅ [VehiculoSerializer.create] Foto guardada: {filename}")
+                except Exception as e:
+                    logger.error(f"❌ [VehiculoSerializer.create] Error guardando foto: {e}")
+                    # Fallback: guardar normalmente
+                    vehiculo.foto = foto_file
+                    vehiculo.save()
+            else:
+                # Sin storage personalizado, guardar normalmente
+                vehiculo.foto = foto_file
+                vehiculo.save()
+        
+        return vehiculo
+    
+    def update(self, instance, validated_data):
+        """
+        Actualizar vehículo asegurando que la foto use el storage correcto
+        """
+        import logging
+        from django.conf import settings
+        
+        logger = logging.getLogger(__name__)
+        
+        # Extraer la foto si existe
+        foto_file = validated_data.pop('foto', None)
+        
+        # Actualizar otros campos
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        
+        # Si hay una nueva foto, guardarla usando el storage correcto
+        if foto_file:
+            logger.warning(f"📸 [VehiculoSerializer.update] Guardando nueva foto para vehículo {instance.id}")
+            
+            # Eliminar la foto anterior si existe
+            if instance.foto:
+                try:
+                    instance.foto.delete()
+                except:
+                    pass
+            
+            # Obtener el storage configurado
+            storage_class = getattr(settings, 'DEFAULT_FILE_STORAGE', None)
+            if storage_class:
+                from django.utils.module_loading import import_string
+                try:
+                    storage = import_string(storage_class)()
+                    logger.warning(f"📸 [VehiculoSerializer.update] Usando storage: {type(storage).__name__}")
+                    # Guardar el archivo usando el storage correcto
+                    filename = storage.save(f'vehiculos/{foto_file.name}', foto_file)
+                    instance.foto = filename
+                    logger.warning(f"✅ [VehiculoSerializer.update] Foto guardada: {filename}")
+                except Exception as e:
+                    logger.error(f"❌ [VehiculoSerializer.update] Error guardando foto: {e}")
+                    # Fallback: guardar normalmente
+                    instance.foto = foto_file
+            else:
+                # Sin storage personalizado, guardar normalmente
+                instance.foto = foto_file
+        
+        instance.save()
+        return instance 
