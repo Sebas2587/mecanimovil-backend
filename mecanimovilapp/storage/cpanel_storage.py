@@ -197,64 +197,61 @@ class CPanelStorage(Storage):
             try:
                 ftp = self._connect_ftp()
                 
-                # Verificar el directorio actual
+                # Obtener el directorio raíz de la cuenta FTP
                 try:
-                    current_dir = ftp.pwd()
-                    logger.warning(f"🔍 [CPanelStorage._save] Directorio actual FTP: {current_dir}")
+                    ftp_root_dir = ftp.pwd()
+                    logger.warning(f"🔍 [CPanelStorage._save] Directorio raíz de cuenta FTP: {ftp_root_dir}")
                 except:
-                    current_dir = None
+                    ftp_root_dir = None
+                    logger.warning(f"⚠️ [CPanelStorage._save] No se pudo obtener directorio raíz")
                 
-                # Simplificar la navegación: trabajar con la ruta relativa desde donde estemos
-                # Si location incluye public_html/, removerlo de la ruta porque navegaremos manualmente
+                # Ajustar la ruta según el directorio raíz de la cuenta FTP
+                # Si location contiene "public_html/", necesitamos determinar si la cuenta FTP
+                # ya está dentro de public_html o no
+                
+                # Si remote_path empieza con public_html/, verificar si estamos ya dentro de public_html
                 if remote_path.startswith('public_html/'):
-                    remote_path = remote_path.replace('public_html/', '', 1)
-                    logger.warning(f"🔍 [CPanelStorage._save] Ruta ajustada (removido public_html/): {remote_path}")
+                    # Si el directorio raíz ya contiene public_html, remover public_html/ de la ruta
+                    if ftp_root_dir and 'public_html' in ftp_root_dir:
+                        remote_path = remote_path.replace('public_html/', '', 1)
+                        logger.warning(f"🔍 [CPanelStorage._save] Ruta ajustada (removido public_html/ porque ya estamos en public_html): {remote_path}")
+                    else:
+                        # No estamos en public_html, mantener la ruta pero navegar primero a public_html
+                        logger.warning(f"🔍 [CPanelStorage._save] Ruta contiene public_html/, navegaremos a public_html/ primero")
                 
-                # Navegar a public_html si no estamos ahí
+                # Obtener directorio actual para navegación
+                current = ftp.pwd()
+                logger.warning(f"🔍 [CPanelStorage._save] Directorio actual: {current}")
+                
+                # Listar contenido del directorio actual
                 try:
-                    current = ftp.pwd()
-                    logger.warning(f"🔍 [CPanelStorage._save] Directorio actual ANTES de navegar: {current}")
-                    
-                    # Listar contenido del directorio actual
-                    try:
-                        items_here = ftp.nlst()
-                        items_here = [item for item in items_here if item not in ['.', '..']]
-                        logger.warning(f"🔍 [CPanelStorage._save] Contenido del directorio actual: {items_here}")
-                    except:
-                        pass
-                    
-                    # Si no estamos en public_html, intentar navegar
-                    if 'public_html' not in current:
-                        try:
-                            ftp.cwd('public_html')
-                            logger.warning(f"✅ [CPanelStorage._save] Navegado a public_html/")
-                            # Listar contenido de public_html
-                            try:
-                                items_public = ftp.nlst()
-                                items_public = [item for item in items_public if item not in ['.', '..']]
-                                logger.warning(f"🔍 [CPanelStorage._save] Contenido de public_html/: {items_public}")
-                            except:
-                                pass
-                        except ftplib.error_perm as e:
-                            # Si no existe public_html, puede que estemos en la raíz de la cuenta FTP
-                            logger.warning(f"⚠️ [CPanelStorage._save] public_html/ no encontrado: {e}")
-                            logger.warning(f"⚠️ [CPanelStorage._save] Intentando navegar directamente a images")
-                except Exception as e:
-                    logger.warning(f"⚠️ [CPanelStorage._save] Error obteniendo directorio: {e}")
-                    # Si no podemos obtener el directorio actual, intentar navegar a public_html
+                    items_here = ftp.nlst()
+                    items_here = [item for item in items_here if item not in ['.', '..']]
+                    logger.warning(f"🔍 [CPanelStorage._save] Contenido del directorio actual: {items_here}")
+                except:
+                    pass
+                
+                # Si remote_path todavía empieza con public_html/ y no estamos en public_html, navegar allí
+                if remote_path.startswith('public_html/'):
                     try:
                         ftp.cwd('public_html')
                         logger.warning(f"✅ [CPanelStorage._save] Navegado a public_html/")
-                    except Exception as e2:
-                        logger.warning(f"⚠️ [CPanelStorage._save] No se pudo navegar a public_html/: {e2}")
+                        remote_path = remote_path.replace('public_html/', '', 1)
+                        logger.warning(f"🔍 [CPanelStorage._save] Ruta ajustada después de navegar: {remote_path}")
+                    except ftplib.error_perm as e:
+                        logger.warning(f"⚠️ [CPanelStorage._save] No se pudo navegar a public_html/: {e}")
+                        # Remover public_html/ de la ruta de todas formas
+                        remote_path = remote_path.replace('public_html/', '', 1)
+                        logger.warning(f"🔍 [CPanelStorage._save] Ruta ajustada (removido public_html/): {remote_path}")
                 
                 # Navegar al directorio del archivo (images/mecanimovil-app-media)
+                # remote_path ya está ajustado (sin public_html/), solo contiene images/mecanimovil-app-media/archivo.jpg
                 remote_dir = os.path.dirname(remote_path)
                 if remote_dir:
                     logger.warning(f"🔍 [CPanelStorage._save] Navegando a directorio: {remote_dir}")
                     dir_parts = remote_dir.split('/')
                     dir_parts = [p for p in dir_parts if p]  # Eliminar partes vacías
-                    logger.warning(f"🔍 [CPanelStorage._save] Partes del directorio: {dir_parts}")
+                    logger.warning(f"🔍 [CPanelStorage._save] Partes del directorio a navegar: {dir_parts}")
                     
                     for part in dir_parts:
                         logger.warning(f"🔍 [CPanelStorage._save] Intentando navegar a: '{part}'")
