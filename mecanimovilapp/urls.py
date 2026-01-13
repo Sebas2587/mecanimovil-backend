@@ -36,11 +36,40 @@ def hello_api(request):
 def serve_media(request, path):
     """
     Vista para servir archivos media en producción
+    Nota: En Render, el sistema de archivos es efímero, por lo que los archivos
+    pueden no existir después de un deploy. Se recomienda usar S3 o disco persistente.
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    
     file_path = os.path.join(settings.MEDIA_ROOT, path)
+    
+    # Log para debugging
+    logger.info(f"🔍 [serve_media] Intentando servir: {path}")
+    logger.info(f"🔍 [serve_media] MEDIA_ROOT: {settings.MEDIA_ROOT}")
+    logger.info(f"🔍 [serve_media] Ruta completa: {file_path}")
+    logger.info(f"🔍 [serve_media] ¿Existe el archivo?: {os.path.exists(file_path)}")
+    
     if os.path.exists(file_path):
+        logger.info(f"✅ [serve_media] Archivo encontrado, sirviendo: {path}")
         return serve(request, path, document_root=settings.MEDIA_ROOT)
-    return JsonResponse({"error": "File not found"}, status=404)
+    else:
+        # Verificar si el directorio existe
+        media_dir = os.path.dirname(file_path)
+        if not os.path.exists(media_dir):
+            logger.warning(f"⚠️ [serve_media] Directorio no existe: {media_dir}")
+        else:
+            logger.warning(f"⚠️ [serve_media] Archivo no encontrado: {file_path}")
+            # Listar archivos en el directorio para debugging
+            try:
+                files_in_dir = os.listdir(media_dir)
+                logger.info(f"📁 [serve_media] Archivos en {media_dir}: {files_in_dir[:10]}")  # Primeros 10
+            except Exception as e:
+                logger.error(f"❌ [serve_media] Error listando directorio: {e}")
+        
+        # Retornar 404 sin generar warning adicional
+        from django.http import HttpResponseNotFound
+        return HttpResponseNotFound("File not found")
 
 urlpatterns = [
     path('admin/', admin.site.urls),

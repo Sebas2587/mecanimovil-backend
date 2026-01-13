@@ -65,14 +65,27 @@ class VehiculoSerializer(serializers.ModelSerializer):
     
     def get_foto(self, obj):
         """Retorna la URL completa de la foto del vehículo"""
+        import logging
+        logger = logging.getLogger(__name__)
+        
         if obj.foto:
             request = self.context.get('request')
             if request:
-                return request.build_absolute_uri(obj.foto.url)
+                # Construir URL completa
+                foto_url = obj.foto.url  # Esto devuelve algo como '/media/vehiculos/vehicle_xxx.jpg'
+                absolute_url = request.build_absolute_uri(foto_url)
+                logger.info(f"📸 [VehiculoSerializer] Vehículo {obj.id} - Foto URL relativa: {foto_url}")
+                logger.info(f"📸 [VehiculoSerializer] Vehículo {obj.id} - Foto URL absoluta: {absolute_url}")
+                logger.info(f"📸 [VehiculoSerializer] Vehículo {obj.id} - Foto name: {obj.foto.name}")
+                return absolute_url
             # Fallback si no hay request (por ejemplo, en tests)
             from django.conf import settings
             if hasattr(settings, 'MEDIA_URL'):
-                return f"{settings.MEDIA_URL}{obj.foto.name}"
+                fallback_url = f"{settings.MEDIA_URL}{obj.foto.name}"
+                logger.warning(f"⚠️ [VehiculoSerializer] Vehículo {obj.id} - Sin request, usando fallback: {fallback_url}")
+                return fallback_url
+        else:
+            logger.info(f"ℹ️ [VehiculoSerializer] Vehículo {obj.id} - No tiene foto")
         return None
     
     def get_color(self, obj):
