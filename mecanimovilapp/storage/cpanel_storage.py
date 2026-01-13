@@ -193,72 +193,62 @@ class CPanelStorage(Storage):
                 except:
                     current_dir = None
                 
-                # Ajustar la ruta según el directorio actual
-                # Si location empieza con public_html/ pero estamos ya en public_html/, quitar public_html/
-                if current_dir and 'public_html' in current_dir and remote_path.startswith('public_html/'):
-                    # Ya estamos en public_html/, usar ruta relativa
-                    adjusted_path = remote_path.replace('public_html/', '', 1)
-                    logger.warning(f"🔍 [CPanelStorage._save] Ruta ajustada (estamos en public_html): {adjusted_path}")
-                    remote_path = adjusted_path
-                elif current_dir and remote_path.startswith('public_html/'):
-                    # Estamos en otro directorio, intentar navegar a public_html/
+                # Simplificar la navegación: trabajar con la ruta relativa desde donde estemos
+                # Si location incluye public_html/, removerlo de la ruta porque navegaremos manualmente
+                if remote_path.startswith('public_html/'):
+                    remote_path = remote_path.replace('public_html/', '', 1)
+                    logger.warning(f"🔍 [CPanelStorage._save] Ruta ajustada (removido public_html/): {remote_path}")
+                
+                # Navegar a public_html si no estamos ahí
+                try:
+                    current = ftp.pwd()
+                    logger.warning(f"🔍 [CPanelStorage._save] Directorio actual: {current}")
+                    
+                    # Si no estamos en public_html, intentar navegar
+                    if 'public_html' not in current:
+                        try:
+                            ftp.cwd('public_html')
+                            logger.warning(f"✅ [CPanelStorage._save] Navegado a public_html/")
+                        except ftplib.error_perm:
+                            # Si no existe public_html, puede que estemos en la raíz de la cuenta FTP
+                            # Intentar navegar directamente a images
+                            logger.warning(f"⚠️ [CPanelStorage._save] public_html/ no encontrado, intentando navegar directamente")
+                except:
+                    # Si no podemos obtener el directorio actual, intentar navegar a public_html
                     try:
                         ftp.cwd('public_html')
-                        logger.warning(f"🔍 [CPanelStorage._save] Navegado a public_html/")
-                        # Ajustar ruta para quitar public_html/
-                        adjusted_path = remote_path.replace('public_html/', '', 1)
-                        remote_path = adjusted_path
-                    except Exception as e:
-                        logger.warning(f"⚠️ [CPanelStorage._save] No se pudo navegar a public_html/: {e}")
-                
-                # Cambiar al directorio del archivo y crear si no existe
-                remote_dir = os.path.dirname(remote_path)
-                if remote_dir:
-                    logger.warning(f"🔍 [CPanelStorage._save] Intentando navegar a: {remote_dir}")
-                    # Dividir la ruta en partes y crear cada directorio si no existe
-                    dir_parts = remote_dir.split('/')
-                    dir_parts = [p for p in dir_parts if p]  # Eliminar partes vacías
-                    logger.warning(f"🔍 [CPanelStorage._save] Partes del directorio a crear: {dir_parts}")
-                    
-                    # Verificar directorio actual antes de empezar
-                    try:
-                        current_before = ftp.pwd()
-                        logger.warning(f"🔍 [CPanelStorage._save] Directorio actual ANTES de crear subdirectorios: {current_before}")
+                        logger.warning(f"✅ [CPanelStorage._save] Navegado a public_html/")
                     except:
                         pass
+                
+                # Navegar al directorio del archivo (images/mecanimovil-app-media)
+                remote_dir = os.path.dirname(remote_path)
+                if remote_dir:
+                    logger.warning(f"🔍 [CPanelStorage._save] Navegando a directorio: {remote_dir}")
+                    dir_parts = remote_dir.split('/')
+                    dir_parts = [p for p in dir_parts if p]  # Eliminar partes vacías
+                    logger.warning(f"🔍 [CPanelStorage._save] Partes del directorio: {dir_parts}")
                     
                     for part in dir_parts:
-                        logger.warning(f"🔍 [CPanelStorage._save] Procesando parte: '{part}'")
+                        logger.warning(f"🔍 [CPanelStorage._save] Intentando navegar a: '{part}'")
                         try:
-                            # Intentar cambiar al directorio
+                            # Primero intentar navegar (el directorio ya existe)
                             ftp.cwd(part)
                             logger.warning(f"✅ [CPanelStorage._save] Navegado a: {part}")
                         except ftplib.error_perm as e:
-                            # Si no existe, crearlo
-                            logger.warning(f"⚠️ [CPanelStorage._save] Directorio '{part}' no existe, intentando crear...")
+                            # Si no existe, intentar crearlo
+                            logger.warning(f"⚠️ [CPanelStorage._save] Directorio '{part}' no encontrado, intentando crear...")
                             try:
-                                # Verificar directorio actual antes de crear
-                                try:
-                                    current = ftp.pwd()
-                                    logger.warning(f"🔍 [CPanelStorage._save] Creando '{part}' en: {current}")
-                                except:
-                                    pass
-                                
                                 ftp.mkd(part)
-                                logger.warning(f"✅ [CPanelStorage._save] Directorio '{part}' creado exitosamente")
+                                logger.warning(f"✅ [CPanelStorage._save] Directorio '{part}' creado")
                                 ftp.cwd(part)
-                                logger.warning(f"✅ [CPanelStorage._save] Navegado a directorio recién creado: {part}")
+                                logger.warning(f"✅ [CPanelStorage._save] Navegado a directorio creado: {part}")
                             except Exception as e2:
-                                logger.error(f"❌ [CPanelStorage._save] Error creando directorio '{part}': {e2}")
-                                # Intentar cambiar de nuevo por si acaso ya existía
-                                try:
-                                    ftp.cwd(part)
-                                    logger.warning(f"✅ [CPanelStorage._save] Directorio '{part}' ya existía, navegado")
-                                except Exception as e3:
-                                    logger.error(f"❌ [CPanelStorage._save] No se pudo navegar a '{part}' después del error: {e3}")
-                                    raise
+                                logger.error(f"❌ [CPanelStorage._save] Error con directorio '{part}': {e2}")
+                                # Último intento: puede que el directorio exista pero con otro nombre o permisos
+                                raise
                 else:
-                    logger.warning(f"🔍 [CPanelStorage._save] No hay directorio, subiendo a raíz")
+                    logger.warning(f"🔍 [CPanelStorage._save] No hay subdirectorio, subiendo a directorio actual")
                 
                 # Verificar el directorio actual antes de subir
                 try:
