@@ -239,6 +239,7 @@ STORAGE_TYPE = config('STORAGE_TYPE', default='local')  # 'local', 'cpanel', 's3
 if not DEBUG:
     # Verificar si hay configuración de cPanel disponible (incluso si STORAGE_TYPE no está configurado)
     cpanel_ftp_host = config('CPANEL_FTP_HOST', default='')
+    cpanel_ftp_port = config('CPANEL_FTP_PORT', default=21, cast=int)  # Puerto FTP (por defecto 21)
     cpanel_ftp_user = config('CPANEL_FTP_USER', default='')
     cpanel_ftp_password = config('CPANEL_FTP_PASSWORD', default='')
     cpanel_ftp_root = config('CPANEL_FTP_ROOT', default='')
@@ -255,6 +256,7 @@ if not DEBUG:
         
         # Credenciales FTP de cPanel
         CPANEL_FTP_HOST = cpanel_ftp_host
+        CPANEL_FTP_PORT = cpanel_ftp_port
         CPANEL_FTP_USER = cpanel_ftp_user
         CPANEL_FTP_PASSWORD = cpanel_ftp_password
         

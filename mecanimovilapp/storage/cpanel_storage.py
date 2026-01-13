@@ -52,6 +52,7 @@ class CPanelStorage(Storage):
         self.location = raw_location
         self.base_url = base_url or getattr(settings, 'CPANEL_MEDIA_URL', '')
         self.ftp_host = getattr(settings, 'CPANEL_FTP_HOST', None)
+        self.ftp_port = getattr(settings, 'CPANEL_FTP_PORT', 21)  # Puerto por defecto: 21
         self.ftp_user = getattr(settings, 'CPANEL_FTP_USER', None)
         self.ftp_password = getattr(settings, 'CPANEL_FTP_PASSWORD', None)
         
@@ -59,6 +60,7 @@ class CPanelStorage(Storage):
         logger.info(f"🔍 [CPanelStorage.__init__] location: {self.location}")
         logger.info(f"🔍 [CPanelStorage.__init__] base_url: {self.base_url}")
         logger.info(f"🔍 [CPanelStorage.__init__] ftp_host: {self.ftp_host}")
+        logger.info(f"🔍 [CPanelStorage.__init__] ftp_port: {self.ftp_port}")
         
         if not all([self.ftp_host, self.ftp_user, self.ftp_password]):
             logger.warning("⚠️ [CPanelStorage] Configuración FTP incompleta. Verifica CPANEL_FTP_* en settings.")
@@ -69,7 +71,9 @@ class CPanelStorage(Storage):
     def _connect_ftp(self):
         """Establece conexión FTP con el servidor cPanel."""
         try:
-            ftp = ftplib.FTP(self.ftp_host)
+            # Conectar al servidor FTP con el puerto especificado
+            ftp = ftplib.FTP()
+            ftp.connect(self.ftp_host, self.ftp_port)
             ftp.login(self.ftp_user, self.ftp_password)
             ftp.set_pasv(True)  # Modo pasivo (recomendado para la mayoría de servidores)
             
