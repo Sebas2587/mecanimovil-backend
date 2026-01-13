@@ -211,24 +211,29 @@ class CPanelStorage(Storage):
                     except Exception as e:
                         logger.warning(f"⚠️ [CPanelStorage._save] No se pudo navegar a public_html/: {e}")
                 
-                # Asegurar que el directorio existe
-                self._ensure_directory_exists(ftp, remote_path)
-                
-                # Cambiar al directorio del archivo
+                # Cambiar al directorio del archivo y crear si no existe
                 remote_dir = os.path.dirname(remote_path)
                 if remote_dir:
-                    try:
-                        ftp.cwd(remote_dir)
-                        logger.warning(f"🔍 [CPanelStorage._save] Navegado a directorio: {remote_dir}")
-                    except Exception as e:
-                        logger.warning(f"⚠️ [CPanelStorage._save] No se pudo cambiar a directorio {remote_dir}: {e}")
-                        # Intentar crear el directorio si no existe
+                    # Dividir la ruta en partes y crear cada directorio si no existe
+                    dir_parts = remote_dir.split('/')
+                    dir_parts = [p for p in dir_parts if p]  # Eliminar partes vacías
+                    
+                    for part in dir_parts:
                         try:
-                            ftp.mkd(remote_dir)
-                            ftp.cwd(remote_dir)
-                            logger.warning(f"✅ [CPanelStorage._save] Directorio creado y navegado: {remote_dir}")
-                        except:
-                            pass
+                            # Intentar cambiar al directorio
+                            ftp.cwd(part)
+                            logger.warning(f"🔍 [CPanelStorage._save] Navegado a: {part}")
+                        except ftplib.error_perm:
+                            # Si no existe, crearlo
+                            try:
+                                ftp.mkd(part)
+                                logger.warning(f"✅ [CPanelStorage._save] Directorio creado: {part}")
+                                ftp.cwd(part)
+                            except Exception as e:
+                                logger.error(f"❌ [CPanelStorage._save] Error creando directorio {part}: {e}")
+                                raise
+                else:
+                    logger.warning(f"🔍 [CPanelStorage._save] No hay directorio, subiendo a raíz")
                 
                 # Verificar el directorio actual antes de subir
                 try:
