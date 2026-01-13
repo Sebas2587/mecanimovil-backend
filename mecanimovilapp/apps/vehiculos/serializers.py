@@ -49,9 +49,8 @@ class VehiculoSerializer(serializers.ModelSerializer):
     numero_motor = serializers.SerializerMethodField()
     numero_chasis = serializers.SerializerMethodField()
     
-    # Campo foto: acepta archivos para escritura, devuelve URL completa para lectura
-    foto_upload = serializers.ImageField(source='foto', write_only=True, required=False, allow_null=True)
-    foto = serializers.SerializerMethodField()  # Para lectura: devuelve URL completa
+    # Campo foto: usar el campo del modelo directamente para escritura
+    # Sobrescribir to_representation para devolver URL completa en lectura
     
     def __init__(self, *args, **kwargs):
         """Inicialización del serializer con logging"""
@@ -64,14 +63,24 @@ class VehiculoSerializer(serializers.ModelSerializer):
         model = Vehiculo
         fields = (
             'id', 'marca', 'modelo', 'cilindraje', 'tipo_motor', 
-            'year', 'año', 'patente', 'placa', 'kilometraje', 'foto', 'foto_upload', 'cliente',
+            'year', 'año', 'patente', 'placa', 'kilometraje', 'foto', 'cliente',
             'cliente_detail', 'marca_nombre', 'modelo_nombre',
             'color', 'numero_motor', 'numero_chasis',
             'fecha_creacion', 'fecha_actualizacion'
         )
         extra_kwargs = {
-            'cliente': {'write_only': True}
+            'cliente': {'write_only': True},
+            'foto': {'required': False, 'allow_null': True}
         }
+    
+    def to_representation(self, instance):
+        """
+        Sobrescribir para devolver URL completa de foto en lectura
+        """
+        representation = super().to_representation(instance)
+        # Reemplazar el valor de foto con la URL completa usando get_foto
+        representation['foto'] = self.get_foto(instance)
+        return representation
     
     def get_foto(self, obj):
         """Retorna la URL completa de la foto del vehículo"""
