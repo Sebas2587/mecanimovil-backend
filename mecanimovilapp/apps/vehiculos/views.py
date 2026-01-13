@@ -98,12 +98,27 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         Asigna automáticamente el cliente (usuario actual) al vehiculo creado
         """
         import logging
+        from django.conf import settings
+        
         logger = logging.getLogger(__name__)
         
         user = self.request.user
         
         if hasattr(user, 'cliente'):
             logger.warning(f"🔄 [VehiculoViewSet.perform_create] Creando vehículo para cliente {user.cliente.id}")
+            
+            # Forzar el uso del storage configurado si hay una foto
+            if 'foto' in serializer.validated_data and serializer.validated_data.get('foto'):
+                storage_class = getattr(settings, 'DEFAULT_FILE_STORAGE', None)
+                if storage_class:
+                    from django.utils.module_loading import import_string
+                    try:
+                        correct_storage = import_string(storage_class)()
+                        logger.warning(f"📸 [VehiculoViewSet.perform_create] Forzando uso de storage: {type(correct_storage).__name__}")
+                        serializer.validated_data['foto'].storage = correct_storage
+                    except (ImportError, AttributeError) as e:
+                        logger.error(f"❌ [VehiculoViewSet.perform_create] Error cargando storage: {e}")
+            
             vehiculo = serializer.save(cliente=user.cliente)
             logger.warning(f"✅ [VehiculoViewSet.perform_create] Vehículo {vehiculo.id} creado. Foto: {vehiculo.foto.name if vehiculo.foto else 'Sin foto'}")
             if vehiculo.foto:
@@ -116,9 +131,12 @@ class VehiculoViewSet(viewsets.ModelViewSet):
     
     def perform_update(self, serializer):
         """
-        Log para verificar actualización de vehículo
+        Log para verificar actualización de vehículo y forzar el uso del storage correcto
         """
         import logging
+        from django.conf import settings
+        from django.core.files.storage import default_storage
+        
         logger = logging.getLogger(__name__)
         
         logger.warning(f"🔄 [VehiculoViewSet.perform_update] Actualizando vehículo {serializer.instance.id}")
@@ -126,7 +144,18 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         # Verificar si hay una nueva foto en los datos
         if 'foto' in serializer.validated_data:
             logger.warning(f"📸 [VehiculoViewSet.perform_update] Nueva foto detectada para vehículo {serializer.instance.id}")
-            logger.warning(f"📸 [VehiculoViewSet.perform_update] Storage configurado: {type(serializer.instance.foto.storage).__name__ if serializer.instance.foto else 'N/A'}")
+            
+            # Forzar el uso del storage configurado en settings
+            storage_class = getattr(settings, 'DEFAULT_FILE_STORAGE', None)
+            if storage_class:
+                from django.utils.module_loading import import_string
+                try:
+                    correct_storage = import_string(storage_class)()
+                    logger.warning(f"📸 [VehiculoViewSet.perform_update] Forzando uso de storage: {type(correct_storage).__name__}")
+                    # Asignar el storage correcto al campo foto antes de guardar
+                    serializer.validated_data['foto'].storage = correct_storage
+                except (ImportError, AttributeError) as e:
+                    logger.error(f"❌ [VehiculoViewSet.perform_update] Error cargando storage: {e}")
         
         vehiculo = serializer.save()
         
