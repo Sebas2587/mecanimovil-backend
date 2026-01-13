@@ -77,6 +77,13 @@ class CPanelStorage(Storage):
             try:
                 current_dir = ftp.pwd()
                 logger.warning(f"🔍 [CPanelStorage._connect_ftp] Directorio actual después de conexión: {current_dir}")
+                
+                # Listar TODO el contenido del directorio raíz
+                try:
+                    all_items = ftp.nlst()
+                    logger.warning(f"🔍 [CPanelStorage._connect_ftp] Contenido del directorio raíz: {all_items}")
+                except:
+                    pass
             except:
                 logger.warning(f"🔍 [CPanelStorage._connect_ftp] No se pudo obtener directorio actual")
             
