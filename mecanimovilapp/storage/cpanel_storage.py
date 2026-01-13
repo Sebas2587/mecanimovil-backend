@@ -143,8 +143,13 @@ class CPanelStorage(Storage):
         Returns:
             str: Nombre del archivo guardado
         """
+        logger.warning(f"🔄 [CPanelStorage._save] INICIANDO - Guardando archivo: {name}")
+        logger.warning(f"🔄 [CPanelStorage._save] location: {self.location}")
+        logger.warning(f"🔄 [CPanelStorage._save] ftp_host: {self.ftp_host}")
+        logger.warning(f"🔄 [CPanelStorage._save] ftp_user: {self.ftp_user}")
+        
         if not all([self.ftp_host, self.ftp_user, self.ftp_password]):
-            logger.error("❌ [CPanelStorage] Configuración FTP incompleta. No se puede guardar archivo.")
+            logger.error("❌ [CPanelStorage._save] Configuración FTP incompleta. No se puede guardar archivo.")
             raise ValueError("Configuración FTP incompleta. Verifica CPANEL_FTP_* en settings.")
         
         # Construir la ruta completa en el servidor
@@ -154,6 +159,8 @@ class CPanelStorage(Storage):
         # Normalizar: eliminar dobles slashes pero mantener el / inicial si existe
         if remote_path.startswith('//'):
             remote_path = '/' + remote_path.lstrip('/')
+        
+        logger.warning(f"🔄 [CPanelStorage._save] Ruta remota construida: {remote_path}")
         
         # Guardar temporalmente en disco local
         temp_file = None
@@ -184,10 +191,12 @@ class CPanelStorage(Storage):
                 
                 # Subir el archivo
                 filename = os.path.basename(remote_path)
+                logger.warning(f"🔄 [CPanelStorage._save] Subiendo archivo vía FTP: {filename} a {remote_dir}")
                 with open(temp_file.name, 'rb') as f:
                     ftp.storbinary(f'STOR {filename}', f)
                 
-                logger.info(f"✅ [CPanelStorage] Archivo subido: {remote_path}")
+                logger.warning(f"✅ [CPanelStorage._save] ARCHIVO SUBIDO EXITOSAMENTE: {remote_path}")
+                logger.warning(f"✅ [CPanelStorage._save] Archivo disponible en: https://mecanimovil.cl/images/mecanimovil-app-media/{name}")
                 
             finally:
                 if ftp:
