@@ -230,14 +230,48 @@ class CPanelStorage(Storage):
                         except:
                             pass
                 
+                # Verificar el directorio actual antes de subir
+                try:
+                    final_dir = ftp.pwd()
+                    logger.warning(f"🔍 [CPanelStorage._save] Directorio final antes de subir: {final_dir}")
+                except:
+                    final_dir = "No se pudo obtener"
+                    logger.warning(f"⚠️ [CPanelStorage._save] No se pudo obtener directorio final")
+                
                 # Subir el archivo
                 filename = os.path.basename(remote_path)
-                logger.warning(f"🔄 [CPanelStorage._save] Subiendo archivo vía FTP: {filename} a {remote_dir}")
-                with open(temp_file.name, 'rb') as f:
-                    ftp.storbinary(f'STOR {filename}', f)
+                logger.warning(f"🔄 [CPanelStorage._save] Subiendo archivo vía FTP: {filename}")
+                logger.warning(f"🔄 [CPanelStorage._save] Directorio destino: {remote_dir or 'raíz'}")
+                logger.warning(f"🔄 [CPanelStorage._save] Ruta completa remota: {remote_path}")
                 
-                logger.warning(f"✅ [CPanelStorage._save] ARCHIVO SUBIDO EXITOSAMENTE: {remote_path}")
-                logger.warning(f"✅ [CPanelStorage._save] Archivo disponible en: https://mecanimovil.cl/images/mecanimovil-app-media/{name}")
+                try:
+                    with open(temp_file.name, 'rb') as f:
+                        result = ftp.storbinary(f'STOR {filename}', f)
+                        logger.warning(f"🔍 [CPanelStorage._save] Resultado de STOR: {result}")
+                    
+                    # Verificar que el archivo existe después de subirlo
+                    try:
+                        ftp.retrbinary(f'RETR {filename}', lambda x: None)
+                        logger.warning(f"✅ [CPanelStorage._save] ARCHIVO VERIFICADO - Existe en servidor: {filename}")
+                    except Exception as e:
+                        logger.error(f"❌ [CPanelStorage._save] ARCHIVO NO VERIFICADO - Error al verificar: {e}")
+                    
+                    # Listar archivos en el directorio actual para confirmar
+                    try:
+                        files = ftp.nlst()
+                        logger.warning(f"🔍 [CPanelStorage._save] Archivos en directorio actual: {files[:10]}")  # Primeros 10
+                        if filename in files:
+                            logger.warning(f"✅ [CPanelStorage._save] ARCHIVO ENCONTRADO en listado: {filename}")
+                        else:
+                            logger.error(f"❌ [CPanelStorage._save] ARCHIVO NO ENCONTRADO en listado del directorio")
+                    except Exception as e:
+                        logger.warning(f"⚠️ [CPanelStorage._save] No se pudo listar archivos: {e}")
+                    
+                    logger.warning(f"✅ [CPanelStorage._save] ARCHIVO SUBIDO EXITOSAMENTE: {remote_path}")
+                    logger.warning(f"✅ [CPanelStorage._save] Archivo disponible en: https://www.mecanimovil.cl/images/mecanimovil-app-media/{name}")
+                except Exception as e:
+                    logger.error(f"❌ [CPanelStorage._save] ERROR al subir archivo: {e}")
+                    raise
                 
             finally:
                 if ftp:
