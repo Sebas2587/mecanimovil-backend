@@ -214,24 +214,34 @@ class CPanelStorage(Storage):
                 # Cambiar al directorio del archivo y crear si no existe
                 remote_dir = os.path.dirname(remote_path)
                 if remote_dir:
+                    logger.warning(f"🔍 [CPanelStorage._save] Intentando navegar a: {remote_dir}")
                     # Dividir la ruta en partes y crear cada directorio si no existe
                     dir_parts = remote_dir.split('/')
                     dir_parts = [p for p in dir_parts if p]  # Eliminar partes vacías
+                    logger.warning(f"🔍 [CPanelStorage._save] Partes del directorio: {dir_parts}")
                     
                     for part in dir_parts:
+                        logger.warning(f"🔍 [CPanelStorage._save] Procesando parte: {part}")
                         try:
                             # Intentar cambiar al directorio
                             ftp.cwd(part)
-                            logger.warning(f"🔍 [CPanelStorage._save] Navegado a: {part}")
-                        except ftplib.error_perm:
+                            logger.warning(f"✅ [CPanelStorage._save] Navegado a: {part}")
+                        except ftplib.error_perm as e:
                             # Si no existe, crearlo
+                            logger.warning(f"⚠️ [CPanelStorage._save] Directorio {part} no existe, intentando crear...")
                             try:
                                 ftp.mkd(part)
                                 logger.warning(f"✅ [CPanelStorage._save] Directorio creado: {part}")
                                 ftp.cwd(part)
-                            except Exception as e:
-                                logger.error(f"❌ [CPanelStorage._save] Error creando directorio {part}: {e}")
-                                raise
+                                logger.warning(f"✅ [CPanelStorage._save] Navegado a directorio recién creado: {part}")
+                            except Exception as e2:
+                                logger.error(f"❌ [CPanelStorage._save] Error creando directorio {part}: {e2}")
+                                # Intentar cambiar de nuevo por si acaso ya existía
+                                try:
+                                    ftp.cwd(part)
+                                    logger.warning(f"✅ [CPanelStorage._save] Directorio {part} ya existía, navegado")
+                                except:
+                                    raise
                 else:
                     logger.warning(f"🔍 [CPanelStorage._save] No hay directorio, subiendo a raíz")
                 
