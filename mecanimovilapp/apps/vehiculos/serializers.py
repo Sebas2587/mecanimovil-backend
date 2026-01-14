@@ -1,5 +1,7 @@
 from rest_framework import serializers
 from .models import Vehiculo, Marca, MarcaVehiculo, Modelo
+from .models_health import ComponenteSaludConfig, ComponenteSaludVehiculo
+from django.db.models import Q
 from mecanimovilapp.apps.usuarios.serializers import ClienteSerializer
 
 
@@ -53,6 +55,13 @@ class VehiculoSerializer(serializers.ModelSerializer):
     # Sobrescribir to_representation para devolver URL completa en lectura
     
     
+    # Campo adicional para inicialización inteligente (checklist)
+    componentes_al_dia = serializers.ListField(
+        child=serializers.IntegerField(), 
+        write_only=True, 
+        required=False
+    )
+    
     class Meta:
         model = Vehiculo
         fields = (
@@ -60,7 +69,8 @@ class VehiculoSerializer(serializers.ModelSerializer):
             'year', 'año', 'patente', 'placa', 'kilometraje', 'foto', 'cliente',
             'cliente_detail', 'marca_nombre', 'modelo_nombre',
             'color', 'numero_motor', 'numero_chasis',
-            'fecha_creacion', 'fecha_actualizacion'
+            'fecha_creacion', 'fecha_actualizacion',
+            'componentes_al_dia'
         )
         extra_kwargs = {
             'cliente': {'write_only': True},
@@ -121,6 +131,8 @@ class VehiculoSerializer(serializers.ModelSerializer):
         
         logger = logging.getLogger(__name__)
         
+        # Extraer la lista de componentes al día
+        componentes_al_dia = validated_data.pop('componentes_al_dia', [])
         # Extraer la foto si existe
         foto_file = validated_data.pop('foto', None)
         
@@ -145,6 +157,53 @@ class VehiculoSerializer(serializers.ModelSerializer):
             else:
                 vehiculo.foto = foto_file
                 vehiculo.save()
+        
+        # --- INICIALIZACIÓN INTELIGENTE DE SALUD ---
+        try:
+            # 1. Determinar tipo de motor para filtrar componentes
+            tipo_motor_map = {
+                'Gasolina': 'GASOLINA',
+                'Diésel': 'DIESEL'
+            }
+            tipo_motor = tipo_motor_map.get(vehiculo.tipo_motor, 'GASOLINA')
+            
+            # 2. Obtener configurations de componentes aplicables
+            configs_aplicables = ComponenteSaludConfig.objects.filter(
+                activo=True
+            ).filter(
+                Q(tipo_motor_aplicable='TODOS') | Q(tipo_motor_aplicable=tipo_motor)
+            )
+            
+            logger.info(f"🔧 Inicializando {configs_aplicables.count()} componentes de salud para vehículo {vehiculo.id}")
+            
+            # 3. Crear componentes de salud
+            for config in configs_aplicables:
+                # Determinar km del último servicio
+                if config.id in componentes_al_dia:
+                    # Si el usuario dijo que está al día, asumimos que se hizo AHORA (km actual)
+                    km_ultimo_servicio = vehiculo.kilometraje
+                    logger.info(f"  - Componente {config.nombre}: AL DÍA (Km último servicio: {km_ultimo_servicio})")
+                else:
+                    # Si no está al día, asumimos que NUNCA se hizo (0 km)
+                    # Esto generará alerta crítica inmediata, lo cual es correcto
+                    km_ultimo_servicio = 0
+                    logger.info(f"  - Componente {config.nombre}: PENDIENTE (Km último servicio: 0)")
+                
+                # Crear instancia 
+                comp = ComponenteSaludVehiculo.objects.create(
+                    vehiculo=vehiculo,
+                    componente_config=config,
+                    salud_porcentaje=0, # Se recalculará
+                    nivel_alerta='CRITICO', # Se recalculará
+                    km_ultimo_servicio=km_ultimo_servicio
+                )
+                
+                # Calcular salud real
+                comp.calcular_salud()
+                
+        except Exception as e:
+            logger.error(f"❌ Error en inicialización de salud: {str(e)}")
+            # No fallamos la creación del vehículo si falla esto, pero logueamos el error
         
         return vehiculo
     

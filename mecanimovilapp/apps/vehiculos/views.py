@@ -3,6 +3,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.db.models import Q
 from .models import Vehiculo, Marca, MarcaVehiculo, Modelo
+from .models_health import ComponenteSaludConfig
 from .serializers import VehiculoSerializer, MarcaSerializer, MarcaVehiculoSerializer, ModeloSerializer
 
 
@@ -171,6 +172,33 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         marcas = MarcaVehiculo.objects.all()
         serializer = MarcaVehiculoSerializer(marcas, many=True)
         return Response(serializer.data)
+
+    @action(detail=False, methods=['get'], url_path='checklist-inicial')
+    def checklist_inicial(self, request):
+        """
+        Devuelve la lista de componentes configurados para mostrar en el checklist inicial
+        Se filtra por tipo de motor (Gasolina/Diesel)
+        """
+        tipo_motor_param = request.query_params.get('tipo_motor', 'Gasolina')
+        
+        # Mapear el parámetro a los valores del modelo (GASOLINA, DIESEL)
+        # El frontend puede enviar 'Gasolina', 'Diésel', 'GASOLINA', 'DIESEL'
+        tipo_motor_map = {
+            'gasolina': 'GASOLINA',
+            'diesel': 'DIESEL',
+            'diésel': 'DIESEL'
+        }
+        
+        tipo_motor = tipo_motor_map.get(tipo_motor_param.lower(), 'GASOLINA')
+        
+        # Filtrar componentes activos que apliquen al motor o a TODOS
+        componentes = ComponenteSaludConfig.objects.filter(
+            activo=True
+        ).filter(
+            Q(tipo_motor_aplicable='TODOS') | Q(tipo_motor_aplicable=tipo_motor)
+        ).values('id', 'nombre', 'descripcion')
+        
+        return Response(list(componentes))
     
     @action(detail=False, methods=['get'], url_path='modelos')
     def get_modelos(self, request):

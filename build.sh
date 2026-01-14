@@ -14,6 +14,8 @@ mkdir -p media
 
 echo "📊 Ejecutando migraciones de base de datos..."
 python manage.py migrate --noinput
+echo "🚑 Inicializando salud para vehículos existentes (Legacy)..."
+python manage.py populate_health_legacy
 
 echo "🎨 Recolectando archivos estáticos..."
 python manage.py collectstatic --noinput
