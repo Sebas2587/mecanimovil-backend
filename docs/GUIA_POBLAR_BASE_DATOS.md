@@ -90,9 +90,9 @@ Este comando normalmente se ejecuta automáticamente durante el deploy, pero es 
 
 ---
 
-## 4. Paso 2: Categorías de Servicios
+## 4. Paso 2: Categorías y Servicios
 
-**Objetivo:** Poblar las categorías de servicios disponibles tanto para usuarios como para proveedores.
+**Objetivo:** Poblar las categorías principales y los servicios asociados tanto para usuarios como para proveedores.
 
 ### Comando:
 ```bash
@@ -100,41 +100,76 @@ python manage.py populate_categorias_servicios
 ```
 
 ### Opciones disponibles:
-- `--force`: Actualiza categorías existentes con nuevos datos
-- `--clear`: Elimina todas las categorías antes de crear las nuevas (⚠️ usar con cuidado)
+- `--force`: Actualiza categorías y servicios existentes con nuevos datos
+- `--clear`: Elimina todas las categorías y servicios antes de crear las nuevas (⚠️ usar con cuidado)
 
-### Categorías que se crean:
-1. Diagnostico mecanico
-2. Cambio de pastillas de frenos
-3. Cambio de pastillas y discos de freno
-4. Cambio de aceite motor
-5. Cambio de filtro de aire
-6. Cambio de filtro habitaculo
-7. Cambio aceite motor y filtro
-8. Diagnostico electromecanico
-9. Servicio escaner automotriz
-10. Mantenimiento por kilometraje
-11. Cambio de ampolletas
-12. Revision precompra
-13. Revision tecnica
-14. Lavado a domicilio
-15. Cambio de bateria
-16. Cambio de bujias
-17. Cambio de pastillas de frenos y rectificado
+### Estructura que se crea:
+
+#### Categorías Principales (5):
+1. **🔍 Diagnóstico e Inspección** - Para saber qué tiene el auto
+2. **🛠️ Mantención Preventiva y Motor** - Para cuidar la vida útil del auto
+3. **🛑 Frenos y Seguridad** - Para seguridad crítica
+4. **⚡ Electricidad y Luces** - Energía y visibilidad
+5. **✨ Estética y Limpieza** - Cuidado visual
+
+#### Servicios por Categoría:
+
+**🔍 Diagnóstico e Inspección:**
+- Diagnóstico mecánico
+- Diagnóstico electromecánico
+- Servicio escáner automotriz
+- Revisión precompra
+- Revisión técnica
+
+**🛠️ Mantención Preventiva y Motor:**
+- Cambio de aceite motor
+- Cambio de filtro de aire
+- Cambio de filtro habitáculo
+- Cambio aceite motor y filtro
+- Mantenimiento por kilometraje
+- Cambio de bujías
+
+**🛑 Frenos y Seguridad:**
+- Cambio de pastillas de frenos
+- Cambio de pastillas y discos de freno
+- Cambio de pastillas de frenos y rectificado
+
+**⚡ Electricidad y Luces:**
+- Cambio de batería
+- Cambio de ampolletas
+
+**✨ Estética y Limpieza:**
+- Lavado a domicilio
 
 ### Verificación:
 ```bash
 python manage.py shell
 ```
 ```python
-from mecanimovilapp.apps.servicios.models import CategoriaServicio
-print(f"Total de categorías: {CategoriaServicio.objects.count()}")
-# Debe mostrar: Total de categorías: 17
+from mecanimovilapp.apps.servicios.models import CategoriaServicio, Servicio
+
+# Verificar categorías principales (sin padre)
+categorias_principales = CategoriaServicio.objects.filter(categoria_padre__isnull=True)
+print(f"Total de categorías principales: {categorias_principales.count()}")
+# Debe mostrar: Total de categorías principales: 5
+
+# Verificar servicios
+print(f"Total de servicios: {Servicio.objects.count()}")
+# Debe mostrar: Total de servicios: 17
+
+# Verificar asociaciones
+for cat in categorias_principales:
+    servicios_count = cat.servicios.count()
+    print(f"{cat.nombre}: {servicios_count} servicios")
 ```
 
 ### O desde la API:
 ```bash
-curl https://mecanimovil-api.onrender.com/api/servicios/categorias/ | python -m json.tool
+# Ver categorías principales
+curl https://mecanimovil-api.onrender.com/api/servicios/categorias/principales/ | python -m json.tool
+
+# Ver servicios
+curl https://mecanimovil-api.onrender.com/api/servicios/servicios/ | python -m json.tool
 ```
 
 ---
@@ -328,9 +363,11 @@ python manage.py shell
 ```
 
 ```python
-# Verificar categorías de servicios
-from mecanimovilapp.apps.servicios.models import CategoriaServicio
-print(f"✅ Categorías de servicios: {CategoriaServicio.objects.count()}")
+# Verificar categorías principales y servicios
+from mecanimovilapp.apps.servicios.models import CategoriaServicio, Servicio
+categorias_principales = CategoriaServicio.objects.filter(categoria_padre__isnull=True)
+print(f"✅ Categorías principales: {categorias_principales.count()}")
+print(f"✅ Servicios: {Servicio.objects.count()}")
 
 # Verificar marcas y modelos
 from mecanimovilapp.apps.vehiculos.models import MarcaVehiculo, Modelo
@@ -493,7 +530,7 @@ echo "⚠️  No olvides crear el superusuario con: python manage.py createsuper
 
 Después de completar todos los pasos, deberías tener:
 
-- ✅ **17 categorías de servicios** disponibles
+- ✅ **5 categorías principales de servicios** con **17 servicios** asociados
 - ✅ **20+ marcas de vehículos** y **100+ modelos**
 - ✅ **Catálogo completo de repuestos** asociados a servicios
 - ✅ **Items de checklist** predefinidos para proveedores
