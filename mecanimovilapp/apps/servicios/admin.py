@@ -25,11 +25,13 @@ class ServicioRepuestoInline(admin.TabularInline):
     fields = ('repuesto', 'cantidad_estimada', 'es_opcional', 'notas')
     autocomplete_fields = ['repuesto']  # Autocompletado para buscar repuestos más fácil
     
-    class Media:
-        css = {
-            'all': ('admin/css/servicio_repuesto_inline.css',)
-        }
-        js = ('admin/js/servicio_repuesto_inline.js',)
+    # Nota: Se removieron referencias a archivos CSS/JS que no existen
+    # para evitar errores en producción con ManifestStaticFilesStorage
+    # class Media:
+    #     css = {
+    #         'all': ('admin/css/servicio_repuesto_inline.css',)
+    #     }
+    #     js = ('admin/js/servicio_repuesto_inline.js',)
 
 @admin.register(CategoriaServicio)
 class CategoriaServicioAdmin(admin.ModelAdmin):
