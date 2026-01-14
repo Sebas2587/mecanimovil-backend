@@ -1007,17 +1007,18 @@ class CuentaMercadoPagoProveedorViewSet(viewsets.GenericViewSet):
         cuenta.mensaje_estado = 'Esperando autorización de Mercado Pago...'
         cuenta.save()
         
-        logger.info(f"OAuth state y code_verifier generados para cuenta {cuenta.id} (usuario {request.user.id})")
-        
-        # Obtener credenciales de la configuración
+        # Obtener credenciales de la configuración ANTES de modificar la cuenta
+        # Esto evita marcar la cuenta como pendiente si hay un error de configuración
         client_id = config('MERCADOPAGO_CLIENT_ID', default='')
         
         if not client_id:
             logger.error("MERCADOPAGO_CLIENT_ID no configurado")
             return Response(
-                {'error': 'La integración con Mercado Pago no está configurada correctamente'},
+                {'error': 'La integración con Mercado Pago no está configurada correctamente. Por favor, contacta al administrador del sistema.'},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE
             )
+        
+        logger.info(f"OAuth state y code_verifier generados para cuenta {cuenta.id} (usuario {request.user.id})")
         
         # URL de redirect (debe estar configurada en Mercado Pago y coincidir EXACTAMENTE)
         # En desarrollo, SIEMPRE intentar detectar ngrok primero ya que las URLs de ngrok free cambian
