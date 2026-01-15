@@ -45,6 +45,33 @@ Value: APP_USR_xxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 💡 **Dónde obtenerlo:**
 - Mercado Pago → Credenciales → Producción → Public Key
 
+```
+Key: MERCADOPAGO_CLIENT_ID
+Value: xxxxxxxxxxxxxxxx
+```
+⚠️ **CRÍTICO:** Necesario para OAuth de proveedores (conexión de cuentas)
+💡 **Dónde obtenerlo:**
+- Mercado Pago → Tus integraciones → Tu aplicación → Credenciales de producción → Client ID
+- O en Credenciales → OAuth → Client ID
+
+```
+Key: MERCADOPAGO_CLIENT_SECRET
+Value: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+⚠️ **CRÍTICO:** Necesario para OAuth de proveedores (conexión de cuentas)
+💡 **Dónde obtenerlo:**
+- Mercado Pago → Tus integraciones → Tu aplicación → Credenciales de producción → Client Secret
+- O en Credenciales → OAuth → Client Secret
+
+```
+Key: MERCADOPAGO_REDIRECT_URI
+Value: https://mecanimovil-api.onrender.com/api/mercadopago/cuenta-proveedor/callback-oauth/
+```
+⚠️ **IMPORTANTE:** Esta URL debe coincidir EXACTAMENTE con la configurada en Mercado Pago
+💡 **Configurar en Mercado Pago:**
+- Mercado Pago → Tus integraciones → Tu aplicación → OAuth → Redirect URIs
+- Agregar: `https://mecanimovil-api.onrender.com/api/mercadopago/cuenta-proveedor/callback-oauth/`
+
 ---
 
 ### 🌐 CORS (Permitir tu Frontend)
@@ -147,6 +174,9 @@ Marca cada variable después de configurarla:
 - [ ] `MERCADOPAGO_ACCESS_TOKEN` = Token de producción
 - [ ] `MERCADOPAGO_WEBHOOK_SECRET` = Secret de webhook
 - [ ] `MERCADOPAGO_PUBLIC_KEY_PROD` = Public key de producción
+- [ ] `MERCADOPAGO_CLIENT_ID` = Client ID de producción (OAuth)
+- [ ] `MERCADOPAGO_CLIENT_SECRET` = Client Secret de producción (OAuth)
+- [ ] `MERCADOPAGO_REDIRECT_URI` = URL de callback OAuth
 
 ### CORS:
 - [ ] `CORS_ALLOWED_ORIGINS` = URLs de tu frontend (separadas por comas)
@@ -221,10 +251,21 @@ Marca cada variable después de configurarla:
 2. Selecciona tu aplicación
 3. Ve a "Credenciales de producción"
 
-### Paso 3: Copiar las Credenciales
+### Paso 3: Copiar las Credenciales Básicas
 - **Access Token:** Lo verás como `APP_USR-xxxxx`
 - **Public Key:** Lo verás como `APP_USR_xxxxx`
 - **Webhook Secret:** Ve a "Webhooks" → Configuración
+
+### Paso 4: Obtener Credenciales OAuth (para conexión de proveedores)
+1. En "Tus integraciones" → Tu aplicación
+2. Ve a la sección **"OAuth"** o **"Credenciales OAuth"**
+3. Copia:
+   - **Client ID:** Número de varios dígitos (ej: `8184034701037196`)
+   - **Client Secret:** String alfanumérico largo (ej: `WavGFX03hEGVknKgQsdZ1WYRBA6WJV6u`)
+4. **Configurar Redirect URI:**
+   - En la misma sección OAuth, agrega la URL de callback:
+   - `https://mecanimovil-api.onrender.com/api/mercadopago/cuenta-proveedor/callback-oauth/`
+   - ⚠️ **IMPORTANTE:** La URL debe coincidir EXACTAMENTE (incluyendo la barra final `/`)
 
 ---
 
