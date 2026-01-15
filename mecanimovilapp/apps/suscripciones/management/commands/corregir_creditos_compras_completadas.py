@@ -9,7 +9,7 @@ Uso:
 """
 from django.core.management.base import BaseCommand
 from django.db import transaction, models
-from mecanimovilapp.apps.suscripciones.models import CompraCreditos, CreditoProveedor
+from mecanimovilapp.apps.suscripciones.models import CompraCreditos, CreditoProveedor, ConsumoCredito
 from mecanimovilapp.apps.suscripciones.creditos_services import obtener_credito_proveedor
 import logging
 
@@ -60,43 +60,49 @@ class Command(BaseCommand):
                 credito_proveedor = obtener_credito_proveedor(compra.proveedor)
                 saldo_actual = credito_proveedor.saldo_creditos
                 
-                # Calcular el saldo esperado si esta compra hubiera sido procesada correctamente
-                # Necesitamos verificar si los créditos de esta compra ya están incluidos
-                # Para esto, verificamos si hay compras completadas anteriores a esta
-                compras_anteriores = CompraCreditos.objects.filter(
+                # Calcular total de créditos comprados (todas las compras completadas)
+                total_creditos_comprados = CompraCreditos.objects.filter(
                     proveedor=compra.proveedor,
-                    estado='completada',
-                    fecha_compra__lt=compra.fecha_compra
+                    estado='completada'
                 ).aggregate(
-                    total_creditos=models.Sum('cantidad_creditos')
-                )['total_creditos'] or 0
+                    total=models.Sum('cantidad_creditos')
+                )['total'] or 0
                 
-                # Calcular saldo esperado: créditos de compras anteriores + créditos de esta compra
-                # Menos los consumos (que no podemos calcular fácilmente aquí)
-                # En su lugar, verificamos si el saldo actual es menor que el esperado mínimo
-                saldo_minimo_esperado = compras_anteriores + compra.cantidad_creditos
+                # Calcular total de créditos consumidos
+                total_creditos_consumidos = ConsumoCredito.objects.filter(
+                    proveedor=compra.proveedor
+                ).aggregate(
+                    total=models.Sum('creditos_consumidos')
+                )['total'] or 0
                 
-                # Si el saldo actual es menor que el mínimo esperado, probablemente faltan créditos
-                if saldo_actual < saldo_minimo_esperado:
-                    # Verificar si esta compra específica ya fue procesada
-                    # Comparando con el saldo antes de esta compra
-                    saldo_antes_compra = saldo_actual - compra.cantidad_creditos
+                # Saldo esperado = créditos comprados - créditos consumidos
+                saldo_esperado = total_creditos_comprados - total_creditos_consumidos
+                
+                # Si el saldo actual es menor que el esperado, hay créditos faltantes
+                diferencia = saldo_esperado - saldo_actual
+                
+                if diferencia > 0:
+                    # Hay créditos faltantes. Verificar si esta compra específica no fue procesada
+                    # Calculamos el saldo esperado sin esta compra
+                    total_sin_esta_compra = total_creditos_comprados - compra.cantidad_creditos
+                    saldo_esperado_sin_compra = total_sin_esta_compra - total_creditos_consumidos
                     
-                    # Si el saldo antes de esta compra es igual a las compras anteriores,
+                    # Si el saldo actual coincide con el esperado sin esta compra,
                     # entonces esta compra NO fue procesada
-                    if abs(saldo_antes_compra - compras_anteriores) < 1:  # Tolerancia para errores de redondeo
+                    if abs(saldo_actual - saldo_esperado_sin_compra) < 1:  # Tolerancia para errores de redondeo
                         if not dry_run:
                             # Acreditar los créditos de esta compra
                             with transaction.atomic():
                                 credito_proveedor.saldo_creditos += compra.cantidad_creditos
-                                credito_proveedor.fecha_ultima_compra = compra.fecha_compra
+                                if not credito_proveedor.fecha_ultima_compra or compra.fecha_compra > credito_proveedor.fecha_ultima_compra:
+                                    credito_proveedor.fecha_ultima_compra = compra.fecha_compra
                                 credito_proveedor.save(update_fields=['saldo_creditos', 'fecha_ultima_compra', 'fecha_actualizacion'])
                             
                             self.stdout.write(
                                 self.style.SUCCESS(
                                     f'✅ Compra {compra.id}: Acreditados {compra.cantidad_creditos} créditos '
                                     f'para proveedor {compra.proveedor.username} '
-                                    f'(Saldo: {saldo_antes_compra} → {credito_proveedor.saldo_creditos})'
+                                    f'(Saldo: {saldo_actual} → {credito_proveedor.saldo_creditos})'
                                 )
                             )
                             compras_corregidas += 1
@@ -104,14 +110,14 @@ class Command(BaseCommand):
                             self.stdout.write(
                                 f'🔧 Compra {compra.id}: Se acreditarían {compra.cantidad_creditos} créditos '
                                 f'para proveedor {compra.proveedor.username} '
-                                f'(Saldo actual: {saldo_actual}, Esperado mínimo: {saldo_minimo_esperado})'
+                                f'(Saldo actual: {saldo_actual}, Esperado: {saldo_esperado}, Diferencia: {diferencia})'
                             )
                             compras_corregidas += 1
                     else:
-                        # Esta compra ya fue procesada, pero hay otro problema
+                        # Hay diferencia pero no es de esta compra específica
                         compras_ya_correctas += 1
                 else:
-                    # El saldo parece correcto
+                    # El saldo está correcto o hay más créditos de los esperados (puede ser por migraciones)
                     compras_ya_correctas += 1
                     
             except Exception as e:
