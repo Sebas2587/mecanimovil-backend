@@ -169,6 +169,57 @@ class CompraCreditosAdmin(admin.ModelAdmin):
             'fields': ('fecha_compra', 'fecha_expiracion_creditos', 'fecha_actualizacion')
         }),
     )
+    
+    def save_model(self, request, obj, form, change):
+        """
+        Intercepta el guardado para asegurar que los créditos se acrediten
+        cuando se marca una compra como completada.
+        """
+        from .creditos_services import confirmar_compra_creditos
+        
+        # Si es una actualización (change=True) y el estado cambió a 'completada'
+        if change:
+            # Obtener el objeto original de la base de datos
+            try:
+                obj_original = CompraCreditos.objects.get(pk=obj.pk)
+                estado_original = obj_original.estado
+                estado_nuevo = obj.estado
+                
+                # Si el estado cambió de algo diferente a 'completada' a 'completada'
+                if estado_original != 'completada' and estado_nuevo == 'completada':
+                    # Usar confirmar_compra_creditos para asegurar que los créditos se agreguen
+                    try:
+                        confirmar_compra_creditos(obj.id, obj.payment_id_mp)
+                        # El objeto ya fue actualizado por confirmar_compra_creditos
+                        return
+                    except Exception as e:
+                        from django.contrib import messages
+                        messages.error(
+                            request,
+                            f'Error al confirmar la compra y acreditar créditos: {str(e)}. '
+                            f'Los créditos NO fueron agregados al saldo del proveedor.'
+                        )
+                        # Si falla, no guardar el cambio de estado
+                        obj.estado = estado_original
+                        obj.save()
+                        return
+                # Si ya estaba completada y se intenta cambiar a otra cosa, prevenir
+                elif estado_original == 'completada' and estado_nuevo != 'completada':
+                    from django.contrib import messages
+                    messages.warning(
+                        request,
+                        'No se puede cambiar el estado de una compra completada. '
+                        'Los créditos ya fueron acreditados.'
+                    )
+                    # Mantener el estado original
+                    obj.estado = estado_original
+                    obj.save()
+                    return
+            except CompraCreditos.DoesNotExist:
+                pass
+        
+        # Guardar normalmente si no hay cambios de estado a completada
+        obj.save()
 
 
 @admin.register(ConsumoCredito)
