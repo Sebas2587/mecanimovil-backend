@@ -114,18 +114,20 @@ class CompraCreditosViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST
                 )
             
+            # Validar que solo se permita Mercado Pago
+            if metodo_pago != 'mercadopago':
+                return Response(
+                    {'error': 'Solo se permite pago con Mercado Pago. El método de transferencia ha sido deshabilitado.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
             # Crear la compra (sin confirmar si es mercadopago)
             compra = comprar_creditos(proveedor, paquete_id, metodo_pago)
             serializer = self.get_serializer(compra)
             response_data = serializer.data
             
-            # Si es transferencia, agregar datos bancarios reales
-            if metodo_pago == 'transferencia':
-                response_data['datos_bancarios'] = DATOS_BANCARIOS_MECANIMOVIL
-                logger.info(f"💰 Compra de créditos por transferencia creada: {compra.id}")
-            
             # Si es Mercado Pago, crear preferencia de pago
-            elif metodo_pago == 'mercadopago':
+            if metodo_pago == 'mercadopago':
                 try:
                     preference_result = self._crear_preferencia_mercadopago(compra, paquete, proveedor)
                     
@@ -441,10 +443,10 @@ class CompraCreditosViewSet(viewsets.ModelViewSet):
         # Verificar que sea una compra por Mercado Pago
         if compra.metodo_pago != 'mercadopago':
             return Response({
-                'status': 'pendiente',
-                'mensaje': 'Esta compra es por transferencia. Espera la confirmación del administrador.',
+                'status': 'error',
+                'mensaje': 'Esta compra utiliza un método de pago no soportado. Solo se permite Mercado Pago.',
                 'creditos_acreditados': False
-            })
+            }, status=status.HTTP_400_BAD_REQUEST)
         
         # Buscar pagos en Mercado Pago por external_reference
         external_reference = f"creditos_{compra.id}"
@@ -547,11 +549,12 @@ class CompraCreditosViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], url_path='datos-bancarios')
     def datos_bancarios(self, request):
         """
-        Obtiene los datos bancarios oficiales de MecaniMovil para transferencias.
+        Obtiene los datos bancarios oficiales de MecaniMovil.
+        NOTA: El método de pago por transferencia ha sido deshabilitado.
         Endpoint: GET /api/suscripciones/creditos/compras/datos-bancarios/
         """
         return Response({
-            'transferencia': DATOS_BANCARIOS_MECANIMOVIL,
+            'mensaje': 'El método de pago por transferencia ha sido deshabilitado. Solo se permite Mercado Pago.',
             'mercadopago': DATOS_MERCADOPAGO_MECANIMOVIL
         })
     
@@ -578,8 +581,9 @@ class CompraCreditosViewSet(viewsets.ModelViewSet):
                 compra_data['puede_reintentar'] = True
                 compra_data['mensaje'] = 'Pago pendiente. Puedes verificar el estado o reintentar.'
             else:
+                # Compras antiguas por transferencia (ya no se permiten nuevas)
                 compra_data['puede_reintentar'] = False
-                compra_data['mensaje'] = 'Esperando confirmación de transferencia.'
+                compra_data['mensaje'] = 'Compra antigua por transferencia. Contacta al administrador para confirmar el pago.'
         
         return Response({
             'compras': data,
@@ -613,7 +617,7 @@ class CompraCreditosViewSet(viewsets.ModelViewSet):
         # Verificar que sea por Mercado Pago
         if compra.metodo_pago != 'mercadopago':
             return Response(
-                {'error': 'Esta compra es por transferencia, no se puede reintentar el pago'},
+                {'error': 'Solo se permite reintentar pagos de Mercado Pago. El método de transferencia ha sido deshabilitado.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
