@@ -1522,8 +1522,12 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
             'id': obj.vehiculo.id,
             'marca': obj.vehiculo.marca_nombre if hasattr(obj.vehiculo, 'marca_nombre') else str(obj.vehiculo.marca),
             'modelo': obj.vehiculo.modelo_nombre if hasattr(obj.vehiculo, 'modelo_nombre') else str(obj.vehiculo.modelo),
-            'a?o': obj.vehiculo.year if hasattr(obj.vehiculo, 'year') else None,
-            'patente': obj.vehiculo.patente if hasattr(obj.vehiculo, 'patente') else None
+            'año': obj.vehiculo.year if hasattr(obj.vehiculo, 'year') else None,
+            'anio': obj.vehiculo.year if hasattr(obj.vehiculo, 'year') else None,  # Alias para compatibilidad
+            'patente': obj.vehiculo.patente if hasattr(obj.vehiculo, 'patente') else None,
+            'kilometraje': obj.vehiculo.kilometraje if hasattr(obj.vehiculo, 'kilometraje') else None,
+            'tipo_motor': obj.vehiculo.tipo_motor if hasattr(obj.vehiculo, 'tipo_motor') else None,
+            'cilindraje': obj.vehiculo.cilindraje if hasattr(obj.vehiculo, 'cilindraje') else None,
         }
     
     def get_direccion_usuario_info(self, obj):
