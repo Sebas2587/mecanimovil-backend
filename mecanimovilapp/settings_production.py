@@ -133,6 +133,35 @@ CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', f'{REDIS_URL}/2'
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 # ============================================
+# OPTIMIZACIÓN: COMPRESIÓN GZIP DE RESPUESTAS
+# ============================================
+# Usamos GZipMiddleware nativo de Django (incluido en Django, no requiere paquetes externos)
+# Comprime automáticamente respuestas > 200 bytes cuando el cliente acepta gzip
+# IMPORTANTE: Debe ir DESPUÉS de WhiteNoise pero ANTES de CommonMiddleware
+# Orden correcto: Security -> WhiteNoise -> Compression -> Sessions -> CORS -> Common -> ...
+# Sobrescribir MIDDLEWARE para incluir compresión
+MIDDLEWARE = [
+    'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
+    'django.middleware.gzip.GZipMiddleware',  # Compresión Gzip nativa de Django
+    'django.contrib.sessions.middleware.SessionMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
+    'django.middleware.common.CommonMiddleware',
+    'django.middleware.csrf.CsrfViewMiddleware',
+    'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'django.contrib.messages.middleware.MessageMiddleware',
+    'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'mecanimovilapp.middleware.vehiculo_activo.VehiculoActivoMiddleware',
+]
+
+# Configuración de GZipMiddleware (opcional, los defaults son suficientes)
+# GZipMiddleware comprime automáticamente:
+# - Respuestas > 200 bytes (GZIP_MIN_LENGTH = 200)
+# - Solo content-types que no estén en GZIP_EXCLUDE_CONTENT_TYPES
+# - Solo si el cliente envía Accept-Encoding: gzip
+GZIP_MIN_LENGTH = 200  # Mínimo tamaño en bytes para comprimir (default: 200)
+
+# ============================================
 # CONFIGURACIÓN DE MERCADO PAGO
 # ============================================
 MERCADOPAGO_MODE = os.environ.get('MERCADOPAGO_MODE', 'production')

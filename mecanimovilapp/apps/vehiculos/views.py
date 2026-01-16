@@ -4,7 +4,7 @@ from rest_framework.response import Response
 from django.db.models import Q
 from .models import Vehiculo, Marca, MarcaVehiculo, Modelo
 from .models_health import ComponenteSaludConfig
-from .serializers import VehiculoSerializer, MarcaSerializer, MarcaVehiculoSerializer, ModeloSerializer
+from .serializers import VehiculoSerializer, VehiculoLiteSerializer, MarcaSerializer, MarcaVehiculoSerializer, ModeloSerializer
 
 
 class MarcaVehiculoViewSet(viewsets.ReadOnlyModelViewSet):
@@ -54,6 +54,15 @@ class VehiculoViewSet(viewsets.ModelViewSet):
     serializer_class = VehiculoSerializer
     permission_classes = [permissions.IsAuthenticated]
     
+    def get_serializer_class(self):
+        """
+        Usar VehiculoLiteSerializer para list (optimización)
+        y VehiculoSerializer completo para retrieve/create/update/delete
+        """
+        if self.action == 'list':
+            return VehiculoLiteSerializer
+        return VehiculoSerializer
+    
     def get_serializer_context(self):
         """
         Pasa el request al serializer para que pueda construir URLs completas
@@ -93,6 +102,25 @@ class VehiculoViewSet(viewsets.ModelViewSet):
             
         # Si el usuario no es un cliente ni staff, no devolver nada
         return Vehiculo.objects.none()
+    
+    def list(self, request, *args, **kwargs):
+        """
+        Sobrescribir list para agregar Cache-Control headers
+        """
+        response = super().list(request, *args, **kwargs)
+        # Cache-Control: public, max-age=300 (5 minutos)
+        # El cliente puede cachear esta respuesta por 5 minutos
+        response['Cache-Control'] = 'public, max-age=300'
+        return response
+    
+    def retrieve(self, request, *args, **kwargs):
+        """
+        Sobrescribir retrieve para agregar Cache-Control headers
+        """
+        response = super().retrieve(request, *args, **kwargs)
+        # Cache-Control: public, max-age=300 (5 minutos)
+        response['Cache-Control'] = 'public, max-age=300'
+        return response
     
     def perform_create(self, serializer):
         """

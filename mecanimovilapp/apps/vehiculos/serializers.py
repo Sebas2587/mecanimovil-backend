@@ -248,3 +248,59 @@ class VehiculoSerializer(serializers.ModelSerializer):
         
         instance.save()
         return instance
+
+
+class VehiculoLiteSerializer(serializers.ModelSerializer):
+    """
+    Serializador ligero para listas de vehículos.
+    Excluye cliente_detail y otros campos pesados para optimizar la respuesta.
+    """
+    marca_nombre = serializers.ReadOnlyField()
+    modelo_nombre = serializers.ReadOnlyField()
+    
+    # Mapeo de campos para compatibilidad con frontend
+    año = serializers.ReadOnlyField(source='year')  # Mapear year -> año
+    placa = serializers.ReadOnlyField(source='patente')  # Mapear patente -> placa
+    
+    # Campos adicionales que pueden no estar en el modelo pero el frontend espera
+    color = serializers.SerializerMethodField()
+    numero_motor = serializers.SerializerMethodField()
+    numero_chasis = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Vehiculo
+        fields = (
+            'id', 'marca', 'modelo', 'cilindraje', 'tipo_motor', 
+            'year', 'año', 'patente', 'placa', 'kilometraje', 'foto',
+            'marca_nombre', 'modelo_nombre',
+            'color', 'numero_motor', 'numero_chasis',
+            'fecha_creacion', 'fecha_actualizacion'
+        )
+        read_only_fields = fields
+    
+    def to_representation(self, instance):
+        """
+        Sobrescribir para devolver URL completa de foto en lectura
+        """
+        representation = super().to_representation(instance)
+        # Reemplazar el valor de foto con la URL completa usando get_foto
+        representation['foto'] = self.get_foto(instance)
+        return representation
+    
+    def get_foto(self, obj):
+        """Retorna la URL completa de la foto del vehículo usando cPanel si está configurado"""
+        from mecanimovilapp.storage.utils import get_image_url
+        request = self.context.get('request')
+        return get_image_url(obj.foto, request)
+    
+    def get_color(self, obj):
+        """Retorna el color del vehículo si está disponible"""
+        return getattr(obj, 'color', None)
+    
+    def get_numero_motor(self, obj):
+        """Retorna el número de motor si está disponible"""
+        return getattr(obj, 'numero_motor', None)
+    
+    def get_numero_chasis(self, obj):
+        """Retorna el número de chasis si está disponible"""
+        return getattr(obj, 'numero_chasis', None)
