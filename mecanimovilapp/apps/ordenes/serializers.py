@@ -1393,7 +1393,11 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
     
     def get_proveedores_dirigidos_detail(self, obj):
         if obj.tipo_solicitud == 'dirigida':
-            return UsuarioSerializer(obj.proveedores_dirigidos.all(), many=True).data
+            return UsuarioSerializer(
+                obj.proveedores_dirigidos.all(), 
+                many=True, 
+                context=self.context
+            ).data
         return []
     
     def get_cliente_nombre(self, obj):
