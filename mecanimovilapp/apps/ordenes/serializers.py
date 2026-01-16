@@ -1358,7 +1358,38 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
         }
     
     def get_servicios_solicitados_detail(self, obj):
-        return ServicioSerializer(obj.servicios_solicitados.all(), many=True).data
+        """
+        Retorna los detalles de los servicios solicitados con información de categoría
+        """
+        servicios = obj.servicios_solicitados.all()
+        servicios_data = []
+        
+        for servicio in servicios:
+            servicio_dict = {
+                'id': servicio.id,
+                'nombre': servicio.nombre,
+                'descripcion': servicio.descripcion,
+            }
+            
+            # Obtener la primera categoría principal (sin padre) o la primera categoría disponible
+            categorias = servicio.categorias.all()
+            if categorias.exists():
+                # Buscar categoría principal (sin padre) primero
+                categoria_principal = categorias.filter(categoria_padre__isnull=True).first()
+                if not categoria_principal:
+                    # Si no hay principal, tomar la primera disponible
+                    categoria_principal = categorias.first()
+                
+                if categoria_principal:
+                    servicio_dict['categoria'] = categoria_principal.nombre
+                    servicio_dict['categoria_id'] = categoria_principal.id
+            else:
+                servicio_dict['categoria'] = None
+                servicio_dict['categoria_id'] = None
+            
+            servicios_data.append(servicio_dict)
+        
+        return servicios_data
     
     def get_proveedores_dirigidos_detail(self, obj):
         if obj.tipo_solicitud == 'dirigida':
