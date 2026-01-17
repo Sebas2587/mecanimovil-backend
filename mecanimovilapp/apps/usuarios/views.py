@@ -613,36 +613,66 @@ def forgot_password(request):
         user.password_reset_token_expires = reset_token_expires
         user.save(update_fields=['password_reset_token', 'password_reset_token_expires'])
         
-        # Enviar email con el token (opcional, si está configurado)
-        try:
-            reset_url = f"{request.scheme}://{request.get_host()}/reset-password?token={reset_token}"
-            send_mail(
-                subject='Recuperación de Contraseña - MecaniMovil',
-                message=f'Hola {user.get_full_name() or user.username},\n\n'
-                       f'Has solicitado recuperar tu contraseña. '
-                       f'Usa el siguiente token para restablecer tu contraseña:\n\n'
-                       f'Token: {reset_token}\n\n'
-                       f'O visita este enlace: {reset_url}\n\n'
-                       f'Este token expira en 1 hora.\n\n'
-                       f'Si no solicitaste este cambio, ignora este mensaje.',
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[email],
-                fail_silently=True,  # No fallar si el email no se puede enviar
-            )
-            logger.info(f"Email de recuperación enviado a {email}")
-        except Exception as e:
-            logger.warning(f"Error enviando email de recuperación: {str(e)}")
-            # Continuamos aunque el email no se haya enviado
+        # Enviar email con el token
+        email_sent = False
+        email_error = None
         
-        # Retornar éxito (por seguridad, no devolvemos el token en la respuesta si el email se envió)
-        # Pero para desarrollo/MVP, podemos devolverlo si el email no está configurado
-        return Response(
-            {
-                "message": "Si el correo existe, se ha enviado un enlace de recuperación",
-                "token": reset_token if settings.DEBUG else None  # Solo en desarrollo
-            },
-            status=status.HTTP_200_OK
-        )
+        # Verificar que las credenciales de email estén configuradas
+        if not settings.EMAIL_HOST_USER or not settings.EMAIL_HOST_PASSWORD:
+            logger.warning("⚠️ EMAIL_HOST_USER o EMAIL_HOST_PASSWORD no están configurados. El email NO se enviará.")
+            email_error = "Configuración de email no encontrada"
+        else:
+            try:
+                reset_url = f"{request.scheme}://{request.get_host()}/reset-password?token={reset_token}"
+                
+                # Usar html_message para mejor formato (opcional, Django lo maneja)
+                message = f'''Hola {user.get_full_name() or user.username},
+
+Has solicitado recuperar tu contraseña en MecaniMovil.
+
+Usa el siguiente token para restablecer tu contraseña:
+
+🔑 Token: {reset_token}
+
+O visita este enlace:
+{reset_url}
+
+⏰ Este token expira en 1 hora.
+
+Si no solicitaste este cambio, ignora este mensaje.
+
+Saludos,
+Equipo MecaniMovil'''
+                
+                send_mail(
+                    subject='🔐 Recuperación de Contraseña - MecaniMovil',
+                    message=message,
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=[email],
+                    fail_silently=False,  # Lanzar excepción si falla para ver el error
+                )
+                email_sent = True
+                logger.info(f"✅ Email de recuperación enviado exitosamente a {email}")
+            except Exception as e:
+                email_error = str(e)
+                logger.error(f"❌ Error enviando email de recuperación a {email}: {str(e)}")
+                logger.error(f"📧 Configuración de email: HOST={settings.EMAIL_HOST}, PORT={settings.EMAIL_PORT}, USER={settings.EMAIL_HOST_USER[:3] + '***' if settings.EMAIL_HOST_USER else 'NOT SET'}")
+        
+        # Retornar éxito con información sobre el envío de email
+        response_data = {
+            "message": "Si el correo existe, se ha enviado un enlace de recuperación",
+        }
+        
+        # En desarrollo o si el email falló, incluir el token para testing
+        if settings.DEBUG or not email_sent:
+            if email_error:
+                logger.warning(f"⚠️ Email no enviado. Token disponible para testing: {reset_token[:20]}...")
+            response_data["token"] = reset_token  # Disponible para testing/desarrollo
+            response_data["email_sent"] = email_sent
+            if email_error and settings.DEBUG:
+                response_data["email_error"] = email_error
+        
+        return Response(response_data, status=status.HTTP_200_OK)
         
     except Usuario.DoesNotExist:
         # Por seguridad, no revelamos si el email existe o no
