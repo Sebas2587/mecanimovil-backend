@@ -8,7 +8,7 @@ from django.contrib.gis.db.models.functions import Distance
 from django.contrib.gis.geos import Point
 from django.contrib.gis.measure import D
 from django_filters.rest_framework import DjangoFilterBackend
-from .models import Usuario, Cliente, Taller, MecanicoDomicilio, ZonaCobertura, Resena, DireccionUsuario, DocumentoOnboarding, HorarioProveedor, MechanicServiceArea, ChileanCommune, ConnectionStatus, ProviderProfile, Review, TallerDireccion
+from .models import Usuario, Cliente, Taller, MecanicoDomicilio, ZonaCobertura, Resena, DireccionUsuario, DocumentoOnboarding, HorarioProveedor, MechanicServiceArea, ChileanCommune, ConnectionStatus, ProviderProfile, Review, TallerDireccion, PushToken
 from .serializers import (
     UsuarioSerializer, ClienteSerializer, UserProfileSerializer, 
     TallerSerializer, MecanicoDomicilioSerializer, ZonaCoberturaSerializer, ResenaSerializer,
@@ -29,6 +29,8 @@ import requests
 import time
 from django.utils import timezone
 from datetime import timedelta
+import uuid
+from django.core.mail import send_mail
 
 # Configurar logger
 logger = logging.getLogger(__name__)
@@ -581,6 +583,146 @@ def change_password(request):
         {"message": "Contraseña cambiada exitosamente", "token": token.key},
         status=status.HTTP_200_OK
     )
+
+
+@api_view(['POST'])
+@permission_classes([permissions.AllowAny])
+def forgot_password(request):
+    """
+    Vista para solicitar recuperación de contraseña
+    Recibe un email y genera un token de reseteo
+    """
+    email = request.data.get('email')
+    
+    if not email:
+        return Response(
+            {"error": "Se requiere un correo electrónico"},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    try:
+        # Buscar usuario por email
+        user = Usuario.objects.get(email=email)
+        
+        # Generar token único
+        reset_token = str(uuid.uuid4())
+        reset_token_expires = timezone.now() + timedelta(hours=1)  # Token válido por 1 hora
+        
+        # Guardar token en el usuario
+        user.password_reset_token = reset_token
+        user.password_reset_token_expires = reset_token_expires
+        user.save(update_fields=['password_reset_token', 'password_reset_token_expires'])
+        
+        # Enviar email con el token (opcional, si está configurado)
+        try:
+            reset_url = f"{request.scheme}://{request.get_host()}/reset-password?token={reset_token}"
+            send_mail(
+                subject='Recuperación de Contraseña - MecaniMovil',
+                message=f'Hola {user.get_full_name() or user.username},\n\n'
+                       f'Has solicitado recuperar tu contraseña. '
+                       f'Usa el siguiente token para restablecer tu contraseña:\n\n'
+                       f'Token: {reset_token}\n\n'
+                       f'O visita este enlace: {reset_url}\n\n'
+                       f'Este token expira en 1 hora.\n\n'
+                       f'Si no solicitaste este cambio, ignora este mensaje.',
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[email],
+                fail_silently=True,  # No fallar si el email no se puede enviar
+            )
+            logger.info(f"Email de recuperación enviado a {email}")
+        except Exception as e:
+            logger.warning(f"Error enviando email de recuperación: {str(e)}")
+            # Continuamos aunque el email no se haya enviado
+        
+        # Retornar éxito (por seguridad, no devolvemos el token en la respuesta si el email se envió)
+        # Pero para desarrollo/MVP, podemos devolverlo si el email no está configurado
+        return Response(
+            {
+                "message": "Si el correo existe, se ha enviado un enlace de recuperación",
+                "token": reset_token if settings.DEBUG else None  # Solo en desarrollo
+            },
+            status=status.HTTP_200_OK
+        )
+        
+    except Usuario.DoesNotExist:
+        # Por seguridad, no revelamos si el email existe o no
+        return Response(
+            {"message": "Si el correo existe, se ha enviado un enlace de recuperación"},
+            status=status.HTTP_200_OK
+        )
+    except Exception as e:
+        logger.error(f"Error en forgot_password: {str(e)}")
+        return Response(
+            {"error": "Ocurrió un error al procesar la solicitud"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['POST'])
+@permission_classes([permissions.AllowAny])
+def reset_password(request):
+    """
+    Vista para resetear la contraseña usando un token
+    """
+    token = request.data.get('token')
+    new_password = request.data.get('new_password')
+    
+    if not token or not new_password:
+        return Response(
+            {"error": "Se requiere el token y la nueva contraseña"},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    # Validar longitud de la contraseña
+    if len(new_password) < 8:
+        return Response(
+            {"error": "La contraseña debe tener al menos 8 caracteres"},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    try:
+        # Buscar usuario por token de reseteo
+        user = Usuario.objects.get(
+            password_reset_token=token,
+            password_reset_token_expires__gt=timezone.now()
+        )
+        
+        # Validar que el token no haya expirado (doble verificación)
+        if user.password_reset_token_expires and user.password_reset_token_expires < timezone.now():
+            return Response(
+                {"error": "El token ha expirado. Solicita un nuevo enlace de recuperación"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Establecer nueva contraseña
+        user.set_password(new_password)
+        
+        # Limpiar token de reseteo
+        user.password_reset_token = None
+        user.password_reset_token_expires = None
+        user.save()
+        
+        # Invalidar tokens antiguos del usuario
+        Token.objects.filter(user=user).delete()
+        
+        logger.info(f"Contraseña reseteada exitosamente para usuario: {user.username}")
+        
+        return Response(
+            {"message": "Contraseña restablecida exitosamente. Puedes iniciar sesión con tu nueva contraseña"},
+            status=status.HTTP_200_OK
+        )
+        
+    except Usuario.DoesNotExist:
+        return Response(
+            {"error": "Token inválido o expirado"},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    except Exception as e:
+        logger.error(f"Error en reset_password: {str(e)}")
+        return Response(
+            {"error": "Ocurrió un error al restablecer la contraseña"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
 
 
 class UserProfileView(generics.RetrieveUpdateAPIView):
@@ -4289,4 +4431,76 @@ class TallerDireccionViewSet(viewsets.ModelViewSet):
             serializer.save(taller=user.taller)
         else:
             raise serializers.ValidationError("El usuario no tiene un taller asociado")
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def registrar_push_token(request):
+    """
+    Registrar o actualizar push token del usuario para notificaciones push
+    """
+    try:
+        token = request.data.get('push_token')
+        if not token:
+            return Response({'error': 'push_token es requerido'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        dispositivo = request.data.get('dispositivo', '')
+        plataforma = request.data.get('plataforma', 'unknown')
+        
+        # Actualizar o crear el token
+        push_token, created = PushToken.objects.update_or_create(
+            token=token,
+            defaults={
+                'usuario': request.user,
+                'activo': True,
+                'dispositivo': dispositivo,
+                'plataforma': plataforma
+            }
+        )
+        
+        logger.info(f"✅ Push token {'registrado' if created else 'actualizado'} para usuario {request.user.id}")
+        
+        return Response({
+            'mensaje': 'Token registrado correctamente',
+            'token_id': push_token.id,
+            'creado': created
+        }, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        logger.error(f"❌ Error registrando push token: {e}", exc_info=True)
+        return Response({
+            'error': 'Error al registrar el token',
+            'detalle': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def desactivar_push_token(request):
+    """
+    Desactivar un push token específico (útil cuando el usuario cierra sesión o desinstala la app)
+    """
+    try:
+        token = request.data.get('push_token')
+        if not token:
+            return Response({'error': 'push_token es requerido'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Desactivar el token del usuario actual
+        tokens_desactivados = PushToken.objects.filter(
+            token=token,
+            usuario=request.user
+        ).update(activo=False)
+        
+        if tokens_desactivados > 0:
+            logger.info(f"✅ Push token desactivado para usuario {request.user.id}")
+            return Response({'mensaje': 'Token desactivado correctamente'}, status=status.HTTP_200_OK)
+        else:
+            return Response({'mensaje': 'Token no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+            
+    except Exception as e:
+        logger.error(f"❌ Error desactivando push token: {e}", exc_info=True)
+        return Response({
+            'error': 'Error al desactivar el token',
+            'detalle': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 

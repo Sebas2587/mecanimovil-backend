@@ -25,6 +25,8 @@ class Usuario(AbstractUser):
     telefono = models.CharField(max_length=20, blank=True, null=True)
     direccion = models.CharField(max_length=255, blank=True, null=True)
     foto_perfil = models.ImageField(upload_to='perfiles/', blank=True, null=True)
+    password_reset_token = models.CharField(max_length=100, blank=True, null=True, unique=True)
+    password_reset_token_expires = models.DateTimeField(blank=True, null=True)
     
     class Meta:
         verbose_name = _('usuario')
@@ -1311,4 +1313,69 @@ class TallerDireccion(models.Model):
     def direccion_completa(self):
         """Retorna la dirección completa formateada"""
         partes = [self.calle, self.numero, self.comuna, self.ciudad, self.region]
-        return ", ".join(filter(None, partes)) 
+        return ", ".join(filter(None, partes))
+
+
+class PushToken(models.Model):
+    """
+    Modelo para almacenar push tokens de Expo para notificaciones push
+    """
+    PLATAFORMA_CHOICES = [
+        ('ios', 'iOS'),
+        ('android', 'Android'),
+        ('unknown', 'Desconocido'),
+    ]
+    
+    usuario = models.ForeignKey(
+        Usuario, 
+        on_delete=models.CASCADE, 
+        related_name='push_tokens',
+        help_text='Usuario propietario del token'
+    )
+    token = models.CharField(
+        max_length=255, 
+        unique=True,
+        help_text='Token de Expo Push Notification'
+    )
+    dispositivo = models.CharField(
+        max_length=100, 
+        blank=True, 
+        null=True,
+        help_text='Nombre o identificador del dispositivo'
+    )
+    plataforma = models.CharField(
+        max_length=20, 
+        choices=PLATAFORMA_CHOICES,
+        default='unknown',
+        help_text='Plataforma del dispositivo'
+    )
+    activo = models.BooleanField(
+        default=True,
+        help_text='Indica si el token está activo y debe recibir notificaciones'
+    )
+    fecha_registro = models.DateTimeField(
+        auto_now_add=True,
+        help_text='Fecha de registro del token'
+    )
+    fecha_actualizacion = models.DateTimeField(
+        auto_now=True,
+        help_text='Fecha de última actualización'
+    )
+    ultima_notificacion_enviada = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='Fecha de la última notificación enviada a este token'
+    )
+
+    class Meta:
+        db_table = 'usuarios_push_tokens'
+        verbose_name = 'Push Token'
+        verbose_name_plural = 'Push Tokens'
+        indexes = [
+            models.Index(fields=['usuario', 'activo']),
+            models.Index(fields=['token']),
+        ]
+        ordering = ['-fecha_registro']
+    
+    def __str__(self):
+        return f"{self.usuario.username} - {self.plataforma} ({'Activo' if self.activo else 'Inactivo'})" 

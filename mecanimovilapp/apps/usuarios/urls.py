@@ -21,6 +21,8 @@ urlpatterns = [
     # URLs personalizadas primero (tienen prioridad)
     path('login/', views.custom_login, name='custom_login'),
     path('login-proveedor/', views.login_proveedor, name='login_proveedor'),  # Login exclusivo para proveedores
+    path('forgot-password/', views.forgot_password, name='forgot-password'),
+    path('reset-password/', views.reset_password, name='reset-password'),
     path('estado-proveedor/', views.EstadoProveedorView.as_view(), name='estado-proveedor'),
     path('proveedores/conectar/', views.actualizar_estado_conexion_generico, name='conectar-proveedor'),
     path('proveedores/desconectar/', views.desconectar_generico, name='desconectar-proveedor'),
@@ -38,6 +40,9 @@ urlpatterns = [
     # Endpoints para onboarding de proveedores
     path('inicializar-onboarding/', views.inicializar_onboarding, name='inicializar-onboarding'),
     path('completar-onboarding/', views.completar_onboarding, name='completar-onboarding'),
+    # Endpoints para push notifications
+    path('registrar-push-token/', views.registrar_push_token, name='registrar-push-token'),
+    path('desactivar-push-token/', views.desactivar_push_token, name='desactivar-push-token'),
     # Router al final
     path('', include(router.urls)),
 ] 
