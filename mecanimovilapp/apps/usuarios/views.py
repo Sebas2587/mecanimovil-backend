@@ -735,18 +735,36 @@ def reset_password(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Establecer nueva contraseña
+        # Guardar el username para logging antes de cambiar la contraseña
+        username = user.username
+        
+        # Establecer nueva contraseña (esto hashea la contraseña correctamente)
         user.set_password(new_password)
         
         # Limpiar token de reseteo
         user.password_reset_token = None
         user.password_reset_token_expires = None
+        
+        # Guardar TODOS los cambios explícitamente (sin update_fields para forzar guardado completo)
         user.save()
         
-        # Invalidar tokens antiguos del usuario
+        # Refrescar el objeto desde la base de datos para asegurar que los cambios se persistieron
+        user.refresh_from_db()
+        
+        # Verificar que la contraseña se guardó correctamente
+        if not user.check_password(new_password):
+            logger.error(f"❌ ERROR CRÍTICO: La contraseña NO se guardó correctamente para usuario {username}")
+            return Response(
+                {"error": "Error al guardar la nueva contraseña. Por favor, intenta nuevamente."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
+        # Invalidar todos los tokens de autenticación antiguos del usuario
+        # Esto fuerza al usuario a iniciar sesión con la nueva contraseña
         Token.objects.filter(user=user).delete()
         
-        logger.info(f"Contraseña reseteada exitosamente para usuario: {user.username}")
+        logger.info(f"✅ Contraseña reseteada exitosamente para usuario: {username}")
+        logger.info(f"✅ Tokens antiguos invalidados. Usuario debe iniciar sesión con nueva contraseña.")
         
         return Response(
             {"message": "Contraseña restablecida exitosamente. Puedes iniciar sesión con tu nueva contraseña"},
