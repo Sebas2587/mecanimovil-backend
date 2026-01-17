@@ -600,8 +600,18 @@ def forgot_password(request):
             status=status.HTTP_400_BAD_REQUEST
         )
     
+    # Validar formato de email
+    if not email or '@' not in email:
+        return Response(
+            {"error": "El formato del correo electrónico no es válido"},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    # Normalizar email (lowercase, trim)
+    email = email.strip().lower()
+    
     try:
-        # Buscar usuario por email
+        # Buscar usuario por email - Validar que el email existe en la plataforma
         user = Usuario.objects.get(email=email)
         
         # Generar token único
@@ -658,27 +668,28 @@ Equipo MecaniMovil'''
                 logger.error(f"❌ Error enviando email de recuperación a {email}: {str(e)}")
                 logger.error(f"📧 Configuración de email: HOST={settings.EMAIL_HOST}, PORT={settings.EMAIL_PORT}, USER={settings.EMAIL_HOST_USER[:3] + '***' if settings.EMAIL_HOST_USER else 'NOT SET'}")
         
-        # Retornar éxito con información sobre el envío de email
+        # Retornar éxito - NUNCA devolver el token en la respuesta por seguridad
+        # El token solo debe llegar por email
         response_data = {
-            "message": "Si el correo existe, se ha enviado un enlace de recuperación",
+            "message": "Se ha enviado un token de recuperación a tu correo electrónico. Revisa tu bandeja de entrada.",
         }
         
-        # En desarrollo o si el email falló, incluir el token para testing
-        if settings.DEBUG or not email_sent:
-            if email_error:
-                logger.warning(f"⚠️ Email no enviado. Token disponible para testing: {reset_token[:20]}...")
-            response_data["token"] = reset_token  # Disponible para testing/desarrollo
-            response_data["email_sent"] = email_sent
-            if email_error and settings.DEBUG:
-                response_data["email_error"] = email_error
+        # Log para diagnóstico (solo en logs del servidor, nunca en respuesta al cliente)
+        if email_sent:
+            logger.info(f"✅ Email enviado exitosamente a {email}")
+        elif email_error:
+            logger.warning(f"⚠️ Email NO enviado a {email}. Error: {email_error}")
+            logger.warning(f"⚠️ El token fue generado pero NO se envió por email. Token: {reset_token[:20]}...")
+            # En producción, esto debería ser un error crítico
         
         return Response(response_data, status=status.HTTP_200_OK)
         
     except Usuario.DoesNotExist:
-        # Por seguridad, no revelamos si el email existe o no
+        # El email no está registrado en la plataforma
+        logger.warning(f"⚠️ Intento de recuperación de contraseña con email no registrado: {email}")
         return Response(
-            {"message": "Si el correo existe, se ha enviado un enlace de recuperación"},
-            status=status.HTTP_200_OK
+            {"error": "El correo electrónico ingresado no está registrado en la plataforma. Verifica que hayas ingresado el correo correcto."},
+            status=status.HTTP_404_NOT_FOUND
         )
     except Exception as e:
         logger.error(f"Error en forgot_password: {str(e)}")
