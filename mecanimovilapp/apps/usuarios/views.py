@@ -31,6 +31,7 @@ from django.utils import timezone
 from datetime import timedelta
 import uuid
 from django.core.mail import send_mail
+from django.contrib.auth.hashers import make_password
 
 # Configurar logger
 logger = logging.getLogger(__name__)
@@ -735,8 +736,12 @@ def reset_password(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Guardar el username para logging antes de cambiar la contraseña
+        # Guardar información para logging antes de cambiar la contraseña
         username = user.username
+        email = user.email
+        user_id = user.id
+        
+        logger.info(f"🔄 Iniciando reset de contraseña para usuario: {username} (ID: {user_id}, Email: {email})")
         
         # Establecer nueva contraseña (esto hashea la contraseña correctamente)
         user.set_password(new_password)
@@ -747,24 +752,46 @@ def reset_password(request):
         
         # Guardar TODOS los cambios explícitamente (sin update_fields para forzar guardado completo)
         user.save()
+        logger.info(f"💾 Usuario guardado en BD con nueva contraseña")
         
-        # Refrescar el objeto desde la base de datos para asegurar que los cambios se persistieron
-        user.refresh_from_db()
+        # Obtener el usuario nuevamente desde la BD (nueva instancia) para verificar
+        # NO usar refresh_from_db() porque puede usar caché del objeto
+        user_from_db = Usuario.objects.get(id=user_id)
         
         # Verificar que la contraseña se guardó correctamente
-        if not user.check_password(new_password):
+        if not user_from_db.check_password(new_password):
             logger.error(f"❌ ERROR CRÍTICO: La contraseña NO se guardó correctamente para usuario {username}")
-            return Response(
-                {"error": "Error al guardar la nueva contraseña. Por favor, intenta nuevamente."},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+            logger.error(f"❌ Intentando guardar nuevamente con método directo...")
+            
+            # Intentar guardar directamente usando update() como último recurso
+            from django.db import connection
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE usuarios_usuario SET password = %s WHERE id = %s",
+                    [make_password(new_password), user_id]
+                )
+            
+            # Verificar nuevamente
+            user_from_db = Usuario.objects.get(id=user_id)
+            if not user_from_db.check_password(new_password):
+                logger.error(f"❌ ERROR CRÍTICO PERSISTENTE: La contraseña NO se guardó después de múltiples intentos")
+                return Response(
+                    {"error": "Error crítico al guardar la nueva contraseña. Por favor, contacta al soporte."},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+            else:
+                logger.info(f"✅ Contraseña guardada correctamente después de intento directo en BD")
+        else:
+            logger.info(f"✅ Contraseña verificada correctamente con check_password()")
         
         # Invalidar todos los tokens de autenticación antiguos del usuario
         # Esto fuerza al usuario a iniciar sesión con la nueva contraseña
-        Token.objects.filter(user=user).delete()
+        deleted_count = Token.objects.filter(user=user_from_db).count()
+        Token.objects.filter(user=user_from_db).delete()
+        logger.info(f"🗑️ {deleted_count} token(s) antiguo(s) eliminado(s)")
         
-        logger.info(f"✅ Contraseña reseteada exitosamente para usuario: {username}")
-        logger.info(f"✅ Tokens antiguos invalidados. Usuario debe iniciar sesión con nueva contraseña.")
+        logger.info(f"✅ Contraseña reseteada exitosamente para usuario: {username} (Email: {email})")
+        logger.info(f"✅ Nueva contraseña verificada y funcionando. Tokens antiguos invalidados.")
         
         return Response(
             {"message": "Contraseña restablecida exitosamente. Puedes iniciar sesión con tu nueva contraseña"},
