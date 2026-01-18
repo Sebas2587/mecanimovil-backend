@@ -129,11 +129,15 @@ def verificar_pagos_pendientes():
         ventana_6_horas = ahora + timedelta(hours=6)
         
         # Buscar solicitudes adjudicadas sin pago que venzan en las próximas 6 horas
+        # NOTA: SolicitudServicioPublica NO tiene campo 'pago_realizado'
+        # El estado del pago se refleja en el campo 'estado':
+        # - 'adjudicada' = sin pago
+        # - 'pendiente_pago' = procesando pago
+        # - 'pagada' = pago completado
         solicitudes_pendientes = SolicitudServicioPublica.objects.filter(
-            estado='adjudicada',
-            pago_realizado=False,
-            fecha_preferida__gte=ahora,
-            fecha_preferida__lte=ventana_6_horas
+            estado__in=['adjudicada', 'pendiente_pago'],  # Estados sin pago completado
+            fecha_limite_pago__gte=ahora,  # Usar fecha_limite_pago en lugar de fecha_preferida
+            fecha_limite_pago__lte=ventana_6_horas
         ).select_related('cliente__usuario')
         
         logger.info(f"🔍 Verificando pagos pendientes: {solicitudes_pendientes.count()} solicitudes encontradas")
@@ -142,8 +146,16 @@ def verificar_pagos_pendientes():
         
         for solicitud in solicitudes_pendientes:
             if solicitud.cliente and solicitud.cliente.usuario:
+                # Usar fecha_limite_pago si existe, sino usar fecha_preferida como fallback
+                fecha_limite = solicitud.fecha_limite_pago or solicitud.fecha_preferida
+                if not fecha_limite:
+                    continue  # Saltar si no hay fecha límite
+                
                 # Calcular tiempo restante
-                tiempo_restante = solicitud.fecha_preferida - ahora
+                tiempo_restante = fecha_limite - ahora
+                if tiempo_restante.total_seconds() < 0:
+                    continue  # Ya expiró
+                    
                 horas_restantes = int(tiempo_restante.total_seconds() / 3600)
                 minutos_restantes = int((tiempo_restante.total_seconds() % 3600) / 60)
                 
@@ -151,7 +163,7 @@ def verificar_pagos_pendientes():
                 if 5.5 <= tiempo_restante.total_seconds() / 3600 <= 6:
                     mensaje = (
                         f"Tu solicitud #{solicitud.id} requiere pago antes de "
-                        f"{solicitud.fecha_preferida.strftime('%d/%m/%Y a las %H:%M')}. "
+                        f"{fecha_limite.strftime('%d/%m/%Y a las %H:%M')}. "
                         f"Quedan {horas_restantes}h {minutos_restantes}m"
                     )
                     
