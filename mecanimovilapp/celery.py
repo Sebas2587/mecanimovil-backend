@@ -77,6 +77,11 @@ app.conf.beat_schedule = {
         'schedule': crontab(hour='*/6', minute=0),  # Cada 6 horas
         'options': {'queue': 'heavy'},  # Asignar a cola heavy
     },
+    'verificar-pagos-pendientes': {
+        'task': 'mecanimovilapp.apps.ordenes.tasks.verificar_pagos_pendientes',
+        'schedule': crontab(minute='*/30'),  # Cada 30 minutos
+        'options': {'queue': 'default'},
+    },
 }
 
 @app.task(bind=True)

@@ -32,6 +32,7 @@ from decimal import Decimal
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 from mecanimovilapp.apps.usuarios.models import Cliente, Usuario, Taller, MecanicoDomicilio, ConnectionStatus
+from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
 from mecanimovilapp.apps.servicios.models import Servicio
 from django.contrib.gis.geos import Point
 from rest_framework import serializers
@@ -2301,6 +2302,18 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
             orden.motivo_rechazo = serializer.validated_data['motivo_rechazo']
             orden.notas_proveedor = serializer.validated_data.get('notas', '')
             orden.save()
+            
+            # Notificar vía Push al cliente
+            try:
+                if orden.cliente and orden.cliente.usuario:
+                    send_expo_push_notification.delay(
+                        orden.cliente.usuario.id,
+                        "Solicitud rechazada ❌",
+                        f"El proveedor ha rechazado tu solicitud para el {orden.vehiculo.marca}. Puedes buscar otro proveedor.",
+                        {"type": "order_rejected", "order_id": str(orden.id)}
+                    )
+            except Exception as e:
+                logger.error(f"Error enviando push en rechazar (SolicitudServicio): {e}")
         
         # Retornar confirmación
         return Response({
@@ -2427,6 +2440,28 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
         with transaction.atomic():
             orden.estado = nuevo_estado
             orden.save()
+            
+            # Notificar vía Push
+            try:
+                estado_nombres = {
+                    'aceptada_por_proveedor': 'Aceptada',
+                    'servicio_iniciado': 'En camino',
+                    'en_proceso': 'En ejecución',
+                    'completado': 'Finalizado',
+                    'rechazada_por_proveedor': 'Rechazada',
+                }
+                estado_str = estado_nombres.get(nuevo_estado, nuevo_estado.replace('_', ' '))
+                
+                # Al cliente
+                if orden.cliente and orden.cliente.usuario:
+                    send_expo_push_notification.delay(
+                        orden.cliente.usuario.id,
+                        f"Actualización de servicio: {estado_str}",
+                        f"Tu servicio para el {orden.vehiculo.marca} {orden.vehiculo.modelo} ha pasado a estado: {estado_str}",
+                        {"type": "status_update", "order_id": str(orden.id), "status": nuevo_estado}
+                    )
+            except Exception as e:
+                logger.error(f"Error enviando push en actualizar_estado: {e}")
         
         response_serializer = self.get_serializer(orden)
         return Response({
@@ -2471,6 +2506,18 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
                 orden.notas_proveedor = (orden.notas_proveedor or '') + f'\nNotas de finalización: {notas}'
             
             orden.save()
+            
+            # Notificar vía Push al cliente
+            try:
+                if orden.cliente and orden.cliente.usuario:
+                    send_expo_push_notification.delay(
+                        orden.cliente.usuario.id,
+                        "Servicio Finalizado 🏁",
+                        f"¡Buenas noticias! El servicio para tu {orden.vehiculo.marca} {orden.vehiculo.modelo} ha sido completado.",
+                        {"type": "order_completed", "order_id": str(orden.id)}
+                    )
+            except Exception as e:
+                logger.error(f"Error enviando push en finalizar_servicio: {e}")
         
         response_serializer = self.get_serializer(orden)
         return Response({
@@ -2918,9 +2965,21 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
                 tipo_proveedor=tipo_proveedor
             )
             
-            # Actualizar contador de rechazos
             solicitud.total_rechazos = solicitud.rechazos.count()
             solicitud.save(update_fields=['total_rechazos'])
+            
+            # Notificar vía Push al cliente (solo si es una solicitud dirigida)
+            if solicitud.tipo_solicitud == 'dirigida':
+                try:
+                    if solicitud.cliente and solicitud.cliente.usuario:
+                        send_expo_push_notification.delay(
+                            solicitud.cliente.usuario.id,
+                            "Solicitud rechazada",
+                            f"Un proveedor ha rechazado tu solicitud dirigida. Revisa tus opciones en la App.",
+                            {"type": "solicitud_rechazada", "solicitud_id": str(solicitud.id)}
+                        )
+                except Exception as e:
+                    logger.error(f"Error enviando push en rechazar (SolicitudPublica): {e}")
             
             # Notificar al cliente
             self._notificar_rechazo(solicitud, rechazo)
@@ -3088,6 +3147,14 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
                             }
                         )
                         logger.info(f"Notificación WebSocket 'oferta_secundaria_aceptada' enviada al proveedor: {oferta.proveedor.id}")
+                        
+                        # NUEVO: Notificación vía Push al proveedor
+                        send_expo_push_notification.delay(
+                            oferta.proveedor.id,
+                            "¡Oferta secundaria aceptada! ✨",
+                            f"El cliente ha aceptado tu oferta adicional por ${oferta.precio_total_ofrecido:,.0f}",
+                            {"type": "offer_accepted", "solicitud_id": str(solicitud.id), "oferta_id": str(oferta.id)}
+                        )
                 except Exception as e:
                     logger.error(f"Error enviando notificación WebSocket: {e}", exc_info=True)
                 
@@ -3509,6 +3576,14 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
                             }
                         )
                         logger.info(f"Notificación WebSocket 'oferta_aceptada' enviada al proveedor: {oferta.proveedor.id}")
+
+                        # NUEVO: Notificación vía Push al proveedor
+                        send_expo_push_notification.delay(
+                            oferta.proveedor.id,
+                            "¡Felicidades! Oferta adjudicada 🎉",
+                            f"Has ganado la solicitud para un {solicitud.vehiculo.marca} {solicitud.vehiculo.modelo}",
+                            {"type": "offer_accepted", "solicitud_id": str(solicitud.id), "oferta_id": str(oferta.id)}
+                        )
                 except Exception as e:
                     logger.error(f"Error enviando notificación WebSocket: {e}", exc_info=True)
                     # No fallar la operación si falla la notificación
@@ -4766,6 +4841,14 @@ class OfertaProveedorViewSet(viewsets.ModelViewSet):
                                 'proveedor_nombre': oferta.nombre_proveedor,
                                 'precio': str(oferta.precio_total_ofrecido)
                             }
+                        )
+                        
+                        # NUEVO: Notificación vía Push al cliente
+                        send_expo_push_notification.delay(
+                            solicitud.cliente.usuario.id,
+                            "Nueva oferta disponible 🛠️",
+                            f"{oferta.nombre_proveedor} te ha enviado una cotización por ${oferta.precio_total_ofrecido:,.0f}",
+                            {"type": "new_offer", "solicitud_id": str(solicitud.id), "oferta_id": str(oferta.id)}
                         )
                 else:
                     logger.warning(f"No se pudo enviar notificación WebSocket: cliente o usuario no disponible para solicitud {solicitud.id}")

@@ -27,6 +27,8 @@ class Usuario(AbstractUser):
     foto_perfil = models.ImageField(upload_to='perfiles/', blank=True, null=True)
     password_reset_token = models.CharField(max_length=100, blank=True, null=True, unique=True)
     password_reset_token_expires = models.DateTimeField(blank=True, null=True)
+    # NUEVO: Token para notificaciones push de Expo
+    expo_push_token = models.CharField(max_length=255, blank=True, null=True, db_index=True)
     
     class Meta:
         verbose_name = _('usuario')

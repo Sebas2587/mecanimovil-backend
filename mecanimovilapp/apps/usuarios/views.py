@@ -32,6 +32,7 @@ from datetime import timedelta
 import uuid
 from django.core.mail import send_mail
 from django.contrib.auth.hashers import make_password
+from exponent_server_sdk import PushClient
 
 # Configurar logger
 logger = logging.getLogger(__name__)
@@ -4517,6 +4518,57 @@ class TallerDireccionViewSet(viewsets.ModelViewSet):
             serializer.save(taller=user.taller)
         else:
             raise serializers.ValidationError("El usuario no tiene un taller asociado")
+
+
+class RegisterPushTokenView(APIView):
+    """
+    Vista para registrar el token de Expo Push Notifications en el modelo Usuario
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        token = request.data.get('token')
+        
+        if not token:
+            return Response(
+                {"error": "El token es requerido"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Validar si el token es un token de Expo válido
+        try:
+            # Algunas versiones del SDK tienen este método
+            is_valid = PushClient().is_exponent_push_token(token)
+            if not is_valid:
+                return Response(
+                    {"error": "El token proporcionado no es un token de Expo válido"}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        except Exception:
+            # Fallback a validación básica si el método no existe
+            if not token.startswith('ExponentPushToken['):
+                return Response(
+                    {"error": "Formato de token de Expo inválido"}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        try:
+            user = request.user
+            user.expo_push_token = token
+            user.save(update_fields=['expo_push_token'])
+            
+            logger.info(f"✅ RegisterPushTokenView: Token guardado para usuario {user.id}")
+            
+            return Response(
+                {"message": "Token de notificaciones registrado exitosamente"}, 
+                status=status.HTTP_200_OK
+            )
+        except Exception as e:
+            logger.error(f"❌ Error en RegisterPushTokenView: {str(e)}")
+            return Response(
+                {"error": "Error interno al guardar el token"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 
 @api_view(['POST'])

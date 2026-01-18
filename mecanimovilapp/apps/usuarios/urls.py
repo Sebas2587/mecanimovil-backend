@@ -41,6 +41,7 @@ urlpatterns = [
     path('inicializar-onboarding/', views.inicializar_onboarding, name='inicializar-onboarding'),
     path('completar-onboarding/', views.completar_onboarding, name='completar-onboarding'),
     # Endpoints para push notifications
+    path('register-expo-push-token/', views.RegisterPushTokenView.as_view(), name='register-expo-push-token'),
     path('registrar-push-token/', views.registrar_push_token, name='registrar-push-token'),
     path('desactivar-push-token/', views.desactivar_push_token, name='desactivar-push-token'),
     # Router al final

@@ -18,6 +18,7 @@ from django.utils import timezone
 from django.db.models import Avg, Count, Q
 from datetime import timedelta
 import logging
+from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
 
 from .models_health import (
     ComponenteSaludConfig,
@@ -87,8 +88,23 @@ def calcular_estado_salud_interno(vehicle_id):
     
     # Recalcular todos los componentes
     componentes = ComponenteSaludVehiculo.objects.filter(vehiculo=vehiculo)
+    
+    # NUEVO: Guardar salud previa para detectar caídas bruscas del 50%
+    salud_previa = {comp.id: comp.salud_porcentaje for comp in componentes}
+    
     for comp in componentes:
         comp.calcular_salud()
+        
+        # ✅ NUEVO: Lógica de Alertas Push según requerimientos del usuario
+        # 1. Si la salud baja a 0%
+        # 2. Si la salud baja un 50% o más respecto al cálculo anterior
+        prev_salud = salud_previa.get(comp.id, 100.0)
+        caida = prev_salud - comp.salud_porcentaje
+        
+        if comp.salud_porcentaje == 0:
+            enviar_alerta_salud_push(vehiculo, comp, "ha llegado al 0%")
+        elif caida >= 50.0:
+            enviar_alerta_salud_push(vehiculo, comp, f"ha bajado un {caida:.0f}% abruptamente")
     
     # Calcular métricas generales usando agregación
     stats = componentes.aggregate(
@@ -704,4 +720,38 @@ def procesar_checklists_historicos_vehiculo(vehicle_id):
         dict: Resultado del procesamiento con estadísticas
     """
     return _procesar_checklists_historicos_vehiculo_interno(vehicle_id)
+
+
+def enviar_alerta_salud_push(vehiculo, componente, motivo_texto):
+    """
+    Función de apoyo para enviar notificaciones push de salud
+    """
+    try:
+        if not (vehiculo.cliente and vehiculo.cliente.usuario):
+            return
+            
+        user_id = vehiculo.cliente.usuario.id
+        nombre_vehiculo = f"{vehiculo.marca} {vehiculo.modelo}" if vehiculo.marca else f"Vehículo {vehiculo.patente or ''}"
+        nombre_componente = componente.componente_config.nombre
+        
+        # Evitar ruidos excesivos enviando alertas muy seguidas (throttling básico opcional)
+        # Por ahora enviamos directamente como lo pide el usuario
+        
+        title = f"⚠️ Alerta de Salud: {nombre_componente}"
+        body = f"La salud de {nombre_componente} en tu {nombre_vehiculo} {motivo_texto}. Te recomendamos agendar una revisión."
+        
+        send_expo_push_notification.delay(
+            user_id,
+            title,
+            body,
+            {
+                "type": "health_alert",
+                "vehicle_id": str(vehiculo.id),
+                "componente": nombre_componente,
+                "salud": str(componente.salud_porcentaje)
+            }
+        )
+        logger.info(f"📲 Alerta Push de salud enviada a usuario {user_id} para {nombre_componente}")
+    except Exception as e:
+        logger.error(f"Error en enviar_alerta_salud_push: {e}")
 

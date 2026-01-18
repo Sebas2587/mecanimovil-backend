@@ -835,6 +835,15 @@ class SolicitudServicioPublica(models.Model):
         return f"Solicitud {self.id} - {self.cliente.usuario.get_full_name()} - {self.estado}"
     
     def save(self, *args, **kwargs):
+        # Detectar cambio de estado para notificaciones push
+        estado_anterior = None
+        if self.pk:
+            try:
+                old_instance = SolicitudServicioPublica.objects.get(pk=self.pk)
+                estado_anterior = old_instance.estado
+            except SolicitudServicioPublica.DoesNotExist:
+                pass
+        
         # Establecer fecha de expiración automáticamente (48 horas por defecto)
         if not self.fecha_expiracion:
             self.fecha_expiracion = timezone.now() + timedelta(hours=48)
@@ -844,6 +853,47 @@ class SolicitudServicioPublica(models.Model):
             self.fecha_publicacion = timezone.now()
         
         super().save(*args, **kwargs)
+        
+        # Enviar notificaciones push si cambió el estado
+        if estado_anterior and estado_anterior != self.estado:
+            # Importar aquí para evitar imports circulares
+            try:
+                from mecanimovilapp.apps.ordenes.tasks import enviar_notificacion_cambio_estado
+                
+                if self.cliente and self.cliente.usuario:
+                    # Enviar notificación de cambio de estado
+                    enviar_notificacion_cambio_estado.delay(
+                        str(self.id),
+                        self.cliente.usuario.id,
+                        estado_anterior,
+                        self.estado
+                    )
+                    
+                    # Si cambió a 'adjudicada', programar recordatorio de pago
+                    if estado_anterior != 'adjudicada' and self.estado == 'adjudicada':
+                        from mecanimovilapp.apps.ordenes.tasks import enviar_push_notificacion_pago_pendiente
+                        
+                        if self.fecha_preferida:
+                            # Programar recordatorio 6 horas antes de la fecha límite
+                            hora_recordatorio = self.fecha_preferida - timedelta(hours=6)
+                            
+                            # Solo programar si la hora del recordatorio aún no pasó
+                            if hora_recordatorio > timezone.now():
+                                mensaje = (
+                                    f"Tu solicitud #{self.id} requiere pago antes de "
+                                    f"{self.fecha_preferida.strftime('%d/%m/%Y a las %H:%M')}. "
+                                    f"Recibirás un recordatorio 6 horas antes."
+                                )
+                                
+                                enviar_push_notificacion_pago_pendiente.apply_async(
+                                    args=[str(self.id), self.cliente.usuario.id, mensaje, '💳 Recordatorio de Pago'],
+                                    eta=hora_recordatorio
+                                )
+                                
+                                logger.info(f"📅 Recordatorio de pago programado para solicitud {self.id} a las {hora_recordatorio}")
+            except Exception as e:
+                # No fallar el save si hay error en las notificaciones
+                logger.error(f"❌ Error enviando notificaciones push: {e}", exc_info=True)
     
     @property
     def tiempo_restante(self):
