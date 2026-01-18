@@ -122,6 +122,7 @@ class ServicioViewSet(viewsets.ModelViewSet):
             servicios = self.queryset.filter(
                 categorias=categoria
             ).prefetch_related(
+                'ofertas', 
                 'ofertas__taller__usuario',
                 'ofertas__mecanico__usuario',
                 'repuestos_necesarios__repuesto'
@@ -193,7 +194,18 @@ class ServicioViewSet(viewsets.ModelViewSet):
             # Combinar todas las opciones (OR): servicios por modelo O servicios con ofertas para la marca
             servicios = (servicios_por_modelo | servicios_con_ofertas | servicios_con_ofertas_genericas).distinct()
             
-            serializer = ServicioListSerializer(servicios, many=True)
+            # PREFETCH MANUAL PARA EVITAR N+1
+            # Como los querysets combinados (OR) a veces pierden el prefetch o son difíciles de prefetcher antes,
+            # lo hacemos sobre los IDs resultantes para garantizar eficiencia.
+            servicios_ids = list(servicios.values_list('id', flat=True))
+            servicios_finales = Servicio.objects.filter(id__in=servicios_ids).prefetch_related(
+                'ofertas',
+                'ofertas__taller',
+                'ofertas__mecanico__usuario',
+                'categorias'
+            )
+            
+            serializer = ServicioListSerializer(servicios_finales, many=True)
             return Response(serializer.data)
         except Modelo.DoesNotExist:
             return Response(
@@ -502,7 +514,16 @@ def servicios_por_vehiculo(request):
     # Combinar todas las opciones (OR): servicios por modelo O servicios con ofertas para la marca
     servicios = (servicios_por_modelo | servicios_con_ofertas | servicios_con_ofertas_genericas).distinct()
     
-    serializer = ServicioListSerializer(servicios, many=True)
+    # PREFETCH MANUAL PARA EVITAR N+1
+    servicios_ids = list(servicios.values_list('id', flat=True))
+    servicios_finales = Servicio.objects.filter(id__in=servicios_ids).prefetch_related(
+        'ofertas',
+        'ofertas__taller',
+        'ofertas__mecanico__usuario',
+        'categorias'
+    )
+    
+    serializer = ServicioListSerializer(servicios_finales, many=True)
     return Response(serializer.data)
 
 

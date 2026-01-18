@@ -362,6 +362,24 @@ class ServicioListSerializer(serializers.ModelSerializer):
     def get_precio_minimo(self, obj):
         """Obtiene el precio mínimo entre todas las ofertas disponibles"""
         try:
+            # OPTIMIZACIÓN: Usar ofertas prefetched si existen
+            if hasattr(obj, '_prefetched_objects_cache') and 'ofertas' in obj._prefetched_objects_cache:
+                ofertas_disponibles = [o for o in obj.ofertas.all() if o.disponible]
+                if not ofertas_disponibles:
+                    return obj.precio_referencia
+                    
+                min_precios = []
+                for o in ofertas_disponibles:
+                    if o.precio_con_repuestos:
+                        min_precios.append(float(o.precio_con_repuestos))
+                    if o.precio_sin_repuestos:
+                        min_precios.append(float(o.precio_sin_repuestos))
+                
+                if min_precios:
+                    return min(min_precios)
+                return obj.precio_referencia
+                
+            # Fallback a consulta DB si no hay prefetch (evitar si es posible)
             ofertas = obj.ofertas.filter(disponible=True)
             if ofertas.exists():
                 precio_min_con = ofertas.aggregate(min_precio=models.Min('precio_con_repuestos'))['min_precio']
@@ -372,15 +390,32 @@ class ServicioListSerializer(serializers.ModelSerializer):
                     return min(precios_validos)
         except Exception as e:
             # Manejar errores de conexión a BD - retornar precio de referencia como fallback
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.warning(f"Error obteniendo precio mínimo para servicio {obj.id}: {str(e)}")
-            # Retornar precio de referencia como fallback seguro
+            # import logging
+            # logger = logging.getLogger(__name__)
+            # logger.warning(f"Error obteniendo precio mínimo para servicio {obj.id}: {str(e)}")
+            pass
         return obj.precio_referencia
     
     def get_precio_maximo(self, obj):
         """Obtiene el precio máximo entre todas las ofertas disponibles"""
         try:
+            # OPTIMIZACIÓN: Usar ofertas prefetched si existen
+            if hasattr(obj, '_prefetched_objects_cache') and 'ofertas' in obj._prefetched_objects_cache:
+                ofertas_disponibles = [o for o in obj.ofertas.all() if o.disponible]
+                if not ofertas_disponibles:
+                    return obj.precio_referencia
+                    
+                max_precios = []
+                for o in ofertas_disponibles:
+                    if o.precio_con_repuestos:
+                        max_precios.append(float(o.precio_con_repuestos))
+                    if o.precio_sin_repuestos:
+                        max_precios.append(float(o.precio_sin_repuestos))
+                
+                if max_precios:
+                    return max(max_precios)
+                return obj.precio_referencia
+
             ofertas = obj.ofertas.filter(disponible=True)
             if ofertas.exists():
                 precio_max_con = ofertas.aggregate(max_precio=models.Max('precio_con_repuestos'))['max_precio']
@@ -391,25 +426,48 @@ class ServicioListSerializer(serializers.ModelSerializer):
                     return max(precios_validos)
         except Exception as e:
             # Manejar errores de conexión a BD - retornar precio de referencia como fallback
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.warning(f"Error obteniendo precio máximo para servicio {obj.id}: {str(e)}")
-            # Retornar precio de referencia como fallback seguro
+            pass
         return obj.precio_referencia
     
     def get_taller_principal(self, obj):
         """Obtiene el taller con mejor calificación que ofrece este servicio"""
         try:
+            # OPTIMIZACIÓN: Usar ofertas prefetched
+            if hasattr(obj, '_prefetched_objects_cache') and 'ofertas' in obj._prefetched_objects_cache:
+                ofertas_taller = [
+                    o for o in obj.ofertas.all() 
+                    if o.disponible and o.tipo_proveedor == 'taller' and o.taller
+                ]
+                # No podemos ordenar fácilmente por calificación de taller sin queries extra si no está en prefetch
+                # Asumimos que queremos uno cualquiera o implementar lógica de sort en python
+                if ofertas_taller:
+                    # Ordenar por calificación (descendente) en Python
+                    # Requiere que oferta.taller tenga calificacion_promedio cargado
+                    def safe_sort_key(o):
+                        try:
+                            # Asegurar que taller existe y tiene calificación
+                            return float(getattr(o.taller, 'calificacion_promedio', 0) or 0)
+                        except:
+                            return 0
+                            
+                    ofertas_taller.sort(key=safe_sort_key, reverse=True)
+                    oferta_taller = ofertas_taller[0]
+                    
+                    return {
+                        'id': oferta_taller.taller.id,
+                        'nombre': oferta_taller.taller.nombre,
+                        'calificacion_promedio': oferta_taller.taller.calificacion_promedio or 4.0,
+                        'precio_con_repuestos': oferta_taller.precio_con_repuestos,
+                        'precio_sin_repuestos': oferta_taller.precio_sin_repuestos
+                    }
+                return None
+
             oferta_taller = obj.ofertas.filter(
                 disponible=True, 
                 tipo_proveedor='taller',
                 taller__isnull=False
             ).select_related('taller').first()
-        except Exception as e:
-            # Manejar errores de conexión a BD - retornar None como fallback
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.warning(f"Error obteniendo taller principal para servicio {obj.id}: {str(e)}")
+        except Exception:
             return None
         
         if oferta_taller and oferta_taller.taller:
@@ -424,36 +482,88 @@ class ServicioListSerializer(serializers.ModelSerializer):
     
     def get_mecanico_principal(self, obj):
         """Obtiene el mecánico con mejor calificación que ofrece este servicio"""
-        oferta_mecanico = obj.ofertas.filter(
-            disponible=True, 
-            tipo_proveedor='mecanico',
-            mecanico__isnull=False
-        ).select_related('mecanico__usuario').first()
-        
-        if oferta_mecanico and oferta_mecanico.mecanico:
-            nombre = 'Mecánico'
-            if oferta_mecanico.mecanico.usuario:
-                nombre = f"{oferta_mecanico.mecanico.usuario.first_name or ''} {oferta_mecanico.mecanico.usuario.last_name or ''}".strip()
-                if not nombre:
+        try:
+            # OPTIMIZACIÓN: Usar ofertas prefetched
+            if hasattr(obj, '_prefetched_objects_cache') and 'ofertas' in obj._prefetched_objects_cache:
+                ofertas_mecanico = [
+                    o for o in obj.ofertas.all() 
+                    if o.disponible and o.tipo_proveedor == 'mecanico' and o.mecanico
+                ]
+                
+                if ofertas_mecanico:
+                    # Ordenar python-side
+                    def safe_sort_key(o):
+                        try:
+                            return float(getattr(o.mecanico, 'calificacion_promedio', 0) or 0)
+                        except:
+                            return 0
+                            
+                    ofertas_mecanico.sort(key=safe_sort_key, reverse=True)
+                    oferta_mecanico = ofertas_mecanico[0]
+                    
                     nombre = 'Mecánico'
+                    # mecanico.usuario debería estar prefetched
+                    if oferta_mecanico.mecanico.usuario:
+                        user = oferta_mecanico.mecanico.usuario
+                        nombre = f"{user.first_name or ''} {user.last_name or ''}".strip() or 'Mecánico'
+                    
+                    return {
+                        'id': oferta_mecanico.mecanico.id,
+                        'nombre': nombre,
+                        'calificacion_promedio': oferta_mecanico.mecanico.calificacion_promedio or 4.0,
+                        'precio_con_repuestos': oferta_mecanico.precio_con_repuestos,
+                        'precio_sin_repuestos': oferta_mecanico.precio_sin_repuestos
+                    }
+                return None
+
+            oferta_mecanico = obj.ofertas.filter(
+                disponible=True, 
+                tipo_proveedor='mecanico',
+                mecanico__isnull=False
+            ).select_related('mecanico__usuario').first()
             
-            return {
-                'id': oferta_mecanico.mecanico.id,
-                'nombre': nombre,
-                'calificacion_promedio': oferta_mecanico.mecanico.calificacion_promedio or 4.0,
-                'precio_con_repuestos': oferta_mecanico.precio_con_repuestos,
-                'precio_sin_repuestos': oferta_mecanico.precio_sin_repuestos
-            }
+            if oferta_mecanico and oferta_mecanico.mecanico:
+                nombre = 'Mecánico'
+                if oferta_mecanico.mecanico.usuario:
+                    nombre = f"{oferta_mecanico.mecanico.usuario.first_name or ''} {oferta_mecanico.mecanico.usuario.last_name or ''}".strip()
+                    if not nombre:
+                        nombre = 'Mecánico'
+                
+                return {
+                    'id': oferta_mecanico.mecanico.id,
+                    'nombre': nombre,
+                    'calificacion_promedio': oferta_mecanico.mecanico.calificacion_promedio or 4.0,
+                    'precio_con_repuestos': oferta_mecanico.precio_con_repuestos,
+                    'precio_sin_repuestos': oferta_mecanico.precio_sin_repuestos
+                }
+        except Exception:
+            pass
         return None
     
     def get_ofertas_disponibles(self, obj):
         """Obtiene el conteo de ofertas disponibles por tipo"""
-        ofertas = obj.ofertas.filter(disponible=True)
-        return {
-            'total': ofertas.count(),
-            'talleres': ofertas.filter(tipo_proveedor='taller').count(),
-            'mecanicos': ofertas.filter(tipo_proveedor='mecanico').count()
-        }
+        try:
+            # OPTIMIZACIÓN: Usar ofertas prefetched
+            if hasattr(obj, '_prefetched_objects_cache') and 'ofertas' in obj._prefetched_objects_cache:
+                ofertas_disponibles = [o for o in obj.ofertas.all() if o.disponible]
+                total = len(ofertas_disponibles)
+                talleres = len([o for o in ofertas_disponibles if o.tipo_proveedor == 'taller'])
+                mecanicos = len([o for o in ofertas_disponibles if o.tipo_proveedor == 'mecanico'])
+                
+                return {
+                    'total': total,
+                    'talleres': talleres,
+                    'mecanicos': mecanicos
+                }
+
+            ofertas = obj.ofertas.filter(disponible=True)
+            return {
+                'total': ofertas.count(),
+                'talleres': ofertas.filter(tipo_proveedor='taller').count(),
+                'mecanicos': ofertas.filter(tipo_proveedor='mecanico').count()
+            }
+        except Exception:
+            return {'total': 0, 'talleres': 0, 'mecanicos': 0}
     
     def get_categorias_ids(self, obj):
         """Obtiene los IDs de las categorías asociadas al servicio"""

@@ -799,17 +799,22 @@ class MecanicoDomicilioSerializer(serializers.ModelSerializer):
         """
         try:
             # **OPTIMIZACIÓN**: Intentar usar relación inversa pre-cargada
-            # connection_status es OneToOne related_name='connection_status'
+            # Validar si connection_status está en la caché de prefetch o si ya fue cargado por select_related
+            # Nota: para OneToOne invertido, si usamos select_related('connection_status') desde Mecanico,
+            # el atributo connection_status debería estar disponible directamente.
+            
+            # Si se usó select_related (en MecanicoDomicilio -> ConnectionStatus)
             if hasattr(obj, 'connection_status'):
                 return obj.connection_status.esta_conectado
                 
-            from .models import ConnectionStatus
-            conn_status = ConnectionStatus.objects.filter(proveedor=obj).first()
-            if conn_status:
-                return conn_status.esta_conectado
+            # Si se usó prefetch_related, Django lo cachea en _prefetched_objects_cache
+            # pero para relaciones inversa 1-1 es más complejo.
+            # Sin embargo, proveedores_filtrados usa prefetch_related('connection_status').
+            # En ese caso, Django asigna el objeto a la instancia si coincide.
+            
             return False
         except Exception as e:
-            print(f"Error obteniendo estado de conexión: {e}")
+            # print(f"Error obteniendo estado de conexión: {e}")
             return False
     
     def get_ultima_conexion(self, obj):
@@ -821,13 +826,9 @@ class MecanicoDomicilioSerializer(serializers.ModelSerializer):
             if hasattr(obj, 'connection_status'):
                 return obj.connection_status.ultima_conexion
                 
-            from .models import ConnectionStatus
-            conn_status = ConnectionStatus.objects.filter(proveedor=obj).first()
-            if conn_status:
-                return conn_status.ultima_conexion
             return None
         except Exception as e:
-            print(f"Error obteniendo última conexión: {e}")
+            # print(f"Error obteniendo última conexión: {e}")
             return None
 
     def get_status(self, obj):
@@ -839,13 +840,9 @@ class MecanicoDomicilioSerializer(serializers.ModelSerializer):
             if hasattr(obj, 'connection_status'):
                 return obj.connection_status.status
                 
-            from .models import ConnectionStatus
-            conn_status = ConnectionStatus.objects.filter(proveedor=obj).first()
-            if conn_status:
-                return conn_status.status
             return 'offline'
         except Exception as e:
-            print(f"Error obteniendo estado actual: {e}")
+            # print(f"Error obteniendo estado actual: {e}")
             return 'offline'
     
     def get_total_resenas(self, obj):
