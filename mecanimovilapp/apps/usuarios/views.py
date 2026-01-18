@@ -1487,7 +1487,14 @@ class TallerViewSet(viewsets.ModelViewSet):
             activo=True
         ).select_related('usuario').prefetch_related(
             'especialidades',
-            'marcas_atendidas'
+            'marcas_atendidas',
+            'direccion_fisica',   # Dirección física
+            'connection_status'   # Estado de conexión
+        ).annotate(
+            servicios_completados_count=Count(
+                'solicitudes',
+                filter=Q(solicitudes__estado='completado')
+            )
         )
         
         logger.info(f"🔍 Talleres con marca {marca_vehiculo.nombre}: {queryset.count()}")
@@ -2022,6 +2029,11 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
             'service_areas',      # Zonas de servicio (comunas)
             'connection_status',  # Estado de conexión
             'resenas'             # Reseñas para calcular rating real si es necesario
+        ).annotate(
+            servicios_completados_count=Count(
+                'solicitudes',
+                filter=Q(solicitudes__estado='completado')
+            )
         )
         
         logger.info(f"🔍 Mecánicos con marca {marca_vehiculo.nombre}: {queryset.count()}")

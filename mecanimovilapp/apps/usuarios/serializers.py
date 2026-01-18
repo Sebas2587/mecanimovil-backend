@@ -533,13 +533,15 @@ class TallerSerializer(serializers.ModelSerializer):
         Obtiene el estado de conexión desde ConnectionStatus
         """
         try:
+            if hasattr(obj, 'connection_status'):
+                return obj.connection_status.esta_conectado
+            
             from .models import ConnectionStatus
             conn_status = ConnectionStatus.objects.filter(taller=obj).first()
             if conn_status:
                 return conn_status.esta_conectado
             return False
-        except Exception as e:
-            print(f"Error obteniendo estado de conexión: {e}")
+        except Exception:
             return False
     
     def get_ultima_conexion(self, obj):
@@ -547,13 +549,15 @@ class TallerSerializer(serializers.ModelSerializer):
         Obtiene la última conexión desde ConnectionStatus
         """
         try:
+            if hasattr(obj, 'connection_status'):
+                return obj.connection_status.ultima_conexion
+
             from .models import ConnectionStatus
             conn_status = ConnectionStatus.objects.filter(taller=obj).first()
             if conn_status:
                 return conn_status.ultima_conexion
             return None
-        except Exception as e:
-            print(f"Error obteniendo última conexión: {e}")
+        except Exception:
             return None
 
     def get_status(self, obj):
@@ -561,13 +565,15 @@ class TallerSerializer(serializers.ModelSerializer):
         Obtiene el estado actual desde ConnectionStatus
         """
         try:
+            if hasattr(obj, 'connection_status'):
+                return obj.connection_status.status
+
             from .models import ConnectionStatus
             conn_status = ConnectionStatus.objects.filter(taller=obj).first()
             if conn_status:
                 return conn_status.status
             return 'offline'
-        except Exception as e:
-            print(f"Error obteniendo status para taller {obj.id}: {e}")
+        except Exception:
             return 'offline'
     
     def get_total_resenas(self, obj):
@@ -578,13 +584,15 @@ class TallerSerializer(serializers.ModelSerializer):
     
     def get_servicios_completados(self, obj):
         """Retorna el número de servicios completados por el taller"""
+        if hasattr(obj, 'servicios_completados_count'):
+            return obj.servicios_completados_count
+            
         try:
             from mecanimovilapp.apps.ordenes.models import SolicitudServicio
-            servicios_completados = SolicitudServicio.objects.filter(
+            return SolicitudServicio.objects.filter(
                 taller=obj,
                 estado='completado'
             ).count()
-            return servicios_completados
         except Exception:
             return 0
     
@@ -853,13 +861,15 @@ class MecanicoDomicilioSerializer(serializers.ModelSerializer):
     
     def get_servicios_completados(self, obj):
         """Retorna el número de servicios completados por el mecánico"""
+        if hasattr(obj, 'servicios_completados_count'):
+            return obj.servicios_completados_count
+            
         try:
             from mecanimovilapp.apps.ordenes.models import SolicitudServicio
-            servicios_completados = SolicitudServicio.objects.filter(
+            return SolicitudServicio.objects.filter(
                 mecanico=obj,
                 estado='completado'
             ).count()
-            return servicios_completados
         except Exception:
             return 0
     
@@ -870,12 +880,16 @@ class MecanicoDomicilioSerializer(serializers.ModelSerializer):
         """
         try:
             # Obtener las zonas de servicio activas
-            zonas = MechanicServiceArea.objects.filter(
-                mechanic=obj,
-                is_active=True
-            )
+            # OPTIMIZACIÓN: Usar prefetch si está disponible
+            if hasattr(obj, '_prefetched_objects_cache') and 'service_areas' in obj._prefetched_objects_cache:
+                zonas = [z for z in obj.service_areas.all() if z.is_active]
+            else:
+                zonas = list(MechanicServiceArea.objects.filter(
+                    mechanic=obj,
+                    is_active=True
+                ))
             
-            if zonas.exists():
+            if zonas:
                 # Obtener todas las comunas de todas las zonas
                 todas_comunas = []
                 for zona in zonas:
