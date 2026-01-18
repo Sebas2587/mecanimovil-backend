@@ -4,7 +4,7 @@ from .models import (
     Usuario, Cliente, Taller, MecanicoDomicilio, ZonaCobertura, 
     Resena, DireccionUsuario, HorarioProveedor, DocumentoOnboarding,
     ConfiguracionSemanalProveedor, MechanicServiceArea, ChileanCommune,
-    ConnectionStatus, ProviderProfile, Review, TallerDireccion
+    ConnectionStatus, ProviderProfile, Review, TallerDireccion, Notificacion
 )
 from mecanimovilapp.apps.servicios.models import CategoriaServicio
 from django.contrib.gis.geos import Point
@@ -1518,3 +1518,15 @@ class ConnectionStatusSerializer(serializers.ModelSerializer):
             }
         
         return data 
+
+class NotificacionSerializer(serializers.ModelSerializer):
+    """
+    Serializer para el modelo Notificacion
+    """
+    class Meta:
+        model = Notificacion
+        fields = [
+            'id', 'tipo', 'titulo', 'mensaje',
+            'leida', 'fecha_leida', 'data', 'fecha_creacion'
+        ]
+        read_only_fields = ['id', 'fecha_creacion', 'fecha_leida']

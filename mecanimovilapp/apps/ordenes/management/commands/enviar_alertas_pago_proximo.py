@@ -129,6 +129,20 @@ class Command(BaseCommand):
                     }
                 )
                 
+                # Crear notificación in-app
+                from mecanimovilapp.apps.usuarios.models import Notificacion
+                Notificacion.objects.create(
+                    usuario=solicitud.cliente.usuario,
+                    tipo='payment_reminder',
+                    titulo=f"⏰ Pago Pendiente",
+                    mensaje=f"Quedan {horas}h {minutos}m para pagar tu servicio. No olvides completar el pago.",
+                    data={
+                        'solicitud_id': str(solicitud.id),
+                        'horas_restantes': horas,
+                        'minutos_restantes': minutos
+                    }
+                )
+                
                 enviadas += 1
                 self.stdout.write(
                     self.style.SUCCESS(

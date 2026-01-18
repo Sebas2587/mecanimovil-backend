@@ -1381,3 +1381,64 @@ class PushToken(models.Model):
     
     def __str__(self):
         return f"{self.usuario.username} - {self.plataforma} ({'Activo' if self.activo else 'Inactivo'})" 
+
+class Notificacion(models.Model):
+    """
+    Modelo para notificaciones in-app del usuario
+    """
+    TIPO_CHOICES = [
+        ('health_alert', 'Alerta de Salud'),
+        ('payment_reminder', 'Recordatorio de Pago'),
+        ('order_update', 'Actualización de Orden'),
+        ('system', 'Sistema'),
+    ]
+    
+    usuario = models.ForeignKey(
+        Usuario,
+        on_delete=models.CASCADE,
+        related_name='notificaciones',
+        help_text='Usuario destinatario de la notificación'
+    )
+    tipo = models.CharField(
+        max_length=50,
+        choices=TIPO_CHOICES,
+        help_text='Tipo de notificación'
+    )
+    titulo = models.CharField(
+        max_length=200,
+        help_text='Título de la notificación'
+    )
+    mensaje = models.TextField(
+        help_text='Mensaje de la notificación'
+    )
+    leida = models.BooleanField(
+        default=False,
+        help_text='Indica si la notificación ha sido leída'
+    )
+    fecha_leida = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='Fecha en que se marcó como leída'
+    )
+    data = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text='Metadatos adicionales en formato JSON'
+    )
+    fecha_creacion = models.DateTimeField(
+        auto_now_add=True,
+        help_text='Fecha de creación de la notificación'
+    )
+    
+    class Meta:
+        db_table = 'usuarios_notificaciones'
+        verbose_name = 'Notificación'
+        verbose_name_plural = 'Notificaciones'
+        ordering = ['-fecha_creacion']
+        indexes = [
+            models.Index(fields=['usuario', '-fecha_creacion']),
+            models.Index(fields=['usuario', 'leida']),
+        ]
+    
+    def __str__(self):
+        return f"{self.usuario.username} - {self.titulo} ({'Leída' if self.leida else 'No leída'})"

@@ -4668,3 +4668,68 @@ def desactivar_push_token(request):
             'detalle': str(e)
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+
+
+class NotificacionViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet para gestionar notificaciones del usuario
+    Endpoints:
+    - GET /notificaciones/ - Listar notificaciones del usuario
+    - POST /notificaciones/{id}/marcar_leida/ - Marcar como leída
+    - POST /notificaciones/marcar_todas_leidas/ - Marcar todas como leídas
+    - GET /notificaciones/no_leidas_count/ - Contador de no leídas
+    """
+    serializer_class = NotificacionSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        """Obtener solo las notificaciones del usuario autenticado"""
+        return Notificacion.objects.filter(
+            usuario=self.request.user
+        ).select_related('usuario')
+    
+    @action(detail=True, methods=['post'])
+    def marcar_leida(self, request, pk=None):
+        """
+        Marcar una notificación como leída
+        POST /notificaciones/{id}/marcar_leida/
+        """
+        notificacion = self.get_object()
+        notificacion.leida = True
+        notificacion.fecha_leida = timezone.now()
+        notificacion.save(update_fields=['leida', 'fecha_leida'])
+        
+        return Response({
+            'status': 'success',
+            'message': 'Notificación marcada como leída',
+            'notification_id': notificacion.id
+        })
+    
+    @action(detail=False, methods=['post'])
+    def marcar_todas_leidas(self, request):
+        """
+        Marcar todas las notificaciones no leídas como leídas
+        POST /notificaciones/marcar_todas_leidas/
+        """
+        count = self.get_queryset().filter(leida=False).update(
+            leida=True,
+            fecha_leida=timezone.now()
+        )
+        
+        return Response({
+            'status': 'success',
+            'message': f'{count} notificaciones marcadas como leídas',
+            'marked_count': count
+        })
+    
+    @action(detail=False, methods=['get'])
+    def no_leidas_count(self, request):
+        """
+        Obtener contador de notificaciones no leídas
+        GET /notificaciones/no_leidas_count/
+        """
+        count = self.get_queryset().filter(leida=False).count()
+        
+        return Response({
+            'unread_count': count
+        })

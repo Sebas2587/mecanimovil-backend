@@ -15,6 +15,7 @@ router.register(r'horarios-proveedor', views.HorarioProveedorViewSet)
 router.register(r'mechanics/me/service-areas', views.MechanicServiceAreaViewSet, basename='mechanicservicearea')
 router.register(r'chilean-communes', views.ChileanCommuneViewSet, basename='chileancommune')
 router.register(r'taller-direcciones', views.TallerDireccionViewSet, basename='tallerdireccion')
+router.register(r'notificaciones', views.NotificacionViewSet, basename='notificaciones')
 
 # URLs personalizadas para reviews de proveedores
 urlpatterns = [
