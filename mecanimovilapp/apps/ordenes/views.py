@@ -5952,10 +5952,32 @@ class ChatSolicitudViewSet(viewsets.ModelViewSet):
         - Información del cliente/proveedor
         - Ordenado por fecha del último mensaje
         """
-        from django.db.models import Max, Count, Q, Prefetch
-        
+        from django.db.models import OuterRef, Subquery, Count, Q, Prefetch
+        from django.db.models.functions import Coalesce
+
         user = request.user
         
+        # Subqueries para evitar GROUP BY masivo
+        # 1. Fecha del último mensaje
+        last_msg_qs = ChatSolicitud.objects.filter(
+            oferta=OuterRef('pk')
+        ).order_by('-fecha_envio').values('fecha_envio')[:1]
+        
+        # 2. Conteo de mensajes no leídos
+        # Para cliente: mensajes del proveedor no leídos
+        unread_client_qs = ChatSolicitud.objects.filter(
+            oferta=OuterRef('pk'),
+            leido=False,
+            es_proveedor=True
+        ).values('oferta').annotate(count=Count('id')).values('count')
+        
+        # Para proveedor: mensajes del cliente no leídos
+        unread_provider_qs = ChatSolicitud.objects.filter(
+            oferta=OuterRef('pk'),
+            leido=False,
+            es_proveedor=False
+        ).values('oferta').annotate(count=Count('id')).values('count')
+
         # Obtener ofertas con mensajes del usuario
         if hasattr(user, 'cliente'):
             # Cliente: ofertas de sus solicitudes que tienen mensajes
@@ -5965,18 +5987,16 @@ class ChatSolicitudViewSet(viewsets.ModelViewSet):
             ).distinct().select_related(
                 'solicitud', 'solicitud__cliente', 'solicitud__cliente__usuario',
                 'solicitud__vehiculo', 'solicitud__vehiculo__marca', 
-                'solicitud__vehiculo__modelo', 'proveedor'
+                'solicitud__vehiculo__modelo', 'proveedor', 
+                'proveedor__taller', 'proveedor__mecanico_domicilio', 'proveedor__taller__connection_status', 'proveedor__mecanico_domicilio__connection_status'
             ).prefetch_related(
                 Prefetch(
                     'mensajes_chat',
                     queryset=ChatSolicitud.objects.order_by('-fecha_envio')
                 )
             ).annotate(
-                ultimo_mensaje_fecha=Max('mensajes_chat__fecha_envio'),
-                mensajes_no_leidos=Count(
-                    'mensajes_chat',
-                    filter=Q(mensajes_chat__leido=False, mensajes_chat__es_proveedor=True)
-                )
+                ultimo_mensaje_fecha=Subquery(last_msg_qs),
+                mensajes_no_leidos=Coalesce(Subquery(unread_client_qs), 0)
             ).order_by('-ultimo_mensaje_fecha')
         else:
             # Proveedor: sus ofertas que tienen mensajes
@@ -5993,11 +6013,8 @@ class ChatSolicitudViewSet(viewsets.ModelViewSet):
                     queryset=ChatSolicitud.objects.order_by('-fecha_envio')
                 )
             ).annotate(
-                ultimo_mensaje_fecha=Max('mensajes_chat__fecha_envio'),
-                mensajes_no_leidos=Count(
-                    'mensajes_chat',
-                    filter=Q(mensajes_chat__leido=False, mensajes_chat__es_proveedor=False)
-                )
+                ultimo_mensaje_fecha=Subquery(last_msg_qs),
+                mensajes_no_leidos=Coalesce(Subquery(unread_provider_qs), 0)
             ).order_by('-ultimo_mensaje_fecha')
         
         # Construir respuesta con metadata
@@ -6023,47 +6040,37 @@ class ChatSolicitudViewSet(viewsets.ModelViewSet):
                 except (AttributeError, ValueError):
                     foto_url = None
                 
-                # Obtener estado de conexión del proveedor desde ConnectionStatus
+                # Obtener estado de conexión del proveedor desde ConnectionStatus (OPTIMIZADO)
                 esta_conectado = False
                 if oferta.proveedor:
                     try:
+                        # Verificar si existe el atributo connection_status en el proveedor
+                        # Esto requeriría select_related('proveedor__connection_status') pero es OneToOne inverso
+                        
                         if oferta.tipo_proveedor == 'mecanico':
-                            # Para mecánicos, verificar en ConnectionStatus
                             try:
                                 mecanico = oferta.proveedor.mecanico_domicilio
-                                if mecanico:
-                                    connection_status = ConnectionStatus.objects.filter(proveedor=mecanico).first()
-                                    if connection_status:
-                                        esta_conectado = connection_status.esta_conectado or connection_status.is_online
-                                    else:
-                                        # Fallback: verificar campo en el modelo
-                                        esta_conectado = getattr(mecanico, 'esta_conectado', False)
-                            except (AttributeError, Exception):
+                                if mecanico and hasattr(mecanico, 'connection_status'):
+                                    conn = mecanico.connection_status
+                                    esta_conectado = conn.esta_conectado or conn.is_online
+                                else:
+                                    # Fallback sin query extra si es posible
+                                    esta_conectado = getattr(mecanico, 'esta_conectado', False)
+                            except AttributeError:
                                 esta_conectado = False
                         elif oferta.tipo_proveedor == 'taller':
-                            # Para talleres, verificar en ConnectionStatus
                             try:
                                 taller = oferta.proveedor.taller
-                                if taller:
-                                    connection_status = ConnectionStatus.objects.filter(taller=taller).first()
-                                    if connection_status:
-                                        esta_conectado = connection_status.esta_conectado or connection_status.is_online
-                                    else:
-                                        # Fallback: verificar campo en el modelo
-                                        esta_conectado = getattr(taller, 'esta_conectado', False)
-                            except (AttributeError, Exception):
+                                if taller and hasattr(taller, 'connection_status'):
+                                    conn = taller.connection_status
+                                    esta_conectado = conn.esta_conectado or conn.is_online
+                                else:
+                                    esta_conectado = getattr(taller, 'esta_conectado', False)
+                            except AttributeError:
                                 esta_conectado = False
-                    except Exception:
-                        # Si hay algún error, usar fallback a los campos del modelo
-                        try:
-                            if oferta.tipo_proveedor == 'mecanico':
-                                mecanico = oferta.proveedor.mecanico_domicilio
-                                esta_conectado = getattr(mecanico, 'esta_conectado', False) if mecanico else False
-                            elif oferta.tipo_proveedor == 'taller':
-                                taller = oferta.proveedor.taller
-                                esta_conectado = getattr(taller, 'esta_conectado', False) if taller else False
-                        except:
-                            esta_conectado = False
+                    except Exception as e:
+                        # Fallback silencioso
+                        esta_conectado = False
                 
                 otra_persona = {
                     'id': oferta.proveedor.id if oferta.proveedor else None,
