@@ -2612,8 +2612,8 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
         queryset = SolicitudServicioPublica.objects.filter(query).exclude(pk=None).distinct()
         
         return queryset.select_related(
-            'cliente', 'cliente__usuario', 'vehiculo', 'vehiculo__marca', 'direccion_usuario'
-        ).prefetch_related('servicios_solicitados', 'proveedores_dirigidos', 'ofertas')
+            'cliente', 'cliente__usuario', 'vehiculo', 'vehiculo__marca', 'direccion_usuario', 'oferta_seleccionada'
+        ).prefetch_related('servicios_solicitados', 'proveedores_dirigidos', 'ofertas', 'rechazos')
     
     def perform_create(self, serializer):
         """Asocia la solicitud con el cliente autenticado"""

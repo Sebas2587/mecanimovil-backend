@@ -1470,11 +1470,11 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
         request = self.context.get('request')
         if request and request.user:
             if hasattr(request.user, 'cliente') and request.user.cliente == obj.cliente:
-                # Filtrar solo ofertas originales (no secundarias)
-                ofertas_originales = obj.ofertas.filter(es_oferta_secundaria=False)
+                # Filtrar solo ofertas originales (no secundarias) usando python para aprovechar prefetch
+                ofertas_originales = [o for o in obj.ofertas.all() if not o.es_oferta_secundaria]
                 return OfertaProveedorSerializer(ofertas_originales, many=True, context=self.context).data
             elif request.user.is_staff:
-                ofertas_originales = obj.ofertas.filter(es_oferta_secundaria=False)
+                ofertas_originales = [o for o in obj.ofertas.all() if not o.es_oferta_secundaria]
                 return OfertaProveedorSerializer(ofertas_originales, many=True, context=self.context).data
         return []
     
@@ -1484,44 +1484,15 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
         logger = logging.getLogger(__name__)
         
         request = self.context.get('request')
-        logger.info(f"?? get_ofertas_secundarias - Solicitud ID: {obj.id}")
-        logger.info(f"?? get_ofertas_secundarias - Request existe: {request is not None}")
-        logger.info(f"?? get_ofertas_secundarias - User existe: {request and request.user is not None if request else False}")
         
         if request and request.user:
-            logger.info(f"?? get_ofertas_secundarias - User ID: {request.user.id}, Username: {request.user.username}")
-            logger.info(f"?? get_ofertas_secundarias - Tiene cliente: {hasattr(request.user, 'cliente')}")
-            
-            if hasattr(request.user, 'cliente'):
-                logger.info(f"?? get_ofertas_secundarias - Cliente user: {request.user.cliente.id}, Cliente obj: {obj.cliente.id}")
-                logger.info(f"?? get_ofertas_secundarias - Clientes coinciden: {request.user.cliente == obj.cliente}")
-                
             if hasattr(request.user, 'cliente') and request.user.cliente == obj.cliente:
-                # Obtener todas las ofertas secundarias de todas las ofertas originales
-                ofertas_secundarias = OfertaProveedor.objects.filter(
-                    solicitud=obj,
-                    es_oferta_secundaria=True
-                )
-                logger.info(f"?? get_ofertas_secundarias - Ofertas secundarias encontradas (cliente): {ofertas_secundarias.count()}")
-                for oferta in ofertas_secundarias:
-                    logger.info(f"  - Oferta secundaria ID: {oferta.id}, Estado: {oferta.estado}, es_oferta_secundaria: {oferta.es_oferta_secundaria}")
-                
-                resultado = OfertaProveedorSerializer(ofertas_secundarias, many=True, context=self.context).data
-                logger.info(f"?? get_ofertas_secundarias - Resultado serializado (cliente): {len(resultado)} ofertas")
-                return resultado
+                # Obtener todas las ofertas secundarias usando python
+                ofertas_secundarias = [o for o in obj.ofertas.all() if o.es_oferta_secundaria]
+                return OfertaProveedorSerializer(ofertas_secundarias, many=True, context=self.context).data
             elif request.user.is_staff:
-                ofertas_secundarias = OfertaProveedor.objects.filter(
-                    solicitud=obj,
-                    es_oferta_secundaria=True
-                )
-                logger.info(f"?? get_ofertas_secundarias - Ofertas secundarias encontradas (staff): {ofertas_secundarias.count()}")
-                resultado = OfertaProveedorSerializer(ofertas_secundarias, many=True, context=self.context).data
-                logger.info(f"?? get_ofertas_secundarias - Resultado serializado (staff): {len(resultado)} ofertas")
-                return resultado
-            else:
-                logger.warning(f"?? get_ofertas_secundarias - Usuario no es cliente ni staff, retornando []")
-        else:
-            logger.warning(f"?? get_ofertas_secundarias - No hay request o user, retornando []")
+                ofertas_secundarias = [o for o in obj.ofertas.all() if o.es_oferta_secundaria]
+                return OfertaProveedorSerializer(ofertas_secundarias, many=True, context=self.context).data
         
         return []
     
@@ -1543,8 +1514,9 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
                 return RechazoSolicitudSerializer(obj.rechazos.all(), many=True, context=self.context).data
             # Proveedor solo puede ver su propio rechazo
             elif hasattr(request.user, 'taller') or hasattr(request.user, 'mecanico_domicilio'):
-                rechazo_propio = obj.rechazos.filter(proveedor=request.user)
-                if rechazo_propio.exists():
+                rechazos = obj.rechazos.all()
+                rechazo_propio = [r for r in rechazos if r.proveedor_id == request.user.id]
+                if rechazo_propio:
                     return RechazoSolicitudSerializer(rechazo_propio, many=True, context=self.context).data
         return []
     
