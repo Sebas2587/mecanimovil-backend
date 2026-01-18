@@ -18,6 +18,7 @@ import logging
 from django.conf import settings
 from django.utils import timezone
 from datetime import timedelta
+from django.core.management import call_command
 from mecanimovilapp.apps.usuarios.models import PushToken
 
 logger = logging.getLogger(__name__)
@@ -184,6 +185,22 @@ def verificar_pagos_pendientes():
     except Exception as e:
         logger.error(f"❌ Error en verificar_pagos_pendientes: {e}", exc_info=True)
         return {'error': str(e)}
+
+
+@shared_task
+def enviar_alertas_pago_proximo_task():
+    """
+    Tarea Celery que ejecuta el comando de management para enviar alertas de pago próximo
+    Incluye notificaciones push y WebSocket
+    """
+    try:
+        logger.info("🔄 Ejecutando comando enviar_alertas_pago_proximo...")
+        call_command('enviar_alertas_pago_proximo' )
+        logger.info("✅ Comando enviar_alertas_pago_proximo ejecutado exitosamente")
+        return {'status': 'success'}
+    except Exception as e:
+        logger.error(f"❌ Error ejecutando enviar_alertas_pago_proximo: {e}", exc_info=True)
+        return {'status': 'error', 'error': str(e)}
 
 
 @shared_task

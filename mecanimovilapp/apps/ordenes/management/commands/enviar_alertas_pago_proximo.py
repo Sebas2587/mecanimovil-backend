@@ -15,6 +15,7 @@ from datetime import timedelta
 from mecanimovilapp.apps.ordenes.models import SolicitudServicioPublica
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
+from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
 import logging
 
 logger = logging.getLogger(__name__)
@@ -114,6 +115,19 @@ class Command(BaseCommand):
                             'timestamp': ahora.isoformat()
                         }
                     )
+                
+                # Enviar notificación PUSH al dispositivo del cliente
+                send_expo_push_notification.delay(
+                    solicitud.cliente.usuario.id,
+                    f"⏰ Pago Pendiente",
+                    f"Quedan {horas}h {minutos}m para pagar tu servicio. No olvides completar el pago.",
+                    {
+                        'type': 'payment_reminder',
+                        'solicitud_id': str(solicitud.id),
+                        'horas_restantes': horas,
+                        'minutos_restantes': minutos
+                    }
+                )
                 
                 enviadas += 1
                 self.stdout.write(

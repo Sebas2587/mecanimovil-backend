@@ -82,6 +82,11 @@ app.conf.beat_schedule = {
         'schedule': crontab(minute='*/30'),  # Cada 30 minutos
         'options': {'queue': 'default'},
     },
+    'enviar-alertas-pago-proximo': {
+        'task': 'mecanimovilapp.apps.ordenes.tasks.enviar_alertas_pago_proximo_task',
+        'schedule': crontab(minute=0),  # Cada hora, en punto
+        'options': {'queue': 'default'},
+    },
 }
 
 @app.task(bind=True)
