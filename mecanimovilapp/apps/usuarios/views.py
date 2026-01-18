@@ -1485,11 +1485,13 @@ class TallerViewSet(viewsets.ModelViewSet):
             marcas_atendidas=marca_vehiculo,
             verificado=True,
             activo=True
-        ).select_related('usuario').prefetch_related(
+        ).select_related(
+            'usuario',
+            'direccion_fisica',   # OneToOne relationship
+            'connection_status'   # OneToOne relationship
+        ).prefetch_related(
             'especialidades',
-            'marcas_atendidas',
-            'direccion_fisica',   # Dirección física
-            'connection_status'   # Estado de conexión
+            'marcas_atendidas'
         ).annotate(
             servicios_completados_count=Count(
                 'solicitudes',
@@ -2023,11 +2025,13 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
             marcas_atendidas=marca_vehiculo,
             verificado=True,
             activo=True
-        ).select_related('usuario').prefetch_related(
+        ).select_related(
+            'usuario',
+            'connection_status'   # OneToOne relationship - use select_related
+        ).prefetch_related(
             'especialidades',
             'marcas_atendidas',
             'service_areas',      # Zonas de servicio (comunas)
-            'connection_status',  # Estado de conexión
             'resenas'             # Reseñas para calcular rating real si es necesario
         ).annotate(
             servicios_completados_count=Count(
