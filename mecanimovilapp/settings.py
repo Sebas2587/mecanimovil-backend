@@ -120,21 +120,22 @@ DATABASE_URL = config('DATABASE_URL', default=None)
 
 if DATABASE_URL:
     # Producción: usar DATABASE_URL con PostGIS
+    db_config = dj_database_url.config(
+        default=DATABASE_URL,
+        engine='django.contrib.gis.db.backends.postgis',
+        conn_max_age=600,  # Conexiones persistentes (10 minutos)
+        conn_health_checks=True,  # Verificar salud de conexiones
+    )
+    # Agregar opciones adicionales para mejorar estabilidad
+    db_config['OPTIONS'] = {
+        'connect_timeout': 10,  # Timeout de conexión inicial
+        'keepalives': 1,  # Habilitar keepalives TCP
+        'keepalives_idle': 30,  # Enviar keepalive después de 30s de inactividad
+        'keepalives_interval': 10,  # Intervalo entre keepalives
+        'keepalives_count': 5,  # Número de keepalives antes de considerar la conexión muerta
+    }
     DATABASES = {
-        'default': dj_database_url.config(
-            default=DATABASE_URL,
-            engine='django.contrib.gis.db.backends.postgis',
-            conn_max_age=600,  # Conexiones persistentes (10 minutos)
-            conn_health_checks=True,  # Verificar salud de conexiones
-            # Opciones adicionales para mejorar estabilidad
-            OPTIONS={
-                'connect_timeout': 10,  # Timeout de conexión inicial
-                'keepalives': 1,  # Habilitar keepalives TCP
-                'keepalives_idle': 30,  # Enviar keepalive después de 30s de inactividad
-                'keepalives_interval': 10,  # Intervalo entre keepalives
-                'keepalives_count': 5,  # Número de keepalives antes de considerar la conexión muerta
-            },
-        )
+        'default': db_config
     }
 else:
     # Desarrollo local: PostgreSQL con PostGIS
