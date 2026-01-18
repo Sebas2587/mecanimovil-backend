@@ -798,7 +798,6 @@ class MecanicoDomicilioSerializer(serializers.ModelSerializer):
         Obtiene el estado de conexión desde ConnectionStatus
         """
         try:
-        try:
             # **OPTIMIZACIÓN**: Intentar usar relación inversa pre-cargada
             # connection_status es OneToOne related_name='connection_status'
             if hasattr(obj, 'connection_status'):
@@ -818,7 +817,6 @@ class MecanicoDomicilioSerializer(serializers.ModelSerializer):
         Obtiene la última conexión desde ConnectionStatus
         """
         try:
-        try:
             # **OPTIMIZACIÓN**: Intentar usar relación inversa pre-cargada
             if hasattr(obj, 'connection_status'):
                 return obj.connection_status.ultima_conexion
@@ -837,7 +835,6 @@ class MecanicoDomicilioSerializer(serializers.ModelSerializer):
         Obtiene el estado actual desde ConnectionStatus
         """
         try:
-        try:
             # **OPTIMIZACIÓN**: Intentar usar relación inversa pre-cargada
             if hasattr(obj, 'connection_status'):
                 return obj.connection_status.status
@@ -848,7 +845,7 @@ class MecanicoDomicilioSerializer(serializers.ModelSerializer):
                 return conn_status.status
             return 'offline'
         except Exception as e:
-            print(f"Error obteniendo status para mecánico {obj.id}: {e}")
+            print(f"Error obteniendo estado actual: {e}")
             return 'offline'
     
     def get_total_resenas(self, obj):
