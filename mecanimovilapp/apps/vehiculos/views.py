@@ -46,6 +46,8 @@ class ModeloViewSet(viewsets.ReadOnlyModelViewSet):
         return queryset
 
 
+from mecanimovilapp.apps.ordenes.models import SolicitudServicio, SolicitudServicioPublica
+
 class VehiculoViewSet(viewsets.ModelViewSet):
     """
     ViewSet para el modelo Vehiculo
@@ -54,6 +56,53 @@ class VehiculoViewSet(viewsets.ModelViewSet):
     serializer_class = VehiculoSerializer
     permission_classes = [permissions.IsAuthenticated]
     
+    # ... (existing methods omitted for brevity in prompt, but in real code I verify context)
+    
+    def destroy(self, request, *args, **kwargs):
+        """
+        Sobrescribir destroy para validar que no haya servicios pendientes
+        """
+        instance = self.get_object()
+        
+        # Validar Solicitudes de Servicio (Agendamientos privados)
+        # Estados que impiden eliminación: cualquier estado activo o pendiente de pago
+        estados_activos = [
+            'pendiente', 'pago_validado', 'confirmado', 'pendiente_aceptacion_proveedor',
+            'aceptada_por_proveedor', 'checklist_en_progreso', 'checklist_completado',
+            'en_proceso', 'pendiente_devolucion', 'solicitud_cancelacion'
+        ]
+        
+        solicitudes_activas = SolicitudServicio.objects.filter(
+            vehiculo=instance,
+            estado__in=estados_activos
+        ).exists()
+        
+        if solicitudes_activas:
+            return Response(
+                {"error": "No puedes eliminar este vehículo porque tiene solicitudes de servicio activas o pagos pendientes."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Validar Solicitudes Públicas (Mercado)
+        # Estados que impiden eliminación
+        estados_publicos_activos = [
+            'creada', 'seleccionando_servicios', 'publicada', 'con_ofertas',
+            'adjudicada', 'pendiente_pago', 'pagada', 'en_ejecucion'
+        ]
+
+        solicitudes_publicas_activas = SolicitudServicioPublica.objects.filter(
+            vehiculo=instance,
+            estado__in=estados_publicos_activos
+        ).exists()
+            
+        if solicitudes_publicas_activas:
+             return Response(
+                {"error": "No puedes eliminar este vehículo porque tiene una solicitud pública en curso o subasta activa."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+            
+        return super().destroy(request, *args, **kwargs)
+
     def get_serializer_class(self):
         """
         Usar VehiculoLiteSerializer para list (optimización)
