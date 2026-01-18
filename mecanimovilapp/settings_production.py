@@ -86,8 +86,16 @@ if DATABASE_URL:
         'default': dj_database_url.config(
             default=DATABASE_URL,
             engine='django.contrib.gis.db.backends.postgis',
-            conn_max_age=600,
-            conn_health_checks=True,
+            conn_max_age=600,  # Mantener conexiones por 10 minutos
+            conn_health_checks=True,  # Verificar salud de conexiones
+            # Opciones adicionales para mejorar estabilidad
+            OPTIONS={
+                'connect_timeout': 10,  # Timeout de conexión inicial
+                'keepalives': 1,  # Habilitar keepalives TCP
+                'keepalives_idle': 30,  # Enviar keepalive después de 30s de inactividad
+                'keepalives_interval': 10,  # Intervalo entre keepalives
+                'keepalives_count': 5,  # Número de keepalives antes de considerar la conexión muerta
+            },
         )
     }
 

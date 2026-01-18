@@ -14,11 +14,8 @@ except ImportError:
     CELERY_AVAILABLE = False
 
 from django.core.cache import cache
-from django.utils import timezone
-from django.db.models import Avg, Count, Q
-from datetime import timedelta
 import logging
-from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
+# Mover imports pesados adentro de las tareas/funciones
 
 from .models_health import (
     ComponenteSaludConfig,
@@ -46,6 +43,7 @@ def calcular_estado_salud_interno(vehicle_id):
     Returns:
         EstadoSaludVehiculo: Objeto con el estado calculado
     """
+    from django.db.models import Avg, Count, Q
     from .models import Vehiculo
     
     try:
@@ -93,7 +91,7 @@ def calcular_estado_salud_interno(vehicle_id):
     salud_previa = {comp.id: comp.salud_porcentaje for comp in componentes}
     
     for comp in componentes:
-        comp.calcular_salud()
+        comp.calcular_salud(commit=False)
         
         # ✅ NUEVO: Lógica de Alertas Push según requerimientos del usuario
         # 1. Si la salud baja a 0%
@@ -105,6 +103,15 @@ def calcular_estado_salud_interno(vehicle_id):
             enviar_alerta_salud_push(vehiculo, comp, "ha llegado al 0%")
         elif caida >= 50.0:
             enviar_alerta_salud_push(vehiculo, comp, f"ha bajado un {caida:.0f}% abruptamente")
+            
+    # ✅ OPTIMIZACIÓN: Guardar todos los componentes en una sola query
+    ComponenteSaludVehiculo.objects.bulk_update(
+        componentes, 
+        [
+            'salud_porcentaje', 'nivel_alerta', 'km_estimados_restantes', 
+            'dias_estimados_restantes', 'requiere_servicio_inmediato', 'mensaje_alerta'
+        ]
+    )
     
     # Calcular métricas generales usando agregación
     stats = componentes.aggregate(
@@ -305,6 +312,8 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
         }
         
         # Actualizar componentes basados en el checklist
+        componentes_para_actualizar = {}
+        
         for respuesta in checklist.respuestas.all():
             item_nombre = respuesta.item_template.catalog_item.nombre if respuesta.item_template.catalog_item else ''
             
@@ -337,9 +346,19 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
                                 comp_salud.fecha_ultimo_servicio = checklist.fecha_finalizacion or timezone.now()
                                 comp_salud.checklist_ultimo_servicio = checklist
                             
-                            comp_salud.calcular_salud()
+                            comp_salud.calcular_salud(commit=False)
+                            componentes_para_actualizar[comp_salud.id] = comp_salud
                     except Exception as e:
                         logger.warning(f"Error actualizando componente {nombre_config}: {str(e)}")
+        
+        # ✅ OPTIMIZACIÓN: bulk_update
+        if componentes_para_actualizar:
+            ComponenteSaludVehiculo.objects.bulk_update(
+                list(componentes_para_actualizar.values()),
+                ['km_ultimo_servicio', 'fecha_ultimo_servicio', 'checklist_ultimo_servicio', 
+                 'salud_porcentaje', 'nivel_alerta', 'km_estimados_restantes', 
+                 'dias_estimados_restantes', 'requiere_servicio_inmediato', 'mensaje_alerta']
+            )
         
         # Recalcular de forma asíncrona
         calcular_salud_vehiculo_async.delay(vehicle_id, force_recalculate=True)
@@ -403,6 +422,8 @@ def recalcular_salud_vehiculos_batch():
     
     TAREA PESADA: Asignada a cola 'heavy' con límites de tiempo
     """
+    from django.utils import timezone
+    from datetime import timedelta
     from .models import Vehiculo
     
     try:
@@ -527,6 +548,7 @@ def _procesar_checklists_historicos_vehiculo_interno(vehicle_id):
         dict: Resultado del procesamiento con estadísticas
     """
     try:
+        from django.utils import timezone
         from .models_health import ComponenteSaludVehiculo, ComponenteSaludConfig
         from .models import Vehiculo
         from ..checklists.models import ChecklistInstance
@@ -646,12 +668,16 @@ def _procesar_checklists_historicos_vehiculo_interno(vehicle_id):
                                         comp_salud.km_ultimo_servicio = km_para_servicio
                                         comp_salud.fecha_ultimo_servicio = fecha_checklist
                                         comp_salud.checklist_ultimo_servicio = checklist
-                                        comp_salud.save()
+                                        # NO guardamos todavía, lo haremos en bulk al final del proceso cronológico o por vehículo
+                                        comp_salud.calcular_salud(commit=False)
                                         componentes_actualizados += 1
                                         logger.info(
-                                            f"✅ Componente {config.nombre} actualizado desde checklist histórico "
-                                            f"{checklist.id} (km: {km_para_servicio}, fecha: {fecha_checklist})"
+                                            f"✅ Componente {config.nombre} preparado para actualización desde checklist histórico "
+                                            f"{checklist.id}"
                                         )
+                                else:
+                                    comp_salud.calcular_salud(commit=False)
+                                    componentes_actualizados += 1
                         except Exception as e:
                             logger.warning(f"Error procesando componente {nombre_config} del checklist {checklist.id}: {str(e)}")
         
@@ -669,10 +695,18 @@ def _procesar_checklists_historicos_vehiculo_interno(vehicle_id):
                 f"(diferencia: +{diferencia} km)"
             )
         
-        # Recalcular salud de todos los componentes
-        componentes = ComponenteSaludVehiculo.objects.filter(vehiculo=vehiculo)
+        # Recalcular salud de todos los componentes y guardar en bulk
+        componentes = list(ComponenteSaludVehiculo.objects.filter(vehiculo=vehiculo))
         for comp in componentes:
-            comp.calcular_salud()
+            comp.calcular_salud(commit=False)
+        
+        if componentes:
+            ComponenteSaludVehiculo.objects.bulk_update(
+                componentes,
+                ['km_ultimo_servicio', 'fecha_ultimo_servicio', 'checklist_ultimo_servicio',
+                 'salud_porcentaje', 'nivel_alerta', 'km_estimados_restantes',
+                 'dias_estimados_restantes', 'requiere_servicio_inmediato', 'mensaje_alerta']
+            )
         
         # Recalcular estado general (usar Celery si está disponible, sino calcular directamente)
         try:
@@ -747,6 +781,8 @@ def enviar_alerta_salud_push(vehiculo, componente, motivo_texto):
         title = f"⚠️ Alerta de Salud: {nombre_componente}"
         body = f"La salud de {nombre_componente} en tu {nombre_vehiculo} {motivo_texto}. Te recomendamos agendar una revisión."
         
+        from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
+        
         send_expo_push_notification.delay(
             user_id,
             title,
@@ -779,6 +815,8 @@ def enviar_alerta_salud_global_push(vehiculo, motivo_texto, es_critico=False):
         
         title = f"{emoji} Salud Global {nivel}: {nombre_vehiculo}"
         body = f"La salud general de tu {nombre_vehiculo} {motivo_texto}. Te recomendamos revisar los componentes afectados pronto."
+        
+        from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
         
         send_expo_push_notification.delay(
             user_id,

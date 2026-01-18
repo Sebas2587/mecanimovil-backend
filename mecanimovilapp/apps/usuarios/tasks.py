@@ -1,11 +1,4 @@
 from celery import shared_task
-from exponent_server_sdk import (
-    PushClient,
-    PushMessage,
-    PushServerError,
-    PushTicketError,
-)
-from .models import Usuario
 import logging
 
 logger = logging.getLogger(__name__)
@@ -15,6 +8,14 @@ def send_expo_push_notification(user_id, title, body, data=None):
     """
     Tarea de Celery para enviar notificaciones push usando Expo
     """
+    from .models import Usuario
+    from exponent_server_sdk import (
+        PushClient,
+        PushMessage,
+        PushServerError,
+        PushTicketError,
+    )
+    
     try:
         user = Usuario.objects.get(pk=user_id)
         token = user.expo_push_token

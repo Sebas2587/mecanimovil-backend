@@ -218,10 +218,13 @@ class ComponenteSaludVehiculo(models.Model):
     def __str__(self):
         return f"{self.vehiculo} - {self.componente_config.nombre}: {self.salud_porcentaje}%"
     
-    def calcular_salud(self):
+    def calcular_salud(self, commit=True):
         """
         Calcular salud usando el algoritmo de Weibull modificado
         Actualiza los campos del componente con el cálculo
+        
+        Args:
+            commit: Si es True, guarda los cambios en la base de datos inmediatamente.
         """
         config = self.componente_config
         vehiculo = self.vehiculo
@@ -287,8 +290,9 @@ class ComponenteSaludVehiculo(models.Model):
         else:
             self.mensaje_alerta = ''
         
-        # Guardar cambios
-        self.save()
+        # Guardar cambios si commit es True
+        if commit:
+            self.save()
         
         return {
             'salud_porcentaje': self.salud_porcentaje,
