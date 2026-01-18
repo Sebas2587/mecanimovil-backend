@@ -244,10 +244,12 @@ LOGGING = {
 # ============================================
 # OPTIMIZACIONES DE CELERY PARA PRODUCCIÓN
 # ============================================
-CELERY_WORKER_CONCURRENCY = int(os.environ.get('CELERY_WORKER_CONCURRENCY', 2))
-CELERY_WORKER_POOL = 'prefork'
+# Reducir concurrencia para minimizar conexiones a BD (plan gratuito)
+CELERY_WORKER_CONCURRENCY = int(os.environ.get('CELERY_WORKER_CONCURRENCY', 1))  # Reducido de 2 a 1 para reducir conexiones
+CELERY_WORKER_POOL = 'solo'  # Usar pool 'solo' (thread) en lugar de 'prefork' (proceso) para reducir conexiones
 CELERY_TASK_COMPRESSION = 'gzip'
 CELERY_BROKER_POOL_LIMIT = 10
 CELERY_TASK_IGNORE_RESULT = False
 CELERY_TASK_STORE_EAGER_RESULT = True
-CELERY_TASK_ALWAYS_EAGER = False
+CELERY_TASK_ALWAYS_EAGER = False  # No ejecutar sincrónicamente
+CELERY_TASK_EAGER_PROPAGATES = True

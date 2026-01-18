@@ -70,7 +70,7 @@ services:
     plan: starter  # Mínimo requerido: starter ($7/mes). También: standard ($25/mes)
     region: oregon
     buildCommand: ./build_worker.sh
-    startCommand: celery -A mecanimovilapp worker -l info -Q default,heavy --concurrency=2
+    startCommand: celery -A mecanimovilapp worker -l info -Q default,heavy --concurrency=1 --pool=solo --max-tasks-per-child=50
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.7"
