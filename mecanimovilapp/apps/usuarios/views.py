@@ -8,7 +8,7 @@ from django.contrib.gis.db.models.functions import Distance
 from django.contrib.gis.geos import Point
 from django.contrib.gis.measure import D
 from django_filters.rest_framework import DjangoFilterBackend
-from .models import Usuario, Cliente, Taller, MecanicoDomicilio, ZonaCobertura, Resena, DireccionUsuario, DocumentoOnboarding, HorarioProveedor, MechanicServiceArea, ChileanCommune, ConnectionStatus, ProviderProfile, Review, TallerDireccion, PushToken
+from .models import Usuario, Cliente, Taller, MecanicoDomicilio, ZonaCobertura, Resena, DireccionUsuario, DocumentoOnboarding, HorarioProveedor, MechanicServiceArea, ChileanCommune, ConnectionStatus, ProviderProfile, Review, TallerDireccion, PushToken, Notificacion
 from .serializers import (
     UsuarioSerializer, ClienteSerializer, UserProfileSerializer, 
     TallerSerializer, MecanicoDomicilioSerializer, ZonaCoberturaSerializer, ResenaSerializer,
@@ -4681,7 +4681,7 @@ class NotificacionViewSet(viewsets.ModelViewSet):
     - GET /notificaciones/no_leidas_count/ - Contador de no leídas
     """
     serializer_class = NotificacionSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated]
     
     def get_queryset(self):
         """Obtener solo las notificaciones del usuario autenticado"""
