@@ -123,10 +123,10 @@ if DATABASE_URL:
     db_config = dj_database_url.config(
         default=DATABASE_URL,
         engine='django.contrib.gis.db.backends.postgis',
-        conn_max_age=300,  # 5 minutos - mejor para plan Starter ($7/mo)
+        conn_max_age=600,  # 10 minutos - mejor pooling para plan Standard (1GB)
         conn_health_checks=True,  # Verificar salud de conexiones antes de usar
     )
-    # Agregar opciones adicionales para mejorar estabilidad
+    # Configuración optimizada para Render Standard (1GB RAM)
     db_config['OPTIONS'] = {
         'connect_timeout': 10,  # Timeout de conexión inicial
         'keepalives': 1,  # Habilitar keepalives TCP
