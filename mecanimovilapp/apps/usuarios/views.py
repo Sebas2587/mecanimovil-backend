@@ -15,7 +15,8 @@ from .serializers import (
     DireccionUsuarioSerializer, DocumentoOnboardingSerializer, HorarioProveedorSerializer,
     ConfigurarSemanaCompletaSerializer, ConfigurarHorarioRapidoSerializer,
     MechanicServiceAreaSerializer, MechanicServiceAreaCreateSerializer, MechanicServiceAreaUpdateSerializer,
-    ChileanCommuneSerializer, ConnectionStatusSerializer, ProviderProfileSerializer, ReviewSerializer, TallerDireccionSerializer
+    ChileanCommuneSerializer, ConnectionStatusSerializer, ProviderProfileSerializer, ReviewSerializer, TallerDireccionSerializer,
+    NotificacionSerializer
 )
 from mecanimovilapp.apps.servicios.models import CategoriaServicio
 from django.contrib.auth import authenticate
