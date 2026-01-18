@@ -4585,7 +4585,7 @@ def registrar_push_token(request):
         dispositivo = request.data.get('dispositivo', '')
         plataforma = request.data.get('plataforma', 'unknown')
         
-        # Actualizar o crear el token
+        # Actualizar o crear el token en el modelo PushToken (legacy compatibility)
         push_token, created = PushToken.objects.update_or_create(
             token=token,
             defaults={
@@ -4595,8 +4595,12 @@ def registrar_push_token(request):
                 'plataforma': plataforma
             }
         )
+
+        # ✅ ACTUALIZAR TAMBIÉN EN EL MODELO USUARIO (Para el nuevo sistema de Celery)
+        request.user.expo_push_token = token
+        request.user.save(update_fields=['expo_push_token'])
         
-        logger.info(f"✅ Push token {'registrado' if created else 'actualizado'} para usuario {request.user.id}")
+        logger.info(f"✅ Push token {'registrado' if created else 'actualizado'} para usuario {request.user.id} (Sincronizado con Usuario model)")
         
         return Response({
             'mensaje': 'Token registrado correctamente',
