@@ -121,10 +121,11 @@ def calcular_estado_salud_interno(vehicle_id):
     costo_total = sum(float(a.costo_estimado) for a in alertas)
     
     # Crear o actualizar snapshot del estado
+    salud_global = stats['salud_promedio'] or 0
     estado, created = EstadoSaludVehiculo.objects.update_or_create(
         vehiculo=vehiculo,
         defaults={
-            'salud_general_porcentaje': stats['salud_promedio'] or 0,
+            'salud_general_porcentaje': salud_global,
             'kilometraje_snapshot': vehiculo.kilometraje,
             'total_componentes_evaluados': stats['total'],
             'componentes_optimos': stats['optimos'],
@@ -135,6 +136,12 @@ def calcular_estado_salud_interno(vehicle_id):
             'costo_estimado_mantenimiento': costo_total,
         }
     )
+
+    # ✅ NUEVO: Alertas de Salud Global según requerimientos del usuario
+    if salud_global == 0:
+        enviar_alerta_salud_global_push(vehiculo, "es de 0%", es_critico=True)
+    elif salud_global < 50.0:
+        enviar_alerta_salud_global_push(vehiculo, f"es baja ({salud_global:.0f}%)", es_critico=False)
     
     return estado
 
@@ -754,4 +761,36 @@ def enviar_alerta_salud_push(vehiculo, componente, motivo_texto):
         logger.info(f"📲 Alerta Push de salud enviada a usuario {user_id} para {nombre_componente}")
     except Exception as e:
         logger.error(f"Error en enviar_alerta_salud_push: {e}")
+
+
+def enviar_alerta_salud_global_push(vehiculo, motivo_texto, es_critico=False):
+    """
+    Función de apoyo para enviar notificaciones push de salud global (recordatorios)
+    """
+    try:
+        if not (vehiculo.cliente and vehiculo.cliente.usuario):
+            return
+            
+        user_id = vehiculo.cliente.usuario.id
+        nombre_vehiculo = f"{vehiculo.marca} {vehiculo.modelo}" if vehiculo.marca else f"Vehículo {vehiculo.patente or ''}"
+        
+        emoji = "🚨" if es_critico else "⚠️"
+        nivel = "CRÍTICA" if es_critico else "Recordatorio"
+        
+        title = f"{emoji} Salud Global {nivel}: {nombre_vehiculo}"
+        body = f"La salud general de tu {nombre_vehiculo} {motivo_texto}. Te recomendamos revisar los componentes afectados pronto."
+        
+        send_expo_push_notification.delay(
+            user_id,
+            title,
+            body,
+            {
+                "type": "global_health_alert",
+                "vehicle_id": str(vehiculo.id),
+                "es_critico": es_critico
+            }
+        )
+        logger.info(f"📲 Alerta Push de salud GLOBAL enviada a usuario {user_id} para {nombre_vehiculo}")
+    except Exception as e:
+        logger.error(f"Error en enviar_alerta_salud_global_push: {e}")
 
