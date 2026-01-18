@@ -85,8 +85,8 @@ if DATABASE_URL:
     db_config = dj_database_url.config(
         default=DATABASE_URL,
         engine='django.contrib.gis.db.backends.postgis',
-        conn_max_age=600,  # Mantener conexiones por 10 minutos
-        conn_health_checks=True,  # Verificar salud de conexiones
+        conn_max_age=60,  # Reducido a 1 minuto para evitar conexiones muertas cuando BD se reinicia
+        conn_health_checks=True,  # Verificar salud de conexiones antes de usar
     )
     # Agregar opciones adicionales para mejorar estabilidad
     db_config['OPTIONS'] = {

@@ -361,35 +361,56 @@ class ServicioListSerializer(serializers.ModelSerializer):
     
     def get_precio_minimo(self, obj):
         """Obtiene el precio mínimo entre todas las ofertas disponibles"""
-        ofertas = obj.ofertas.filter(disponible=True)
-        if ofertas.exists():
-            precio_min_con = ofertas.aggregate(min_precio=models.Min('precio_con_repuestos'))['min_precio']
-            precio_min_sin = ofertas.aggregate(min_precio=models.Min('precio_sin_repuestos'))['min_precio']
-            # Filtrar valores None y obtener el mínimo solo si hay precios válidos
-            precios_validos = list(filter(None, [precio_min_con, precio_min_sin]))
-            if precios_validos:
-                return min(precios_validos)
+        try:
+            ofertas = obj.ofertas.filter(disponible=True)
+            if ofertas.exists():
+                precio_min_con = ofertas.aggregate(min_precio=models.Min('precio_con_repuestos'))['min_precio']
+                precio_min_sin = ofertas.aggregate(min_precio=models.Min('precio_sin_repuestos'))['min_precio']
+                # Filtrar valores None y obtener el mínimo solo si hay precios válidos
+                precios_validos = list(filter(None, [precio_min_con, precio_min_sin]))
+                if precios_validos:
+                    return min(precios_validos)
+        except Exception as e:
+            # Manejar errores de conexión a BD - retornar precio de referencia como fallback
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Error obteniendo precio mínimo para servicio {obj.id}: {str(e)}")
+            # Retornar precio de referencia como fallback seguro
         return obj.precio_referencia
     
     def get_precio_maximo(self, obj):
         """Obtiene el precio máximo entre todas las ofertas disponibles"""
-        ofertas = obj.ofertas.filter(disponible=True)
-        if ofertas.exists():
-            precio_max_con = ofertas.aggregate(max_precio=models.Max('precio_con_repuestos'))['max_precio']
-            precio_max_sin = ofertas.aggregate(max_precio=models.Max('precio_sin_repuestos'))['max_precio']
-            # Filtrar valores None y obtener el máximo solo si hay precios válidos
-            precios_validos = list(filter(None, [precio_max_con, precio_max_sin]))
-            if precios_validos:
-                return max(precios_validos)
+        try:
+            ofertas = obj.ofertas.filter(disponible=True)
+            if ofertas.exists():
+                precio_max_con = ofertas.aggregate(max_precio=models.Max('precio_con_repuestos'))['max_precio']
+                precio_max_sin = ofertas.aggregate(max_precio=models.Max('precio_sin_repuestos'))['max_precio']
+                # Filtrar valores None y obtener el máximo solo si hay precios válidos
+                precios_validos = list(filter(None, [precio_max_con, precio_max_sin]))
+                if precios_validos:
+                    return max(precios_validos)
+        except Exception as e:
+            # Manejar errores de conexión a BD - retornar precio de referencia como fallback
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Error obteniendo precio máximo para servicio {obj.id}: {str(e)}")
+            # Retornar precio de referencia como fallback seguro
         return obj.precio_referencia
     
     def get_taller_principal(self, obj):
         """Obtiene el taller con mejor calificación que ofrece este servicio"""
-        oferta_taller = obj.ofertas.filter(
-            disponible=True, 
-            tipo_proveedor='taller',
-            taller__isnull=False
-        ).select_related('taller').first()
+        try:
+            oferta_taller = obj.ofertas.filter(
+                disponible=True, 
+                tipo_proveedor='taller',
+                taller__isnull=False
+            ).select_related('taller').first()
+        except Exception as e:
+            # Manejar errores de conexión a BD - retornar None como fallback
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Error obteniendo taller principal para servicio {obj.id}: {str(e)}")
+            return None
         
         if oferta_taller and oferta_taller.taller:
             return {
