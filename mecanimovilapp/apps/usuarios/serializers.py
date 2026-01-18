@@ -769,10 +769,14 @@ class MecanicoDomicilioSerializer(serializers.ModelSerializer):
         Devuelve información sobre las zonas de servicio del mecánico
         """
         try:
-            zonas = MechanicServiceArea.objects.filter(
-                mechanic=obj,
-                is_active=True
-            )
+            # **OPTIMIZACIÓN**: Usar prefetch si está disponible
+            if hasattr(obj, '_prefetched_objects_cache') and 'service_areas' in obj._prefetched_objects_cache:
+                zonas = [z for z in obj.service_areas.all() if z.is_active]
+            else:
+                zonas = MechanicServiceArea.objects.filter(
+                    mechanic=obj,
+                    is_active=True
+                )
             
             zonas_info = []
             for zona in zonas:
@@ -794,6 +798,12 @@ class MecanicoDomicilioSerializer(serializers.ModelSerializer):
         Obtiene el estado de conexión desde ConnectionStatus
         """
         try:
+        try:
+            # **OPTIMIZACIÓN**: Intentar usar relación inversa pre-cargada
+            # connection_status es OneToOne related_name='connection_status'
+            if hasattr(obj, 'connection_status'):
+                return obj.connection_status.esta_conectado
+                
             from .models import ConnectionStatus
             conn_status = ConnectionStatus.objects.filter(proveedor=obj).first()
             if conn_status:
@@ -808,6 +818,11 @@ class MecanicoDomicilioSerializer(serializers.ModelSerializer):
         Obtiene la última conexión desde ConnectionStatus
         """
         try:
+        try:
+            # **OPTIMIZACIÓN**: Intentar usar relación inversa pre-cargada
+            if hasattr(obj, 'connection_status'):
+                return obj.connection_status.ultima_conexion
+                
             from .models import ConnectionStatus
             conn_status = ConnectionStatus.objects.filter(proveedor=obj).first()
             if conn_status:
@@ -822,6 +837,11 @@ class MecanicoDomicilioSerializer(serializers.ModelSerializer):
         Obtiene el estado actual desde ConnectionStatus
         """
         try:
+        try:
+            # **OPTIMIZACIÓN**: Intentar usar relación inversa pre-cargada
+            if hasattr(obj, 'connection_status'):
+                return obj.connection_status.status
+                
             from .models import ConnectionStatus
             conn_status = ConnectionStatus.objects.filter(proveedor=obj).first()
             if conn_status:

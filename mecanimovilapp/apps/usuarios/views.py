@@ -2016,9 +2016,12 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
             marcas_atendidas=marca_vehiculo,
             verificado=True,
             activo=True
-        ).select_related('usuario').prefetch_related(
+        ).select_related('usuario', 'direccion_fisica').prefetch_related(
             'especialidades',
-            'marcas_atendidas'
+            'marcas_atendidas',
+            'service_areas',      # Zonas de servicio (comunas)
+            'connection_status',  # Estado de conexión
+            'resenas'             # Reseñas para calcular rating real si es necesario
         )
         
         logger.info(f"🔍 Mecánicos con marca {marca_vehiculo.nombre}: {queryset.count()}")
@@ -3797,50 +3800,53 @@ class MechanicServiceAreaViewSet(viewsets.ModelViewSet):
             print(f"🏙️ Comunas finales a procesar: {user_communes}")
             print(f"🔍 DEBUG: user_communes después de procesar comunas extraídas: {user_communes}")
 
-            # **NUEVA LÓGICA**: Intentar geocodificación con mejor manejo de errores
-            try:
-                geocoding_url = "https://nominatim.openstreetmap.org/reverse"
-                params = {
-                    'lat': lat,
-                    'lon': lng,
-                    'format': 'json',
-                    'addressdetails': 1,
-                    'accept-language': 'es'
-                }
-                
-                response = requests.get(geocoding_url, params=params, timeout=5)
-                if response.status_code == 200:
-                    data = response.json()
-                    address_components = data.get('address', {})
+            # **OPTIMIZACIÓN**: Solo geocodificar si NO se proporcionaron comunas desde el frontend
+            if not user_communes:
+                try:
+                    print(f"🌍 Iniciando geocodificación fallback para lat: {lat}, lng: {lng}")
+                    # Usar timeout muy corto para no bloquear workers
+                    geocoding_url = "https://nominatim.openstreetmap.org/reverse"
+                    params = {
+                        'lat': lat,
+                        'lon': lng,
+                        'format': 'json',
+                        'addressdetails': 1,
+                        'accept-language': 'es'
+                    }
                     
-                    print(f"🗺️ Respuesta de geocodificación: {data.get('display_name', 'N/A')}")
-                    
-                    # **MEJORADA**: Buscar comuna en diferentes campos con prioridad
-                    commune_priority = [
-                        'municipality', 'city_district', 'suburb', 
-                        'neighbourhood', 'city', 'town', 'village'
-                    ]
-                    
-                    for field in commune_priority:
-                        if field in address_components and address_components[field]:
-                            potential_commune = address_components[field].strip().title()
-                            print(f"🔍 Campo '{field}' encontrado: {potential_commune}")
+                    response = requests.get(geocoding_url, params=params, timeout=2)
+                    if response.status_code == 200:
+                        data = response.json()
+                        address_components = data.get('address', {})
+                        
+                        print(f"🗺️ Respuesta de geocodificación: {data.get('display_name', 'N/A')}")
+                        
+                        # **MEJORADA**: Buscar comuna en diferentes campos con prioridad
+                        commune_priority = [
+                            'municipality', 'city_district', 'suburb', 
+                            'neighbourhood', 'city', 'town', 'village'
+                        ]
+                        
+                        for field in commune_priority:
+                            if field in address_components and address_components[field]:
+                                potential_commune = address_components[field].strip().title()
+                                print(f"🔍 Campo '{field}' encontrado: {potential_commune}")
+                                
+                                # **NUEVO**: Verificar si esta comuna tiene mecánicos con cobertura
+                                mechanic_ids_with_coverage = MechanicServiceArea.objects.filter(
+                                    is_active=True,
+                                    commune_names__icontains=potential_commune
+                                ).values_list('mechanic_id', flat=True)
+                                
+                                if mechanic_ids_with_coverage and potential_commune not in user_communes:
+                                    user_communes.append(potential_commune)
+                                    print(f"🎯 Comuna válida detectada: {potential_commune} (con {len(mechanic_ids_with_coverage)} mecánicos)")
+                        
+                        if not user_communes:
+                            print("⚠️ No se encontró comuna válida en la geocodificación")
                             
-                            # **NUEVO**: Verificar si esta comuna tiene mecánicos con cobertura
-                            mechanic_ids_with_coverage = MechanicServiceArea.objects.filter(
-                                is_active=True,
-                                commune_names__icontains=potential_commune
-                            ).values_list('mechanic_id', flat=True)
-                            
-                            if mechanic_ids_with_coverage and potential_commune not in user_communes:
-                                user_communes.append(potential_commune)
-                                print(f"🎯 Comuna válida detectada: {potential_commune} (con {len(mechanic_ids_with_coverage)} mecánicos)")
-                    
-                    if not user_communes:
-                        print("⚠️ No se encontró comuna válida en la geocodificación")
-                            
-            except Exception as geocoding_error:
-                print(f"⚠️ Error en geocodificación: {geocoding_error}")
+                except Exception as geocoding_error:
+                    print(f"⚠️ Error en geocodificación: {geocoding_error}")
             
             # **MEJORADO**: Fallback más inteligente con comunas comunes
             if not user_communes:

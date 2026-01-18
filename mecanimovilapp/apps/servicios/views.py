@@ -169,26 +169,24 @@ class ServicioViewSet(viewsets.ModelViewSet):
             from mecanimovilapp.apps.usuarios.models import Taller, MecanicoDomicilio
             from django.db.models import Q
             
-            proveedores_marca_ids = list(
-                Taller.objects.filter(
-                    marcas_atendidas=marca,
-                    verificado=True,
-                    activo=True
-                ).values_list('id', flat=True)
-            ) + list(
-                MecanicoDomicilio.objects.filter(
-                    marcas_atendidas=marca,
-                    verificado=True,
-                    activo=True
-                ).values_list('id', flat=True)
-            )
+            talleres_ids = Taller.objects.filter(
+                marcas_atendidas=marca,
+                verificado=True,
+                activo=True
+            ).values('id')
+
+            mecanicos_ids = MecanicoDomicilio.objects.filter(
+                marcas_atendidas=marca,
+                verificado=True,
+                activo=True
+            ).values('id')
             
             servicios_con_ofertas_genericas = Servicio.objects.filter(
                 Q(ofertas__marca_vehiculo_seleccionada__isnull=True) &
                 Q(ofertas__disponible=True) &
                 (
-                    Q(ofertas__taller_id__in=proveedores_marca_ids) |
-                    Q(ofertas__mecanico_id__in=proveedores_marca_ids)
+                    Q(ofertas__taller_id__in=talleres_ids) |
+                    Q(ofertas__mecanico_id__in=mecanicos_ids)
                 )
             ).distinct()
             
@@ -480,26 +478,24 @@ def servicios_por_vehiculo(request):
     from mecanimovilapp.apps.usuarios.models import Taller, MecanicoDomicilio
     from django.db.models import Q
     
-    proveedores_marca_ids = list(
-        Taller.objects.filter(
-            marcas_atendidas=marca,
-            verificado=True,
-            activo=True
-        ).values_list('id', flat=True)
-    ) + list(
-        MecanicoDomicilio.objects.filter(
-            marcas_atendidas=marca,
-            verificado=True,
-            activo=True
-        ).values_list('id', flat=True)
-    )
+    talleres_ids = Taller.objects.filter(
+        marcas_atendidas=marca,
+        verificado=True,
+        activo=True
+    ).values('id')
+
+    mecanicos_ids = MecanicoDomicilio.objects.filter(
+        marcas_atendidas=marca,
+        verificado=True,
+        activo=True
+    ).values('id')
     
     servicios_con_ofertas_genericas = Servicio.objects.filter(
         Q(ofertas__marca_vehiculo_seleccionada__isnull=True) &
         Q(ofertas__disponible=True) &
         (
-            Q(ofertas__taller_id__in=proveedores_marca_ids) |
-            Q(ofertas__mecanico_id__in=proveedores_marca_ids)
+            Q(ofertas__taller_id__in=talleres_ids) |
+            Q(ofertas__mecanico_id__in=mecanicos_ids)
         )
     ).distinct()
     
