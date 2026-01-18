@@ -221,6 +221,10 @@ def enviar_notificacion_cambio_estado(solicitud_id, user_id, estado_anterior, es
                 'titulo': '✅ Oferta Aceptada',
                 'mensaje': 'Tu solicitud ha sido adjudicada. Procede con el pago para confirmar el servicio.'
             },
+            'pendiente_pago': {
+                'titulo': '💳 Pago Pendiente',
+                'mensaje': 'Tienes un pago pendiente para tu solicitud. Completa el proceso para agendar.'
+            },
             'pagada': {
                 'titulo': '💳 Pago Confirmado',
                 'mensaje': 'Tu pago ha sido confirmado. El proveedor será notificado para iniciar el servicio.'
