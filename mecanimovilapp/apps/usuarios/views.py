@@ -2016,7 +2016,7 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
             marcas_atendidas=marca_vehiculo,
             verificado=True,
             activo=True
-        ).select_related('usuario', 'direccion_fisica').prefetch_related(
+        ).select_related('usuario').prefetch_related(
             'especialidades',
             'marcas_atendidas',
             'service_areas',      # Zonas de servicio (comunas)
