@@ -129,7 +129,6 @@ if DATABASE_URL:
     # Agregar opciones adicionales para mejorar estabilidad
     db_config['OPTIONS'] = {
         'connect_timeout': 10,  # Timeout de conexión inicial
-        'options': '-c statement_timeout=30000',  # 30s max por query (previene queries largas)
         'keepalives': 1,  # Habilitar keepalives TCP
         'keepalives_idle': 30,  # Enviar keepalive después de 30s de inactividad
         'keepalives_interval': 10,  # Intervalo entre keepalives
