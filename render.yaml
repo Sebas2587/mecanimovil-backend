@@ -9,7 +9,7 @@ databases:
   # - pro-4gb, pro-8gb, pro-16gb, etc. (planes profesionales)
   # - accelerated-16gb, accelerated-32gb, etc. (planes acelerados)
   - name: mecanimovil-db
-    plan: free  # Cambiar a 'basic-1gb' o 'pro-4gb' para producción
+    plan: basic-256mb  # Plan actual: Basic-256mb (no se puede hacer downgrade a Free)
     databaseName: mecanimovil
     user: mecanimovil
     postgresMajorVersion: "15"
