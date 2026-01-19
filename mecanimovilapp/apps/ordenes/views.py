@@ -3077,6 +3077,8 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
         """
         Selecciona una oferta y crea una SolicitudServicio tradicional
         """
+        # Asegurar logger definido localmente para evitar errores de scope
+        logger = logging.getLogger(__name__)
         try:
             solicitud = self.get_object()
             logger.info(f"Seleccionando oferta - Solicitud: {solicitud.id}, Usuario: {request.user.id}")
