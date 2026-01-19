@@ -865,12 +865,20 @@ class SolicitudServicioPublica(models.Model):
                 
                 if self.cliente and self.cliente.usuario:
                     # Enviar notificación de cambio de estado
-                    enviar_notificacion_cambio_estado.delay(
-                        str(self.id),
-                        self.cliente.usuario.id,
-                        estado_anterior,
-                        self.estado
-                    )
+                    # Wrapped en try-except para evitar crashes si Redis está saturado
+                    try:
+                        enviar_notificacion_cambio_estado.delay(
+                            str(self.id),
+                            self.cliente.usuario.id,
+                            estado_anterior,
+                            self.estado
+                        )
+                    except Exception as celery_error:
+                        # Log del error pero no interrumpir el flujo
+                        logger.error(
+                            f"❌ Error enviando notificación via Celery (Redis saturado?): {celery_error}",
+                            exc_info=False  # No imprimir stacktrace completo para reducir logs
+                        )
                     
                     # Si cambió a 'adjudicada', programar recordatorio de pago
                     if estado_anterior != 'adjudicada' and self.estado == 'adjudicada':
@@ -896,15 +904,20 @@ class SolicitudServicioPublica(models.Model):
                                     f"Recibirás un recordatorio 6 horas antes."
                                 )
                                 
-                                enviar_push_notificacion_pago_pendiente.apply_async(
-                                    args=[str(self.id), self.cliente.usuario.id, mensaje, '💳 Recordatorio de Pago'],
-                                    eta=hora_recordatorio
-                                )
-                                
-                                logger.info(f"📅 Recordatorio de pago programado para solicitud {self.id} a las {hora_recordatorio}")
+                                try:
+                                    enviar_push_notificacion_pago_pendiente.apply_async(
+                                        args=[str(self.id), self.cliente.usuario.id, mensaje, '💳 Recordatorio de Pago'],
+                                        eta=hora_recordatorio
+                                    )
+                                    logger.info(f"📅 Recordatorio de pago programado para solicitud {self.id} a las {hora_recordatorio}")
+                                except Exception as celery_error:
+                                    logger.error(
+                                        f"❌ Error programando recordatorio de pago (Redis saturado?): {celery_error}",
+                                        exc_info=False
+                                    )
             except Exception as e:
                 # No fallar el save si hay error en las notificaciones
-                logger.error(f"❌ Error enviando notificaciones push: {e}", exc_info=True)
+                logger.error(f"❌ Error en sistema de notificaciones: {e}", exc_info=False)
     
     @property
     def tiempo_restante(self):

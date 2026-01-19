@@ -256,6 +256,19 @@ class ConnectionConsumer(AsyncWebsocketConsumer):
             'timestamp': timezone.now().isoformat()
         }))
     
+    async def servicio_iniciado(self, event):
+        """
+        Notifica al cliente que el proveedor ha iniciado el servicio
+        """
+        await self.send(text_data=json.dumps({
+            'type': 'servicio_iniciado',
+            'solicitud_id': event['solicitud_id'],
+            'oferta_id': event['oferta_id'],
+            'proveedor_nombre': event.get('proveedor_nombre'),
+            'mensaje': event.get('mensaje', 'El proveedor ha iniciado el servicio'),
+            'timestamp': timezone.now().isoformat()
+        }))
+    
     async def programar_verificacion_heartbeat(self):
         """
         Programa la verificación de heartbeat para detectar desconexiones
@@ -812,6 +825,19 @@ class MechanicStatusConsumer(AsyncWebsocketConsumer):
             'enviado_por': event['enviado_por'],
             'mensaje': event['mensaje'],
             'es_proveedor': event['es_proveedor'],
+            'timestamp': timezone.now().isoformat()
+        }))
+    
+    async def servicio_iniciado(self, event):
+        """
+        Notifica al cliente que el proveedor ha iniciado el servicio
+        """
+        await self.send(text_data=json.dumps({
+            'type': 'servicio_iniciado',
+            'solicitud_id': event['solicitud_id'],
+            'oferta_id': event['oferta_id'],
+            'proveedor_nombre': event.get('proveedor_nombre'),
+            'mensaje': event.get('mensaje', 'El proveedor ha iniciado el servicio'),
             'timestamp': timezone.now().isoformat()
         }))
     
