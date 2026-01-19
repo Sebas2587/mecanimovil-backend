@@ -8,8 +8,11 @@ from mecanimovilapp.apps.vehiculos.models import Vehiculo
 from django.utils import timezone
 from decimal import Decimal
 from django.contrib.gis.db import models as gis_models
-from datetime import timedelta
+from datetime import timedelta, datetime, time
+import logging
 import uuid
+
+logger = logging.getLogger(__name__)
 
 
 class SolicitudServicio(models.Model):
@@ -874,8 +877,16 @@ class SolicitudServicioPublica(models.Model):
                         from mecanimovilapp.apps.ordenes.tasks import enviar_push_notificacion_pago_pendiente
                         
                         if self.fecha_preferida:
+                            # Combinar fecha y hora para crear un datetime consciente de zona horaria
+                            request_time = datetime.combine(
+                                self.fecha_preferida, 
+                                self.hora_preferida or time(9, 0)
+                            )
+                            if timezone.is_naive(request_time):
+                                request_time = timezone.make_aware(request_time)
+                            
                             # Programar recordatorio 6 horas antes de la fecha límite
-                            hora_recordatorio = self.fecha_preferida - timedelta(hours=6)
+                            hora_recordatorio = request_time - timedelta(hours=6)
                             
                             # Solo programar si la hora del recordatorio aún no pasó
                             if hora_recordatorio > timezone.now():
