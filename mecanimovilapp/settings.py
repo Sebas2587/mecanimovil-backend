@@ -451,8 +451,18 @@ CELERY_WORKER_POOL = 'prefork'
 # Task compression: comprimir mensajes grandes
 CELERY_TASK_COMPRESSION = 'gzip'
 
-# Broker connection pool limit: limitar conexiones a Redis
-CELERY_BROKER_POOL_LIMIT = 10
+# Broker connection pool limit: SIN límite para evitar saturación
+# None = usa connection pooling de Redis sin límite artificial
+CELERY_BROKER_POOL_LIMIT = None  # Era 10, ahora sin límite
+
+# Connection retry settings: reintentar conexiones fallidas
+CELERY_BROKER_CONNECTION_RETRY = True
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+CELERY_BROKER_CONNECTION_MAX_RETRIES = 10
+
+# Result backend optimizations
+CELERY_RESULT_BACKEND_MAX_RETRIES = 10
+CELERY_RESULT_EXPIRES = 300  # Expirar resultados después de 5 minutos (libera memoria)
 
 # Task ignore result: no guardar resultados si no se necesitan (ahorra memoria)
 # Se puede configurar por tarea, aquí es el default

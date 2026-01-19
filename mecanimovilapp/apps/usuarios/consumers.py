@@ -49,6 +49,9 @@ class ConnectionConsumer(AsyncWebsocketConsumer):
         # Aceptar la conexión
         await self.accept()
         
+        # Inicializar contador de heartbeats para optimización de DB writes
+        self.heartbeat_counter = 0
+        
         logger.info(f"🔗 WebSocket conectado: {proveedor_info['nombre']}")
         
         # Notificar a todos los clientes sobre el cambio de estado
@@ -272,35 +275,44 @@ class ConnectionConsumer(AsyncWebsocketConsumer):
     async def programar_verificacion_heartbeat(self):
         """
         Programa la verificación de heartbeat para detectar desconexiones
+        Optimizado para reducir writes a BD: verifica cada 60s, guarda cada 3min
         """
-        # Verificar cada 30 segundos si el proveedor sigue activo
-        await asyncio.sleep(30)
+        # Verificar cada 60 segundos (antes era 30s)
+        await asyncio.sleep(60)
         
         if hasattr(self, 'proveedor') and self.proveedor:
-            # Verificar si el último heartbeat fue hace más de 60 segundos
-            connection_status = await self.verificar_ultimo_heartbeat()
+            # Incrementar contador de heartbeats
+            self.heartbeat_counter += 1
             
-            if connection_status and not connection_status.esta_conectado:
-                # Obtener información del proveedor de forma async-safe
-                proveedor_info = await self.get_proveedor_info()
-                if proveedor_info and proveedor_info['id']:
-                    logger.info(f"🔌 Proveedor {proveedor_info['nombre']} marcado como desconectado por timeout")
-                    
-                    # Notificar a clientes
-                    await self.channel_layer.group_send(
-                        "clientes",
-                        {
-                            'type': 'connection_status_update',
-                            'proveedor_id': proveedor_info['id'],
-                            'usuario_id': proveedor_info.get('usuario_id'),  # ID del Usuario para comparar con otra_persona.id
-                            'tipo_proveedor': self.tipo_proveedor,
-                            'esta_conectado': False,
-                            'nombre_proveedor': proveedor_info['nombre'],
-                            'timestamp': timezone.now().isoformat()
-                        }
-                    )
+            # Solo guardar a BD cada 3 ciclos (cada 3 minutos)
+            # Esto reduce DB writes de ~120/hora a ~20/hora por conexión
+            should_save_to_db = (self.heartbeat_counter % 3 == 0)
             
-            # Continuar verificando cada 30 segundos
+            if should_save_to_db:
+                # Verificar si el último heartbeat fue hace más de 120 segundos (2 ciclos)
+                connection_status = await self.verificar_ultimo_heartbeat()
+                
+                if connection_status and not connection_status.esta_conectado:
+                    # Obtener información del proveedor de forma async-safe
+                    proveedor_info = await self.get_proveedor_info()
+                    if proveedor_info and proveedor_info['id']:
+                        logger.info(f"🔌 Proveedor {proveedor_info['nombre']} marcado como desconectado por timeout")
+                        
+                        # Notificar a clientes
+                        await self.channel_layer.group_send(
+                            "clientes",
+                            {
+                                'type': 'connection_status_update',
+                                'proveedor_id': proveedor_info['id'],
+                                'usuario_id': proveedor_info.get('usuario_id'),  # ID del Usuario para comparar con otra_persona.id
+                                'tipo_proveedor': self.tipo_proveedor,
+                                'esta_conectado': False,
+                                'nombre_proveedor': proveedor_info['nombre'],
+                                'timestamp': timezone.now().isoformat()
+                            }
+                        )
+            
+            # Continuar verificando cada 60 segundos
             await self.programar_verificacion_heartbeat()
     
     @database_sync_to_async
