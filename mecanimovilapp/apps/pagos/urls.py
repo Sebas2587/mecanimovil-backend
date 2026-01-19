@@ -12,6 +12,7 @@ from .views import (
     crear_preferencia_pago_proveedor,
     confirmar_pago_oferta,
     obtener_estado_pago_oferta,
+    verificar_pago_mercadopago,
 )
 
 router = DefaultRouter()
@@ -28,4 +29,5 @@ urlpatterns = [
     path('pago-proveedor/', crear_preferencia_pago_proveedor, name='pago-proveedor'),
     path('confirmar-pago-oferta/', confirmar_pago_oferta, name='confirmar-pago-oferta'),
     path('estado-pago-oferta/<uuid:oferta_id>/', obtener_estado_pago_oferta, name='estado-pago-oferta'),
+    path('verificar-pago-mercadopago/', verificar_pago_mercadopago, name='verificar-pago-mercadopago'),
 ]

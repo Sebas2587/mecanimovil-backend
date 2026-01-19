@@ -2367,3 +2367,237 @@ def obtener_estado_pago_oferta(request, oferta_id):
             {'error': f'Error al obtener estado de pago: {str(e)}'},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def verificar_pago_mercadopago(request):
+    """
+    Verificar directamente con Mercado Pago si un pago fue completado.
+    
+    Este endpoint busca pagos en Mercado Pago usando el external_reference
+    y confirma el pago si encuentra uno aprobado.
+    
+    Body esperado:
+    {
+        "oferta_id": "uuid-de-la-oferta",
+        "tipo_pago": "repuestos" | "servicio" | "total",
+        "preference_id": "preference-id-opcional"
+    }
+    
+    Returns:
+    {
+        "success": true,
+        "payment_found": true,
+        "payment_approved": true,
+        "payment_id": "payment-id",
+        "oferta_estado": "pagada",
+        "message": "Pago verificado y confirmado"
+    }
+    """
+    from mecanimovilapp.apps.ordenes.models import OfertaProveedor
+    import mercadopago
+    
+    oferta_id = request.data.get('oferta_id')
+    tipo_pago = request.data.get('tipo_pago', 'total')
+    preference_id = request.data.get('preference_id')
+    
+    if not oferta_id:
+        return Response(
+            {'error': 'Se requiere oferta_id'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    try:
+        # Obtener la oferta
+        oferta = OfertaProveedor.objects.select_related(
+            'solicitud', 'proveedor'
+        ).get(id=oferta_id)
+        
+        # Verificar que el usuario sea el cliente de la solicitud
+        if oferta.solicitud.cliente.usuario != request.user:
+            return Response(
+                {'error': 'No tienes permiso para verificar el pago de esta oferta'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Obtener la cuenta de Mercado Pago del proveedor
+        cuenta_proveedor = CuentaMercadoPagoProveedor.objects.filter(
+            usuario=oferta.proveedor,
+            estado='conectada'
+        ).first()
+        
+        if not cuenta_proveedor or not cuenta_proveedor.access_token:
+            return Response(
+                {'error': 'El proveedor no tiene configurado Mercado Pago'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Crear SDK de Mercado Pago con el token del proveedor
+        sdk = mercadopago.SDK(cuenta_proveedor.access_token)
+        
+        # Construir el external_reference esperado
+        external_reference = f"oferta_{oferta_id}_{tipo_pago}"
+        
+        logger.info(f"🔍 Verificando pago  directo en Mercado Pago")
+        logger.info(f"   - Oferta: {oferta_id}")
+        logger.info(f"   - External reference: {external_reference}")
+        logger.info(f"   - Preference ID: {preference_id}")
+        
+        # Buscar pagos relacionados a esta preferencia o external_reference
+        # Mercado Pago permite buscar pagos por external_reference
+        search_filters = {
+            "external_reference": external_reference,
+            "limit": 10,
+            "offset": 0
+        }
+        
+        try:
+            # Buscar pagos con el external_reference
+            search_response = sdk.payment().search(filters=search_filters)
+            
+            logger.info(f"📥 Respuesta de búsqueda de pagos: status={search_response.get('status')}")
+            
+            if search_response.get('status') in [200, 201]:
+                search_data = search_response.get('response', {})
+                results = search_data.get('results', [])
+                
+                logger.info(f"   - Pagos encontrados: {len(results)}")
+                
+                if results:
+                    # Tomar el pago más reciente
+                    payment_data = results[0]
+                    payment_id = payment_data.get('id')
+                    payment_status = payment_data.get('status')
+                    
+                    logger.info(f"   - Payment ID: {payment_id}")
+                    logger.info(f"   - Payment Status: {payment_status}")
+                    logger.info(f"   - Payment Data: {json.dumps(payment_data, indent=2)}")
+                    
+                    # Si el pago está aprobado, confirmarlo en nuestro sistema
+                    if payment_status == 'approved':
+                        logger.info(f"✅ Pago encontrado y aprobado en Mercado Pago: {payment_id}")
+                        
+                        # Actualizar estados según el tipo de pago (misma lógica que confirmar_pago_oferta)
+                        solicitud = oferta.solicitud
+                        
+                        # Actualizar fecha_respuesta_cliente
+                        oferta.fecha_respuesta_cliente = timezone.now()
+                        
+                        if tipo_pago == 'repuestos':
+                            oferta.estado_pago_repuestos = 'pagado'
+                            oferta.metodo_pago_cliente = 'repuestos_adelantado'
+                            oferta.estado = 'pagada_parcialmente'
+                            
+                            if solicitud.estado not in ['en_ejecucion', 'completada']:
+                                solicitud.estado = 'pagada_parcialmente'
+                            
+                            message = 'Pago de repuestos verificado y confirmado'
+                            
+                        elif tipo_pago == 'servicio':
+                            oferta.estado_pago_servicio = 'pagado'
+                            oferta.estado = 'pagada'
+                            
+                            message = 'Pago del servicio verificado y confirmado'
+                            
+                        else:  # total
+                            oferta.estado_pago_repuestos = 'pagado' if oferta.costo_repuestos and float(oferta.costo_repuestos) > 0 else 'no_aplica'
+                            oferta.estado_pago_servicio = 'pagado'
+                            oferta.metodo_pago_cliente = 'todo_adelantado'
+                            oferta.estado = 'pagada'
+                            solicitud.estado = 'pagada'
+                            
+                            message = 'Pago completo verificado y confirmado'
+                        
+                        # Guardar cambios
+                        oferta.save()
+                        solicitud.save()
+                        
+                        logger.info(f"✅ Pago confirmado exitosamente desde verificación directa")
+                        logger.info(f"   - Estado oferta: {oferta.estado}")
+                        logger.info(f"   - Estado solicitud: {solicitud.estado}")
+                        logger.info(f"   - Estado pago repuestos: {oferta.estado_pago_repuestos}")
+                        logger.info(f"   - Estado pago servicio: {oferta.estado_pago_servicio}")
+                        
+                        # Crear o actualizar el registro de Pago
+                        pago, created = Pago.objects.get_or_create(
+                            payment_id_mp=str(payment_id),
+                            defaults={
+                                'usuario': request.user,
+                                'carrito': None,
+                                'transaction_amount': payment_data.get('transaction_amount', 0),
+                                'currency_id': payment_data.get('currency_id', 'CLP'),
+                                'description': payment_data.get('description', ''),
+                                'status': payment_status,
+                                'status_detail': payment_data.get('status_detail', ''),
+                                'payment_method_id': payment_data.get('payment_method_id'),
+                                'payment_type_id': payment_data.get('payment_type_id'),
+                                'payer_email': payment_data.get('payer', {}).get('email', ''),
+                                'external_reference': external_reference,
+                                'date_created_mp': payment_data.get('date_created'),
+                                'date_approved_mp': payment_data.get('date_approved'),
+                            }
+                        )
+                        
+                        if not created:
+                            logger.info(f"   - Pago  ya existía en BD: {pago.id}")
+                        
+                        return Response({
+                            'success': True,
+                            'payment_found': True,
+                            'payment_approved': True,
+                            'payment_id': str(payment_id),
+                            'oferta_id': str(oferta.id),
+                            'oferta_estado': oferta.estado,
+                            'solicitud_estado': solicitud.estado,
+                            'estado_pago_repuestos': oferta.estado_pago_repuestos,
+                            'estado_pago_servicio': oferta.estado_pago_servicio,
+                            'payment_status': payment_status,
+                            'message': message
+                        })
+                    else:
+                        # Pago encontrado pero no está aprobado
+                        logger.info(f"⏳ Pago encontrado pero no aprobado: {payment_status}")
+                        return Response({
+                            'success': False,
+                            'payment_found': True,
+                            'payment_approved': False,
+                            'payment_id': str(payment_id),
+                            'payment_status': payment_status,
+                            'message': f'Pago encontrado pero está en estado: {payment_status}'
+                        })
+                else:
+                    # No se encontraron pagos
+                    logger.info(f"⚠️ No se encontraron pagos para el external_reference: {external_reference}")
+                    return Response({
+                        'success': False,
+                        'payment_found': False,
+                        'payment_approved': False,
+                        'message': 'No se encontró ningún pago en Mercado Pago para esta oferta'
+                    })
+            else:
+                logger.error(f"❌ Error en búsqueda de pagos: {search_response}")
+                return Response({
+                    'success': False,
+                    'error': 'Error al buscar pagos en Mercado Pago',
+                    'mp_response': search_response
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                
+        except Exception as search_error:
+            logger.error(f"❌ Error en búsqueda de pagos: {search_error}", exc_info=True)
+            return Response({
+                'success': False,
+                'error': f'Error al buscar pagos: {str(search_error)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            
+    except OfertaProveedor.DoesNotExist:
+        return Response(
+            {'error': 'Oferta no encontrada'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+    except Exception as e:
+        logger.error(f"❌ Error verificando pago: {e}", exc_info=True)
+        return Response(
+            {'error': f'Error al verificar el pago: {str(e)}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
