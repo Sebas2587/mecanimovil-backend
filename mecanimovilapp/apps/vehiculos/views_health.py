@@ -140,21 +140,20 @@ class VehicleHealthViewSet(viewsets.ReadOnlyModelViewSet):
                 
                 # Si ningún cálculo funcionó, devolver respuesta con datos por defecto
                 if not estado:
-                
-                # Devolver respuesta inmediata con datos por defecto
-                return Response({
-                    'salud_general_porcentaje': 100,
-                    'componentes_optimos': 0,
-                    'componentes_atencion': 0,
-                    'componentes_urgentes': 0,
-                    'componentes_criticos': 0,
-                    'tiene_alertas_activas': False,
-                    'costo_estimado_mantenimiento': 0,
-                    'componentes': [],
-                    'alertas': [],
-                    'calculando': True,  # Flag para frontend
-                    'mensaje': 'Calculando estado de salud...'
-                }, status=status.HTTP_202_ACCEPTED)
+                    # Devolver respuesta inmediata con datos por defecto
+                    return Response({
+                        'salud_general_porcentaje': 100,
+                        'componentes_optimos': 0,
+                        'componentes_atencion': 0,
+                        'componentes_urgentes': 0,
+                        'componentes_criticos': 0,
+                        'tiene_alertas_activas': False,
+                        'costo_estimado_mantenimiento': 0,
+                        'componentes': [],
+                        'alertas': [],
+                        'calculando': True,  # Flag para frontend
+                        'mensaje': 'Calculando estado de salud...'
+                    }, status=status.HTTP_202_ACCEPTED)
             
             # PASO 4: Cargar componentes y alertas con prefetch (solo 2 queries más)
             componentes = ComponenteSaludVehiculo.objects.filter(
