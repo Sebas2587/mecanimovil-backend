@@ -114,18 +114,32 @@ class VehicleHealthViewSet(viewsets.ReadOnlyModelViewSet):
             # PASO 3: Si no existe estado, crear uno básico y calcular en background
             if not estado:
                 # Intentar iniciar cálculo asíncrono (NO bloquea)
+                calculo_exitoso = False
                 try:
                     if CELERY_AVAILABLE and calcular_salud_vehiculo_async:
                         calcular_salud_vehiculo_async.delay(vehicle_id, force_recalculate=True)
-                    else:
-                        # Si Celery no está disponible, calcular sincrónicamente
-                        from .tasks import calcular_estado_salud_interno
-                        try:
-                            calcular_estado_salud_interno(vehicle_id)
-                        except Exception as e:
-                            logger.warning(f"Error calculando salud sincrónicamente: {str(e)}")
+                        calculo_exitoso = True
+                        logger.info(f"Cálculo asíncrono iniciado para vehículo {vehicle_id}")
                 except Exception as e:
                     logger.warning(f"No se pudo iniciar cálculo asíncrono: {str(e)}")
+                
+                # Si el cálculo asíncrono falló, intentar sincrónicamente
+                if not calculo_exitoso:
+                    try:
+                        from .tasks import calcular_estado_salud_interno
+                        logger.info(f"Intentando cálculo síncrono para vehículo {vehicle_id}")
+                        estado = calcular_estado_salud_interno(vehicle_id)
+                        if estado:
+                            # Si se calculó exitosamente, devolver los datos
+                            logger.info(f"Cálculo síncrono exitoso para vehículo {vehicle_id}")
+                            # Continuar al PASO 4 para devolver datos completos
+                        else:
+                            logger.warning(f"Cálculo síncrono retornó None para vehículo {vehicle_id}")
+                    except Exception as e:
+                        logger.error(f"Error calculando salud sincrónicamente: {str(e)}", exc_info=True)
+                
+                # Si ningún cálculo funcionó, devolver respuesta con datos por defecto
+                if not estado:
                 
                 # Devolver respuesta inmediata con datos por defecto
                 return Response({
