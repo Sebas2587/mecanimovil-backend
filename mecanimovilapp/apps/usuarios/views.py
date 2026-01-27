@@ -34,6 +34,9 @@ import uuid
 from django.core.mail import send_mail
 from django.contrib.auth.hashers import make_password
 from exponent_server_sdk import PushClient
+from django.utils.decorators import method_decorator
+from django.views.decorators.cache import cache_page
+from django.views.decorators.vary import vary_on_cookie
 
 # Configurar logger
 logger = logging.getLogger(__name__)
@@ -3570,6 +3573,13 @@ class ChileanCommuneViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = ChileanCommuneSerializer
     permission_classes = [permissions.AllowAny]  # Público para todos
     pagination_class = None  # Sin paginación para una respuesta completa
+    
+    @method_decorator(cache_page(60*60*24*7)) # Cache por 7 días
+    def list(self, request, *args, **kwargs):
+        """
+        Sobrescribimos list para cachear los resultados por 7 días
+        """
+        return super().list(request, *args, **kwargs)
     
     def get_queryset(self):
         """Filtrar comunas por región si se especifica"""

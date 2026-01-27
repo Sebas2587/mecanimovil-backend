@@ -441,7 +441,12 @@ class SolicitudServicioViewSet(viewsets.ModelViewSet):
         if fecha_hasta is not None:
             queryset = queryset.filter(fecha_servicio__lte=fecha_hasta)
         
-        return queryset.select_related('cliente', 'taller', 'mecanico', 'vehiculo')
+        return queryset.select_related(
+            'cliente', 'taller', 'mecanico', 'vehiculo',
+            'vehiculo__marca', 'vehiculo__modelo'
+        ).prefetch_related(
+            'lineas', 'lineas__oferta_servicio'
+        )
     
     @action(detail=False, methods=['get'])
     def activas(self, request):

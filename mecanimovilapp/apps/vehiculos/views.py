@@ -1,3 +1,5 @@
+from django.utils.decorators import method_decorator
+from django.views.decorators.cache import cache_page
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -26,7 +28,11 @@ class MarcaViewSet(viewsets.ReadOnlyModelViewSet):
     """
     queryset = Marca.objects.all()
     serializer_class = MarcaSerializer
-    permission_classes = [permissions.AllowAny()]
+    permission_classes = [permissions.AllowAny]
+
+    @method_decorator(cache_page(60*60*24)) # Cache por 24 horas
+    def list(self, request, *args, **kwargs):
+        return super().list(request, *args, **kwargs)
 
 
 class ModeloViewSet(viewsets.ReadOnlyModelViewSet):
@@ -37,11 +43,20 @@ class ModeloViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = ModeloSerializer
     permission_classes = [permissions.IsAuthenticated]
     
+    @method_decorator(cache_page(60*60*24)) # Cache por 24 horas
+    def list(self, request, *args, **kwargs):
+        """
+        Sobrescribimos list para cachear, pero debemos tener cuidado con el filtro por marca.
+        La cache varía por URL completa (incluyendo query params), así que funciona bien.
+        """
+        return super().list(request, *args, **kwargs)
+
     def get_queryset(self):
         """
         Filtra los modelos por marca si se proporciona el parámetro marca
         """
-        queryset = super().get_queryset()
+        # Optimizamos con select_related para traer la marca
+        queryset = Modelo.objects.select_related('marca').all()
         marca_id = self.request.query_params.get('marca', None)
         
         if marca_id is not None:
@@ -99,8 +114,8 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         Permitir acceso público al endpoint de marcas
         """
         if self.action == 'get_marcas':
-            return [permissions.AllowAny()]
-        return [permissions.IsAuthenticated()]
+            return [permissions.AllowAny]
+        return [permissions.IsAuthenticated]
     
     def get_queryset(self):
         """
@@ -110,7 +125,8 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         
         # Solo devolver vehículos del usuario actual
         if hasattr(user, 'cliente'):
-            return Vehiculo.objects.filter(cliente=user.cliente)
+            # Optimización N+1: Traer marca, modelo y cliente en la misma consulta
+            return Vehiculo.objects.filter(cliente=user.cliente).select_related('marca', 'modelo', 'cliente')
         
         # Si el usuario no es un cliente (admin/staff), devolver todos los vehículos
         if user.is_staff:

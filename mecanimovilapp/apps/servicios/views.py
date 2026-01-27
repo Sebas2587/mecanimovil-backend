@@ -15,6 +15,8 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.shortcuts import get_object_or_404
 from mecanimovilapp.apps.vehiculos.models import Marca, Vehiculo, Modelo
 from django.db import models
+from django.utils.decorators import method_decorator
+from django.views.decorators.cache import cache_page
 
 
 class CategoriaServicioViewSet(viewsets.ModelViewSet):
@@ -28,6 +30,7 @@ class CategoriaServicioViewSet(viewsets.ModelViewSet):
     search_fields = ['nombre', 'descripcion']
     pagination_class = None  # Deshabilitar paginación para categorías
     
+    @method_decorator(cache_page(60*60*24)) # Cache por 24 horas
     def list(self, request, *args, **kwargs):
         """
         Sobrescribir el método list para devolver todas las categorías sin filtros
@@ -37,6 +40,7 @@ class CategoriaServicioViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
     
     @action(detail=False, methods=['get'])
+    @method_decorator(cache_page(60*60*24))
     def principales(self, request):
         """
         Obtiene solo las categorías principales (sin categoría padre)
@@ -46,6 +50,7 @@ class CategoriaServicioViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
     
     @action(detail=True, methods=['get'])
+    @method_decorator(cache_page(60*60*24))
     def subcategorias(self, request, pk=None):
         """
         Obtiene las subcategorías de una categoría específica
@@ -56,6 +61,7 @@ class CategoriaServicioViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
     
     @action(detail=False, methods=['get'])
+    @method_decorator(cache_page(60*60*24))
     def arbol(self, request):
         """
         Devuelve todas las categorías organizadas jerárquicamente
