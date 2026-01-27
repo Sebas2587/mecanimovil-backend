@@ -278,7 +278,9 @@ class ConnectionConsumer(AsyncWebsocketConsumer):
         Optimizado para reducir writes a BD: verifica cada 60s, guarda cada 3min
         """
         # Verificar cada 60 segundos (antes era 30s)
-        await asyncio.sleep(60)
+        # OPTIMIZACIÓN: Deshabilitado temporalmente para reducir consumo
+        # await asyncio.sleep(60)
+        return # Salir inmediatamente para no programar nada
         
         if hasattr(self, 'proveedor') and self.proveedor:
             # Incrementar contador de heartbeats
