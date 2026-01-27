@@ -114,8 +114,8 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         Permitir acceso público al endpoint de marcas
         """
         if self.action == 'get_marcas':
-            return [permissions.AllowAny]
-        return [permissions.IsAuthenticated]
+            return [permissions.AllowAny()]
+        return [permissions.IsAuthenticated()]
     
     def get_queryset(self):
         """
