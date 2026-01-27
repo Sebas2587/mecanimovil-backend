@@ -392,6 +392,10 @@ class OfertaServicioViewSet(viewsets.ModelViewSet):
         if not mecanico_id:
             return Response({"error": "Se requiere el parámetro 'mecanico'"}, status=400)
         
+        # Validate that mecanico_id is an integer
+        if not str(mecanico_id).isdigit():
+            return Response([])
+
         ofertas = OfertaServicio.objects.filter(mecanico_id=mecanico_id, disponible=True)
         serializer = self.get_serializer(ofertas, many=True)
         return Response(serializer.data)

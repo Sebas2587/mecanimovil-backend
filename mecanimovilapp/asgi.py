@@ -24,6 +24,7 @@ from channels.security.websocket import AllowedHostsOriginValidator
 
 # Importar las rutas de WebSocket después de configurar Django
 from mecanimovilapp.apps.usuarios.routing import websocket_urlpatterns
+import mecanimovilapp.apps.chat.routing
 from mecanimovilapp.apps.usuarios.middleware import TokenAuthMiddleware
 
 # Aplicación ASGI con soporte para HTTP y WebSockets
@@ -34,7 +35,7 @@ application = ProtocolTypeRouter({
     "websocket": AllowedHostsOriginValidator(
         TokenAuthMiddleware(
             URLRouter(
-                websocket_urlpatterns
+                websocket_urlpatterns + mecanimovilapp.apps.chat.routing.websocket_urlpatterns
             )
         )
     ),

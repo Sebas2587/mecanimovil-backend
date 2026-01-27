@@ -39,8 +39,8 @@ class VehiculoSerializer(serializers.ModelSerializer):
     Serializador para el modelo Vehiculo
     """
     cliente_detail = ClienteSerializer(source='cliente', read_only=True)
-    marca_nombre = serializers.ReadOnlyField()
-    modelo_nombre = serializers.ReadOnlyField()
+    marca_nombre = serializers.CharField(source='marca.nombre', read_only=True)
+    modelo_nombre = serializers.CharField(source='modelo.nombre', read_only=True)
     
     # Mapeo de campos para compatibilidad con frontend
     año = serializers.ReadOnlyField(source='year')  # Mapear year -> año
@@ -55,12 +55,19 @@ class VehiculoSerializer(serializers.ModelSerializer):
     # Sobrescribir to_representation para devolver URL completa en lectura
     
     
+    year = serializers.ReadOnlyField() # Compatibility alias for read
+    patente = serializers.ReadOnlyField() # Return raw value
+    
     # Campo adicional para inicialización inteligente (checklist)
     componentes_al_dia = serializers.ListField(
         child=serializers.IntegerField(), 
         write_only=True, 
         required=False
     )
+    
+    health_score = serializers.SerializerMethodField()
+    active_requests_count = serializers.SerializerMethodField()
+    ofertas_activas_count = serializers.SerializerMethodField()
     
     class Meta:
         model = Vehiculo
@@ -70,10 +77,17 @@ class VehiculoSerializer(serializers.ModelSerializer):
             'cliente_detail', 'marca_nombre', 'modelo_nombre',
             'color', 'numero_motor', 'numero_chasis',
             'fecha_creacion', 'fecha_actualizacion',
-            'componentes_al_dia'
+            'componentes_al_dia',
+            # Appraisal Fields
+            'tasacion_fiscal', 'permiso_circulacion', 'year_tasacion_fiscal',
+            'precio_mercado_min', 'precio_mercado_max', 'precio_mercado_promedio',
+            'precio_retoma', 'fecha_ultima_tasacion', 'precio_sugerido_final',
+            'health_score',
+            'active_requests_count',
+            'ofertas_activas_count'
         )
         extra_kwargs = {
-            'cliente': {'write_only': True},
+            'cliente': {'write_only': True, 'required': False},
             'foto': {'required': False, 'allow_null': True}
         }
     
@@ -95,9 +109,7 @@ class VehiculoSerializer(serializers.ModelSerializer):
     
     def get_color(self, obj):
         """Retorna el color del vehículo si está disponible"""
-        # Por ahora retorna None ya que no existe en el modelo
-        # En el futuro se puede agregar el campo al modelo
-        return getattr(obj, 'color', None)
+        return getattr(obj, 'color', 'Desconocido')
     
     def get_numero_motor(self, obj):
         """Retorna el número de motor si está disponible"""
@@ -105,11 +117,48 @@ class VehiculoSerializer(serializers.ModelSerializer):
         # En el futuro se puede agregar el campo al modelo
         return getattr(obj, 'numero_motor', None)
     
+    def get_health_score(self, obj):
+        # Calcular promedio de salud de componentes (Lógica compartida)
+        from .models_health import ComponenteSaludVehiculo
+        from django.db.models import Avg
+        
+        avg_health = ComponenteSaludVehiculo.objects.filter(vehiculo=obj).aggregate(Avg('salud_porcentaje'))['salud_porcentaje__avg']
+        
+        if avg_health is not None:
+            return int(avg_health)
+        return 100 # Default para nuevos vehículos sin componentes reportados aún
+    
     def get_numero_chasis(self, obj):
         """Retorna el número de chasis si está disponible"""
         # Por ahora retorna None ya que no existe en el modelo
         # En el futuro se puede agregar el campo al modelo
         return getattr(obj, 'numero_chasis', None)
+
+    def get_active_requests_count(self, obj):
+        """Retorna el número de solicitudes activas para este vehículo"""
+        from mecanimovilapp.apps.ordenes.models import SolicitudServicio
+        return SolicitudServicio.objects.filter(
+            vehiculo=obj,
+            estado__in=['pendiente', 'aceptado', 'en_camino', 'en_progreso']
+        ).count()
+
+    def get_ofertas_activas_count(self, obj):
+        """Retorna el número de ofertas activas para solicitudes de este vehículo"""
+        from mecanimovilapp.apps.ordenes.models import SolicitudServicioPublica, OfertaProveedor
+        from django.db.models import Count
+        
+        # Contar ofertas activas en solicitudes públicas de este vehículo
+        # que están en estado 'abierta' (esperando ofertas o comparando)
+        # Contar ofertas activas (no rechazadas) en solicitudes públicas activas
+        count = OfertaProveedor.objects.filter(
+            solicitud__vehiculo=obj,
+            solicitud__estado__in=['abierta', 'comparando', 'adjudicada'],
+        ).exclude(
+            estado='rechazada'
+        ).count()
+        
+        return count
+
     
     def validate(self, data):
         """
@@ -201,6 +250,64 @@ class VehiculoSerializer(serializers.ModelSerializer):
                 # Calcular salud real
                 comp.calcular_salud()
                 
+            # 4. Obtener Tasación y Valoración (GetAPI)
+            try:
+                import requests
+                from django.utils import timezone
+                from mecanimovilapp.apps.marketplace.valuation_engine import calculate_suggested_price
+                
+                API_KEY = "28054a51-09f6-4687-a4a7-ecf3ead55ef4"
+                URL_APPRAISAL = f"https://chile.getapi.cl/v1/vehicles/appraisal/{vehiculo.patente}"
+                
+                logger.info(f"💰 Consultando tasación para {vehiculo.patente}")
+                
+                headers = {"x-api-key": API_KEY, "Content-Type": "application/json"}
+                response = requests.get(URL_APPRAISAL, headers=headers, timeout=10)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    # data = { success: true, data: { vehicleId: ..., informacionFiscal: {...}, precioUsado: {...}, ... } }
+                    
+                    if data.get("success") is not False:
+                        appraisal_data = data.get("data", {})
+                        
+                        info_fiscal = appraisal_data.get("informacionFiscal", {})
+                        precio_usado = appraisal_data.get("precioUsado", {})
+                        
+                        # Actualizar campos
+                        vehiculo.tasacion_fiscal = int(info_fiscal.get("tasacion", 0) or 0)
+                        vehiculo.permiso_circulacion = int(info_fiscal.get("permiso", 0) or 0)
+                        vehiculo.year_tasacion_fiscal = int(info_fiscal.get("ano_info_fiscal", 0) or 0)
+                        
+                        vehiculo.precio_mercado_min = int(precio_usado.get("banda_min", 0) or 0)
+                        vehiculo.precio_mercado_max = int(precio_usado.get("banda_max", 0) or 0)
+                        vehiculo.precio_mercado_promedio = int(precio_usado.get("precio", 0) or 0)
+                        
+                        vehiculo.precio_retoma = int(appraisal_data.get("precioRetoma", 0) or 0)
+                        vehiculo.fecha_ultima_tasacion = timezone.now()
+                        
+                        # CALCULAR PRECIO SUGERIDO (ALGORITMO MAESTRO)
+                        vehiculo.precio_sugerido_final = calculate_suggested_price(
+                            vehiculo,
+                            precio_mercado=vehiculo.precio_mercado_promedio,
+                            precio_fiscal=vehiculo.tasacion_fiscal
+                        )
+                        
+                        vehiculo.save(update_fields=[
+                            'tasacion_fiscal', 'permiso_circulacion', 'year_tasacion_fiscal',
+                            'precio_mercado_min', 'precio_mercado_max', 'precio_mercado_promedio',
+                            'precio_retoma', 'fecha_ultima_tasacion', 'precio_sugerido_final'
+                        ])
+                        
+                        logger.info(f"✅ Tasación guardada. Precio Sugerido: {vehiculo.precio_sugerido_final}")
+                    else:
+                        logger.warning(f"⚠️ Tasación no exitosa en API: {data.get('message')}")
+                else:
+                    logger.warning(f"⚠️ Error HTTP al consultar tasación: {response.status_code}")
+                    
+            except Exception as e:
+                logger.error(f"❌ Error obteniendo tasación: {e}")
+
         except Exception as e:
             logger.error(f"❌ Error en inicialización de salud: {str(e)}")
             # No fallamos la creación del vehículo si falla esto, pero logueamos el error
@@ -246,6 +353,22 @@ class VehiculoSerializer(serializers.ModelSerializer):
             else:
                 instance.foto = foto_file
         
+        # Recalcular valoración si cambia el precio de mercado
+        if 'precio_mercado_promedio' in validated_data:
+            from mecanimovilapp.apps.marketplace.valuation_engine import calculate_suggested_price
+            
+            # Si se actualiza el precio de mercado manual y no hay tasación fiscal,
+            # asumimos la misma base para evitar devaluación artificial
+            if instance.tasacion_fiscal == 0 or not instance.tasacion_fiscal:
+                instance.tasacion_fiscal = instance.precio_mercado_promedio
+                
+            instance.precio_sugerido_final = calculate_suggested_price(
+                instance,
+                precio_mercado=instance.precio_mercado_promedio,
+                precio_fiscal=instance.tasacion_fiscal
+            )
+            logger.info(f"🔄 Recalculando valor sugerido: {instance.precio_sugerido_final}")
+
         instance.save()
         return instance
 
@@ -255,8 +378,8 @@ class VehiculoLiteSerializer(serializers.ModelSerializer):
     Serializador ligero para listas de vehículos.
     Excluye cliente_detail y otros campos pesados para optimizar la respuesta.
     """
-    marca_nombre = serializers.ReadOnlyField()
-    modelo_nombre = serializers.ReadOnlyField()
+    marca_nombre = serializers.CharField(source='marca.nombre', read_only=True)
+    modelo_nombre = serializers.CharField(source='modelo.nombre', read_only=True)
     
     # Mapeo de campos para compatibilidad con frontend
     año = serializers.ReadOnlyField(source='year')  # Mapear year -> año
@@ -266,6 +389,8 @@ class VehiculoLiteSerializer(serializers.ModelSerializer):
     color = serializers.SerializerMethodField()
     numero_motor = serializers.SerializerMethodField()
     numero_chasis = serializers.SerializerMethodField()
+    active_requests_count = serializers.SerializerMethodField()
+    ofertas_activas_count = serializers.SerializerMethodField()
     
     class Meta:
         model = Vehiculo
@@ -274,7 +399,10 @@ class VehiculoLiteSerializer(serializers.ModelSerializer):
             'year', 'año', 'patente', 'placa', 'kilometraje', 'foto',
             'marca_nombre', 'modelo_nombre',
             'color', 'numero_motor', 'numero_chasis',
-            'fecha_creacion', 'fecha_actualizacion'
+            'fecha_creacion', 'fecha_actualizacion',
+            'precio_mercado_promedio', 'precio_sugerido_final',
+            'active_requests_count',
+            'ofertas_activas_count'
         )
         read_only_fields = fields
     
@@ -304,3 +432,143 @@ class VehiculoLiteSerializer(serializers.ModelSerializer):
     def get_numero_chasis(self, obj):
         """Retorna el número de chasis si está disponible"""
         return getattr(obj, 'numero_chasis', None)
+    
+    def get_active_requests_count(self, obj):
+        """Retorna el número de solicitudes activas para este vehículo"""
+        from mecanimovilapp.apps.ordenes.models import SolicitudServicio
+        return SolicitudServicio.objects.filter(
+            vehiculo=obj,
+            estado__in=['pendiente', 'aceptado', 'en_camino', 'en_progreso']
+        ).count()
+
+    def get_ofertas_activas_count(self, obj):
+        """Retorna el número de ofertas activas para solicitudes de este vehículo"""
+        from mecanimovilapp.apps.ordenes.models import SolicitudServicioPublica, OfertaProveedor
+        
+        # Contar ofertas activas (no rechazadas) en solicitudes públicas activas
+        count = OfertaProveedor.objects.filter(
+            solicitud__vehiculo=obj,
+            solicitud__estado__in=['abierta', 'comparando', 'adjudicada'],
+        ).exclude(
+            estado='rechazada'
+        ).count()
+        
+        return count
+
+
+class VehiculoMarketplaceSerializer(serializers.ModelSerializer):
+    """
+    Serializador específico para la gestión de venta en Marketplace
+    """
+    health_bonus_percentage = serializers.SerializerMethodField()
+    suggested_price = serializers.IntegerField(source='precio_sugerido_final', read_only=True)
+    marca_nombre = serializers.ReadOnlyField()
+    modelo_nombre = serializers.ReadOnlyField()
+    year = serializers.ReadOnlyField()
+    foto_url = serializers.SerializerMethodField()
+    health_score = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Vehiculo
+        fields = (
+            'id', 'is_published', 'precio_venta', 'suggested_price',
+            'health_bonus_percentage', 'views_count', 'favorites_count', 'leads_count',
+            'marca_nombre', 'modelo_nombre', 'year', 'foto_url', 'health_score'
+        )
+        read_only_fields = ('suggested_price', 'views_count', 'favorites_count', 'leads_count', 'health_bonus_percentage', 'health_score')
+
+    def get_foto_url(self, obj):
+        from mecanimovilapp.storage.utils import get_image_url
+        request = self.context.get('request')
+        return get_image_url(obj.foto, request)
+    
+    def get_health_score(self, obj):
+        # Calcular promedio de salud de componentes
+        from .models_health import ComponenteSaludVehiculo
+        from django.db.models import Avg
+        
+        avg_health = ComponenteSaludVehiculo.objects.filter(vehiculo=obj).aggregate(Avg('salud_porcentaje'))['salud_porcentaje__avg']
+        
+        if avg_health is not None:
+            return int(avg_health)
+        return 100 # Default para nuevos vehículos sin componentes reportados aún
+
+    def get_health_bonus_percentage(self, obj):
+        # TODO: Implement real calculation based on health score logic
+        # For now we mock it or use a simple logic if health score exists
+        return 5.3 # Default mock from design requirements for now
+
+
+class VehiculoMarketplaceDetailSerializer(VehiculoMarketplaceSerializer):
+    """
+    Serializador detallado para la vista pública de un vehículo en marketplace.
+    Incluye historial de servicios.
+    """
+    history = serializers.SerializerMethodField()
+    
+    class Meta(VehiculoMarketplaceSerializer.Meta):
+        fields = VehiculoMarketplaceSerializer.Meta.fields + ('history',)
+        read_only_fields = VehiculoMarketplaceSerializer.Meta.read_only_fields + ('history',)
+        
+    def get_history(self, obj):
+        # Obtener solicitudes completadas asociados al vehículo
+        from mecanimovilapp.apps.ordenes.models import SolicitudServicio
+        solicitudes = SolicitudServicio.objects.filter(vehiculo=obj, estado='completado').order_by('-fecha_servicio')
+        
+        history_data = []
+        for sol in solicitudes:
+            # Determinar el nombre del servicio (puede ser uno o varios, tomamos el principal o concatenamos)
+            # Como no tenemos acceso fácil a los servicios aquí (dependiendo de la implementación M2M),
+            # usaremos una descripción genérica o el tipo de servicio.
+            # Asumiremos que se puede obtener algo descriptivo.
+            service_name = sol.get_tipo_servicio_display() 
+            
+            # Obtener proveedor
+            provider_name = "MecaniMóvil Provider"
+            if sol.taller:
+                provider_name = sol.taller.nombre
+            elif sol.mecanico:
+                provider_name = f"{sol.mecanico.usuario.first_name} {sol.mecanico.usuario.last_name}"
+            
+            history_data.append({
+                'id': sol.id,
+                'date': sol.fecha_servicio.strftime('%d %b %Y'),
+                'service': service_name,
+                'provider': provider_name,
+                'verified': True,
+                'mileage': f"{obj.kilometraje} km" # Fallback: Historical mileage logic needed in future
+            })
+            
+        return history_data
+
+    # Add health_details field
+    health_details = serializers.SerializerMethodField()
+    
+    class Meta(VehiculoMarketplaceSerializer.Meta):
+        fields = VehiculoMarketplaceSerializer.Meta.fields + ('history', 'health_details')
+        read_only_fields = VehiculoMarketplaceSerializer.Meta.read_only_fields + ('history', 'health_details')
+
+    def get_health_details(self, obj):
+        from .models_health import ComponenteSaludVehiculo
+        # Obtener todos los componentes del vehículo
+        componentes = ComponenteSaludVehiculo.objects.filter(vehiculo=obj)
+        
+        details = []
+        for comp in componentes:
+            # Determinar estado basado en porcentaje
+            status = 'normal'
+            if comp.salud_porcentaje < 40:
+                status = 'critical'
+            elif comp.salud_porcentaje < 70:
+                status = 'warning'
+                
+            details.append({
+                'id': comp.componente_config.id,
+                'name': comp.componente_config.nombre,
+                'score': int(comp.salud_porcentaje),
+                'status': status,
+                # En marketplace público NO mostramos observaciones detalladas privadas, solo el estado general
+                'category': comp.componente_config.tipo_motor_aplicable  # Use tipo_motor as broad category or add category field to model
+            })
+            
+        return details

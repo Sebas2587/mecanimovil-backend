@@ -44,8 +44,7 @@ class DireccionUsuario(models.Model):
     """
     usuario = models.ForeignKey(Usuario, on_delete=models.CASCADE, related_name='direcciones')
     direccion = models.CharField(max_length=255)
-    etiqueta = models.CharField(max_length=50, default='Casa', 
-                              choices=[('Casa', 'Casa'), ('Trabajo', 'Trabajo'), ('Otro', 'Otro')])
+    etiqueta = models.CharField(max_length=50, default='Casa')
     detalles = models.CharField(max_length=255, blank=True, null=True)
     es_principal = models.BooleanField(default=False)
     fecha_creacion = models.DateTimeField(auto_now_add=True)
@@ -580,6 +579,15 @@ class Resena(models.Model):
     fecha_hora_resena = models.DateTimeField(auto_now_add=True)
     taller = models.ForeignKey(Taller, on_delete=models.CASCADE, related_name='resenas', null=True, blank=True)
     mecanico = models.ForeignKey(MecanicoDomicilio, on_delete=models.CASCADE, related_name='resenas', null=True, blank=True)
+    # New Link to Service Request
+    solicitud = models.OneToOneField(
+        'ordenes.SolicitudServicio', 
+        on_delete=models.SET_NULL, 
+        null=True, 
+        blank=True,
+        related_name='resena',
+        help_text='Solicitud de servicio asociada a esta reseña'
+    )
     
     class Meta:
         verbose_name = _('reseña')
@@ -620,6 +628,22 @@ class Resena(models.Model):
                 self.mecanico.calificacion_promedio = total / count
                 self.mecanico.numero_de_calificaciones = count
                 self.mecanico.save(update_fields=['calificacion_promedio', 'numero_de_calificaciones'])
+
+
+class ResenaFoto(models.Model):
+    """
+    Modelo para almacenar fotos adjuntas a una reseña
+    """
+    resena = models.ForeignKey(Resena, on_delete=models.CASCADE, related_name='fotos')
+    foto = models.ImageField(upload_to='resenas/', help_text="Foto adjunta a la reseña")
+    fecha_subida = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        verbose_name = _('foto de reseña')
+        verbose_name_plural = _('fotos de reseñas')
+        
+    def __str__(self):
+        return f"Foto para reseña {self.resena.id}"
 
 
 class HorarioProveedor(models.Model):

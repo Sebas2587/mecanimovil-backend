@@ -4,7 +4,11 @@ from rest_framework.response import Response
 from django.db.models import Q
 from .models import Vehiculo, Marca, MarcaVehiculo, Modelo
 from .models_health import ComponenteSaludConfig
-from .serializers import VehiculoSerializer, VehiculoLiteSerializer, MarcaSerializer, MarcaVehiculoSerializer, ModeloSerializer
+from .serializers import (
+    VehiculoSerializer, VehiculoLiteSerializer, MarcaSerializer, 
+    MarcaVehiculoSerializer, ModeloSerializer, VehiculoMarketplaceSerializer,
+    VehiculoMarketplaceDetailSerializer
+)
 
 
 class MarcaVehiculoViewSet(viewsets.ReadOnlyModelViewSet):
@@ -58,50 +62,13 @@ class VehiculoViewSet(viewsets.ModelViewSet):
     
     # ... (existing methods omitted for brevity in prompt, but in real code I verify context)
     
-    def destroy(self, request, *args, **kwargs):
-        """
-        Sobrescribir destroy para validar que no haya servicios pendientes
-        """
-        instance = self.get_object()
-        
-        # Validar Solicitudes de Servicio (Agendamientos privados)
-        # Estados que impiden eliminación: cualquier estado activo o pendiente de pago
-        estados_activos = [
-            'pendiente', 'pago_validado', 'confirmado', 'pendiente_aceptacion_proveedor',
-            'aceptada_por_proveedor', 'checklist_en_progreso', 'checklist_completado',
-            'en_proceso', 'pendiente_devolucion', 'solicitud_cancelacion'
-        ]
-        
-        solicitudes_activas = SolicitudServicio.objects.filter(
-            vehiculo=instance,
-            estado__in=estados_activos
-        ).exists()
-        
-        if solicitudes_activas:
-            return Response(
-                {"error": "No puedes eliminar este vehículo porque tiene solicitudes de servicio activas o pagos pendientes."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        # Validar Solicitudes Públicas (Mercado)
-        # Estados que impiden eliminación
-        estados_publicos_activos = [
-            'creada', 'seleccionando_servicios', 'publicada', 'con_ofertas',
-            'adjudicada', 'pendiente_pago', 'pagada', 'en_ejecucion'
-        ]
-
-        solicitudes_publicas_activas = SolicitudServicioPublica.objects.filter(
-            vehiculo=instance,
-            estado__in=estados_publicos_activos
-        ).exists()
-            
-        if solicitudes_publicas_activas:
-             return Response(
-                {"error": "No puedes eliminar este vehículo porque tiene una solicitud pública en curso o subasta activa."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-            
-        return super().destroy(request, *args, **kwargs)
+    
+    # def destroy(self, request, *args, **kwargs):
+    #     """
+    #     Sobrescribir destroy para validar que no haya servicios pendientes
+    #     """
+    #     # Se elimina la validación para permitir borrado en cascada
+    #     return super().destroy(request, *args, **kwargs)
 
     def get_serializer_class(self):
         """
@@ -203,9 +170,82 @@ class VehiculoViewSet(viewsets.ModelViewSet):
                 logger.warning(f"📸 [VehiculoViewSet.perform_create] Storage usado: {type(vehiculo.foto.storage).__name__}")
         else:
             # Si el usuario no tiene un cliente asociado, lanzar error
-            raise permissions.PermissionDenied(
+            from rest_framework import exceptions
+            raise exceptions.PermissionDenied(
                 "Solo los clientes pueden crear vehículos."
             )
+
+    def create(self, request, *args, **kwargs):
+        """
+        Sobrescribe create para:
+        1. Manejar Update si el vehículo ya existe para este cliente (por patente)
+        2. Resolver o Crear Marca/Modelo si faltan IDs pero hay nombres
+        """
+        print(f"DEBUG: Create Vehicle - Data received: {request.data}")
+        data = request.data.copy()
+        user = request.user
+        
+        if not hasattr(user, 'cliente'):
+             return Response({"error": "Usuario sin perfil de cliente"}, status=status.HTTP_403_FORBIDDEN)
+             
+        if not hasattr(user, 'cliente'):
+             return Response({"error": "Usuario sin perfil de cliente"}, status=status.HTTP_403_FORBIDDEN)
+             
+        # 1. Resolver Marca
+        marca_id = data.get('marca')
+        marca_obj = None
+        
+        if marca_id:
+             marca_obj = Marca.objects.filter(id=marca_id).first()
+             
+        if not marca_obj and data.get('marca_nombre'):
+            marca_nombre = data.get('marca_nombre')
+            print(f"DEBUG: Resolving Brand by name: {marca_nombre}")
+            marca_obj, _ = Marca.objects.get_or_create(nombre=marca_nombre.upper())
+            data['marca'] = marca_obj.id
+            print(f"DEBUG: Resolved Brand ID: {marca_obj.id}")
+        
+        # 2. Resolver Modelo
+        modelo_id = data.get('modelo')
+        
+        if not modelo_id and marca_obj and data.get('modelo_nombre'):
+                modelo_nombre = data.get('modelo_nombre')
+                print(f"DEBUG: Resolving Model by name: {modelo_nombre}")
+                # Buscamos o creamos el modelo bajo esa marca
+                try:
+                    modelo_obj, created = Modelo.objects.get_or_create(
+                        marca=marca_obj, 
+                        nombre=modelo_nombre.upper()
+                    )
+                    data['modelo'] = modelo_obj.id
+                    print(f"DEBUG: Resolved Model ID: {modelo_obj.id} (Created: {created})")
+                except Exception as e:
+                    print(f"DEBUG: Error creating model: {e}")
+
+        # 3. Verificar existencia por Patente para este Cliente
+        patente = data.get('patente', '').upper()
+        if patente:
+            existing_vehicle = Vehiculo.objects.filter(cliente=user.cliente, patente=patente).first()
+            if existing_vehicle:
+                print(f"DEBUG: Updating existing vehicle {existing_vehicle.id}")
+                # Update logic
+                # Necesitamos un serializer para update con instance=existing_vehicle
+                serializer = self.get_serializer(existing_vehicle, data=data, partial=True)
+                if not serializer.is_valid():
+                    print(f"DEBUG: Update Serializer Errors: {serializer.errors}")
+                serializer.is_valid(raise_exception=True)
+                self.perform_update(serializer)
+                return Response(serializer.data)
+
+        # 3. Create normal
+        print("DEBUG: Creating new vehicle")
+        serializer = self.get_serializer(data=data)
+        if not serializer.is_valid():
+             print(f"DEBUG: Create Serializer Errors: {serializer.errors}")
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
     
     def perform_update(self, serializer):
         """
@@ -290,4 +330,166 @@ class VehiculoViewSet(viewsets.ModelViewSet):
             modelos = Modelo.objects.all()
             
         serializer = ModeloSerializer(modelos, many=True)
-        return Response(serializer.data) 
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'], url_path='consultar-patente')
+    def consultar_patente(self, request):
+        """
+        Consulta una patente en GetAPI.cl y normaliza la respuesta
+        """
+        import requests
+        
+        patente = request.query_params.get('patente', '').upper()
+        if not patente:
+            return Response({"error": "Debe proporcionar una patente"}, status=status.HTTP_400_BAD_REQUEST)
+            
+        API_KEY = "28054a51-09f6-4687-a4a7-ecf3ead55ef4"
+        URL = f"https://chile.getapi.cl/v1/vehicles/plate/{patente}"
+        
+        try:
+            # Using endpoint /v1/vehicles/plate/{plate}
+            # API requires x-api-key header based on 401 response
+            headers = {
+                "x-api-key": API_KEY,
+                "Content-Type": "application/json"
+            }
+            response = requests.get(URL, headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                json_response = response.json()
+                
+                # Check for success flag if present in wrapper
+                # User example: { "success": true, "data": { ... } }
+                if json_response.get("success") is False:
+                     return Response({"error": "Vehículo no encontrado"}, status=status.HTTP_404_NOT_FOUND)
+
+                data = json_response.get("data", json_response)
+                
+                # Map nested fields
+                # structure: data.model.brand.name, data.model.name, etc.
+                
+                marca_nombre = data.get("model", {}).get("brand", {}).get("name", "")
+                modelo_nombre = data.get("model", {}).get("name", "")
+                
+                normalized_data = {
+                    "patente": data.get("licensePlate", patente),
+                    "marca_nombre": marca_nombre,
+                    "modelo_nombre": modelo_nombre,
+                    "year": data.get("year", ""),
+                    "color": data.get("color", ""),
+                    "motor": data.get("engine", ""),
+                    "vin": data.get("vinNumber", ""),
+                    "tipo_motor": data.get("fuel", "GASOLINA"), # e.g. "BENCINA" -> mapping might be needed later
+                    "cilindraje": data.get("engine", ""), 
+                    "raw_data": data
+                }
+                
+                # Try to map Marca/Modelo to internal IDs
+                try:
+                    marca_obj = Marca.objects.filter(nombre__iexact=normalized_data["marca_nombre"]).first()
+                    if marca_obj:
+                        normalized_data["marca_id"] = marca_obj.id
+                        
+                        # Fuzzy or exact match for model might be tricky due to versions
+                        # e.g. API: "BRAVO SPORT TJET", Internal: "Bravo"
+                        # We try contains or exact
+                        modelo_obj = Modelo.objects.filter(marca=marca_obj, nombre__iexact=normalized_data["modelo_nombre"]).first()
+                        if not modelo_obj:
+                             modelo_obj = Modelo.objects.filter(marca=marca_obj, nombre__icontains=normalized_data["modelo_nombre"].split()[0]).first()
+                             
+                        if modelo_obj:
+                            normalized_data["modelo_id"] = modelo_obj.id
+                except Exception as e:
+                    print(f"Error mapping marca/modelo: {e}")
+
+                return Response(normalized_data)
+            else:
+                return Response({"error": "Vehículo no encontrado en registro nacional"}, status=status.HTTP_404_NOT_FOUND)
+                
+        except Exception as e:
+            print(f"Error connecting to GetAPI: {e}")
+            return Response({"error": "Error al consultar servicio externo"}, status=status.HTTP_503_SERVICE_UNAVAILABLE) 
+
+    @action(detail=True, methods=['get'], url_path='tasacion')
+    def tasacion(self, request, pk=None):
+        """
+        Endpoint para obtener la tasación detallada del vehículo
+        """
+        vehiculo = self.get_object()
+        
+        # Calcular bonus salud (Mock logic por ahora, igual que en serializer)
+        # TODO: Centralizar cálculo
+        health_bonus_percentage = 5.3 
+        
+        data = {
+            'tasacion_fiscal': vehiculo.tasacion_fiscal,
+            'permiso_circulacion': vehiculo.permiso_circulacion,
+            'year_tasacion_fiscal': vehiculo.year_tasacion_fiscal,
+            'precio_mercado_min': vehiculo.precio_mercado_min,
+            'precio_mercado_max': vehiculo.precio_mercado_max,
+            'precio_mercado_promedio': vehiculo.precio_mercado_promedio,
+            'precio_retoma': vehiculo.precio_retoma,
+            'suggested_price': vehiculo.precio_sugerido_final,
+            'bonus_percentage': health_bonus_percentage,
+            'currency': 'CLP'
+        }
+        return Response(data)
+
+    @action(detail=True, methods=['get', 'patch'], url_path='marketplace')
+    def marketplace(self, request, pk=None):
+        """
+        Endpoint para gestionar la venta del vehículo (Publicar, Precio, etc.)
+        """
+        vehiculo = self.get_object()
+        
+        if request.method == 'GET':
+            serializer = VehiculoMarketplaceSerializer(vehiculo)
+            return Response(serializer.data)
+        
+        elif request.method == 'PATCH':
+            print(f"DEBUG: Updating marketplace data for {vehiculo.id}")
+            print(f"DEBUG: Request Data: {request.data}")
+            serializer = VehiculoMarketplaceSerializer(vehiculo, data=request.data, partial=True)
+            if serializer.is_valid():
+                serializer.save()
+                print(f"DEBUG: Saved data. New precio_venta: {vehiculo.precio_venta}")
+                return Response(serializer.data)
+            print(f"DEBUG: Serializer Errors: {serializer.errors}")
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=['get'], url_path='marketplace-stats')
+    def marketplace_stats(self, request, pk=None):
+        """
+        Endpoint para obtener estadísticas del vehículo en marketplace
+        """
+        vehiculo = self.get_object()
+        # Aquí eventualmente podríamos agregar lógica real de conteo si está en otra tabla
+        # Por ahora devolvemos los campos del modelo
+        data = {
+            'views': vehiculo.views_count,
+            'favorites': vehiculo.favorites_count,
+            'leads': vehiculo.leads_count
+        }
+        return Response(data)
+
+    @action(detail=False, methods=['get'], url_path='marketplace-listings', permission_classes=[permissions.AllowAny])
+    def marketplace_listings(self, request):
+        """
+        Endpoint público para listar vehículos publicados en el marketplace
+        """
+        queryset = Vehiculo.objects.filter(is_published=True).order_by('-fecha_actualizacion')
+        serializer = VehiculoMarketplaceSerializer(queryset, many=True, context={'request': request})
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['get'], url_path='marketplace-public-detail', permission_classes=[permissions.AllowAny])
+    def marketplace_public_detail(self, request, pk=None):
+        """
+        Endpoint público para ver el detalle de un vehículo en marketplace (incluye historial)
+        """
+        try:
+            vehiculo = Vehiculo.objects.get(pk=pk, is_published=True)
+        except Vehiculo.DoesNotExist:
+            return Response({"error": "Vehículo no disponible"}, status=status.HTTP_404_NOT_FOUND)
+            
+        serializer = VehiculoMarketplaceDetailSerializer(vehiculo, context={'request': request})
+        return Response(serializer.data)

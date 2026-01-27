@@ -1329,6 +1329,7 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
     total_rechazos = serializers.IntegerField(read_only=True, default=0)
     ofertas = serializers.SerializerMethodField()
     ofertas_secundarias = serializers.SerializerMethodField()
+    estado_display = serializers.SerializerMethodField()
     rechazos = serializers.SerializerMethodField()
     oferta_seleccionada_detail = serializers.SerializerMethodField()
     puede_reenviar = serializers.SerializerMethodField()
@@ -1343,7 +1344,7 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
             'servicios_solicitados', 'servicios_solicitados_detail',
             'direccion_usuario', 'direccion_usuario_info',
             'ubicacion_servicio', 'direccion_servicio_texto', 'detalles_ubicacion',
-            'fecha_preferida', 'hora_preferida', 'estado', 'fecha_creacion',
+            'fecha_preferida', 'hora_preferida', 'estado', 'estado_display', 'fecha_creacion',
             'fecha_publicacion', 'fecha_expiracion', 'fecha_limite_pago', 'tiempo_restante',
             'puede_recibir_ofertas', 'puede_ver_datos_cliente', 'total_ofertas', 'total_visualizaciones',
             'total_rechazos', 'oferta_seleccionada', 'oferta_seleccionada_detail', 'ofertas',
@@ -1357,18 +1358,41 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
             'fecha_expiracion': {'required': False, 'allow_null': True}
         }
     
+    def get_estado_display(self, obj):
+        """Retorna el estado en formato legible para humanos"""
+        estado_dict = {
+            'pendiente': 'Pendiente',
+            'publicada': 'Publicada',
+            'pago_validado': 'Pago Validado',
+            'confirmado': 'Confirmado',
+            'en_proceso': 'En Proceso',
+            'completado': 'Completado',
+            'cancelado': 'Cancelado',
+            'solicitud_cancelacion': 'Solicitud de Cancelación',
+            'pendiente_devolucion': 'Pendiente de Devolución',
+            'devuelto': 'Devuelto',
+            'pendiente_aceptacion_proveedor': 'Pendiente de Aceptación',
+            'aceptada_por_proveedor': 'Aceptada',
+            'rechazada_por_proveedor': 'Rechazada',
+            'checklist_en_progreso': 'Checklist en Progreso',
+            'checklist_completado': 'Checklist Completado',
+        }
+        return estado_dict.get(obj.estado, obj.estado.replace('_', ' ').title())
+
     def get_servicios_solicitados_detail(self, obj):
         """
-        Retorna los detalles de los servicios solicitados con información de categoría
+        Retorna los detalles de los servicios solicitados con información de categoría e imágenes
         """
         servicios = obj.servicios_solicitados.all()
         servicios_data = []
+        request = self.context.get('request')
         
         for servicio in servicios:
             servicio_dict = {
                 'id': servicio.id,
                 'nombre': servicio.nombre,
                 'descripcion': servicio.descripcion,
+                'foto': get_image_url(servicio.foto, request) if servicio.foto else None
             }
             
             # Obtener la primera categoría principal (sin padre) o la primera categoría disponible
@@ -1383,9 +1407,11 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
                 if categoria_principal:
                     servicio_dict['categoria'] = categoria_principal.nombre
                     servicio_dict['categoria_id'] = categoria_principal.id
+                    servicio_dict['categoria_icono'] = categoria_principal.icono
             else:
                 servicio_dict['categoria'] = None
                 servicio_dict['categoria_id'] = None
+                servicio_dict['categoria_icono'] = None
             
             servicios_data.append(servicio_dict)
         

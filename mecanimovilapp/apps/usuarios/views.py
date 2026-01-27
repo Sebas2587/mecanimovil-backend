@@ -956,7 +956,7 @@ class TallerViewSet(viewsets.ModelViewSet):
         Permitir GET y CREATE sin autenticación, pero requerir 
         autenticación y admin para otras operaciones
         """
-        if self.action in ['list', 'retrieve', 'horarios_disponibles', 'create', 'actualizar_propio', 'cerca', 'actualizar_ubicacion_domicilio', 'proveedores_filtrados']:
+        if self.action in ['list', 'retrieve', 'horarios_disponibles', 'create', 'actualizar_propio', 'cerca', 'actualizar_ubicacion_domicilio', 'proveedores_filtrados', 'reviews']:
             if self.action in ['actualizar_propio', 'actualizar_ubicacion_domicilio']:
                 # Solo requiere autenticación para actualizar propio perfil o ubicación
                 return [permissions.IsAuthenticated()]
@@ -1426,6 +1426,42 @@ class TallerViewSet(viewsets.ModelViewSet):
                 'error': 'Error interno del servidor al actualizar ubicación'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+
+    @action(detail=True, methods=['get'], permission_classes=[permissions.AllowAny])
+    def reviews(self, request, pk=None):
+        """
+        Obtiene el resumen de reseñas y la lista detallada
+        """
+        taller = self.get_object()
+        resenas = Resena.objects.filter(taller=taller).select_related(
+            'cliente', 'cliente__usuario', 'solicitud', 'solicitud__vehiculo', 
+            'solicitud__vehiculo__marca', 'solicitud__vehiculo__modelo'
+        ).prefetch_related('fotos').order_by('-fecha_hora_resena')
+        
+        # Calcular estadísticas
+        total_reviews = resenas.count()
+        average_rating = resenas.aggregate(Avg('calificacion'))['calificacion__avg'] or 0.0
+        
+        # Calcular breakdown
+        breakdown = {
+            '5': resenas.filter(calificacion=5).count(),
+            '4': resenas.filter(calificacion=4).count(),
+            '3': resenas.filter(calificacion=3).count(),
+            '2': resenas.filter(calificacion=2).count(),
+            '1': resenas.filter(calificacion=1).count(),
+        }
+        
+        # Serializar respuesta
+        from .serializers import ProviderReviewsSummarySerializer
+        serializer = ProviderReviewsSummarySerializer({
+            'rating_average': round(average_rating, 1),
+            'total_reviews': total_reviews,
+            'rating_breakdown': breakdown,
+            'reviews': resenas
+        }, context={'request': request})
+        
+        return Response(serializer.data)
+
     @action(detail=False, methods=['get'], permission_classes=[permissions.AllowAny])
     def proveedores_filtrados(self, request):
         """
@@ -1610,7 +1646,7 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
         Permitir GET y CREATE sin autenticación, pero requerir 
         autenticación y admin para otras operaciones
         """
-        if self.action in ['list', 'retrieve', 'horarios_disponibles', 'create', 'actualizar_propio', 'cerca', 'actualizar_ubicacion_domicilio', 'proveedores_filtrados']:
+        if self.action in ['list', 'retrieve', 'horarios_disponibles', 'create', 'actualizar_propio', 'cerca', 'actualizar_ubicacion_domicilio', 'proveedores_filtrados', 'reviews']:
             if self.action in ['actualizar_propio', 'actualizar_ubicacion_domicilio']:
                 # Solo requiere autenticación para actualizar propio perfil o ubicación
                 return [permissions.IsAuthenticated()]
@@ -1965,6 +2001,42 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
             return Response({
                 'error': 'Error interno del servidor'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+    @action(detail=True, methods=['get'], permission_classes=[permissions.AllowAny])
+    def reviews(self, request, pk=None):
+        """
+        Obtiene el resumen de reseñas y la lista detallada para mecánicos
+        """
+        mecanico = self.get_object()
+        resenas = Resena.objects.filter(mecanico=mecanico).select_related(
+            'cliente', 'cliente__usuario', 'solicitud', 'solicitud__vehiculo', 
+            'solicitud__vehiculo__marca', 'solicitud__vehiculo__modelo'
+        ).prefetch_related('fotos').order_by('-fecha_hora_resena')
+        
+        # Calcular estadísticas
+        total_reviews = resenas.count()
+        average_rating = resenas.aggregate(Avg('calificacion'))['calificacion__avg'] or 0.0
+        
+        # Calcular breakdown
+        breakdown = {
+            '5': resenas.filter(calificacion=5).count(),
+            '4': resenas.filter(calificacion=4).count(),
+            '3': resenas.filter(calificacion=3).count(),
+            '2': resenas.filter(calificacion=2).count(),
+            '1': resenas.filter(calificacion=1).count(),
+        }
+        
+        # Serializar respuesta
+        from .serializers import ProviderReviewsSummarySerializer
+        serializer = ProviderReviewsSummarySerializer({
+            'rating_average': round(average_rating, 1),
+            'total_reviews': total_reviews,
+            'rating_breakdown': breakdown,
+            'reviews': resenas
+        }, context={'request': request})
+        
+        return Response(serializer.data)
 
     @action(detail=False, methods=['get'], permission_classes=[permissions.AllowAny])
     def proveedores_filtrados(self, request):

@@ -73,6 +73,7 @@ INSTALLED_APPS = [
     'mecanimovilapp.apps.checklists',  # App de checklist correctamente ubicada
     'mecanimovilapp.apps.pagos',  # App de pagos con Mercado Pago
     'mecanimovilapp.apps.suscripciones',  # App de suscripciones freemium + planes
+    'mecanimovilapp.apps.chat', # Sistema de mensajería contextual
 ]
 
 # Configuración del modelo de usuario personalizado

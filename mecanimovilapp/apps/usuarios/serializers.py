@@ -1043,21 +1043,87 @@ class ZonaCoberturaSerializer(serializers.ModelSerializer):
         return ret
 
 
+        return data
+
+    def get_service_context(self, obj):
+        """Retorna información contextual del servicio realizado"""
+        if obj.solicitud:
+            return {
+                'service_name': obj.solicitud.servicio.nombre if hasattr(obj.solicitud, 'servicio') and obj.solicitud.servicio else 'Servicio General',
+                'vehicle_model': f"{obj.solicitud.vehiculo.marca.nombre} {obj.solicitud.vehiculo.modelo.nombre}" if obj.solicitud.vehiculo else 'Vehículo no especificado',
+                'date': obj.solicitud.fecha_servicio
+            }
+        return None
+
+    def get_photos(self, obj):
+        """Retorna lista de URLs de fotos adjuntas"""
+        request = self.context.get('request')
+        photos = []
+        for foto_obj in obj.fotos.all():
+            if foto_obj.foto:
+                photos.append(get_image_url(foto_obj.foto, request))
+        return photos
+
+
 class ResenaSerializer(serializers.ModelSerializer):
     """
     Serializador para el modelo Resena
     """
     cliente_nombre = serializers.SerializerMethodField()
+    cliente_avatar = serializers.SerializerMethodField()
+    service_context = serializers.SerializerMethodField()
+    photos = serializers.SerializerMethodField()
     
     class Meta:
         model = Resena
-        fields = ('id', 'cliente', 'cliente_nombre', 'comentario', 'calificacion', 
-                  'fecha_hora_resena', 'taller', 'mecanico')
+        fields = ('id', 'cliente', 'cliente_nombre', 'cliente_avatar', 'comentario', 'calificacion', 
+                  'fecha_hora_resena', 'taller', 'mecanico', 'solicitud', 'service_context', 'photos')
         read_only_fields = ('fecha_hora_resena',)
     
     def get_cliente_nombre(self, obj):
-        return f"{obj.cliente.nombre} {obj.cliente.apellido}"
+        # Intentar obtener nombre completo, o usar username si no hay nombre
+        full_name = f"{obj.cliente.nombre} {obj.cliente.apellido}".strip()
+        return full_name if full_name else obj.cliente.usuario.username
+        
+    def get_cliente_avatar(self, obj):
+        request = self.context.get('request')
+        if obj.cliente.usuario.foto_perfil:
+             return get_image_url(obj.cliente.usuario.foto_perfil, request)
+        return None
     
+    def get_service_context(self, obj):
+        """Retorna información contextual del servicio realizado"""
+        if obj.solicitud:
+            # Intentar obtener el nombre del servicio desde diferentes fuentes posibles en SolicitudServicio
+            service_name = 'Servicio realizado'
+            
+            # Si SolicitudServicio tiene relación directa con Servicio (oferta->servicio)
+            # Nota: SolicitudServicio no tiene campo 'servicio' directo en el modelo mostrado anteriormente, 
+            # pero asumiremos que podemos inferirlo o que el modelo lo tiene. 
+            # Si no, usamos un genérico.
+            
+            # Verificamos si podemos obtener el vehículo
+            vehicle_info = 'Vehículo'
+            if obj.solicitud.vehiculo:
+                 vehicle_info = f"{obj.solicitud.vehiculo.marca.nombre} {obj.solicitud.vehiculo.modelo.nombre}"
+            
+            return {
+                'service_name': service_name, 
+                'vehicle_model': vehicle_info,
+                'date': obj.solicitud.fecha_servicio
+            }
+        return None
+
+    def get_photos(self, obj):
+        """Retorna lista de URLs de fotos adjuntas"""
+        request = self.context.get('request')
+        photos = []
+        if hasattr(obj, 'fotos'):
+            for foto_obj in obj.fotos.all():
+                if foto_obj.foto:
+                    photos.append(get_image_url(foto_obj.foto, request))
+        return photos
+        
     def validate(self, data):
         """
         Validar que se proporcione al menos un taller o mecánico, pero no ambos
@@ -1357,8 +1423,13 @@ class ReviewSerializer(serializers.ModelSerializer):
                     domain = request.build_absolute_uri('/').rstrip('/')
                     profile_photo_url = f"{domain}{obj.client.foto_perfil.url}"
                 else:
-                    # Fallback: usar IP específica del servidor
-                    profile_photo_url = f"http://192.168.100.40:8000{obj.client.foto_perfil.url}"
+                    # Fallback: usar MEDIA_URL de settings
+                    media_url = getattr(settings, 'MEDIA_URL', '/media/')
+                    if media_url.startswith('http'):
+                        profile_photo_url = f"{media_url.rstrip('/')}{obj.client.foto_perfil.url}"
+                    else:
+                        # Si MEDIA_URL es relativa, intentar construir absoluta o devolver relativa
+                        profile_photo_url = obj.client.foto_perfil.url
             
             return {
                 'username': obj.client.username,
@@ -1530,3 +1601,13 @@ class NotificacionSerializer(serializers.ModelSerializer):
             'leida', 'fecha_leida', 'data', 'fecha_creacion'
         ]
         read_only_fields = ['id', 'fecha_creacion', 'fecha_leida']
+
+
+class ProviderReviewsSummarySerializer(serializers.Serializer):
+    """
+    Serializer para el resumen de reseñas de un proveedor
+    """
+    rating_average = serializers.FloatField()
+    total_reviews = serializers.IntegerField()
+    rating_breakdown = serializers.DictField()
+    reviews = ResenaSerializer(many=True)

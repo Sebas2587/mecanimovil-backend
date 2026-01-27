@@ -54,7 +54,11 @@ class Vehiculo(models.Model):
     """
     TIPO_MOTOR_CHOICES = [
         ('Gasolina', 'Gasolina'),
+        ('GASOLINA', 'GASOLINA'),
+        ('BENCINA', 'BENCINA'),
         ('Diésel', 'Diésel'),
+        ('DIESEL', 'DIESEL'),
+        ('Electric', 'Electric'),
     ]
     
     marca = models.ForeignKey(
@@ -88,6 +92,27 @@ class Vehiculo(models.Model):
     )
     fecha_creacion = models.DateTimeField(auto_now_add=True, null=True)
     fecha_actualizacion = models.DateTimeField(auto_now=True, null=True)
+    
+    # Campos de Tasación y Valoración (GetAPI)
+    tasacion_fiscal = models.IntegerField(default=0, help_text="Tasación fiscal del SII")
+    permiso_circulacion = models.IntegerField(default=0, help_text="Valor permiso circulación")
+    year_tasacion_fiscal = models.IntegerField(null=True, blank=True)
+    
+    precio_mercado_min = models.IntegerField(default=0, help_text="Precio mercado mínimo (GetAPI)")
+    precio_mercado_max = models.IntegerField(default=0, help_text="Precio mercado máximo (GetAPI)")
+    precio_mercado_promedio = models.IntegerField(default=0, help_text="Precio referencia usado")
+    
+    precio_retoma = models.IntegerField(default=0, help_text="Precio sugerido de retoma")
+    fecha_ultima_tasacion = models.DateTimeField(null=True, blank=True)
+    
+    precio_sugerido_final = models.IntegerField(default=0, help_text="Precio calculado por nuestro algoritmo")
+    
+    # Campos de Marketplace
+    is_published = models.BooleanField(default=False, verbose_name=_('publicado'))
+    precio_venta = models.IntegerField(null=True, blank=True, verbose_name=_('precio de venta'))
+    views_count = models.PositiveIntegerField(default=0, verbose_name=_('vistas'))
+    favorites_count = models.PositiveIntegerField(default=0, verbose_name=_('favoritos'))
+    leads_count = models.PositiveIntegerField(default=0, verbose_name=_('interesados'))
     
     class Meta:
         verbose_name = _('vehículo')
