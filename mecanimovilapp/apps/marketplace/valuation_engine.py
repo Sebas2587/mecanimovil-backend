@@ -75,9 +75,13 @@ def calculate_suggested_price(vehicle, precio_mercado, precio_fiscal, health_ove
          
     health_factor_value = Decimal('0')
     
-    if health_score > 90:
-        # Bonificación del 5% del valor base (Certificado/Excelente estado)
+    if health_score >= 90:
+        # Bonificación del 5% (Joya / Certificado)
         health_factor_value = base_value * Decimal('0.05')
+    elif health_score >= 80:
+        # Bonificación del 2.5% (Muy Buen Estado)
+        # Reconocemos que un 88% sigue siendo muy bueno.
+        health_factor_value = base_value * Decimal('0.025')
     elif health_score < 50:
         # Penalización: Restar costo estimado de reparaciones
         # Solo aplicar si NO estamos en modo simulación (health_override is None o health_override < 50)
