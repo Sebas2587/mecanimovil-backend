@@ -496,9 +496,14 @@ class VehiculoMarketplaceSerializer(serializers.ModelSerializer):
         return 100 # Default para nuevos vehículos sin componentes reportados aún
 
     def get_health_bonus_percentage(self, obj):
-        # TODO: Implement real calculation based on health score logic
-        # For now we mock it or use a simple logic if health score exists
-        return 5.3 # Default mock from design requirements for now
+        # We repurpose this field to return the Monetary Value of Potential Gain for now, 
+        # or we might want to rename it in the frontend. 
+        # Given the legacy name implies percentage, let's keep likely consistent for now 
+        # or better: Return the actual value if frontend expects value OR percent.
+        # User prompt implies "obtener el potencial de ganancia".
+        
+        from mecanimovilapp.apps.marketplace.valuation_engine import calculate_potential_gain
+        return calculate_potential_gain(obj)
 
 
 class VehiculoMarketplaceDetailSerializer(VehiculoMarketplaceSerializer):
