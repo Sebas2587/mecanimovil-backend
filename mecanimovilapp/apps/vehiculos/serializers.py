@@ -475,9 +475,14 @@ class VehiculoLiteSerializer(serializers.ModelSerializer):
         return 0
 
     def get_pending_alerts_count(self, obj):
-        """Retorna el número de alertas de mantenimiento activas"""
-        from mecanimovilapp.apps.vehiculos.models_health import AlertaMantenimiento
-        return AlertaMantenimiento.objects.filter(vehiculo=obj, activa=True).count()
+        """Retorna el número de componentes en estado crítico o advertencia"""
+        from mecanimovilapp.apps.vehiculos.models_health import ComponenteSaludVehiculo
+        
+        # Contamos componentes que requieren atención inmediata o próxima
+        return ComponenteSaludVehiculo.objects.filter(
+            vehiculo=obj, 
+            nivel_alerta__in=['CRITICO', 'ADVERTENCIA']
+        ).count()
 
 
 class VehiculoMarketplaceSerializer(serializers.ModelSerializer):
