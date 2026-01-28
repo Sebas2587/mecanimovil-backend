@@ -138,6 +138,44 @@ class ConversationViewSet(viewsets.ReadOnlyModelViewSet):
             attachment=attachment
         )
         
+        # 🔄 BACKWARDS COMPATIBILITY: Also save to ChatSolicitud table
+        # This ensures apps using the old API can see messages sent via new API
+        try:
+            from mecanimovilapp.apps.ordenes.models import ChatSolicitud, OfertaProveedor
+            
+            # Determine if this conversation has an associated Oferta
+            oferta = None
+            if conversation.context_object:
+                context_model = conversation.content_type.model_class().__name__
+                
+                if context_model == 'OfertaProveedor':
+                    oferta = conversation.context_object
+                elif 'Solicitud' in context_model:
+                    # Find related oferta
+                    oferta = OfertaProveedor.objects.filter(
+                        solicitud=conversation.context_object
+                    ).first()
+            
+            if oferta:
+                # Determine if sender is provider
+                es_proveedor = hasattr(request.user, 'mecanicodomicilio') or hasattr(request.user, 'taller')
+                
+                # Create corresponding ChatSolicitud
+                ChatSolicitud.objects.create(
+                    oferta=oferta,
+                    mensaje=content if content else '',
+                    enviado_por=request.user,
+                    es_proveedor=es_proveedor,
+                    archivo_adjunto=attachment
+                )
+                print(f"✅ [CHAT BACKEND] Message also saved to ChatSolicitud for backwards compatibility")
+            else:
+                print(f"⚠️ [CHAT BACKEND] No oferta found, skipping ChatSolicitud creation")
+                
+        except Exception as e:
+            # If backwards compat fails, log but don't break the main flow
+            print(f"⚠️ [CHAT BACKEND] Failed to save to ChatSolicitud: {e}")
+        
         # Update conversation timestamp
         conversation.save()  # Triggers auto_now on updated_at
         
