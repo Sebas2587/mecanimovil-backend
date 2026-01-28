@@ -469,7 +469,10 @@ class VehiculoLiteSerializer(serializers.ModelSerializer):
         
         if avg_health is not None:
             return int(avg_health)
-        return 100 # Default para nuevos sin reportes
+            
+        # Si no hay componentes reportados, NO asumir 100%.
+        # Retornar 0 indica que falta inicialización o datos.
+        return 0
 
     def get_pending_alerts_count(self, obj):
         """Retorna el número de alertas de mantenimiento activas"""
