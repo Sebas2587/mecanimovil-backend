@@ -27,6 +27,7 @@ def calculate_suggested_price(vehicle, precio_mercado, precio_fiscal, health_ove
         return 0
         
     # Base Value = 100% Market Price (Fiscal Price is ignored to avoid undervaluing)
+    val_mercado = Decimal(precio_mercado)
     base_value = val_mercado
     
     # Legacy/Reference only:
