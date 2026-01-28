@@ -481,7 +481,7 @@ class VehiculoLiteSerializer(serializers.ModelSerializer):
         # Contamos componentes que requieren atención inmediata o próxima
         return ComponenteSaludVehiculo.objects.filter(
             vehiculo=obj, 
-            nivel_alerta__in=['CRITICO', 'ADVERTENCIA']
+            nivel_alerta__in=['ATENCION', 'URGENTE', 'CRITICO']
         ).count()
 
 
