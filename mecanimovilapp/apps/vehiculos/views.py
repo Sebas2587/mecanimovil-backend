@@ -239,7 +239,12 @@ class VehiculoViewSet(viewsets.ModelViewSet):
                     print(f"DEBUG: Error creating model: {e}")
 
         # 3. Verificar existencia por Patente para este Cliente
-        patente = data.get('patente', '').upper()
+        patente = data.get('patente', '').upper().strip()
+        data['patente'] = patente # Asegurar que esté saneada en los datos
+
+        if not patente:
+             return Response({"patente": ["Este campo es obligatorio."]}, status=status.HTTP_400_BAD_REQUEST)
+
         if patente:
             existing_vehicle = Vehiculo.objects.filter(cliente=user.cliente, patente=patente).first()
             if existing_vehicle:
