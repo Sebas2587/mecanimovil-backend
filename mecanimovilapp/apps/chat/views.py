@@ -292,7 +292,53 @@ class ConversationViewSet(viewsets.ReadOnlyModelViewSet):
         Mark all messages in this conversation as read for the current user
         """
         conversation = self.get_object()
-        # Mark messages NOT sent by me as read
+        
+        # 1. Mark new system Messages as read
         unread = conversation.messages.exclude(sender=request.user).filter(is_read=False)
         count = unread.update(is_read=True)
+        
+        # 2. 🔄 BACKWARDS COMPATIBILITY: Mark legacy ChatSolicitud as read
+        try:
+            from mecanimovilapp.apps.ordenes.models import ChatSolicitud, OfertaProveedor
+            
+            # Determine if this conversation has an associated Oferta
+            oferta = None
+            if conversation.context_object:
+                context_model = conversation.content_type.model_class().__name__
+                
+                if context_model == 'OfertaProveedor':
+                    oferta = conversation.context_object
+                elif 'Solicitud' in context_model:
+                    # Find related oferta linked to this solicitud
+                    oferta = OfertaProveedor.objects.filter(
+                        solicitud=conversation.context_object
+                    ).first()
+            
+            if oferta:
+                # Update ChatSolicitud records
+                # Logic: If I am the provider, I read messages from USER (es_proveedor=False)
+                # If I am the user, I read messages from PROVIDER (es_proveedor=True)
+                
+                # Check directly if user is provider to be safe, though the logic is usually inverse of message sender
+                es_proveedor_usuario = hasattr(request.user, 'mecanicodomicilio') or hasattr(request.user, 'taller')
+                
+                # We want to mark messages SENT BY the OTHER party as read
+                # If I am provider (es_proveedor_usuario=True), I read messages where es_proveedor=False
+                # If I am user (es_proveedor_usuario=False), I read messages where es_proveedor=True
+                
+                target_es_proveedor = not es_proveedor_usuario
+                
+                legacy_updated = ChatSolicitud.objects.filter(
+                    oferta=oferta,
+                    leido=False,
+                    es_proveedor=target_es_proveedor
+                ).update(leido=True)
+                
+                print(f"✅ [CHAT BACKEND] Synced read status to {legacy_updated} ChatSolicitud records")
+            else:
+                print(f"⚠️ [CHAT BACKEND] No oferta found for read sync")
+                
+        except Exception as e:
+            print(f"⚠️ [CHAT BACKEND] Failed to sync read status to ChatSolicitud: {e}")
+
         return Response({'marked_read': count})
