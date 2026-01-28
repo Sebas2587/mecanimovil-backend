@@ -393,6 +393,8 @@ class VehiculoLiteSerializer(serializers.ModelSerializer):
     numero_chasis = serializers.SerializerMethodField()
     active_requests_count = serializers.SerializerMethodField()
     ofertas_activas_count = serializers.SerializerMethodField()
+    health_score = serializers.SerializerMethodField()
+    pending_alerts_count = serializers.SerializerMethodField()
     
     class Meta:
         model = Vehiculo
@@ -404,7 +406,8 @@ class VehiculoLiteSerializer(serializers.ModelSerializer):
             'fecha_creacion', 'fecha_actualizacion',
             'precio_mercado_promedio', 'precio_sugerido_final',
             'active_requests_count',
-            'ofertas_activas_count'
+            'ofertas_activas_count',
+            'health_score', 'pending_alerts_count'
         )
         read_only_fields = fields
     
@@ -456,6 +459,22 @@ class VehiculoLiteSerializer(serializers.ModelSerializer):
         ).count()
         
         return count
+
+    def get_health_score(self, obj):
+        """Retorna el puntaje promedio de salud del vehículo"""
+        from django.db.models import Avg
+        from mecanimovilapp.apps.vehiculos.models_health import ComponenteSaludVehiculo
+        
+        avg_health = ComponenteSaludVehiculo.objects.filter(vehiculo=obj).aggregate(Avg('salud_porcentaje'))['salud_porcentaje__avg']
+        
+        if avg_health is not None:
+            return int(avg_health)
+        return 100 # Default para nuevos sin reportes
+
+    def get_pending_alerts_count(self, obj):
+        """Retorna el número de alertas de mantenimiento activas"""
+        from mecanimovilapp.apps.vehiculos.models_health import AlertaMantenimiento
+        return AlertaMantenimiento.objects.filter(vehiculo=obj, activa=True).count()
 
 
 class VehiculoMarketplaceSerializer(serializers.ModelSerializer):
