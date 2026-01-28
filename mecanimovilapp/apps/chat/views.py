@@ -158,12 +158,28 @@ class ConversationViewSet(viewsets.ReadOnlyModelViewSet):
             if conversation.context_object:
                 context_model = conversation.content_type.model_class().__name__
                 print(f"🔵 [CHAT BACKEND] Context model: {context_model}")
-                if context_model == 'Oferta':
+                
+                if context_model == 'OfertaProveedor':
+                    # Direct Oferta context
                     oferta_id = conversation.context_object.id
-                    solicitud_id = conversation.context_object.solicitud.id
-                elif context_model == 'SolicitudServicio' or context_model == 'Solicitud':
+                    solicitud_id = conversation.context_object.solicitud.id if hasattr(conversation.context_object, 'solicitud') else None
+                elif 'Solicitud' in context_model:
+                    # SolicitudServicioPublica or similar
                     solicitud_id = conversation.context_object.id
-                    # Try to find related offer if needed, or leave None if pre-offer
+                    
+                    # Try to find the related Oferta
+                    # Query for OfertaProveedor where solicitud = this solicitud
+                    from mecanimovilapp.apps.ordenes.models import OfertaProveedor
+                    try:
+                        oferta = OfertaProveedor.objects.filter(
+                            solicitud=conversation.context_object
+                        ).first()
+                        if oferta:
+                            oferta_id = oferta.id
+                            print(f"🔵 [CHAT BACKEND] Found related Oferta: {oferta_id}")
+                    except Exception as e:
+                        print(f"⚠️ [CHAT BACKEND] Could not query related Oferta: {e}")
+                
                 print(f"🔵 [CHAT BACKEND] Context resolved - Oferta: {oferta_id}, Solicitud: {solicitud_id}")
         except Exception as e:
             print(f"❌ [CHAT BACKEND] Error resolving context: {e}")
