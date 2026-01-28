@@ -45,11 +45,18 @@ class ConversationSerializer(serializers.ModelSerializer):
     last_message = serializers.SerializerMethodField()
     other_participant = serializers.SerializerMethodField()
     context_info = serializers.SerializerMethodField()
+    context_id = serializers.SerializerMethodField()
     unread_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Conversation
-        fields = ('id', 'type', 'last_message', 'other_participant', 'context_info', 'updated_at', 'unread_count')
+        fields = ('id', 'type', 'last_message', 'other_participant', 'context_info', 'context_id', 'updated_at', 'unread_count')
+
+    def get_context_id(self, obj):
+        """Return the ID of the context object (Oferta, Solicitud, etc.)"""
+        if obj.context_object:
+            return str(obj.context_object.id)
+        return None
 
     def get_last_message(self, obj):
         last_msg = obj.messages.last()
