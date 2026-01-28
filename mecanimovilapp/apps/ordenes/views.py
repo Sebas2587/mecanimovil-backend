@@ -5829,35 +5829,62 @@ class ChatSolicitudViewSet(viewsets.ModelViewSet):
             fecha_lectura=timezone.now()
         )
         
+        
         # Notificar al destinatario vía WebSocket
         try:
             channel_layer = get_channel_layer()
             
-            # Determinar destinatario
-            if mensaje.es_proveedor:
-                # Mensaje del proveedor, notificar al cliente
-                if not oferta.solicitud.cliente or not oferta.solicitud.cliente.usuario:
-                    logger.warning(f"No se pudo enviar notificación: cliente o usuario no disponible para oferta {oferta.id}")
-                    return Response({'error': 'Cliente o usuario no disponible'}, status=status.HTTP_400_BAD_REQUEST)
-                destinatario_id = oferta.solicitud.cliente.usuario.id
-                grupo = f"cliente_{destinatario_id}"
-            else:
-                # Mensaje del cliente, notificar al proveedor
-                destinatario_id = oferta.proveedor.id
-                grupo = f"proveedor_{destinatario_id}"
+            print(f"🔵 [CHAT BACKEND OLD API] Iniciando broadcast para mensaje: {mensaje.id}")
+            print(f"🔵 [CHAT BACKEND OLD API] Oferta: {oferta.id}, Solicitud: {oferta.solicitud.id}")
+            print(f"🔵 [CHAT BACKEND OLD API] Sender is provider: {mensaje.es_proveedor}")
             
-            async_to_sync(channel_layer.group_send)(
-                grupo,
-                {
-                    'type': 'nuevo_mensaje_chat',
-                    'mensaje_id': str(mensaje.id),
-                    'oferta_id': str(oferta.id),
-                    'solicitud_id': str(oferta.solicitud.id),
-                    'enviado_por': mensaje.enviado_por.get_full_name(),
-                    'mensaje': mensaje.mensaje[:100],
-                    'es_proveedor': mensaje.es_proveedor
-                }
-            )
+            # Preparar payload con todos los campos necesarios
+            payload = {
+                'type': 'nuevo_mensaje_chat',
+                'mensaje_id': str(mensaje.id),
+                'oferta_id': str(oferta.id),
+                'solicitud_id': str(oferta.solicitud.id),
+                'enviado_por': mensaje.enviado_por.get_full_name(),
+                'mensaje': mensaje.mensaje,
+                'content': mensaje.mensaje,
+                'message': mensaje.mensaje,
+                'es_proveedor': mensaje.es_proveedor,
+                'sender_id': mensaje.enviado_por.id,
+                'timestamp': mensaje.fecha_envio.isoformat() if hasattr(mensaje.fecha_envio, 'isoformat') else str(mensaje.fecha_envio),
+                'archivo_adjunto': None
+            }
+            
+            print(f"🔵 [CHAT BACKEND OLD API] Payload prepared: {payload}")
+            
+            # Determinar participantes (cliente y proveedor)
+            participantes = []
+            
+            # Agregar cliente
+            if oferta.solicitud.cliente and oferta.solicitud.cliente.usuario:
+                participantes.append(oferta.solicitud.cliente.usuario)
+            
+            # Agregar proveedor
+            if oferta.proveedor:
+                participantes.append(oferta.proveedor)
+            
+            print(f"🔵 [CHAT BACKEND OLD API] Broadcasting to {len(participantes)} participants")
+            
+            # Enviar a AMBOS canales (cliente_ y proveedor_) de cada participante
+            for participante in participantes:
+                print(f"🔵 [CHAT BACKEND OLD API] Broadcasting to cliente_{participante.id} and proveedor_{participante.id}")
+                # Send to Client Consumer Group
+                async_to_sync(channel_layer.group_send)(
+                    f"cliente_{participante.id}",
+                    payload
+                )
+                # Send to Provider Consumer Group
+                async_to_sync(channel_layer.group_send)(
+                    f"proveedor_{participante.id}",
+                    payload
+                )
+            
+            print(f"🔵 [CHAT BACKEND OLD API] Broadcast completado")
+            
         except Exception as e:
             logger.error(f"Error enviando notificación WebSocket: {e}")
     
