@@ -5829,6 +5829,42 @@ class ChatSolicitudViewSet(viewsets.ModelViewSet):
             fecha_lectura=timezone.now()
         )
         
+        # 🔄 BACKWARDS COMPATIBILITY: Also save to Message table
+        # This ensures apps using the new API can see messages sent via old API
+        try:
+            from mecanimovilapp.apps.chat.models import Conversation, Message
+            from django.contrib.contenttypes.models import ContentType
+            
+            # Find or create conversation for this oferta
+            oferta_content_type = ContentType.objects.get_for_model(oferta)
+            conversation, created = Conversation.objects.get_or_create(
+                content_type=oferta_content_type,
+                object_id=oferta.id,
+                defaults={'type': 'service'}
+            )
+            
+            # Add participants if new conversation
+            if created:
+                # Add cliente
+                if oferta.solicitud.cliente and oferta.solicitud.cliente.usuario:
+                    conversation.participants.add(oferta.solicitud.cliente.usuario)
+                # Add proveedor
+                if oferta.proveedor:
+                    conversation.participants.add(oferta.proveedor)
+            
+            # Create message in Message table
+            Message.objects.create(
+                conversation=conversation,
+                sender=user,
+                content=mensaje.mensaje,
+                attachment=mensaje.archivo_adjunto
+            )
+            print(f"✅ [CHAT BACKEND OLD API] Message also saved to Message table for new API compatibility")
+            
+        except Exception as e:
+            # If backwards compat fails, log but don't break the main flow
+            print(f"⚠️ [CHAT BACKEND OLD API] Failed to save to Message table: {e}")
+        
         
         # Notificar al destinatario vía WebSocket
         try:
