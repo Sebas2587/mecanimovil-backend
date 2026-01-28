@@ -26,10 +26,11 @@ def calculate_suggested_price(vehicle, precio_mercado, precio_fiscal, health_ove
     if not precio_mercado:
         return 0
         
-    val_fiscal = Decimal(precio_fiscal) if precio_fiscal else Decimal(precio_mercado)
-    val_mercado = Decimal(precio_mercado)
+    # Base Value = 100% Market Price (Fiscal Price is ignored to avoid undervaluing)
+    base_value = val_mercado
     
-    base_value = (val_mercado * Decimal('0.70')) + (val_fiscal * Decimal('0.30'))
+    # Legacy/Reference only:
+    # base_value = (val_mercado * Decimal('0.70')) + (val_fiscal * Decimal('0.30'))
     
     # 2. Mileage Factor Calculation
     mileage_factor = Decimal('0')
