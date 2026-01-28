@@ -141,23 +141,86 @@ class ConversationViewSet(viewsets.ReadOnlyModelViewSet):
         # Update conversation timestamp
         conversation.save()  # Triggers auto_now on updated_at
         
-        # Broadcast to WebSocket group
+        # Broadcast to WebSocket groups (Global Consumers)
         from channels.layers import get_channel_layer
         from asgiref.sync import async_to_sync
         
-        channel_layer = get_channel_layer()
-        room_group_name = f'chat_{conversation.id}'
+        print(f"🔵 [CHAT BACKEND] Iniciando broadcast para mensaje: {message.id}")
         
+        channel_layer = get_channel_layer()
+        
+        # Determine context IDs
+        oferta_id = None
+        solicitud_id = None
+        
+        # Try to resolve context
+        try:
+            if conversation.context_object:
+                context_model = conversation.content_type.model_class().__name__
+                print(f"🔵 [CHAT BACKEND] Context model: {context_model}")
+                if context_model == 'Oferta':
+                    oferta_id = conversation.context_object.id
+                    solicitud_id = conversation.context_object.solicitud.id
+                elif context_model == 'SolicitudServicio' or context_model == 'Solicitud':
+                    solicitud_id = conversation.context_object.id
+                    # Try to find related offer if needed, or leave None if pre-offer
+                print(f"🔵 [CHAT BACKEND] Context resolved - Oferta: {oferta_id}, Solicitud: {solicitud_id}")
+        except Exception as e:
+            print(f"❌ [CHAT BACKEND] Error resolving context: {e}")
+
+        # Determine if sender is provider
+        es_proveedor = False
+        try:
+            if hasattr(message.sender, 'mecanicodomicilio') or hasattr(message.sender, 'taller'):
+                es_proveedor = True
+        except:
+            pass
+        
+        print(f"🔵 [CHAT BACKEND] Sender is provider: {es_proveedor}")
+
+        # Prepare payload for Global Consumers (nuevo_mensaje_chat)
+        payload = {
+            'type': 'nuevo_mensaje_chat',
+            'mensaje_id': str(message.id),
+            'oferta_id': str(oferta_id) if oferta_id else None,
+            'solicitud_id': str(solicitud_id) if solicitud_id else None,
+            'enviado_por': f"{message.sender.first_name} {message.sender.last_name}",
+            'mensaje': message.content,
+            'content': message.content, # Fallback
+            'message': message.content, # Fallback
+            'es_proveedor': es_proveedor,
+            'sender_id': message.sender.id,
+            'timestamp': message.timestamp.isoformat(),
+            'archivo_adjunto': message.attachment.url if message.attachment else None
+        }
+        
+        print(f"🔵 [CHAT BACKEND] Payload prepared: {payload}")
+
+        # Broadcast to all participants' user groups
+        participants = list(conversation.participants.all())
+        print(f"🔵 [CHAT BACKEND] Broadcasting to {len(participants)} participants")
+        
+        for participant in participants:
+            print(f"🔵 [CHAT BACKEND] Broadcasting to cliente_{participant.id} and proveedor_{participant.id}")
+            # Send to Client Consumer Group
+            async_to_sync(channel_layer.group_send)(
+                f"cliente_{participant.id}",
+                payload
+            )
+            # Send to Provider Consumer Group
+            async_to_sync(channel_layer.group_send)(
+                f"proveedor_{participant.id}",
+                payload
+            )
+            
+        print(f"🔵 [CHAT BACKEND] Broadcast completado")
+        
+        # Also broadcast to legacy chat group if needed
         async_to_sync(channel_layer.group_send)(
-            room_group_name,
+            f'chat_{conversation.id}',
             {
-                'type': 'chat_message',
-                'message': message.content,
-                'sender_id': message.sender.id,
-                'sender_name': f"{message.sender.first_name} {message.sender.last_name}",
-                'timestamp': message.timestamp.isoformat(),
-                'id': message.id,
-                'attachment': message.attachment.url if message.attachment else None
+                'type': 'chat_message', # Keep legacy type for specific chat consumers
+                **payload
             }
         )
         
