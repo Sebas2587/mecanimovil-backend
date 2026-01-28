@@ -52,8 +52,13 @@ class VehiculoSerializer(serializers.ModelSerializer):
     numero_chasis = serializers.SerializerMethodField()
     
     
+    
     # Campo foto: usar el campo del modelo directamente para escritura
     # Sobrescribir to_representation para devolver URL completa en lectura
+    
+    # Forzar campos como escritura explicita para evitar que sean ReadOnly implícitamente
+    year = serializers.IntegerField(required=True)
+    patente = serializers.CharField(max_length=20, required=True)
     
     # Campo adicional para inicialización inteligente (checklist)
     componentes_al_dia = serializers.ListField(
