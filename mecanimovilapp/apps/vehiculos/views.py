@@ -440,7 +440,8 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         
         # Calcular bonus salud (Mock logic por ahora, igual que en serializer)
         # TODO: Centralizar cálculo
-        health_bonus_percentage = 5.3 
+        from mecanimovilapp.apps.marketplace.valuation_engine import calculate_potential_gain
+        health_bonus_percentage = calculate_potential_gain(vehiculo) 
         
         data = {
             'tasacion_fiscal': vehiculo.tasacion_fiscal,

@@ -1,10 +1,18 @@
 from decimal import Decimal
 from django.db.models import Sum
+from django.utils import timezone
 
 def calculate_suggested_price(vehicle, precio_mercado, precio_fiscal, health_override=None):
     """
     Calcula el precio sugerido final basado en el algoritmo maestro:
-    PrecioSugerido = (PrecioMercado * 0.4) + (PrecioFiscal * 0.6) + FactorSalud
+    PrecioSugerido = (BaseValue * MileageFactor) + HealthFactor
+    
+    BaseValue = (PrecioMercado * 0.70) + (PrecioFiscal * 0.30)
+    
+    MileageFactor:
+    - 20,000 km/año estándar
+    - < 70% del esperado: +3% Bonus
+    - > 130% del esperado: -3% Penalty
     
     FactorSalud:
     - Si Salud > 90%: +5% del valor base
@@ -21,9 +29,32 @@ def calculate_suggested_price(vehicle, precio_mercado, precio_fiscal, health_ove
     val_fiscal = Decimal(precio_fiscal) if precio_fiscal else Decimal(precio_mercado)
     val_mercado = Decimal(precio_mercado)
     
-    base_value = (val_mercado * Decimal('0.40')) + (val_fiscal * Decimal('0.60'))
+    base_value = (val_mercado * Decimal('0.70')) + (val_fiscal * Decimal('0.30'))
     
-    # 2. Health Factor Calculation
+    # 2. Mileage Factor Calculation
+    mileage_factor = Decimal('0')
+    try:
+        current_year = timezone.now().year
+        vehicle_year = int(vehicle.year)
+        age = max(1, current_year - vehicle_year) # Mínimo 1 año para evitar división por cero
+        
+        expected_km = age * 20000
+        actual_km = vehicle.kilometraje
+        
+        if actual_km > 0:
+            usage_ratio = actual_km / expected_km
+            
+            if usage_ratio < 0.7:
+                # Bajo Kilometraje: Bonus +3%
+                mileage_factor = base_value * Decimal('0.03')
+            elif usage_ratio > 1.3:
+                # Alto Kilometraje: Penalty -3%
+                mileage_factor = -(base_value * Decimal('0.03'))
+    except Exception as e:
+        print(f"Error calculating mileage factor: {e}")
+        # Fallback: No bonus/penalty
+    
+    # 3. Health Factor Calculation
     health_score = 0
     
     if health_override is not None:
@@ -40,12 +71,11 @@ def calculate_suggested_price(vehicle, precio_mercado, precio_fiscal, health_ove
              if ultimo_estado:
                  health_score = ultimo_estado.salud_general_porcentaje
          
-    # Lógica de Factor Salud
-    health_factor = Decimal('0')
+    health_factor_value = Decimal('0')
     
     if health_score > 90:
         # Bonificación del 5% del valor base (Certificado/Excelente estado)
-        health_factor = base_value * Decimal('0.05')
+        health_factor_value = base_value * Decimal('0.05')
     elif health_score < 50:
         # Penalización: Restar costo estimado de reparaciones
         # Solo aplicar si NO estamos en modo simulación (health_override is None o health_override < 50)
@@ -65,9 +95,9 @@ def calculate_suggested_price(vehicle, precio_mercado, precio_fiscal, health_ove
                  # Penalización presunta del 10% si no tenemos datos precisos
                  costo_reparaciones = base_value * Decimal('0.10')
             
-            health_factor = -Decimal(costo_reparaciones)
+            health_factor_value = -Decimal(costo_reparaciones)
             
-    final_price = base_value + health_factor
+    final_price = base_value + mileage_factor + health_factor_value
     
     # Asegurar que no sea negativo
     if final_price < 0:
