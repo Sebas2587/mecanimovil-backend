@@ -5833,21 +5833,25 @@ class ChatSolicitudViewSet(viewsets.ModelViewSet):
         # This ensures apps using the new API can see messages sent via old API
         try:
             from mecanimovilapp.apps.chat.models import Conversation, Message
+            from mecanimovilapp.apps.ordenes.models import SolicitudServicioPublica
             from django.contrib.contenttypes.models import ContentType
             
-            # Find or create conversation for this oferta
-            oferta_content_type = ContentType.objects.get_for_model(oferta)
+            # IMPORTANT: Use solicitud (not oferta) to match NEW API behavior
+
+            # Both APIs must create/find the SAME conversation
+            solicitud = oferta.solicitud
+            solicitud_content_type = ContentType.objects.get_for_model(SolicitudServicioPublica)
             conversation, created = Conversation.objects.get_or_create(
-                content_type=oferta_content_type,
-                object_id=oferta.id,
+                content_type=solicitud_content_type,
+                object_id=str(solicitud.id),  # Use solicitud, not oferta
                 defaults={'type': 'service'}
             )
             
             # Add participants if new conversation
             if created:
                 # Add cliente
-                if oferta.solicitud.cliente and oferta.solicitud.cliente.usuario:
-                    conversation.participants.add(oferta.solicitud.cliente.usuario)
+                if solicitud.cliente and solicitud.cliente.usuario:
+                    conversation.participants.add(solicitud.cliente.usuario)
                 # Add proveedor
                 if oferta.proveedor:
                     conversation.participants.add(oferta.proveedor)
