@@ -141,6 +141,26 @@ class ConversationViewSet(viewsets.ReadOnlyModelViewSet):
         # Update conversation timestamp
         conversation.save()  # Triggers auto_now on updated_at
         
+        # Broadcast to WebSocket group
+        from channels.layers import get_channel_layer
+        from asgiref.sync import async_to_sync
+        
+        channel_layer = get_channel_layer()
+        room_group_name = f'chat_{conversation.id}'
+        
+        async_to_sync(channel_layer.group_send)(
+            room_group_name,
+            {
+                'type': 'chat_message',
+                'message': message.content,
+                'sender_id': message.sender.id,
+                'sender_name': f"{message.sender.first_name} {message.sender.last_name}",
+                'timestamp': message.timestamp.isoformat(),
+                'id': message.id,
+                'attachment': message.attachment.url if message.attachment else None
+            }
+        )
+        
         serializer = MessageSerializer(message, context={'request': request})
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
