@@ -255,6 +255,11 @@ class ConversationViewSet(viewsets.ReadOnlyModelViewSet):
         print(f"🔵 [CHAT BACKEND] Broadcasting to {len(participants)} participants")
         
         for participant in participants:
+            # Skip sender to avoid duplicates (they have optimistic update)
+            if participant.id == request.user.id:
+                print(f"🔵 [CHAT BACKEND] Skipping sender (ID: {participant.id}) to avoid duplicates")
+                continue
+            
             print(f"🔵 [CHAT BACKEND] Broadcasting to cliente_{participant.id} and proveedor_{participant.id}")
             # Send to Client Consumer Group
             async_to_sync(channel_layer.group_send)(

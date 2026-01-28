@@ -5870,7 +5870,13 @@ class ChatSolicitudViewSet(viewsets.ModelViewSet):
             print(f"🔵 [CHAT BACKEND OLD API] Broadcasting to {len(participantes)} participants")
             
             # Enviar a AMBOS canales (cliente_ y proveedor_) de cada participante
+            # EXCEPTO al que envió el mensaje (para evitar duplicados)
             for participante in participantes:
+                # Skip sender to avoid duplicates (they have optimistic update)
+                if participante.id == mensaje.enviado_por.id:
+                    print(f"🔵 [CHAT BACKEND OLD API] Skipping sender (ID: {participante.id}) to avoid duplicates")
+                    continue
+                
                 print(f"🔵 [CHAT BACKEND OLD API] Broadcasting to cliente_{participante.id} and proveedor_{participante.id}")
                 # Send to Client Consumer Group
                 async_to_sync(channel_layer.group_send)(
