@@ -26,22 +26,29 @@ def verify():
     else:
         print("✅ Todos los campos esperados existen en el modelo.")
 
-    print("\n--- Verificando datos del último vehículo ---")
-    last_v = Vehiculo.objects.last()
-    if last_v:
-        print(f"Patente: {last_v.patente}")
-        print(f"ID: {last_v.id}")
-        data = {
-            'vin': last_v.vin,
-            'numero_motor': last_v.numero_motor,
-            'version': last_v.version,
-            'puertas': last_v.puertas,
-            'mes_revision_tecnica': last_v.mes_revision_tecnica,
-            'transmision': last_v.transmision,
-            'color': last_v.color
-        }
-        for k, v in data.items():
-            print(f"  - {k}: {v}")
+    count = Vehiculo.objects.count()
+    print(f"\n--- Verificando últimos 5 vehículos (Total: {count}) ---")
+    
+    # Obtener los últimos 5, ordenados por ID descendente
+    last_vehicles = Vehiculo.objects.all().order_by('-id')[:5]
+    
+    if last_vehicles:
+        for v in last_vehicles:
+            print(f"\n🚗 ID: {v.id} | Patente: {v.patente} | Creado: {v.fecha_creacion}")
+            data = {
+                'vin': v.vin,
+                'numero_motor': v.numero_motor,
+                'version': v.version,
+                'puertas': v.puertas,
+                'mes_revision_tecnica': v.mes_revision_tecnica,
+                'transmision': v.transmision,
+                'color': v.color
+            }
+            for k, val in data.items():
+                if val:
+                    print(f"  ✅ {k}: {val}")
+                else:
+                    print(f"  ❌ {k}: None")
     else:
         print("No hay vehículos registrados.")
 
