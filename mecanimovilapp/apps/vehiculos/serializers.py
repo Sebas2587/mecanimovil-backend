@@ -68,7 +68,7 @@ class VehiculoSerializer(serializers.ModelSerializer):
         model = Vehiculo
         fields = (
             'id', 'marca', 'modelo', 'cilindraje', 'tipo_motor', 
-            'year', 'año', 'patente', 'placa', 'kilometraje', 'foto', 'cliente',
+            'year', 'año', 'patente', 'placa', 'kilometraje', 'kilometraje_api', 'foto', 'cliente',
             'cliente_detail', 'marca_nombre', 'modelo_nombre',
             'color', 'numero_motor', 'vin',
             'fecha_creacion', 'fecha_actualizacion',

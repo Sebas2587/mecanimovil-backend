@@ -90,6 +90,7 @@ class Vehiculo(models.Model):
 
     patente = models.CharField(max_length=20, unique=True)
     kilometraje = models.PositiveIntegerField(default=0)
+    kilometraje_api = models.IntegerField(null=True, blank=True, help_text="Kilometraje obtenido de API externa")
     foto = models.ImageField(
         upload_to='',  # Guardar directamente en la raíz del storage (mecanimovil-app-media/)
         blank=True, 
