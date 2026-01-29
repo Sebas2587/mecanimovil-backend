@@ -656,7 +656,8 @@ class OfertaVehiculoSerializer(serializers.ModelSerializer):
     vendedor_nombre = serializers.ReadOnlyField(source='vehiculo.cliente.usuario.first_name')
     vendedor_apellido = serializers.ReadOnlyField(source='vehiculo.cliente.usuario.last_name')
     vendedor_foto = serializers.SerializerMethodField()
-    conversacion_id = serializers.ReadOnlyField(source='conversacion.id')
+    vendedor_foto = serializers.SerializerMethodField()
+    conversacion_id = serializers.SerializerMethodField()
 
     class Meta:
         model = OfertaVehiculo
@@ -669,6 +670,34 @@ class OfertaVehiculoSerializer(serializers.ModelSerializer):
             'conversacion_id'
         ]
         read_only_fields = ['comprador', 'fecha_creacion', 'fecha_actualizacion']
+
+    def get_conversacion_id(self, obj):
+        # Self-healing: If accepted but no conversation, create it now
+        if obj.estado == 'aceptada' and not obj.conversacion:
+            try:
+                from mecanimovilapp.apps.chat.models import Conversation
+                from django.contrib.contenttypes.models import ContentType
+                
+                # Double check to prevent race conditions or duplicates
+                if not obj.conversacion:
+                    seller = obj.vehiculo.cliente.usuario
+                    buyer = obj.comprador
+                    
+                    conversation = Conversation.objects.create(
+                        type='MARKETPLACE',
+                        content_type=ContentType.objects.get_for_model(obj),
+                        object_id=obj.id
+                    )
+                    conversation.participants.add(seller, buyer)
+                    
+                    obj.conversacion = conversation
+                    obj.save(update_fields=['conversacion'])
+            except Exception as e:
+                # Log error silently, return None
+                print(f"Error auto-healing conversation for offer {obj.id}: {e}")
+                return None
+                
+        return obj.conversacion.id if obj.conversacion else None
 
 
     def get_comprador_foto(self, obj):
