@@ -605,7 +605,8 @@ class VehiculoMarketplaceDetailSerializer(VehiculoMarketplaceSerializer):
                 'provider_avatar': provider_avatar,
                 'provider_type': provider_type,
                 'verified': True,
-                'mileage': f"{obj.kilometraje} km" # Fallback: Historical mileage logic needed in future
+                'mileage': f"{obj.kilometraje} km", # Fallback: Historical mileage logic needed in future
+                'cost': sol.total # Adding total cost of the service
             })
             
         return history_data
