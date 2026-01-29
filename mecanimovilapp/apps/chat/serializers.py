@@ -130,6 +130,23 @@ class ConversationSerializer(serializers.ModelSerializer):
             except:
                 pass
                 
+        elif 'ofertavehiculo' in model_name.lower():
+            try:
+                # Extract Info from Offer -> Vehicle
+                vehiculo = context.vehiculo
+                info['id'] = str(vehiculo.id) # Override ID to be Vehicle ID for navigation
+                info['type'] = 'vehiculo' # Frontend expects 'vehiculo' to nav to Marketplace Detail
+                
+                marca = vehiculo.marca_nombre or vehiculo.marca
+                modelo = vehiculo.modelo_nombre or vehiculo.modelo
+                info['title'] = f"{marca} {modelo} • {vehiculo.year}"
+                
+                # Show offer amount as subtitle
+                info['subtitle'] = f"Oferta: ${context.monto:,.0f}".replace(",", ".")
+            except Exception as e:
+                print(f"Error getting offer context info: {e}")
+                info['title'] = "Oferta de Vehículo"
+                
         return info
 
     def get_unread_count(self, obj):
