@@ -573,8 +573,8 @@ class VehiculoMarketplaceDetailSerializer(VehiculoMarketplaceSerializer):
             history_data.append({
                 'id': sol.id,
                 'date': sol.fecha_servicio.strftime('%d %b %Y'),
-                'service': service_name,
-                'provider': provider_name,
+                'service_name': service_name,   # Changed from 'service'
+                'provider_name': provider_name, # Changed from 'provider'
                 'verified': True,
                 'mileage': f"{obj.kilometraje} km" # Fallback: Historical mileage logic needed in future
             })
