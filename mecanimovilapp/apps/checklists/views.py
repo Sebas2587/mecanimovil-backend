@@ -228,14 +228,15 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
             logger.error(f"🔸 Traceback: {traceback.format_exc()}")
             return Response({'error': f'Error interno: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
-    @action(detail=False, methods=['get'], url_path='by_order/(?P<orden_id>[^/.]+)')
+    @action(detail=False, methods=['get'], url_path='by_order/(?P<orden_id>[^/.]+)', permission_classes=[permissions.AllowAny])
     def by_order(self, request, orden_id=None):
-        """Obtener checklist por ID de orden - Accesible por proveedores Y clientes dueños de la orden"""
+        """Obtener checklist por ID de orden - Accesible por proveedores, clientes dueños y PÚBLICO si es marketplace"""
         import logging
         logger = logging.getLogger(__name__)
         
         logger.info(f"🔸 by_order llamado para orden: {orden_id}")
-        logger.info(f"🔸 Usuario: {request.user.username} (ID: {request.user.id})")
+        user = request.user
+        logger.info(f"🔸 Usuario solicito: {user.username if user.is_authenticated else 'Anonymous'} (ID: {user.id if user.is_authenticated else 'None'})")
         
         if not orden_id:
             logger.error("🔸 ERROR: No se proporcionó orden_id")
@@ -248,30 +249,35 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
             # Buscar el checklist asociado a esta orden
             logger.info(f"🔸 Buscando checklist para orden: {orden_id}")
             instance = ChecklistInstance.objects.select_related(
-                'orden__cliente__usuario', 'orden__taller', 'orden__mecanico'
+                'orden__cliente__usuario', 'orden__taller', 'orden__mecanico', 'orden__vehiculo'
             ).get(orden=orden_id)
             logger.info(f"🔸 Checklist encontrado: ID {instance.id}, Estado: {instance.estado}")
             
             # Verificar que el usuario tenga acceso a esta orden
-            user = self.request.user
             tiene_acceso = False
             tipo_usuario = 'ninguno'
             
-            # ✅ NUEVO: Verificar si es el cliente dueño de la orden
-            try:
-                if hasattr(user, 'cliente') and instance.orden.cliente == user.cliente:
-                    tiene_acceso = True
-                    tipo_usuario = 'cliente_propietario'
-                    logger.info(f"🔸 Acceso verificado: Usuario es el cliente propietario de la orden")
-                elif instance.orden.cliente.usuario == user:
-                    tiene_acceso = True
-                    tipo_usuario = 'cliente_propietario'
-                    logger.info(f"🔸 Acceso verificado: Usuario es el cliente propietario de la orden (por usuario)")
-            except Exception as cliente_error:
-                logger.debug(f"🔸 Usuario no es cliente: {cliente_error}")
-            
-            # Verificar si es el proveedor (lógica existente)
-            if not tiene_acceso:
+            # ✅ NUEVO: Permitir acceso PÚBLICO si el vehículo está publicado en Marketplace
+            if instance.orden.vehiculo.is_published:
+                tiene_acceso = True
+                tipo_usuario = 'publico_marketplace'
+                logger.info(f"🔸 Acceso verificado: Vehículo publicado en Marketplace")
+
+            if user.is_authenticated:
+                # ✅ NUEVO: Verificar si es el cliente dueño de la orden
+                try:
+                    if hasattr(user, 'cliente') and instance.orden.cliente == user.cliente:
+                        tiene_acceso = True
+                        tipo_usuario = 'cliente_propietario'
+                        logger.info(f"🔸 Acceso verificado: Usuario es el cliente propietario de la orden")
+                    elif instance.orden.cliente.usuario == user:
+                        tiene_acceso = True
+                        tipo_usuario = 'cliente_propietario'
+                        logger.info(f"🔸 Acceso verificado: Usuario es el cliente propietario de la orden (por usuario)")
+                except Exception as cliente_error:
+                    logger.debug(f"🔸 Usuario no es cliente: {cliente_error}")
+                
+                # Verificar si es el proveedor (lógica existente)
                 if hasattr(user, 'taller') and instance.orden.taller == user.taller:
                     tiene_acceso = True
                     tipo_usuario = 'proveedor_taller'
@@ -282,7 +288,7 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
                     logger.info(f"🔸 Acceso verificado: Usuario es el mecánico asignado")
                     
             if not tiene_acceso:
-                logger.error(f"🔸 ERROR: Usuario {user.username} no tiene acceso a orden {orden_id}")
+                logger.error(f"🔸 ERROR: Usuario {user.username if user.is_authenticated else 'Anonymous'} no tiene acceso a orden {orden_id}")
                 return Response(
                     {'error': 'No tienes acceso a este checklist'}, 
                     status=status.HTTP_403_FORBIDDEN
