@@ -478,6 +478,7 @@ class VehiculoMarketplaceSerializer(serializers.ModelSerializer):
     foto_url = serializers.SerializerMethodField()
     health_score = serializers.SerializerMethodField()
     seller = serializers.SerializerMethodField()
+    is_reserved = serializers.SerializerMethodField()
     
     class Meta:
         model = Vehiculo
@@ -486,9 +487,15 @@ class VehiculoMarketplaceSerializer(serializers.ModelSerializer):
             'health_bonus_percentage', 'views_count', 'favorites_count', 'leads_count',
             'marca_nombre', 'modelo_nombre', 'year', 'foto_url', 'health_score',
             'seller', 'cilindraje', 'tipo_motor', 'kilometraje', 'color', 'transmision',
-            'vin', 'numero_motor', 'version', 'puertas', 'mes_revision_tecnica'
+            'vin', 'numero_motor', 'version', 'puertas', 'mes_revision_tecnica',
+            'is_reserved'
         )
-        read_only_fields = ('suggested_price', 'views_count', 'favorites_count', 'leads_count', 'health_bonus_percentage', 'health_score', 'seller')
+        read_only_fields = ('suggested_price', 'views_count', 'favorites_count', 'leads_count', 'health_bonus_percentage', 'health_score', 'seller', 'is_reserved')
+
+    def get_is_reserved(self, obj):
+        # A vehicle is reserved if it has any accepted offer
+        # We use the reversed relationship 'ofertas_recibidas'
+        return obj.ofertas_recibidas.filter(estado='aceptada').exists()
 
     def get_seller(self, obj):
         """Retorna información básica del vendedor"""
