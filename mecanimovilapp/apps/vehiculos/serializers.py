@@ -160,6 +160,9 @@ class VehiculoSerializer(serializers.ModelSerializer):
         
         logger = logging.getLogger(__name__)
         
+        logger.info(f"🚗 Creating Vehicle with data keys: {validated_data.keys()}")
+        logger.info(f"🚗 Detailed specs received: VIN={validated_data.get('vin')}, Motor={validated_data.get('numero_motor')}, Version={validated_data.get('version')}")
+
         # Extraer la lista de componentes al día
         componentes_al_dia = validated_data.pop('componentes_al_dia', [])
         # Extraer la foto si existe
