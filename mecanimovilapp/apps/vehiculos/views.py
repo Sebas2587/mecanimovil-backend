@@ -212,7 +212,13 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         marca_obj = None
         
         if marca_id:
-             marca_obj = Marca.objects.filter(id=marca_id).first()
+             # Validar si es un ID numérico o un string numérico
+             if isinstance(marca_id, int) or (isinstance(marca_id, str) and marca_id.isdigit()):
+                  marca_obj = Marca.objects.filter(id=marca_id).first()
+             else:
+                  # Si viene un nombre en el campo 'marca', lo ignoramos aquí para que lo resuelva por nombre abajo
+                  print(f"DEBUG: 'marca' field is not an ID ({marca_id}), trying resolution by name...")
+                  marca_id = None
              
         if not marca_obj and data.get('marca_nombre'):
             marca_nombre = data.get('marca_nombre')
