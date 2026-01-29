@@ -527,6 +527,7 @@ class OfertaVehiculoSerializer(serializers.ModelSerializer):
     vehiculo_precio = serializers.ReadOnlyField(source='vehiculo.precio_venta')
 
     # Datos del vendedor (para ofertas enviadas)
+    vendedor_id = serializers.ReadOnlyField(source='vehiculo.cliente.usuario.id')
     vendedor_nombre = serializers.ReadOnlyField(source='vehiculo.cliente.usuario.first_name')
     vendedor_apellido = serializers.ReadOnlyField(source='vehiculo.cliente.usuario.last_name')
     vendedor_foto = serializers.SerializerMethodField()
@@ -537,10 +538,11 @@ class OfertaVehiculoSerializer(serializers.ModelSerializer):
             'id', 'vehiculo', 'comprador', 'monto', 'mensaje', 'estado', 
             'fecha_creacion', 'fecha_actualizacion',
             'comprador_nombre', 'comprador_apellido', 'comprador_foto',
-            'vendedor_nombre', 'vendedor_apellido', 'vendedor_foto',
+            'vendedor_id', 'vendedor_nombre', 'vendedor_apellido', 'vendedor_foto',
             'vehiculo_marca', 'vehiculo_modelo', 'vehiculo_year', 'vehiculo_imagen', 'vehiculo_precio'
         ]
         read_only_fields = ['comprador', 'fecha_creacion', 'fecha_actualizacion']
+
 
 
     def get_comprador_foto(self, obj):
