@@ -656,6 +656,7 @@ class OfertaVehiculoSerializer(serializers.ModelSerializer):
     vendedor_nombre = serializers.ReadOnlyField(source='vehiculo.cliente.usuario.first_name')
     vendedor_apellido = serializers.ReadOnlyField(source='vehiculo.cliente.usuario.last_name')
     vendedor_foto = serializers.SerializerMethodField()
+    conversacion_id = serializers.ReadOnlyField(source='conversacion.id')
 
     class Meta:
         model = OfertaVehiculo
@@ -664,9 +665,11 @@ class OfertaVehiculoSerializer(serializers.ModelSerializer):
             'fecha_creacion', 'fecha_actualizacion',
             'comprador_nombre', 'comprador_apellido', 'comprador_foto',
             'vendedor_id', 'vendedor_nombre', 'vendedor_apellido', 'vendedor_foto',
-            'vehiculo_marca', 'vehiculo_modelo', 'vehiculo_year', 'vehiculo_imagen', 'vehiculo_precio'
+            'vehiculo_marca', 'vehiculo_modelo', 'vehiculo_year', 'vehiculo_imagen', 'vehiculo_precio',
+            'conversacion_id'
         ]
         read_only_fields = ['comprador', 'fecha_creacion', 'fecha_actualizacion']
+
 
     def get_comprador_foto(self, obj):
         from mecanimovilapp.storage.utils import get_image_url

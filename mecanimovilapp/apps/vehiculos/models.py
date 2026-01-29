@@ -1,6 +1,7 @@
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 from mecanimovilapp.apps.usuarios.models import Cliente
+from mecanimovilapp.apps.chat.models import Conversation
 
 
 class MarcaVehiculo(models.Model):
@@ -166,6 +167,14 @@ class OfertaVehiculo(models.Model):
     monto = models.IntegerField(help_text="Monto ofrecido")
     mensaje = models.TextField(blank=True, null=True)
     estado = models.CharField(max_length=20, choices=ESTADO_CHOICES, default='pendiente')
+    # Relación con la conversación de chat (se crea al aceptar)
+    conversacion = models.OneToOneField(
+        Conversation, 
+        on_delete=models.SET_NULL, 
+        null=True, 
+        blank=True,
+        related_name='oferta_vehiculo'
+    )
     fecha_creacion = models.DateTimeField(auto_now_add=True)
     fecha_actualizacion = models.DateTimeField(auto_now=True)
 

@@ -575,6 +575,33 @@ class OfertaVehiculoViewSet(viewsets.ModelViewSet):
             
         if nuevo_estado in ['aceptada', 'rechazada', 'contraoferta']:
             oferta.estado = nuevo_estado
+            
+            # Si se acepta, crear (o recuperar) la conversación
+            if nuevo_estado == 'aceptada':
+                from mecanimovilapp.apps.chat.models import Conversation
+                
+                # Check if conversation already exists for this offer
+                if not oferta.conversacion:
+                    # Create new conversation
+                    # Participants: Buyer (oferta.comprador), Seller (oferta.vehiculo.cliente.usuario)
+                    # Context: Vehicle Offer
+                    
+                    seller = oferta.vehiculo.cliente.usuario
+                    buyer = oferta.comprador
+                    
+                    # Try to find existing conversation between these users for this context type?
+                    # For simplicity, we create a new one or find existing direct one. 
+                    # But the requirement is specific to THIS offer.
+                    
+                    conversation = Conversation.objects.create(
+                        type='direct', # Or 'group' if we want dedicated context
+                        # We might need to contextually link it. 
+                        # Assuming 'direct' is sufficient with context data in messages or just the link.
+                    )
+                    conversation.participants.add(seller, buyer)
+                    
+                    oferta.conversacion = conversation
+            
             oferta.save()
             return Response(self.get_serializer(oferta).data)
         
