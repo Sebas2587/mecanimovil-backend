@@ -557,12 +557,18 @@ class VehiculoMarketplaceDetailSerializer(VehiculoMarketplaceSerializer):
         
         history_data = []
         for sol in solicitudes:
-            # Determinar el nombre del servicio (puede ser uno o varios, tomamos el principal o concatenamos)
-            # Como no tenemos acceso fácil a los servicios aquí (dependiendo de la implementación M2M),
-            # usaremos una descripción genérica o el tipo de servicio.
-            # Asumiremos que se puede obtener algo descriptivo.
-            service_name = sol.get_tipo_servicio_display() 
+            # Determinar el nombre del servicio real desde las líneas
+            service_name = "Servicio General"
             
+            # Intentar obtener servicio desde lineas (lo más común en historial completado)
+            first_line = sol.lineas.first()
+            if first_line:
+                if first_line.oferta_servicio and first_line.oferta_servicio.servicio:
+                    service_name = first_line.oferta_servicio.servicio.nombre
+                # Si hay más de una línea, podríamos agregar un indicador " + otros"
+                if sol.lineas.count() > 1:
+                    service_name += " y otros"
+
             # Obtener proveedor y avatar
             provider_name = "MecaniMóvil Provider"
             provider_avatar = None
