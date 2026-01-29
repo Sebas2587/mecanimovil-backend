@@ -4,12 +4,12 @@ from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.db.models import Q
-from .models import Vehiculo, Marca, MarcaVehiculo, Modelo
+from .models import Vehiculo, Marca, MarcaVehiculo, Modelo, OfertaVehiculo
 from .models_health import ComponenteSaludConfig
 from .serializers import (
     VehiculoSerializer, VehiculoLiteSerializer, MarcaSerializer, 
     MarcaVehiculoSerializer, ModeloSerializer, VehiculoMarketplaceSerializer,
-    VehiculoMarketplaceDetailSerializer
+    VehiculoMarketplaceDetailSerializer, OfertaVehiculoSerializer
 )
 
 
@@ -531,3 +531,51 @@ class VehiculoViewSet(viewsets.ModelViewSet):
             
         serializer = VehiculoMarketplaceDetailSerializer(vehiculo, context={'request': request})
         return Response(serializer.data)
+
+
+class OfertaVehiculoViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet para manejar las ofertas de vehículos (Compras)
+    """
+    queryset = OfertaVehiculo.objects.all()
+    serializer_class = OfertaVehiculoSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        # Retorna ofertas enviadas por mí O recibidas por mis vehículos
+        return OfertaVehiculo.objects.filter(
+            Q(comprador=user) | Q(vehiculo__cliente__usuario=user)
+        ).distinct()
+
+    def perform_create(self, serializer):
+        serializer.save(comprador=self.request.user)
+
+    @action(detail=False, methods=['get'])
+    def mis_ofertas_enviadas(self, request):
+        ofertas = OfertaVehiculo.objects.filter(comprador=request.user)
+        serializer = self.get_serializer(ofertas, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'])
+    def mis_ofertas_recibidas(self, request):
+        # Necesitamos volver hacia atras: User -> Cliente -> Vehiculos -> Ofertas
+        ofertas = OfertaVehiculo.objects.filter(vehiculo__cliente__usuario=request.user)
+        serializer = self.get_serializer(ofertas, many=True)
+        return Response(serializer.data)
+        
+    @action(detail=True, methods=['post'])
+    def responder(self, request, pk=None):
+        oferta = self.get_object()
+        nuevo_estado = request.data.get('estado')
+        
+        # Validar permisos (solo dueño del vehículo puede aceptar/rechazar)
+        if oferta.vehiculo.cliente.usuario != request.user:
+            return Response({"error": "Solo el dueño del vehículo puede responder"}, status=403)
+            
+        if nuevo_estado in ['aceptada', 'rechazada', 'contraoferta']:
+            oferta.estado = nuevo_estado
+            oferta.save()
+            return Response(self.get_serializer(oferta).data)
+        
+        return Response({"error": "Estado inválido"}, status=400)

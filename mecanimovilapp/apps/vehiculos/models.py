@@ -139,4 +139,40 @@ class Vehiculo(models.Model):
     
     @property
     def modelo_nombre(self):
-        return self.modelo.nombre 
+        return self.modelo.nombre
+
+class OfertaVehiculo(models.Model):
+    """
+    Ofertas de compra para vehículos en el Marketplace
+    """
+    ESTADO_CHOICES = [
+        ('pendiente', 'Pendiente'),
+        ('aceptada', 'Aceptada'),
+        ('rechazada', 'Rechazada'),
+        ('contraoferta', 'Contraoferta'),
+        ('cancelada', 'Cancelada'),
+    ]
+
+    vehiculo = models.ForeignKey(
+        Vehiculo, 
+        on_delete=models.CASCADE, 
+        related_name='ofertas_recibidas'
+    )
+    comprador = models.ForeignKey(
+        'usuarios.Usuario', 
+        on_delete=models.CASCADE, 
+        related_name='ofertas_compras_vehiculos'
+    )
+    monto = models.IntegerField(help_text="Monto ofrecido")
+    mensaje = models.TextField(blank=True, null=True)
+    estado = models.CharField(max_length=20, choices=ESTADO_CHOICES, default='pendiente')
+    fecha_creacion = models.DateTimeField(auto_now_add=True)
+    fecha_actualizacion = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _('oferta de vehículo')
+        verbose_name_plural = _('ofertas de vehículos')
+        ordering = ['-fecha_creacion']
+
+    def __str__(self):
+        return f"Oferta {self.id} - {self.vehiculo} - {self.monto}"

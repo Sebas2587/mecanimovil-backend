@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Vehiculo, Marca, MarcaVehiculo, Modelo
+from .models import Vehiculo, Marca, MarcaVehiculo, Modelo, OfertaVehiculo
 from .models_health import ComponenteSaludConfig, ComponenteSaludVehiculo
 from django.db.models import Q
 from mecanimovilapp.apps.usuarios.serializers import ClienteSerializer
@@ -510,7 +510,60 @@ class VehiculoMarketplaceSerializer(serializers.ModelSerializer):
                 'nombre': f"{user.first_name} {user.last_name}".strip() or user.username,
                 'foto_url': foto_url
             }
+
+class OfertaVehiculoSerializer(serializers.ModelSerializer):
+    """
+    Serializador para las ofertas de vehículos
+    """
+    comprador_nombre = serializers.ReadOnlyField(source='comprador.first_name')
+    comprador_apellido = serializers.ReadOnlyField(source='comprador.last_name')
+    comprador_foto = serializers.SerializerMethodField()
+    
+    # Datos planos del vehículo para fácil visualización
+    vehiculo_marca = serializers.ReadOnlyField(source='vehiculo.marca.nombre')
+    vehiculo_modelo = serializers.ReadOnlyField(source='vehiculo.modelo.nombre')
+    vehiculo_year = serializers.ReadOnlyField(source='vehiculo.year')
+    vehiculo_imagen = serializers.SerializerMethodField()
+    vehiculo_precio = serializers.ReadOnlyField(source='vehiculo.precio_venta')
+
+    # Datos del vendedor (para ofertas enviadas)
+    vendedor_nombre = serializers.ReadOnlyField(source='vehiculo.cliente.usuario.first_name')
+    vendedor_apellido = serializers.ReadOnlyField(source='vehiculo.cliente.usuario.last_name')
+    vendedor_foto = serializers.SerializerMethodField()
+
+    class Meta:
+        model = OfertaVehiculo
+        fields = [
+            'id', 'vehiculo', 'comprador', 'monto', 'mensaje', 'estado', 
+            'fecha_creacion', 'fecha_actualizacion',
+            'comprador_nombre', 'comprador_apellido', 'comprador_foto',
+            'vendedor_nombre', 'vendedor_apellido', 'vendedor_foto',
+            'vehiculo_marca', 'vehiculo_modelo', 'vehiculo_year', 'vehiculo_imagen', 'vehiculo_precio'
+        ]
+        read_only_fields = ['comprador', 'fecha_creacion', 'fecha_actualizacion']
+
+
+    def get_comprador_foto(self, obj):
+        from mecanimovilapp.storage.utils import get_image_url
+        request = self.context.get('request')
+        if obj.comprador and obj.comprador.foto_perfil:
+            return get_image_url(obj.comprador.foto_perfil, request)
         return None
+
+    def get_vehiculo_imagen(self, obj):
+        from mecanimovilapp.storage.utils import get_image_url
+        request = self.context.get('request')
+        if obj.vehiculo and obj.vehiculo.foto:
+            return get_image_url(obj.vehiculo.foto, request)
+        return None
+
+    def get_vendedor_foto(self, obj):
+        from mecanimovilapp.storage.utils import get_image_url
+        request = self.context.get('request')
+        if obj.vehiculo and obj.vehiculo.cliente and obj.vehiculo.cliente.usuario and obj.vehiculo.cliente.usuario.foto_perfil:
+             return get_image_url(obj.vehiculo.cliente.usuario.foto_perfil, request)
+        return None
+
 
     def get_foto_url(self, obj):
         from mecanimovilapp.storage.utils import get_image_url
