@@ -563,18 +563,34 @@ class VehiculoMarketplaceDetailSerializer(VehiculoMarketplaceSerializer):
             # Asumiremos que se puede obtener algo descriptivo.
             service_name = sol.get_tipo_servicio_display() 
             
-            # Obtener proveedor
+            # Obtener proveedor y avatar
             provider_name = "MecaniMóvil Provider"
+            provider_avatar = None
+            provider_type = 'mecanico'
+
+            from mecanimovilapp.storage.utils import get_image_url
+            request = self.context.get('request')
+
             if sol.taller:
                 provider_name = sol.taller.nombre
+                provider_type = 'taller'
+                if sol.taller.logo:
+                    provider_avatar = get_image_url(sol.taller.logo, request)
             elif sol.mecanico:
                 provider_name = f"{sol.mecanico.usuario.first_name} {sol.mecanico.usuario.last_name}"
+                provider_type = 'mecanico'
+                if sol.mecanico.usuario.foto_perfil:
+                    provider_avatar = get_image_url(sol.mecanico.usuario.foto_perfil, request)
+                elif hasattr(sol.mecanico.usuario, 'foto_perfil_url') and sol.mecanico.usuario.foto_perfil_url:
+                     provider_avatar = sol.mecanico.usuario.foto_perfil_url
             
             history_data.append({
                 'id': sol.id,
                 'date': sol.fecha_servicio.strftime('%d %b %Y'),
-                'service_name': service_name,   # Changed from 'service'
-                'provider_name': provider_name, # Changed from 'provider'
+                'service_name': service_name,
+                'provider_name': provider_name,
+                'provider_avatar': provider_avatar,
+                'provider_type': provider_type,
                 'verified': True,
                 'mileage': f"{obj.kilometraje} km" # Fallback: Historical mileage logic needed in future
             })
