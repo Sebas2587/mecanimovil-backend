@@ -496,15 +496,39 @@ class VehiculoMarketplaceSerializer(serializers.ModelSerializer):
     year = serializers.ReadOnlyField()
     foto_url = serializers.SerializerMethodField()
     health_score = serializers.SerializerMethodField()
+    seller = serializers.SerializerMethodField()
     
     class Meta:
         model = Vehiculo
         fields = (
             'id', 'is_published', 'precio_venta', 'suggested_price',
             'health_bonus_percentage', 'views_count', 'favorites_count', 'leads_count',
-            'marca_nombre', 'modelo_nombre', 'year', 'foto_url', 'health_score'
+            'marca_nombre', 'modelo_nombre', 'year', 'foto_url', 'health_score',
+            'seller'
         )
-        read_only_fields = ('suggested_price', 'views_count', 'favorites_count', 'leads_count', 'health_bonus_percentage', 'health_score')
+        read_only_fields = ('suggested_price', 'views_count', 'favorites_count', 'leads_count', 'health_bonus_percentage', 'health_score', 'seller')
+
+    def get_seller(self, obj):
+        """Retorna información básica del vendedor"""
+        if hasattr(obj, 'cliente') and obj.cliente and hasattr(obj.cliente, 'usuario'):
+            user = obj.cliente.usuario
+            
+            # Obtener URL de foto de perfil
+            foto_url = None
+            # Check various potential photo fields
+            if hasattr(user, 'foto_perfil') and user.foto_perfil:
+                from mecanimovilapp.storage.utils import get_image_url
+                request = self.context.get('request')
+                foto_url = get_image_url(user.foto_perfil, request)
+            elif hasattr(user, 'foto_perfil_url') and user.foto_perfil_url:
+                foto_url = user.foto_perfil_url
+                
+            return {
+                'id': user.id,
+                'nombre': f"{user.first_name} {user.last_name}".strip() or user.username,
+                'foto_url': foto_url
+            }
+        return None
 
     def get_foto_url(self, obj):
         from mecanimovilapp.storage.utils import get_image_url
