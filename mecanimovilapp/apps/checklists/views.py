@@ -248,9 +248,17 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
         try:
             # Buscar el checklist asociado a esta orden
             logger.info(f"🔸 Buscando checklist para orden: {orden_id}")
+            
+            # Verificar si orden_id es numérico o UUID
+            if str(orden_id).isdigit():
+                query = {'orden__id': orden_id}
+            else:
+                # Asumir que es UUID si no es dígito
+                query = {'orden__uuid': orden_id}
+
             instance = ChecklistInstance.objects.select_related(
                 'orden__cliente__usuario', 'orden__taller', 'orden__mecanico', 'orden__vehiculo'
-            ).get(orden=orden_id)
+            ).get(**query)
             logger.info(f"🔸 Checklist encontrado: ID {instance.id}, Estado: {instance.estado}")
             
             # Verificar que el usuario tenga acceso a esta orden
