@@ -78,6 +78,16 @@ class Vehiculo(models.Model):
         default='Gasolina'
     )
     year = models.IntegerField(verbose_name=_('año'), default=2024)
+    color = models.CharField(max_length=30, blank=True, null=True, verbose_name=_('color'))
+    transmision = models.CharField(max_length=20, blank=True, null=True, verbose_name=_('transmisión'))
+    
+    # Nuevos campos detallados
+    vin = models.CharField(max_length=30, blank=True, null=True, verbose_name=_('VIN'))
+    numero_motor = models.CharField(max_length=30, blank=True, null=True, verbose_name=_('número de motor'))
+    version = models.CharField(max_length=100, blank=True, null=True, verbose_name=_('versión'))
+    puertas = models.IntegerField(null=True, blank=True, verbose_name=_('puertas'))
+    mes_revision_tecnica = models.CharField(max_length=20, blank=True, null=True, verbose_name=_('mes revisión técnica'))
+
     patente = models.CharField(max_length=20, unique=True)
     kilometraje = models.PositiveIntegerField(default=0)
     foto = models.ImageField(

@@ -46,13 +46,6 @@ class VehiculoSerializer(serializers.ModelSerializer):
     año = serializers.ReadOnlyField(source='year')  # Mapear year -> año
     placa = serializers.ReadOnlyField(source='patente')  # Mapear patente -> placa
     
-    # Campos adicionales que pueden no estar en el modelo pero el frontend espera
-    color = serializers.SerializerMethodField()
-    numero_motor = serializers.SerializerMethodField()
-    numero_chasis = serializers.SerializerMethodField()
-    
-    
-    
     # Campo foto: usar el campo del modelo directamente para escritura
     # Sobrescribir to_representation para devolver URL completa en lectura
     
@@ -77,9 +70,10 @@ class VehiculoSerializer(serializers.ModelSerializer):
             'id', 'marca', 'modelo', 'cilindraje', 'tipo_motor', 
             'year', 'año', 'patente', 'placa', 'kilometraje', 'foto', 'cliente',
             'cliente_detail', 'marca_nombre', 'modelo_nombre',
-            'color', 'numero_motor', 'numero_chasis',
+            'color', 'numero_motor', 'vin',
             'fecha_creacion', 'fecha_actualizacion',
             'componentes_al_dia',
+            'transmision', 'version', 'puertas', 'mes_revision_tecnica',
             # Appraisal Fields
             'tasacion_fiscal', 'permiso_circulacion', 'year_tasacion_fiscal',
             'precio_mercado_min', 'precio_mercado_max', 'precio_mercado_promedio',
@@ -109,16 +103,6 @@ class VehiculoSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         return get_image_url(obj.foto, request)
     
-    def get_color(self, obj):
-        """Retorna el color del vehículo si está disponible"""
-        return getattr(obj, 'color', 'Desconocido')
-    
-    def get_numero_motor(self, obj):
-        """Retorna el número de motor si está disponible"""
-        # Por ahora retorna None ya que no existe en el modelo
-        # En el futuro se puede agregar el campo al modelo
-        return getattr(obj, 'numero_motor', None)
-    
     def get_health_score(self, obj):
         # Calcular promedio de salud de componentes (Lógica compartida)
         from .models_health import ComponenteSaludVehiculo
@@ -129,12 +113,6 @@ class VehiculoSerializer(serializers.ModelSerializer):
         if avg_health is not None:
             return int(avg_health)
         return 100 # Default para nuevos vehículos sin componentes reportados aún
-    
-    def get_numero_chasis(self, obj):
-        """Retorna el número de chasis si está disponible"""
-        # Por ahora retorna None ya que no existe en el modelo
-        # En el futuro se puede agregar el campo al modelo
-        return getattr(obj, 'numero_chasis', None)
 
     def get_active_requests_count(self, obj):
         """Retorna el número de solicitudes activas para este vehículo"""
@@ -504,7 +482,8 @@ class VehiculoMarketplaceSerializer(serializers.ModelSerializer):
             'id', 'is_published', 'precio_venta', 'suggested_price',
             'health_bonus_percentage', 'views_count', 'favorites_count', 'leads_count',
             'marca_nombre', 'modelo_nombre', 'year', 'foto_url', 'health_score',
-            'seller'
+            'seller', 'cilindraje', 'tipo_motor', 'kilometraje', 'color', 'transmision',
+            'vin', 'numero_motor', 'version', 'puertas', 'mes_revision_tecnica'
         )
         read_only_fields = ('suggested_price', 'views_count', 'favorites_count', 'leads_count', 'health_bonus_percentage', 'health_score', 'seller')
 
