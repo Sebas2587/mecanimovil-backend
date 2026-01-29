@@ -246,19 +246,50 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
             )
         
         try:
-            # Buscar el checklist asociado a esta orden
-            logger.info(f"🔸 Buscando checklist para orden: {orden_id}")
+            # Inicializar instance
+            instance = None
             
             # Verificar si orden_id es numérico o UUID
             if str(orden_id).isdigit():
+                # Búsqueda estándar por ID de SolicitudServicio (Int)
                 query = {'orden__id': orden_id}
+                try:
+                    instance = ChecklistInstance.objects.select_related(
+                        'orden__cliente__usuario', 'orden__taller', 'orden__mecanico', 'orden__vehiculo'
+                    ).get(**query)
+                except ChecklistInstance.DoesNotExist:
+                    # Si no existe, lanzará 404
+                    raise
             else:
-                # Asumir que es UUID si no es dígito
-                query = {'orden__uuid': orden_id}
+                # Si es UUID, puede ser:
+                # 1. ID de la SolicitudServicioPublica (lo que ve el dueño en su panel)
+                # 2. ID de la OfertaProveedor (menos probable pero posible)
+                
+                from django.db.models import Q
+                
+                # Intentamos encontrar la instancia usando diferentes caminos posibles con UUID
+                try:
+                    instance = ChecklistInstance.objects.select_related(
+                        'orden__cliente__usuario', 'orden__taller', 'orden__mecanico', 'orden__vehiculo'
+                    ).filter(
+                        Q(orden__oferta_proveedor__solicitud__id=orden_id) |  # Por ID de Solicitud Publica
+                        Q(orden__oferta_proveedor__id=orden_id)               # Por ID de Oferta Proveedor
+                    ).first()
+                    
+                    if instance:
+                         logger.info(f"🔸 Checklist encontrado por UUID indirecto: ID {instance.id}")
+                    else:
+                         logger.warning(f"🔸 No se encontró checklist para UUID: {orden_id}")
+                         raise ChecklistInstance.DoesNotExist
+                except Exception as e:
+                     logger.warning(f"🔸 No se pudo resolver UUID {orden_id}: {e}")
+                     raise ChecklistInstance.DoesNotExist
 
-            instance = ChecklistInstance.objects.select_related(
-                'orden__cliente__usuario', 'orden__taller', 'orden__mecanico', 'orden__vehiculo'
-            ).get(**query)
+            if not instance:
+                # Fallback final (seguridad)
+                raise ChecklistInstance.DoesNotExist
+
+            logger.info(f"🔸 Checklist encontrado: ID {instance.id}, Estado: {instance.estado}")
             logger.info(f"🔸 Checklist encontrado: ID {instance.id}, Estado: {instance.estado}")
             
             # Verificar que el usuario tenga acceso a esta orden
