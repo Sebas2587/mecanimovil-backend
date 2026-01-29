@@ -229,6 +229,16 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         
         # 2. Resolver Modelo
         modelo_id = data.get('modelo')
+
+        if modelo_id:
+             # Validar si es un ID numérico válido y si EXISTE en nuestra BD
+             if isinstance(modelo_id, int) or (isinstance(modelo_id, str) and modelo_id.isdigit()):
+                  if not Modelo.objects.filter(id=modelo_id).exists():
+                       print(f"DEBUG: 'modelo' ID {modelo_id} does not exist in local DB. Trying resolution by name...")
+                       modelo_id = None
+             else:
+                  print(f"DEBUG: 'modelo' field is not an ID ({modelo_id}), trying resolution by name...")
+                  modelo_id = None
         
         if not modelo_id and marca_obj and data.get('modelo_nombre'):
                 modelo_nombre = data.get('modelo_nombre')
