@@ -2,7 +2,9 @@ from django.contrib import admin
 from django.utils.html import format_html
 from .models import Marca, MarcaVehiculo, Modelo, Vehiculo
 from .models_health import (
-    ComponenteSaludConfig,
+    ComponenteSalud,
+    ReglaMantenimientoGenerica,
+    ReglaMantenimientoEspecifica,
     EstadoSaludVehiculo,
     ComponenteSaludVehiculo,
     AlertaMantenimiento
@@ -153,34 +155,23 @@ class VehiculoAdmin(admin.ModelAdmin):
     mostrar_foto_detalle.short_description = 'Vista previa'
 
 
-@admin.register(ComponenteSaludConfig)
-class ComponenteSaludConfigAdmin(admin.ModelAdmin):
-    """
-    Administrador para ComponenteSaludConfig
-    """
-    list_display = ['nombre', 'tipo_medicion', 'km_critico', 'meses_critico', 'activo', 'orden_visualizacion']
-    list_filter = ['tipo_medicion', 'activo']
-    search_fields = ['nombre', 'descripcion']
-    ordering = ['orden_visualizacion', 'nombre']
-    
-    fieldsets = (
-        ('Información Básica', {
-            'fields': ('nombre', 'descripcion', 'tipo_medicion', 'icono', 'activo', 'orden_visualizacion')
-        }),
-        ('Parámetros de Weibull', {
-            'fields': ('beta', 'eta'),
-            'description': 'Parámetros del algoritmo de degradación'
-        }),
-        ('Umbrales de Servicio', {
-            'fields': ('km_critico', 'meses_critico'),
-        }),
-        ('Factores de Ajuste', {
-            'fields': ('factor_edad_vehiculo', 'factor_uso_intensivo'),
-        }),
-        ('Integración', {
-            'fields': ('servicio_asociado',),
-        }),
-    )
+@admin.register(ComponenteSalud)
+class ComponenteSaludAdmin(admin.ModelAdmin):
+    list_display = ['nombre', 'slug', 'es_critico', 'icono', 'orden_visualizacion']
+    search_fields = ['nombre', 'slug']
+    ordering = ['orden_visualizacion']
+
+@admin.register(ReglaMantenimientoGenerica)
+class ReglaMantenimientoGenericaAdmin(admin.ModelAdmin):
+    list_display = ['componente', 'tipo_motor', 'vida_util_km', 'beta']
+    list_filter = ['tipo_motor']
+    search_fields = ['componente__nombre']
+
+@admin.register(ReglaMantenimientoEspecifica)
+class ReglaMantenimientoEspecificaAdmin(admin.ModelAdmin):
+    list_display = ['componente', 'marca', 'modelo', 'vida_util_km', 'beta']
+    list_filter = ['marca']
+    search_fields = ['componente__nombre', 'marca__nombre', 'modelo__nombre']
 
 
 @admin.register(EstadoSaludVehiculo)
@@ -200,21 +191,13 @@ class ComponenteSaludVehiculoAdmin(admin.ModelAdmin):
     """
     Administrador para ComponenteSaludVehiculo
     """
-    list_display = ['vehiculo', 'componente_config', 'salud_porcentaje', 'nivel_alerta', 'requiere_servicio_inmediato']
+    list_display = ['vehiculo', 'componente', 'salud_porcentaje', 'nivel_alerta', 'requiere_servicio_inmediato']
     list_filter = ['nivel_alerta', 'requiere_servicio_inmediato']
-    search_fields = ['vehiculo__patente', 'componente_config__nombre']
-    actions = ['recalcular_salud']
+    search_fields = ['vehiculo__patente', 'componente__nombre']
     
-    def recalcular_salud(self, request, queryset):
-        """
-        Acción para recalcular salud de componentes seleccionados
-        """
-        count = 0
-        for comp in queryset:
-            comp.calcular_salud()
-            count += 1
-        self.message_user(request, f'Se recalculó la salud de {count} componentes.')
-    recalcular_salud.short_description = 'Recalcular salud de componentes seleccionados'
+    # actions = ['recalcular_salud']
+    # def recalcular_salud(self, request, queryset):
+    #     pass
 
 
 @admin.register(AlertaMantenimiento)

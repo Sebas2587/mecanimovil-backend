@@ -159,7 +159,7 @@ class VehicleHealthViewSet(viewsets.ReadOnlyModelViewSet):
             componentes = ComponenteSaludVehiculo.objects.filter(
                 vehiculo_id=vehicle_id
             ).select_related(
-                'componente_config'
+                'componente'
             )[:20]  # Limitar a 20 componentes (paginación implícita)
             
             alertas = AlertaMantenimiento.objects.filter(
@@ -255,7 +255,7 @@ class VehicleHealthViewSet(viewsets.ReadOnlyModelViewSet):
         
         componentes = ComponenteSaludVehiculo.objects.filter(
             vehiculo_id=vehicle_id
-        ).select_related('componente_config')[offset:offset + page_size]
+        ).select_related('componente')[offset:offset + page_size]
         
         data = ComponenteSaludVehiculoSerializer(componentes, many=True).data
         

@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from .models import Vehiculo, Marca, MarcaVehiculo, Modelo, OfertaVehiculo
-from .models_health import ComponenteSaludConfig, ComponenteSaludVehiculo
+from .models_health import ComponenteSalud, ComponenteSaludVehiculo, EstadoSaludVehiculo
 from django.db.models import Q
 from mecanimovilapp.apps.usuarios.serializers import ClienteSerializer
 
@@ -61,6 +61,7 @@ class VehiculoSerializer(serializers.ModelSerializer):
     )
     
     health_score = serializers.SerializerMethodField()
+    health_report = serializers.SerializerMethodField()
     active_requests_count = serializers.SerializerMethodField()
     ofertas_activas_count = serializers.SerializerMethodField()
     
@@ -80,7 +81,8 @@ class VehiculoSerializer(serializers.ModelSerializer):
             'precio_retoma', 'fecha_ultima_tasacion', 'precio_sugerido_final',
             'health_score',
             'active_requests_count',
-            'ofertas_activas_count'
+            'ofertas_activas_count',
+            'health_report'
         )
         extra_kwargs = {
             'cliente': {'write_only': True, 'required': False},
@@ -104,15 +106,31 @@ class VehiculoSerializer(serializers.ModelSerializer):
         return get_image_url(obj.foto, request)
     
     def get_health_score(self, obj):
-        # Calcular promedio de salud de componentes (Lógica compartida)
+        # Usar snapshot de estado de salud si existe
+        from .models_health import EstadoSaludVehiculo
+        snapshot = EstadoSaludVehiculo.objects.filter(vehiculo=obj).first() # Ordering is -fecha_calculo by default
+        if snapshot:
+            return int(snapshot.salud_general_porcentaje)
+        return 0
+
+    def get_health_report(self, obj):
+        # Construir reporte basado en componentes persistidos
+        # Esto es más rápido que recalcular todo el motor
         from .models_health import ComponenteSaludVehiculo
-        from django.db.models import Avg
         
-        avg_health = ComponenteSaludVehiculo.objects.filter(vehiculo=obj).aggregate(Avg('salud_porcentaje'))['salud_porcentaje__avg']
-        
-        if avg_health is not None:
-            return int(avg_health)
-        return 100 # Default para nuevos vehículos sin componentes reportados aún
+        comps = ComponenteSaludVehiculo.objects.filter(vehiculo=obj).select_related('componente')
+        report = []
+        for c in comps:
+             report.append({
+                'componente': c.componente.nombre,
+                'slug': c.componente.slug,
+                'salud': c.salud_porcentaje,
+                'status': c.nivel_alerta,
+                'vida_util_total': c.vida_util_proyectada,
+                'es_especifica': c.es_regla_especifica,
+                'mensaje_alerta': c.mensaje_alerta
+             })
+        return report
 
     def get_active_requests_count(self, obj):
         """Retorna el número de solicitudes activas para este vehículo"""
@@ -191,115 +209,78 @@ class VehiculoSerializer(serializers.ModelSerializer):
                 vehiculo.save()
         
         # --- INICIALIZACIÓN INTELIGENTE DE SALUD ---
-        try:
-            # 1. Determinar tipo de motor para filtrar componentes
-            tipo_motor_map = {
-                'Gasolina': 'GASOLINA',
-                'Diésel': 'DIESEL'
-            }
-            tipo_motor = tipo_motor_map.get(vehiculo.tipo_motor, 'GASOLINA')
-            
-            # 2. Obtener configurations de componentes aplicables
-            configs_aplicables = ComponenteSaludConfig.objects.filter(
-                activo=True
-            ).filter(
-                Q(tipo_motor_aplicable='TODOS') | Q(tipo_motor_aplicable=tipo_motor)
-            )
-            
-            logger.info(f"🔧 Inicializando {configs_aplicables.count()} componentes de salud para vehículo {vehiculo.id}")
-            
-            # 3. Crear componentes de salud
-            for config in configs_aplicables:
-                # Determinar km del último servicio
-                if config.id in componentes_al_dia:
-                    # Si el usuario dijo que está al día, asumimos que se hizo AHORA (km actual)
-                    km_ultimo_servicio = vehiculo.kilometraje
-                    logger.info(f"  - Componente {config.nombre}: AL DÍA (Km último servicio: {km_ultimo_servicio})")
-                else:
-                    # Si no está al día, asumimos que NUNCA se hizo (0 km)
-                    # Esto generará alerta crítica inmediata, lo cual es correcto
-                    km_ultimo_servicio = 0
-                    logger.info(f"  - Componente {config.nombre}: PENDIENTE (Km último servicio: 0)")
-                
-                # Crear instancia 
-                comp = ComponenteSaludVehiculo.objects.create(
-                    vehiculo=vehiculo,
-                    componente_config=config,
-                    salud_porcentaje=0, # Se recalculará
-                    nivel_alerta='CRITICO', # Se recalculará
-                    km_ultimo_servicio=km_ultimo_servicio
-                )
-                
-                # Calcular salud real
-                comp.calcular_salud()
-            
-            # 3.5. Invocar tarea asíncrona para calcular salud general y alertas
-            # Esto asegura que se genere un EstadoSaludVehiculo y se actualicen métricas globales
-            from mecanimovilapp.apps.vehiculos.tasks import calcular_salud_vehiculo_async
-            calcular_salud_vehiculo_async.delay(vehiculo.id)
-            logger.info(f"🚀 Tarea de cálculo de salud disparada para vehículo {vehiculo.id}")
+        # 3. Inicialización inteligente delegada a Health Engine (Async)
+        # Ya no creamos componentes estáticamente aquí.
+        # La tarea asíncrona se encargará de:
+        # - Detectar motor y reglas
+        # - Crear componentes iniciales
+        # - Calcular salud
+        
+        # 3.5. Invocar tarea asíncrona para calcular salud general y alertas
+        # Esto asegura que se genere un EstadoSaludVehiculo y se actualicen métricas globales
+        from mecanimovilapp.apps.vehiculos.tasks import calcular_salud_vehiculo_async
+        calcular_salud_vehiculo_async.delay(vehiculo.id)
+        logger.info(f"🚀 Tarea de cálculo de salud disparada para vehículo {vehiculo.id}")
 
             # 4. Obtener Tasación y Valoración (GetAPI)
-            try:
-                import requests
-                from django.utils import timezone
-                from mecanimovilapp.apps.marketplace.valuation_engine import calculate_suggested_price
+        try:
+            import requests
+            from django.utils import timezone
+            from mecanimovilapp.apps.marketplace.valuation_engine import calculate_suggested_price
+            
+            API_KEY = "28054a51-09f6-4687-a4a7-ecf3ead55ef4"
+            URL_APPRAISAL = f"https://chile.getapi.cl/v1/vehicles/appraisal/{vehiculo.patente}"
+            
+            logger.info(f"💰 Consultando tasación para {vehiculo.patente}")
+            
+            headers = {"x-api-key": API_KEY, "Content-Type": "application/json"}
+            response = requests.get(URL_APPRAISAL, headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                # data = { success: true, data: { vehicleId: ..., informacionFiscal: {...}, precioUsado: {...}, ... } }
                 
-                API_KEY = "28054a51-09f6-4687-a4a7-ecf3ead55ef4"
-                URL_APPRAISAL = f"https://chile.getapi.cl/v1/vehicles/appraisal/{vehiculo.patente}"
-                
-                logger.info(f"💰 Consultando tasación para {vehiculo.patente}")
-                
-                headers = {"x-api-key": API_KEY, "Content-Type": "application/json"}
-                response = requests.get(URL_APPRAISAL, headers=headers, timeout=10)
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    # data = { success: true, data: { vehicleId: ..., informacionFiscal: {...}, precioUsado: {...}, ... } }
+                if data.get("success") is not False:
+                    appraisal_data = data.get("data", {})
                     
-                    if data.get("success") is not False:
-                        appraisal_data = data.get("data", {})
-                        
-                        info_fiscal = appraisal_data.get("informacionFiscal", {})
-                        precio_usado = appraisal_data.get("precioUsado", {})
-                        
-                        # Actualizar campos
-                        vehiculo.tasacion_fiscal = int(info_fiscal.get("tasacion", 0) or 0)
-                        vehiculo.permiso_circulacion = int(info_fiscal.get("permiso", 0) or 0)
-                        vehiculo.year_tasacion_fiscal = int(info_fiscal.get("ano_info_fiscal", 0) or 0)
-                        
-                        vehiculo.precio_mercado_min = int(precio_usado.get("banda_min", 0) or 0)
-                        vehiculo.precio_mercado_max = int(precio_usado.get("banda_max", 0) or 0)
-                        vehiculo.precio_mercado_promedio = int(precio_usado.get("precio", 0) or 0)
-                        
-                        vehiculo.precio_retoma = int(appraisal_data.get("precioRetoma", 0) or 0)
-                        vehiculo.fecha_ultima_tasacion = timezone.now()
-                        
-                        # CALCULAR PRECIO SUGERIDO (ALGORITMO MAESTRO)
-                        vehiculo.precio_sugerido_final = calculate_suggested_price(
-                            vehiculo,
-                            precio_mercado=vehiculo.precio_mercado_promedio,
-                            precio_fiscal=vehiculo.tasacion_fiscal
-                        )
-                        
-                        vehiculo.save(update_fields=[
-                            'tasacion_fiscal', 'permiso_circulacion', 'year_tasacion_fiscal',
-                            'precio_mercado_min', 'precio_mercado_max', 'precio_mercado_promedio',
-                            'precio_retoma', 'fecha_ultima_tasacion', 'precio_sugerido_final'
-                        ])
-                        
-                        logger.info(f"✅ Tasación guardada. Precio Sugerido: {vehiculo.precio_sugerido_final}")
-                    else:
-                        logger.warning(f"⚠️ Tasación no exitosa en API: {data.get('message')}")
+                    info_fiscal = appraisal_data.get("informacionFiscal", {})
+                    precio_usado = appraisal_data.get("precioUsado", {})
+                    
+                    # Actualizar campos
+                    vehiculo.tasacion_fiscal = int(info_fiscal.get("tasacion", 0) or 0)
+                    vehiculo.permiso_circulacion = int(info_fiscal.get("permiso", 0) or 0)
+                    vehiculo.year_tasacion_fiscal = int(info_fiscal.get("ano_info_fiscal", 0) or 0)
+                    
+                    vehiculo.precio_mercado_min = int(precio_usado.get("banda_min", 0) or 0)
+                    vehiculo.precio_mercado_max = int(precio_usado.get("banda_max", 0) or 0)
+                    vehiculo.precio_mercado_promedio = int(precio_usado.get("precio", 0) or 0)
+                    
+                    vehiculo.precio_retoma = int(appraisal_data.get("precioRetoma", 0) or 0)
+                    vehiculo.fecha_ultima_tasacion = timezone.now()
+                    
+                    # CALCULAR PRECIO SUGERIDO (ALGORITMO MAESTRO)
+                    vehiculo.precio_sugerido_final = calculate_suggested_price(
+                        vehiculo,
+                        precio_mercado=vehiculo.precio_mercado_promedio,
+                        precio_fiscal=vehiculo.tasacion_fiscal
+                    )
+                    
+                    vehiculo.save(update_fields=[
+                        'tasacion_fiscal', 'permiso_circulacion', 'year_tasacion_fiscal',
+                        'precio_mercado_min', 'precio_mercado_max', 'precio_mercado_promedio',
+                        'precio_retoma', 'fecha_ultima_tasacion', 'precio_sugerido_final'
+                    ])
+                    
+                    logger.info(f"✅ Tasación guardada. Precio Sugerido: {vehiculo.precio_sugerido_final}")
                 else:
-                    logger.warning(f"⚠️ Error HTTP al consultar tasación: {response.status_code}")
-                    
-            except Exception as e:
-                logger.error(f"❌ Error obteniendo tasación: {e}")
-
+                    logger.warning(f"⚠️ Tasación no exitosa en API: {data.get('message')}")
+            else:
+                logger.warning(f"⚠️ Error HTTP al consultar tasación: {response.status_code}")
+                
         except Exception as e:
-            logger.error(f"❌ Error en inicialización de salud: {str(e)}")
-            # No fallamos la creación del vehículo si falla esto, pero logueamos el error
+            logger.error(f"❌ Error obteniendo tasación: {e}")
+
+        # End of create method
         
         return vehiculo
     
@@ -627,7 +608,7 @@ class VehiculoMarketplaceDetailSerializer(VehiculoMarketplaceSerializer):
     def get_health_details(self, obj):
         from .models_health import ComponenteSaludVehiculo
         # Obtener todos los componentes del vehículo
-        componentes = ComponenteSaludVehiculo.objects.filter(vehiculo=obj)
+        componentes = ComponenteSaludVehiculo.objects.filter(vehiculo=obj).select_related('componente')
         
         details = []
         for comp in componentes:
@@ -639,12 +620,12 @@ class VehiculoMarketplaceDetailSerializer(VehiculoMarketplaceSerializer):
                 status = 'warning'
                 
             details.append({
-                'id': comp.componente_config.id,
-                'name': comp.componente_config.nombre,
+                'id': comp.componente.id,
+                'name': comp.componente.nombre,
                 'score': int(comp.salud_porcentaje),
                 'status': status,
                 # En marketplace público NO mostramos observaciones detalladas privadas, solo el estado general
-                'category': comp.componente_config.tipo_motor_aplicable  # Use tipo_motor as broad category or add category field to model
+                'category': 'General' # comp.componente.get_tipo_display() if we had it
             })
             
         return details

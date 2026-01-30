@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from .models_health import (
-    ComponenteSaludConfig,
+    ComponenteSalud,
     EstadoSaludVehiculo,
     ComponenteSaludVehiculo,
     AlertaMantenimiento
@@ -9,36 +9,25 @@ from .serializers import VehiculoSerializer
 from mecanimovilapp.apps.servicios.serializers import ServicioSerializer
 
 
-class ComponenteSaludConfigSerializer(serializers.ModelSerializer):
+class ComponenteSaludSerializer(serializers.ModelSerializer):
     """
-    Serializador para ComponenteSaludConfig
+    Serializador para ComponenteSalud (Maestro)
     """
-    tipo_medicion_display = serializers.CharField(
-        source='get_tipo_medicion_display', 
-        read_only=True
-    )
-    servicio_asociado_nombre = serializers.CharField(
-        source='servicio_asociado.nombre',
-        read_only=True
-    )
-    
     class Meta:
-        model = ComponenteSaludConfig
+        model = ComponenteSalud
         fields = (
-            'id', 'nombre', 'descripcion', 'tipo_medicion', 'tipo_medicion_display',
-            'beta', 'eta', 'km_critico', 'meses_critico', 'factor_edad_vehiculo',
-            'factor_uso_intensivo', 'servicio_asociado', 'servicio_asociado_nombre',
-            'activo', 'orden_visualizacion', 'icono', 'fecha_creacion', 'fecha_actualizacion'
+            'id', 'nombre', 'slug', 'descripcion', 'es_critico', 
+            'icono', 'orden_visualizacion'
         )
 
 
 class ComponenteSaludVehiculoSerializer(serializers.ModelSerializer):
     """
     Serializador para ComponenteSaludVehiculo
-    Incluye información del componente config y colores según nivel de alerta
+    Incluye información del componente maestro y colores según nivel de alerta
     """
-    componente_config_detail = ComponenteSaludConfigSerializer(
-        source='componente_config',
+    componente_detail = ComponenteSaludSerializer(
+        source='componente',
         read_only=True
     )
     nivel_alerta_display = serializers.CharField(
@@ -47,23 +36,22 @@ class ComponenteSaludVehiculoSerializer(serializers.ModelSerializer):
     )
     color = serializers.SerializerMethodField()
     nombre = serializers.CharField(
-        source='componente_config.nombre',
+        source='componente.nombre',
         read_only=True
     )
     icono = serializers.CharField(
-        source='componente_config.icono',
+        source='componente.icono',
         read_only=True
     )
     
     class Meta:
         model = ComponenteSaludVehiculo
         fields = (
-            'id', 'vehiculo', 'componente_config', 'componente_config_detail',
+            'id', 'vehiculo', 'componente', 'componente_detail',
             'salud_porcentaje', 'nivel_alerta', 'nivel_alerta_display', 'color',
             'km_ultimo_servicio', 'fecha_ultimo_servicio', 'km_estimados_restantes',
-            'dias_estimados_restantes', 'fecha_estimada_servicio',
             'requiere_servicio_inmediato', 'mensaje_alerta', 'nombre', 'icono',
-            'ultima_actualizacion', 'actualizado_automaticamente'
+            'ultima_actualizacion'
         )
     
     def get_color(self, obj):

@@ -5,7 +5,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.db.models import Q
 from .models import Vehiculo, Marca, MarcaVehiculo, Modelo, OfertaVehiculo
-from .models_health import ComponenteSaludConfig
+from .models_health import ComponenteSalud, ReglaMantenimientoGenerica
 from .serializers import (
     VehiculoSerializer, VehiculoLiteSerializer, MarcaSerializer, 
     MarcaVehiculoSerializer, ModeloSerializer, VehiculoMarketplaceSerializer,
@@ -331,26 +331,26 @@ class VehiculoViewSet(viewsets.ModelViewSet):
     def checklist_inicial(self, request):
         """
         Devuelve la lista de componentes configurados para mostrar en el checklist inicial
-        Se filtra por tipo de motor (Gasolina/Diesel)
+        Se filtra por tipo de motor (Gasolina/Diesel) usando las Reglas Genericas.
         """
         tipo_motor_param = request.query_params.get('tipo_motor', 'Gasolina')
         
         # Mapear el parámetro a los valores del modelo (GASOLINA, DIESEL)
-        # El frontend puede enviar 'Gasolina', 'Diésel', 'GASOLINA', 'DIESEL'
         tipo_motor_map = {
             'gasolina': 'GASOLINA',
             'diesel': 'DIESEL',
-            'diésel': 'DIESEL'
+            'diésel': 'DIESEL',
+            'electrico': 'ELECTRICO',
+            'hibrido': 'HIBRIDO'
         }
         
         tipo_motor = tipo_motor_map.get(tipo_motor_param.lower(), 'GASOLINA')
         
-        # Filtrar componentes activos que apliquen al motor o a TODOS
-        componentes = ComponenteSaludConfig.objects.filter(
-            activo=True
-        ).filter(
-            Q(tipo_motor_aplicable='TODOS') | Q(tipo_motor_aplicable=tipo_motor)
-        ).values('id', 'nombre', 'descripcion')
+        # Obtener componentes que tengan una regla genérica para este tipo de motor
+        # Esto asegura que solo mostramos lo relevante (ej: no mostrar DPF a Gasolina)
+        componentes = ComponenteSalud.objects.filter(
+            reglas_genericas__tipo_motor=tipo_motor
+        ).values('id', 'nombre', 'descripcion').distinct()
         
         return Response(list(componentes))
     

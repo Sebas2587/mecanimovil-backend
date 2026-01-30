@@ -18,11 +18,12 @@ import logging
 # Mover imports pesados adentro de las tareas/funciones
 
 from .models_health import (
-    ComponenteSaludConfig,
+    ComponenteSalud,
     EstadoSaludVehiculo,
     ComponenteSaludVehiculo,
     AlertaMantenimiento
 )
+from .services.health_engine import HealthEngine
 from .utils.cache_health import (
     invalidate_vehicle_health_cache,
     set_cached_health,
@@ -43,114 +44,54 @@ def calcular_estado_salud_interno(vehicle_id):
     Returns:
         EstadoSaludVehiculo: Objeto con el estado calculado
     """
-    from django.db.models import Avg, Count, Q
-    from .models import Vehiculo
-    
-    try:
-        vehiculo = Vehiculo.objects.get(id=vehicle_id)
-    except Vehiculo.DoesNotExist:
-        logger.error(f"Vehículo {vehicle_id} no encontrado")
-        raise
-    
-    # Determinar el tipo de motor del vehículo para filtrar componentes
-    tipo_motor = vehiculo.tipo_motor
-    
-    # Mapear tipo de motor del vehículo a tipo de motor de componentes
-    if tipo_motor and 'diesel' in tipo_motor.lower() or tipo_motor == 'Diésel':
-        tipo_motor_filtro = 'DIESEL'
-    else:
-        tipo_motor_filtro = 'GASOLINA'
-    
-    logger.info(f"Calculando salud para vehículo {vehicle_id} con motor: {tipo_motor} -> filtro: {tipo_motor_filtro}")
-    
-    # Obtener configs activos que aplican a este tipo de motor
-    # Incluir: TODOS + tipo específico del vehículo
-    configs = ComponenteSaludConfig.objects.filter(
-        activo=True
-    ).filter(
-        Q(tipo_motor_aplicable='TODOS') | Q(tipo_motor_aplicable=tipo_motor_filtro)
-    )
-    
-    logger.info(f"Se encontraron {configs.count()} componentes aplicables para tipo motor {tipo_motor_filtro}")
-    
-    for config in configs:
-        ComponenteSaludVehiculo.objects.get_or_create(
-            vehiculo=vehiculo,
-            componente_config=config,
-            defaults={
-                'km_ultimo_servicio': 0,
-                'salud_porcentaje': 100,
-                'nivel_alerta': 'OPTIMO',
-            }
-        )
-    
-    # Recalcular todos los componentes
-    componentes = ComponenteSaludVehiculo.objects.filter(vehiculo=vehiculo)
-    
-    # NUEVO: Guardar salud previa para detectar caídas bruscas del 50%
-    salud_previa = {comp.id: comp.salud_porcentaje for comp in componentes}
-    
-    for comp in componentes:
-        comp.calcular_salud(commit=False)
-        
-        # ✅ NUEVO: Lógica de Alertas Push según requerimientos del usuario
-        # 1. Si la salud baja a 0%
-        # 2. Si la salud baja un 50% o más respecto al cálculo anterior
-        prev_salud = salud_previa.get(comp.id, 100.0)
-        caida = prev_salud - comp.salud_porcentaje
-        
-        if comp.salud_porcentaje == 0:
-            enviar_alerta_salud_push(vehiculo, comp, "ha llegado al 0%")
-        elif caida >= 50.0:
-            enviar_alerta_salud_push(vehiculo, comp, f"ha bajado un {caida:.0f}% abruptamente")
-            
-    # ✅ OPTIMIZACIÓN: Guardar todos los componentes en una sola query
-    ComponenteSaludVehiculo.objects.bulk_update(
-        componentes, 
-        [
-            'salud_porcentaje', 'nivel_alerta', 'km_estimados_restantes', 
-            'dias_estimados_restantes', 'requiere_servicio_inmediato', 'mensaje_alerta'
-        ]
-    )
-    
-    # Calcular métricas generales usando agregación
-    stats = componentes.aggregate(
-        salud_promedio=Avg('salud_porcentaje'),
-        total=Count('id'),
-        optimos=Count('id', filter=Q(nivel_alerta='OPTIMO')),
-        atencion=Count('id', filter=Q(nivel_alerta='ATENCION')),
-        urgentes=Count('id', filter=Q(nivel_alerta='URGENTE')),
-        criticos=Count('id', filter=Q(nivel_alerta='CRITICO')),
-    )
-    
-    # Calcular costo estimado de alertas activas
-    alertas = AlertaMantenimiento.objects.filter(vehiculo=vehiculo, activa=True)
-    costo_total = sum(float(a.costo_estimado) for a in alertas)
-    
-    # Crear o actualizar snapshot del estado
-    salud_global = stats['salud_promedio'] or 0
-    estado, created = EstadoSaludVehiculo.objects.update_or_create(
-        vehiculo=vehiculo,
-        defaults={
-            'salud_general_porcentaje': salud_global,
-            'kilometraje_snapshot': vehiculo.kilometraje,
-            'total_componentes_evaluados': stats['total'],
-            'componentes_optimos': stats['optimos'],
-            'componentes_atencion': stats['atencion'],
-            'componentes_urgentes': stats['urgentes'],
-            'componentes_criticos': stats['criticos'],
-            'tiene_alertas_activas': alertas.exists(),
-            'costo_estimado_mantenimiento': costo_total,
-        }
-    )
+    # Capturar estado previo para alertas de caida abrupta
+    # TODO: Optimizar: esto hace query, HealthEngine hace query.
+    prev_components = {
+        c.componente.id: c.salud_porcentaje 
+        for c in ComponenteSaludVehiculo.objects.filter(vehiculo_id=vehicle_id)
+    }
 
-    # ✅ NUEVO: Alertas de Salud Global según requerimientos del usuario
-    if salud_global == 0:
-        enviar_alerta_salud_global_push(vehiculo, "es de 0%", es_critico=True)
-    elif salud_global < 50.0:
-        enviar_alerta_salud_global_push(vehiculo, f"es baja ({salud_global:.0f}%)", es_critico=False)
+    # =========================================================
+    # DELEGACIÓN AL HEALTH ENGINE (Arquitectura Cascada)
+    # =========================================================
+    reporte = HealthEngine.calcular_salud_vehiculo(vehicle_id)
     
-    return estado
+    # Recuperar el estado global calculado por el engine
+    try:
+        estado_global = EstadoSaludVehiculo.objects.filter(vehiculo_id=vehicle_id).latest('fecha_calculo')
+    except EstadoSaludVehiculo.DoesNotExist:
+        logger.error(f"HealthEngine no generó estado para vehiculo {vehicle_id}")
+        return None
+
+    # =========================================================
+    # LÓGICA DE NOTIFICACIONES (PUSH)
+    # =========================================================
+    vehiculo = estado_global.vehiculo
+    
+    # Check for abrupt drops or zero health in individual components
+    # Re-fetch updated components to access alert flags set by Engine
+    updated_components = ComponenteSaludVehiculo.objects.filter(vehiculo_id=vehicle_id).select_related('componente')
+    
+    for comp in updated_components:
+        prev_salud = prev_components.get(comp.componente.id, 100.0)
+        current_salud = comp.salud_porcentaje
+        caida = prev_salud - current_salud
+        
+        # Enviar push si corresponde
+        if current_salud == 0 and prev_salud > 0:
+            enviar_alerta_salud_push(vehiculo, comp.componente.nombre, "ha llegado al 0%")
+        elif caida >= 50.0:
+            enviar_alerta_salud_push(vehiculo, comp.componente.nombre, f"ha bajado un {caida:.0f}% abruptamente")
+
+    # Alertas Globales
+    salud_global = estado_global.salud_general_porcentaje
+    if salud_global == 0:
+         enviar_alerta_salud_global_push(vehiculo, "es de 0%", es_critico=True)
+    elif salud_global < 50.0 and salud_global > 0:
+         # Limit noise?
+         enviar_alerta_salud_global_push(vehiculo, f"es baja ({salud_global:.0f}%)", es_critico=False)
+
+    return estado_global
 
 
 @shared_task(bind=True, max_retries=3)
@@ -549,7 +490,7 @@ def _procesar_checklists_historicos_vehiculo_interno(vehicle_id):
     """
     try:
         from django.utils import timezone
-        from .models_health import ComponenteSaludVehiculo, ComponenteSaludConfig
+        from .models_health import ComponenteSaludVehiculo, ComponenteSalud
         from .models import Vehiculo
         from ..checklists.models import ChecklistInstance
         from ..ordenes.models import SolicitudServicio
@@ -635,19 +576,19 @@ def _procesar_checklists_historicos_vehiculo_interno(vehicle_id):
                     if any(item.lower() in item_nombre.lower() for item in items_relacionados):
                         try:
                             # Buscar el config por su nombre exacto
-                            config = ComponenteSaludConfig.objects.filter(
-                                nombre=nombre_config,
-                                activo=True
+                            # Buscar el componente maestro por su nombre exacto
+                            componente_maestro = ComponenteSalud.objects.filter(
+                                nombre=nombre_config
                             ).first()
                             
-                            if config:
+                            if componente_maestro:
                                 # Usar kilometraje del checklist si está disponible, sino el del vehículo
                                 km_para_servicio = kilometraje_checklist if kilometraje_checklist else vehiculo.kilometraje
                                 
-                                # Obtener o crear componente
+                                # Obtener o crear componente asociado a este vehículo
                                 comp_salud, created = ComponenteSaludVehiculo.objects.get_or_create(
                                     vehiculo=vehiculo,
-                                    componente_config=config,
+                                    componente=componente_maestro,
                                     defaults={
                                         'km_ultimo_servicio': km_para_servicio,
                                         'fecha_ultimo_servicio': checklist.fecha_finalizacion or timezone.now(),
@@ -669,14 +610,17 @@ def _procesar_checklists_historicos_vehiculo_interno(vehicle_id):
                                         comp_salud.fecha_ultimo_servicio = fecha_checklist
                                         comp_salud.checklist_ultimo_servicio = checklist
                                         # NO guardamos todavía, lo haremos en bulk al final del proceso cronológico o por vehículo
-                                        comp_salud.calcular_salud(commit=False)
+                                        comp_salud.checklist_ultimo_servicio = checklist
+                                        # NO calculamos salud individualmente aquí, delegamos al HealthEngine al final
+                                        # comp_salud.calcular_salud(commit=False) # DEPRECATED
+                                        comp_salud.save() # Guardamos el km actualizado para que el Engine lo use
                                         componentes_actualizados += 1
                                         logger.info(
-                                            f"✅ Componente {config.nombre} preparado para actualización desde checklist histórico "
+                                            f"✅ Componente {nombre_config} preparado para actualización desde checklist histórico "
                                             f"{checklist.id}"
                                         )
                                 else:
-                                    comp_salud.calcular_salud(commit=False)
+                                    comp_salud.save()
                                     componentes_actualizados += 1
                         except Exception as e:
                             logger.warning(f"Error procesando componente {nombre_config} del checklist {checklist.id}: {str(e)}")
@@ -696,17 +640,16 @@ def _procesar_checklists_historicos_vehiculo_interno(vehicle_id):
             )
         
         # Recalcular salud de todos los componentes y guardar en bulk
-        componentes = list(ComponenteSaludVehiculo.objects.filter(vehiculo=vehiculo))
-        for comp in componentes:
-            comp.calcular_salud(commit=False)
+        # Recalcular usando Health Engine en lugar de lógica manual
+        # El Engine leerá los km_ultimo_servicio que acabamos de actualizar
+        HealthEngine.calcular_salud_vehiculo(vehicle_id)
         
-        if componentes:
-            ComponenteSaludVehiculo.objects.bulk_update(
-                componentes,
-                ['km_ultimo_servicio', 'fecha_ultimo_servicio', 'checklist_ultimo_servicio',
-                 'salud_porcentaje', 'nivel_alerta', 'km_estimados_restantes',
-                 'dias_estimados_restantes', 'requiere_servicio_inmediato', 'mensaje_alerta']
-            )
+        # componentes = list(ComponenteSaludVehiculo.objects.filter(vehiculo=vehiculo))
+        # for comp in componentes:
+        #    comp.calcular_salud(commit=False)
+        
+        # if componentes:
+        #    ComponenteSaludVehiculo.objects.bulk_update(...)
         
         # Recalcular estado general (usar Celery si está disponible, sino calcular directamente)
         try:
@@ -773,7 +716,7 @@ def enviar_alerta_salud_push(vehiculo, componente, motivo_texto):
             
         user_id = vehiculo.cliente.usuario.id
         nombre_vehiculo = f"{vehiculo.marca} {vehiculo.modelo}" if vehiculo.marca else f"Vehículo {vehiculo.patente or ''}"
-        nombre_componente = componente.componente_config.nombre
+        nombre_componente = componente_nombre # componente es string aqui
         
         # Evitar ruidos excesivos enviando alertas muy seguidas (throttling básico opcional)
         # Por ahora enviamos directamente como lo pide el usuario
