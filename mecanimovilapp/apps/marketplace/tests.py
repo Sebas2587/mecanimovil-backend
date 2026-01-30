@@ -1,4 +1,4 @@
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.contrib.auth import get_user_model
 from mecanimovilapp.apps.vehiculos.models import Vehiculo, OfertaVehiculo, MarcaVehiculo, Modelo
 from mecanimovilapp.apps.usuarios.models import Cliente
@@ -9,6 +9,7 @@ import uuid
 
 User = get_user_model()
 
+@override_settings(SECURE_SSL_REDIRECT=False)
 class TransferenciaVehiculoTests(TestCase):
     def setUp(self):
         self.client = APIClient()
