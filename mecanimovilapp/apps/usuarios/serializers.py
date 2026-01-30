@@ -1443,24 +1443,8 @@ class ReviewSerializer(serializers.ModelSerializer):
     def get_client_info(self, obj):
         """Información del cliente que hizo la reseña"""
         try:
-            # Obtener la URL completa de la foto de perfil
-            profile_photo_url = None
-            if obj.client.foto_perfil:
-                # Construir la URL completa usando la IP del servidor
-                from django.conf import settings
-                request = self.context.get('request')
-                if request:
-                    # Usar el dominio del request actual
-                    domain = request.build_absolute_uri('/').rstrip('/')
-                    profile_photo_url = f"{domain}{obj.client.foto_perfil.url}"
-                else:
-                    # Fallback: usar MEDIA_URL de settings
-                    media_url = getattr(settings, 'MEDIA_URL', '/media/')
-                    if media_url.startswith('http'):
-                        profile_photo_url = f"{media_url.rstrip('/')}{obj.client.foto_perfil.url}"
-                    else:
-                        # Si MEDIA_URL es relativa, intentar construir absoluta o devolver relativa
-                        profile_photo_url = obj.client.foto_perfil.url
+            # Obtener la URL completa de la foto de perfil usando el helper centralizado
+            profile_photo_url = get_image_url(obj.client.foto_perfil) if obj.client.foto_perfil else None
             
             return {
                 'username': obj.client.username,
