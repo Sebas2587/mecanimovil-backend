@@ -612,6 +612,8 @@ class VehiculoMarketplaceDetailSerializer(VehiculoMarketplaceSerializer):
         
         details = []
         for comp in componentes:
+            if not comp.componente:
+                continue
             # Determinar estado basado en porcentaje
             status = 'normal'
             if comp.salud_porcentaje < 40:
