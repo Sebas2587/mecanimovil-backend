@@ -152,6 +152,7 @@ class OfertaVehiculo(models.Model):
         ('rechazada', 'Rechazada'),
         ('contraoferta', 'Contraoferta'),
         ('cancelada', 'Cancelada'),
+        ('completada', 'Completada'),
     ]
 
     vehiculo = models.ForeignKey(

@@ -543,9 +543,11 @@ class OfertaVehiculoViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        # Retorna ofertas enviadas por mí O recibidas por mis vehículos
+        # Retorna ofertas enviadas por mí O recibidas por mis vehículos O donde soy el vendedor en una transferencia
         return OfertaVehiculo.objects.filter(
-            Q(comprador=user) | Q(vehiculo__cliente__usuario=user)
+            Q(comprador=user) | 
+            Q(vehiculo__cliente__usuario=user) |
+            Q(transferencia__vendedor=user)
         ).distinct()
 
     def perform_create(self, serializer):
@@ -559,8 +561,11 @@ class OfertaVehiculoViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'])
     def mis_ofertas_recibidas(self, request):
-        # Necesitamos volver hacia atras: User -> Cliente -> Vehiculos -> Ofertas
-        ofertas = OfertaVehiculo.objects.filter(vehiculo__cliente__usuario=request.user)
+        # Retorna ofertas recibidas por mis vehículos actuales O donde fui el vendedor
+        ofertas = OfertaVehiculo.objects.filter(
+            Q(vehiculo__cliente__usuario=request.user) |
+            Q(transferencia__vendedor=request.user)
+        ).distinct()
         serializer = self.get_serializer(ofertas, many=True)
         return Response(serializer.data)
         
