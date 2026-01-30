@@ -9,6 +9,7 @@ from mecanimovilapp.apps.vehiculos.models import Vehiculo, OfertaVehiculo
 from mecanimovilapp.apps.usuarios.models import Cliente
 import logging
 import json
+import uuid
 
 logger = logging.getLogger(__name__)
 
