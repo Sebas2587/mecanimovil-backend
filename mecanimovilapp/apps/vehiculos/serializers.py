@@ -520,7 +520,7 @@ class VehiculoMarketplaceSerializer(serializers.ModelSerializer):
         
         if avg_health is not None:
             return int(avg_health)
-        return 100 # Default para nuevos vehículos sin componentes reportados aún
+        return 0 # Default para nuevos vehículos sin datos (evita falso 100%)
 
     def get_health_bonus_percentage(self, obj):
         # We repurpose this field to return the Monetary Value of Potential Gain for now, 
@@ -612,9 +612,11 @@ class VehiculoMarketplaceDetailSerializer(VehiculoMarketplaceSerializer):
         
         details = []
         for comp in componentes:
+            # Skip if component relation is missing (prevent crash)
             if not comp.componente:
                 continue
-            # Determinar estado basado en porcentaje
+                
+            # Determinar estado basado en porcentaje (fallback logic matches frontend)
             status = 'normal'
             if comp.salud_porcentaje < 40:
                 status = 'critical'
@@ -624,10 +626,16 @@ class VehiculoMarketplaceDetailSerializer(VehiculoMarketplaceSerializer):
             details.append({
                 'id': comp.componente.id,
                 'name': comp.componente.nombre,
+                'nombre': comp.componente.nombre, # Dual support for frontend
                 'score': int(comp.salud_porcentaje),
+                'salud_porcentaje': int(comp.salud_porcentaje), # Dual support
                 'status': status,
-                # En marketplace público NO mostramos observaciones detalladas privadas, solo el estado general
-                'category': 'General' # comp.componente.get_tipo_display() if we had it
+                'nivel_alerta': comp.nivel_alerta, 
+                'nivel_alerta_display': comp.get_nivel_alerta_display(),
+                'km_ultimo_servicio': comp.km_ultimo_servicio,
+                'km_estimados_restantes': comp.km_estimados_restantes,
+                'mensaje_alerta': comp.mensaje_alerta,
+                'category': 'General'
             })
             
         return details
