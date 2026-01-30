@@ -232,7 +232,13 @@ class VehiculoSerializer(serializers.ModelSerializer):
                 
                 # Calcular salud real
                 comp.calcular_salud()
-                
+            
+            # 3.5. Invocar tarea asíncrona para calcular salud general y alertas
+            # Esto asegura que se genere un EstadoSaludVehiculo y se actualicen métricas globales
+            from mecanimovilapp.apps.vehiculos.tasks import calcular_salud_vehiculo_async
+            calcular_salud_vehiculo_async.delay(vehiculo.id)
+            logger.info(f"🚀 Tarea de cálculo de salud disparada para vehículo {vehiculo.id}")
+
             # 4. Obtener Tasación y Valoración (GetAPI)
             try:
                 import requests
