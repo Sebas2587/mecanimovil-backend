@@ -79,9 +79,9 @@ def calcular_estado_salud_interno(vehicle_id):
         
         # Enviar push si corresponde
         if current_salud == 0 and prev_salud > 0:
-            enviar_alerta_salud_push(vehiculo, comp.componente.nombre, "ha llegado al 0%")
+            enviar_alerta_salud_push(vehiculo, comp, "ha llegado al 0%")
         elif caida >= 50.0:
-            enviar_alerta_salud_push(vehiculo, comp.componente.nombre, f"ha bajado un {caida:.0f}% abruptamente")
+            enviar_alerta_salud_push(vehiculo, comp, f"ha bajado un {caida:.0f}% abruptamente")
 
     # Alertas Globales
     salud_global = estado_global.salud_general_porcentaje
@@ -716,7 +716,8 @@ def enviar_alerta_salud_push(vehiculo, componente, motivo_texto):
             
         user_id = vehiculo.cliente.usuario.id
         nombre_vehiculo = f"{vehiculo.marca} {vehiculo.modelo}" if vehiculo.marca else f"Vehículo {vehiculo.patente or ''}"
-        nombre_componente = componente_nombre # componente es string aqui
+        # componente arg is ComponenteSaludVehiculo object
+        nombre_componente = componente.componente.nombre
         
         # Evitar ruidos excesivos enviando alertas muy seguidas (throttling básico opcional)
         # Por ahora enviamos directamente como lo pide el usuario
