@@ -38,6 +38,9 @@ from django.utils.decorators import method_decorator
 from django.views.decorators.cache import cache_page
 from django.views.decorators.vary import vary_on_cookie
 
+# Helper para URLs de archivos en cPanel
+from mecanimovilapp.storage.utils import get_image_url
+
 # Configurar logger
 logger = logging.getLogger(__name__)
 
@@ -4551,14 +4554,14 @@ def servicios_completados_sin_resena(request):
                         'provider_type': 'taller',
                         'provider_id': servicio.taller.id,
                         'provider_name': servicio.taller.nombre,
-                        'provider_photo': servicio.taller.foto_perfil.url if servicio.taller.foto_perfil else None
+                        'provider_photo': get_image_url(servicio.taller.foto_perfil, request)
                     }
                 elif servicio.mecanico:
                     provider_info = {
                         'provider_type': 'mecanico',
                         'provider_id': servicio.mecanico.id,
                         'provider_name': servicio.mecanico.nombre,
-                        'provider_photo': servicio.mecanico.foto_perfil.url if servicio.mecanico.foto_perfil else None
+                        'provider_photo': get_image_url(servicio.mecanico.foto_perfil, request)
                     }
                 
                 # Información del vehículo
