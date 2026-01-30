@@ -74,6 +74,7 @@ INSTALLED_APPS = [
     'mecanimovilapp.apps.pagos',  # App de pagos con Mercado Pago
     'mecanimovilapp.apps.suscripciones',  # App de suscripciones freemium + planes
     'mecanimovilapp.apps.chat', # Sistema de mensajería contextual
+    'mecanimovilapp.apps.marketplace', # Marketplace de vehículos y transferencias
 ]
 
 # Configuración del modelo de usuario personalizado
