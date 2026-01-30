@@ -77,7 +77,16 @@ class LineaServicioSerializer(serializers.ModelSerializer):
     Serializador para el modelo LineaServicio
     """
     oferta_servicio_detail = OfertaServicioSerializer(source='oferta_servicio', read_only=True)
-    servicio_nombre = serializers.CharField(source='oferta_servicio.servicio.nombre', read_only=True)
+    servicio_nombre = serializers.SerializerMethodField()
+
+    def get_servicio_nombre(self, obj):
+        try:
+            if obj.oferta_servicio and obj.oferta_servicio.servicio:
+                return obj.oferta_servicio.servicio.nombre
+            return "Servicio no disponible"
+        except AttributeError:
+            return "Servicio no disponible"
+
     
     class Meta:
         model = LineaServicio
@@ -142,7 +151,16 @@ class ItemCarritoAgendamientoSerializer(serializers.ModelSerializer):
     Serializador para el modelo ItemCarritoAgendamiento
     """
     oferta_servicio_detail = OfertaServicioSerializer(source='oferta_servicio', read_only=True)
-    servicio_nombre = serializers.CharField(source='oferta_servicio.servicio.nombre', read_only=True)
+    servicio_nombre = serializers.SerializerMethodField()
+
+    def get_servicio_nombre(self, obj):
+        try:
+            if obj.oferta_servicio and obj.oferta_servicio.servicio:
+                return obj.oferta_servicio.servicio.nombre
+            return "Servicio no disponible"
+        except AttributeError:
+            return "Servicio no disponible"
+
     precio_estimado = serializers.ReadOnlyField()
     taller_nombre = serializers.SerializerMethodField()
     taller_direccion = serializers.SerializerMethodField()
