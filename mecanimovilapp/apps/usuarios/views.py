@@ -4433,20 +4433,43 @@ class ReviewViewSet(viewsets.ReadOnlyModelViewSet):
             )
     
     def list(self, request, *args, **kwargs):
-        """Listar reseñas con filtros opcionales"""
+        """Listar reseñas con resumen de estadísticas"""
+        provider_id = self.kwargs.get('provider_id')
         queryset = self.get_queryset()
-        
-        # Aplicar filtros automáticos de DRF
         queryset = self.filter_queryset(queryset)
         
-        # Paginación
+        # Calcular estadísticas básicas
+        stats = queryset.aggregate(
+            avg_rating=Avg('rating'),
+            total_reviews=Count('id'),
+            five_star=Count('id', filter=Q(rating=5)),
+            four_star=Count('id', filter=Q(rating=4)),
+            three_star=Count('id', filter=Q(rating=3)),
+            two_star=Count('id', filter=Q(rating=2)),
+            one_star=Count('id', filter=Q(rating=1))
+        )
+        
+        # Paginación para las reseñas
         page = self.paginate_queryset(queryset)
         if page is not None:
             serializer = self.get_serializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
-        
-        serializer = self.get_serializer(queryset, many=True)
-        return Response(serializer.data)
+            review_data = serializer.data
+        else:
+            serializer = self.get_serializer(queryset, many=True)
+            review_data = serializer.data
+            
+        return Response({
+            'rating_average': float(stats['avg_rating'] or 0.00),
+            'total_reviews': stats['total_reviews'] or 0,
+            'rating_breakdown': {
+                '5': stats['five_star'] or 0,
+                '4': stats['four_star'] or 0,
+                '3': stats['three_star'] or 0,
+                '2': stats['two_star'] or 0,
+                '1': stats['one_star'] or 0,
+            },
+            'reviews': review_data
+        })
     
     @action(detail=False, methods=['get'])
     def stats(self, request, *args, **kwargs):
