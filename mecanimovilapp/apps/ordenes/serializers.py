@@ -131,18 +131,18 @@ class CarritoAgendamientoSerializer(serializers.ModelSerializer):
         return ItemCarritoAgendamientoSerializer(items, many=True).data
     
     def get_taller_detail(self, obj):
-        """Obtiene informaci?n del taller si hay items que requieren taller"""
+        """Obtiene información del taller si hay items que requieren taller"""
         # Buscar el primer item que tenga taller
         for item in obj.items.all():
-            if item.oferta_servicio.taller:
+            if item.oferta_servicio and item.oferta_servicio.taller:
                 return TallerSerializer(item.oferta_servicio.taller).data
         return None
     
     def get_mecanico_detail(self, obj):
-        """Obtiene informaci?n del mec?nico si hay items que requieren mec?nico"""
-        # Buscar el primer item que tenga mec?nico
+        """Obtiene información del mecánico si hay items que requieren mecánico"""
+        # Buscar el primer item que tenga mecánico
         for item in obj.items.all():
-            if item.oferta_servicio.mecanico:
+            if item.oferta_servicio and item.oferta_servicio.mecanico:
                 return MecanicoDomicilioSerializer(item.oferta_servicio.mecanico).data
         return None
 
