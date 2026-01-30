@@ -4490,14 +4490,14 @@ class ReviewViewSet(viewsets.ReadOnlyModelViewSet):
                 'provider_id': provider_id,
                 'provider_name': provider_name,
                 'provider_type': provider_type,
-                'average_rating': float(stats['avg_rating'] or 0.00),
+                'rating_average': float(stats['avg_rating'] or 0.00),
                 'total_reviews': stats['total_reviews'] or 0,
-                'rating_distribution': {
-                    '5_star': stats['five_star'] or 0,
-                    '4_star': stats['four_star'] or 0,
-                    '3_star': stats['three_star'] or 0,
-                    '2_star': stats['two_star'] or 0,
-                    '1_star': stats['one_star'] or 0,
+                'rating_breakdown': {
+                    '5': stats['five_star'] or 0,
+                    '4': stats['four_star'] or 0,
+                    '3': stats['three_star'] or 0,
+                    '2': stats['two_star'] or 0,
+                    '1': stats['one_star'] or 0,
                 }
             })
         except Exception as e:

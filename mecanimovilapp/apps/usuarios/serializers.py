@@ -1400,14 +1400,45 @@ class ReviewSerializer(serializers.ModelSerializer):
     created_at_formatted = serializers.SerializerMethodField()
     provider_name = serializers.SerializerMethodField()
     
+    # Alias para compatibilidad con el frontend
+    cliente_nombre = serializers.SerializerMethodField()
+    cliente_avatar = serializers.SerializerMethodField()
+    calificacion = serializers.ReadOnlyField(source='rating')
+    comentario = serializers.ReadOnlyField(source='comment')
+    fecha_hora_resena = serializers.SerializerMethodField()
+    service_context = serializers.SerializerMethodField()
+    
     class Meta:
         model = Review
         fields = [
             'id', 'client', 'provider_type', 'provider_id', 'service_order',
             'rating', 'comment', 'created_at', 'updated_at',
-            'client_info', 'car_info', 'service_info', 'created_at_formatted', 'provider_name'
+            'client_info', 'car_info', 'service_info', 'created_at_formatted', 'provider_name',
+            'cliente_nombre', 'cliente_avatar', 'calificacion', 'comentario', 'fecha_hora_resena', 'service_context'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
+    
+    def get_cliente_nombre(self, obj):
+        """Nombre completo del cliente para el frontend"""
+        return f"{obj.client.first_name} {obj.client.last_name}".strip() or obj.client.username
+
+    def get_cliente_avatar(self, obj):
+        """URL de la foto de perfil del cliente"""
+        info = self.get_client_info(obj)
+        return info.get('profile_photo')
+
+    def get_fecha_hora_resena(self, obj):
+        """Alias para created_at_formatted"""
+        return self.get_created_at_formatted(obj)
+
+    def get_service_context(self, obj):
+        """Contexto del servicio para el frontend (nombre de servicio y modelo de auto)"""
+        car = self.get_car_info(obj)
+        service = self.get_service_info(obj)
+        return {
+            'service_name': service.get('name', 'Servicio'),
+            'vehicle_model': car.get('full_name', 'N/A')
+        }
     
     def get_client_info(self, obj):
         """Información del cliente que hizo la reseña"""
