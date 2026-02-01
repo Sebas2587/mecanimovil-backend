@@ -224,13 +224,28 @@ class VehiculoSerializer(serializers.ModelSerializer):
         if componentes_historial:
             import json
             from .models_health import ComponenteSalud, ComponenteSaludVehiculo
-            # Aceptar string JSON (desde FormData)
+            # Aceptar string JSON o lista (QueryDict puede devolver lista con string)
+            items_to_process = []
             if isinstance(componentes_historial, str):
                 try:
-                    componentes_historial = json.loads(componentes_historial)
+                    parsed = json.loads(componentes_historial)
+                    items_to_process = list(parsed) if isinstance(parsed, list) else []
                 except (json.JSONDecodeError, TypeError):
-                    componentes_historial = []
-            for item in (componentes_historial or []):
+                    pass
+            elif isinstance(componentes_historial, list):
+                for x in componentes_historial:
+                    if isinstance(x, dict):
+                        items_to_process.append(x)
+                    elif isinstance(x, str):
+                        try:
+                            p = json.loads(x)
+                            if isinstance(p, list):
+                                items_to_process.extend(p)
+                            elif isinstance(p, dict):
+                                items_to_process.append(p)
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+            for item in items_to_process:
                 if not isinstance(item, dict):
                     continue
                 comp_id = item.get('componente_id')
@@ -260,7 +275,7 @@ class VehiculoSerializer(serializers.ModelSerializer):
                         'mensaje_alerta': '',
                     }
                 )
-            logger.info(f"📋 Componentes historial aplicados para vehículo {vehiculo.id}: {len(componentes_historial)} items")
+            logger.info(f"📋 Componentes historial aplicados para vehículo {vehiculo.id}: {len(items_to_process)} items")
 
         # --- INICIALIZACIÓN INTELIGENTE DE SALUD ---
         # 3. Inicialización inteligente delegada a Health Engine (Async)

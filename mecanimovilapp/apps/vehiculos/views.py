@@ -218,9 +218,21 @@ class VehiculoViewSet(viewsets.ModelViewSet):
                 except (json.JSONDecodeError, TypeError):
                     componentes_historial = []
             elif isinstance(ch, list):
-                componentes_historial = ch
+                # QueryDict puede devolver lista con un string JSON, ej: ['[{"componente_id":1,...}]']
+                for x in ch:
+                    if isinstance(x, dict):
+                        componentes_historial.append(x)
+                    elif isinstance(x, str):
+                        try:
+                            parsed = json.loads(x)
+                            if isinstance(parsed, list):
+                                componentes_historial.extend(p for p in parsed if isinstance(p, dict))
+                            elif isinstance(parsed, dict):
+                                componentes_historial.append(parsed)
+                        except (json.JSONDecodeError, TypeError):
+                            pass
         if componentes_historial:
-            print(f"DEBUG: componentes_historial recibido: {componentes_historial}")
+            print(f"DEBUG: componentes_historial parseado: {componentes_historial}")
         
         if not hasattr(user, 'cliente'):
              return Response({"error": "Usuario sin perfil de cliente"}, status=status.HTTP_403_FORBIDDEN)
