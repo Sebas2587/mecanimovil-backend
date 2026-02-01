@@ -219,6 +219,8 @@ class VehiculoViewSet(viewsets.ModelViewSet):
                     componentes_historial = []
             elif isinstance(ch, list):
                 componentes_historial = ch
+        if componentes_historial:
+            print(f"DEBUG: componentes_historial recibido: {componentes_historial}")
         
         if not hasattr(user, 'cliente'):
              return Response({"error": "Usuario sin perfil de cliente"}, status=status.HTTP_403_FORBIDDEN)
