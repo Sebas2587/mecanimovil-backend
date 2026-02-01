@@ -30,7 +30,15 @@ class SolicitudServicioSerializer(serializers.ModelSerializer):
     vehiculo_detail = VehiculoSerializer(source='vehiculo', read_only=True)
     lineas_detail = serializers.SerializerMethodField()
     oferta_proveedor_id = serializers.SerializerMethodField()
-    
+    taller_id = serializers.SerializerMethodField()
+    mecanico_id = serializers.SerializerMethodField()
+
+    def get_taller_id(self, obj):
+        return obj.taller_id
+
+    def get_mecanico_id(self, obj):
+        return obj.mecanico_id
+
     class Meta:
         model = SolicitudServicio
         fields = (
@@ -41,7 +49,8 @@ class SolicitudServicioSerializer(serializers.ModelSerializer):
             'comprobante_pago', 'comprobante_validado', 'fecha_validacion',
             'notas_cliente', 'notas_admin', 'motivo_cancelacion', 'fecha_cancelacion',
             'fecha_devolucion', 'fecha_respuesta_proveedor', 'motivo_rechazo',
-            'notas_proveedor', 'lineas_detail', 'oferta_proveedor', 'oferta_proveedor_id'
+            'notas_proveedor', 'lineas_detail', 'oferta_proveedor', 'oferta_proveedor_id',
+            'taller_id', 'mecanico_id'
         )
         extra_kwargs = {
             'cliente': {'write_only': True},
