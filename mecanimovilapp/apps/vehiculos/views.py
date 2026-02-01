@@ -103,6 +103,10 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         
         context = super().get_serializer_context()
         context['request'] = self.request
+        # componentes_historial (mantenimientos) se pasa para create, evita validación FormData
+        if hasattr(self, '_componentes_historial'):
+            context['componentes_historial'] = self._componentes_historial
+            del self._componentes_historial
         
         # Log para verificar que el serializer se está ejecutando
         logger.info(f"🔍 [VehiculoViewSet] get_serializer_context llamado para acción: {self.action}")
@@ -203,15 +207,18 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         user = request.user
 
         # Parse componentes_historial if sent as JSON string (FormData)
-        ch = data.get('componentes_historial')
+        # Se pasa por context al serializer para evitar validación ListField/DictField con FormData
+        componentes_historial = []
+        ch = data.pop('componentes_historial', None)
         if ch is not None:
             if isinstance(ch, str):
                 try:
-                    data['componentes_historial'] = json.loads(ch)
+                    parsed = json.loads(ch)
+                    componentes_historial = list(parsed) if isinstance(parsed, list) else []
                 except (json.JSONDecodeError, TypeError):
-                    data['componentes_historial'] = []
-            elif not isinstance(ch, list):
-                data['componentes_historial'] = []
+                    componentes_historial = []
+            elif isinstance(ch, list):
+                componentes_historial = ch
         
         if not hasattr(user, 'cliente'):
              return Response({"error": "Usuario sin perfil de cliente"}, status=status.HTTP_403_FORBIDDEN)
@@ -288,6 +295,7 @@ class VehiculoViewSet(viewsets.ModelViewSet):
 
         # 3. Create normal
         print("DEBUG: Creating new vehicle")
+        self._componentes_historial = componentes_historial
         serializer = self.get_serializer(data=data)
         if not serializer.is_valid():
              print(f"DEBUG: Create Serializer Errors: {serializer.errors}")

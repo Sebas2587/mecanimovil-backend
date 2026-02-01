@@ -66,13 +66,7 @@ class VehiculoSerializer(serializers.ModelSerializer):
         required=False
     )
 
-    # Historial de mantenimientos: [{ componente_id, km_ultimo_cambio }]
-    # Actualiza km_ultimo_servicio en ComponenteSaludVehiculo antes del Health Engine
-    componentes_historial = serializers.ListField(
-        child=serializers.DictField(),
-        write_only=True,
-        required=False
-    )
+    # Historial de mantenimientos: se recibe vía context (evita validación DictField con FormData)
     
     health_score = serializers.SerializerMethodField()
     health_report = serializers.SerializerMethodField()
@@ -88,7 +82,6 @@ class VehiculoSerializer(serializers.ModelSerializer):
             'color', 'numero_motor', 'vin',
             'fecha_creacion', 'fecha_actualizacion',
             'componentes_al_dia',
-            'componentes_historial',
             'transmision', 'version', 'puertas', 'mes_revision_tecnica',
             # Appraisal Fields
             'tasacion_fiscal', 'permiso_circulacion', 'year_tasacion_fiscal',
@@ -198,7 +191,8 @@ class VehiculoSerializer(serializers.ModelSerializer):
 
         # Extraer la lista de componentes al día
         componentes_al_dia = validated_data.pop('componentes_al_dia', [])
-        componentes_historial = validated_data.pop('componentes_historial', [])
+        # componentes_historial viene del context (evita validación con FormData)
+        componentes_historial = self.context.get('componentes_historial') or []
         # Extraer la foto si existe
         foto_file = validated_data.pop('foto', None)
         
@@ -237,6 +231,8 @@ class VehiculoSerializer(serializers.ModelSerializer):
                 except (json.JSONDecodeError, TypeError):
                     componentes_historial = []
             for item in (componentes_historial or []):
+                if not isinstance(item, dict):
+                    continue
                 comp_id = item.get('componente_id')
                 km_ultimo = item.get('km_ultimo_cambio')
                 if comp_id is None or km_ultimo is None:
