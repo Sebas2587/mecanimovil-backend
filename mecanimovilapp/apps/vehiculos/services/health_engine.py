@@ -37,9 +37,9 @@ class HealthEngine:
             logger.error(f"Vehículo {vehiculo_id} no encontrado para cálculo de salud")
             return []
 
-        # 1. Normalizar datos del vehículo
-        marca_nombre = vehiculo.marca if vehiculo.marca else ""
-        modelo_nombre = vehiculo.modelo if vehiculo.modelo else ""
+        # 1. Normalizar datos del vehículo (marca/modelo son FKs; necesitamos el nombre)
+        marca_nombre = vehiculo.marca.nombre if vehiculo.marca else ""
+        modelo_nombre = vehiculo.modelo.nombre if vehiculo.modelo else ""
         
         # Mapeo de Motor para coincidir con Choices
         tipo_motor_raw = str(vehiculo.tipo_motor).upper().strip()

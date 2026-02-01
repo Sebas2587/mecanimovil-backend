@@ -270,11 +270,17 @@ class VehiculoSerializer(serializers.ModelSerializer):
         # - Crear componentes iniciales (o usar los pre-creados con km_ultimo_servicio)
         # - Calcular salud
 
-        # 3.5. Invocar tarea asíncrona para calcular salud general y alertas
-        # Esto asegura que se genere un EstadoSaludVehiculo y se actualicen métricas globales
+        # 3.5. Invocar tarea asíncrona DESPUÉS del commit (evita race condition)
+        # Si la tarea corre antes del commit, no vería los ComponenteSaludVehiculo
+        # con km_ultimo_servicio que acabamos de crear → calcularía 0%
+        from django.db import transaction
         from mecanimovilapp.apps.vehiculos.tasks import calcular_salud_vehiculo_async
-        calcular_salud_vehiculo_async.delay(vehiculo.id)
-        logger.info(f"🚀 Tarea de cálculo de salud disparada para vehículo {vehiculo.id}")
+
+        def _disparar_calculo_salud():
+            calcular_salud_vehiculo_async.delay(vehiculo.id)
+            logger.info(f"🚀 Tarea de cálculo de salud disparada para vehículo {vehiculo.id} (post-commit)")
+
+        transaction.on_commit(_disparar_calculo_salud)
 
             # 4. Obtener Tasación y Valoración (GetAPI)
         try:
