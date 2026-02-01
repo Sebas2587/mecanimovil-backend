@@ -65,6 +65,14 @@ class VehiculoSerializer(serializers.ModelSerializer):
         write_only=True, 
         required=False
     )
+
+    # Historial de mantenimientos: [{ componente_id, km_ultimo_cambio }]
+    # Actualiza km_ultimo_servicio en ComponenteSaludVehiculo antes del Health Engine
+    componentes_historial = serializers.ListField(
+        child=serializers.DictField(),
+        write_only=True,
+        required=False
+    )
     
     health_score = serializers.SerializerMethodField()
     health_report = serializers.SerializerMethodField()
@@ -80,6 +88,7 @@ class VehiculoSerializer(serializers.ModelSerializer):
             'color', 'numero_motor', 'vin',
             'fecha_creacion', 'fecha_actualizacion',
             'componentes_al_dia',
+            'componentes_historial',
             'transmision', 'version', 'puertas', 'mes_revision_tecnica',
             # Appraisal Fields
             'tasacion_fiscal', 'permiso_circulacion', 'year_tasacion_fiscal',
@@ -189,6 +198,7 @@ class VehiculoSerializer(serializers.ModelSerializer):
 
         # Extraer la lista de componentes al día
         componentes_al_dia = validated_data.pop('componentes_al_dia', [])
+        componentes_historial = validated_data.pop('componentes_historial', [])
         # Extraer la foto si existe
         foto_file = validated_data.pop('foto', None)
         
@@ -214,14 +224,56 @@ class VehiculoSerializer(serializers.ModelSerializer):
                 vehiculo.foto = foto_file
                 vehiculo.save()
         
+        # --- COMPONENTES HISTORIAL (km_ultimo_servicio) ---
+        # Crear/actualizar ComponenteSaludVehiculo ANTES del Health Engine
+        # para que use km_ultimo_servicio correcto al calcular degradación
+        if componentes_historial:
+            import json
+            from .models_health import ComponenteSalud, ComponenteSaludVehiculo
+            # Aceptar string JSON (desde FormData)
+            if isinstance(componentes_historial, str):
+                try:
+                    componentes_historial = json.loads(componentes_historial)
+                except (json.JSONDecodeError, TypeError):
+                    componentes_historial = []
+            for item in (componentes_historial or []):
+                comp_id = item.get('componente_id')
+                km_ultimo = item.get('km_ultimo_cambio')
+                if comp_id is None or km_ultimo is None:
+                    continue
+                try:
+                    comp_id = int(comp_id)
+                    km_ultimo = int(km_ultimo)
+                except (TypeError, ValueError):
+                    continue
+                if km_ultimo < 0 or km_ultimo > (vehiculo.kilometraje or 0):
+                    continue
+                if not ComponenteSalud.objects.filter(id=comp_id).exists():
+                    continue
+                ComponenteSaludVehiculo.objects.update_or_create(
+                    vehiculo=vehiculo,
+                    componente_id=comp_id,
+                    defaults={
+                        'km_ultimo_servicio': km_ultimo,
+                        'salud_porcentaje': 100,
+                        'nivel_alerta': 'OPTIMO',
+                        'vida_util_proyectada': 0,
+                        'es_regla_especifica': False,
+                        'km_estimados_restantes': 0,
+                        'requiere_servicio_inmediato': False,
+                        'mensaje_alerta': '',
+                    }
+                )
+            logger.info(f"📋 Componentes historial aplicados para vehículo {vehiculo.id}: {len(componentes_historial)} items")
+
         # --- INICIALIZACIÓN INTELIGENTE DE SALUD ---
         # 3. Inicialización inteligente delegada a Health Engine (Async)
         # Ya no creamos componentes estáticamente aquí.
         # La tarea asíncrona se encargará de:
         # - Detectar motor y reglas
-        # - Crear componentes iniciales
+        # - Crear componentes iniciales (o usar los pre-creados con km_ultimo_servicio)
         # - Calcular salud
-        
+
         # 3.5. Invocar tarea asíncrona para calcular salud general y alertas
         # Esto asegura que se genere un EstadoSaludVehiculo y se actualicen métricas globales
         from mecanimovilapp.apps.vehiculos.tasks import calcular_salud_vehiculo_async

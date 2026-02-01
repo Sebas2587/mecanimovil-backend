@@ -197,9 +197,21 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         1. Manejar Update si el vehículo ya existe para este cliente (por patente)
         2. Resolver o Crear Marca/Modelo si faltan IDs pero hay nombres
         """
+        import json
         print(f"DEBUG: Create Vehicle - Data received: {request.data}")
         data = request.data.copy()
         user = request.user
+
+        # Parse componentes_historial if sent as JSON string (FormData)
+        ch = data.get('componentes_historial')
+        if ch is not None:
+            if isinstance(ch, str):
+                try:
+                    data['componentes_historial'] = json.loads(ch)
+                except (json.JSONDecodeError, TypeError):
+                    data['componentes_historial'] = []
+            elif not isinstance(ch, list):
+                data['componentes_historial'] = []
         
         if not hasattr(user, 'cliente'):
              return Response({"error": "Usuario sin perfil de cliente"}, status=status.HTTP_403_FORBIDDEN)
