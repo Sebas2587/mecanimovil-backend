@@ -39,8 +39,14 @@ class VehiculoSerializer(serializers.ModelSerializer):
     Serializador para el modelo Vehiculo
     """
     cliente_detail = ClienteSerializer(source='cliente', read_only=True)
-    marca_nombre = serializers.CharField(source='marca.nombre', read_only=True)
-    modelo_nombre = serializers.CharField(source='modelo.nombre', read_only=True)
+    marca_nombre = serializers.SerializerMethodField()
+    modelo_nombre = serializers.SerializerMethodField()
+
+    def get_marca_nombre(self, obj):
+        return obj.marca.nombre if obj.marca else None
+
+    def get_modelo_nombre(self, obj):
+        return obj.modelo.nombre if obj.modelo else None
     
     # Mapeo de campos para compatibilidad con frontend
     año = serializers.ReadOnlyField(source='year')  # Mapear year -> año

@@ -524,11 +524,11 @@ class SolicitudServicioViewSet(viewsets.ModelViewSet):
             if fecha_hasta:
                 queryset = queryset.filter(fecha_servicio__lte=fecha_hasta)
             
-            # Obtener solicitudes con relaciones optimizadas
+            # Obtener solicitudes con relaciones optimizadas (vehiculo__marca/modelo para evitar NoneType)
             solicitudes_historial = queryset.select_related(
-                'cliente', 'taller', 'mecanico', 'vehiculo'
+                'cliente', 'taller', 'mecanico', 'vehiculo', 'vehiculo__marca', 'vehiculo__modelo'
             ).prefetch_related(
-                'lineas__oferta_servicio'
+                'lineas__oferta_servicio__servicio'
             ).order_by('-fecha_hora_solicitud')  # Más recientes primero
             
             serializer = self.get_serializer(solicitudes_historial, many=True)
