@@ -56,7 +56,7 @@ class SolicitudServicio(models.Model):
     )
     vehiculo = models.ForeignKey(
         Vehiculo,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,  # Changed from CASCADE to SET_NULL - preserves service history
         related_name='solicitudes',
         null=True,
         blank=True
@@ -643,9 +643,11 @@ class SolicitudServicioPublica(models.Model):
     
     vehiculo = models.ForeignKey(
         Vehiculo,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,  # Changed from CASCADE to SET_NULL - preserves service history
         related_name='solicitudes_publicas',
-        verbose_name='Vehículo'
+        verbose_name='Vehículo',
+        null=True,  # Added to allow NULL when vehicle is deleted
+        blank=True
     )
     
     # Descripción general (antes de seleccionar servicios)
