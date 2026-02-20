@@ -1,5 +1,5 @@
 """
-Modelos para el sistema Pay-per-Win con créditos.
+Modelos para el sistema Pay-per-Win con créditos y Suscripciones Mensuales.
 """
 from django.db import models
 from django.utils.translation import gettext_lazy as _
@@ -542,4 +542,171 @@ class ProveedorCancelaciones(models.Model):
         """Sobrescribir save para ejecutar validaciones"""
         self.full_clean()
         super().save(*args, **kwargs)
+
+
+# ============================================================================
+# MODELOS DEL SISTEMA DE SUSCRIPCIONES MENSUALES (CAPA SUPERIOR)
+# ============================================================================
+
+class PlanSuscripcion(models.Model):
+    """
+    Planes de suscripción mensual disponibles para los proveedores.
+    Cada plan otorga una cantidad fija de créditos al mes.
+    El mp_plan_id se crea manualmente en el panel de MP o via API.
+    """
+    nombre = models.CharField(
+        max_length=100,
+        verbose_name='Nombre',
+        help_text='Nombre del plan (ej: "Plan Básico", "Plan Pro")'
+    )
+    descripcion = models.TextField(
+        blank=True,
+        verbose_name='Descripción',
+        help_text='Descripción del plan y sus beneficios'
+    )
+    precio = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        validators=[MinValueValidator(0)],
+        verbose_name='Precio Mensual (CLP)',
+        help_text='Precio mensual del plan en CLP'
+    )
+    creditos_mensuales = models.IntegerField(
+        validators=[MinValueValidator(1)],
+        verbose_name='Créditos Mensuales',
+        help_text='Cantidad de créditos que se otorgan cada mes al confirmarse el cobro'
+    )
+    mp_preapproval_plan_id = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        verbose_name='ID Plan MercadoPago',
+        help_text='ID del plan de Preapproval en MercadoPago (opcional, si se usan Preapproval Plans)'
+    )
+    activo = models.BooleanField(
+        default=True,
+        verbose_name='Activo',
+        help_text='Plan disponible para nuevas suscripciones'
+    )
+    destacado = models.BooleanField(
+        default=False,
+        verbose_name='Destacado',
+        help_text='Plan que se destaca visualmente en la UI'
+    )
+    orden = models.IntegerField(
+        default=0,
+        verbose_name='Orden',
+        help_text='Orden de visualización (menor = primero)'
+    )
+
+    # Timestamps
+    fecha_creacion = models.DateTimeField(auto_now_add=True)
+    fecha_actualizacion = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _('Plan de Suscripción')
+        verbose_name_plural = _('Planes de Suscripción')
+        ordering = ['orden', 'precio']
+        indexes = [
+            models.Index(fields=['activo', 'orden']),
+        ]
+
+    def __str__(self):
+        return f"{self.nombre} — {self.creditos_mensuales} créditos/mes — ${self.precio:,.0f}/mes"
+
+
+class SuscripcionProveedor(models.Model):
+    """
+    Registro de suscripción mensual de un proveedor.
+    Vincula al proveedor con un PlanSuscripcion y almacena el estado
+    de la suscripción en MercadoPago Preapproval.
+    """
+    ESTADOS = [
+        ('pendiente', 'Pendiente'),       # Suscripción creada, aún no autorizada
+        ('activa', 'Activa'),             # Cobro periódico activo
+        ('pausada', 'Pausada'),           # Pausada temporalmente
+        ('cancelada', 'Cancelada'),       # Cancelada por el proveedor o admin
+        ('expirada', 'Expirada'),         # Dejó de cobrarse por falta de pago
+    ]
+
+    proveedor = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='suscripcion_proveedor',
+        verbose_name='Proveedor',
+        help_text='Proveedor suscripto'
+    )
+    plan = models.ForeignKey(
+        PlanSuscripcion,
+        on_delete=models.PROTECT,
+        related_name='suscripciones',
+        verbose_name='Plan',
+        help_text='Plan de suscripción contratado'
+    )
+    estado = models.CharField(
+        max_length=20,
+        choices=ESTADOS,
+        default='pendiente',
+        verbose_name='Estado',
+        help_text='Estado actual de la suscripción'
+    )
+    mp_preapproval_id = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        unique=True,
+        verbose_name='ID Preapproval MercadoPago',
+        help_text='ID de la suscripción (preapproval) en MercadoPago'
+    )
+    mp_init_point = models.TextField(
+        blank=True,
+        null=True,
+        verbose_name='URL de Pago Inicial',
+        help_text='init_point retornado por MercadoPago para que el proveedor autorice'
+    )
+    ultimo_charge_id = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        verbose_name='Último Charge ID',
+        help_text='ID del último cobro procesado (para idempotencia)'
+    )
+    fecha_inicio = models.DateTimeField(
+        auto_now_add=True,
+        verbose_name='Fecha de Inicio',
+        help_text='Fecha de creación de la suscripción'
+    )
+    fecha_proximo_cobro = models.DateTimeField(
+        blank=True,
+        null=True,
+        verbose_name='Próximo Cobro',
+        help_text='Fecha estimada del próximo cobro automático'
+    )
+    fecha_cancelacion = models.DateTimeField(
+        blank=True,
+        null=True,
+        verbose_name='Fecha de Cancelación',
+        help_text='Fecha en que se canceló la suscripción'
+    )
+
+    # Timestamps
+    fecha_actualizacion = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _('Suscripción de Proveedor')
+        verbose_name_plural = _('Suscripciones de Proveedores')
+        ordering = ['-fecha_inicio']
+        indexes = [
+            models.Index(fields=['proveedor', 'estado']),
+            models.Index(fields=['mp_preapproval_id']),
+            models.Index(fields=['estado']),
+        ]
+
+    def __str__(self):
+        return f"{self.proveedor.username} — {self.plan.nombre} — {self.get_estado_display()}"
+
+    @property
+    def esta_activa(self):
+        """Retorna True si la suscripción está activa y otorga créditos."""
+        return self.estado == 'activa'
 

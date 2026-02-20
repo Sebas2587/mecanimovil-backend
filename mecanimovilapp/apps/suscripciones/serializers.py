@@ -1,5 +1,5 @@
 """
-Serializers para el sistema Pay-per-Win con créditos.
+Serializers para el sistema Pay-per-Win con créditos y Suscripciones Mensuales.
 """
 from rest_framework import serializers
 from .models import (
@@ -8,7 +8,9 @@ from .models import (
     CompraCreditos,
     ConsumoCredito,
     ConfiguracionCreditos,
-    ConfiguracionCreditosServicio
+    ConfiguracionCreditosServicio,
+    PlanSuscripcion,
+    SuscripcionProveedor,
 )
 
 
@@ -192,3 +194,49 @@ class ConfiguracionCreditosSerializer(serializers.ModelSerializer):
             'fecha_actualizacion'
         ]
 
+
+# ============================================================================
+# SERIALIZERS DEL SISTEMA DE SUSCRIPCIONES MENSUALES
+# ============================================================================
+
+class PlanSuscripcionSerializer(serializers.ModelSerializer):
+    """Serializer para PlanSuscripcion — solo lectura en la API pública."""
+
+    class Meta:
+        model = PlanSuscripcion
+        fields = [
+            'id',
+            'nombre',
+            'descripcion',
+            'precio',
+            'creditos_mensuales',
+            'destacado',
+            'orden',
+            'fecha_creacion',
+        ]
+        read_only_fields = fields
+
+
+class SuscripcionProveedorSerializer(serializers.ModelSerializer):
+    """Serializer para SuscripcionProveedor con datos del plan embebidos."""
+
+    plan = PlanSuscripcionSerializer(read_only=True)
+    estado_display = serializers.CharField(source='get_estado_display', read_only=True)
+    esta_activa = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = SuscripcionProveedor
+        fields = [
+            'id',
+            'plan',
+            'estado',
+            'estado_display',
+            'esta_activa',
+            'mp_preapproval_id',
+            'mp_init_point',
+            'fecha_inicio',
+            'fecha_proximo_cobro',
+            'fecha_cancelacion',
+            'fecha_actualizacion',
+        ]
+        read_only_fields = fields

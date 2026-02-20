@@ -87,6 +87,11 @@ app.conf.beat_schedule = {
         'schedule': crontab(minute=0),  # Cada hora, en punto
         'options': {'queue': 'default'},
     },
+    'verificar-suscripciones-activas': {
+        'task': 'suscripciones.verificar_suscripciones_activas',
+        'schedule': crontab(hour=4, minute=0),  # Diariamente a las 04:00 AM
+        'options': {'queue': 'default'},
+    },
 }
 
 @app.task(bind=True)
