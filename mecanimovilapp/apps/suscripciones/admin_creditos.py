@@ -1,5 +1,5 @@
 """
-Admin adicional para modelos de créditos.
+Admin adicional para modelos de créditos y suscripciones mensuales.
 Se importa desde admin.py principal.
 """
 from django.contrib import admin
@@ -10,7 +10,9 @@ from .models import (
     ConsumoCredito,
     ConfiguracionCreditos,
     ConfiguracionCreditosServicio,
-    ProveedorCancelaciones
+    ProveedorCancelaciones,
+    PlanSuscripcion,
+    SuscripcionProveedor,
 )
 
 
@@ -283,3 +285,62 @@ class ProveedorCancelacionesAdmin(admin.ModelAdmin):
         }),
     )
 
+
+
+# ============================================================================
+# ADMIN PARA SUSCRIPCIONES MENSUALES
+# ============================================================================
+
+@admin.register(PlanSuscripcion)
+class PlanSuscripcionAdmin(admin.ModelAdmin):
+    """Admin para PlanSuscripcion — gestión de planes disponibles."""
+    list_display = ['nombre', 'precio', 'creditos_mensuales', 'activo', 'destacado', 'orden']
+    list_filter = ['activo', 'destacado']
+    search_fields = ['nombre']
+    ordering = ['orden', 'precio']
+    readonly_fields = ['fecha_creacion', 'fecha_actualizacion']
+
+    fieldsets = (
+        ('Información del Plan', {
+            'fields': ('nombre', 'descripcion', 'activo', 'destacado', 'orden')
+        }),
+        ('Precios y Créditos', {
+            'fields': ('precio', 'creditos_mensuales')
+        }),
+        ('MercadoPago (opcional)', {
+            'fields': ('mp_preapproval_plan_id',),
+            'classes': ('collapse',),
+        }),
+        ('Fechas', {
+            'fields': ('fecha_creacion', 'fecha_actualizacion'),
+            'classes': ('collapse',)
+        }),
+    )
+
+
+@admin.register(SuscripcionProveedor)
+class SuscripcionProveedorAdmin(admin.ModelAdmin):
+    """Admin para SuscripcionProveedor — estado de suscripciones por proveedor."""
+    list_display = [
+        'proveedor', 'plan', 'estado',
+        'mp_preapproval_id', 'fecha_inicio', 'fecha_proximo_cobro',
+    ]
+    list_filter = ['estado', 'plan']
+    search_fields = ['proveedor__username', 'proveedor__email', 'mp_preapproval_id']
+    ordering = ['-fecha_inicio']
+    readonly_fields = [
+        'fecha_inicio', 'fecha_actualizacion',
+        'mp_preapproval_id', 'mp_init_point', 'ultimo_charge_id',
+    ]
+
+    fieldsets = (
+        ('Proveedor y Plan', {
+            'fields': ('proveedor', 'plan', 'estado')
+        }),
+        ('MercadoPago', {
+            'fields': ('mp_preapproval_id', 'mp_init_point', 'ultimo_charge_id'),
+        }),
+        ('Fechas', {
+            'fields': ('fecha_inicio', 'fecha_proximo_cobro', 'fecha_cancelacion', 'fecha_actualizacion'),
+        }),
+    )

@@ -1,5 +1,5 @@
 """
-ViewSets para el sistema Pay-per-Win con créditos.
+ViewSets para el sistema Pay-per-Win con créditos y Suscripciones Mensuales.
 """
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
@@ -13,14 +13,18 @@ from .models import (
     CreditoProveedor,
     PaqueteCreditos,
     CompraCreditos,
-    ConsumoCredito
+    ConsumoCredito,
+    PlanSuscripcion,
+    SuscripcionProveedor,
 )
 from .serializers import (
     PaqueteCreditosSerializer,
     CompraCreditosSerializer,
     CreditoProveedorSerializer,
     ConsumoCreditoSerializer,
-    EstadisticasCreditosSerializer
+    EstadisticasCreditosSerializer,
+    PlanSuscripcionSerializer,
+    SuscripcionProveedorSerializer,
 )
 from mecanimovilapp.apps.ordenes.permissions import IsProveedor
 from mecanimovilapp.apps.pagos.services import get_mercado_pago_service
@@ -844,3 +848,158 @@ class CreditoProveedorViewSet(viewsets.ReadOnlyModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+
+# ============================================================================
+# VIEWSETS DEL SISTEMA DE SUSCRIPCIONES MENSUALES
+# ============================================================================
+
+class PlanSuscripcionViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    ViewSet de solo lectura para listar planes de suscripción activos.
+    Cualquier proveedor autenticado puede ver los planes disponibles.
+    """
+    serializer_class = PlanSuscripcionSerializer
+    permission_classes = [IsAuthenticated]
+    queryset = PlanSuscripcion.objects.filter(activo=True).order_by('orden', 'precio')
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAuthenticated, IsProveedor])
+    def suscribirse(self, request, pk=None):
+        """
+        POST /api/suscripciones/planes/{id}/suscribirse/
+
+        Crea una suscripción mensual en MercadoPago Preapproval.
+        Retorna init_point para que el frontend abra el WebView de pago.
+        """
+        from .suscripcion_services import crear_suscripcion_mp
+
+        proveedor = request.user
+
+        try:
+            resultado = crear_suscripcion_mp(proveedor, pk)
+            return Response(resultado, status=status.HTTP_201_CREATED)
+        except ValueError as e:
+            logger.warning(f"Error creando suscripción para proveedor {proveedor.id}: {e}")
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.error(f"Error inesperado creando suscripción: {e}", exc_info=True)
+            return Response(
+                {'error': 'Error al procesar la suscripción. Inténtelo nuevamente.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class SuscripcionProveedorViewSet(viewsets.GenericViewSet):
+    """
+    ViewSet para gestionar la suscripción mensual del proveedor autenticado.
+    Endpoints: mi_suscripcion, cancelar, webhook_preapproval.
+    """
+    serializer_class = SuscripcionProveedorSerializer
+    permission_classes = [IsAuthenticated, IsProveedor]
+
+    def get_queryset(self):
+        return SuscripcionProveedor.objects.filter(
+            proveedor=self.request.user
+        ).select_related('plan')
+
+    @action(detail=False, methods=['get'])
+    def mi_suscripcion(self, request):
+        """
+        GET /api/suscripciones/mi-suscripcion/
+
+        Retorna la suscripción activa/pendiente del proveedor autenticado.
+        """
+        from .suscripcion_services import obtener_suscripcion_activa
+
+        suscripcion = obtener_suscripcion_activa(request.user)
+        if not suscripcion:
+            return Response({'suscripcion': None}, status=status.HTTP_200_OK)
+
+        serializer = self.get_serializer(suscripcion)
+        return Response({'suscripcion': serializer.data}, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['post'])
+    def cancelar(self, request):
+        """
+        POST /api/suscripciones/mi-suscripcion/cancelar/
+
+        Cancela la suscripción activa del proveedor en MP y en la BD.
+        """
+        from .suscripcion_services import cancelar_suscripcion
+
+        try:
+            resultado = cancelar_suscripcion(request.user)
+            http_status = status.HTTP_200_OK if resultado.get('cancelada') else status.HTTP_400_BAD_REQUEST
+            return Response(resultado, status=http_status)
+        except Exception as e:
+            logger.error(f"Error cancelando suscripción para {request.user.id}: {e}", exc_info=True)
+            return Response(
+                {'error': 'Error al cancelar la suscripción. Inténtelo nuevamente.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(
+        detail=False,
+        methods=['post'],
+        permission_classes=[AllowAny],
+        url_path='webhook-preapproval',
+    )
+    def webhook_preapproval(self, request):
+        """
+        POST /api/suscripciones/webhook-preapproval/
+
+        Recibe notificaciones de MercadoPago Preapproval. Tipos relevantes:
+          - subscription_authorized_payment → cobro mensual exitoso → acredita créditos
+          - subscription_preapproval        → cambio de estado → sincroniza localmente
+        """
+        import json
+        from .suscripcion_services import acreditar_creditos_suscripcion, sincronizar_estado_suscripcion
+
+        logger.info(
+            f"📨 [Webhook Preapproval] Datos: {json.dumps(request.data, default=str)[:600]}"
+        )
+
+        notification_type = (
+            request.data.get('type')
+            or request.data.get('action')
+            or request.query_params.get('type')
+            or ''
+        )
+        data = request.data.get('data') or {}
+        preapproval_id = data.get('id') or request.query_params.get('id')
+
+        logger.info(
+            f"📨 [Webhook Preapproval] type={notification_type!r}, preapproval_id={preapproval_id!r}"
+        )
+
+        # ── Cobro mensual exitoso → acreditar créditos ──────────────────────
+        if notification_type in ('subscription_authorized_payment', 'authorized_payment'):
+            if not preapproval_id:
+                preapproval_id = request.data.get('preapproval_id')
+
+            authorized_payment_id = request.data.get('id') or data.get('id')
+
+            if preapproval_id:
+                try:
+                    resultado = acreditar_creditos_suscripcion(
+                        preapproval_id=preapproval_id,
+                        charge_id=authorized_payment_id,
+                    )
+                    logger.info(f"✅ [Webhook] Resultado acreditación: {resultado}")
+                except Exception as e:
+                    logger.error(f"❌ [Webhook] Error acreditando créditos: {e}", exc_info=True)
+
+        # ── Cambio de estado de la suscripción → sincronizar ────────────────
+        elif notification_type in ('subscription_preapproval', 'preapproval'):
+            if preapproval_id:
+                try:
+                    suscripcion = SuscripcionProveedor.objects.filter(
+                        mp_preapproval_id=preapproval_id
+                    ).select_related('plan').first()
+                    if suscripcion:
+                        sincronizar_estado_suscripcion(suscripcion)
+                        logger.info(f"🔄 [Webhook] Suscripción {preapproval_id} sincronizada")
+                except Exception as e:
+                    logger.error(f"❌ [Webhook] Error sincronizando suscripción: {e}", exc_info=True)
+
+        # Siempre 200 OK para que MercadoPago no reintente el webhook
+        return Response({'status': 'ok'}, status=status.HTTP_200_OK)
