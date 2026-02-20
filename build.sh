@@ -43,4 +43,7 @@ else:
     print("ℹ️ Superusuario ya existe o no se proporcionó contraseña")
 EOF
 
+echo "💳 Cargando planes de suscripción mensual (idempotente)..."
+python scripts/cargar_planes_suscripcion.py
+
 echo "✅ Build completado exitosamente!"
