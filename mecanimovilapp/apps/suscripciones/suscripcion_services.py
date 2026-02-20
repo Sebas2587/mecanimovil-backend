@@ -101,7 +101,11 @@ def crear_suscripcion_mp(proveedor, plan_id):
 
     preapproval_data = {
         "reason": f"Suscripción MecaniMovil — {plan.nombre}",
-        "payer_email": proveedor.email,
+        # payer_email es OPCIONAL para status "pending" según docs MP.
+        # Si el email del proveedor pertenece a una cuenta MP de otro país,
+        # MP lanza "Cannot operate between different countries".
+        # Para status pending, MP genera el link de pago sin requerir el email.
+        # "payer_email": proveedor.email,  ← omitido intencionalmente
         "auto_recurring": {
             "frequency": 1,
             "frequency_type": "months",
