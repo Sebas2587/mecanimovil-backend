@@ -79,11 +79,16 @@ def crear_suscripcion_mp(proveedor, plan_id):
         }
 
     # Construir payload para la API de Preapproval de MercadoPago
-    webhook_base_url = config('WEBHOOK_BASE_URL', default='')
-    back_url = f"{webhook_base_url}/api/suscripciones/webhook-preapproval/" if webhook_base_url else ''
+    # NOTA: back_url debe ser una URL HTTPS válida — MP rechaza deep links (mecanimovil://)
+    webhook_base_url = config('WEBHOOK_BASE_URL', default='https://api.mecanimovil.com')
+
+    # back_url: página HTTPS a donde MP redirige al usuario tras autorizar el pago
+    back_url = f"{webhook_base_url}/suscripciones-resultado/"
+
+    # notification_url: endpoint de nuestro backend donde MP envía webhooks de cobro
+    notification_url = f"{webhook_base_url}/api/suscripciones/webhook-preapproval/"
 
     precio_entero = int(round(float(plan.precio)))
-    nombre_completo = f"{proveedor.first_name} {proveedor.last_name}".strip() or proveedor.username
 
     preapproval_data = {
         "reason": f"Suscripción MecaniMovil — {plan.nombre}",
@@ -94,20 +99,19 @@ def crear_suscripcion_mp(proveedor, plan_id):
             "transaction_amount": precio_entero,
             "currency_id": "CLP",
         },
-        "back_url": f"mecanimovil://suscripciones/resultado",
+        "back_url": back_url,
+        "notification_url": notification_url,
         "status": "pending",
     }
-
-    if webhook_base_url:
-        preapproval_data["notification_url"] = (
-            f"{webhook_base_url}/api/suscripciones/webhook-preapproval/"
-        )
 
     # Si el plan tiene un mp_preapproval_plan_id, usarlo
     if plan.mp_preapproval_plan_id:
         preapproval_data["preapproval_plan_id"] = plan.mp_preapproval_plan_id
 
-    logger.info(f"📤 Creando preapproval MP para proveedor {proveedor.id}, plan '{plan.nombre}'")
+    logger.info(
+        f"📤 Creando preapproval MP para proveedor {proveedor.id}, plan '{plan.nombre}' "
+        f"| precio={precio_entero} CLP | back_url={back_url}"
+    )
 
     try:
         access_token = _get_mp_access_token()
@@ -120,10 +124,21 @@ def crear_suscripcion_mp(proveedor, plan_id):
             },
             timeout=15,
         )
+        # Loguear siempre el cuerpo de respuesta para facilitar debugging
+        logger.info(f"📥 MP Preapproval respuesta [{response.status_code}]: {response.text[:800]}")
         response.raise_for_status()
         mp_response = response.json()
+    except requests.exceptions.HTTPError as e:
+        # Incluir el body de respuesta de MP en el error para debugging
+        error_body = ''
+        try:
+            error_body = e.response.json()
+        except Exception:
+            error_body = e.response.text[:400] if e.response else ''
+        logger.error(f"❌ MP Preapproval 4xx/5xx [{e.response.status_code if e.response else '?'}]: {error_body}")
+        raise ValueError(f"MercadoPago rechazó la solicitud: {error_body}")
     except requests.exceptions.RequestException as e:
-        logger.error(f"❌ Error llamando a MP Preapproval API: {e}")
+        logger.error(f"❌ Error de red llamando a MP Preapproval API: {e}")
         raise ValueError(f"Error al comunicarse con MercadoPago: {str(e)}")
 
     preapproval_id = mp_response.get("id")

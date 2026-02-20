@@ -32,6 +32,17 @@ admin.site.index_title = "Bienvenido al portal de administración de MecaniMovil
 def hello_api(request):
     return JsonResponse({"message": "¡Hola desde el backend de MecaniMovil!"})
 
+# Vista de retorno tras autorizar suscripción en MercadoPago
+# MercadoPago redirige aquí (back_url) después de que el usuario autoriza el débito.
+# En producción, esta página debería indicarle al usuario que vuelva a la app.
+def suscripciones_resultado(request):
+    estado = request.GET.get('status', '')
+    return JsonResponse({
+        "message": "Puedes volver a la aplicación MecaniMovil.",
+        "status": estado,
+        "instruccion": "Abre la app MecaniMovil para ver el estado de tu suscripción.",
+    })
+
 # Vista para servir archivos media en producción
 def serve_media(request, path):
     """
@@ -87,6 +98,7 @@ urlpatterns = [
     
     # Endpoint para prueba de conexión
     path('api/hello/', hello_api, name='hello_api'),
+    path('suscripciones-resultado/', suscripciones_resultado, name='suscripciones-resultado'),
     # Documentación de la API
     # path('docs/', include_docs_urls(title='MecaniMovil API')),
 ]
