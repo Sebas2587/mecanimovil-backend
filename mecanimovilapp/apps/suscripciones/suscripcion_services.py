@@ -90,6 +90,13 @@ def crear_suscripcion_mp(proveedor, plan_id):
 
     precio_entero = int(round(float(plan.precio)))
 
+    # currency_id debe coincidir con el país de la cuenta MercadoPago:
+    # - Cuenta Argentina → "ARS"  (mercadopago.com.ar)
+    # - Cuenta Chile     → "CLP"  (mercadopago.cl)
+    # - Cuenta Colombia  → "COP"  (mercadopago.com.co)
+    # Configurar MERCADOPAGO_CURRENCY en las variables de entorno de Render.
+    currency_id = config('MERCADOPAGO_CURRENCY', default='ARS')
+
     preapproval_data = {
         "reason": f"Suscripción MecaniMovil — {plan.nombre}",
         "payer_email": proveedor.email,
@@ -97,7 +104,7 @@ def crear_suscripcion_mp(proveedor, plan_id):
             "frequency": 1,
             "frequency_type": "months",
             "transaction_amount": precio_entero,
-            "currency_id": "CLP",
+            "currency_id": currency_id,
         },
         "back_url": back_url,
         "notification_url": notification_url,
