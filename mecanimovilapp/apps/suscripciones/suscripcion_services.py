@@ -112,7 +112,7 @@ def crear_suscripcion_mp(proveedor, plan_id):
 
     logger.info(
         f"📤 Creando preapproval MP para proveedor {proveedor.id}, plan '{plan.nombre}' "
-        f"| modo={mp_modo} | payer_email={payer_email[:20]}... | precio={precio_entero} {currency_id}"
+        f"| payer_email={payer_email[:25]}... | precio={precio_entero} {currency_id}"
     )
 
     # Usar el SDK oficial de MP (igual que pagos/services.py) para que el
