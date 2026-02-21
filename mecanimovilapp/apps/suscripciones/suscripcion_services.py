@@ -88,25 +88,10 @@ def crear_suscripcion_mp(proveedor, plan_id):
 
     precio_entero = int(round(float(plan.precio)))
     currency_id = config('MERCADOPAGO_CURRENCY', default='CLP')
-    mp_modo = config('MERCADOPAGO_MODE', default='test')
 
-    # ─── payer_email ─────────────────────────────────────────────────────────────
-    # La API de Preapproval (suscripciones) requiere payer_email Y valida que
-    # pertenezca a una cuenta MP del mismo país que el merchant (Chile = MLC).
-    # Esto es diferente a Checkout Pro (créditos), que no requiere email upfront.
-    #
-    # En TEST: se necesita un email de cuenta de prueba chilena de MP.
-    # En PROD: se usa el email real del proveedor (debe tener cuenta MP en Chile).
-    if mp_modo == 'production':
-        payer_email = proveedor.email
-    else:
-        payer_email = config('MERCADOPAGO_TEST_PAYER_EMAIL', default='')
-        if not payer_email:
-            raise ValueError(
-                "En modo test, debes configurar MERCADOPAGO_TEST_PAYER_EMAIL "
-                "con el email de un test user chileno de MP. "
-                "Créalo en: https://www.mercadopago.cl/developers/panel/test-users"
-            )
+    # payer_email: la API de Preapproval requiere el email del pagador.
+    # El proveedor debe tener cuenta MercadoPago en Chile (mismo país que el merchant).
+    payer_email = proveedor.email
 
     preapproval_data = {
         "reason": f"Suscripción MecaniMovil — {plan.nombre}",
