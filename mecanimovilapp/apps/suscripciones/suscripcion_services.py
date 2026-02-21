@@ -170,13 +170,18 @@ def crear_suscripcion_mp(proveedor, plan_id):
 
     logger.info(f"✅ Preapproval creado: {preapproval_id}")
 
-    # Guardar en BD
-    suscripcion = SuscripcionProveedor.objects.create(
+    # Usar update_or_create porque SuscripcionProveedor tiene OneToOneField
+    # en proveedor → solo puede existir UNA fila por proveedor en la BD.
+    # Si ya existe (cancelada o cualquier estado), la actualizamos en lugar de crear.
+    suscripcion, _ = SuscripcionProveedor.objects.update_or_create(
         proveedor=proveedor,
-        plan=plan,
-        estado='pendiente',
-        mp_preapproval_id=preapproval_id,
-        mp_init_point=init_point,
+        defaults={
+            'plan': plan,
+            'estado': 'pendiente',
+            'mp_preapproval_id': preapproval_id,
+            'mp_init_point': init_point,
+            'fecha_cancelacion': None,
+        }
     )
 
     return {
