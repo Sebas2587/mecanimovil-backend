@@ -11,7 +11,7 @@ from django.utils import timezone
 from django.db import transaction
 from decouple import config
 import logging
-import requests
+import mercadopago
 
 from .models import PlanSuscripcion, SuscripcionProveedor
 from .creditos_services import obtener_credito_proveedor
@@ -19,12 +19,15 @@ from .creditos_services import obtener_credito_proveedor
 logger = logging.getLogger(__name__)
 
 
-def _get_mp_access_token():
-    """Obtiene el Access Token de MercadoPago desde variables de entorno."""
+def _get_mp_sdk():
+    """Retorna el SDK de MercadoPago inicializado, igual que pagos/services.py."""
     token = config('MERCADOPAGO_ACCESS_TOKEN', default='')
     if not token:
         raise ValueError("MERCADOPAGO_ACCESS_TOKEN no está configurado")
-    return token
+    return mercadopago.SDK(token)
+
+
+
 
 
 def crear_suscripcion_mp(proveedor, plan_id):
@@ -78,34 +81,36 @@ def crear_suscripcion_mp(proveedor, plan_id):
             'ya_existia': True,
         }
 
-    # Construir payload para la API de Preapproval de MercadoPago
-    # NOTA: back_url debe ser una URL HTTPS válida — MP rechaza deep links (mecanimovil://)
-    webhook_base_url = config('WEBHOOK_BASE_URL', default='https://api.mecanimovil.com')
-
-    # back_url: página HTTPS a donde MP redirige al usuario tras autorizar el pago
+    # URLs para el flujo de suscripción
+    webhook_base_url = config('WEBHOOK_BASE_URL', default='https://mecanimovil-api.onrender.com')
     back_url = f"{webhook_base_url}/suscripciones-resultado/"
-
-    # notification_url: endpoint de nuestro backend donde MP envía webhooks de cobro
     notification_url = f"{webhook_base_url}/api/suscripciones/webhook-preapproval/"
 
     precio_entero = int(round(float(plan.precio)))
-
-    # currency_id debe coincidir con el país de la cuenta MercadoPago:
-    # La app usa CLP (Chile) — mismo valor que usa el sistema de créditos existente
-    # (pagos/views.py usa currency_id='CLP' en todas sus preferencias y funciona OK)
     currency_id = config('MERCADOPAGO_CURRENCY', default='CLP')
+    mp_modo = config('MERCADOPAGO_MODE', default='test')
 
-    # site_id identifica el país en la API de Preapproval (requerido explícitamente)
-    # MLC = MercadoPago Chile  |  MLA = Argentina  |  MCO = Colombia
-    site_id = config('MERCADOPAGO_SITE_ID', default='MLC')
+    # ─── payer_email ─────────────────────────────────────────────────────────────
+    # La API de Preapproval (suscripciones) requiere payer_email Y valida que
+    # pertenezca a una cuenta MP del mismo país que el merchant (Chile = MLC).
+    # Esto es diferente a Checkout Pro (créditos), que no requiere email upfront.
+    #
+    # En TEST: se necesita un email de cuenta de prueba chilena de MP.
+    # En PROD: se usa el email real del proveedor (debe tener cuenta MP en Chile).
+    if mp_modo == 'production':
+        payer_email = proveedor.email
+    else:
+        payer_email = config('MERCADOPAGO_TEST_PAYER_EMAIL', default='')
+        if not payer_email:
+            raise ValueError(
+                "En modo test, debes configurar MERCADOPAGO_TEST_PAYER_EMAIL "
+                "con el email de un test user chileno de MP. "
+                "Créalo en: https://www.mercadopago.cl/developers/panel/test-users"
+            )
 
     preapproval_data = {
         "reason": f"Suscripción MecaniMovil — {plan.nombre}",
-        # payer_email es OPCIONAL para status "pending" según docs MP.
-        # Si el email del proveedor pertenece a una cuenta MP de otro país,
-        # MP lanza "Cannot operate between different countries".
-        # Para status pending, MP genera el link de pago sin requerir el email.
-        # "payer_email": proveedor.email,  ← omitido intencionalmente
+        "payer_email": payer_email,
         "auto_recurring": {
             "frequency": 1,
             "frequency_type": "months",
@@ -117,41 +122,32 @@ def crear_suscripcion_mp(proveedor, plan_id):
         "status": "pending",
     }
 
-    # Si el plan tiene un mp_preapproval_plan_id, usarlo
     if plan.mp_preapproval_plan_id:
         preapproval_data["preapproval_plan_id"] = plan.mp_preapproval_plan_id
 
     logger.info(
         f"📤 Creando preapproval MP para proveedor {proveedor.id}, plan '{plan.nombre}' "
-        f"| precio={precio_entero} CLP | back_url={back_url}"
+        f"| modo={mp_modo} | payer_email={payer_email[:20]}... | precio={precio_entero} {currency_id}"
     )
 
+    # Usar el SDK oficial de MP (igual que pagos/services.py) para que el
+    # site_id sea inferido automáticamente desde el token del merchant.
     try:
-        access_token = _get_mp_access_token()
-        response = requests.post(
-            "https://api.mercadopago.com/preapproval",
-            json=preapproval_data,
-            headers={
-                "Authorization": f"Bearer {access_token}",
-                "Content-Type": "application/json",
-            },
-            timeout=15,
-        )
-        # Loguear siempre el cuerpo de respuesta para facilitar debugging
-        logger.info(f"📥 MP Preapproval respuesta [{response.status_code}]: {response.text[:800]}")
-        response.raise_for_status()
-        mp_response = response.json()
-    except requests.exceptions.HTTPError as e:
-        # Incluir el body de respuesta de MP en el error para debugging
-        error_body = ''
-        try:
-            error_body = e.response.json()
-        except Exception:
-            error_body = e.response.text[:400] if e.response else ''
-        logger.error(f"❌ MP Preapproval 4xx/5xx [{e.response.status_code if e.response else '?'}]: {error_body}")
-        raise ValueError(f"MercadoPago rechazó la solicitud: {error_body}")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"❌ Error de red llamando a MP Preapproval API: {e}")
+        sdk = _get_mp_sdk()
+        result = sdk.preapproval().create(preapproval_data)
+        logger.info(f"📥 MP Preapproval SDK respuesta status={result.get('status')}: {str(result.get('response', {}))[:400]}")
+
+        if result.get('status') not in [200, 201]:
+            error_body = result.get('response', {})
+            logger.error(f"❌ MP Preapproval rechazado [{result.get('status')}]: {error_body}")
+            raise ValueError(f"MercadoPago rechazó la solicitud: {error_body}")
+
+        mp_response = result.get('response', {})
+
+    except ValueError:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error llamando a MP Preapproval SDK: {e}")
         raise ValueError(f"Error al comunicarse con MercadoPago: {str(e)}")
 
     preapproval_id = mp_response.get("id")
