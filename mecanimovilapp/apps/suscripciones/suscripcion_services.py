@@ -62,24 +62,50 @@ def crear_suscripcion_mp(proveedor, plan_id):
     except PlanSuscripcion.DoesNotExist:
         raise ValueError("El plan no existe o no está disponible")
 
-    # Si ya tiene suscripción activa/pendiente, retornar la existente
-    suscripcion_existente = SuscripcionProveedor.objects.filter(
+    # Si ya tiene suscripción ACTIVA o PAUSADA, retornar la existente (no crear nueva)
+    suscripcion_activa = SuscripcionProveedor.objects.filter(
         proveedor=proveedor,
-        estado__in=['activa', 'pendiente']
+        estado__in=['activa', 'pausada']
     ).first()
 
-    if suscripcion_existente:
+    if suscripcion_activa:
         logger.info(
-            f"Proveedor {proveedor.id} ya tiene suscripción en estado "
-            f"'{suscripcion_existente.estado}' (ID: {suscripcion_existente.id})"
+            f"Proveedor {proveedor.id} ya tiene suscripción activa/pausada "
+            f"(ID: {suscripcion_activa.id})"
         )
         return {
-            'suscripcion_id': suscripcion_existente.id,
-            'init_point': suscripcion_existente.mp_init_point,
-            'estado': suscripcion_existente.estado,
-            'plan': _plan_to_dict(suscripcion_existente.plan),
+            'suscripcion_id': suscripcion_activa.id,
+            'init_point': suscripcion_activa.mp_init_point,
+            'estado': suscripcion_activa.estado,
+            'plan': _plan_to_dict(suscripcion_activa.plan),
             'ya_existia': True,
         }
+
+    # Si hay una suscripción PENDIENTE (WebView abierto pero no se pagó),
+    # cancelarla en MP y en BD para permitir un nuevo intento limpio.
+    suscripcion_pendiente = SuscripcionProveedor.objects.filter(
+        proveedor=proveedor,
+        estado='pendiente'
+    ).first()
+
+    if suscripcion_pendiente:
+        logger.info(
+            f"Proveedor {proveedor.id}: cancelando suscripción pendiente abandonada "
+            f"(ID: {suscripcion_pendiente.id}) para crear una nueva"
+        )
+        # Intentar cancelar en MP (sin bloquear si falla)
+        if suscripcion_pendiente.mp_preapproval_id:
+            try:
+                sdk = _get_mp_sdk()
+                sdk.preapproval().update(
+                    suscripcion_pendiente.mp_preapproval_id,
+                    {"status": "cancelled"}
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ No se pudo cancelar preapproval pendiente en MP: {e}")
+        suscripcion_pendiente.estado = 'cancelada'
+        suscripcion_pendiente.fecha_cancelacion = timezone.now()
+        suscripcion_pendiente.save(update_fields=['estado', 'fecha_cancelacion', 'fecha_actualizacion'])
 
     # URLs para el flujo de suscripción
     webhook_base_url = config('WEBHOOK_BASE_URL', default='https://mecanimovil-api.onrender.com')
@@ -244,27 +270,22 @@ def cancelar_suscripcion(proveedor):
     except SuscripcionProveedor.DoesNotExist:
         return {'cancelada': False, 'mensaje': 'No tienes una suscripción activa para cancelar'}
 
-    # Cancelar en MercadoPago
+    # Cancelar en MercadoPago via SDK
     if suscripcion.mp_preapproval_id:
         try:
-            access_token = _get_mp_access_token()
-            response = requests.put(
-                f"https://api.mercadopago.com/preapproval/{suscripcion.mp_preapproval_id}",
-                json={"status": "cancelled"},
-                headers={
-                    "Authorization": f"Bearer {access_token}",
-                    "Content-Type": "application/json",
-                },
-                timeout=15,
+            sdk = _get_mp_sdk()
+            result = sdk.preapproval().update(
+                suscripcion.mp_preapproval_id,
+                {"status": "cancelled"}
             )
-            if response.status_code not in (200, 201):
+            if result.get('status') not in (200, 201):
                 logger.warning(
-                    f"⚠️ MP devolvió {response.status_code} al cancelar "
-                    f"preapproval {suscripcion.mp_preapproval_id}: {response.text}"
+                    f"⚠️ MP devolvió {result.get('status')} al cancelar "
+                    f"preapproval {suscripcion.mp_preapproval_id}: {result.get('response')}"
                 )
             else:
                 logger.info(f"✅ Preapproval {suscripcion.mp_preapproval_id} cancelado en MP")
-        except requests.exceptions.RequestException as e:
+        except Exception as e:
             logger.error(f"❌ Error cancelando preapproval en MP: {e}")
             # No bloqueamos la cancelación local si MP falla
 
@@ -291,21 +312,17 @@ def sincronizar_estado_suscripcion(suscripcion):
         return suscripcion.estado
 
     try:
-        access_token = _get_mp_access_token()
-        response = requests.get(
-            f"https://api.mercadopago.com/preapproval/{suscripcion.mp_preapproval_id}",
-            headers={"Authorization": f"Bearer {access_token}"},
-            timeout=15,
-        )
+        sdk = _get_mp_sdk()
+        result = sdk.preapproval().get(suscripcion.mp_preapproval_id)
 
-        if response.status_code != 200:
+        if result.get('status') != 200:
             logger.warning(
-                f"⚠️ MP devolvió {response.status_code} al consultar "
+                f"⚠️ MP devolvió {result.get('status')} al consultar "
                 f"preapproval {suscripcion.mp_preapproval_id}"
             )
             return suscripcion.estado
 
-        mp_data = response.json()
+        mp_data = result.get('response', {})
         mp_status = mp_data.get("status", "")
 
         # Mapear estados de MP a estados locales
@@ -353,9 +370,11 @@ def obtener_suscripcion_activa(proveedor):
     Returns:
         SuscripcionProveedor | None
     """
+    # Solo 'activa' y 'pausada' cuentan como suscripción vigente.
+    # 'pendiente' = WebView abierto pero sin pagar → NO es suscripción activa.
     return SuscripcionProveedor.objects.filter(
         proveedor=proveedor,
-        estado__in=['activa', 'pendiente', 'pausada']
+        estado__in=['activa', 'pausada']
     ).select_related('plan').first()
 
 
