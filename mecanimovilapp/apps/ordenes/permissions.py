@@ -133,4 +133,39 @@ class CanManageOrder(BasePermission):
             return obj.mecanico == request.user.mecanico_domicilio
         
         # Los administradores pueden gestionar todas las órdenes
-        return request.user.is_staff 
+        return request.user.is_staff
+
+
+class IsProveedorConMP(IsProveedor):
+    """
+    Permiso que exige: usuario autenticado + perfil de proveedor + cuenta MercadoPago conectada.
+    Usado para bloquear acciones que requieren poder recibir/realizar pagos (crear ofertas,
+    suscribirse a planes, etc.) si el proveedor no ha vinculado su cuenta de Mercado Pago.
+    """
+
+    message = (
+        "Debes conectar tu cuenta de Mercado Pago antes de realizar esta acción. "
+        "Ve a Configuración → Mercado Pago para vincularla."
+    )
+
+    def has_permission(self, request, view):
+        # Primero verificar que sea un proveedor válido
+        if not super().has_permission(request, view):
+            return False
+
+        # Luego verificar que tenga cuenta MP conectada
+        try:
+            cuenta_mp = request.user.cuenta_mercadopago
+            if not cuenta_mp or cuenta_mp.estado != 'conectada':
+                logger.warning(
+                    f"⛔ Proveedor {request.user.id} intentó acceder sin cuenta MP conectada "
+                    f"(estado: {cuenta_mp.estado if cuenta_mp else 'sin cuenta'})"
+                )
+                return False
+        except Exception:
+            logger.warning(
+                f"⛔ Proveedor {request.user.id} no tiene cuenta_mercadopago configurada"
+            )
+            return False
+
+        return True

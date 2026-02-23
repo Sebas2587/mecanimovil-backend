@@ -871,8 +871,36 @@ class PlanSuscripcionViewSet(viewsets.ReadOnlyModelViewSet):
         Retorna init_point para que el frontend abra el WebView de pago.
         """
         from .suscripcion_services import crear_suscripcion_mp
+        from rest_framework.exceptions import PermissionDenied
 
         proveedor = request.user
+
+        # ✅ REGLA DE NEGOCIO: El proveedor debe tener cuenta MP conectada para suscribirse.
+        # Sin MP conectado no puede gestionar su suscripción (recibir reembolsos, etc.)
+        try:
+            cuenta_mp = proveedor.cuenta_mercadopago
+            if not cuenta_mp or cuenta_mp.estado != 'conectada':
+                return Response(
+                    {
+                        'error': (
+                            'Debes conectar tu cuenta de Mercado Pago antes de suscribirte. '
+                            'Ve a Configuración → Mercado Pago para vincularla.'
+                        ),
+                        'codigo': 'MP_NO_CONECTADO',
+                    },
+                    status=status.HTTP_403_FORBIDDEN
+                )
+        except Exception:
+            return Response(
+                {
+                    'error': (
+                        'Debes conectar tu cuenta de Mercado Pago antes de suscribirte. '
+                        'Ve a Configuración → Mercado Pago para vincularla.'
+                    ),
+                    'codigo': 'MP_NO_CONECTADO',
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
 
         try:
             resultado = crear_suscripcion_mp(proveedor, pk)

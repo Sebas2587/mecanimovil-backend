@@ -4601,6 +4601,23 @@ class OfertaProveedorViewSet(viewsets.ModelViewSet):
             # Verificar que el usuario es proveedor
             if not (hasattr(self.request.user, 'taller') or hasattr(self.request.user, 'mecanico_domicilio')):
                 raise permissions.PermissionDenied("Debes ser un proveedor para crear ofertas")
+
+            # ✅ REGLA DE NEGOCIO: El proveedor debe tener cuenta MP conectada para postular ofertas.
+            # Sin MP conectado, el proveedor no puede recibir pagos si su oferta es adjudicada.
+            try:
+                cuenta_mp = self.request.user.cuenta_mercadopago
+                if not cuenta_mp or cuenta_mp.estado != 'conectada':
+                    raise permissions.PermissionDenied(
+                        "Debes conectar tu cuenta de Mercado Pago antes de postular ofertas. "
+                        "Ve a Configuración → Mercado Pago para vincularla."
+                    )
+            except permissions.PermissionDenied:
+                raise
+            except Exception:
+                raise permissions.PermissionDenied(
+                    "Debes conectar tu cuenta de Mercado Pago antes de postular ofertas. "
+                    "Ve a Configuración → Mercado Pago para vincularla."
+                )
             
             # Validar que la solicitud esté en validated_data
             if 'solicitud' not in serializer.validated_data:
