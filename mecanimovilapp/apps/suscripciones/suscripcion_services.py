@@ -375,14 +375,15 @@ def sincronizar_estado_suscripcion(suscripcion):
                 suscripcion.save(update_fields=['fecha_proximo_cobro', 'fecha_actualizacion'])
 
         # Si la suscripción está activa, sincronizar posibles cobros pendientes de acreditar
+        cobros_res = []
         if suscripcion.estado == 'activa':
-            sincronizar_cobros_preapproval(suscripcion.mp_preapproval_id)
+            cobros_res = sincronizar_cobros_preapproval(suscripcion.mp_preapproval_id)
 
-        return suscripcion.estado
+        return suscripcion.estado, cobros_res
 
     except Exception as e:
         logger.error(f"❌ Error sincronizando suscripción {suscripcion.id}: {e}")
-        return suscripcion.estado
+        return suscripcion.estado, []
 
 
 def obtener_suscripcion_activa(proveedor):
@@ -465,7 +466,7 @@ def sincronizar_suscripcion_por_email(proveedor):
             f"directo desde MP..."
         )
         estado_anterior = suscripcion_local.estado
-        estado_actualizado = sincronizar_estado_suscripcion(suscripcion_local)
+        estado_actualizado, cobros_res = sincronizar_estado_suscripcion(suscripcion_local)
         suscripcion_local.refresh_from_db()
 
         if estado_actualizado == 'activa' and estado_anterior != 'activa':
@@ -473,23 +474,21 @@ def sincronizar_suscripcion_por_email(proveedor):
                 f"✅ Suscripción {suscripcion_local.id} activada vía sincronización directa "
                 f"(preapproval: {suscripcion_local.mp_preapproval_id})"
             )
-            # Sincronizar cobros inmediatamente al activar
-            sincronizar_cobros_preapproval(suscripcion_local.mp_preapproval_id)
             return {
                 'sincronizado': True,
                 'estado': 'activa',
                 'mensaje': '¡Suscripción activada! Tu suscripción fue autorizada en Mercado Pago.',
                 'suscripcion_id': suscripcion_local.id,
+                'cobros_procesados': cobros_res
             }
 
         if estado_actualizado == 'activa':
-            # Intentar sincronizar cobros de todos modos si ya estaba activa
-            sincronizar_cobros_preapproval(suscripcion_local.mp_preapproval_id)
             return {
                 'sincronizado': True,
                 'estado': 'activa',
                 'mensaje': 'Tu suscripción está activa.',
                 'suscripcion_id': suscripcion_local.id,
+                'cobros_procesados': cobros_res
             }
 
         if estado_actualizado in ('cancelada', 'expirada'):
@@ -576,22 +575,24 @@ def sincronizar_suscripcion_por_email(proveedor):
             suscripcion.save(update_fields=['estado', 'fecha_proximo_cobro', 'fecha_actualizacion'])
 
             # Sincronizar cobros inmediatamente después de activar
-            sincronizar_cobros_preapproval(preapproval_id)
+            cobros_res = sincronizar_cobros_preapproval(preapproval_id)
 
             return {
                 'sincronizado': True,
                 'estado': 'activa',
                 'mensaje': '¡Suscripción activada! Mercado Pago confirmó la autorización.',
                 'suscripcion_id': suscripcion.id,
+                'cobros_procesados': cobros_res
             }
 
         # Ya estaba activa, sincronizar cobros por si acaso
-        sincronizar_cobros_preapproval(preapproval_id)
+        cobros_res = sincronizar_cobros_preapproval(preapproval_id)
         return {
             'sincronizado': True,
             'estado': 'activa',
             'mensaje': 'Tu suscripción está activa en Mercado Pago.',
             'suscripcion_id': suscripcion.id,
+            'cobros_procesados': cobros_res
         }
 
     # No se encontraron preapprovals autorizados
@@ -624,15 +625,19 @@ def sincronizar_cobros_preapproval(preapproval_id):
         # para ver qué está devolviendo MP exactamente.
         result = sdk.preapproval_payment().search({
             "preapproval_id": preapproval_id,
-            "limit": 10,
+            "limit": 20,
         })
 
         if result.get('status') not in [200, 201]:
             logger.warning(f"⚠️ Error al buscar cobros para {preapproval_id} en MP: {result.get('status')}")
-            return []
+            return [{'error': f"MP Error {result.get('status')}", 'debug': result.get('response')}]
 
         pagos = result.get('response', {}).get('results', [])
         logger.info(f"📦 Se encontraron {len(pagos)} cobros en total para {preapproval_id}")
+        
+        # Log del primer pago para debug si existe
+        if pagos:
+            logger.info(f"🧪 Datos del primer cobro: {pagos[0]}")
 
         resultados = []
         for pago in pagos:
