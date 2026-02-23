@@ -638,11 +638,12 @@ def sincronizar_cobros_preapproval(preapproval_id):
         for pago in pagos:
             charge_id = pago.get('id')
             mp_status = pago.get('status')
+            monto = pago.get('transaction_amount')
             
-            logger.info(f"📋 Analizando cobro MP {charge_id} con estado '{mp_status}'")
+            logger.info(f"📋 Analizando cobro MP {charge_id} con estado '{mp_status}' y monto {monto}")
 
-            # Consideramos exitosos 'authorized' y 'processed'
-            if mp_status not in ('authorized', 'processed'):
+            # Consideramos exitosos 'authorized', 'processed' y 'approved'
+            if mp_status not in ('authorized', 'processed', 'approved'):
                 logger.info(f"⏭️ Saltando cobro {charge_id} por estado no exitoso: {mp_status}")
                 continue
             
