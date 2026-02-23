@@ -117,13 +117,26 @@ def crear_suscripcion_mp(proveedor, plan_id):
     # site_id MLC = MercadoPago Chile
     site_id = config('MERCADOPAGO_SITE_ID', default='MLC')
 
-    # IMPORTANTE: NO enviamos payer_email.
-    # Para preapprovals con status "pending", el campo es OPCIONAL.
-    # Si se envía el email de una cuenta MP de otro país (ej. Argentina),
-    # MP lanza "Cannot operate between different countries".
-    # Al omitirlo, MP solicita el email al proveedor cuando abre el WebView.
+    # Obtener el email verificado de la cuenta MP del proveedor.
+    # Si el proveedor ya conectó su cuenta MP vía OAuth, usamos ese email verificado.
+    # Si no tiene cuenta MP conectada, usamos el email de registro como fallback.
+    # MercadoPago Chile (MLC) requiere payer_email siempre en el preapproval.
+    payer_email = None
+    try:
+        cuenta_mp = proveedor.cuenta_mercadopago
+        if cuenta_mp and cuenta_mp.email_mp and cuenta_mp.estado == 'conectada':
+            payer_email = cuenta_mp.email_mp
+            logger.info(f"📧 Usando email MP verificado del proveedor: {payer_email}")
+    except Exception:
+        pass
+
+    if not payer_email:
+        payer_email = proveedor.email
+        logger.info(f"📧 Usando email de registro del proveedor como fallback: {payer_email}")
+
     preapproval_data = {
         "reason": f"Suscripción MecaniMovil — {plan.nombre}",
+        "payer_email": payer_email,
         "auto_recurring": {
             "frequency": 1,
             "frequency_type": "months",
@@ -140,7 +153,7 @@ def crear_suscripcion_mp(proveedor, plan_id):
 
     logger.info(
         f"📤 Creando preapproval MP para proveedor {proveedor.id}, plan '{plan.nombre}' "
-        f"| precio={precio_entero} {currency_id} | site={site_id} | sin payer_email (status=pending)"
+        f"| precio={precio_entero} {currency_id} | site={site_id} | payer_email={payer_email}"
     )
 
     # Usar el SDK oficial de MP (igual que pagos/services.py) para que el
