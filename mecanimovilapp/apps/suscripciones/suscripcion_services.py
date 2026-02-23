@@ -261,7 +261,7 @@ def acreditar_creditos_suscripcion(preapproval_id, charge_id=None):
 
     logger.info(
         f"✅ Créditos acreditados: {creditos} para proveedor {suscripcion.proveedor.id} "
-        f"(preapproval: {preapproval_id}). Nuevo saldo: {credito_proveedor.saldo_creditos}"
+        f"(preapproval: {preapproval_id}, charge: {charge_id}). Nuevo saldo: {credito_proveedor.saldo_creditos}"
     )
 
     return {
@@ -269,6 +269,7 @@ def acreditar_creditos_suscripcion(preapproval_id, charge_id=None):
         'creditos': creditos,
         'saldo_nuevo': credito_proveedor.saldo_creditos,
         'proveedor_id': suscripcion.proveedor.id,
+        'charge_id': charge_id
     }
 
 
@@ -373,6 +374,10 @@ def sincronizar_estado_suscripcion(suscripcion):
                 suscripcion.fecha_proximo_cobro = fecha
                 suscripcion.save(update_fields=['fecha_proximo_cobro', 'fecha_actualizacion'])
 
+        # Si la suscripción está activa, sincronizar posibles cobros pendientes de acreditar
+        if suscripcion.estado == 'activa':
+            sincronizar_cobros_preapproval(suscripcion.mp_preapproval_id)
+
         return suscripcion.estado
 
     except Exception as e:
@@ -468,6 +473,8 @@ def sincronizar_suscripcion_por_email(proveedor):
                 f"✅ Suscripción {suscripcion_local.id} activada vía sincronización directa "
                 f"(preapproval: {suscripcion_local.mp_preapproval_id})"
             )
+            # Sincronizar cobros inmediatamente al activar
+            sincronizar_cobros_preapproval(suscripcion_local.mp_preapproval_id)
             return {
                 'sincronizado': True,
                 'estado': 'activa',
@@ -476,6 +483,8 @@ def sincronizar_suscripcion_por_email(proveedor):
             }
 
         if estado_actualizado == 'activa':
+            # Intentar sincronizar cobros de todos modos si ya estaba activa
+            sincronizar_cobros_preapproval(suscripcion_local.mp_preapproval_id)
             return {
                 'sincronizado': True,
                 'estado': 'activa',
@@ -566,6 +575,9 @@ def sincronizar_suscripcion_por_email(proveedor):
 
             suscripcion.save(update_fields=['estado', 'fecha_proximo_cobro', 'fecha_actualizacion'])
 
+            # Sincronizar cobros inmediatamente después de activar
+            sincronizar_cobros_preapproval(preapproval_id)
+
             return {
                 'sincronizado': True,
                 'estado': 'activa',
@@ -573,7 +585,8 @@ def sincronizar_suscripcion_por_email(proveedor):
                 'suscripcion_id': suscripcion.id,
             }
 
-        # Ya estaba activa
+        # Ya estaba activa, sincronizar cobros por si acaso
+        sincronizar_cobros_preapproval(preapproval_id)
         return {
             'sincronizado': True,
             'estado': 'activa',
@@ -591,3 +604,52 @@ def sincronizar_suscripcion_por_email(proveedor):
         ),
         'suscripcion_id': suscripcion_local.id if suscripcion_local else None,
     }
+
+
+def sincronizar_cobros_preapproval(preapproval_id):
+    """
+    Busca cobros/pagos autorizados en MercadoPago para un preapproval específico
+    y los procesa para acreditar créditos si aún no han sido procesados.
+
+    Esto actúa como un fallback manual robusto cuando los webhooks fallan.
+    """
+    if not preapproval_id:
+        return []
+
+    logger.info(f"🔍 Sincronizando cobros para preapproval {preapproval_id}...")
+    
+    try:
+        sdk = _get_mp_sdk()
+        # Buscar pagos asociados a este preapproval
+        # Endpoint: GET /preapproval_payment/search
+        result = sdk.preapproval_payment().search({
+            "preapproval_id": preapproval_id,
+            "status": "authorized",  # Solo cobros autorizados/exitosos
+            "limit": 5,
+        })
+
+        if result.get('status') not in [200, 201]:
+            logger.warning(f"⚠️ Error al buscar cobros para {preapproval_id} en MP: {result.get('status')}")
+            return []
+
+        pagos = result.get('response', {}).get('results', [])
+        logger.info(f"📦 Se encontraron {len(pagos)} cobros autorizados en MP para {preapproval_id}")
+
+        resultados = []
+        for pago in pagos:
+            charge_id = pago.get('id')
+            if not charge_id:
+                continue
+            
+            # Intentar acreditar (la función ya es idempotente vía ultimo_charge_id)
+            try:
+                res = acreditar_creditos_suscripcion(preapproval_id, charge_id=charge_id)
+                resultados.append(res)
+            except Exception as e:
+                logger.error(f"❌ Error acreditando cobro {charge_id}: {e}")
+        
+        return resultados
+
+    except Exception as e:
+        logger.error(f"❌ Error en sincronizar_cobros_preapproval para {preapproval_id}: {e}")
+        return []
