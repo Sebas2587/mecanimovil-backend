@@ -608,24 +608,23 @@ def sincronizar_suscripcion_por_email(proveedor):
 
 def sincronizar_cobros_preapproval(preapproval_id):
     """
-    Busca cobros/pagos autorizados en MercadoPago para un preapproval específico
+    Busca cobros/pagos en MercadoPago para un preapproval específico
     y los procesa para acreditar créditos si aún no han sido procesados.
 
-    Esto actúa como un fallback manual robusto cuando los webhooks fallan.
+    Sincroniza estados: 'authorized' y 'processed'.
     """
     if not preapproval_id:
         return []
 
-    logger.info(f"🔍 Sincronizando cobros para preapproval {preapproval_id}...")
+    logger.info(f"🔍 Iniciando sincronización de cobros para preapproval {preapproval_id}...")
     
     try:
         sdk = _get_mp_sdk()
-        # Buscar pagos asociados a este preapproval
-        # Endpoint: GET /preapproval_payment/search
+        # Buscar pagos asociados a este preapproval sin filtro de estado estricto
+        # para ver qué está devolviendo MP exactamente.
         result = sdk.preapproval_payment().search({
             "preapproval_id": preapproval_id,
-            "status": "authorized",  # Solo cobros autorizados/exitosos
-            "limit": 5,
+            "limit": 10,
         })
 
         if result.get('status') not in [200, 201]:
@@ -633,17 +632,30 @@ def sincronizar_cobros_preapproval(preapproval_id):
             return []
 
         pagos = result.get('response', {}).get('results', [])
-        logger.info(f"📦 Se encontraron {len(pagos)} cobros autorizados en MP para {preapproval_id}")
+        logger.info(f"📦 Se encontraron {len(pagos)} cobros en total para {preapproval_id}")
 
         resultados = []
         for pago in pagos:
             charge_id = pago.get('id')
+            mp_status = pago.get('status')
+            
+            logger.info(f"📋 Analizando cobro MP {charge_id} con estado '{mp_status}'")
+
+            # Consideramos exitosos 'authorized' y 'processed'
+            if mp_status not in ('authorized', 'processed'):
+                logger.info(f"⏭️ Saltando cobro {charge_id} por estado no exitoso: {mp_status}")
+                continue
+            
             if not charge_id:
                 continue
             
             # Intentar acreditar (la función ya es idempotente vía ultimo_charge_id)
             try:
                 res = acreditar_creditos_suscripcion(preapproval_id, charge_id=charge_id)
+                if res.get('acreditado'):
+                    logger.info(f"✨ Créditos acreditados exitosamente para cobro {charge_id}")
+                else:
+                    logger.info(f"ℹ️ Cobro {charge_id} no acreditado: {res.get('motivo')}")
                 resultados.append(res)
             except Exception as e:
                 logger.error(f"❌ Error acreditando cobro {charge_id}: {e}")
@@ -651,5 +663,5 @@ def sincronizar_cobros_preapproval(preapproval_id):
         return resultados
 
     except Exception as e:
-        logger.error(f"❌ Error en sincronizar_cobros_preapproval para {preapproval_id}: {e}")
+        logger.error(f"❌ Error crítico en sincronizar_cobros_preapproval para {preapproval_id}: {e}")
         return []
