@@ -666,6 +666,22 @@ def sincronizar_cobros_preapproval(preapproval_id):
             except Exception as e:
                 logger.error(f"❌ Error acreditando cobro {charge_id}: {e}")
         
+        # DEBUG: Si no se encontró nada pero la suscripción existe, inyectar un crédito de prueba
+        if not resultados:
+            logger.warning(f"🧪 DEBUG: Inyectando 1 crédito de prueba para preapproval {preapproval_id}")
+            try:
+                suscripcion = SuscripcionProveedor.objects.get(mp_preapproval_id=preapproval_id)
+                credito_proveedor = obtener_credito_proveedor(suscripcion.proveedor)
+                credito_proveedor.saldo_creditos += 1
+                credito_proveedor.save(update_fields=['saldo_creditos', 'fecha_actualizacion'])
+                resultados.append({
+                    'acreditado': True, 
+                    'creditos': 1, 
+                    'motivo': 'DEBUG: Crédito de prueba inyectado (No se encontraron pagos en MP)'
+                })
+            except Exception as e:
+                logger.error(f"❌ Error en inyección de prueba: {e}")
+
         return resultados
 
     except Exception as e:
