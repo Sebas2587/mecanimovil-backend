@@ -408,3 +408,186 @@ def _plan_to_dict(plan):
         'creditos_mensuales': plan.creditos_mensuales,
         'destacado': plan.destacado,
     }
+
+
+@transaction.atomic
+def sincronizar_suscripcion_por_email(proveedor):
+    """
+    Sincroniza el estado de la suscripción del proveedor consultando directamente
+    la API de MercadoPago por el email de su cuenta MP conectada.
+
+    Útil cuando el webhook no llegó pero el proveedor ya autorizó el preapproval:
+    - Busca preapprovals asociados al payer_email del proveedor
+    - Si encuentra uno con status 'authorized' → activa la suscripción local
+    - Si la suscripción local tiene mp_preapproval_id, la sincroniza directamente
+
+    Args:
+        proveedor: Usuario proveedor autenticado.
+
+    Returns:
+        dict: {
+            'sincronizado': bool,
+            'estado': str,
+            'mensaje': str,
+            'suscripcion_id': int | None,
+        }
+    """
+    # 1. Obtener email MP del proveedor
+    payer_email = None
+    try:
+        cuenta_mp = proveedor.cuenta_mercadopago
+        if cuenta_mp and cuenta_mp.email_mp and cuenta_mp.estado == 'conectada':
+            payer_email = cuenta_mp.email_mp
+    except Exception:
+        pass
+
+    if not payer_email:
+        payer_email = proveedor.email
+        logger.info(f"📧 Usando email de registro como fallback para sincronización: {payer_email}")
+
+    logger.info(f"🔄 Sincronizando suscripción para proveedor {proveedor.id} (email: {payer_email})")
+
+    sdk = _get_mp_sdk()
+
+    # 2. Si ya tenemos un preapproval_id local, sincronizarlo directamente (más rápido)
+    suscripcion_local = SuscripcionProveedor.objects.filter(
+        proveedor=proveedor
+    ).exclude(estado__in=['cancelada', 'expirada']).select_related('plan').first()
+
+    if suscripcion_local and suscripcion_local.mp_preapproval_id:
+        logger.info(
+            f"🔍 Sincronizando preapproval local {suscripcion_local.mp_preapproval_id} "
+            f"directo desde MP..."
+        )
+        estado_anterior = suscripcion_local.estado
+        estado_actualizado = sincronizar_estado_suscripcion(suscripcion_local)
+        suscripcion_local.refresh_from_db()
+
+        if estado_actualizado == 'activa' and estado_anterior != 'activa':
+            logger.info(
+                f"✅ Suscripción {suscripcion_local.id} activada vía sincronización directa "
+                f"(preapproval: {suscripcion_local.mp_preapproval_id})"
+            )
+            return {
+                'sincronizado': True,
+                'estado': 'activa',
+                'mensaje': '¡Suscripción activada! Tu suscripción fue autorizada en Mercado Pago.',
+                'suscripcion_id': suscripcion_local.id,
+            }
+
+        if estado_actualizado == 'activa':
+            return {
+                'sincronizado': True,
+                'estado': 'activa',
+                'mensaje': 'Tu suscripción está activa.',
+                'suscripcion_id': suscripcion_local.id,
+            }
+
+        if estado_actualizado in ('cancelada', 'expirada'):
+            return {
+                'sincronizado': True,
+                'estado': estado_actualizado,
+                'mensaje': f'Tu suscripción fue {estado_actualizado} en Mercado Pago.',
+                'suscripcion_id': suscripcion_local.id,
+            }
+
+    # 3. Buscar preapprovals en MP por payer_email (descubre suscripciones
+    #    autorizadas que no están en la BD o cuyo webhook no llegó)
+    logger.info(f"🔍 Buscando preapprovals en MP para email: {payer_email}")
+    try:
+        result = sdk.preapproval().search({
+            "payer_email": payer_email,
+            "status": "authorized",
+            "limit": 10,
+        })
+
+        if result.get('status') not in [200, 201]:
+            logger.warning(
+                f"⚠️ MP devolvió {result.get('status')} al buscar preapprovals "
+                f"por email {payer_email}"
+            )
+            # Si no pudimos buscar por email, retornar el estado actual
+            return {
+                'sincronizado': False,
+                'estado': suscripcion_local.estado if suscripcion_local else 'sin_suscripcion',
+                'mensaje': 'No se pudo verificar el estado en Mercado Pago. Inténtalo más tarde.',
+                'suscripcion_id': suscripcion_local.id if suscripcion_local else None,
+            }
+
+        preapprovals = result.get('response', {}).get('results', [])
+        logger.info(f"📦 MP devolvió {len(preapprovals)} preapprovals autorizados para {payer_email}")
+
+    except Exception as e:
+        logger.error(f"❌ Error buscando preapprovals en MP: {e}")
+        return {
+            'sincronizado': False,
+            'estado': suscripcion_local.estado if suscripcion_local else 'sin_suscripcion',
+            'mensaje': 'Error al contactar Mercado Pago. Inténtalo más tarde.',
+            'suscripcion_id': suscripcion_local.id if suscripcion_local else None,
+        }
+
+    for preapproval in preapprovals:
+        preapproval_id = preapproval.get('id')
+        mp_status = preapproval.get('status', '')
+
+        if mp_status != 'authorized':
+            continue
+
+        # Buscar suscripción local por preapproval_id
+        suscripcion = SuscripcionProveedor.objects.filter(
+            mp_preapproval_id=preapproval_id
+        ).select_related('plan').first()
+
+        if not suscripcion:
+            # El preapproval existe en MP pero no en BD → puede ser de otro acceso
+            logger.warning(
+                f"⚠️ Preapproval {preapproval_id} autorizado en MP pero no existe en BD local"
+            )
+            continue
+
+        # Activar la suscripción si estaba pendiente
+        if suscripcion.estado != 'activa':
+            logger.info(
+                f"✅ Activando suscripción {suscripcion.id} (preapproval {preapproval_id}) "
+                f"via sincronización por email"
+            )
+            suscripcion.estado = 'activa'
+
+            # Actualizar fecha_proximo_cobro si MP la envía
+            next_payment = (
+                preapproval.get('next_payment_date') or
+                preapproval.get('auto_recurring', {}).get('next_payment_date')
+            )
+            if next_payment:
+                from django.utils.dateparse import parse_datetime
+                fecha = parse_datetime(next_payment)
+                if fecha:
+                    suscripcion.fecha_proximo_cobro = fecha
+
+            suscripcion.save(update_fields=['estado', 'fecha_proximo_cobro', 'fecha_actualizacion'])
+
+            return {
+                'sincronizado': True,
+                'estado': 'activa',
+                'mensaje': '¡Suscripción activada! Mercado Pago confirmó la autorización.',
+                'suscripcion_id': suscripcion.id,
+            }
+
+        # Ya estaba activa
+        return {
+            'sincronizado': True,
+            'estado': 'activa',
+            'mensaje': 'Tu suscripción está activa en Mercado Pago.',
+            'suscripcion_id': suscripcion.id,
+        }
+
+    # No se encontraron preapprovals autorizados
+    return {
+        'sincronizado': False,
+        'estado': suscripcion_local.estado if suscripcion_local else 'sin_suscripcion',
+        'mensaje': (
+            'No se encontraron suscripciones autorizadas en Mercado Pago para tu cuenta. '
+            'Si realizaste un pago, puede tardar unos minutos en procesarse.'
+        ),
+        'suscripcion_id': suscripcion_local.id if suscripcion_local else None,
+    }

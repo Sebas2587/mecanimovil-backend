@@ -965,6 +965,35 @@ class SuscripcionProveedorViewSet(viewsets.GenericViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+    @action(detail=False, methods=['post'])
+    def sincronizar(self, request):
+        """
+        POST /api/suscripciones/mi-suscripcion/sincronizar/
+
+        Sincroniza el estado de la suscripción del proveedor consultando la API
+        de MercadoPago directamente por el email de su cuenta MP conectada.
+
+        Útil para:
+        - Suscripciones que quedaron en 'pendiente' aunque el proveedor ya autorizó
+        - Cuando el webhook no llegó o llegó tarde
+        - Después de abrir el WebView y no ver el estado reflejado
+        """
+        from .suscripcion_services import sincronizar_suscripcion_por_email
+
+        try:
+            resultado = sincronizar_suscripcion_por_email(request.user)
+            http_status = status.HTTP_200_OK
+            return Response(resultado, status=http_status)
+        except Exception as e:
+            logger.error(
+                f"Error sincronizando suscripción para proveedor {request.user.id}: {e}",
+                exc_info=True
+            )
+            return Response(
+                {'error': 'Error al sincronizar la suscripción. Inténtelo nuevamente.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
     @action(
         detail=False,
         methods=['post'],
