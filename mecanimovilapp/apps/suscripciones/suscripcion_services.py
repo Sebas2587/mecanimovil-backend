@@ -209,7 +209,7 @@ def crear_suscripcion_mp(proveedor, plan_id):
 
 
 @transaction.atomic
-def acreditar_creditos_suscripcion(preapproval_id, charge_id=None):
+def acreditar_creditos_suscripcion(preapproval_id, charge_id=None, force_initial=False):
     """
     Acredita créditos mensuales al proveedor cuando MercadoPago confirma
     un cobro recurrente (evento subscription_authorized_payment).
@@ -219,9 +219,8 @@ def acreditar_creditos_suscripcion(preapproval_id, charge_id=None):
     Args:
         preapproval_id: ID del preapproval en MP.
         charge_id: ID del cobro específico (para idempotencia).
-
-    Returns:
-        dict: { 'acreditado': bool, 'creditos': int, 'saldo_nuevo': int }
+        force_initial: Si es True, acredita los créditos del plan incluso si no hay charge_id.
+                       Se usa solo para la activación inicial garantizada.
     """
     try:
         suscripcion = SuscripcionProveedor.objects.select_for_update().get(
@@ -230,6 +229,14 @@ def acreditar_creditos_suscripcion(preapproval_id, charge_id=None):
     except SuscripcionProveedor.DoesNotExist:
         logger.warning(f"⚠️ Suscripción {preapproval_id} no encontrada en BD")
         return {'acreditado': False, 'motivo': 'Suscripción no encontrada'}
+
+    # Si es carga inicial forzada y ya tiene cobros registrados, ignorar para evitar duplicidad
+    if force_initial:
+        if suscripcion.ultimo_charge_id:
+            logger.info(f"ℹ️ Suscripción {preapproval_id} ya tiene créditos acreditados (charge: {suscripcion.ultimo_charge_id})")
+            return {'acreditado': False, 'motivo': 'Ya tiene créditos acreditados'}
+        charge_id = 'inicial_autorizacion'
+        logger.info(f"🚀 Iniciando acreditación inicial forzada para {preapproval_id}")
 
     # Idempotencia: no procesar dos veces el mismo cobro
     if charge_id and suscripcion.ultimo_charge_id == str(charge_id):
@@ -666,21 +673,19 @@ def sincronizar_cobros_preapproval(preapproval_id):
             except Exception as e:
                 logger.error(f"❌ Error acreditando cobro {charge_id}: {e}")
         
-        # DEBUG: Si no se encontró nada pero la suscripción existe, inyectar un crédito de prueba
+        # GARANTÍA INICIAL: Si no se encontró ningún cobro específico en MP pero la suscripción 
+        # está activa localmente y NUNCA ha recibido créditos, los otorgamos ahora.
         if not resultados:
-            logger.warning(f"🧪 DEBUG: Inyectando 1 crédito de prueba para preapproval {preapproval_id}")
             try:
                 suscripcion = SuscripcionProveedor.objects.get(mp_preapproval_id=preapproval_id)
-                credito_proveedor = obtener_credito_proveedor(suscripcion.proveedor)
-                credito_proveedor.saldo_creditos += 1
-                credito_proveedor.save(update_fields=['saldo_creditos', 'fecha_actualizacion'])
-                resultados.append({
-                    'acreditado': True, 
-                    'creditos': 1, 
-                    'motivo': 'DEBUG: Crédito de prueba inyectado (No se encontraron pagos en MP)'
-                })
+                if not suscripcion.ultimo_charge_id:
+                    logger.info(f"🎁 Aplicando garantía inicial de créditos para preapproval {preapproval_id}")
+                    res = acreditar_creditos_suscripcion(preapproval_id, force_initial=True)
+                    resultados.append(res)
+                else:
+                    logger.info(f"ℹ️ No se encontraron nuevos cobros para {preapproval_id} (ya tiene créditos iniciales)")
             except Exception as e:
-                logger.error(f"❌ Error en inyección de prueba: {e}")
+                logger.error(f"❌ Error en lógica de garantía inicial: {e}")
 
         return resultados
 
