@@ -621,7 +621,7 @@ class PreapprovalPayment(MPBase):
     el cliente para /preapproval_payment/search.
     """
     def search(self, filters=None, request_options=None):
-        return self._get(uri="/preapproval_payment/search", filters=filters, request_options=request_options)
+        return self._get(uri="/v1/preapproval_payments/search", filters=filters, request_options=request_options)
 
 
 def sincronizar_cobros_preapproval(preapproval_id):
@@ -642,62 +642,48 @@ def sincronizar_cobros_preapproval(preapproval_id):
         # Instanciar nuestro cliente auxiliar para buscar pagos de preapproval
         pp_client = PreapprovalPayment(sdk.request_options, sdk.http_client)
         
-        # Buscar pagos asociados a este preapproval sin filtro de estado estricto
-        # para ver qué está devolviendo MP exactamente.
+        # Buscar pagos asociados a este preapproval
         result = pp_client.search({
             "preapproval_id": preapproval_id,
             "limit": 20,
         })
 
-        if result.get('status') not in [200, 201]:
-            logger.warning(f"⚠️ Error al buscar cobros para {preapproval_id} en MP: {result.get('status')}")
-            return [{'error': f"MP Error {result.get('status')}", 'debug': result.get('response')}]
-
-        pagos = result.get('response', {}).get('results', [])
-        logger.info(f"📦 Se encontraron {len(pagos)} cobros en total para {preapproval_id}")
-        
-        # Log del primer pago para debug si existe
-        if pagos:
-            logger.info(f"🧪 Datos del primer cobro: {pagos[0]}")
-
+        pagos = []
         resultados = []
-        for pago in pagos:
-            charge_id = pago.get('id')
-            mp_status = pago.get('status')
-            monto = pago.get('transaction_amount')
-            
-            logger.info(f"📋 Analizando cobro MP {charge_id} con estado '{mp_status}' y monto {monto}")
 
-            # Consideramos exitosos 'authorized', 'processed' y 'approved'
-            if mp_status not in ('authorized', 'processed', 'approved'):
-                logger.info(f"⏭️ Saltando cobro {charge_id} por estado no exitoso: {mp_status}")
-                continue
+        if result.get('status') in [200, 201]:
+            pagos = result.get('response', {}).get('results', [])
+            logger.info(f"📦 Se encontraron {len(pagos)} cobros en total para {preapproval_id}")
             
-            if not charge_id:
-                continue
-            
-            # Intentar acreditar (la función ya es idempotente vía ultimo_charge_id)
-            try:
-                res = acreditar_creditos_suscripcion(preapproval_id, charge_id=charge_id)
-                if res.get('acreditado'):
-                    logger.info(f"✨ Créditos acreditados exitosamente para cobro {charge_id}")
-                else:
-                    logger.info(f"ℹ️ Cobro {charge_id} no acreditado: {res.get('motivo')}")
-                resultados.append(res)
-            except Exception as e:
-                logger.error(f"❌ Error acreditando cobro {charge_id}: {e}")
+            for pago in pagos:
+                charge_id = pago.get('id')
+                mp_status = pago.get('status')
+                monto = pago.get('transaction_amount')
+                
+                logger.info(f"📋 Analizando cobro MP {charge_id} con estado '{mp_status}' y monto {monto}")
+
+                if mp_status in ('authorized', 'processed', 'approved') and charge_id:
+                    try:
+                        res = acreditar_creditos_suscripcion(preapproval_id, charge_id=charge_id)
+                        resultados.append(res)
+                    except Exception as e:
+                        logger.error(f"❌ Error acreditando cobro {charge_id}: {e}")
+        else:
+            logger.warning(f"⚠️ Error al buscar cobros para {preapproval_id} en MP: {result.get('status')}")
         
-        # GARANTÍA INICIAL: Si no se encontró ningún cobro específico en MP pero la suscripción 
-        # está activa localmente y NUNCA ha recibido créditos, los otorgamos ahora.
+        # GARANTÍA INICIAL: Si no se acreditó nada vía pagos individuales (sea por error en MP o porque no hay pagos),
+        # y la suscripción NUNCA ha recibido créditos, los otorgamos ahora como cortesía de activación.
+        # Solo comprobamos esto si resultados está vacío.
         if not resultados:
             try:
                 suscripcion = SuscripcionProveedor.objects.get(mp_preapproval_id=preapproval_id)
                 if not suscripcion.ultimo_charge_id:
                     logger.info(f"🎁 Aplicando garantía inicial de créditos para preapproval {preapproval_id}")
                     res = acreditar_creditos_suscripcion(preapproval_id, force_initial=True)
-                    resultados.append(res)
+                    if res.get('acreditado'):
+                        resultados.append(res)
                 else:
-                    logger.info(f"ℹ️ No se encontraron nuevos cobros para {preapproval_id} (ya tiene créditos iniciales)")
+                    logger.info(f"ℹ️ No se requieren créditos iniciales para {preapproval_id} (ya procesados)")
             except Exception as e:
                 logger.error(f"❌ Error en lógica de garantía inicial: {e}")
 
