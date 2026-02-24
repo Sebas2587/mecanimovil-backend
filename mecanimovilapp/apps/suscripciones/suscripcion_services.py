@@ -12,6 +12,7 @@ from django.db import transaction
 from decouple import config
 import logging
 import mercadopago
+from mercadopago.core import MPBase
 
 from .models import PlanSuscripcion, SuscripcionProveedor
 from .creditos_services import obtener_credito_proveedor
@@ -614,12 +615,21 @@ def sincronizar_suscripcion_por_email(proveedor):
     }
 
 
+class PreapprovalPayment(MPBase):
+    """
+    Clase auxiliar para extender el SDK de Mercado Pago (v2.2.0) que no incluye 
+    el cliente para /preapproval_payment/search.
+    """
+    def search(self, filters=None, request_options=None):
+        return self._get(uri="/preapproval_payment/search", filters=filters, request_options=request_options)
+
+
 def sincronizar_cobros_preapproval(preapproval_id):
     """
     Busca cobros/pagos en MercadoPago para un preapproval específico
     y los procesa para acreditar créditos si aún no han sido procesados.
 
-    Sincroniza estados: 'authorized' y 'processed'.
+    Sincroniza estados: 'authorized', 'processed' y 'approved'.
     """
     if not preapproval_id:
         return []
@@ -628,9 +638,13 @@ def sincronizar_cobros_preapproval(preapproval_id):
     
     try:
         sdk = _get_mp_sdk()
+        
+        # Instanciar nuestro cliente auxiliar para buscar pagos de preapproval
+        pp_client = PreapprovalPayment(sdk.request_options, sdk.http_client)
+        
         # Buscar pagos asociados a este preapproval sin filtro de estado estricto
         # para ver qué está devolviendo MP exactamente.
-        result = sdk.preapproval_payment().search({
+        result = pp_client.search({
             "preapproval_id": preapproval_id,
             "limit": 20,
         })
