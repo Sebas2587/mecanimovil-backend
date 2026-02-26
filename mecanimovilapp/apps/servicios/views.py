@@ -180,13 +180,13 @@ class ServicioViewSet(viewsets.ModelViewSet):
                 marcas_atendidas=marca,
                 verificado=True,
                 activo=True
-            ).values('id')
+            ).values_list('id', flat=True)
 
             mecanicos_ids = MecanicoDomicilio.objects.filter(
                 marcas_atendidas=marca,
                 verificado=True,
                 activo=True
-            ).values('id')
+            ).values_list('id', flat=True)
             
             servicios_con_ofertas_genericas = Servicio.objects.filter(
                 Q(ofertas__marca_vehiculo_seleccionada__isnull=True) &
@@ -232,70 +232,136 @@ class ServicioViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['get'])
     def ofertas(self, request, pk=None):
         """
-        Endpoint para obtener todas las ofertas disponibles para un servicio específico
+        Endpoint para obtener todas las ofertas disponibles para un servicio específico.
+        Puede filtrar por marca de vehículo.
         """
         servicio = self.get_object()
-        ofertas = OfertaServicio.objects.filter(servicio=servicio, disponible=True)
-        serializer = OfertaServicioSerializer(ofertas, many=True)
+        marca_id = request.query_params.get('marca')
+        
+        queryset = OfertaServicio.objects.filter(servicio=servicio, disponible=True)
+        
+        if marca_id:
+            from django.db.models import Q
+            from mecanimovilapp.apps.usuarios.models import Taller, MecanicoDomicilio
+            
+            # Obtener IDs de proveedores verificados que atienden la marca
+            talleres_ids = Taller.objects.filter(
+                marcas_atendidas__id=marca_id, verificado=True, activo=True
+            ).values_list('id', flat=True)
+            
+            mecanicos_ids = MecanicoDomicilio.objects.filter(
+                marcas_atendidas__id=marca_id, verificado=True, activo=True
+            ).values_list('id', flat=True)
+            
+            # Filtro: Ofertas para la marca exacta OR Ofertas genéricas de proveedores aptos
+            queryset = queryset.filter(
+                Q(marca_vehiculo_seleccionada_id=marca_id) |
+                (
+                    Q(marca_vehiculo_seleccionada__isnull=True) &
+                    (Q(taller_id__in=talleres_ids) | Q(mecanico_id__in=mecanicos_ids))
+                )
+            ).distinct()
+            
+        serializer = OfertaServicioSerializer(queryset, many=True)
         return Response(serializer.data)
     
     @action(detail=True, methods=['get'])
     def talleres(self, request, pk=None):
         """
-        Endpoint para obtener todos los talleres que ofrecen un servicio específico
+        Endpoint para obtener todos los talleres que ofrecen un servicio específico.
+        Puede filtrar opcionalmente por la marca_id.
         """
         servicio = self.get_object()
+        marca_id = request.query_params.get('marca')
+        
         ofertas = OfertaServicio.objects.filter(
             servicio=servicio, 
             tipo_proveedor='taller',
             disponible=True
         )
-        talleres = [oferta.taller for oferta in ofertas]
+        
+        if marca_id:
+            from django.db.models import Q
+            from mecanimovilapp.apps.usuarios.models import Taller
+            talleres_ids = Taller.objects.filter(
+                marcas_atendidas__id=marca_id, verificado=True, activo=True
+            ).values_list('id', flat=True)
+            
+            ofertas = ofertas.filter(
+                Q(marca_vehiculo_seleccionada_id=marca_id) |
+                (
+                    Q(marca_vehiculo_seleccionada__isnull=True) &
+                    Q(taller_id__in=talleres_ids)
+                )
+            ).distinct()
+            
+        talleres = [oferta.taller for oferta in ofertas if oferta.taller]
         
         # Usar un serializador personalizado para incluir precios
         resultados = []
         for taller in talleres:
-            oferta = OfertaServicio.objects.get(servicio=servicio, taller=taller)
-            resultados.append({
-                'taller': {
-                    'id': taller.id,
-                    'nombre': taller.nombre,
-                    'telefono': taller.telefono,
-                    'calificacion_promedio': taller.calificacion_promedio
-                },
-                'precio_con_repuestos': oferta.precio_con_repuestos,
-                'precio_sin_repuestos': oferta.precio_sin_repuestos
-            })
+            oferta = ofertas.filter(taller=taller).first()
+            if oferta:
+                resultados.append({
+                    'taller': {
+                        'id': taller.id,
+                        'nombre': taller.nombre,
+                        'telefono': taller.telefono,
+                        'calificacion_promedio': taller.calificacion_promedio
+                    },
+                    'precio_con_repuestos': oferta.precio_con_repuestos,
+                    'precio_sin_repuestos': oferta.precio_sin_repuestos
+                })
         
         return Response(resultados)
     
     @action(detail=True, methods=['get'])
     def mecanicos(self, request, pk=None):
         """
-        Endpoint para obtener todos los mecánicos que ofrecen un servicio específico
+        Endpoint para obtener todos los mecánicos que ofrecen un servicio específico.
+        Puede filtrar opcionalmente por marca_id.
         """
         servicio = self.get_object()
+        marca_id = request.query_params.get('marca')
+        
         ofertas = OfertaServicio.objects.filter(
             servicio=servicio, 
             tipo_proveedor='mecanico',
             disponible=True
         )
-        mecanicos = [oferta.mecanico for oferta in ofertas]
+        
+        if marca_id:
+            from django.db.models import Q
+            from mecanimovilapp.apps.usuarios.models import MecanicoDomicilio
+            mecanicos_ids = MecanicoDomicilio.objects.filter(
+                marcas_atendidas__id=marca_id, verificado=True, activo=True
+            ).values_list('id', flat=True)
+            
+            ofertas = ofertas.filter(
+                Q(marca_vehiculo_seleccionada_id=marca_id) |
+                (
+                    Q(marca_vehiculo_seleccionada__isnull=True) &
+                    Q(mecanico_id__in=mecanicos_ids)
+                )
+            ).distinct()
+            
+        mecanicos = [oferta.mecanico for oferta in ofertas if oferta.mecanico]
         
         # Usar un serializador personalizado para incluir precios
         resultados = []
         for mecanico in mecanicos:
-            oferta = OfertaServicio.objects.get(servicio=servicio, mecanico=mecanico)
-            resultados.append({
-                'mecanico': {
-                    'id': mecanico.id,
-                    'nombre': mecanico.nombre,
-                    'telefono': mecanico.telefono,
-                    'calificacion_promedio': mecanico.calificacion_promedio
-                },
-                'precio_con_repuestos': oferta.precio_con_repuestos,
-                'precio_sin_repuestos': oferta.precio_sin_repuestos
-            })
+            oferta = ofertas.filter(mecanico=mecanico).first()
+            if oferta:
+                resultados.append({
+                    'mecanico': {
+                        'id': mecanico.id,
+                        'nombre': mecanico.nombre,
+                        'telefono': mecanico.telefono,
+                        'calificacion_promedio': mecanico.calificacion_promedio
+                    },
+                    'precio_con_repuestos': oferta.precio_con_repuestos,
+                    'precio_sin_repuestos': oferta.precio_sin_repuestos
+                })
         
         return Response(resultados)
     
