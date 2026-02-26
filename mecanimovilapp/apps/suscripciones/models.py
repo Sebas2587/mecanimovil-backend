@@ -197,10 +197,12 @@ class CompraCreditos(models.Model):
     )
     paquete = models.ForeignKey(
         PaqueteCreditos,
-        on_delete=models.PROTECT,
+        on_delete=models.SET_NULL,
         related_name='compras',
         verbose_name='Paquete',
-        help_text='Paquete de créditos comprado'
+        help_text='Paquete de créditos comprado',
+        null=True,
+        blank=True
     )
     cantidad_creditos = models.IntegerField(
         validators=[MinValueValidator(1)],

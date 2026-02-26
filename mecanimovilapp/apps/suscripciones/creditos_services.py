@@ -194,7 +194,7 @@ def consumir_creditos_adjudicacion(proveedor, oferta, servicio):
         raise ValidationError(f"Error al consumir créditos: {str(e)}")
 
 
-def comprar_creditos(proveedor, paquete_id, metodo_pago):
+def comprar_creditos(proveedor, metodo_pago, paquete_id=None, cantidad_creditos=None):
     """
     Crea un registro de compra de créditos.
     
@@ -204,20 +204,36 @@ def comprar_creditos(proveedor, paquete_id, metodo_pago):
     
     Args:
         proveedor: Usuario proveedor
-        paquete_id: ID del paquete de créditos
         metodo_pago: 'mercadopago', 'transferencia', 'migracion'
+        paquete_id: ID del paquete de créditos (opcional)
+        cantidad_creditos: Cantidad dinámica de créditos a comprar (opcional)
     
     Returns:
         CompraCreditos: Registro de compra creado
     
     Raises:
-        ValidationError: Si el paquete no existe o no está activo
+        ValidationError: Si el paquete no existe, la cantidad es inválida u ocurre algún error.
     """
     try:
-        # Validar paquete
-        paquete = PaqueteCreditos.objects.filter(id=paquete_id, activo=True).first()
-        if not paquete:
-            raise ValidationError("El paquete no existe o no está disponible")
+        precio_total = Decimal('0')
+        cantidad_total = 0
+        paquete = None
+        
+        # Validar paquete o cantidad
+        if paquete_id:
+            paquete = PaqueteCreditos.objects.filter(id=paquete_id, activo=True).first()
+            if not paquete:
+                raise ValidationError("El paquete no existe o no está disponible")
+            cantidad_total = paquete.total_creditos
+            precio_total = paquete.precio
+        elif cantidad_creditos:
+            cantidad_total = int(cantidad_creditos)
+            if cantidad_total <= 0:
+                raise ValidationError("La cantidad de créditos debe ser mayor a cero")
+            precio_base = calcular_precio_credito()
+            precio_total = precio_base * cantidad_total
+        else:
+            raise ValidationError("Debe especificar un paquete o una cantidad de créditos")
         
         # Obtener configuración para calcular fecha de expiración
         config = ConfiguracionCreditos.objects.filter(activo=True).first()
@@ -240,7 +256,7 @@ def comprar_creditos(proveedor, paquete_id, metodo_pago):
             proveedor=proveedor,
             paquete=paquete,
             cantidad_creditos=cantidad_total,
-            precio_total=paquete.precio,
+            precio_total=precio_total,
             metodo_pago=metodo_pago,
             estado='pendiente',
             fecha_expiracion_creditos=fecha_expiracion
@@ -254,7 +270,8 @@ def comprar_creditos(proveedor, paquete_id, metodo_pago):
         
         logger.info(
             f"Compra de créditos creada: {compra.id} para proveedor {proveedor.id}, "
-            f"paquete {paquete.nombre}, {cantidad_total} créditos, método: {metodo_pago}"
+            f"paquete_id: {paquete_id}, {cantidad_total} créditos, "
+            f"precio total: ${precio_total}, método: {metodo_pago}"
         )
         
         return compra

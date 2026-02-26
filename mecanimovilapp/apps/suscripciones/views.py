@@ -101,23 +101,16 @@ class CompraCreditosViewSet(viewsets.ModelViewSet):
         
         proveedor = request.user
         paquete_id = request.data.get('paquete_id')
+        cantidad_creditos = request.data.get('cantidad_creditos')
         metodo_pago = request.data.get('metodo_pago', 'mercadopago')
         
-        if not paquete_id:
+        if not paquete_id and not cantidad_creditos:
             return Response(
-                {'error': 'paquete_id es requerido'},
+                {'error': 'Debe proporcionar paquete_id o cantidad_creditos'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
         try:
-            # Obtener el paquete primero para tener los datos
-            paquete = PaqueteCreditos.objects.filter(id=paquete_id, activo=True).first()
-            if not paquete:
-                return Response(
-                    {'error': 'El paquete no existe o no está disponible'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
             # Validar que solo se permita Mercado Pago
             if metodo_pago != 'mercadopago':
                 return Response(
@@ -126,14 +119,14 @@ class CompraCreditosViewSet(viewsets.ModelViewSet):
                 )
             
             # Crear la compra (sin confirmar si es mercadopago)
-            compra = comprar_creditos(proveedor, paquete_id, metodo_pago)
+            compra = comprar_creditos(proveedor, metodo_pago, paquete_id=paquete_id, cantidad_creditos=cantidad_creditos)
             serializer = self.get_serializer(compra)
             response_data = serializer.data
             
             # Si es Mercado Pago, crear preferencia de pago
             if metodo_pago == 'mercadopago':
                 try:
-                    preference_result = self._crear_preferencia_mercadopago(compra, paquete, proveedor)
+                    preference_result = self._crear_preferencia_mercadopago(compra, proveedor)
                     
                     if preference_result.get('success'):
                         response_data['mercadopago'] = {
@@ -167,7 +160,7 @@ class CompraCreditosViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
     
-    def _crear_preferencia_mercadopago(self, compra, paquete, proveedor):
+    def _crear_preferencia_mercadopago(self, compra, proveedor):
         """
         Crea una preferencia de pago en Mercado Pago para la compra de créditos.
         """
@@ -175,9 +168,9 @@ class CompraCreditosViewSet(viewsets.ModelViewSet):
             servicio = get_mercado_pago_service()
             
             # Construir descripción del item
-            descripcion = f"Compra de {paquete.total_creditos} créditos"
-            if paquete.bonificacion_creditos > 0:
-                descripcion += f" (+{paquete.bonificacion_creditos} de bonificación)"
+            descripcion = f"Compra de {compra.cantidad_creditos} créditos"
+            if compra.paquete and compra.paquete.bonificacion_creditos > 0:
+                descripcion += f" (+{compra.paquete.bonificacion_creditos} de bonificación)"
             
             # Construir información del pagador
             payer = {
@@ -194,12 +187,15 @@ class CompraCreditosViewSet(viewsets.ModelViewSet):
                 }
             
             # Convertir precio a entero (Mercado Pago requiere enteros para CLP)
-            precio_entero = int(round(float(paquete.precio)))
+            precio_entero = int(round(float(compra.precio_total)))
+            
+            # Determinar título
+            payment_title = f"Créditos MecaniMovil - {compra.paquete.nombre}" if compra.paquete else "Créditos MecaniMovil - Recarga a medida"
             
             # Construir la preferencia
             preference_data = {
                 'items': [{
-                    'title': f"Créditos MecaniMovil - {paquete.nombre}",
+                    'title': payment_title,
                     'description': descripcion,
                     'quantity': 1,
                     'unit_price': precio_entero,
@@ -223,9 +219,9 @@ class CompraCreditosViewSet(viewsets.ModelViewSet):
                 preference_data['notification_url'] = f"{webhook_base_url}/api/suscripciones/creditos/compras/webhook-mp/"
             
             logger.info(f"📋 Creando preferencia de MP para compra de créditos {compra.id}")
-            logger.info(f"   - Paquete: {paquete.nombre}")
+            logger.info(f"   - Paquete: {compra.paquete.nombre if compra.paquete else 'A medida'}")
             logger.info(f"   - Precio: ${precio_entero} CLP")
-            logger.info(f"   - Créditos: {paquete.total_creditos}")
+            logger.info(f"   - Créditos: {compra.cantidad_creditos}")
             
             # Crear la preferencia usando el servicio
             preference_result = servicio.create_preference(preference_data)
@@ -627,10 +623,9 @@ class CompraCreditosViewSet(viewsets.ModelViewSet):
         
         try:
             # Crear nueva preferencia de pago
-            paquete = compra.paquete
             proveedor = compra.proveedor
             
-            preference_result = self._crear_preferencia_mercadopago(compra, paquete, proveedor)
+            preference_result = self._crear_preferencia_mercadopago(compra, proveedor)
             
             if preference_result.get('success'):
                 serializer = self.get_serializer(compra)

@@ -54,8 +54,11 @@ class CompraCreditosSerializer(serializers.ModelSerializer):
     paquete_id = serializers.PrimaryKeyRelatedField(
         queryset=PaqueteCreditos.objects.filter(activo=True),
         source='paquete',
-        write_only=True
+        write_only=True,
+        required=False,
+        allow_null=True
     )
+    cantidad_creditos = serializers.IntegerField(required=False, min_value=1)
     proveedor_nombre = serializers.CharField(source='proveedor.username', read_only=True)
     
     class Meta:
@@ -80,7 +83,6 @@ class CompraCreditosSerializer(serializers.ModelSerializer):
         read_only_fields = [
             'id',
             'proveedor',
-            'cantidad_creditos',
             'precio_total',
             'estado',
             'fecha_compra',
