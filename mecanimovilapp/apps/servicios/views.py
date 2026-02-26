@@ -703,12 +703,8 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
             
             proveedor = proveedor_data['proveedor']
             
-            # Verificar que el proveedor atiende esta marca
-            if not proveedor.marcas_atendidas.filter(id=marca_id).exists():
-                return Response(
-                    {'error': 'El proveedor no atiende esta marca de vehículo'},
-                    status=403
-                )
+            # permitimos que el endpoint responda incluso si el proveedor ha desmarcado esta marca,
+            # para no romper la pantalla de EDICIÓN de un servicio previamente configurado.
             
             # Obtener especialidades del proveedor
             especialidades_ids = proveedor.especialidades.values_list('id', flat=True)
