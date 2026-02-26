@@ -703,19 +703,28 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
             
             proveedor = proveedor_data['proveedor']
             
-            # permitimos que el endpoint responda incluso si el proveedor ha desmarcado esta marca,
+            # Permitimos que el endpoint responda incluso si el proveedor ha desmarcado esta marca,
             # para no romper la pantalla de EDICIÓN de un servicio previamente configurado.
             
             # Obtener especialidades del proveedor
             especialidades_ids = proveedor.especialidades.values_list('id', flat=True)
             
-            # Obtener servicios relacionados con las especialidades del proveedor Y la marca específica
-            servicios = Servicio.objects.filter(
-                categorias__in=especialidades_ids,
-                modelos_compatibles__marca_id=marca_id  # ✅ FILTRAR POR MARCA
-            ).prefetch_related('categorias').values(
-                'id', 'nombre', 'descripcion', 'requiere_repuestos'
-            ).distinct()  # ✅ EVITAR DUPLICADOS
+            # Soporte para "Marca Genérica/Todas las marcas" (ID 0)
+            if str(marca_id) == '0':
+                servicios = Servicio.objects.filter(
+                    categorias__in=especialidades_ids,
+                    modelos_compatibles__isnull=True  # 🛠️ Servicios que no requieren modelos/marcas específicas
+                ).prefetch_related('categorias').values(
+                    'id', 'nombre', 'descripcion', 'requiere_repuestos'
+                ).distinct()
+            else:
+                # Obtener servicios relacionados con las especialidades del proveedor Y la marca específica
+                servicios = Servicio.objects.filter(
+                    categorias__in=especialidades_ids,
+                    modelos_compatibles__marca_id=marca_id  # ✅ FILTRAR POR MARCA
+                ).prefetch_related('categorias').values(
+                    'id', 'nombre', 'descripcion', 'requiere_repuestos'
+                ).distinct()  # ✅ EVITAR DUPLICADOS
             
             return Response(list(servicios))
             
