@@ -46,6 +46,7 @@ class SolicitudServicio(models.Model):
         ('debito', 'Débito'),
         ('credito', 'Crédito'),
         ('transferencia', 'Transferencia'),
+        ('mercadopago', 'Mercado Pago'),
     ]
     
     # Información básica de la solicitud

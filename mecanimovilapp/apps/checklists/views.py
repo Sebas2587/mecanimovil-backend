@@ -371,7 +371,7 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
     
     @action(detail=True, methods=['post'])
     def start(self, request, pk=None):
-        """Iniciar un checklist"""
+        """Iniciar un checklist (solo entonces la orden pasa a 'checklist_en_progreso')."""
         instance = self.get_object()
         
         if instance.estado != 'PENDIENTE':
@@ -383,6 +383,12 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
         instance.estado = 'EN_PROGRESO'
         instance.fecha_inicio = timezone.now()
         instance.save()
+        
+        # Pasar la orden a checklist_en_progreso solo cuando el proveedor inicia el checklist
+        orden = instance.orden
+        if orden.estado == 'confirmado':
+            orden.estado = 'checklist_en_progreso'
+            orden.save(update_fields=['estado'])
         
         return Response({'message': 'Checklist iniciado correctamente'})
     

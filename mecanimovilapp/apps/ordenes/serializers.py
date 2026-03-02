@@ -610,7 +610,7 @@ class SolicitudServicioProveedorSeguroSerializer(serializers.ModelSerializer):
         estado_dict = {
             'pendiente': 'Pendiente',
             'pago_validado': 'Pago Validado',
-            'confirmado': 'Confirmado',
+            'confirmado': 'Pendiente de iniciar',
             'en_proceso': 'En Proceso',
             'completado': 'Completado',
             'cancelado': 'Cancelado',
@@ -632,7 +632,8 @@ class SolicitudServicioProveedorSeguroSerializer(serializers.ModelSerializer):
         # 2. El estado permite gesti?n
         estados_gestionables = [
             'pendiente_aceptacion_proveedor',
-            'aceptada_por_proveedor', 
+            'aceptada_por_proveedor',
+            'confirmado',  # Puede abrir e iniciar checklist
             'checklist_en_progreso',
             'checklist_completado',
             'en_proceso'
@@ -736,7 +737,7 @@ class SolicitudServicioProveedorLegacySerializer(serializers.ModelSerializer):
         estado_dict = {
             'pendiente': 'Pendiente',
             'pago_validado': 'Pago Validado',
-            'confirmado': 'Confirmado',
+            'confirmado': 'Pendiente de iniciar',
             'en_proceso': 'En Proceso',
             'completado': 'Completado',
             'cancelado': 'Cancelado',
@@ -755,7 +756,8 @@ class SolicitudServicioProveedorLegacySerializer(serializers.ModelSerializer):
         """Determina si el proveedor puede gestionar esta orden"""
         estados_gestionables = [
             'pendiente_aceptacion_proveedor',
-            'aceptada_por_proveedor', 
+            'aceptada_por_proveedor',
+            'confirmado',  # Puede abrir e iniciar checklist
             'checklist_en_progreso',
             'checklist_completado',
             'en_proceso'

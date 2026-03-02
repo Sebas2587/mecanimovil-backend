@@ -2093,8 +2093,7 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
                                         estado='PENDIENTE'
                                     )
                                     logger.info(f'✅ Checklist creado automáticamente al crear orden: {checklist_instance.id} para orden {solicitud_servicio.id}')
-                                    solicitud_servicio.estado = 'checklist_en_progreso'
-                                    solicitud_servicio.save(update_fields=['estado'])
+                                    # No cambiar estado a checklist_en_progreso aquí; se hará cuando el proveedor llame a start()
                                 break
                     except Exception as checklist_error:
                         logger.warning(f'⚠️ Error creando checklist para orden {solicitud_servicio.id}: {checklist_error}')
@@ -2133,9 +2132,7 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
                                 estado='PENDIENTE'
                             )
                             logger.info(f'✅ Checklist creado retroactivamente: {checklist_instance.id} para orden {orden_sin_checklist.id}')
-                            if orden_sin_checklist.estado == 'confirmado':
-                                orden_sin_checklist.estado = 'checklist_en_progreso'
-                                orden_sin_checklist.save(update_fields=['estado'])
+                            # No cambiar estado a checklist_en_progreso aquí; se hará cuando el proveedor llame a start()
                             checklist_creados_retroactivos += 1
                             break
             
@@ -5515,18 +5512,11 @@ class OfertaProveedorViewSet(viewsets.ModelViewSet):
                                         estado='PENDIENTE'
                                     )
                                     logger.info(f'✅ Checklist creado automáticamente: {checklist_instance.id} para orden {solicitud_servicio.id} con template {template.id}')
-                                    
-                                    # Cambiar estado de solicitud_servicio a checklist_en_progreso
-                                    solicitud_servicio.estado = 'checklist_en_progreso'
-                                    solicitud_servicio.save(update_fields=['estado'])
+                                    # No cambiar estado a checklist_en_progreso aquí; se hará cuando el proveedor llame a start()
                                     checklist_creado = True
                                     break  # Solo crear un checklist (el primero encontrado)
                                 else:
                                     logger.info(f'⚠️ Ya existe checklist para orden {solicitud_servicio.id}: {existing_instance.id}')
-                                    # Si ya existe checklist, cambiar a checklist_en_progreso si no está en ese estado
-                                    if solicitud_servicio.estado != 'checklist_en_progreso':
-                                        solicitud_servicio.estado = 'checklist_en_progreso'
-                                        solicitud_servicio.save(update_fields=['estado'])
                                     checklist_creado = True
                                     break
                             else:
