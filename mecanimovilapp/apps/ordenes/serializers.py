@@ -1578,6 +1578,9 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
         return obj.puede_reenviar()
     
     def get_vehiculo_info(self, obj):
+        """Retorna info del vehículo; None si la solicitud no tiene vehículo (ej. vehículo eliminado)."""
+        if not obj.vehiculo:
+            return None
         return {
             'id': obj.vehiculo.id,
             'marca': obj.vehiculo.marca_nombre if hasattr(obj.vehiculo, 'marca_nombre') else str(obj.vehiculo.marca),

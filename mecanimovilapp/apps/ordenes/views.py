@@ -2620,6 +2620,22 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
             'cliente', 'cliente__usuario', 'vehiculo', 'vehiculo__marca', 'direccion_usuario', 'oferta_seleccionada'
         ).prefetch_related('servicios_solicitados', 'proveedores_dirigidos', 'ofertas', 'rechazos')
     
+    def list(self, request, *args, **kwargs):
+        """
+        Lista solicitudes; aplica filtro por estado si se envía ?estado=...
+        (ej. estado=completada para solicitudes finalizadas).
+        """
+        queryset = self.filter_queryset(self.get_queryset())
+        estado = request.query_params.get('estado')
+        if estado:
+            queryset = queryset.filter(estado=estado)
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+    
     def perform_create(self, serializer):
         """Asocia la solicitud con el cliente autenticado"""
         if not hasattr(self.request.user, 'cliente'):
