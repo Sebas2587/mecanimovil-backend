@@ -192,8 +192,14 @@ class ChecklistInstanceCreateSerializer(serializers.ModelSerializer):
 
 
 class ChecklistPhotoUploadSerializer(serializers.ModelSerializer):
-    """Serializer para subir fotos"""
-    
+    """Serializer para subir fotos - devuelve id e imagen_url para mostrar en el cliente"""
+    imagen_url = serializers.SerializerMethodField()
+
     class Meta:
         model = ChecklistPhoto
-        fields = ['response', 'imagen', 'descripcion', 'orden_en_respuesta'] 
+        fields = ['id', 'response', 'imagen', 'imagen_url', 'descripcion', 'orden_en_respuesta', 'fecha_captura']
+        read_only_fields = ['id', 'fecha_captura']
+
+    def get_imagen_url(self, obj):
+        request = self.context.get('request')
+        return get_image_url(obj.imagen, request)

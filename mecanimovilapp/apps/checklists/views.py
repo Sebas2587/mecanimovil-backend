@@ -256,6 +256,8 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
                 try:
                     instance = ChecklistInstance.objects.select_related(
                         'orden__cliente__usuario', 'orden__taller', 'orden__mecanico', 'orden__vehiculo'
+                    ).prefetch_related(
+                        'respuestas__fotos', 'respuestas__item_template__catalog_item'
                     ).get(**query)
                 except ChecklistInstance.DoesNotExist:
                     # Si no existe, lanzará 404
@@ -271,6 +273,8 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
                 try:
                     instance = ChecklistInstance.objects.select_related(
                         'orden__cliente__usuario', 'orden__taller', 'orden__mecanico', 'orden__vehiculo'
+                    ).prefetch_related(
+                        'respuestas__fotos', 'respuestas__item_template__catalog_item'
                     ).filter(
                         Q(orden__oferta_proveedor__solicitud__id=orden_id) |  # Por ID de Solicitud Publica
                         Q(orden__oferta_proveedor__id=orden_id)               # Por ID de Oferta Proveedor
