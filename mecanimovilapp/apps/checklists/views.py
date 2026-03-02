@@ -436,6 +436,19 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
         
         instance = self.get_object()
         logger.info(f"🔸 Finalizando checklist ID: {instance.id} para orden: {instance.orden.id}")
+
+        # ✅ Idempotencia: si ya está completado, no devolver error (evita fallos por reintentos)
+        if instance.estado == 'COMPLETADO':
+            logger.warning(f"🔸 finalize llamado pero checklist ya COMPLETADO: {instance.id}")
+            return Response(
+                {
+                    'message': 'El checklist ya fue finalizado anteriormente',
+                    'checklist_id': instance.id,
+                    'orden_id': instance.orden.id,
+                    'estado': instance.estado,
+                },
+                status=status.HTTP_200_OK
+            )
         
         if instance.estado not in ['EN_PROGRESO', 'PAUSADO']:
             logger.warning(f"🔸 Estado inválido para finalizar: {instance.estado}")
@@ -521,6 +534,19 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
             # Buscar el checklist asociado a esta orden
             instance = ChecklistInstance.objects.get(orden=orden_id)
             logger.info(f"🔸 Instancia encontrada: ID {instance.id}, Estado: {instance.estado}")
+
+            # ✅ Idempotencia: si ya está completado, no devolver error
+            if instance.estado == 'COMPLETADO':
+                logger.warning(f"🔸 finalize_by_order llamado pero checklist ya COMPLETADO: {instance.id}")
+                return Response(
+                    {
+                        'message': 'El checklist ya fue finalizado anteriormente',
+                        'checklist_id': instance.id,
+                        'orden_id': instance.orden.id,
+                        'estado': instance.estado,
+                    },
+                    status=status.HTTP_200_OK
+                )
             
             # Verificar que el usuario tenga acceso a esta orden
             user = self.request.user
