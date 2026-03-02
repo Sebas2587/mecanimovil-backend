@@ -3978,19 +3978,34 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'])
     def activas(self, request):
         """
-        Lista solicitudes activas del cliente
+        Lista solicitudes activas del cliente.
+        Incluye solicitudes con estado activo Y solicitudes que tengan ofertas secundarias
+        pendientes (enviada, vista, en_chat, aceptada, pendiente_pago, etc.) para que el usuario
+        pueda aceptar o rechazar aunque la oferta original ya esté finalizada.
         """
         if not hasattr(request.user, 'cliente'):
             return Response(
                 {'error': 'Solo los clientes pueden ver sus solicitudes activas'},
                 status=status.HTTP_403_FORBIDDEN
             )
-        
+        estados_solicitud_activos = [
+            'publicada', 'con_ofertas', 'seleccionando_servicios',
+            'adjudicada', 'pendiente_pago', 'pagada', 'en_ejecucion'
+        ]
+        # Ofertas secundarias que siguen pendientes de acción del usuario (aceptar/rechazar o pagar)
+        estados_oferta_secundaria_pendientes = [
+            'enviada', 'vista', 'en_chat', 'aceptada', 'pendiente_pago',
+            'pagada_parcialmente', 'pagada', 'en_ejecucion'
+        ]
         solicitudes = SolicitudServicioPublica.objects.filter(
-            cliente=request.user.cliente,
-            estado__in=['publicada', 'con_ofertas', 'seleccionando_servicios', 'adjudicada', 'pendiente_pago', 'pagada', 'en_ejecucion']
-        ).select_related('cliente', 'vehiculo').prefetch_related('ofertas')
-        
+            cliente=request.user.cliente
+        ).filter(
+            Q(estado__in=estados_solicitud_activos)
+            | Q(
+                ofertas__es_oferta_secundaria=True,
+                ofertas__estado__in=estados_oferta_secundaria_pendientes
+            )
+        ).select_related('cliente', 'vehiculo').prefetch_related('ofertas').distinct()
         serializer = self.get_serializer(solicitudes, many=True)
         return Response(serializer.data)
     
