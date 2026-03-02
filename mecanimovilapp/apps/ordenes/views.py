@@ -4741,6 +4741,26 @@ class OfertaProveedorViewSet(viewsets.ModelViewSet):
             else:
                 raise serializers.ValidationError("El usuario no es un proveedor válido")
             
+            # Fecha alternativa: si el cliente no envió es_fecha_alternativa pero la oferta tiene
+            # fecha/hora distinta a la solicitada, marcar es_fecha_alternativa = True
+            if 'es_fecha_alternativa' not in serializer.validated_data or serializer.validated_data.get('es_fecha_alternativa') is None:
+                fecha_disp = serializer.validated_data.get('fecha_disponible')
+                hora_disp = serializer.validated_data.get('hora_disponible')
+                fecha_pref = getattr(solicitud, 'fecha_preferida', None)
+                hora_pref = getattr(solicitud, 'hora_preferida', None)
+                if fecha_disp and fecha_pref:
+                    fd = fecha_disp.date() if hasattr(fecha_disp, 'date') else fecha_disp
+                    fp = fecha_pref.date() if hasattr(fecha_pref, 'date') else fecha_pref
+                    fechas_distintas = fd != fp
+                    if not fechas_distintas and hora_disp is not None and hora_pref is not None:
+                        hd = hora_disp if isinstance(hora_disp, time) else None
+                        hp = hora_pref if isinstance(hora_pref, time) else None
+                        if hd is not None and hp is not None:
+                            fechas_distintas = (hd.hour != hp.hour or hd.minute != hp.minute)
+                    if fechas_distintas:
+                        serializer.validated_data['es_fecha_alternativa'] = True
+                        # No sobrescribir motivo_fecha_alternativa si ya vino en el payload
+            
             # Crear la oferta
             try:
                 logger.info(f"🔍 Intentando crear oferta con datos: {serializer.validated_data}")

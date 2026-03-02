@@ -588,7 +588,8 @@ class OfertaProveedorAdmin(admin.ModelAdmin):
         }),
         ('Disponibilidad', {
             'fields': (
-                'fecha_disponible', 'hora_disponible'
+                'fecha_disponible', 'hora_disponible',
+                'es_fecha_alternativa', 'motivo_fecha_alternativa'
             )
         }),
         ('Estado y Timestamps', {

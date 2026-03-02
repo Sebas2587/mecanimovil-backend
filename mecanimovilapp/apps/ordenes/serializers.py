@@ -863,7 +863,7 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
             'id', 'solicitud', 'solicitud_detail', 'solicitud_estado', 'proveedor', 'proveedor_id_detail', 'tipo_proveedor', 'nombre_proveedor',
             'rating_proveedor', 'precio_total_ofrecido', 'incluye_repuestos',
             'tiempo_estimado_total', 'descripcion_oferta', 'garantia_ofrecida',
-            'fecha_disponible', 'hora_disponible', 'estado', 'fecha_envio',
+            'fecha_disponible', 'hora_disponible', 'es_fecha_alternativa', 'motivo_fecha_alternativa', 'estado', 'fecha_envio',
             'fecha_visualizacion_cliente', 'detalles_servicios', 'servicios_ofertados',
             'total_mensajes_chat', 'mensajes_no_leidos', 'tiempo_restante_solicitud',
             'antiguedad_proveedor', 'servicios_realizados_proveedor', 'proveedor_verificado',

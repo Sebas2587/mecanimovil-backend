@@ -1113,6 +1113,18 @@ class OfertaProveedor(models.Model):
         verbose_name='Hora Disponible'
     )
     
+    es_fecha_alternativa = models.BooleanField(
+        default=False,
+        verbose_name='Es fecha alternativa',
+        help_text='True si el proveedor propone una fecha distinta a la solicitada por el cliente.'
+    )
+    motivo_fecha_alternativa = models.TextField(
+        blank=True,
+        null=True,
+        verbose_name='Motivo fecha alternativa',
+        help_text='Razón por la que el proveedor propone otra fecha.'
+    )
+    
     # Estado de la oferta
     estado = models.CharField(
         max_length=20,
