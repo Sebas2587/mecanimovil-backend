@@ -14,6 +14,7 @@ except ImportError:
     CELERY_AVAILABLE = False
 
 from django.core.cache import cache
+from django.utils import timezone
 import logging
 # Mover imports pesados adentro de las tareas/funciones
 
@@ -236,9 +237,16 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
                             logger.warning(f"Error creando alerta de kilometraje: {str(e)}")
         
         # Mapeo de items del checklist a componentes de salud
-        # La clave es el nombre del ComponenteSaludConfig (debe coincidir exactamente)
+        # La clave es el nombre del ComponenteSalud (debe coincidir exactamente)
         mapeo_componentes = {
-            'Aceite Motor': ['Cambio de Aceite', 'Nivel de aceite', 'Aceite motor'],
+            'Aceite Motor': [
+                'Cambio de Aceite',
+                'Nivel de aceite',
+                'Aceite motor',
+                'Nivel Aceite',
+                'Nivel aceite',
+                'Aceite Motor',
+            ],
             'Filtro de Aire': ['Filtro de Aire', 'Filtro aire'],
             'Filtro de Aceite': ['Filtro de Aceite', 'Filtro aceite'],
             'Bujías': ['Bujías', 'Bujias', 'Cambio de bujías'],
@@ -246,10 +254,27 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
             'Neumáticos': ['Neumáticos', 'Neumaticos', 'Llantas', 'Cambio de neumáticos'],
             'Pastillas de Freno': ['Pastillas de Freno', 'Pastillas freno'],
             'Discos de Freno': ['Discos de Freno', 'Discos freno'],
-            'Amortiguadores': ['Amortiguadores', 'Suspensión'],
-            'Correa de Distribución': ['Correa de Distribución', 'Correa distribución'],
-            'Líquido de Frenos': ['Líquido de Frenos', 'Liquido frenos'],
-            'Refrigerante': ['Refrigerante', 'Líquido refrigerante'],
+            'Amortiguadores': [
+                'Amortiguadores',
+                'Suspensión',
+                'Amortiguador Reemplazado',
+                'Estado Amortiguadores',
+            ],
+            'Correa de Distribución': [
+                'Correa de Distribución',
+                'Correa distribución',
+                'Correa Reemplazada',
+            ],
+            'Líquido de Frenos': [
+                'Líquido de Frenos',
+                'Liquido frenos',
+                'Líquido Frenos Reemplazado',
+            ],
+            'Refrigerante': [
+                'Refrigerante',
+                'Líquido refrigerante',
+                'Refrigerante Rellenado',
+            ],
         }
         
         # Actualizar componentes basados en el checklist
@@ -261,31 +286,29 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
             for nombre_config, items_relacionados in mapeo_componentes.items():
                 if any(item.lower() in item_nombre.lower() for item in items_relacionados):
                     try:
-                        # Buscar el config por su nombre exacto
-                        config = ComponenteSaludConfig.objects.filter(
-                            nombre=nombre_config,
-                            activo=True
+                        # Buscar el componente maestro por su nombre exacto
+                        config = ComponenteSalud.objects.filter(
+                            nombre=nombre_config
                         ).first()
                         
                         if config:
+                            # Usar el kilometraje del checklist si está disponible, sino el del vehículo
+                            km_para_servicio = kilometraje_checklist if kilometraje_checklist else vehiculo.kilometraje
+
                             comp_salud, created = ComponenteSaludVehiculo.objects.get_or_create(
                                 vehiculo=vehiculo,
-                                componente_config=config,
+                                componente=config,
                                 defaults={
-                                    'km_ultimo_servicio': kilometraje_checklist if kilometraje_checklist else vehiculo.kilometraje,
+                                    'km_ultimo_servicio': km_para_servicio,
                                     'fecha_ultimo_servicio': checklist.fecha_finalizacion or timezone.now(),
-                                    'checklist_ultimo_servicio': checklist,
-                                    'salud_porcentaje': 100,
+                                    'salud_porcentaje': 100.0,
                                     'nivel_alerta': 'OPTIMO',
                                 }
                             )
                             
                             if not created:
-                                # Usar el kilometraje del checklist si está disponible, sino el del vehículo
-                                km_para_servicio = kilometraje_checklist if kilometraje_checklist else vehiculo.kilometraje
                                 comp_salud.km_ultimo_servicio = km_para_servicio
                                 comp_salud.fecha_ultimo_servicio = checklist.fecha_finalizacion or timezone.now()
-                                comp_salud.checklist_ultimo_servicio = checklist
                             
                             comp_salud.calcular_salud(commit=False)
                             componentes_para_actualizar[comp_salud.id] = comp_salud
@@ -296,8 +319,8 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
         if componentes_para_actualizar:
             ComponenteSaludVehiculo.objects.bulk_update(
                 list(componentes_para_actualizar.values()),
-                ['km_ultimo_servicio', 'fecha_ultimo_servicio', 'checklist_ultimo_servicio', 
-                 'salud_porcentaje', 'nivel_alerta', 'km_estimados_restantes', 
+                ['km_ultimo_servicio', 'fecha_ultimo_servicio',
+                 'salud_porcentaje', 'nivel_alerta', 'km_estimados_restantes',
                  'dias_estimados_restantes', 'requiere_servicio_inmediato', 'mensaje_alerta']
             )
         
@@ -536,9 +559,16 @@ def _procesar_checklists_historicos_vehiculo_interno(vehicle_id):
             }
         
         # Mapeo de items del checklist a componentes de salud
-        # La clave es el nombre del ComponenteSaludConfig (debe coincidir exactamente)
+        # La clave es el nombre del ComponenteSalud (debe coincidir exactamente)
         mapeo_componentes = {
-            'Aceite Motor': ['Cambio de Aceite', 'Nivel de aceite', 'Aceite motor'],
+            'Aceite Motor': [
+                'Cambio de Aceite',
+                'Nivel de aceite',
+                'Aceite motor',
+                'Nivel Aceite',
+                'Nivel aceite',
+                'Aceite Motor',
+            ],
             'Filtro de Aire': ['Filtro de Aire', 'Filtro aire'],
             'Filtro de Aceite': ['Filtro de Aceite', 'Filtro aceite'],
             'Bujías': ['Bujías', 'Bujias', 'Cambio de bujías'],
@@ -546,10 +576,27 @@ def _procesar_checklists_historicos_vehiculo_interno(vehicle_id):
             'Neumáticos': ['Neumáticos', 'Neumaticos', 'Llantas', 'Cambio de neumáticos'],
             'Pastillas de Freno': ['Pastillas de Freno', 'Pastillas freno'],
             'Discos de Freno': ['Discos de Freno', 'Discos freno'],
-            'Amortiguadores': ['Amortiguadores', 'Suspensión'],
-            'Correa de Distribución': ['Correa de Distribución', 'Correa distribución'],
-            'Líquido de Frenos': ['Líquido de Frenos', 'Liquido frenos'],
-            'Refrigerante': ['Refrigerante', 'Líquido refrigerante'],
+            'Amortiguadores': [
+                'Amortiguadores',
+                'Suspensión',
+                'Amortiguador Reemplazado',
+                'Estado Amortiguadores',
+            ],
+            'Correa de Distribución': [
+                'Correa de Distribución',
+                'Correa distribución',
+                'Correa Reemplazada',
+            ],
+            'Líquido de Frenos': [
+                'Líquido de Frenos',
+                'Liquido frenos',
+                'Líquido Frenos Reemplazado',
+            ],
+            'Refrigerante': [
+                'Refrigerante',
+                'Líquido refrigerante',
+                'Refrigerante Rellenado',
+            ],
         }
         
         componentes_actualizados = 0
@@ -592,7 +639,6 @@ def _procesar_checklists_historicos_vehiculo_interno(vehicle_id):
                                     defaults={
                                         'km_ultimo_servicio': km_para_servicio,
                                         'fecha_ultimo_servicio': checklist.fecha_finalizacion or timezone.now(),
-                                        'checklist_ultimo_servicio': checklist,
                                         'salud_porcentaje': 100,
                                         'nivel_alerta': 'OPTIMO',
                                     }
@@ -605,13 +651,11 @@ def _procesar_checklists_historicos_vehiculo_interno(vehicle_id):
                                     fecha_ultimo = comp_salud.fecha_ultimo_servicio or timezone.make_aware(dt.min)
                                     fecha_checklist = checklist.fecha_finalizacion or timezone.now()
                                     
-                                    if fecha_checklist >= fecha_ultimo:
-                                        comp_salud.km_ultimo_servicio = km_para_servicio
-                                        comp_salud.fecha_ultimo_servicio = fecha_checklist
-                                        comp_salud.checklist_ultimo_servicio = checklist
-                                        # NO guardamos todavía, lo haremos en bulk al final del proceso cronológico o por vehículo
-                                        comp_salud.checklist_ultimo_servicio = checklist
-                                        # NO calculamos salud individualmente aquí, delegamos al HealthEngine al final
+                                        if fecha_checklist >= fecha_ultimo:
+                                            comp_salud.km_ultimo_servicio = km_para_servicio
+                                            comp_salud.fecha_ultimo_servicio = fecha_checklist
+                                            # NO guardamos todavía, lo haremos en bulk al final del proceso cronológico o por vehículo
+                                            # NO calculamos salud individualmente aquí, delegamos al HealthEngine al final
                                         # comp_salud.calcular_salud(commit=False) # DEPRECATED
                                         comp_salud.save() # Guardamos el km actualizado para que el Engine lo use
                                         componentes_actualizados += 1
