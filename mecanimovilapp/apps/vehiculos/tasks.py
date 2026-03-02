@@ -650,14 +650,14 @@ def _procesar_checklists_historicos_vehiculo_interno(vehicle_id):
                                     from datetime import datetime as dt
                                     fecha_ultimo = comp_salud.fecha_ultimo_servicio or timezone.make_aware(dt.min)
                                     fecha_checklist = checklist.fecha_finalizacion or timezone.now()
-                                    
-                                        if fecha_checklist >= fecha_ultimo:
-                                            comp_salud.km_ultimo_servicio = km_para_servicio
-                                            comp_salud.fecha_ultimo_servicio = fecha_checklist
-                                            # NO guardamos todavía, lo haremos en bulk al final del proceso cronológico o por vehículo
-                                            # NO calculamos salud individualmente aquí, delegamos al HealthEngine al final
+
+                                    if fecha_checklist >= fecha_ultimo:
+                                        comp_salud.km_ultimo_servicio = km_para_servicio
+                                        comp_salud.fecha_ultimo_servicio = fecha_checklist
+                                        # NO guardamos todavía, lo haremos en bulk al final del proceso cronológico o por vehículo
+                                        # NO calculamos salud individualmente aquí, delegamos al HealthEngine al final
                                         # comp_salud.calcular_salud(commit=False) # DEPRECATED
-                                        comp_salud.save() # Guardamos el km actualizado para que el Engine lo use
+                                        comp_salud.save()  # Guardamos el km actualizado para que el Engine lo use
                                         componentes_actualizados += 1
                                         logger.info(
                                             f"✅ Componente {nombre_config} preparado para actualización desde checklist histórico "
