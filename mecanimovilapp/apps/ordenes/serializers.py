@@ -1359,6 +1359,9 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
     ofertas = serializers.SerializerMethodField()
     ofertas_secundarias = serializers.SerializerMethodField()
     estado_display = serializers.SerializerMethodField()
+    tiene_ofertas_secundarias_pendientes = serializers.SerializerMethodField()
+    estado_efectivo = serializers.SerializerMethodField()
+    estado_display_efectivo = serializers.SerializerMethodField()
     rechazos = serializers.SerializerMethodField()
     oferta_seleccionada_detail = serializers.SerializerMethodField()
     puede_reenviar = serializers.SerializerMethodField()
@@ -1377,7 +1380,8 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
             'fecha_publicacion', 'fecha_expiracion', 'fecha_limite_pago', 'tiempo_restante',
             'puede_recibir_ofertas', 'puede_ver_datos_cliente', 'total_ofertas', 'total_visualizaciones',
             'total_rechazos', 'oferta_seleccionada', 'oferta_seleccionada_detail', 'ofertas',
-            'ofertas_secundarias', 'rechazos', 'puede_reenviar'
+            'ofertas_secundarias', 'tiene_ofertas_secundarias_pendientes', 'estado_efectivo', 'estado_display_efectivo',
+            'rechazos', 'puede_reenviar'
         ]
         read_only_fields = [
             'estado', 'fecha_creacion', 'fecha_publicacion', 'fecha_limite_pago',
@@ -1388,25 +1392,46 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
         }
     
     def get_estado_display(self, obj):
-        """Retorna el estado en formato legible para humanos"""
+        """Retorna el estado en formato legible para humanos (estado real de la solicitud)"""
         estado_dict = {
-            'pendiente': 'Pendiente',
+            'creada': 'Creada',
+            'seleccionando_servicios': 'Seleccionando Servicios',
             'publicada': 'Publicada',
-            'pago_validado': 'Pago Validado',
-            'confirmado': 'Confirmado',
-            'en_proceso': 'En Proceso',
-            'completado': 'Completado',
-            'cancelado': 'Cancelado',
-            'solicitud_cancelacion': 'Solicitud de Cancelación',
-            'pendiente_devolucion': 'Pendiente de Devolución',
-            'devuelto': 'Devuelto',
-            'pendiente_aceptacion_proveedor': 'Pendiente de Aceptación',
-            'aceptada_por_proveedor': 'Aceptada',
-            'rechazada_por_proveedor': 'Rechazada',
-            'checklist_en_progreso': 'Checklist en Progreso',
-            'checklist_completado': 'Checklist Completado',
+            'con_ofertas': 'Con Ofertas',
+            'adjudicada': 'Adjudicada',
+            'pendiente_pago': 'Pendiente de Pago',
+            'pagada': 'Pagada',
+            'en_ejecucion': 'En Ejecución',
+            'completada': 'Completada',
+            'expirada': 'Expirada',
+            'cancelada': 'Cancelada',
         }
         return estado_dict.get(obj.estado, obj.estado.replace('_', ' ').title())
+
+    ESTADOS_OFERTA_SECUNDARIA_PENDIENTES = [
+        'enviada', 'vista', 'en_chat', 'aceptada', 'pendiente_pago',
+        'pagada_parcialmente', 'pagada', 'en_ejecucion'
+    ]
+
+    def get_tiene_ofertas_secundarias_pendientes(self, obj):
+        """True si hay ofertas secundarias que el usuario aún debe aceptar/rechazar o pagar"""
+        return any(
+            o.estado in self.ESTADOS_OFERTA_SECUNDARIA_PENDIENTES
+            for o in obj.ofertas.all()
+            if o.es_oferta_secundaria
+        )
+
+    def get_estado_efectivo(self, obj):
+        """Estado para UI: si hay ofertas secundarias pendientes, priorizar eso sobre completada/finalizada"""
+        if self.get_tiene_ofertas_secundarias_pendientes(obj):
+            return 'ofertas_adicionales_pendientes'
+        return obj.estado
+
+    def get_estado_display_efectivo(self, obj):
+        """Texto del estado efectivo para tags/badges: no mostrar Completada si hay ofertas por revisar"""
+        if self.get_tiene_ofertas_secundarias_pendientes(obj):
+            return 'Ofertas adicionales por revisar'
+        return self.get_estado_display(obj)
 
     def get_servicios_solicitados_detail(self, obj):
         """
