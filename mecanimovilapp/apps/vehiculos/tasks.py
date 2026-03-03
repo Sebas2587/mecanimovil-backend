@@ -309,8 +309,11 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
                             if not created:
                                 comp_salud.km_ultimo_servicio = km_para_servicio
                                 comp_salud.fecha_ultimo_servicio = checklist.fecha_finalizacion or timezone.now()
+                                comp_salud.salud_porcentaje = 100.0
+                                comp_salud.nivel_alerta = 'OPTIMO'
+                                comp_salud.requiere_servicio_inmediato = False
+                                comp_salud.mensaje_alerta = ''
                             
-                            comp_salud.calcular_salud(commit=False)
                             componentes_para_actualizar[comp_salud.id] = comp_salud
                     except Exception as e:
                         logger.warning(f"Error actualizando componente {nombre_config}: {str(e)}")
@@ -321,7 +324,7 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
                 list(componentes_para_actualizar.values()),
                 ['km_ultimo_servicio', 'fecha_ultimo_servicio',
                  'salud_porcentaje', 'nivel_alerta', 'km_estimados_restantes',
-                 'dias_estimados_restantes', 'requiere_servicio_inmediato', 'mensaje_alerta']
+                 'requiere_servicio_inmediato', 'mensaje_alerta']
             )
         
         # Recalcular de forma asíncrona
