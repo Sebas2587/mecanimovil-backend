@@ -149,6 +149,10 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
     IMPORTANTE: Esta función puede ejecutarse tanto con Celery (.delay()) 
     como directamente (sincrónicamente) como fallback.
     
+    Para checklists ya completados ANTES de que esta lógica esté correcta,
+    ejecutar: python manage.py procesar_checklists_historicos
+    (reprocesa todos los checklists completados y actualiza métricas).
+    
     Args:
         checklist_id: ID del checklist completado
         vehicle_id: ID del vehículo
@@ -237,50 +241,41 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
                             logger.warning(f"Error creando alerta de kilometraje: {str(e)}")
         
         # Mapeo de items del checklist a componentes de salud
-        # La clave es el nombre del ComponenteSalud (debe coincidir exactamente)
+        # La clave es el nombre del ComponenteSalud (debe coincidir exactamente).
+        # Cada valor es lista de subcadenas: si alguna está contenida en el nombre del ítem del catálogo, se asocia.
+        # Incluye nombres del catálogo (ej. populate_checklists_por_servicio) para máxima cobertura.
         mapeo_componentes = {
             'Aceite Motor': [
-                'Cambio de Aceite',
-                'Nivel de aceite',
-                'Aceite motor',
-                'Nivel Aceite',
-                'Nivel aceite',
-                'Aceite Motor',
+                'Cambio de Aceite', 'Nivel de aceite', 'Aceite motor', 'Nivel Aceite', 'Nivel aceite', 'Aceite Motor',
+                'Aceite Motor Reemplazado', 'Nivel Aceite Antes', 'Nivel Aceite Después', 'Nivel de Fluidos',
             ],
-            'Filtro de Aire': ['Filtro de Aire', 'Filtro aire'],
-            'Filtro de Aceite': ['Filtro de Aceite', 'Filtro aceite'],
-            'Bujías': ['Bujías', 'Bujias', 'Cambio de bujías'],
-            'Batería': ['Batería', 'Bateria', 'Cambio de batería'],
-            'Neumáticos': ['Neumáticos', 'Neumaticos', 'Llantas', 'Cambio de neumáticos'],
-            'Pastillas de Freno': ['Pastillas de Freno', 'Pastillas freno'],
-            'Discos de Freno': ['Discos de Freno', 'Discos freno'],
+            'Filtro de Aire': ['Filtro de Aire', 'Filtro aire', 'Filtro de Aire Reemplazado'],
+            'Filtro de Aceite': ['Filtro de Aceite', 'Filtro aceite', 'Filtro de Aceite Reemplazado'],
+            'Bujías': ['Bujías', 'Bujias', 'Cambio de bujías', 'Bujías Reemplazadas', 'Estado Cables Bujías'],
+            'Batería': ['Batería', 'Bateria', 'Cambio de batería', 'Batería Reemplazada', 'Estado de Batería'],
+            'Neumáticos': ['Neumáticos', 'Neumaticos', 'Llantas', 'Cambio de neumáticos', 'Estado de Neumáticos'],
+            'Pastillas de Freno': ['Pastillas de Freno', 'Pastillas freno', 'Estado Pastillas', 'Pastillas y Discos Reemplazados'],
+            'Discos de Freno': ['Discos de Freno', 'Discos freno', 'Estado Discos', 'Rectificado Realizado'],
             'Amortiguadores': [
-                'Amortiguadores',
-                'Suspensión',
-                'Amortiguador Reemplazado',
-                'Estado Amortiguadores',
+                'Amortiguadores', 'Suspensión', 'Amortiguador Reemplazado', 'Estado Amortiguadores',
             ],
             'Correa de Distribución': [
-                'Correa de Distribución',
-                'Correa distribución',
-                'Correa Reemplazada',
+                'Correa de Distribución', 'Correa distribución', 'Correa Reemplazada', 'Correa Distribución Revisada',
             ],
             'Líquido de Frenos': [
-                'Líquido de Frenos',
-                'Liquido frenos',
-                'Líquido Frenos Reemplazado',
+                'Líquido de Frenos', 'Liquido frenos', 'Líquido Frenos Reemplazado', 'Líquido Frenos Revisado', 'Estado de Frenos',
             ],
             'Refrigerante': [
-                'Refrigerante',
-                'Líquido refrigerante',
-                'Refrigerante Rellenado',
+                'Refrigerante', 'Líquido refrigerante', 'Refrigerante Rellenado', 'Refrigerante Revisado',
             ],
         }
         
         # Actualizar componentes basados en el checklist
         componentes_para_actualizar = {}
+        respuestas_count = 0
         
         for respuesta in checklist.respuestas.all():
+            respuestas_count += 1
             item_nombre = respuesta.item_template.catalog_item.nombre if respuesta.item_template.catalog_item else ''
             
             for nombre_config, items_relacionados in mapeo_componentes.items():
@@ -317,6 +312,12 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
                             componentes_para_actualizar[comp_salud.id] = comp_salud
                     except Exception as e:
                         logger.warning(f"Error actualizando componente {nombre_config}: {str(e)}")
+        
+        if not componentes_para_actualizar and respuestas_count > 0:
+            logger.warning(
+                f"Checklist {checklist_id}: {respuestas_count} respuestas pero ningún ítem coincidió con el mapeo de salud. "
+                f"Revisar nombres de ítems del catálogo o ejecutar: python manage.py procesar_checklists_historicos"
+            )
         
         # ✅ OPTIMIZACIÓN: bulk_update
         if componentes_para_actualizar:
@@ -561,44 +562,30 @@ def _procesar_checklists_historicos_vehiculo_interno(vehicle_id):
                 'kilometraje_actualizado': False
             }
         
-        # Mapeo de items del checklist a componentes de salud
-        # La clave es el nombre del ComponenteSalud (debe coincidir exactamente)
+        # Mapeo idéntico al de actualizar_salud_desde_checklist (misma lógica de coincidencia por nombre)
         mapeo_componentes = {
             'Aceite Motor': [
-                'Cambio de Aceite',
-                'Nivel de aceite',
-                'Aceite motor',
-                'Nivel Aceite',
-                'Nivel aceite',
-                'Aceite Motor',
+                'Cambio de Aceite', 'Nivel de aceite', 'Aceite motor', 'Nivel Aceite', 'Nivel aceite', 'Aceite Motor',
+                'Aceite Motor Reemplazado', 'Nivel Aceite Antes', 'Nivel Aceite Después', 'Nivel de Fluidos',
             ],
-            'Filtro de Aire': ['Filtro de Aire', 'Filtro aire'],
-            'Filtro de Aceite': ['Filtro de Aceite', 'Filtro aceite'],
-            'Bujías': ['Bujías', 'Bujias', 'Cambio de bujías'],
-            'Batería': ['Batería', 'Bateria', 'Cambio de batería'],
-            'Neumáticos': ['Neumáticos', 'Neumaticos', 'Llantas', 'Cambio de neumáticos'],
-            'Pastillas de Freno': ['Pastillas de Freno', 'Pastillas freno'],
-            'Discos de Freno': ['Discos de Freno', 'Discos freno'],
+            'Filtro de Aire': ['Filtro de Aire', 'Filtro aire', 'Filtro de Aire Reemplazado'],
+            'Filtro de Aceite': ['Filtro de Aceite', 'Filtro aceite', 'Filtro de Aceite Reemplazado'],
+            'Bujías': ['Bujías', 'Bujias', 'Cambio de bujías', 'Bujías Reemplazadas', 'Estado Cables Bujías'],
+            'Batería': ['Batería', 'Bateria', 'Cambio de batería', 'Batería Reemplazada', 'Estado de Batería'],
+            'Neumáticos': ['Neumáticos', 'Neumaticos', 'Llantas', 'Cambio de neumáticos', 'Estado de Neumáticos'],
+            'Pastillas de Freno': ['Pastillas de Freno', 'Pastillas freno', 'Estado Pastillas', 'Pastillas y Discos Reemplazados'],
+            'Discos de Freno': ['Discos de Freno', 'Discos freno', 'Estado Discos', 'Rectificado Realizado'],
             'Amortiguadores': [
-                'Amortiguadores',
-                'Suspensión',
-                'Amortiguador Reemplazado',
-                'Estado Amortiguadores',
+                'Amortiguadores', 'Suspensión', 'Amortiguador Reemplazado', 'Estado Amortiguadores',
             ],
             'Correa de Distribución': [
-                'Correa de Distribución',
-                'Correa distribución',
-                'Correa Reemplazada',
+                'Correa de Distribución', 'Correa distribución', 'Correa Reemplazada', 'Correa Distribución Revisada',
             ],
             'Líquido de Frenos': [
-                'Líquido de Frenos',
-                'Liquido frenos',
-                'Líquido Frenos Reemplazado',
+                'Líquido de Frenos', 'Liquido frenos', 'Líquido Frenos Reemplazado', 'Líquido Frenos Revisado', 'Estado de Frenos',
             ],
             'Refrigerante': [
-                'Refrigerante',
-                'Líquido refrigerante',
-                'Refrigerante Rellenado',
+                'Refrigerante', 'Líquido refrigerante', 'Refrigerante Rellenado', 'Refrigerante Revisado',
             ],
         }
         

@@ -18,7 +18,11 @@ logger = logging.getLogger(__name__)
 
 
 class Command(BaseCommand):
-    help = 'Procesa todos los checklists históricos completados y actualiza métricas de salud de vehículos'
+    help = (
+        'Procesa todos los checklists históricos completados y actualiza métricas de salud de vehículos. '
+        'Útil cuando hay checklists ya finalizados cuyas métricas no se actualizaron (ej. tras un fix en el signal). '
+        'Ejemplo: python manage.py procesar_checklists_historicos'
+    )
 
     def add_arguments(self, parser):
         parser.add_argument(
