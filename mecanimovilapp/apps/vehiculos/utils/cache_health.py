@@ -5,9 +5,12 @@ Usa Redis para cachear datos y evitar cálculos repetidos
 from django.core.cache import cache
 from django.conf import settings
 
+# Si el snapshot en BD es más viejo que esto, no servir solo desde cache sin revalidar
+HEALTH_SUMMARY_MAX_STALE_SECONDS = 25 * 3600  # 25 h: batch diario mantiene frescura
+
 # Tiempos de cache (en segundos)
 CACHE_TIMEOUTS = {
-    'health_summary': 300,        # 5 minutos - Resumen de salud
+    'health_summary': 600,        # 10 min: menos requests repetidas; staleness se valida por ultima_actualizacion
     'health_components': 600,      # 10 minutos - Lista de componentes
     'health_alerts': 180,          # 3 minutos - Alertas activas
     'health_calculation': 3600,    # 1 hora - Cálculo completo (solo si no hay cambios)

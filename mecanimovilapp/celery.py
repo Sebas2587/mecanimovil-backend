@@ -28,6 +28,7 @@ app.conf.task_routes = {
     'mecanimovilapp.apps.vehiculos.tasks.procesar_checklists_historicos_batch': {'queue': 'heavy'},
     'mecanimovilapp.apps.vehiculos.tasks.procesar_checklists_historicos_vehiculo': {'queue': 'heavy'},
     'mecanimovilapp.apps.vehiculos.tasks.recalcular_salud_vehiculos_batch': {'queue': 'heavy'},
+    'mecanimovilapp.apps.vehiculos.tasks.recalcular_salud_vehiculos_diario': {'queue': 'heavy'},
     # Tareas ligeras van a la cola 'default' (o se puede omitir)
     'mecanimovilapp.apps.vehiculos.tasks.calcular_salud_vehiculo_async': {'queue': 'default'},
     'mecanimovilapp.apps.vehiculos.tasks.actualizar_salud_desde_checklist': {'queue': 'default'},
@@ -74,8 +75,14 @@ from celery.schedules import crontab
 app.conf.beat_schedule = {
     'recalcular-salud-vehiculos': {
         'task': 'mecanimovilapp.apps.vehiculos.tasks.recalcular_salud_vehiculos_batch',
-        'schedule': crontab(hour='*/6', minute=0),  # Cada 6 horas
-        'options': {'queue': 'heavy'},  # Asignar a cola heavy
+        'schedule': crontab(hour='*/6', minute=0),  # Cada 6 horas (ligero)
+        'options': {'queue': 'heavy'},
+    },
+    # Diario: fuerza recálculo + invalida cache; usuario desconectado ve datos al día al abrir
+    'recalcular-salud-vehiculos-diario': {
+        'task': 'mecanimovilapp.apps.vehiculos.tasks.recalcular_salud_vehiculos_diario',
+        'schedule': crontab(hour=5, minute=15),  # 05:15 UTC (baja carga)
+        'options': {'queue': 'heavy'},
     },
     'verificar-pagos-pendientes': {
         'task': 'mecanimovilapp.apps.ordenes.tasks.verificar_pagos_pendientes',

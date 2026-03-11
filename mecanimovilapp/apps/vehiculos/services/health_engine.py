@@ -199,6 +199,10 @@ class HealthEngine:
                 'tiene_alertas_activas': tiene_alertas
             }
         )
+        # Marcar momento del recálculo (staleness / sync / marketplace coherente)
+        EstadoSaludVehiculo.objects.filter(pk=estado_general.pk).update(
+            ultima_actualizacion=timezone.now()
+        )
         
         # Sort report by criticality (ascending health)
         reporte_salud.sort(key=lambda x: x['salud'])

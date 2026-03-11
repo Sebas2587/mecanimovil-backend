@@ -118,7 +118,11 @@ def calcular_salud_vehiculo_async(self, vehicle_id, force_recalculate=False):
         
         # Calcular salud (esto puede tardar 1-2 segundos)
         estado = calcular_estado_salud_interno(vehicle_id)
-        
+        if not estado:
+            return None
+        # Refrescar snapshot por si ultima_actualizacion se actualizó vía update() en HealthEngine
+        estado.refresh_from_db()
+
         # Guardar en cache
         data = {
             'salud_general_porcentaje': estado.salud_general_porcentaje,
@@ -126,9 +130,15 @@ def calcular_salud_vehiculo_async(self, vehicle_id, force_recalculate=False):
             'componentes_atencion': estado.componentes_atencion,
             'componentes_urgentes': estado.componentes_urgentes,
             'componentes_criticos': estado.componentes_criticos,
-            'fecha_calculo': estado.fecha_calculo.isoformat(),
+            'fecha_calculo': estado.fecha_calculo.isoformat() if estado.fecha_calculo else None,
+            'ultima_actualizacion': (
+                estado.ultima_actualizacion.isoformat()
+                if getattr(estado, 'ultima_actualizacion', None) else None
+            ),
         }
         
+        # Tras recálculo forzado, invalidar resumen para que el próximo GET reconstruya desde BD
+        invalidate_vehicle_health_cache(vehicle_id)
         set_cached_health(vehicle_id, data, 'health_calculation', timeout=3600)
         
         logger.info(f"Salud de vehículo {vehicle_id} calculada exitosamente")
@@ -384,32 +394,69 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
 @shared_task(queue='heavy', time_limit=600, soft_time_limit=300)
 def recalcular_salud_vehiculos_batch():
     """
-    Tarea periódica para recalcular salud de vehículos
-    Se ejecuta cada 6 horas (no en cada request)
-    Solo recalcula vehículos con actividad reciente
-    
-    TAREA PESADA: Asignada a cola 'heavy' con límites de tiempo
+    Recálculo periódico ligero: vehículos con actividad reciente.
+    Usa force_recalculate=False para no martillar Redis si el worker ya corrió hace poco.
+    """
+    return _recalcular_salud_vehiculos_core(
+        dias_actividad=30,
+        force_recalculate=False,
+        incluir_publicados=False,
+        stagger_seconds=0,
+    )
+
+
+@shared_task(queue='heavy', time_limit=1800, soft_time_limit=1200)
+def recalcular_salud_vehiculos_diario():
+    """
+    Recálculo diario: asegura métricas frescas aunque el usuario no abra la app.
+    Incluye vehículos publicados en marketplace (misma fuente BD que listados).
+    force_recalculate=True + invalidación en tarea → DB y serializers marketplace coherentes.
+    Encola con countdown escalonado para no saturar la cola default.
+    """
+    return _recalcular_salud_vehiculos_core(
+        dias_actividad=365,
+        force_recalculate=True,
+        incluir_publicados=True,
+        stagger_seconds=3,
+    )
+
+
+def _recalcular_salud_vehiculos_core(
+    dias_actividad=30,
+    force_recalculate=False,
+    incluir_publicados=False,
+    stagger_seconds=0,
+):
+    """
+    Núcleo compartido: arma el conjunto de vehículos y encola calcular_salud_vehiculo_async.
     """
     from django.utils import timezone
     from datetime import timedelta
+    from django.db.models import Q
     from .models import Vehiculo
-    
+
     try:
-        # Solo recalcular vehículos que han tenido actividad reciente (últimos 30 días)
-        fecha_limite = timezone.now() - timedelta(days=30)
-        
-        vehiculos = Vehiculo.objects.filter(
-            fecha_actualizacion__gte=fecha_limite
-        ).values_list('id', flat=True)
-        
+        fecha_limite = timezone.now() - timedelta(days=dias_actividad)
+        q = Q(fecha_actualizacion__gte=fecha_limite)
+        if incluir_publicados:
+            q |= Q(is_published=True)
+        vehiculos = Vehiculo.objects.filter(q).values_list('id', flat=True).distinct()
+        ids = list(vehiculos)
         count = 0
-        for vehicle_id in vehiculos:
-            calcular_salud_vehiculo_async.delay(vehicle_id, force_recalculate=False)
+        for i, vehicle_id in enumerate(ids):
+            if stagger_seconds and i > 0:
+                calcular_salud_vehiculo_async.apply_async(
+                    args=[vehicle_id, force_recalculate],
+                    countdown=min(i * stagger_seconds, 3600),
+                )
+            else:
+                calcular_salud_vehiculo_async.delay(vehicle_id, force_recalculate)
             count += 1
-        
-        logger.info(f"Recálculo batch iniciado para {count} vehículos")
+        logger.info(
+            f"Recálculo batch: {count} vehículos encolados "
+            f"(force={force_recalculate}, publicados={incluir_publicados})"
+        )
         return count
-        
     except Exception as e:
         logger.error(f"Error en recálculo batch: {str(e)}")
         return 0

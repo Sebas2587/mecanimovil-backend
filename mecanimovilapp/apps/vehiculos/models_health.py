@@ -103,7 +103,13 @@ class EstadoSaludVehiculo(models.Model):
     salud_general_porcentaje = models.FloatField(validators=[MinValueValidator(0), MaxValueValidator(100)])
     kilometraje_snapshot = models.PositiveIntegerField()
     fecha_calculo = models.DateTimeField(auto_now_add=True)
-    
+    # Se actualiza en cada recálculo (HealthEngine) para saber si cache/lectura está obsoleto
+    ultima_actualizacion = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='Última vez que HealthEngine actualizó este snapshot'
+    )
+
     # Stats
     total_componentes_evaluados = models.PositiveIntegerField(default=0)
     componentes_optimos = models.PositiveIntegerField(default=0)

@@ -24,7 +24,8 @@ from .serializers_health import (
 from .utils.cache_health import (
     get_cached_health,
     set_cached_health,
-    invalidate_vehicle_health_cache
+    invalidate_vehicle_health_cache,
+    HEALTH_SUMMARY_MAX_STALE_SECONDS,
 )
 
 # Verificar si Celery está disponible y importar tarea
@@ -100,11 +101,28 @@ class VehicleHealthViewSet(viewsets.ReadOnlyModelViewSet):
                     status=status.HTTP_404_NOT_FOUND
                 )
             
-            # PASO 1: Intentar obtener desde cache (MUY RÁPIDO - <10ms)
+            # PASO 1: Cache solo si el snapshot no está obsoleto (evita días sin conectar = datos viejos)
             cached_data = get_cached_health(vehicle_id, 'health_summary')
             if cached_data:
-                logger.debug(f"Cache HIT para vehículo {vehicle_id}")
-                return Response(cached_data)
+                stale = True
+                try:
+                    from datetime import datetime, timezone as dt_tz
+                    ts = cached_data.get('ultima_actualizacion') or cached_data.get('fecha_calculo')
+                    if ts:
+                        if isinstance(ts, str) and ts.endswith('Z'):
+                            ts = ts.replace('Z', '+00:00')
+                        parsed = datetime.fromisoformat(ts)
+                        if parsed.tzinfo is None:
+                            parsed = parsed.replace(tzinfo=dt_tz.utc)
+                        age = (datetime.now(dt_tz.utc) - parsed).total_seconds()
+                        stale = age > HEALTH_SUMMARY_MAX_STALE_SECONDS
+                except Exception:
+                    stale = True  # Ante duda, revalidar desde BD
+                if not stale:
+                    logger.debug(f"Cache HIT para vehículo {vehicle_id}")
+                    return Response(cached_data)
+                invalidate_vehicle_health_cache(vehicle_id)
+                logger.info(f"Cache STALE para vehículo {vehicle_id}, revalidando desde BD")
             
             # PASO 2: Obtener datos básicos desde DB (1 query optimizada)
             estado = EstadoSaludVehiculo.objects.filter(
@@ -182,6 +200,7 @@ class VehicleHealthViewSet(viewsets.ReadOnlyModelViewSet):
                 logger.error(f"Error serializando alertas: {str(e)}")
                 alertas_data = []
             
+            ultima = getattr(estado, 'ultima_actualizacion', None)
             data = {
                 'salud_general_porcentaje': estado.salud_general_porcentaje or 0,
                 'componentes_optimos': estado.componentes_optimos or 0,
@@ -193,6 +212,7 @@ class VehicleHealthViewSet(viewsets.ReadOnlyModelViewSet):
                 'componentes': componentes_data,
                 'alertas': alertas_data,
                 'fecha_calculo': estado.fecha_calculo.isoformat() if estado.fecha_calculo else None,
+                'ultima_actualizacion': ultima.isoformat() if ultima else None,
             }
             
             # PASO 6: Guardar en cache para próximas requests
@@ -214,7 +234,58 @@ class VehicleHealthViewSet(viewsets.ReadOnlyModelViewSet):
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-    
+
+    @action(detail=False, methods=['post'], url_path='vehicle/(?P<vehicle_id>[^/.]+)/sync')
+    def vehicle_health_sync(self, request, vehicle_id=None):
+        """
+        Sincronizar métricas de salud para este vehículo (botón en app).
+        Invalida cache, encola recálculo forzado. Respuesta 202: el cliente puede
+        reconsultar GET vehicle_health tras unos segundos.
+        Marketplace: los serializers leen ComponenteSaludVehiculo/EstadoSaludVehiculo
+        desde BD; al terminar la tarea, listados/detalle muestran valores actualizados
+        (no quedan "desactualizados" respecto al dueño: es la misma fuente).
+        """
+        user = request.user
+        from .models import Vehiculo
+        if not hasattr(user, 'cliente'):
+            return Response(
+                {'error': 'Usuario no tiene un cliente asociado'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        try:
+            Vehiculo.objects.get(id=vehicle_id, cliente=user.cliente)
+        except Vehiculo.DoesNotExist:
+            return Response(
+                {'error': 'Vehículo no encontrado o no tienes permisos'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        invalidate_vehicle_health_cache(vehicle_id)
+        encolado = False
+        if CELERY_AVAILABLE and calcular_salud_vehiculo_async:
+            try:
+                calcular_salud_vehiculo_async.delay(int(vehicle_id), force_recalculate=True)
+                encolado = True
+            except Exception as e:
+                logger.warning(f"sync salud: Celery no disponible: {e}")
+        if not encolado:
+            try:
+                from .tasks import calcular_estado_salud_interno
+                calcular_estado_salud_interno(int(vehicle_id))
+            except Exception as e:
+                logger.error(f"sync salud síncrono falló: {e}", exc_info=True)
+                return Response(
+                    {'error': 'No se pudo actualizar ahora. Intenta de nuevo.'},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE
+                )
+        return Response(
+            {
+                'ok': True,
+                'mensaje': 'Actualización iniciada. Vuelve a cargar la pantalla en unos segundos.',
+                'async': encolado,
+            },
+            status=status.HTTP_202_ACCEPTED
+        )
+
     @action(detail=False, methods=['get'], url_path='vehicle/(?P<vehicle_id>[^/.]+)/components')
     def vehicle_components(self, request, vehicle_id=None):
         """
