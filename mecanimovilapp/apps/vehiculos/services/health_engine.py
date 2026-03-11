@@ -119,19 +119,58 @@ class HealthEngine:
             
             # Kilometraje recorrido desde último servicio
             km_recorridos = max(0, vehiculo.kilometraje - comp_estado.km_ultimo_servicio)
-            
-            # Parámetros Weibull
-            eta = float(regla_aplicada.vida_util_km) # Scale Parameter (Vida característica)
-            beta = float(regla_aplicada.beta) # Shape Parameter
-            
-            # Cálculo de Confiabilidad R(t) = exp(-(t/eta)^beta)
-            # R(t) representa la probabilidad de que el componente siga funcionando
-            # Lo usamos como proxy de "Salud %"
+
+            # Parámetros Weibull (eje km)
+            eta = float(regla_aplicada.vida_util_km)  # Scale Parameter (Vida característica)
+            beta = float(regla_aplicada.beta)  # Shape Parameter
+
+            # Salud por km: R(km) = exp(-(km_recorridos/eta)^beta)
             if eta > 0:
-                reliability = math.exp(-((km_recorridos / eta) ** beta))
-                salud_pct = reliability * 100.0
+                salud_km = math.exp(-((km_recorridos / eta) ** beta)) * 100.0
             else:
-                salud_pct = 0.0
+                salud_km = 0.0
+
+            salud_pct = salud_km
+            months_elapsed = None
+            intervalo_meses = getattr(regla_aplicada, 'intervalo_meses', None)
+
+            # Si regla específica no trae intervalo_meses, intentar genérica solo para el eje tiempo
+            if not intervalo_meses and es_especifica:
+                try:
+                    reg_gen = ReglaMantenimientoGenerica.objects.get(
+                        componente=comp_maestro, tipo_motor=tipo_motor_norm
+                    )
+                    intervalo_meses = getattr(reg_gen, 'intervalo_meses', None)
+                except ReglaMantenimientoGenerica.DoesNotExist:
+                    pass
+
+            # Eje tiempo: misma forma Weibull sobre "meses desde último servicio" vs intervalo_meses
+            # Así el % baja con el paso de los días aunque el km no suba (ej. aceite 6 meses).
+            if intervalo_meses and intervalo_meses > 0 and comp_estado.fecha_ultimo_servicio:
+                fecha_ref = comp_estado.fecha_ultimo_servicio
+                if timezone.is_naive(fecha_ref):
+                    fecha_ref = timezone.make_aware(fecha_ref)
+                delta = timezone.now() - fecha_ref
+                months_elapsed = max(0.0, delta.days / 30.44)
+                salud_tiempo = math.exp(
+                    -((months_elapsed / float(intervalo_meses)) ** beta)
+                ) * 100.0
+                salud_pct = min(salud_km, salud_tiempo)
+
+            # meses_critico solo en genérica: umbral duro opcional
+            meses_critico = None
+            if not es_especifica:
+                meses_critico = getattr(regla_aplicada, 'meses_critico', None)
+            else:
+                try:
+                    reg_gen = ReglaMantenimientoGenerica.objects.get(
+                        componente=comp_maestro, tipo_motor=tipo_motor_norm
+                    )
+                    meses_critico = getattr(reg_gen, 'meses_critico', None)
+                except ReglaMantenimientoGenerica.DoesNotExist:
+                    pass
+            if meses_critico and months_elapsed is not None and months_elapsed >= meses_critico:
+                salud_pct = min(salud_pct, 25.0)
 
             # Determinar Status
             if salud_pct >= 70:
@@ -165,18 +204,26 @@ class HealthEngine:
                 comp_estado.mensaje_alerta = f"Atención requerida: {comp_maestro.nombre} al {round(salud_pct)}%."
             else:
                 comp_estado.mensaje_alerta = ""
+            if months_elapsed is not None and intervalo_meses and salud_pct < salud_km - 0.5:
+                extra = f" Intervalo por tiempo (~{int(months_elapsed)} meses desde último servicio)."
+                comp_estado.mensaje_alerta = (comp_estado.mensaje_alerta or "").strip() + extra
                 
             comp_estado.save()
             
-            reporte_salud.append({
+            reporte_item = {
                 'componente': comp_maestro.nombre,
                 'slug': comp_maestro.slug,
                 'salud': round(salud_pct, 1),
                 'status': status,
                 'vida_util_total': int(eta),
                 'km_recorridos': km_recorridos,
-                'es_especifica': es_especifica
-            })
+                'es_especifica': es_especifica,
+            }
+            if months_elapsed is not None:
+                reporte_item['meses_desde_servicio'] = round(months_elapsed, 1)
+            if intervalo_meses:
+                reporte_item['intervalo_meses_regla'] = int(intervalo_meses)
+            reporte_salud.append(reporte_item)
 
         # --------------------------------------------------------
         # Actualizar Snapshot General (EstadoSaludVehiculo)

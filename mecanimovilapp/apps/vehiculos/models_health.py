@@ -57,7 +57,14 @@ class ReglaMantenimientoGenerica(models.Model):
     
     vida_util_km = models.PositiveIntegerField(help_text="Vida útil estimada en Kilómetros (ETA)")
     beta = models.FloatField(default=2.0, help_text="Factor de forma Weibull (2.0 = desgaste lineal/normal)")
-    
+    # Intervalo por tiempo (ej. aceite cada 6 meses aunque no se alcance el km). Si se define, la salud
+    # usa el mínimo entre desgaste por km y por tiempo desde fecha_ultimo_servicio.
+    intervalo_meses = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Meses recomendados entre servicios (ej. 6). Opcional; si null, solo aplica eje km.",
+    )
+
     # Factores adicionales opcionales
     meses_critico = models.PositiveIntegerField(null=True, blank=True, help_text="Límite en meses (opcional)")
 
@@ -81,7 +88,12 @@ class ReglaMantenimientoEspecifica(models.Model):
     
     vida_util_km = models.PositiveIntegerField(help_text="Vida útil específica en Kilómetros")
     beta = models.FloatField(default=2.0, help_text="Factor de forma Weibull")
-    
+    intervalo_meses = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Meses entre servicios para este modelo; si null, hereda solo eje km o usar regla genérica.",
+    )
+
     class Meta:
         verbose_name = 'Regla Mantenimiento Específica'
         verbose_name_plural = 'Reglas Mantenimiento Específicas'

@@ -163,13 +163,13 @@ class ComponenteSaludAdmin(admin.ModelAdmin):
 
 @admin.register(ReglaMantenimientoGenerica)
 class ReglaMantenimientoGenericaAdmin(admin.ModelAdmin):
-    list_display = ['componente', 'tipo_motor', 'vida_util_km', 'beta']
+    list_display = ['componente', 'tipo_motor', 'vida_util_km', 'intervalo_meses', 'beta']
     list_filter = ['tipo_motor']
     search_fields = ['componente__nombre']
 
 @admin.register(ReglaMantenimientoEspecifica)
 class ReglaMantenimientoEspecificaAdmin(admin.ModelAdmin):
-    list_display = ['componente', 'marca', 'modelo', 'vida_util_km', 'beta']
+    list_display = ['componente', 'marca', 'modelo', 'vida_util_km', 'intervalo_meses', 'beta']
     list_filter = ['marca']
     search_fields = ['componente__nombre', 'marca__nombre', 'modelo__nombre']
 
