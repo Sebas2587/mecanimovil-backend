@@ -174,11 +174,11 @@ class VehicleHealthViewSet(viewsets.ReadOnlyModelViewSet):
                     }, status=status.HTTP_202_ACCEPTED)
             
             # PASO 4: Cargar componentes y alertas con prefetch (solo 2 queries más)
-            componentes = ComponenteSaludVehiculo.objects.filter(
-                vehiculo_id=vehicle_id
-            ).select_related(
-                'componente'
-            )[:20]  # Limitar a 20 componentes (paginación implícita)
+            componentes = (
+                ComponenteSaludVehiculo.objects.filter(vehiculo_id=vehicle_id)
+                .select_related('componente')
+                .prefetch_related('componente__servicios_asociados')[:20]
+            )
             
             alertas = AlertaMantenimiento.objects.filter(
                 vehiculo_id=vehicle_id,
@@ -285,9 +285,11 @@ class VehicleHealthViewSet(viewsets.ReadOnlyModelViewSet):
         invalidate_vehicle_health_cache(vehicle_id)
         estado = EstadoSaludVehiculo.objects.filter(vehiculo_id=vehicle_id).select_related('vehiculo').first()
         if estado:
-            componentes = ComponenteSaludVehiculo.objects.filter(
-                vehiculo_id=vehicle_id
-            ).select_related('componente')[:20]
+            componentes = (
+                ComponenteSaludVehiculo.objects.filter(vehiculo_id=vehicle_id)
+                .select_related('componente')
+                .prefetch_related('componente__servicios_asociados')[:20]
+            )
             try:
                 componentes_data = ComponenteSaludVehiculoSerializer(componentes, many=True).data
             except Exception:
@@ -367,9 +369,13 @@ class VehicleHealthViewSet(viewsets.ReadOnlyModelViewSet):
         page_size = int(request.query_params.get('page_size', 20))
         offset = (page - 1) * page_size
         
-        componentes = ComponenteSaludVehiculo.objects.filter(
-            vehiculo_id=vehicle_id
-        ).select_related('componente')[offset:offset + page_size]
+        componentes = (
+            ComponenteSaludVehiculo.objects.filter(vehiculo_id=vehicle_id)
+            .select_related('componente')
+            .prefetch_related('componente__servicios_asociados')[
+                offset : offset + page_size
+            ]
+        )
         
         data = ComponenteSaludVehiculoSerializer(componentes, many=True).data
         

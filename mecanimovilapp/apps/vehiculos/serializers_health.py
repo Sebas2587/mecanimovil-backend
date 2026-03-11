@@ -43,7 +43,9 @@ class ComponenteSaludVehiculoSerializer(serializers.ModelSerializer):
         source='componente.icono',
         read_only=True
     )
-    
+    # Servicios ligados al componente maestro (Admin: ComponenteSalud.servicios_asociados)
+    servicios_asociados = serializers.SerializerMethodField()
+
     class Meta:
         model = ComponenteSaludVehiculo
         fields = (
@@ -51,8 +53,26 @@ class ComponenteSaludVehiculoSerializer(serializers.ModelSerializer):
             'salud_porcentaje', 'nivel_alerta', 'nivel_alerta_display', 'color',
             'km_ultimo_servicio', 'fecha_ultimo_servicio', 'km_estimados_restantes',
             'requiere_servicio_inmediato', 'mensaje_alerta', 'nombre', 'icono',
-            'ultima_actualizacion'
+            'ultima_actualizacion', 'servicios_asociados'
         )
+
+    def get_servicios_asociados(self, obj):
+        """Lista ligera para cards en modal (id, nombre, descripcion, precio_referencia)."""
+        if not obj.componente_id:
+            return []
+        try:
+            qs = obj.componente.servicios_asociados.all()
+        except Exception:
+            return []
+        out = []
+        for s in qs:
+            out.append({
+                'id': s.id,
+                'nombre': s.nombre,
+                'descripcion': (s.descripcion or '')[:300],
+                'precio_referencia': float(s.precio_referencia) if s.precio_referencia is not None else None,
+            })
+        return out
     
     def get_color(self, obj):
         """

@@ -27,6 +27,15 @@ class ComponenteSalud(models.Model):
     fecha_creacion = models.DateTimeField(auto_now_add=True)
     fecha_actualizacion = models.DateTimeField(auto_now=True)
 
+    # Servicios que el usuario puede agendar cuando este componente requiere atención
+    # (ej. componente "Bujías" → servicio "Cambio de bujías"). Configurable en Admin.
+    servicios_asociados = models.ManyToManyField(
+        Servicio,
+        blank=True,
+        related_name='componentes_salud',
+        help_text='Servicios sugeridos al tocar este componente en salud del vehículo (modal en app).',
+    )
+
     class Meta:
         verbose_name = 'Componente de Salud (Maestro)'
         verbose_name_plural = 'Componentes de Salud (Maestro)'

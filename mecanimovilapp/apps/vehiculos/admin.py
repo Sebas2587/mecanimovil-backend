@@ -160,6 +160,16 @@ class ComponenteSaludAdmin(admin.ModelAdmin):
     list_display = ['nombre', 'slug', 'es_critico', 'icono', 'orden_visualizacion']
     search_fields = ['nombre', 'slug']
     ordering = ['orden_visualizacion']
+    filter_horizontal = ['servicios_asociados']
+    fieldsets = (
+        (None, {
+            'fields': ('nombre', 'slug', 'descripcion', 'es_critico', 'icono', 'orden_visualizacion'),
+        }),
+        ('Servicios en app (modal salud)', {
+            'fields': ('servicios_asociados',),
+            'description': 'Al tocar este componente en salud del vehículo, se muestran estos servicios para agendar directo.',
+        }),
+    )
 
 @admin.register(ReglaMantenimientoGenerica)
 class ReglaMantenimientoGenericaAdmin(admin.ModelAdmin):
