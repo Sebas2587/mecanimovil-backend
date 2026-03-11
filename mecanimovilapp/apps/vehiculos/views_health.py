@@ -119,8 +119,20 @@ class VehicleHealthViewSet(viewsets.ReadOnlyModelViewSet):
                 except Exception:
                     stale = True  # Ante duda, revalidar desde BD
                 if not stale:
-                    logger.debug(f"Cache HIT para vehículo {vehicle_id}")
-                    return Response(cached_data)
+                    # Cache anterior sin servicios_asociados (modal) → forzar rebuild
+                    comp = cached_data.get('componentes') or []
+                    if comp and isinstance(comp, list) and len(comp) > 0:
+                        if 'servicios_asociados' not in comp[0]:
+                            invalidate_vehicle_health_cache(vehicle_id)
+                            logger.info(
+                                f"Cache sin servicios_asociados para vehículo {vehicle_id}, revalidando"
+                            )
+                        else:
+                            logger.debug(f"Cache HIT para vehículo {vehicle_id}")
+                            return Response(cached_data)
+                    else:
+                        logger.debug(f"Cache HIT para vehículo {vehicle_id}")
+                        return Response(cached_data)
                 invalidate_vehicle_health_cache(vehicle_id)
                 logger.info(f"Cache STALE para vehículo {vehicle_id}, revalidando desde BD")
             

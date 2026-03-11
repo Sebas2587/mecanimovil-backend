@@ -122,22 +122,43 @@ class VehiculoSerializer(serializers.ModelSerializer):
         return 0
 
     def get_health_report(self, obj):
-        # Construir reporte basado en componentes persistidos
-        # Esto es más rápido que recalcular todo el motor
+        # Construir reporte basado en componentes persistidos (misma info que necesita el modal).
         from .models_health import ComponenteSaludVehiculo
-        
-        comps = ComponenteSaludVehiculo.objects.filter(vehiculo=obj).select_related('componente')
+
+        comps = (
+            ComponenteSaludVehiculo.objects.filter(vehiculo=obj)
+            .select_related('componente')
+            .prefetch_related('componente__servicios_asociados')
+        )
         report = []
         for c in comps:
-             report.append({
+            servicios_asociados = []
+            try:
+                for s in c.componente.servicios_asociados.all():
+                    servicios_asociados.append({
+                        'id': s.id,
+                        'nombre': s.nombre,
+                        'descripcion': (s.descripcion or '')[:300],
+                        'precio_referencia': float(s.precio_referencia) if s.precio_referencia is not None else None,
+                    })
+            except Exception:
+                pass
+            report.append({
+                'id': c.id,
                 'componente': c.componente.nombre,
+                'componente_id': c.componente_id,
+                'nombre': c.componente.nombre,
                 'slug': c.componente.slug,
                 'salud': c.salud_porcentaje,
+                'salud_porcentaje': c.salud_porcentaje,
                 'status': c.nivel_alerta,
+                'nivel_alerta': c.nivel_alerta,
+                'km_estimados_restantes': c.km_estimados_restantes,
                 'vida_util_total': c.vida_util_proyectada,
                 'es_especifica': c.es_regla_especifica,
-                'mensaje_alerta': c.mensaje_alerta
-             })
+                'mensaje_alerta': c.mensaje_alerta or '',
+                'servicios_asociados': servicios_asociados,
+            })
         return report
 
     def get_active_requests_count(self, obj):
