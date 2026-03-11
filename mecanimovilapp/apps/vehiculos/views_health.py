@@ -260,6 +260,7 @@ class VehicleHealthViewSet(viewsets.ReadOnlyModelViewSet):
                 status=status.HTTP_404_NOT_FOUND
             )
         invalidate_vehicle_health_cache(vehicle_id)
+        logger.info(f"sync salud: vehículo {vehicle_id} invalidado, encolando recálculo forzado")
         encolado = False
         if CELERY_AVAILABLE and calcular_salud_vehiculo_async:
             try:
