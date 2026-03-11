@@ -260,31 +260,73 @@ class VehicleHealthViewSet(viewsets.ReadOnlyModelViewSet):
                 status=status.HTTP_404_NOT_FOUND
             )
         invalidate_vehicle_health_cache(vehicle_id)
-        logger.info(f"sync salud: vehículo {vehicle_id} invalidado, encolando recálculo forzado")
-        encolado = False
-        if CELERY_AVAILABLE and calcular_salud_vehiculo_async:
+        logger.info(f"sync salud: vehículo {vehicle_id} invalidado, recálculo forzado")
+
+        # Siempre recalcular en este request para que GET siguiente (o el mismo cliente
+        # al refrescar) vea ya BD actualizada. Solo encolar Celery adicional para pushes
+        # duplicaría trabajo; la tasync invalida cache otra vez al terminar.
+        try:
+            from .tasks import calcular_estado_salud_interno
+            calcular_estado_salud_interno(int(vehicle_id))
+        except Exception as e:
+            logger.error(f"sync salud síncrono falló: {e}", exc_info=True)
+            # Fallback: encolar por si el síncrono falló por timeout/memoria
+            if CELERY_AVAILABLE and calcular_salud_vehiculo_async:
+                try:
+                    calcular_salud_vehiculo_async.delay(int(vehicle_id), force_recalculate=True)
+                except Exception as e2:
+                    logger.warning(f"sync salud: Celery fallback falló: {e2}")
+            return Response(
+                {'error': 'No se pudo actualizar ahora. Intenta de nuevo.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+
+        # Refrescar resumen desde BD y devolverlo para que la app no dependa de "esperar al worker"
+        invalidate_vehicle_health_cache(vehicle_id)
+        estado = EstadoSaludVehiculo.objects.filter(vehiculo_id=vehicle_id).select_related('vehiculo').first()
+        if estado:
+            componentes = ComponenteSaludVehiculo.objects.filter(
+                vehiculo_id=vehicle_id
+            ).select_related('componente')[:20]
             try:
-                calcular_salud_vehiculo_async.delay(int(vehicle_id), force_recalculate=True)
-                encolado = True
-            except Exception as e:
-                logger.warning(f"sync salud: Celery no disponible: {e}")
-        if not encolado:
-            try:
-                from .tasks import calcular_estado_salud_interno
-                calcular_estado_salud_interno(int(vehicle_id))
-            except Exception as e:
-                logger.error(f"sync salud síncrono falló: {e}", exc_info=True)
-                return Response(
-                    {'error': 'No se pudo actualizar ahora. Intenta de nuevo.'},
-                    status=status.HTTP_503_SERVICE_UNAVAILABLE
-                )
+                componentes_data = ComponenteSaludVehiculoSerializer(componentes, many=True).data
+            except Exception:
+                componentes_data = []
+            ultima = getattr(estado, 'ultima_actualizacion', None)
+            payload = {
+                'ok': True,
+                'mensaje': 'Salud actualizada.',
+                'async': False,
+                'salud_general_porcentaje': estado.salud_general_porcentaje or 0,
+                'componentes_optimos': estado.componentes_optimos or 0,
+                'componentes_atencion': estado.componentes_atencion or 0,
+                'componentes_urgentes': estado.componentes_urgentes or 0,
+                'componentes_criticos': estado.componentes_criticos or 0,
+                'ultima_actualizacion': ultima.isoformat() if ultima else None,
+                'componentes': componentes_data,
+            }
+            set_cached_health(vehicle_id, {
+                'salud_general_porcentaje': payload['salud_general_porcentaje'],
+                'componentes_optimos': payload['componentes_optimos'],
+                'componentes_atencion': payload['componentes_atencion'],
+                'componentes_urgentes': payload['componentes_urgentes'],
+                'componentes_criticos': payload['componentes_criticos'],
+                'fecha_calculo': estado.fecha_calculo.isoformat() if estado.fecha_calculo else None,
+                'ultima_actualizacion': payload['ultima_actualizacion'],
+                'tiene_alertas_activas': estado.tiene_alertas_activas or False,
+                'costo_estimado_mantenimiento': float(estado.costo_estimado_mantenimiento or 0),
+                'componentes': componentes_data,
+                'alertas': [],
+            }, 'health_summary')
+            return Response(payload, status=status.HTTP_200_OK)
+
         return Response(
             {
                 'ok': True,
-                'mensaje': 'Actualización iniciada. Vuelve a cargar la pantalla en unos segundos.',
-                'async': encolado,
+                'mensaje': 'Recálculo ejecutado; vuelve a cargar la pantalla.',
+                'async': False,
             },
-            status=status.HTTP_202_ACCEPTED
+            status=status.HTTP_200_OK
         )
 
     @action(detail=False, methods=['get'], url_path='vehicle/(?P<vehicle_id>[^/.]+)/components')

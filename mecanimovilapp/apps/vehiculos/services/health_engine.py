@@ -1,5 +1,6 @@
 import math
 import logging
+from datetime import timedelta
 from django.utils import timezone
 from ..models_health import (
     ComponenteSalud, 
@@ -144,18 +145,75 @@ class HealthEngine:
                 except ReglaMantenimientoGenerica.DoesNotExist:
                     pass
 
-            # Eje tiempo: misma forma Weibull sobre "meses desde último servicio" vs intervalo_meses
-            # Así el % baja con el paso de los días aunque el km no suba (ej. aceite 6 meses).
-            if intervalo_meses and intervalo_meses > 0 and comp_estado.fecha_ultimo_servicio:
-                fecha_ref = comp_estado.fecha_ultimo_servicio
-                if timezone.is_naive(fecha_ref):
-                    fecha_ref = timezone.make_aware(fecha_ref)
-                delta = timezone.now() - fecha_ref
-                months_elapsed = max(0.0, delta.days / 30.44)
-                salud_tiempo = math.exp(
-                    -((months_elapsed / float(intervalo_meses)) ** beta)
-                ) * 100.0
-                salud_pct = min(salud_km, salud_tiempo)
+            # Eje tiempo: misma forma Weibull sobre "meses desde último servicio" vs intervalo_meses.
+            # Sin fecha_ultimo_servicio el eje tiempo no aplicaba → métricas no cambiaban solo por tiempo.
+            # Anclaje cuando hay intervalo_meses pero fecha null (checklist nunca matcheó o fila antigua):
+            # - km_recorridos == 0 → último servicio "en este km" ahora (decae a partir de hoy).
+            # - km_recorridos > 0 → proxy: fecha = ahora - fracción del intervalo acorde al desgaste km/eta
+            #   para que el primer cálculo sea coherente; los días siguientes el tiempo sigue corriendo.
+            if intervalo_meses and intervalo_meses > 0:
+                if not comp_estado.fecha_ultimo_servicio:
+                    now = timezone.now()
+                    if km_recorridos <= 0:
+                        comp_estado.fecha_ultimo_servicio = now
+                        ComponenteSaludVehiculo.objects.filter(pk=comp_estado.pk).update(
+                            fecha_ultimo_servicio=now
+                        )
+                        comp_estado.fecha_ultimo_servicio = now
+                        logger.info(
+                            "HealthEngine: anclaje fecha_ultimo_servicio=now (km_recorridos=0) "
+                            "componente=%s vehiculo=%s intervalo_meses=%s",
+                            comp_maestro.nombre,
+                            vehiculo_id,
+                            intervalo_meses,
+                        )
+                    elif eta > 0:
+                        # Fracción de vida km consumida → misma fracción del intervalo en meses (tope 2x intervalo)
+                        frac = min(2.0, km_recorridos / eta)
+                        months_proxy = frac * float(intervalo_meses)
+                        anchor = now - timedelta(days=months_proxy * 30.44)
+                        if timezone.is_naive(anchor):
+                            anchor = timezone.make_aware(anchor)
+                        ComponenteSaludVehiculo.objects.filter(pk=comp_estado.pk).update(
+                            fecha_ultimo_servicio=anchor
+                        )
+                        comp_estado.fecha_ultimo_servicio = anchor
+                        logger.info(
+                            "HealthEngine: anclaje fecha_ultimo_servicio proxy meses=%.2f componente=%s "
+                            "vehiculo=%s intervalo_meses=%s km_recorridos=%s",
+                            months_proxy,
+                            comp_maestro.nombre,
+                            vehiculo_id,
+                            intervalo_meses,
+                            km_recorridos,
+                        )
+                    else:
+                        logger.warning(
+                            "HealthEngine: intervalo_meses=%s pero sin fecha y eta=0; eje tiempo omitido "
+                            "componente=%s vehiculo=%s",
+                            intervalo_meses,
+                            comp_maestro.nombre,
+                            vehiculo_id,
+                        )
+
+                if comp_estado.fecha_ultimo_servicio:
+                    fecha_ref = comp_estado.fecha_ultimo_servicio
+                    if timezone.is_naive(fecha_ref):
+                        fecha_ref = timezone.make_aware(fecha_ref)
+                    delta = timezone.now() - fecha_ref
+                    months_elapsed = max(0.0, delta.days / 30.44)
+                    salud_tiempo = math.exp(
+                        -((months_elapsed / float(intervalo_meses)) ** beta)
+                    ) * 100.0
+                    salud_pct = min(salud_km, salud_tiempo)
+                elif intervalo_meses:
+                    logger.warning(
+                        "HealthEngine: regla con intervalo_meses=%s sin fecha anclable componente=%s "
+                        "vehiculo=%s (revisar checklist/mapeo)",
+                        intervalo_meses,
+                        comp_maestro.nombre,
+                        vehiculo_id,
+                    )
 
             # meses_critico solo en genérica: umbral duro opcional
             meses_critico = None
