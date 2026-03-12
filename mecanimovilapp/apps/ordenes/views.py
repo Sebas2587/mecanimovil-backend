@@ -3371,203 +3371,210 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
                     elif not detalles_servicios:
                         logger.warning(f"⚠️ Oferta {oferta.id} no tiene detalles_servicios, no se pueden consumir créditos")
                 
-                # Obtener o crear carrito para el cliente y vehículo
-                logger.info("Obteniendo o creando carrito para cliente y vehículo")
-                try:
-                    # Obtener o crear carrito (CarritoAgendamiento ya está importado al inicio del archivo)
-                    carrito = obtener_o_crear_carrito(solicitud.cliente, solicitud.vehiculo)
-                    logger.info(f"Carrito obtenido/creado: {carrito.id}")
-                    
-                    # Copiar notas de la solicitud al carrito (si existen y el carrito no tiene notas)
-                    if solicitud.descripcion_problema and not carrito.notas:
-                        carrito.notas = solicitud.descripcion_problema
-                        carrito.fecha_programada = oferta.fecha_disponible
-                        carrito.hora_programada = oferta.hora_disponible
-                        carrito.save(update_fields=['notas', 'fecha_programada', 'hora_programada'])
-                        logger.info(f"Notas copiadas al carrito: {carrito.id}")
-                except Exception as e:
-                    logger.error(f"Error obteniendo/creando carrito: {e}", exc_info=True)
-                    return Response(
-                        {'error': f'Error al obtener o crear el carrito: {str(e)}'},
-                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                    )
-                
-                # Agregar servicios al carrito
-                logger.info("Agregando servicios al carrito")
-                from mecanimovilapp.apps.servicios.models import OfertaServicio
-                
-                # Obtener tipo_proveedor correcto para usar en OfertaServicio
-                # CRÍTICO: Usar el tipo_proveedor de la oferta directamente, no inferirlo
-                tipo_proveedor_servicio = oferta.tipo_proveedor
-                logger.info(f"Tipo de proveedor para OfertaServicio: {tipo_proveedor_servicio} (de oferta: {oferta.id})")
-                
-                # Validar que tipo_proveedor_servicio coincida con taller/mecanico
-                if tipo_proveedor_servicio == 'taller' and not taller:
-                    logger.error(f"Inconsistencia: tipo_proveedor='taller' pero taller es None")
-                    raise ValueError("Inconsistencia: tipo_proveedor es 'taller' pero no hay taller asociado")
-                elif tipo_proveedor_servicio == 'mecanico' and not mecanico:
-                    logger.error(f"Inconsistencia: tipo_proveedor='mecanico' pero mecanico es None")
-                    raise ValueError("Inconsistencia: tipo_proveedor es 'mecanico' pero no hay mecánico asociado")
-                elif tipo_proveedor_servicio not in ['taller', 'mecanico']:
-                    logger.error(f"Tipo de proveedor inválido: {tipo_proveedor_servicio}")
-                    raise ValueError(f"Tipo de proveedor inválido: {tipo_proveedor_servicio}")
-                
-                for detalle in detalles_servicios:
+                # Sin vehículo (ej. precompra): sin carrito; pago vía pagar_solicitud_adjudicada
+                carrito = None
+                if solicitud.vehiculo_id is not None:
+                    # Obtener o crear carrito para el cliente y vehículo
+                    logger.info("Obteniendo o creando carrito para cliente y vehículo")
                     try:
-                        logger.info(f"Procesando detalle de servicio: {detalle.servicio.id}, Precio: {detalle.precio_servicio}")
+                        # Obtener o crear carrito (CarritoAgendamiento ya está importado al inicio del archivo)
+                        carrito = obtener_o_crear_carrito(solicitud.cliente, solicitud.vehiculo)
+                        logger.info(f"Carrito obtenido/creado: {carrito.id}")
                         
-                        # Buscar o crear OfertaServicio correspondiente
-                        # CRÍTICO: Incluir tipo_proveedor en la búsqueda para evitar ambigüedades
-                        try:
-                            oferta_servicio = OfertaServicio.objects.get(
-                                servicio=detalle.servicio,
-                                tipo_proveedor=tipo_proveedor_servicio,
-                                taller=taller,
-                                mecanico=mecanico
-                            )
-                            logger.info(f"OfertaServicio encontrada: {oferta_servicio.id}")
-                        except OfertaServicio.DoesNotExist:
-                            # Crear OfertaServicio temporal
-                            logger.info("Creando OfertaServicio temporal")
-                            
-                            # IMPORTANTE: El modelo OfertaServicio tiene un método save() que llama a calcular_precios()
-                            # calcular_precios() calcula precios basándose en costo_mano_de_obra_sin_iva y costo_repuestos_sin_iva
-                            # El precio que viene de detalle.precio_servicio es el precio final que el proveedor ofreció
-                            # Necesitamos trabajar hacia atrás para calcular los costos sin IVA
-                            
-                            from decimal import Decimal
-                            precio_ofrecido = Decimal(str(detalle.precio_servicio))
-                            
-                            # El precio_ofrecido es el precio final que el cliente pagará (con IVA)
-                            # Necesitamos calcular los costos sin IVA que resulten en ese precio
-                            # Fórmula: precio_final = (costo_mano_de_obra + costo_repuestos) * 1.19
-                            # Por lo tanto: costo_total_sin_iva = precio_ofrecido / 1.19
-                            IVA_RATE = Decimal('0.19')
-                            costo_total_sin_iva = precio_ofrecido / (Decimal('1') + IVA_RATE)
-                            
-                            # Dividir el costo total entre mano de obra y repuestos
-                            if oferta.incluye_repuestos:
-                                # Si incluye repuestos, dividir aproximadamente 70% mano de obra, 30% repuestos
-                                costo_mano_de_obra = costo_total_sin_iva * Decimal('0.7')
-                                costo_repuestos = costo_total_sin_iva * Decimal('0.3')
-                                tipo_servicio = 'con_repuestos'
-                            else:
-                                # Si no incluye repuestos, todo es mano de obra
-                                costo_mano_de_obra = costo_total_sin_iva
-                                costo_repuestos = Decimal('0')
-                                tipo_servicio = 'sin_repuestos'
-                            
-                            logger.info(f"Creando OfertaServicio: tipo_proveedor={tipo_proveedor_servicio}, taller={taller.id if taller else None}, mecanico={mecanico.id if mecanico else None}")
-                            logger.info(f"  Precio ofrecido: {precio_ofrecido}, Costo total sin IVA: {costo_total_sin_iva}")
-                            logger.info(f"  Costo mano de obra: {costo_mano_de_obra}, Costo repuestos: {costo_repuestos}, Tipo: {tipo_servicio}")
-                            
-                            try:
-                                # CRÍTICO: Validar que tipo_proveedor coincida con taller/mecanico ANTES de crear
-                                if tipo_proveedor_servicio == 'taller':
-                                    if not taller:
-                                        raise ValueError(f"Inconsistencia: tipo_proveedor='taller' pero taller es None")
-                                    if mecanico:
-                                        raise ValueError(f"Inconsistencia: tipo_proveedor='taller' pero mecanico no es None")
-                                elif tipo_proveedor_servicio == 'mecanico':
-                                    if not mecanico:
-                                        raise ValueError(f"Inconsistencia: tipo_proveedor='mecanico' pero mecanico es None")
-                                    if taller:
-                                        raise ValueError(f"Inconsistencia: tipo_proveedor='mecanico' pero taller no es None")
-                                else:
-                                    raise ValueError(f"Tipo de proveedor inválido: {tipo_proveedor_servicio}")
-                                
-                                # Crear OfertaServicio con los costos correctos
-                                # CRÍTICO: Asegurar que taller y mecanico se establezcan correctamente según tipo_proveedor
-                                # El modelo valida que tipo_proveedor=='taller' implica taller!=None y mecanico==None
-                                # Y que tipo_proveedor=='mecanico' implica mecanico!=None y taller==None
-                                
-                                taller_final = taller if tipo_proveedor_servicio == 'taller' else None
-                                mecanico_final = mecanico if tipo_proveedor_servicio == 'mecanico' else None
-                                
-                                logger.info(f"Valores finales para OfertaServicio:")
-                                logger.info(f"  tipo_proveedor: '{tipo_proveedor_servicio}' (type: {type(tipo_proveedor_servicio)})")
-                                logger.info(f"  taller: {taller_final.id if taller_final else None}")
-                                logger.info(f"  mecanico: {mecanico_final.id if mecanico_final else None}")
-                                logger.info(f"  servicio: {detalle.servicio.id}")
-                                logger.info(f"  costo_mano_de_obra: {costo_mano_de_obra}, costo_repuestos: {costo_repuestos}")
-                                
-                                # Crear instancia sin guardar primero para validar
-                                oferta_servicio = OfertaServicio(
-                                    servicio=detalle.servicio,
-                                    tipo_proveedor=str(tipo_proveedor_servicio).strip(),  # Asegurar que sea string y sin espacios
-                                    taller=taller_final,
-                                    mecanico=mecanico_final,
-                                    costo_mano_de_obra_sin_iva=costo_mano_de_obra,
-                                    costo_repuestos_sin_iva=costo_repuestos,
-                                    tipo_servicio=tipo_servicio
-                                )
-                                
-                                # Llamar a clean() manualmente para validar antes de guardar
-                                logger.info(f"Validando OfertaServicio antes de guardar...")
-                                try:
-                                    oferta_servicio.clean()
-                                    logger.info(f"Validación exitosa")
-                                except ValidationError as ve:
-                                    logger.error(f"Error de validación en clean(): {ve}", exc_info=True)
-                                    logger.error(f"Estado del objeto: tipo_proveedor='{oferta_servicio.tipo_proveedor}', taller={oferta_servicio.taller}, mecanico={oferta_servicio.mecanico}")
-                                    raise
-                                
-                                # Guardar (calcular_precios() se ejecutará automáticamente en save())
-                                logger.info(f"Guardando OfertaServicio...")
-                                try:
-                                    oferta_servicio.save()
-                                except Exception as e:
-                                    logger.error(f"Error en save() de OfertaServicio: {e}", exc_info=True)
-                                    raise
-                                
-                                logger.info(f"OfertaServicio creada exitosamente: {oferta_servicio.id}")
-                                logger.info(f"  Precios calculados: con_repuestos={oferta_servicio.precio_con_repuestos}, sin_repuestos={oferta_servicio.precio_sin_repuestos}")
-                                logger.info(f"  Precio publicado cliente: {oferta_servicio.precio_publicado_cliente}")
-                            except ValidationError as ve:
-                                logger.error(f"Error de validación creando OfertaServicio: {ve}", exc_info=True)
-                                logger.error(f"Datos intentados: tipo_proveedor={tipo_proveedor_servicio}, taller={taller.id if taller else None}, mecanico={mecanico.id if mecanico else None}")
-                                logger.error(f"  servicio={detalle.servicio.id}, costo_mano_de_obra={costo_mano_de_obra}, costo_repuestos={costo_repuestos}")
-                                raise
-                            except Exception as e:
-                                logger.error(f"Error creando OfertaServicio: {e}", exc_info=True)
-                                logger.error(f"Datos intentados: tipo_proveedor={tipo_proveedor_servicio}, taller={taller}, mecanico={mecanico}")
-                                logger.error(f"  servicio={detalle.servicio.id}, costo_mano_de_obra={costo_mano_de_obra}, costo_repuestos={costo_repuestos}")
-                                raise
-                        
-                        # Crear línea de servicio
-                        # Usar el precio calculado de oferta_servicio (después de calcular_precios())
-                        # Si incluye_repuestos, usar precio_con_repuestos, sino precio_sin_repuestos
-                        precio_unitario_linea = oferta_servicio.precio_con_repuestos if oferta.incluye_repuestos else oferta_servicio.precio_sin_repuestos
-                        
-                        logger.info(f"Agregando servicio al carrito: precio_unitario={precio_unitario_linea}, con_repuestos={oferta.incluye_repuestos}")
-                        
-                        # Crear o actualizar item del carrito
-                        item_carrito, created = ItemCarritoAgendamiento.objects.get_or_create(
-                            carrito=carrito,
-                            oferta_servicio=oferta_servicio,
-                            defaults={
-                                'con_repuestos': oferta.incluye_repuestos,
-                                'cantidad': 1,
-                                'fecha_servicio': oferta.fecha_disponible,
-                                'hora_servicio': oferta.hora_disponible,
-                            }
-                        )
-                        
-                        if not created:
-                            # Si el item ya existe, actualizar información
-                            item_carrito.con_repuestos = oferta.incluye_repuestos
-                            item_carrito.fecha_servicio = oferta.fecha_disponible
-                            item_carrito.hora_servicio = oferta.hora_disponible
-                            item_carrito.save(update_fields=['con_repuestos', 'fecha_servicio', 'hora_servicio'])
-                            logger.info(f"Item del carrito actualizado: {item_carrito.id}")
-                        else:
-                            logger.info(f"Item del carrito creado: {item_carrito.id}, precio_estimado={item_carrito.precio_estimado}")
+                        # Copiar notas de la solicitud al carrito (si existen y el carrito no tiene notas)
+                        if solicitud.descripcion_problema and not carrito.notas:
+                            carrito.notas = solicitud.descripcion_problema
+                            carrito.fecha_programada = oferta.fecha_disponible
+                            carrito.hora_programada = oferta.hora_disponible
+                            carrito.save(update_fields=['notas', 'fecha_programada', 'hora_programada'])
+                            logger.info(f"Notas copiadas al carrito: {carrito.id}")
                     except Exception as e:
-                        logger.error(f"Error agregando servicio al carrito para {detalle.servicio.id}: {e}", exc_info=True)
-                        # Re-lanzar la excepción para que se revierta la transacción
-                        raise
-                
-                logger.info(f"Total de servicios agregados al carrito: {len(detalles_servicios)}")
+                        logger.error(f"Error obteniendo/creando carrito: {e}", exc_info=True)
+                        return Response(
+                            {'error': f'Error al obtener o crear el carrito: {str(e)}'},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                        )
+                    
+                    # Agregar servicios al carrito
+                    logger.info("Agregando servicios al carrito")
+                    from mecanimovilapp.apps.servicios.models import OfertaServicio
+                    
+                    # Obtener tipo_proveedor correcto para usar en OfertaServicio
+                    # CRÍTICO: Usar el tipo_proveedor de la oferta directamente, no inferirlo
+                    tipo_proveedor_servicio = oferta.tipo_proveedor
+                    logger.info(f"Tipo de proveedor para OfertaServicio: {tipo_proveedor_servicio} (de oferta: {oferta.id})")
+                    
+                    # Validar que tipo_proveedor_servicio coincida con taller/mecanico
+                    if tipo_proveedor_servicio == 'taller' and not taller:
+                        logger.error(f"Inconsistencia: tipo_proveedor='taller' pero taller es None")
+                        raise ValueError("Inconsistencia: tipo_proveedor es 'taller' pero no hay taller asociado")
+                    elif tipo_proveedor_servicio == 'mecanico' and not mecanico:
+                        logger.error(f"Inconsistencia: tipo_proveedor='mecanico' pero mecanico es None")
+                        raise ValueError("Inconsistencia: tipo_proveedor es 'mecanico' pero no hay mecánico asociado")
+                    elif tipo_proveedor_servicio not in ['taller', 'mecanico']:
+                        logger.error(f"Tipo de proveedor inválido: {tipo_proveedor_servicio}")
+                        raise ValueError(f"Tipo de proveedor inválido: {tipo_proveedor_servicio}")
+                    
+                    for detalle in detalles_servicios:
+                        try:
+                            logger.info(f"Procesando detalle de servicio: {detalle.servicio.id}, Precio: {detalle.precio_servicio}")
+                            
+                            # Buscar o crear OfertaServicio correspondiente
+                            # CRÍTICO: Incluir tipo_proveedor en la búsqueda para evitar ambigüedades
+                            try:
+                                oferta_servicio = OfertaServicio.objects.get(
+                                    servicio=detalle.servicio,
+                                    tipo_proveedor=tipo_proveedor_servicio,
+                                    taller=taller,
+                                    mecanico=mecanico
+                                )
+                                logger.info(f"OfertaServicio encontrada: {oferta_servicio.id}")
+                            except OfertaServicio.DoesNotExist:
+                                # Crear OfertaServicio temporal
+                                logger.info("Creando OfertaServicio temporal")
+                                
+                                # IMPORTANTE: El modelo OfertaServicio tiene un método save() que llama a calcular_precios()
+                                # calcular_precios() calcula precios basándose en costo_mano_de_obra_sin_iva y costo_repuestos_sin_iva
+                                # El precio que viene de detalle.precio_servicio es el precio final que el proveedor ofreció
+                                # Necesitamos trabajar hacia atrás para calcular los costos sin IVA
+                                
+                                from decimal import Decimal
+                                precio_ofrecido = Decimal(str(detalle.precio_servicio))
+                                
+                                # El precio_ofrecido es el precio final que el cliente pagará (con IVA)
+                                # Necesitamos calcular los costos sin IVA que resulten en ese precio
+                                # Fórmula: precio_final = (costo_mano_de_obra + costo_repuestos) * 1.19
+                                # Por lo tanto: costo_total_sin_iva = precio_ofrecido / 1.19
+                                IVA_RATE = Decimal('0.19')
+                                costo_total_sin_iva = precio_ofrecido / (Decimal('1') + IVA_RATE)
+                                
+                                # Dividir el costo total entre mano de obra y repuestos
+                                if oferta.incluye_repuestos:
+                                    # Si incluye repuestos, dividir aproximadamente 70% mano de obra, 30% repuestos
+                                    costo_mano_de_obra = costo_total_sin_iva * Decimal('0.7')
+                                    costo_repuestos = costo_total_sin_iva * Decimal('0.3')
+                                    tipo_servicio = 'con_repuestos'
+                                else:
+                                    # Si no incluye repuestos, todo es mano de obra
+                                    costo_mano_de_obra = costo_total_sin_iva
+                                    costo_repuestos = Decimal('0')
+                                    tipo_servicio = 'sin_repuestos'
+                                
+                                logger.info(f"Creando OfertaServicio: tipo_proveedor={tipo_proveedor_servicio}, taller={taller.id if taller else None}, mecanico={mecanico.id if mecanico else None}")
+                                logger.info(f"  Precio ofrecido: {precio_ofrecido}, Costo total sin IVA: {costo_total_sin_iva}")
+                                logger.info(f"  Costo mano de obra: {costo_mano_de_obra}, Costo repuestos: {costo_repuestos}, Tipo: {tipo_servicio}")
+                                
+                                try:
+                                    # CRÍTICO: Validar que tipo_proveedor coincida con taller/mecanico ANTES de crear
+                                    if tipo_proveedor_servicio == 'taller':
+                                        if not taller:
+                                            raise ValueError(f"Inconsistencia: tipo_proveedor='taller' pero taller es None")
+                                        if mecanico:
+                                            raise ValueError(f"Inconsistencia: tipo_proveedor='taller' pero mecanico no es None")
+                                    elif tipo_proveedor_servicio == 'mecanico':
+                                        if not mecanico:
+                                            raise ValueError(f"Inconsistencia: tipo_proveedor='mecanico' pero mecanico es None")
+                                        if taller:
+                                            raise ValueError(f"Inconsistencia: tipo_proveedor='mecanico' pero taller no es None")
+                                    else:
+                                        raise ValueError(f"Tipo de proveedor inválido: {tipo_proveedor_servicio}")
+                                    
+                                    # Crear OfertaServicio con los costos correctos
+                                    # CRÍTICO: Asegurar que taller y mecanico se establezcan correctamente según tipo_proveedor
+                                    # El modelo valida que tipo_proveedor=='taller' implica taller!=None y mecanico==None
+                                    # Y que tipo_proveedor=='mecanico' implica mecanico!=None y taller==None
+                                    
+                                    taller_final = taller if tipo_proveedor_servicio == 'taller' else None
+                                    mecanico_final = mecanico if tipo_proveedor_servicio == 'mecanico' else None
+                                    
+                                    logger.info(f"Valores finales para OfertaServicio:")
+                                    logger.info(f"  tipo_proveedor: '{tipo_proveedor_servicio}' (type: {type(tipo_proveedor_servicio)})")
+                                    logger.info(f"  taller: {taller_final.id if taller_final else None}")
+                                    logger.info(f"  mecanico: {mecanico_final.id if mecanico_final else None}")
+                                    logger.info(f"  servicio: {detalle.servicio.id}")
+                                    logger.info(f"  costo_mano_de_obra: {costo_mano_de_obra}, costo_repuestos: {costo_repuestos}")
+                                    
+                                    # Crear instancia sin guardar primero para validar
+                                    oferta_servicio = OfertaServicio(
+                                        servicio=detalle.servicio,
+                                        tipo_proveedor=str(tipo_proveedor_servicio).strip(),  # Asegurar que sea string y sin espacios
+                                        taller=taller_final,
+                                        mecanico=mecanico_final,
+                                        costo_mano_de_obra_sin_iva=costo_mano_de_obra,
+                                        costo_repuestos_sin_iva=costo_repuestos,
+                                        tipo_servicio=tipo_servicio
+                                    )
+                                    
+                                    # Llamar a clean() manualmente para validar antes de guardar
+                                    logger.info(f"Validando OfertaServicio antes de guardar...")
+                                    try:
+                                        oferta_servicio.clean()
+                                        logger.info(f"Validación exitosa")
+                                    except ValidationError as ve:
+                                        logger.error(f"Error de validación en clean(): {ve}", exc_info=True)
+                                        logger.error(f"Estado del objeto: tipo_proveedor='{oferta_servicio.tipo_proveedor}', taller={oferta_servicio.taller}, mecanico={oferta_servicio.mecanico}")
+                                        raise
+                                    
+                                    # Guardar (calcular_precios() se ejecutará automáticamente en save())
+                                    logger.info(f"Guardando OfertaServicio...")
+                                    try:
+                                        oferta_servicio.save()
+                                    except Exception as e:
+                                        logger.error(f"Error en save() de OfertaServicio: {e}", exc_info=True)
+                                        raise
+                                    
+                                    logger.info(f"OfertaServicio creada exitosamente: {oferta_servicio.id}")
+                                    logger.info(f"  Precios calculados: con_repuestos={oferta_servicio.precio_con_repuestos}, sin_repuestos={oferta_servicio.precio_sin_repuestos}")
+                                    logger.info(f"  Precio publicado cliente: {oferta_servicio.precio_publicado_cliente}")
+                                except ValidationError as ve:
+                                    logger.error(f"Error de validación creando OfertaServicio: {ve}", exc_info=True)
+                                    logger.error(f"Datos intentados: tipo_proveedor={tipo_proveedor_servicio}, taller={taller.id if taller else None}, mecanico={mecanico.id if mecanico else None}")
+                                    logger.error(f"  servicio={detalle.servicio.id}, costo_mano_de_obra={costo_mano_de_obra}, costo_repuestos={costo_repuestos}")
+                                    raise
+                                except Exception as e:
+                                    logger.error(f"Error creando OfertaServicio: {e}", exc_info=True)
+                                    logger.error(f"Datos intentados: tipo_proveedor={tipo_proveedor_servicio}, taller={taller}, mecanico={mecanico}")
+                                    logger.error(f"  servicio={detalle.servicio.id}, costo_mano_de_obra={costo_mano_de_obra}, costo_repuestos={costo_repuestos}")
+                                    raise
+                            
+                            # Crear línea de servicio
+                            # Usar el precio calculado de oferta_servicio (después de calcular_precios())
+                            # Si incluye_repuestos, usar precio_con_repuestos, sino precio_sin_repuestos
+                            precio_unitario_linea = oferta_servicio.precio_con_repuestos if oferta.incluye_repuestos else oferta_servicio.precio_sin_repuestos
+                            
+                            logger.info(f"Agregando servicio al carrito: precio_unitario={precio_unitario_linea}, con_repuestos={oferta.incluye_repuestos}")
+                            
+                            # Crear o actualizar item del carrito
+                            item_carrito, created = ItemCarritoAgendamiento.objects.get_or_create(
+                                carrito=carrito,
+                                oferta_servicio=oferta_servicio,
+                                defaults={
+                                    'con_repuestos': oferta.incluye_repuestos,
+                                    'cantidad': 1,
+                                    'fecha_servicio': oferta.fecha_disponible,
+                                    'hora_servicio': oferta.hora_disponible,
+                                }
+                            )
+                            
+                            if not created:
+                                # Si el item ya existe, actualizar información
+                                item_carrito.con_repuestos = oferta.incluye_repuestos
+                                item_carrito.fecha_servicio = oferta.fecha_disponible
+                                item_carrito.hora_servicio = oferta.hora_disponible
+                                item_carrito.save(update_fields=['con_repuestos', 'fecha_servicio', 'hora_servicio'])
+                                logger.info(f"Item del carrito actualizado: {item_carrito.id}")
+                            else:
+                                logger.info(f"Item del carrito creado: {item_carrito.id}, precio_estimado={item_carrito.precio_estimado}")
+                        except Exception as e:
+                            logger.error(f"Error agregando servicio al carrito para {detalle.servicio.id}: {e}", exc_info=True)
+                            # Re-lanzar la excepción para que se revierta la transacción
+                            raise
+                    
+                    logger.info(f"Total de servicios agregados al carrito: {len(detalles_servicios)}")
+                else:
+                    logger.info(
+                        "Solicitud sin vehículo: adjudicada sin carrito; usar POST pagar_solicitud_adjudicada para pagar"
+                    )
                 
                 # Crear mensaje inicial en el chat
                 logger.info("Creando mensaje inicial en el chat")
@@ -3588,7 +3595,7 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
                                 'type': 'oferta_aceptada',
                                 'oferta_id': str(oferta.id),
                                 'solicitud_id': str(solicitud.id),
-                                'carrito_id': carrito.id,
+                                'carrito_id': carrito.id if carrito else None,
                                 'mensaje': '¡Tu oferta fue aceptada! El cliente procederá con el pago.',
                                 'estado_oferta': 'aceptada',
                                 'monto_total': float(oferta.precio_total_ofrecido),
@@ -3598,27 +3605,44 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
                         logger.info(f"Notificación WebSocket 'oferta_aceptada' enviada al proveedor: {oferta.proveedor.id}")
 
                         # NUEVO: Notificación vía Push al proveedor
+                        push_body = (
+                            f"Has ganado la solicitud para un {solicitud.vehiculo.marca} {solicitud.vehiculo.modelo}"
+                            if solicitud.vehiculo_id
+                            else "Has ganado una solicitud de servicio (sin vehículo registrado)"
+                        )
                         send_expo_push_notification.delay(
                             oferta.proveedor.id,
                             "¡Felicidades! Oferta adjudicada 🎉",
-                            f"Has ganado la solicitud para un {solicitud.vehiculo.marca} {solicitud.vehiculo.modelo}",
+                            push_body,
                             {"type": "offer_accepted", "solicitud_id": str(solicitud.id), "oferta_id": str(oferta.id)}
                         )
                 except Exception as e:
                     logger.error(f"Error enviando notificación WebSocket: {e}", exc_info=True)
                     # No fallar la operación si falla la notificación
                 
-                # Guardar el ID del carrito para usar después de la transacción
-                carrito_id = carrito.id
-                logger.info(f"Carrito ID guardado: {carrito_id}")
+                # Guardar el ID del carrito para usar después de la transacción (solo si hubo carrito)
+                if carrito is not None:
+                    carrito_id = carrito.id
+                    logger.info(f"Carrito ID guardado: {carrito_id}")
             
-            # Validar que tenemos un carrito_id antes de continuar
+            # Sin carrito (solicitud sin vehículo): respuesta indica pagar con pagar_solicitud_adjudicada
             if not carrito_id:
-                logger.error("No se pudo obtener el ID del carrito después de la transacción")
-                return Response(
-                    {'error': 'Error al obtener el ID del carrito después de agregar los servicios'},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
+                try:
+                    solicitud_serializer = SolicitudServicioPublicaSerializer(
+                        solicitud, context={'request': request}
+                    )
+                    return Response({
+                        'message': 'Oferta adjudicada sin carrito; use pagar_solicitud_adjudicada para confirmar y pagar',
+                        'sin_carrito': True,
+                        'carrito': None,
+                        'solicitud': solicitud_serializer.data,
+                    })
+                except Exception as e:
+                    logger.error(f"Error serializando solicitud sin carrito: {e}", exc_info=True)
+                    return Response(
+                        {'error': str(e)},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    )
             
             # Recargar el carrito con relaciones para serialización (después de la transacción)
             try:

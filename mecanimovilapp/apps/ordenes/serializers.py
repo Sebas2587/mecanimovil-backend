@@ -1783,15 +1783,27 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
         """
         Validaci?n adicional antes de crear la solicitud
         """
-        # Validar campos requeridos
+        # Flujo opcional sin vehículo registrado (ej. inspección precompra): el cliente
+        # debe enviar explícitamente sin_vehiculo_registrado=true para no exigir vehiculo.
+        # Así no se afecta el flujo actual que siempre envía vehiculo.
+        initial = getattr(self, 'initial_data', None) or {}
+        raw_sv = initial.get('sin_vehiculo_registrado')
+        sin_vehiculo = raw_sv is True or str(raw_sv).lower() == 'true'
+
+        # Validar campos requeridos (vehiculo solo obligatorio si no es flujo sin vehículo)
         campos_requeridos = {
             'cliente': 'El cliente es requerido',
-            'vehiculo': 'El veh?culo es requerido',
             'descripcion_problema': 'La descripci?n del problema es requerida',
             'ubicacion_servicio': 'La ubicaci?n del servicio es requerida',
             'fecha_preferida': 'La fecha preferida es requerida'
         }
-        
+        if not sin_vehiculo:
+            campos_requeridos['vehiculo'] = 'El veh?culo es requerido'
+        else:
+            # Asegurar None explícito para que create no falle si no vino el campo
+            if not attrs.get('vehiculo'):
+                attrs['vehiculo'] = None
+
         for campo, mensaje in campos_requeridos.items():
             if campo not in attrs or not attrs.get(campo):
                 raise serializers.ValidationError({campo: mensaje})
