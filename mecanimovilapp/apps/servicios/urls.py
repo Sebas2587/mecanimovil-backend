@@ -1,7 +1,7 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
-    CategoriaServicioViewSet, ServicioViewSet,
+    CategoriaServicioViewSet, ServicioViewSet, servicios_buscar_alias,
     DetalleServicioViewSet, OfertaServicioViewSet,
     ProveedorOfertaServicioViewSet, RepuestoViewSet,
     FotoServicioViewSet, servicios_por_vehiculo
@@ -27,6 +27,8 @@ urlpatterns = [
         ServicioViewSet.as_view({'get': 'retrieve'}),
         name='servicio-detail-alias',
     ),
+    # Cliente llama GET /api/servicios/buscar/?q= — la acción del ViewSet queda en .../servicios/servicios/buscar/
+    path('buscar/', servicios_buscar_alias, name='servicios-buscar-alias'),
     path('', include(router.urls)),
     # Endpoints públicos sin autenticación
     path('vehiculo-servicios/', servicios_por_vehiculo, name='servicios_por_vehiculo'),

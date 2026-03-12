@@ -1500,10 +1500,51 @@ class TallerViewSet(viewsets.ModelViewSet):
                     break
         
         logger.info(f"🔍 Vehículo ID: {vehiculo_id}, Servicio IDs: {servicio_ids}")
+
+        # Sin vehículo pero con servicios (ej. precompra): listar talleres que ofrecen esos servicios
+        if not vehiculo_id and servicio_ids:
+            try:
+                servicio_ids_int = [int(sid) for sid in servicio_ids]
+                servicios = Servicio.objects.filter(id__in=servicio_ids_int)
+                if not servicios.exists():
+                    return Response(
+                        {"error": "Ninguno de los servicios especificados existe"},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                talleres_ids = OfertaServicio.objects.filter(
+                    servicio__in=servicios,
+                    tipo_proveedor='taller',
+                    disponible=True,
+                    taller__isnull=False,
+                    taller__verificado=True,
+                    taller__activo=True,
+                ).values_list('taller_id', flat=True).distinct()
+                queryset = Taller.objects.filter(id__in=talleres_ids).select_related(
+                    'usuario', 'direccion_fisica', 'connection_status'
+                ).prefetch_related('especialidades', 'marcas_atendidas').annotate(
+                    servicios_completados_count=Count(
+                        'solicitudes', filter=Q(solicitudes__estado='completado')
+                    )
+                )
+                serializer = TallerSerializer(queryset, many=True)
+                return Response({
+                    "talleres": serializer.data,
+                    "total": queryset.count(),
+                    "filtros_aplicados": {
+                        "marca_vehiculo": None,
+                        "servicios": servicio_ids,
+                        "sin_vehiculo": True,
+                    },
+                })
+            except ValueError:
+                return Response(
+                    {"error": "Los IDs de servicios deben ser números válidos"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
         
         if not vehiculo_id:
             return Response(
-                {"error": "Se requiere el parámetro 'vehiculo_id'"},
+                {"error": "Se requiere el parámetro 'vehiculo_id' o servicio_ids sin vehículo"},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
@@ -2076,10 +2117,53 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
                     break
         
         logger.info(f"🔍 Vehículo ID: {vehiculo_id}, Servicio IDs: {servicio_ids}")
+
+        # Sin vehículo pero con servicios (ej. precompra): listar mecánicos que ofrecen esos servicios
+        if not vehiculo_id and servicio_ids:
+            try:
+                servicio_ids_int = [int(sid) for sid in servicio_ids]
+                servicios = Servicio.objects.filter(id__in=servicio_ids_int)
+                if not servicios.exists():
+                    return Response(
+                        {"error": "Ninguno de los servicios especificados existe"},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                mecanicos_ids = OfertaServicio.objects.filter(
+                    servicio__in=servicios,
+                    tipo_proveedor='mecanico',
+                    disponible=True,
+                    mecanico__isnull=False,
+                    mecanico__verificado=True,
+                    mecanico__activo=True,
+                ).values_list('mecanico_id', flat=True).distinct()
+                queryset = MecanicoDomicilio.objects.filter(id__in=mecanicos_ids).select_related(
+                    'usuario', 'connection_status'
+                ).prefetch_related(
+                    'especialidades', 'marcas_atendidas', 'service_areas', 'resenas'
+                ).annotate(
+                    servicios_completados_count=Count(
+                        'solicitudes', filter=Q(solicitudes__estado='completado')
+                    )
+                )
+                serializer = MecanicoDomicilioSerializer(queryset, many=True)
+                return Response({
+                    "mecanicos": serializer.data,
+                    "total": queryset.count(),
+                    "filtros_aplicados": {
+                        "marca_vehiculo": None,
+                        "servicios": servicio_ids,
+                        "sin_vehiculo": True,
+                    },
+                })
+            except ValueError:
+                return Response(
+                    {"error": "Los IDs de servicios deben ser números válidos"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
         
         if not vehiculo_id:
             return Response(
-                {"error": "Se requiere el parámetro 'vehiculo_id'"},
+                {"error": "Se requiere el parámetro 'vehiculo_id' o servicio_ids sin vehículo"},
                 status=status.HTTP_400_BAD_REQUEST
             )
         

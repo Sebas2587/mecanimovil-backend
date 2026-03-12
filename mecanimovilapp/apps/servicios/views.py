@@ -1099,4 +1099,21 @@ class FotoServicioViewSet(viewsets.ModelViewSet):
         return Response({
             'mensaje': f'{len(fotos_creadas)} fotos subidas exitosamente',
             'fotos': fotos_creadas
-        }) 
+        })
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def servicios_buscar_alias(request):
+    """
+    GET /api/servicios/buscar/?q=...
+    Alias porque el router registra la acción en .../servicios/servicios/buscar/
+    """
+    termino = (request.query_params.get('q') or '').strip()
+    if not termino:
+        return Response([])
+    qs = Servicio.objects.filter(
+        models.Q(nombre__icontains=termino) | models.Q(descripcion__icontains=termino)
+    ).distinct()[:50]
+    serializer = ServicioListSerializer(qs, many=True)
+    return Response(serializer.data)
