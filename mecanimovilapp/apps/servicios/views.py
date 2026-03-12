@@ -106,6 +106,21 @@ class ServicioViewSet(viewsets.ModelViewSet):
         if self.action == 'list':
             return ServicioListSerializer
         return ServicioSerializer
+
+    @action(detail=False, methods=['get'], url_path='buscar')
+    def buscar(self, request):
+        """
+        Busca servicios por nombre o descripción (query param q).
+        Compatibilidad con cliente que llama GET .../servicios/buscar/?q=...
+        """
+        termino = (request.query_params.get('q') or '').strip()
+        if not termino:
+            return Response([])
+        qs = self.get_queryset().filter(
+            models.Q(nombre__icontains=termino) | models.Q(descripcion__icontains=termino)
+        ).distinct()[:50]
+        serializer = ServicioListSerializer(qs, many=True)
+        return Response(serializer.data)
     
     @action(detail=False, methods=['get'])
     def por_categoria(self, request):

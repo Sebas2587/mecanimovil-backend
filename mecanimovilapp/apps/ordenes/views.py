@@ -4033,7 +4033,7 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(solicitudes, many=True)
         return Response(serializer.data)
     
-    @action(detail=False, methods=['get'])
+    @action(detail=False, methods=['get'], url_path='puede-crear-solicitud')
     def puede_crear_solicitud(self, request):
         """
         Verifica si el cliente puede crear nuevas solicitudes.

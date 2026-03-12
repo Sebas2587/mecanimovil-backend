@@ -19,7 +19,14 @@ router.register(r'proveedor/mis-servicios', ProveedorOfertaServicioViewSet, base
 router.register(r'repuestos', RepuestoViewSet)
 router.register(r'fotos-servicios', FotoServicioViewSet, basename='fotos-servicios')
 
+# Alias: muchos clientes llaman GET /api/servicios/<pk>/ pero el router expone
+# /api/servicios/servicios/<pk>/ — este path evita 404 en producción.
 urlpatterns = [
+    path(
+        '<int:pk>/',
+        ServicioViewSet.as_view({'get': 'retrieve'}),
+        name='servicio-detail-alias',
+    ),
     path('', include(router.urls)),
     # Endpoints públicos sin autenticación
     path('vehiculo-servicios/', servicios_por_vehiculo, name='servicios_por_vehiculo'),
