@@ -122,13 +122,41 @@ class OfertaServicioSerializer(serializers.ModelSerializer):
         )
     
     def get_servicio_info(self, obj):
-        """Retorna información básica del servicio"""
+        """
+        Retorna información completa del servicio embebida en la oferta.
+        Incluye categorias_info y modelos_info para evitar que el cliente
+        tenga que hacer requests individuales por cada servicio (N+1).
+        """
         request = self.context.get('request')
+        servicio = obj.servicio
+
+        # categorias: prefetch_related('servicio__categorias') en las vistas por_taller/por_mecanico
+        categorias_info = [
+            {'id': c.id, 'nombre': c.nombre, 'descripcion': getattr(c, 'descripcion', ''), 'icono': getattr(c, 'icono', '')}
+            for c in servicio.categorias.all()
+        ]
+
+        # modelos_compatibles: prefetch_related en las vistas
+        modelos_info = [
+            {
+                'id': m.id,
+                'nombre': getattr(m, 'nombre', '') or getattr(m, 'modelo_nombre', ''),
+                'marca_nombre': getattr(m, 'marca_nombre', '') or (
+                    getattr(m.marca, 'nombre', '') if getattr(m, 'marca', None) else ''
+                ),
+            }
+            for m in servicio.modelos_compatibles.all()
+        ]
+
         return {
-            'id': obj.servicio.id,
-            'nombre': obj.servicio.nombre,
-            'descripcion': obj.servicio.descripcion,
-            'foto': get_image_url(obj.servicio.foto, request)
+            'id': servicio.id,
+            'nombre': servicio.nombre,
+            'descripcion': servicio.descripcion,
+            'foto': get_image_url(servicio.foto, request),
+            'duracion_estimada_base': getattr(servicio, 'duracion_estimada_base', None),
+            'precio_referencia': str(servicio.precio_referencia) if getattr(servicio, 'precio_referencia', None) else None,
+            'categorias_info': categorias_info,
+            'modelos_info': modelos_info,
         }
 
 

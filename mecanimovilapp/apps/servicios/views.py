@@ -460,31 +460,53 @@ class OfertaServicioViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], permission_classes=[AllowAny])
     def por_taller(self, request):
         """
-        Obtiene todas las ofertas de servicios disponibles para un taller específico
+        Obtiene todas las ofertas de servicios disponibles para un taller específico.
+        Usa select_related + prefetch_related para evitar N+1 queries:
+        sin esto, cada oferta dispara queries adicionales por servicio, categorías y modelos.
         """
         taller_id = request.query_params.get('taller')
         if not taller_id:
             return Response({"error": "Se requiere el parámetro 'taller'"}, status=400)
-        
-        ofertas = OfertaServicio.objects.filter(taller_id=taller_id, disponible=True)
-        serializer = self.get_serializer(ofertas, many=True)
+
+        ofertas = (
+            OfertaServicio.objects
+            .filter(taller_id=taller_id, disponible=True)
+            .select_related('servicio', 'taller', 'taller__usuario')
+            .prefetch_related(
+                'servicio__categorias',
+                'servicio__modelos_compatibles',
+                'servicio__modelos_compatibles__marca',
+                'fotos_servicio',
+            )
+        )
+        serializer = OfertaServicioSerializer(ofertas, many=True, context={'request': request})
         return Response(serializer.data)
-    
+
     @action(detail=False, methods=['get'], permission_classes=[AllowAny])
     def por_mecanico(self, request):
         """
-        Obtiene todas las ofertas de servicios disponibles para un mecánico específico
+        Obtiene todas las ofertas de servicios disponibles para un mecánico específico.
+        Usa select_related + prefetch_related para evitar N+1 queries.
         """
         mecanico_id = request.query_params.get('mecanico')
         if not mecanico_id:
             return Response({"error": "Se requiere el parámetro 'mecanico'"}, status=400)
-        
-        # Validate that mecanico_id is an integer
+
         if not str(mecanico_id).isdigit():
             return Response([])
 
-        ofertas = OfertaServicio.objects.filter(mecanico_id=mecanico_id, disponible=True)
-        serializer = self.get_serializer(ofertas, many=True)
+        ofertas = (
+            OfertaServicio.objects
+            .filter(mecanico_id=mecanico_id, disponible=True)
+            .select_related('servicio', 'mecanico', 'mecanico__usuario')
+            .prefetch_related(
+                'servicio__categorias',
+                'servicio__modelos_compatibles',
+                'servicio__modelos_compatibles__marca',
+                'fotos_servicio',
+            )
+        )
+        serializer = OfertaServicioSerializer(ofertas, many=True, context={'request': request})
         return Response(serializer.data)
     
     @action(detail=False, methods=['get'], permission_classes=[AllowAny])
