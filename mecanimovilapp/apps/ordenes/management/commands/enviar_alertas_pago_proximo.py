@@ -129,18 +129,17 @@ class Command(BaseCommand):
                     }
                 )
                 
-                # Crear notificación in-app
+                # Crear notificación in-app (deduplicada: solo 1 por solicitud en 6h)
                 from mecanimovilapp.apps.usuarios.models import Notificacion
-                Notificacion.objects.create(
+                Notificacion.crear_unica(
                     usuario=solicitud.cliente.usuario,
                     tipo='payment_reminder',
-                    titulo=f"⏰ Pago Pendiente",
+                    titulo="⏰ Pago Pendiente",
                     mensaje=f"Quedan {horas}h {minutos}m para pagar tu servicio. No olvides completar el pago.",
                     data={
                         'solicitud_id': str(solicitud.id),
-                        'horas_restantes': horas,
-                        'minutos_restantes': minutos
-                    }
+                    },
+                    ventana_horas=6,
                 )
                 
                 enviadas += 1

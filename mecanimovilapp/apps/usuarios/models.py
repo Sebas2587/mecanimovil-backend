@@ -1466,3 +1466,38 @@ class Notificacion(models.Model):
     
     def __str__(self):
         return f"{self.usuario.username} - {self.titulo} ({'Leída' if self.leida else 'No leída'})"
+
+    @classmethod
+    def crear_unica(cls, usuario, tipo, titulo, mensaje, data=None, ventana_horas=24):
+        """
+        Crea la notificación solo si no existe otra con el mismo usuario + tipo + data
+        creada en las últimas `ventana_horas`. Evita que Celery recree notificaciones
+        que el usuario ya eliminó o que la tarea generó en la ejecución anterior.
+        Retorna (instancia, created).
+        """
+        from django.utils import timezone
+        from datetime import timedelta
+
+        if data is None:
+            data = {}
+
+        desde = timezone.now() - timedelta(hours=ventana_horas)
+
+        existente = cls.objects.filter(
+            usuario=usuario,
+            tipo=tipo,
+            data=data,
+            fecha_creacion__gte=desde,
+        ).first()
+
+        if existente:
+            return existente, False
+
+        nueva = cls.objects.create(
+            usuario=usuario,
+            tipo=tipo,
+            titulo=titulo,
+            mensaje=mensaje,
+            data=data,
+        )
+        return nueva, True

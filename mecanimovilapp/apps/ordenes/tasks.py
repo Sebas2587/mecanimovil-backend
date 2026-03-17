@@ -263,19 +263,24 @@ def enviar_notificacion_cambio_estado(solicitud_id, user_id, estado_anterior, es
             logger.warning(f"⚠️ No hay tokens push activos para usuario {user_id}")
             # Aún si no hay tokens push, debemos crear la notificación in-app
         
-        # Crear notificación in-app
-        from mecanimovilapp.apps.usuarios.models import Notificacion
-        Notificacion.objects.create(
-            usuario_id=user_id,
-            tipo='order_update',
-            titulo=info_mensaje['titulo'],
-            mensaje=info_mensaje['mensaje'],
-            data={
-                'solicitud_id': str(solicitud_id),
-                'estado_anterior': estado_anterior,
-                'estado_nuevo': estado_nuevo
-            }
-        )
+        # Crear notificación in-app (deduplicada: solo 1 por solicitud + estado_nuevo en 12h)
+        from mecanimovilapp.apps.usuarios.models import Notificacion, Usuario
+        try:
+            usuario_obj = Usuario.objects.get(pk=user_id)
+            Notificacion.crear_unica(
+                usuario=usuario_obj,
+                tipo='order_update',
+                titulo=info_mensaje['titulo'],
+                mensaje=info_mensaje['mensaje'],
+                data={
+                    'solicitud_id': str(solicitud_id),
+                    'estado_anterior': estado_anterior,
+                    'estado_nuevo': estado_nuevo,
+                },
+                ventana_horas=12,
+            )
+        except Exception as e:
+            logger.error(f"Error creando notificación in-app: {e}")
         
         if not tokens:
              return {'enviados': 0, 'error': 'No hay tokens activos, pero notificación in-app creada'}

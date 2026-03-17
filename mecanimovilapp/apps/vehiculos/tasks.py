@@ -854,17 +854,18 @@ def enviar_alerta_salud_global_push(vehiculo, motivo_texto, es_critico=False):
             }
         )
         
-        # También crear notificación in-app
+        # También crear notificación in-app (deduplicada: ventana de 24h por vehículo + criticidad)
         from mecanimovilapp.apps.usuarios.models import Notificacion
-        Notificacion.objects.create(
+        Notificacion.crear_unica(
             usuario=vehiculo.cliente.usuario,
             tipo='health_alert',
             titulo=title,
             mensaje=body,
             data={
                 "vehicle_id": str(vehiculo.id),
-                "es_critico": es_critico
-            }
+                "es_critico": es_critico,
+            },
+            ventana_horas=24,
         )
         
         logger.info(f"📲 Alerta Push de salud GLOBAL enviada a usuario {user_id} para {nombre_vehiculo}")
