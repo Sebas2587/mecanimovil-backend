@@ -1790,6 +1790,20 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
         raw_sv = initial.get('sin_vehiculo_registrado')
         sin_vehiculo = raw_sv is True or str(raw_sv).lower() == 'true'
 
+        # Flujo precompra sin vehículo: autocompletar descripción si viene vacía
+        # para no bloquear creación por validación de campo requerido.
+        descripcion_actual = str(attrs.get('descripcion_problema') or '').strip()
+        if sin_vehiculo and not descripcion_actual:
+            nombre_servicio = 'servicio'
+            servicios = attrs.get('servicios_solicitados') or []
+            try:
+                primer_servicio = servicios[0] if isinstance(servicios, (list, tuple)) and servicios else None
+                if primer_servicio is not None:
+                    nombre_servicio = getattr(primer_servicio, 'nombre', None) or str(primer_servicio)
+            except Exception:
+                pass
+            attrs['descripcion_problema'] = f'Solicitud de {nombre_servicio}'
+
         # Validar campos requeridos (vehiculo solo obligatorio si no es flujo sin vehículo)
         campos_requeridos = {
             'cliente': 'El cliente es requerido',

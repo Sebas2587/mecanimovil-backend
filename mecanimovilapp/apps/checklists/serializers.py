@@ -124,7 +124,7 @@ class ChecklistInstanceSerializer(serializers.ModelSerializer):
     puede_finalizar_check = serializers.SerializerMethodField()
     
     def get_orden_info(self, obj):
-        return {
+        result = {
             'id': obj.orden.id,
             'cliente': obj.orden.cliente.usuario.get_full_name(),
             'vehiculo': f"{obj.orden.vehiculo.modelo.marca.nombre} {obj.orden.vehiculo.modelo.nombre}",
@@ -133,6 +133,46 @@ class ChecklistInstanceSerializer(serializers.ModelSerializer):
             'estado': obj.orden.estado,
             'tipo_servicio': obj.orden.tipo_servicio,
         }
+
+        proveedor_info = None
+        try:
+            request = self.context.get('request')
+            taller = getattr(obj.orden, 'taller', None)
+            mecanico = getattr(obj.orden, 'mecanico', None)
+
+            if taller:
+                try:
+                    marcas = [m.nombre for m in taller.marcas_atendidas.all()[:5]]
+                except Exception:
+                    marcas = []
+                proveedor_info = {
+                    'nombre': taller.nombre,
+                    'foto_perfil_url': get_image_url(taller.foto_perfil, request),
+                    'tipo': 'taller',
+                    'tipo_display': 'Taller Mecánico',
+                    'marcas_atendidas': marcas,
+                }
+            elif mecanico:
+                try:
+                    marcas = [m.nombre for m in mecanico.marcas_atendidas.all()[:5]]
+                except Exception:
+                    marcas = []
+                try:
+                    nombre = mecanico.usuario.get_full_name()
+                except Exception:
+                    nombre = 'Mecánico'
+                proveedor_info = {
+                    'nombre': nombre,
+                    'foto_perfil_url': get_image_url(mecanico.foto_perfil, request),
+                    'tipo': 'mecanico',
+                    'tipo_display': 'Mecánico a Domicilio',
+                    'marcas_atendidas': marcas,
+                }
+        except Exception:
+            pass
+
+        result['proveedor_info'] = proveedor_info
+        return result
     
     def get_progreso_info(self, obj):
         total_items = obj.checklist_template.items.count()
