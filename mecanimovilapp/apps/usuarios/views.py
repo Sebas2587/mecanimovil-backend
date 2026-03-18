@@ -4867,14 +4867,16 @@ class NotificacionViewSet(viewsets.ModelViewSet):
     """
     ViewSet para gestionar notificaciones del usuario
     Endpoints:
-    - GET /notificaciones/ - Listar notificaciones del usuario
+    - GET /notificaciones/ - Listar notificaciones del usuario (SIN paginación)
     - POST /notificaciones/{id}/marcar_leida/ - Marcar como leída
     - POST /notificaciones/marcar_todas_leidas/ - Marcar todas como leídas
+    - POST /notificaciones/eliminar_todas/ - Soft-delete de todas las notificaciones
     - GET /notificaciones/no_leidas_count/ - Contador de no leídas
     """
     serializer_class = NotificacionSerializer
     permission_classes = [permissions.IsAuthenticated]
-    
+    pagination_class = None  # Retornar TODAS las notificaciones; la paginación ocultaba páginas
+
     def get_queryset(self):
         """Obtener solo las notificaciones activas (no eliminadas) del usuario autenticado"""
         return Notificacion.objects.filter(
@@ -4928,6 +4930,24 @@ class NotificacionViewSet(viewsets.ModelViewSet):
             'marked_count': count
         })
     
+    @action(detail=False, methods=['post'])
+    def eliminar_todas(self, request):
+        """
+        Soft-delete masivo de todas las notificaciones del usuario.
+        POST /notificaciones/eliminar_todas/
+        Las marca eliminada=True para que Celery no las recree dentro de la ventana de dedup.
+        """
+        from django.utils import timezone as tz
+        count = self.get_queryset().update(
+            eliminada=True,
+            fecha_eliminada=tz.now(),
+        )
+        return Response({
+            'status': 'success',
+            'message': f'{count} notificaciones eliminadas',
+            'deleted_count': count,
+        })
+
     @action(detail=False, methods=['get'])
     def no_leidas_count(self, request):
         """
