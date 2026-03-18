@@ -193,7 +193,9 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
             if existing:
                 logger.warning(f"🔸 ADVERTENCIA: Ya existe checklist para orden {orden_id} - ID: {existing.id}")
                 # Devolver el existente en lugar de error
-                response_serializer = ChecklistInstanceSerializer(existing)
+                response_serializer = ChecklistInstanceSerializer(
+                    existing, context=self.get_serializer_context()
+                )
                 return Response(response_serializer.data, status=status.HTTP_200_OK)
             
             # Usar el serializer simplificado para validar y crear
@@ -210,7 +212,9 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
             
             # 🔧 CORRECCIÓN: Usar el serializer completo para la respuesta
             # Esto asegura que el frontend reciba toda la información necesaria
-            response_serializer = ChecklistInstanceSerializer(instance)
+            response_serializer = ChecklistInstanceSerializer(
+                instance, context=self.get_serializer_context()
+            )
             
             headers = self.get_success_headers(response_serializer.data)
             logger.info(f"🔸 ÉXITO - Devolviendo instancia completa")
@@ -784,4 +788,57 @@ class ChecklistPhotoViewSet(viewsets.ModelViewSet):
                 response__checklist_instance__orden__mecanico=user.mecanico_domicilio
             ).select_related('response', 'response__checklist_instance')
         
-        return ChecklistPhoto.objects.none() 
+        return ChecklistPhoto.objects.none()
+    
+    def create(self, request, *args, **kwargs):
+        """Override create para logging detallado y respuesta con imagen_url"""
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        logger.info(f"📸 ChecklistPhoto.create — usuario: {request.user.username}")
+        logger.info(f"📸 Content-Type: {request.content_type}")
+        logger.info(f"📸 FILES recibidos: {list(request.FILES.keys())}")
+        logger.info(f"📸 DATA recibido: { {k: v for k, v in request.data.items() if k != 'imagen'} }")
+        
+        if 'imagen' not in request.FILES and 'imagen' not in request.data:
+            logger.error("📸 ERROR: campo 'imagen' no encontrado en la petición")
+            return Response(
+                {'error': "Se requiere el campo 'imagen' (archivo de imagen)"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        serializer = self.get_serializer(data=request.data)
+        if not serializer.is_valid():
+            logger.error(f"📸 ERROR de validación: {serializer.errors}")
+            return Response(
+                {'error': 'Datos inválidos', 'details': serializer.errors},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            foto = serializer.save()
+            logger.info(f"📸 Foto guardada: ID {foto.id}, archivo: {foto.imagen.name}")
+            
+            # Construir URL completa usando el mismo mecanismo que otros serializadores
+            from mecanimovilapp.storage.utils import get_image_url
+            imagen_url = get_image_url(foto.imagen, request)
+            logger.info(f"📸 imagen_url generada: {imagen_url}")
+            
+            return Response(
+                {
+                    'id': foto.id,
+                    'imagen_url': imagen_url,
+                    'descripcion': foto.descripcion,
+                    'orden_en_respuesta': foto.orden_en_respuesta,
+                    'fecha_captura': foto.fecha_captura,
+                },
+                status=status.HTTP_201_CREATED
+            )
+        except Exception as e:
+            logger.error(f"📸 ERROR guardando foto: {type(e).__name__}: {e}")
+            import traceback
+            logger.error(f"📸 Traceback: {traceback.format_exc()}")
+            return Response(
+                {'error': f'Error al guardar la imagen: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            ) 
