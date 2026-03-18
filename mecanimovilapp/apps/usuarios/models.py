@@ -1478,12 +1478,18 @@ class Notificacion(models.Model):
         return f"{self.usuario.username} - {self.titulo} ({'Leída' if self.leida else 'No leída'})"
 
     @classmethod
-    def crear_unica(cls, usuario, tipo, titulo, mensaje, data=None, ventana_horas=24):
+    def crear_unica(cls, usuario, tipo, titulo, mensaje, data=None, ventana_horas=24, dedup_key=None):
         """
-        Crea la notificación solo si no existe otra con el mismo usuario + tipo + data
-        creada en las últimas `ventana_horas` (incluye eliminadas via soft-delete).
-        Si el usuario ya descartó una notificación idéntica dentro de la ventana,
-        Celery no la recrea. Retorna (instancia, created).
+        Crea la notificación solo si no existe otra equivalente en las últimas
+        `ventana_horas` (incluye eliminadas via soft-delete, evita que Celery las recree).
+
+        dedup_key (dict, opcional): subset del data a usar para la comparación de
+            duplicados (usa data__contains, más permisivo que la igualdad exacta).
+            Útil cuando el data puede tener campos que varían entre runs de Celery
+            (p.ej. es_critico en health_alert) pero el identificador real es solo
+            vehicle_id. Si se omite, se usa igualdad exacta sobre todo el data.
+
+        Retorna (instancia, created).
         """
         from django.utils import timezone
         from datetime import timedelta
@@ -1493,13 +1499,23 @@ class Notificacion(models.Model):
 
         desde = timezone.now() - timedelta(hours=ventana_horas)
 
-        # Busca tanto activas como eliminadas (soft-delete) para evitar recreación
-        existente = cls.objects.filter(
-            usuario=usuario,
-            tipo=tipo,
-            data=data,
-            fecha_creacion__gte=desde,
-        ).first()
+        # Busca tanto activas como eliminadas (soft-delete) para evitar recreación.
+        # Si se pasa dedup_key usamos data__contains (subset match) para tolerar
+        # campos cambiantes dentro del data (p.ej. es_critico).
+        if dedup_key is not None:
+            existente = cls.objects.filter(
+                usuario=usuario,
+                tipo=tipo,
+                data__contains=dedup_key,
+                fecha_creacion__gte=desde,
+            ).first()
+        else:
+            existente = cls.objects.filter(
+                usuario=usuario,
+                tipo=tipo,
+                data=data,
+                fecha_creacion__gte=desde,
+            ).first()
 
         if existente:
             return existente, False

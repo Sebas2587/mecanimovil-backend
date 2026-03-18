@@ -854,7 +854,10 @@ def enviar_alerta_salud_global_push(vehiculo, motivo_texto, es_critico=False):
             }
         )
         
-        # También crear notificación in-app (deduplicada: ventana de 24h por vehículo + criticidad)
+        # También crear notificación in-app.
+        # dedup_key usa solo vehicle_id para que un cambio en es_critico entre
+        # runs de Celery no genere una notificación nueva mientras la ventana esté abierta.
+        # ventana_horas=72: si el usuario descarta la alerta no reaparece en 3 días.
         from mecanimovilapp.apps.usuarios.models import Notificacion
         Notificacion.crear_unica(
             usuario=vehiculo.cliente.usuario,
@@ -865,7 +868,8 @@ def enviar_alerta_salud_global_push(vehiculo, motivo_texto, es_critico=False):
                 "vehicle_id": str(vehiculo.id),
                 "es_critico": es_critico,
             },
-            ventana_horas=24,
+            ventana_horas=72,
+            dedup_key={"vehicle_id": str(vehiculo.id)},
         )
         
         logger.info(f"📲 Alerta Push de salud GLOBAL enviada a usuario {user_id} para {nombre_vehiculo}")
