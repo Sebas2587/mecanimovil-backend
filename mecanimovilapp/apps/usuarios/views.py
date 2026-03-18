@@ -4876,10 +4876,23 @@ class NotificacionViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     
     def get_queryset(self):
-        """Obtener solo las notificaciones del usuario autenticado"""
+        """Obtener solo las notificaciones activas (no eliminadas) del usuario autenticado"""
         return Notificacion.objects.filter(
-            usuario=self.request.user
+            usuario=self.request.user,
+            eliminada=False,
         ).select_related('usuario')
+
+    def destroy(self, request, *args, **kwargs):
+        """
+        Soft-delete: marca la notificación como eliminada en lugar de borrarla del DB.
+        Esto impide que Celery la recree dentro de la ventana de deduplicación.
+        """
+        from django.utils import timezone as tz
+        notificacion = self.get_object()
+        notificacion.eliminada = True
+        notificacion.fecha_eliminada = tz.now()
+        notificacion.save(update_fields=['eliminada', 'fecha_eliminada'])
+        return Response(status=status.HTTP_204_NO_CONTENT)
     
     @action(detail=True, methods=['post'])
     def marcar_leida(self, request, pk=None):

@@ -1444,6 +1444,15 @@ class Notificacion(models.Model):
         blank=True,
         help_text='Fecha en que se marcó como leída'
     )
+    eliminada = models.BooleanField(
+        default=False,
+        help_text='Soft-delete: el usuario la descartó; no se muestra pero evita que Celery la recree'
+    )
+    fecha_eliminada = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='Fecha en que el usuario la eliminó'
+    )
     data = models.JSONField(
         default=dict,
         blank=True,
@@ -1462,6 +1471,7 @@ class Notificacion(models.Model):
         indexes = [
             models.Index(fields=['usuario', '-fecha_creacion']),
             models.Index(fields=['usuario', 'leida']),
+            models.Index(fields=['usuario', 'eliminada']),
         ]
     
     def __str__(self):
@@ -1471,9 +1481,9 @@ class Notificacion(models.Model):
     def crear_unica(cls, usuario, tipo, titulo, mensaje, data=None, ventana_horas=24):
         """
         Crea la notificación solo si no existe otra con el mismo usuario + tipo + data
-        creada en las últimas `ventana_horas`. Evita que Celery recree notificaciones
-        que el usuario ya eliminó o que la tarea generó en la ejecución anterior.
-        Retorna (instancia, created).
+        creada en las últimas `ventana_horas` (incluye eliminadas via soft-delete).
+        Si el usuario ya descartó una notificación idéntica dentro de la ventana,
+        Celery no la recrea. Retorna (instancia, created).
         """
         from django.utils import timezone
         from datetime import timedelta
@@ -1483,6 +1493,7 @@ class Notificacion(models.Model):
 
         desde = timezone.now() - timedelta(hours=ventana_horas)
 
+        # Busca tanto activas como eliminadas (soft-delete) para evitar recreación
         existente = cls.objects.filter(
             usuario=usuario,
             tipo=tipo,
