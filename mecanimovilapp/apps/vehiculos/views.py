@@ -296,11 +296,17 @@ class VehiculoViewSet(viewsets.ModelViewSet):
              return Response({"patente": ["Este campo es obligatorio."]}, status=status.HTTP_400_BAD_REQUEST)
 
         if patente:
+            # Reject if another user already owns this patente
+            other_vehicle = Vehiculo.objects.filter(patente=patente).exclude(cliente=user.cliente).first()
+            if other_vehicle:
+                return Response(
+                    {"patente": ["Esta patente ya se encuentra registrada por otro usuario."]},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
             existing_vehicle = Vehiculo.objects.filter(cliente=user.cliente, patente=patente).first()
             if existing_vehicle:
                 print(f"DEBUG: Updating existing vehicle {existing_vehicle.id}")
-                # Update logic
-                # Necesitamos un serializer para update con instance=existing_vehicle
                 serializer = self.get_serializer(existing_vehicle, data=data, partial=True)
                 if not serializer.is_valid():
                     print(f"DEBUG: Update Serializer Errors: {serializer.errors}")
@@ -460,6 +466,31 @@ class VehiculoViewSet(viewsets.ModelViewSet):
             
         serializer = ModeloSerializer(modelos, many=True)
         return Response(serializer.data)
+
+    @action(detail=False, methods=['get'], url_path='verificar-patente')
+    def verificar_patente(self, request):
+        """
+        Verifica si una patente ya está registrada en el sistema.
+        Retorna owner=self si es del mismo usuario, owner=other si pertenece a otro,
+        o registered=false si no existe.
+        GET /api/vehiculos/verificar-patente/?patente=ABCD12
+        """
+        patente = request.query_params.get('patente', '').upper().strip()
+        if not patente:
+            return Response({"error": "Debe proporcionar una patente"}, status=status.HTTP_400_BAD_REQUEST)
+
+        existing = Vehiculo.objects.filter(patente=patente).select_related('cliente__usuario').first()
+        if not existing:
+            return Response({"registered": False})
+
+        is_own = hasattr(request.user, 'cliente') and existing.cliente_id == request.user.cliente.id
+        return Response({
+            "registered": True,
+            "owner": "self" if is_own else "other",
+            "vehicle_id": existing.id if is_own else None,
+            "marca": str(existing.marca) if existing.marca else None,
+            "modelo": str(existing.modelo) if existing.modelo else None,
+        })
 
     @action(detail=False, methods=['get'], url_path='consultar-patente')
     def consultar_patente(self, request):
