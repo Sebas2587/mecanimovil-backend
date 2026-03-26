@@ -142,6 +142,54 @@ class Vehiculo(models.Model):
     def modelo_nombre(self):
         return self.modelo.nombre
 
+class ViajeRegistrado(models.Model):
+    """
+    Historial de viajes GPS registrados por el usuario.
+    Cada viaje acumula km que se suman al odómetro del vehículo.
+    """
+    vehiculo = models.ForeignKey(
+        Vehiculo,
+        on_delete=models.CASCADE,
+        related_name='viajes'
+    )
+    km_recorridos = models.FloatField(help_text="Kilómetros recorridos en el viaje")
+    km_odometro_anterior = models.PositiveIntegerField(
+        help_text="Odómetro antes del viaje"
+    )
+    km_odometro_nuevo = models.PositiveIntegerField(
+        help_text="Odómetro después del viaje"
+    )
+    duracion_segundos = models.PositiveIntegerField(
+        default=0,
+        help_text="Duración del viaje en segundos"
+    )
+    coordenadas_inicio = models.JSONField(
+        null=True, blank=True,
+        help_text="{'latitude': ..., 'longitude': ...}"
+    )
+    coordenadas_fin = models.JSONField(
+        null=True, blank=True,
+        help_text="{'latitude': ..., 'longitude': ...}"
+    )
+    velocidad_promedio_kmh = models.FloatField(
+        default=0,
+        help_text="Velocidad promedio en km/h"
+    )
+    fecha_inicio = models.DateTimeField(
+        null=True, blank=True,
+        help_text="Momento en que se inició el viaje"
+    )
+    fecha_registro = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = _('viaje registrado')
+        verbose_name_plural = _('viajes registrados')
+        ordering = ['-fecha_registro']
+
+    def __str__(self):
+        return f"Viaje {self.id} - {self.vehiculo} - {self.km_recorridos:.1f} km"
+
+
 class OfertaVehiculo(models.Model):
     """
     Ofertas de compra para vehículos en el Marketplace

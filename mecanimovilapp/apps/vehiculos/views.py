@@ -4,12 +4,13 @@ from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.db.models import Q
-from .models import Vehiculo, Marca, MarcaVehiculo, Modelo, OfertaVehiculo
+from .models import Vehiculo, Marca, MarcaVehiculo, Modelo, OfertaVehiculo, ViajeRegistrado
 from .models_health import ComponenteSalud, ReglaMantenimientoGenerica
 from .serializers import (
     VehiculoSerializer, VehiculoLiteSerializer, MarcaSerializer, 
     MarcaVehiculoSerializer, ModeloSerializer, VehiculoMarketplaceSerializer,
-    VehiculoMarketplaceDetailSerializer, OfertaVehiculoSerializer
+    VehiculoMarketplaceDetailSerializer, OfertaVehiculoSerializer,
+    RegistrarViajeSerializer
 )
 
 
@@ -352,6 +353,70 @@ class VehiculoViewSet(viewsets.ModelViewSet):
             logger.warning(f"✅ [VehiculoViewSet.perform_update] Vehículo {vehiculo.id} actualizado. Foto: {vehiculo.foto.name}")
             logger.warning(f"📸 [VehiculoViewSet.perform_update] Storage usado: {type(vehiculo.foto.storage).__name__}")
     
+    @action(detail=True, methods=['post'], url_path='registrar-viaje')
+    def registrar_viaje(self, request, pk=None):
+        """
+        Registra un viaje GPS: suma km al odómetro y dispara recálculo de salud.
+        POST /api/vehiculos/{id}/registrar-viaje/
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        vehiculo = self.get_object()  # validates ownership via get_queryset
+
+        serializer = RegistrarViajeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        km_recorridos = data['km_recorridos']
+        km_anterior = vehiculo.kilometraje
+        km_nuevo = km_anterior + int(round(km_recorridos))
+
+        vehiculo.kilometraje = km_nuevo
+        vehiculo.save(update_fields=['kilometraje', 'fecha_actualizacion'])
+
+        viaje = ViajeRegistrado.objects.create(
+            vehiculo=vehiculo,
+            km_recorridos=km_recorridos,
+            km_odometro_anterior=km_anterior,
+            km_odometro_nuevo=km_nuevo,
+            duracion_segundos=data.get('duracion_segundos', 0),
+            coordenadas_inicio=data.get('coordenadas_inicio'),
+            coordenadas_fin=data.get('coordenadas_fin'),
+            velocidad_promedio_kmh=data.get('velocidad_promedio_kmh', 0),
+            fecha_inicio=data.get('fecha_inicio'),
+        )
+
+        try:
+            from .tasks import calcular_salud_vehiculo_async
+            calcular_salud_vehiculo_async.delay(vehiculo.id, force_recalculate=True)
+            salud_status = 'recalculando'
+        except Exception as e:
+            logger.warning(f"Celery no disponible para recálculo de salud: {e}")
+            try:
+                from .tasks import calcular_estado_salud_interno
+                calcular_estado_salud_interno(vehiculo.id)
+                salud_status = 'recalculada'
+            except Exception as inner_e:
+                logger.error(f"Recálculo síncrono falló: {inner_e}")
+                salud_status = 'pendiente'
+
+        logger.info(
+            f"Viaje registrado: vehículo={vehiculo.id} "
+            f"km_recorridos={km_recorridos} "
+            f"odómetro={km_anterior}→{km_nuevo} "
+            f"salud={salud_status}"
+        )
+
+        return Response({
+            'viaje_id': viaje.id,
+            'km_recorridos': viaje.km_recorridos,
+            'km_odometro_anterior': viaje.km_odometro_anterior,
+            'km_odometro_nuevo': viaje.km_odometro_nuevo,
+            'kilometraje_actual': vehiculo.kilometraje,
+            'salud_status': salud_status,
+        }, status=status.HTTP_201_CREATED)
+
     @action(detail=False, methods=['get'], url_path='marcas')
     def get_marcas(self, request):
         """

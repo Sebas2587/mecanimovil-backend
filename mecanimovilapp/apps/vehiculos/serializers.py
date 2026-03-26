@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Vehiculo, Marca, MarcaVehiculo, Modelo, OfertaVehiculo
+from .models import Vehiculo, Marca, MarcaVehiculo, Modelo, OfertaVehiculo, ViajeRegistrado
 from .models_health import ComponenteSalud, ComponenteSaludVehiculo, EstadoSaludVehiculo
 from django.db.models import Q
 from mecanimovilapp.apps.usuarios.serializers import ClienteSerializer
@@ -818,3 +818,17 @@ class OfertaVehiculoSerializer(serializers.ModelSerializer):
         if obj.vehiculo and obj.vehiculo.cliente and obj.vehiculo.cliente.usuario and obj.vehiculo.cliente.usuario.foto_perfil:
              return get_image_url(obj.vehiculo.cliente.usuario.foto_perfil, request)
         return None
+
+
+class RegistrarViajeSerializer(serializers.Serializer):
+    km_recorridos = serializers.FloatField(min_value=0.01, max_value=9999)
+    duracion_segundos = serializers.IntegerField(min_value=0, required=False, default=0)
+    coordenadas_inicio = serializers.DictField(required=False, allow_null=True)
+    coordenadas_fin = serializers.DictField(required=False, allow_null=True)
+    velocidad_promedio_kmh = serializers.FloatField(required=False, default=0)
+    fecha_inicio = serializers.DateTimeField(required=False, allow_null=True)
+
+    def validate_km_recorridos(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("Los kilómetros recorridos deben ser mayor a 0.")
+        return round(value, 2)
