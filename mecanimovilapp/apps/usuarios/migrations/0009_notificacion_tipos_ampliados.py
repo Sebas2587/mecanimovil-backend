@@ -8,6 +8,28 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        migrations.RunSQL(
+            sql=[
+                "ALTER INDEX IF EXISTS usuarios_no_usuario_elimina_idx RENAME TO usuarios_no_usr_eliminada_idx;",
+                "CREATE INDEX IF NOT EXISTS usuarios_no_usr_eliminada_idx ON usuarios_notificaciones (usuario_id, eliminada);",
+            ],
+            reverse_sql=[
+                "DROP INDEX IF EXISTS usuarios_no_usr_eliminada_idx;",
+            ],
+            state_operations=[
+                migrations.RemoveIndex(
+                    model_name='notificacion',
+                    name='usuarios_no_usuario_elimina_idx',
+                ),
+                migrations.AddIndex(
+                    model_name='notificacion',
+                    index=models.Index(
+                        fields=['usuario', 'eliminada'],
+                        name='usuarios_no_usr_eliminada_idx',
+                    ),
+                ),
+            ],
+        ),
         migrations.AlterField(
             model_name='notificacion',
             name='tipo',

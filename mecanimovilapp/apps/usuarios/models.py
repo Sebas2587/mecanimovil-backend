@@ -1475,7 +1475,7 @@ class Notificacion(models.Model):
         indexes = [
             models.Index(fields=['usuario', '-fecha_creacion'], name='usuarios_no_usuario_e45db9_idx'),
             models.Index(fields=['usuario', 'leida'], name='usuarios_no_usuario_b76e82_idx'),
-            models.Index(fields=['usuario', 'eliminada'], name='usuarios_no_usuario_elimina_idx'),
+            models.Index(fields=['usuario', 'eliminada'], name='usuarios_no_usr_eliminada_idx'),
         ]
     
     def __str__(self):
