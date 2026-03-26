@@ -1473,9 +1473,9 @@ class Notificacion(models.Model):
         verbose_name_plural = 'Notificaciones'
         ordering = ['-fecha_creacion']
         indexes = [
-            models.Index(fields=['usuario', '-fecha_creacion']),
-            models.Index(fields=['usuario', 'leida']),
-            models.Index(fields=['usuario', 'eliminada']),
+            models.Index(fields=['usuario', '-fecha_creacion'], name='usuarios_no_usuario_e45db9_idx'),
+            models.Index(fields=['usuario', 'leida'], name='usuarios_no_usuario_b76e82_idx'),
+            models.Index(fields=['usuario', 'eliminada'], name='usuarios_no_usuario_elimina_idx'),
         ]
     
     def __str__(self):
