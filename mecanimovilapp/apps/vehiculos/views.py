@@ -401,6 +401,46 @@ class VehiculoViewSet(viewsets.ModelViewSet):
                 logger.error(f"Recálculo síncrono falló: {inner_e}")
                 salud_status = 'pendiente'
 
+        nombre_vehiculo = f"{vehiculo.marca} {vehiculo.modelo}" if vehiculo.marca else f"Vehículo {vehiculo.patente or ''}"
+        user_id = None
+        try:
+            if vehiculo.cliente and vehiculo.cliente.usuario:
+                user_id = vehiculo.cliente.usuario.id
+        except Exception:
+            pass
+
+        if user_id:
+            try:
+                from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
+                from mecanimovilapp.apps.usuarios.models import Notificacion
+
+                send_expo_push_notification.delay(
+                    user_id,
+                    f"Viaje registrado: {nombre_vehiculo}",
+                    f"Se registraron {km_recorridos:.1f} km. Odómetro: {km_anterior:,} → {km_nuevo:,} km.",
+                    {
+                        "type": "viaje_registrado",
+                        "vehicle_id": str(vehiculo.id),
+                        "viaje_id": str(viaje.id),
+                        "km_recorridos": str(km_recorridos),
+                    },
+                )
+
+                Notificacion.crear_unica(
+                    usuario=vehiculo.cliente.usuario,
+                    tipo='viaje_registrado',
+                    titulo=f"Viaje registrado: {nombre_vehiculo}",
+                    mensaje=f"Se registraron {km_recorridos:.1f} km. Odómetro: {km_anterior:,} → {km_nuevo:,} km. Las métricas de salud se actualizarán automáticamente.",
+                    data={
+                        "vehicle_id": str(vehiculo.id),
+                        "viaje_id": str(viaje.id),
+                    },
+                    ventana_horas=1,
+                    dedup_key={"viaje_id": str(viaje.id)},
+                )
+            except Exception as push_err:
+                logger.warning(f"Error enviando push de viaje: {push_err}")
+
         logger.info(
             f"Viaje registrado: vehículo={vehiculo.id} "
             f"km_recorridos={km_recorridos} "

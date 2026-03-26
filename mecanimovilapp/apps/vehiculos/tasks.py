@@ -89,8 +89,9 @@ def calcular_estado_salud_interno(vehicle_id):
     if salud_global == 0:
          enviar_alerta_salud_global_push(vehiculo, "es de 0%", es_critico=True)
     elif salud_global < 50.0 and salud_global > 0:
-         # Limit noise?
          enviar_alerta_salud_global_push(vehiculo, f"es baja ({salud_global:.0f}%)", es_critico=False)
+
+    enviar_salud_actualizada_push(vehiculo, salud_global)
 
     return estado_global
 
@@ -789,25 +790,21 @@ def procesar_checklists_historicos_vehiculo(vehicle_id):
 
 def enviar_alerta_salud_push(vehiculo, componente, motivo_texto):
     """
-    Función de apoyo para enviar notificaciones push de salud
+    Función de apoyo para enviar notificaciones push de salud por componente.
     """
     try:
         if not (vehiculo.cliente and vehiculo.cliente.usuario):
             return
-            
+
         user_id = vehiculo.cliente.usuario.id
         nombre_vehiculo = f"{vehiculo.marca} {vehiculo.modelo}" if vehiculo.marca else f"Vehículo {vehiculo.patente or ''}"
-        # componente arg is ComponenteSaludVehiculo object
         nombre_componente = componente.componente.nombre
-        
-        # Evitar ruidos excesivos enviando alertas muy seguidas (throttling básico opcional)
-        # Por ahora enviamos directamente como lo pide el usuario
-        
+
         title = f"⚠️ Alerta de Salud: {nombre_componente}"
         body = f"La salud de {nombre_componente} en tu {nombre_vehiculo} {motivo_texto}. Te recomendamos agendar una revisión."
-        
+
         from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
-        
+
         send_expo_push_notification.delay(
             user_id,
             title,
@@ -816,9 +813,24 @@ def enviar_alerta_salud_push(vehiculo, componente, motivo_texto):
                 "type": "health_alert",
                 "vehicle_id": str(vehiculo.id),
                 "componente": nombre_componente,
-                "salud": str(componente.salud_porcentaje)
-            }
+                "salud": str(componente.salud_porcentaje),
+            },
         )
+
+        from mecanimovilapp.apps.usuarios.models import Notificacion
+        Notificacion.crear_unica(
+            usuario=vehiculo.cliente.usuario,
+            tipo='health_alert',
+            titulo=title,
+            mensaje=body,
+            data={
+                "vehicle_id": str(vehiculo.id),
+                "componente": nombre_componente,
+            },
+            ventana_horas=24,
+            dedup_key={"vehicle_id": str(vehiculo.id), "componente": nombre_componente},
+        )
+
         logger.info(f"📲 Alerta Push de salud enviada a usuario {user_id} para {nombre_componente}")
     except Exception as e:
         logger.error(f"Error en enviar_alerta_salud_push: {e}")
@@ -875,4 +887,46 @@ def enviar_alerta_salud_global_push(vehiculo, motivo_texto, es_critico=False):
         logger.info(f"📲 Alerta Push de salud GLOBAL enviada a usuario {user_id} para {nombre_vehiculo}")
     except Exception as e:
         logger.error(f"Error en enviar_alerta_salud_global_push: {e}")
+
+
+def enviar_salud_actualizada_push(vehiculo, salud_global):
+    """
+    Notificación informativa: recálculo de salud completado.
+    Se envía con throttle de 30 min por vehículo para no saturar.
+    """
+    try:
+        if not (vehiculo.cliente and vehiculo.cliente.usuario):
+            return
+
+        user_id = vehiculo.cliente.usuario.id
+        nombre_vehiculo = f"{vehiculo.marca} {vehiculo.modelo}" if vehiculo.marca else f"Vehículo {vehiculo.patente or ''}"
+
+        title = f"Salud actualizada: {nombre_vehiculo}"
+        body = f"La salud general de tu {nombre_vehiculo} es de {salud_global:.0f}%."
+
+        from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
+
+        send_expo_push_notification.delay(
+            user_id,
+            title,
+            body,
+            {
+                "type": "salud_actualizada",
+                "vehicle_id": str(vehiculo.id),
+                "salud_global": str(salud_global),
+            },
+        )
+
+        from mecanimovilapp.apps.usuarios.models import Notificacion
+        Notificacion.crear_unica(
+            usuario=vehiculo.cliente.usuario,
+            tipo='salud_actualizada',
+            titulo=title,
+            mensaje=body,
+            data={"vehicle_id": str(vehiculo.id)},
+            ventana_horas=1,
+            dedup_key={"vehicle_id": str(vehiculo.id)},
+        )
+    except Exception as e:
+        logger.error(f"Error en enviar_salud_actualizada_push: {e}")
 

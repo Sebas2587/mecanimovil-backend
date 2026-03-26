@@ -1,12 +1,49 @@
 from celery import shared_task
+from django.core.cache import cache
 import logging
 
 logger = logging.getLogger(__name__)
 
-@shared_task
-def send_expo_push_notification(user_id, title, body, data=None):
+THROTTLE_WINDOWS = {
+    'health_alert':        3600,
+    'global_health_alert': 3600 * 6,
+    'viaje_registrado':    300,
+    'salud_actualizada':   1800,
+    'recordatorio_pago':   3600 * 4,
+    'cambio_estado':       60,
+    'nueva_oferta':        120,
+    'solicitud_adjudicada': 60,
+}
+
+DEFAULT_THROTTLE_SECONDS = 300
+
+
+def _should_throttle(user_id, data):
     """
-    Tarea de Celery para enviar notificaciones push usando Expo
+    Returns True if this push should be skipped (duplicate within window).
+    Uses Redis/cache with a per-user per-event key.
+    """
+    notif_type = (data or {}).get('type', 'generic')
+    vehicle_id = (data or {}).get('vehicle_id', '')
+    solicitud_id = (data or {}).get('solicitud_id', '')
+    unique_suffix = vehicle_id or solicitud_id or ''
+
+    cache_key = f"push_throttle:{user_id}:{notif_type}:{unique_suffix}"
+    window = THROTTLE_WINDOWS.get(notif_type, DEFAULT_THROTTLE_SECONDS)
+
+    if cache.get(cache_key):
+        logger.debug(f"⏳ Push throttled: {cache_key} (window {window}s)")
+        return True
+
+    cache.set(cache_key, 1, timeout=window)
+    return False
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
+def send_expo_push_notification(self, user_id, title, body, data=None):
+    """
+    Tarea de Celery para enviar notificaciones push usando Expo.
+    Incluye throttling por tipo de evento y reintentos automáticos.
     """
     from .models import Usuario
     from exponent_server_sdk import (
@@ -15,44 +52,50 @@ def send_expo_push_notification(user_id, title, body, data=None):
         PushServerError,
         PushTicketError,
     )
-    
+
+    if _should_throttle(user_id, data):
+        return
+
     try:
         user = Usuario.objects.get(pk=user_id)
         token = user.expo_push_token
-        
+
         if not token:
-            logger.debug(f"ℹ️ [send_expo_push_notification] Usuario {user_id} no tiene expo_push_token registrado")
+            logger.debug(f"ℹ️ [push] Usuario {user_id} sin expo_push_token")
             return
-        
-        # Preparar el mensaje
+
+        notif_type = (data or {}).get('type', 'generic')
+        channel_id = 'default'
+        if notif_type in ('health_alert', 'global_health_alert', 'salud_actualizada'):
+            channel_id = 'salud'
+        elif notif_type == 'viaje_registrado':
+            channel_id = 'viajes'
+        elif notif_type in ('recordatorio_pago', 'cambio_estado', 'nueva_oferta', 'solicitud_adjudicada'):
+            channel_id = 'servicios'
+
         message = PushMessage(
             to=token,
             title=title,
             body=body,
-            data=data or {}
+            data=data or {},
+            sound='default',
+            channel_id=channel_id,
+            priority='high' if notif_type in ('health_alert', 'global_health_alert', 'cambio_estado') else 'default',
         )
-        
-        # Enviar usando el cliente de Expo
+
         try:
-            # publishing devuelve un objeto de respuesta de ticket.
-            # NO lo manejamos sincrónicamente para validación profunda de tickets aquí
-            # ya que eso requiere un paso extra de polling, pero registramos el envío.
             PushClient().publish(message)
-            logger.info(f"✅ Notificación Push enviada exitosamente a usuario {user_id} (@{user.username})")
-            
+            logger.info(f"✅ Push [{notif_type}] enviada a usuario {user_id}")
         except PushServerError as exc:
-            # Errores del servidor de Expo (ej. 5xx)
-            logger.error(f"❌ Error del servidor de Expo para usuario {user_id}: {exc}")
-            # Aquí se podría implementar reintento si se desea
+            logger.error(f"❌ Expo server error para usuario {user_id}: {exc}")
+            raise self.retry(exc=exc)
         except (PushTicketError, ValueError) as exc:
-            # Token inválido (DeviceNotRegistered) o errores de formato
-            logger.error(f"❌ Token de Expo inválido/expirado para usuario {user_id}: {exc}")
-            # Limpiar el token inválido para evitar envíos futuros fallidos
+            logger.error(f"❌ Token inválido para usuario {user_id}: {exc}")
             user.expo_push_token = None
             user.save(update_fields=['expo_push_token'])
-            logger.info(f"🧹 Token inválido removido del usuario {user_id}")
-            
+
     except Usuario.DoesNotExist:
-        logger.error(f"❌ [send_expo_push_notification] Usuario con ID {user_id} no encontrado")
+        logger.error(f"❌ [push] Usuario {user_id} no encontrado")
     except Exception as e:
-        logger.error(f"❌ Error crítico en send_expo_push_notification: {str(e)}", exc_info=True)
+        logger.error(f"❌ Error crítico en push: {str(e)}", exc_info=True)
+        raise self.retry(exc=e)

@@ -1412,8 +1412,12 @@ class Notificacion(models.Model):
     """
     TIPO_CHOICES = [
         ('health_alert', 'Alerta de Salud'),
+        ('salud_actualizada', 'Salud Actualizada'),
+        ('viaje_registrado', 'Viaje Registrado'),
         ('payment_reminder', 'Recordatorio de Pago'),
         ('order_update', 'Actualización de Orden'),
+        ('nueva_oferta', 'Nueva Oferta'),
+        ('solicitud_adjudicada', 'Solicitud Adjudicada'),
         ('system', 'Sistema'),
     ]
     
