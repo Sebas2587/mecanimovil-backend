@@ -356,13 +356,14 @@ class VehiculoViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='registrar-viaje')
     def registrar_viaje(self, request, pk=None):
         """
-        Registra un viaje GPS: suma km al odómetro y dispara recálculo de salud.
+        Registra un viaje GPS: suma km al odómetro y responde de inmediato.
+        Recálculo de salud y notificaciones se procesan en background vía Celery.
         POST /api/vehiculos/{id}/registrar-viaje/
         """
         import logging
         logger = logging.getLogger(__name__)
 
-        vehiculo = self.get_object()  # validates ownership via get_queryset
+        vehiculo = self.get_object()
 
         serializer = RegistrarViajeSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -387,65 +388,17 @@ class VehiculoViewSet(viewsets.ModelViewSet):
             fecha_inicio=data.get('fecha_inicio'),
         )
 
+        # Everything below is fire-and-forget: enqueue to Celery, never block.
+        from .tasks import procesar_post_viaje
         try:
-            from .tasks import calcular_salud_vehiculo_async
-            calcular_salud_vehiculo_async.delay(vehiculo.id, force_recalculate=True)
-            salud_status = 'recalculando'
+            procesar_post_viaje.delay(vehiculo.id, viaje.id, km_recorridos, km_anterior, km_nuevo)
         except Exception as e:
-            logger.warning(f"Celery no disponible para recálculo de salud: {e}")
-            try:
-                from .tasks import calcular_estado_salud_interno
-                calcular_estado_salud_interno(vehiculo.id)
-                salud_status = 'recalculada'
-            except Exception as inner_e:
-                logger.error(f"Recálculo síncrono falló: {inner_e}")
-                salud_status = 'pendiente'
-
-        nombre_vehiculo = f"{vehiculo.marca} {vehiculo.modelo}" if vehiculo.marca else f"Vehículo {vehiculo.patente or ''}"
-        user_id = None
-        try:
-            if vehiculo.cliente and vehiculo.cliente.usuario:
-                user_id = vehiculo.cliente.usuario.id
-        except Exception:
-            pass
-
-        if user_id:
-            try:
-                from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
-                from mecanimovilapp.apps.usuarios.models import Notificacion
-
-                send_expo_push_notification.delay(
-                    user_id,
-                    f"Viaje registrado: {nombre_vehiculo}",
-                    f"Se registraron {km_recorridos:.1f} km. Odómetro: {km_anterior:,} → {km_nuevo:,} km.",
-                    {
-                        "type": "viaje_registrado",
-                        "vehicle_id": str(vehiculo.id),
-                        "viaje_id": str(viaje.id),
-                        "km_recorridos": str(km_recorridos),
-                    },
-                )
-
-                Notificacion.crear_unica(
-                    usuario=vehiculo.cliente.usuario,
-                    tipo='viaje_registrado',
-                    titulo=f"Viaje registrado: {nombre_vehiculo}",
-                    mensaje=f"Se registraron {km_recorridos:.1f} km. Odómetro: {km_anterior:,} → {km_nuevo:,} km. Las métricas de salud se actualizarán automáticamente.",
-                    data={
-                        "vehicle_id": str(vehiculo.id),
-                        "viaje_id": str(viaje.id),
-                    },
-                    ventana_horas=1,
-                    dedup_key={"viaje_id": str(viaje.id)},
-                )
-            except Exception as push_err:
-                logger.warning(f"Error enviando push de viaje: {push_err}")
+            logger.warning(f"Celery no disponible para post-viaje: {e}")
 
         logger.info(
             f"Viaje registrado: vehículo={vehiculo.id} "
             f"km_recorridos={km_recorridos} "
-            f"odómetro={km_anterior}→{km_nuevo} "
-            f"salud={salud_status}"
+            f"odómetro={km_anterior}→{km_nuevo}"
         )
 
         return Response({
@@ -454,7 +407,7 @@ class VehiculoViewSet(viewsets.ModelViewSet):
             'km_odometro_anterior': viaje.km_odometro_anterior,
             'km_odometro_nuevo': viaje.km_odometro_nuevo,
             'kilometraje_actual': vehiculo.kilometraje,
-            'salud_status': salud_status,
+            'salud_status': 'recalculando',
         }, status=status.HTTP_201_CREATED)
 
     @action(detail=False, methods=['get'], url_path='marcas')

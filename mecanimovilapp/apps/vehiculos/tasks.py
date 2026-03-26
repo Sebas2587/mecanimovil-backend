@@ -151,6 +151,79 @@ def calcular_salud_vehiculo_async(self, vehicle_id, force_recalculate=False):
         raise self.retry(exc=exc, countdown=30)
 
 
+@shared_task(bind=True, max_retries=2, default_retry_delay=15)
+def procesar_post_viaje(self, vehicle_id, viaje_id, km_recorridos, km_anterior, km_nuevo):
+    """
+    Procesa todo lo que sigue al registro de un viaje, fuera del request HTTP:
+    1. Recálculo de salud del vehículo
+    2. Push notification al usuario
+    3. Notificación in-app
+    """
+    try:
+        from .models import Vehiculo
+
+        vehiculo = Vehiculo.objects.select_related('marca', 'modelo', 'cliente__usuario').get(id=vehicle_id)
+        nombre_vehiculo = (
+            f"{vehiculo.marca} {vehiculo.modelo}" if vehiculo.marca
+            else f"Vehículo {vehiculo.patente or ''}"
+        )
+
+        # 1. Recálculo de salud (puede tardar 1-5s, no importa aquí)
+        try:
+            calcular_estado_salud_interno(vehicle_id)
+            logger.info(f"Salud recalculada para vehículo {vehicle_id} post-viaje")
+        except Exception as e:
+            logger.error(f"Error recalculando salud post-viaje para {vehicle_id}: {e}")
+
+        # 2. Push + notificación in-app
+        user_id = None
+        try:
+            if vehiculo.cliente and vehiculo.cliente.usuario:
+                user_id = vehiculo.cliente.usuario.id
+        except Exception:
+            pass
+
+        if user_id:
+            try:
+                from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
+                from mecanimovilapp.apps.usuarios.models import Notificacion
+
+                send_expo_push_notification.delay(
+                    user_id,
+                    f"Viaje registrado: {nombre_vehiculo}",
+                    f"Se registraron {km_recorridos:.1f} km. Odómetro: {km_anterior:,} → {km_nuevo:,} km.",
+                    {
+                        "type": "viaje_registrado",
+                        "vehicle_id": str(vehicle_id),
+                        "viaje_id": str(viaje_id),
+                        "km_recorridos": str(km_recorridos),
+                    },
+                )
+
+                Notificacion.crear_unica(
+                    usuario=vehiculo.cliente.usuario,
+                    tipo='viaje_registrado',
+                    titulo=f"Viaje registrado: {nombre_vehiculo}",
+                    mensaje=(
+                        f"Se registraron {km_recorridos:.1f} km. "
+                        f"Odómetro: {km_anterior:,} → {km_nuevo:,} km. "
+                        f"Las métricas de salud se actualizarán automáticamente."
+                    ),
+                    data={
+                        "vehicle_id": str(vehicle_id),
+                        "viaje_id": str(viaje_id),
+                    },
+                    ventana_horas=1,
+                    dedup_key={"viaje_id": str(viaje_id)},
+                )
+            except Exception as push_err:
+                logger.warning(f"Error enviando push de viaje: {push_err}")
+
+    except Exception as exc:
+        logger.error(f"Error en procesar_post_viaje ({vehicle_id}): {exc}")
+        raise self.retry(exc=exc)
+
+
 @shared_task
 def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
     """
