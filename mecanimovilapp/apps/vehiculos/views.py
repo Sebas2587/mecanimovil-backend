@@ -671,6 +671,7 @@ class VehiculoViewSet(viewsets.ModelViewSet):
             return Response({"error": "No eres el dueño de este vehículo"}, status=status.HTTP_403_FORBIDDEN)
 
         from mecanimovilapp.apps.ordenes.models import SolicitudServicio
+        from mecanimovilapp.apps.ordenes.history_km import kilometraje_al_momento_del_servicio
         from mecanimovilapp.storage.utils import get_image_url
 
         solicitudes = SolicitudServicio.objects.filter(
@@ -678,7 +679,10 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         ).select_related(
             'taller', 'mecanico__usuario', 'cliente__usuario',
             'oferta_proveedor__solicitud',
-        ).prefetch_related('lineas__oferta_servicio__servicio').order_by('-fecha_servicio')
+        ).prefetch_related(
+            'lineas__oferta_servicio__servicio',
+            'checklist_instance__respuestas__item_template__catalog_item',
+        ).order_by('-fecha_servicio')
 
         history = []
         for sol in solicitudes:
@@ -708,6 +712,7 @@ class VehiculoViewSet(viewsets.ModelViewSet):
             if sol.oferta_proveedor_id and sol.oferta_proveedor and sol.oferta_proveedor.solicitud_id:
                 solicitud_publica_id = str(sol.oferta_proveedor.solicitud_id)
 
+            km_servicio = kilometraje_al_momento_del_servicio(sol)
             history.append({
                 'id': sol.id,
                 'solicitud_publica_id': solicitud_publica_id,
@@ -717,7 +722,7 @@ class VehiculoViewSet(viewsets.ModelViewSet):
                 'proveedor_foto': provider_avatar,
                 'tipo_proveedor': provider_type,
                 'total': str(sol.total) if sol.total else None,
-                'kilometraje': vehiculo.kilometraje,
+                'kilometraje': km_servicio,
                 'verified': True,
                 'cliente_original': sol.cliente.usuario.username if sol.cliente and sol.cliente.usuario else None,
             })

@@ -640,7 +640,14 @@ class VehiculoMarketplaceDetailSerializer(VehiculoMarketplaceSerializer):
     def get_history(self, obj):
         # Obtener solicitudes completadas asociados al vehículo
         from mecanimovilapp.apps.ordenes.models import SolicitudServicio
-        solicitudes = SolicitudServicio.objects.filter(vehiculo=obj, estado='completado').order_by('-fecha_servicio')
+        from mecanimovilapp.apps.ordenes.history_km import kilometraje_al_momento_del_servicio
+
+        solicitudes = SolicitudServicio.objects.filter(
+            vehiculo=obj, estado='completado'
+        ).prefetch_related(
+            'lineas__oferta_servicio__servicio',
+            'checklist_instance__respuestas__item_template__catalog_item',
+        ).order_by('-fecha_servicio')
         
         history_data = []
         for sol in solicitudes:
@@ -677,6 +684,7 @@ class VehiculoMarketplaceDetailSerializer(VehiculoMarketplaceSerializer):
                 elif hasattr(sol.mecanico.usuario, 'foto_perfil_url') and sol.mecanico.usuario.foto_perfil_url:
                      provider_avatar = sol.mecanico.usuario.foto_perfil_url
             
+            km_servicio = kilometraje_al_momento_del_servicio(sol)
             history_data.append({
                 'id': sol.id,
                 'date': sol.fecha_servicio.strftime('%d %b %Y'),
@@ -685,7 +693,8 @@ class VehiculoMarketplaceDetailSerializer(VehiculoMarketplaceSerializer):
                 'provider_avatar': provider_avatar,
                 'provider_type': provider_type,
                 'verified': True,
-                'mileage': f"{obj.kilometraje} km", # Fallback: Historical mileage logic needed in future
+                'kilometraje': km_servicio,
+                'mileage': f"{km_servicio} km" if km_servicio is not None else None,
                 'cost': sol.total # Adding total cost of the service
             })
             
