@@ -1,7 +1,7 @@
 from rest_framework import viewsets, permissions, filters, status
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
-from django.db.models import Q, Avg, Count, Sum
+from django.db.models import Q, Avg, Count, Sum, Exists, OuterRef
 from django.utils import timezone
 from datetime import datetime, timedelta, time
 from .models import (
@@ -32,6 +32,7 @@ from decimal import Decimal
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 from mecanimovilapp.apps.usuarios.models import Cliente, Usuario, Taller, MecanicoDomicilio, ConnectionStatus
+from mecanimovilapp.apps.vehiculos.models import Vehiculo
 from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
 from mecanimovilapp.apps.servicios.models import Servicio
 from django.contrib.gis.geos import Point
@@ -2560,11 +2561,17 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
                 'cliente', 'cliente__usuario', 'vehiculo', 'direccion_usuario'
             ).prefetch_related('servicios_solicitados', 'proveedores_dirigidos', 'ofertas')
         
-        # Cliente viendo sus solicitudes + solicitudes de vehículos que posee actualmente
+        # Cliente: propias solicitudes + solicitudes ligadas a un vehículo que hoy es suyo.
+        # Usar Exists en lugar de OR + distinct() para evitar filas duplicadas por JOIN y
+        # errores con get()/retrieve en PostgreSQL.
         if hasattr(user, 'cliente'):
+            vehiculo_es_mio = Vehiculo.objects.filter(
+                pk=OuterRef('vehiculo_id'),
+                cliente_id=user.cliente.pk,
+            )
             return SolicitudServicioPublica.objects.filter(
-                Q(cliente=user.cliente) | Q(vehiculo__cliente=user.cliente)
-            ).distinct().select_related(
+                Q(cliente=user.cliente) | Exists(vehiculo_es_mio)
+            ).select_related(
                 'cliente', 'cliente__usuario', 'vehiculo', 'direccion_usuario'
             ).prefetch_related('servicios_solicitados', 'proveedores_dirigidos', 'ofertas')
         
@@ -2840,7 +2847,11 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
             QuerySet: Proveedores que cumplen los criterios
         """
         from mecanimovilapp.apps.servicios.models import OfertaServicio
-        
+
+        if not solicitud.vehiculo:
+            logger.warning(f"Solicitud {solicitud.id} sin vehículo: no se notifica a proveedores por marca")
+            return Usuario.objects.none()
+
         marca_vehiculo = solicitud.vehiculo.marca
         if not marca_vehiculo:
             logger.warning(f"Solicitud {solicitud.id} no tiene marca de vehículo")
@@ -2913,20 +2924,29 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
                 proveedores = self._obtener_proveedores_para_notificar(solicitud)
             
             if not proveedores.exists():
+                marca_txt = 'N/A'
+                v = solicitud.vehiculo
+                if v and v.marca:
+                    marca_txt = getattr(v.marca, 'nombre', str(v.marca))
                 logger.warning(
                     f"No se encontraron proveedores elegibles para notificar solicitud {solicitud.id}. "
-                    f"Marca: {solicitud.vehiculo.marca.nombre if solicitud.vehiculo.marca else 'N/A'}"
+                    f"Marca: {marca_txt}"
                 )
                 return
             
             # Enviar notificación a cada proveedor
             for proveedor in proveedores:
+                v = solicitud.vehiculo
+                if v:
+                    vehiculo_label = f"{getattr(v.marca, 'nombre', v.marca)} {getattr(v.modelo, 'nombre', v.modelo)}"
+                else:
+                    vehiculo_label = 'Sin vehículo'
                 async_to_sync(channel_layer.group_send)(
                     f"proveedor_{proveedor.id}",
                     {
                         'type': 'nueva_solicitud',
                         'solicitud_id': str(solicitud.id),
-                        'vehiculo': f"{solicitud.vehiculo.marca} {solicitud.vehiculo.modelo}",
+                        'vehiculo': vehiculo_label,
                         'descripcion': solicitud.descripcion_problema[:100],
                         'urgencia': solicitud.urgencia,
                         'fecha_expiracion': solicitud.fecha_expiracion.isoformat()
@@ -4595,11 +4615,15 @@ class OfertaProveedorViewSet(viewsets.ModelViewSet):
             queryset = OfertaProveedor.objects.select_related(
                 'solicitud', 'solicitud__cliente', 'proveedor'
             ).prefetch_related('detalles_servicios__servicio', 'mensajes_chat')
-        # Cliente viendo ofertas de sus solicitudes + solicitudes de vehículos que posee
+        # Cliente: ofertas de solicitudes propias o de vehículos que hoy son suyos (sin OR+distinct).
         elif hasattr(user, 'cliente'):
+            solicitud_vehiculo_mio = SolicitudServicioPublica.objects.filter(
+                pk=OuterRef('solicitud_id'),
+                vehiculo__cliente=user.cliente,
+            )
             queryset = OfertaProveedor.objects.filter(
-                Q(solicitud__cliente=user.cliente) | Q(solicitud__vehiculo__cliente=user.cliente)
-            ).distinct().select_related(
+                Q(solicitud__cliente=user.cliente) | Exists(solicitud_vehiculo_mio)
+            ).select_related(
                 'solicitud', 'solicitud__cliente', 'proveedor'
             ).prefetch_related('detalles_servicios__servicio', 'mensajes_chat')
         # Proveedor viendo sus ofertas
