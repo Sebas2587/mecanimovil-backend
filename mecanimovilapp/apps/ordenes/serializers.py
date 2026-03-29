@@ -1783,6 +1783,8 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
         """
         Validaci?n adicional antes de crear la solicitud
         """
+        request = self.context.get('request')
+
         # Flujo opcional sin vehículo registrado (ej. inspección precompra): el cliente
         # debe enviar explícitamente sin_vehiculo_registrado=true para no exigir vehiculo.
         # Así no se afecta el flujo actual que siempre envía vehiculo.
@@ -1882,7 +1884,43 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
                     raise serializers.ValidationError({
                         'fecha_preferida': 'La fecha preferida no puede ser en el pasado'
                     })
-        
+
+        # Misma solicitud activa: mismo vehículo + al menos un servicio ya pedido en otra solicitud abierta
+        estados_bloquean_duplicado = [
+            'creada', 'seleccionando_servicios', 'publicada', 'con_ofertas',
+            'adjudicada', 'pendiente_pago', 'pagada', 'en_ejecucion',
+        ]
+        vehiculo_dup = attrs.get('vehiculo')
+        servicios_dup = attrs.get('servicios_solicitados') or []
+        if (
+            not sin_vehiculo
+            and vehiculo_dup
+            and servicios_dup
+            and request
+            and hasattr(request.user, 'cliente')
+        ):
+            servicio_ids = []
+            for s in servicios_dup:
+                pk = getattr(s, 'pk', None)
+                if pk is None and s is not None:
+                    pk = getattr(s, 'id', None)
+                if pk is not None:
+                    servicio_ids.append(pk)
+            if servicio_ids:
+                existe = SolicitudServicioPublica.objects.filter(
+                    cliente=request.user.cliente,
+                    vehiculo=vehiculo_dup,
+                    estado__in=estados_bloquean_duplicado,
+                    servicios_solicitados__id__in=servicio_ids,
+                ).distinct().exists()
+                if existe:
+                    raise serializers.ValidationError({
+                        'servicios_solicitados': (
+                            'Ya tienes una solicitud activa con uno o más de estos servicios para este '
+                            'vehículo. Revisa Mis solicitudes o espera a que finalice.'
+                        )
+                    })
+
         return attrs
     
     def create(self, validated_data):
