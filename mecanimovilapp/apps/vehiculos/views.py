@@ -676,7 +676,8 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         solicitudes = SolicitudServicio.objects.filter(
             vehiculo=vehiculo, estado='completado'
         ).select_related(
-            'taller', 'mecanico__usuario', 'cliente__usuario'
+            'taller', 'mecanico__usuario', 'cliente__usuario',
+            'oferta_proveedor__solicitud',
         ).prefetch_related('lineas__oferta_servicio__servicio').order_by('-fecha_servicio')
 
         history = []
@@ -703,8 +704,13 @@ class VehiculoViewSet(viewsets.ModelViewSet):
                 if sol.mecanico.usuario.foto_perfil:
                     provider_avatar = get_image_url(sol.mecanico.usuario.foto_perfil, request)
 
+            solicitud_publica_id = None
+            if sol.oferta_proveedor_id and sol.oferta_proveedor and sol.oferta_proveedor.solicitud_id:
+                solicitud_publica_id = str(sol.oferta_proveedor.solicitud_id)
+
             history.append({
                 'id': sol.id,
+                'solicitud_publica_id': solicitud_publica_id,
                 'fecha_servicio': sol.fecha_servicio.isoformat() if sol.fecha_servicio else None,
                 'servicio_nombre': service_name,
                 'nombre_proveedor': provider_name,

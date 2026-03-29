@@ -2560,11 +2560,11 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
                 'cliente', 'cliente__usuario', 'vehiculo', 'direccion_usuario'
             ).prefetch_related('servicios_solicitados', 'proveedores_dirigidos', 'ofertas')
         
-        # Cliente viendo sus solicitudes
+        # Cliente viendo sus solicitudes + solicitudes de vehículos que posee actualmente
         if hasattr(user, 'cliente'):
             return SolicitudServicioPublica.objects.filter(
-                cliente=user.cliente
-            ).select_related(
+                Q(cliente=user.cliente) | Q(vehiculo__cliente=user.cliente)
+            ).distinct().select_related(
                 'cliente', 'cliente__usuario', 'vehiculo', 'direccion_usuario'
             ).prefetch_related('servicios_solicitados', 'proveedores_dirigidos', 'ofertas')
         
@@ -4595,11 +4595,11 @@ class OfertaProveedorViewSet(viewsets.ModelViewSet):
             queryset = OfertaProveedor.objects.select_related(
                 'solicitud', 'solicitud__cliente', 'proveedor'
             ).prefetch_related('detalles_servicios__servicio', 'mensajes_chat')
-        # Cliente viendo ofertas de sus solicitudes
+        # Cliente viendo ofertas de sus solicitudes + solicitudes de vehículos que posee
         elif hasattr(user, 'cliente'):
             queryset = OfertaProveedor.objects.filter(
-                solicitud__cliente=user.cliente
-            ).select_related(
+                Q(solicitud__cliente=user.cliente) | Q(solicitud__vehiculo__cliente=user.cliente)
+            ).distinct().select_related(
                 'solicitud', 'solicitud__cliente', 'proveedor'
             ).prefetch_related('detalles_servicios__servicio', 'mensajes_chat')
         # Proveedor viendo sus ofertas
