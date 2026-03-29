@@ -2586,9 +2586,7 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
         elif hasattr(user, 'mecanico_domicilio') and user.mecanico_domicilio:
             marcas_atendidas = list(user.mecanico_domicilio.marcas_atendidas.values_list('id', flat=True))
         
-        # Construir query usando Q objects para evitar problemas al combinar querysets
-        from django.db.models import Q
-        
+        # Q ya está importado a nivel de módulo; no reimportar aquí (rompe la rama cliente: UnboundLocalError).
         # Iniciar con una query imposible (que no devuelve nada)
         query = Q(pk=None)
         
