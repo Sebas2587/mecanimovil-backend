@@ -655,6 +655,69 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         serializer = VehiculoMarketplaceDetailSerializer(vehiculo, context={'request': request})
         return Response(serializer.data)
 
+    @action(detail=True, methods=['get'], url_path='historial-servicios')
+    def historial_servicios(self, request, pk=None):
+        """
+        Retorna TODAS las solicitudes completadas de un vehículo independientemente
+        del dueño que las creó. Preserva trazabilidad tras transferencias.
+        Solo accesible por el dueño actual del vehículo.
+        """
+        try:
+            vehiculo = Vehiculo.objects.select_related('cliente__usuario').get(pk=pk)
+        except Vehiculo.DoesNotExist:
+            return Response({"error": "Vehículo no encontrado"}, status=status.HTTP_404_NOT_FOUND)
+
+        if vehiculo.cliente.usuario != request.user:
+            return Response({"error": "No eres el dueño de este vehículo"}, status=status.HTTP_403_FORBIDDEN)
+
+        from mecanimovilapp.apps.ordenes.models import SolicitudServicio
+        from mecanimovilapp.storage.utils import get_image_url
+
+        solicitudes = SolicitudServicio.objects.filter(
+            vehiculo=vehiculo, estado='completado'
+        ).select_related(
+            'taller', 'mecanico__usuario', 'cliente__usuario'
+        ).prefetch_related('lineas__oferta_servicio__servicio').order_by('-fecha_servicio')
+
+        history = []
+        for sol in solicitudes:
+            service_name = "Servicio General"
+            first_line = sol.lineas.first()
+            if first_line and first_line.oferta_servicio and first_line.oferta_servicio.servicio:
+                service_name = first_line.oferta_servicio.servicio.nombre
+                if sol.lineas.count() > 1:
+                    service_name += " y otros"
+
+            provider_name = "Proveedor"
+            provider_avatar = None
+            provider_type = 'mecanico'
+
+            if sol.taller:
+                provider_name = sol.taller.nombre
+                provider_type = 'taller'
+                if sol.taller.logo:
+                    provider_avatar = get_image_url(sol.taller.logo, request)
+            elif sol.mecanico:
+                provider_name = f"{sol.mecanico.usuario.first_name} {sol.mecanico.usuario.last_name}".strip()
+                provider_type = 'mecanico'
+                if sol.mecanico.usuario.foto_perfil:
+                    provider_avatar = get_image_url(sol.mecanico.usuario.foto_perfil, request)
+
+            history.append({
+                'id': sol.id,
+                'fecha_servicio': sol.fecha_servicio.isoformat() if sol.fecha_servicio else None,
+                'servicio_nombre': service_name,
+                'nombre_proveedor': provider_name,
+                'proveedor_foto': provider_avatar,
+                'tipo_proveedor': provider_type,
+                'total': str(sol.total) if sol.total else None,
+                'kilometraje': vehiculo.kilometraje,
+                'verified': True,
+                'cliente_original': sol.cliente.usuario.username if sol.cliente and sol.cliente.usuario else None,
+            })
+
+        return Response(history)
+
 
 class OfertaVehiculoViewSet(viewsets.ModelViewSet):
     """

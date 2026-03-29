@@ -170,7 +170,13 @@ class TransferenciaViewSet(viewsets.GenericViewSet):
                 'status': 'success',
                 'message': 'Vehículo transferido exitosamente',
                 'vehicle_id': vehiculo.id,
-                'new_owner': request.user.username
+                'vehicle_name': f"{vehiculo.marca.nombre} {vehiculo.modelo.nombre}",
+                'vehicle_year': vehiculo.year,
+                'vehicle_cilindrada': vehiculo.cilindraje or '',
+                'new_owner': request.user.username,
+                'new_owner_name': f"{request.user.first_name} {request.user.last_name}".strip() or request.user.username,
+                'new_owner_email': request.user.email,
+                'seller_name': f"{transferencia.vendedor.first_name} {transferencia.vendedor.last_name}".strip() or transferencia.vendedor.username,
             })
             
         except TransferenciaVehiculo.DoesNotExist:
