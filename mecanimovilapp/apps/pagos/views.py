@@ -2015,6 +2015,13 @@ def crear_preferencia_pago_proveedor(request):
             'pending': back_urls.get('pending', ''),
         }
         
+        # Mercado Pago Chile (CLP) requiere montos enteros y unit_price > 0.
+        # En entornos de prueba a veces llegan montos decimales muy pequeños (ej. 0.83),
+        # lo que termina en unit_price=0 si se hace int(monto) y MP rechaza la preferencia.
+        unit_price_clp = int(round(monto))
+        if unit_price_clp <= 0:
+            unit_price_clp = 1
+
         preference_data = {
             'items': [
                 {
@@ -2022,7 +2029,7 @@ def crear_preferencia_pago_proveedor(request):
                     'title': descripcion,
                     'description': f"Servicio para {oferta.solicitud.vehiculo.marca} {oferta.solicitud.vehiculo.modelo}",
                     'quantity': 1,
-                    'unit_price': int(monto),  # Mercado Pago Chile usa enteros
+                    'unit_price': unit_price_clp,  # Mercado Pago Chile usa enteros (>0)
                     'currency_id': 'CLP',
                 }
             ],
@@ -2041,6 +2048,7 @@ def crear_preferencia_pago_proveedor(request):
         logger.info(f"   - Oferta: {oferta.id}")
         logger.info(f"   - Tipo pago: {tipo_pago}")
         logger.info(f"   - Monto: ${monto}")
+        logger.info(f"   - Unit price (CLP): ${unit_price_clp}")
         logger.info(f"   - Proveedor: {oferta.nombre_proveedor}")
         logger.info(f"   - Back URLs: {back_urls_config}")
         logger.info(f"   - Auto Return: all (redirige en todos los casos)")
