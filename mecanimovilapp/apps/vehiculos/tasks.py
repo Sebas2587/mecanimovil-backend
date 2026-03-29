@@ -33,6 +33,38 @@ from .utils.cache_health import (
 
 logger = logging.getLogger(__name__)
 
+# Subcadenas para detectar ítems NUMBER que en la práctica son odómetro (plantillas antiguas / catálogo)
+_KM_CATALOG_HINTS = (
+    'kilomet', 'kilometraje', 'odomet', 'odómetro', 'cuenta kilómetro', 'cuenta kilometros',
+)
+
+
+def extraer_kilometraje_desde_checklist_instance(checklist):
+    """
+    Lee el km declarado en el checklist. Además de KILOMETER_INPUT, acepta NUMBER si el ítem
+    del catálogo indica odómetro (muchos templates usan solo NUMBER).
+    """
+    qs = checklist.respuestas.select_related('item_template__catalog_item')
+    for respuesta in qs.all():
+        cat = respuesta.item_template.catalog_item
+        if not cat or respuesta.respuesta_numero is None:
+            continue
+        tipo = (cat.tipo_pregunta or '').strip()
+        if tipo == 'KILOMETER_INPUT':
+            pass
+        elif tipo == 'NUMBER':
+            nombre = (cat.nombre or '').lower()
+            texto = (cat.pregunta_texto or '').lower()
+            if not any((h in nombre) or (h in texto) for h in _KM_CATALOG_HINTS):
+                continue
+        else:
+            continue
+        try:
+            return int(float(respuesta.respuesta_numero))
+        except (TypeError, ValueError):
+            continue
+    return None
+
 
 def calcular_estado_salud_interno(vehicle_id):
     """
@@ -251,7 +283,9 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
         
         # Obtener checklist y vehículo
         try:
-            checklist = ChecklistInstance.objects.get(id=checklist_id)
+            checklist = ChecklistInstance.objects.prefetch_related(
+                'respuestas__item_template__catalog_item'
+            ).get(id=checklist_id)
             vehiculo = Vehiculo.objects.get(id=vehicle_id)
         except (ChecklistInstance.DoesNotExist, Vehiculo.DoesNotExist):
             logger.error(f"Checklist {checklist_id} o vehículo {vehicle_id} no encontrado")
@@ -260,22 +294,29 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
         # ============================================
         # 1. ACTUALIZAR KILOMETRAJE DEL VEHÍCULO
         # ============================================
-        # Buscar respuestas de tipo KILOMETER_INPUT en el checklist
-        kilometraje_checklist = None
-        for respuesta in checklist.respuestas.all():
-            if respuesta.item_template.catalog_item and \
-               respuesta.item_template.catalog_item.tipo_pregunta == 'KILOMETER_INPUT' and \
-               respuesta.respuesta_numero is not None:
-                kilometraje_checklist = int(float(respuesta.respuesta_numero))
-                break
-        
+        kilometraje_checklist = extraer_kilometraje_desde_checklist_instance(checklist)
+        if kilometraje_checklist is not None:
+            logger.info(
+                "Checklist %s: km leído para vehículo %s → %s km",
+                checklist_id,
+                vehicle_id,
+                kilometraje_checklist,
+            )
+        else:
+            logger.warning(
+                "Checklist %s (vehículo %s): sin km reconocible en respuestas "
+                "(se espera KILOMETER_INPUT o NUMBER con nombre/texto de odómetro).",
+                checklist_id,
+                vehicle_id,
+            )
+
         # Si se encontró kilometraje en el checklist, actualizar el vehículo
         if kilometraje_checklist is not None:
-            kilometraje_anterior = vehiculo.kilometraje
+            kilometraje_anterior = int(vehiculo.kilometraje or 0)
             diferencia_km = abs(kilometraje_checklist - kilometraje_anterior)
-            
-            # Actualizar si hay diferencia significativa (más de 1 km)
-            if diferencia_km > 1:
+
+            # Actualizar si hay al menos 1 km de diferencia y el checklist no reduce el odómetro
+            if diferencia_km >= 1:
                 # Si el kilometraje del checklist es mayor, actualizar automáticamente
                 if kilometraje_checklist > kilometraje_anterior:
                     vehiculo.kilometraje = kilometraje_checklist
@@ -412,8 +453,24 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
                  'requiere_servicio_inmediato', 'mensaje_alerta']
             )
         
-        # Recalcular de forma asíncrona
-        calcular_salud_vehiculo_async.delay(vehicle_id, force_recalculate=True)
+        # Recalcular salud (cola o mismo proceso si Celery no entrega el trabajo)
+        try:
+            calcular_salud_vehiculo_async.delay(vehicle_id, force_recalculate=True)
+        except Exception as celery_err:
+            logger.warning(
+                "No se pudo encolar calcular_salud_vehiculo_async para vehículo %s: %s — recalculando en proceso",
+                vehicle_id,
+                celery_err,
+            )
+            try:
+                calcular_estado_salud_interno(vehicle_id)
+            except Exception as sync_err:
+                logger.error(
+                    "Recálculo síncrono de salud falló para vehículo %s: %s",
+                    vehicle_id,
+                    sync_err,
+                    exc_info=True,
+                )
         
         # Obtener usuario del vehículo para notificaciones
         usuario = None
@@ -711,21 +768,14 @@ def _procesar_checklists_historicos_vehiculo_interno(vehicle_id):
         }
         
         componentes_actualizados = 0
-        kilometraje_maximo_encontrado = vehiculo.kilometraje
-        
+        kilometraje_maximo_encontrado = int(vehiculo.kilometraje or 0)
+
         # Procesar cada checklist en orden cronológico
         for checklist in checklists_completados:
-            # Extraer kilometraje del checklist si está disponible
-            kilometraje_checklist = None
-            for respuesta in checklist.respuestas.all():
-                if respuesta.item_template.catalog_item and \
-                   respuesta.item_template.catalog_item.tipo_pregunta == 'KILOMETER_INPUT' and \
-                   respuesta.respuesta_numero is not None:
-                    kilometraje_checklist = int(float(respuesta.respuesta_numero))
-                    if kilometraje_checklist > kilometraje_maximo_encontrado:
-                        kilometraje_maximo_encontrado = kilometraje_checklist
-                    break
-            
+            kilometraje_checklist = extraer_kilometraje_desde_checklist_instance(checklist)
+            if kilometraje_checklist is not None and kilometraje_checklist > kilometraje_maximo_encontrado:
+                kilometraje_maximo_encontrado = kilometraje_checklist
+
             # Procesar componentes del checklist
             for respuesta in checklist.respuestas.all():
                 item_nombre = respuesta.item_template.catalog_item.nombre if respuesta.item_template.catalog_item else ''
