@@ -116,9 +116,13 @@ class VehiculoViewSet(viewsets.ModelViewSet):
     
     def get_permissions(self):
         """
-        Permitir acceso público al endpoint de marcas
+        Permitir acceso público donde corresponda.
+        Nota: @action(permission_classes=[AllowAny]) no aplica si este método
+        no lo refleja — antes marketplace_public_detail quedaba bloqueado para anónimos.
         """
         if self.action == 'get_marcas':
+            return [permissions.AllowAny()]
+        if self.action in ('marketplace_listings', 'marketplace_public_detail'):
             return [permissions.AllowAny()]
         return [permissions.IsAuthenticated()]
     
