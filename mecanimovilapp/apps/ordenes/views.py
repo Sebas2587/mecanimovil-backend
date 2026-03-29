@@ -2007,8 +2007,15 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
                     tipo_servicio = 'domicilio'
                     ubicacion_servicio = solicitud_publica.direccion_servicio_texto
                 
-                # Crear SolicitudServicio para esta oferta
+                # Crear SolicitudServicio para esta oferta (bloquear oferta para evitar duplicados concurrentes)
                 with transaction.atomic():
+                    oferta_bloqueada = OfertaProveedor.objects.select_for_update().get(pk=oferta.pk)
+                    if SolicitudServicio.objects.filter(oferta_proveedor=oferta_bloqueada).exists():
+                        logger.info(
+                            f"Oferta {oferta_bloqueada.id} ya tiene SolicitudServicio tras lock; omitiendo creación"
+                        )
+                        continue
+
                     solicitud_servicio = SolicitudServicio.objects.create(
                         cliente=solicitud_publica.cliente,
                         vehiculo=solicitud_publica.vehiculo,
@@ -2025,7 +2032,7 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
                         comprobante_validado=True,  # Ya fue pagado
                         devolucion_procesada=False,
                         requiere_devolucion=False,
-                        oferta_proveedor=oferta
+                        oferta_proveedor=oferta_bloqueada
                     )
                     
                     # Crear líneas de servicio
