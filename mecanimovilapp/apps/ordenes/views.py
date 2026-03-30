@@ -3066,7 +3066,10 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
         
         # Resetear la solicitud
         solicitud.estado = 'publicada'
-        solicitud.fecha_expiracion = timezone.now() + timedelta(hours=48)
+        solicitud.fecha_expiracion = SolicitudServicioPublica.compute_default_fecha_expiracion(
+            now=timezone.now(),
+            fecha_preferida=solicitud.fecha_preferida,
+        )
         solicitud.fecha_publicacion = timezone.now()
         solicitud.total_rechazos = 0
         solicitud.save(update_fields=['estado', 'fecha_expiracion', 'fecha_publicacion', 'total_rechazos'])

@@ -836,6 +836,25 @@ class SolicitudServicioPublica(models.Model):
             models.Index(fields=['cliente', 'estado']),
             models.Index(fields=['fecha_expiracion']),
         ]
+
+    @staticmethod
+    def compute_default_fecha_expiracion(*, now, fecha_preferida):
+        """
+        Calcula la fecha_expiracion por defecto (ventana para recibir ofertas).
+
+        Reglas:
+        - Si la solicitud es para mañana (fecha_preferida == hoy+1), expira en 2 horas.
+        - En otros casos, expira en 48 horas.
+        """
+        try:
+            today = timezone.localdate()
+            manana = today + timedelta(days=1)
+            if fecha_preferida == manana:
+                return now + timedelta(hours=2)
+        except Exception:
+            # Fallback seguro: comportamiento histórico
+            pass
+        return now + timedelta(hours=48)
     
     def __str__(self):
         return f"Solicitud {self.id} - {self.cliente.usuario.get_full_name()} - {self.estado}"
@@ -850,9 +869,15 @@ class SolicitudServicioPublica(models.Model):
             except SolicitudServicioPublica.DoesNotExist:
                 pass
         
-        # Establecer fecha de expiración automáticamente (48 horas por defecto)
+        # Establecer fecha de expiración automáticamente.
+        # Regla de negocio:
+        # - Si el servicio es para "mañana" (fecha_preferida == hoy+1), ventana corta para ofertar: 2 horas.
+        # - Caso general: 48 horas.
         if not self.fecha_expiracion:
-            self.fecha_expiracion = timezone.now() + timedelta(hours=48)
+            self.fecha_expiracion = self.compute_default_fecha_expiracion(
+                now=timezone.now(),
+                fecha_preferida=self.fecha_preferida,
+            )
         
         # Si cambia a estado 'publicada', registrar fecha
         if self.estado == 'publicada' and not self.fecha_publicacion:

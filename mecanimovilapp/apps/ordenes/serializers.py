@@ -1705,7 +1705,19 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
         Este m?todo se ejecuta despu?s de to_internal_value() pero antes de validate()
         """
         if value is None:
-            return timezone.now() + timedelta(hours=48)
+            # Fallback: usar regla de expiración por defecto basada en fecha_preferida (si viene).
+            initial = getattr(self, 'initial_data', None) or {}
+            fecha_raw = initial.get('fecha_preferida')
+            fecha_pref = None
+            try:
+                if isinstance(fecha_raw, str) and fecha_raw:
+                    fecha_pref = datetime.strptime(fecha_raw, '%Y-%m-%d').date()
+            except Exception:
+                fecha_pref = None
+            return SolicitudServicioPublica.compute_default_fecha_expiracion(
+                now=timezone.now(),
+                fecha_preferida=fecha_pref,
+            )
         return value
     
     def to_internal_value(self, data):
@@ -1713,12 +1725,24 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
         Convertir ubicacion_servicio a formato GeoJSON Geometry y establecer fecha_expiracion
         antes de la validaci?n. GeoFeatureModelSerializer espera formato: {"type": "Point", "coordinates": [lng, lat]}
         """
-        # Establecer fecha_expiracion autom?ticamente si no est? presente (48 horas desde ahora)
+        # Establecer fecha_expiracion automáticamente si no está presente.
+        # Regla: si fecha_preferida es "mañana", expira en 2 horas; si no, en 48 horas.
         # Esto debe hacerse ANTES de la validaci?n para que DRF no falle
         # Usar formato ISO 8601 que DRF puede parsear correctamente
         if isinstance(data, dict):
             if 'fecha_expiracion' not in data or not data.get('fecha_expiracion'):
-                fecha_expiracion = timezone.now() + timedelta(hours=48)
+                fecha_pref = None
+                try:
+                    fecha_raw = data.get('fecha_preferida')
+                    if isinstance(fecha_raw, str) and fecha_raw:
+                        fecha_pref = datetime.strptime(fecha_raw, '%Y-%m-%d').date()
+                except Exception:
+                    fecha_pref = None
+
+                fecha_expiracion = SolicitudServicioPublica.compute_default_fecha_expiracion(
+                    now=timezone.now(),
+                    fecha_preferida=fecha_pref,
+                )
                 # Formato ISO 8601 est?ndar que DRF puede parsear correctamente
                 data['fecha_expiracion'] = fecha_expiracion.isoformat()
         
