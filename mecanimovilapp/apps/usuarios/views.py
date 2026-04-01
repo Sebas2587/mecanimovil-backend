@@ -2816,6 +2816,9 @@ class DocumentoOnboardingViewSet(viewsets.ModelViewSet):
         """
         Permisos específicos según la acción
         """
+        if self.action in ['proveedor_documentos']:
+            return [permissions.AllowAny()]
+            
         if self.action in ['list', 'retrieve', 'create', 'update', 'partial_update', 'destroy']:
             permission_classes = [permissions.IsAuthenticated]
         else:

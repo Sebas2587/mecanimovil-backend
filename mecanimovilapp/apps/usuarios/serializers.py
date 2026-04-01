@@ -477,7 +477,7 @@ class TallerSerializer(serializers.ModelSerializer):
                   'verificado', 'onboarding_completado', 'onboarding_iniciado', 'fecha_verificacion',
                   'fecha_registro', 'ultima_actualizacion', 'distance',
                   'ultima_conexion', 'esta_conectado', 'status', 'total_resenas',
-                  'servicios_completados', 'comunas_atendidas',
+                  'servicios_completados', 'comunas_atendidas', 'experiencia_anos',
                   'latitud', 'longitud', 'direccion_fisica')
         read_only_fields = ('fecha_registro', 'ultima_actualizacion', 'fecha_verificacion', 
                             'verificado', 'estado_verificacion', 'onboarding_completado', 'onboarding_iniciado',
