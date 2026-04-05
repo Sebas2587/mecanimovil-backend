@@ -11,6 +11,7 @@ from django.utils import timezone
 from django.db import transaction
 from decouple import config
 import logging
+import requests as http_requests
 import mercadopago
 from mercadopago.core import MPBase
 
@@ -28,6 +29,39 @@ def _get_mp_sdk():
     return mercadopago.SDK(token)
 
 
+def obtener_preapproval_id_desde_pago(authorized_payment_id):
+    """
+    Dado un authorized_payment_id (cobro recurrente), consulta la API de
+    MercadoPago para obtener el preapproval_id al que pertenece.
+
+    El webhook subscription_authorized_payment envía data.id = authorized_payment_id,
+    NO el preapproval_id. Esta función resuelve esa indirección.
+    """
+    token = config('MERCADOPAGO_ACCESS_TOKEN', default='')
+    if not token:
+        logger.error("[obtener_preapproval_id_desde_pago] MERCADOPAGO_ACCESS_TOKEN no configurado")
+        return None
+
+    url = f"https://api.mercadopago.com/authorized_payments/{authorized_payment_id}"
+    try:
+        resp = http_requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            preapproval_id = data.get('preapproval_id')
+            logger.info(
+                f"[obtener_preapproval_id_desde_pago] authorized_payment {authorized_payment_id} "
+                f"-> preapproval_id {preapproval_id}"
+            )
+            return preapproval_id
+        else:
+            logger.warning(
+                f"[obtener_preapproval_id_desde_pago] MP devolvió {resp.status_code} "
+                f"para authorized_payment {authorized_payment_id}: {resp.text[:300]}"
+            )
+            return None
+    except Exception as e:
+        logger.error(f"[obtener_preapproval_id_desde_pago] Error HTTP: {e}")
+        return None
 
 
 
@@ -111,7 +145,7 @@ def crear_suscripcion_mp(proveedor, plan_id):
     # URLs para el flujo de suscripción
     webhook_base_url = config('WEBHOOK_BASE_URL', default='https://mecanimovil-api.onrender.com')
     back_url = f"{webhook_base_url}/suscripciones-resultado/"
-    notification_url = f"{webhook_base_url}/api/suscripciones/webhook-preapproval/"
+    notification_url = f"{webhook_base_url}/api/suscripciones/webhook-preapproval/?source_news=webhooks"
 
     precio_entero = int(round(float(plan.precio)))
     currency_id = config('MERCADOPAGO_CURRENCY', default='CLP')
@@ -215,7 +249,8 @@ def acreditar_creditos_suscripcion(preapproval_id, charge_id=None, force_initial
     Acredita créditos mensuales al proveedor cuando MercadoPago confirma
     un cobro recurrente (evento subscription_authorized_payment).
 
-    Idempotente: si el charge_id ya fue procesado, no acredita de nuevo.
+    Idempotente: verifica contra processed_charge_ids (lista completa)
+    para nunca acreditar el mismo cobro dos veces.
 
     Args:
         preapproval_id: ID del preapproval en MP.
@@ -228,48 +263,50 @@ def acreditar_creditos_suscripcion(preapproval_id, charge_id=None, force_initial
             mp_preapproval_id=preapproval_id
         )
     except SuscripcionProveedor.DoesNotExist:
-        logger.warning(f"⚠️ Suscripción {preapproval_id} no encontrada en BD")
+        logger.warning(f"Suscripción {preapproval_id} no encontrada en BD")
         return {'acreditado': False, 'motivo': 'Suscripción no encontrada'}
 
-    # Si es carga inicial forzada y ya tiene cobros registrados, ignorar para evitar duplicidad
+    processed_ids = set(suscripcion.processed_charge_ids or [])
+
     if force_initial:
-        if suscripcion.ultimo_charge_id:
-            logger.info(f"ℹ️ Suscripción {preapproval_id} ya tiene créditos acreditados (charge: {suscripcion.ultimo_charge_id})")
+        if processed_ids:
+            logger.info(f"Suscripción {preapproval_id} ya tiene créditos acreditados ({len(processed_ids)} cobros)")
             return {'acreditado': False, 'motivo': 'Ya tiene créditos acreditados'}
         charge_id = 'inicial_autorizacion'
-        logger.info(f"🚀 Iniciando acreditación inicial forzada para {preapproval_id}")
+        logger.info(f"Iniciando acreditación inicial forzada para {preapproval_id}")
 
-    # Idempotencia: no procesar dos veces el mismo cobro
-    if charge_id and suscripcion.ultimo_charge_id == str(charge_id):
-        logger.info(f"ℹ️ Charge {charge_id} ya fue procesado para suscripción {preapproval_id}")
+    # Idempotencia robusta: verificar contra la lista completa de cobros procesados
+    if charge_id and str(charge_id) in processed_ids:
+        logger.info(f"Charge {charge_id} ya fue procesado para suscripción {preapproval_id}")
         return {'acreditado': False, 'motivo': 'Cobro ya procesado'}
 
-    # Activar suscripción si estaba pendiente
     if suscripcion.estado == 'pendiente':
         suscripcion.estado = 'activa'
-        logger.info(f"✅ Suscripción {preapproval_id} activada tras primer cobro")
+        logger.info(f"Suscripción {preapproval_id} activada tras primer cobro")
 
     if suscripcion.estado not in ('activa', 'pendiente'):
-        logger.warning(f"⚠️ Suscripción {preapproval_id} en estado '{suscripcion.estado}', no se acreditan créditos")
+        logger.warning(f"Suscripción {preapproval_id} en estado '{suscripcion.estado}', no se acreditan créditos")
         return {'acreditado': False, 'motivo': f"Estado inválido: {suscripcion.estado}"}
 
     creditos = suscripcion.plan.creditos_mensuales
 
-    # Sumar créditos al saldo del proveedor
     credito_proveedor = obtener_credito_proveedor(suscripcion.proveedor)
     credito_proveedor.saldo_creditos += creditos
     credito_proveedor.fecha_ultima_compra = timezone.now()
     credito_proveedor.save(update_fields=['saldo_creditos', 'fecha_ultima_compra', 'fecha_actualizacion'])
 
-    # Actualizar suscripción
     if charge_id:
         suscripcion.ultimo_charge_id = str(charge_id)
+        processed_ids.add(str(charge_id))
+        suscripcion.processed_charge_ids = sorted(processed_ids)
     suscripcion.estado = 'activa'
-    suscripcion.save(update_fields=['estado', 'ultimo_charge_id', 'fecha_actualizacion'])
+    suscripcion.save(update_fields=['estado', 'ultimo_charge_id', 'processed_charge_ids', 'fecha_actualizacion'])
 
     logger.info(
-        f"✅ Créditos acreditados: {creditos} para proveedor {suscripcion.proveedor.id} "
-        f"(preapproval: {preapproval_id}, charge: {charge_id}). Nuevo saldo: {credito_proveedor.saldo_creditos}"
+        f"Créditos acreditados: {creditos} para proveedor {suscripcion.proveedor.id} "
+        f"(preapproval: {preapproval_id}, charge: {charge_id}). "
+        f"Nuevo saldo: {credito_proveedor.saldo_creditos}. "
+        f"Total cobros procesados: {len(processed_ids)}"
     )
 
     return {
@@ -335,10 +372,10 @@ def sincronizar_estado_suscripcion(suscripcion):
         suscripcion: Instancia de SuscripcionProveedor.
 
     Returns:
-        str: Estado actualizado de la suscripción.
+        tuple: (estado_str, cobros_list) — el estado actualizado y lista de resultados de cobros procesados.
     """
     if not suscripcion.mp_preapproval_id:
-        return suscripcion.estado
+        return suscripcion.estado, []
 
     try:
         sdk = _get_mp_sdk()
@@ -346,10 +383,10 @@ def sincronizar_estado_suscripcion(suscripcion):
 
         if result.get('status') != 200:
             logger.warning(
-                f"⚠️ MP devolvió {result.get('status')} al consultar "
+                f"MP devolvió {result.get('status')} al consultar "
                 f"preapproval {suscripcion.mp_preapproval_id}"
             )
-            return suscripcion.estado
+            return suscripcion.estado, []
 
         mp_data = result.get('response', {})
         mp_status = mp_data.get("status", "")
@@ -671,21 +708,20 @@ def sincronizar_cobros_preapproval(preapproval_id):
         else:
             logger.warning(f"⚠️ Error al buscar cobros para {preapproval_id} en MP: {result.get('status')}")
         
-        # GARANTÍA INICIAL: Si no se acreditó nada vía pagos individuales (sea por error en MP o porque no hay pagos),
-        # y la suscripción NUNCA ha recibido créditos, los otorgamos ahora como cortesía de activación.
-        # Solo comprobamos esto si resultados está vacío.
+        # GARANTÍA INICIAL: Si no se acreditó nada vía pagos individuales,
+        # y la suscripción NUNCA ha recibido créditos, los otorgamos como cortesía de activación.
         if not resultados:
             try:
                 suscripcion = SuscripcionProveedor.objects.get(mp_preapproval_id=preapproval_id)
-                if not suscripcion.ultimo_charge_id:
-                    logger.info(f"🎁 Aplicando garantía inicial de créditos para preapproval {preapproval_id}")
+                if not suscripcion.processed_charge_ids:
+                    logger.info(f"Aplicando garantía inicial de créditos para preapproval {preapproval_id}")
                     res = acreditar_creditos_suscripcion(preapproval_id, force_initial=True)
                     if res.get('acreditado'):
                         resultados.append(res)
                 else:
-                    logger.info(f"ℹ️ No se requieren créditos iniciales para {preapproval_id} (ya procesados)")
+                    logger.info(f"No se requieren créditos iniciales para {preapproval_id} (ya procesados)")
             except Exception as e:
-                logger.error(f"❌ Error en lógica de garantía inicial: {e}")
+                logger.error(f"Error en lógica de garantía inicial: {e}")
 
         return resultados
 

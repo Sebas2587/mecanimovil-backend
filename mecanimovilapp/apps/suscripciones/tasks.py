@@ -32,16 +32,21 @@ def verificar_suscripciones_activas(self):
         for suscripcion in suscripciones:
             try:
                 estado_antes = suscripcion.estado
-                nuevo_estado = sincronizar_estado_suscripcion(suscripcion)
+                nuevo_estado, cobros_res = sincronizar_estado_suscripcion(suscripcion)
                 if nuevo_estado != estado_antes:
                     actualizadas += 1
+                if cobros_res:
+                    logger.info(
+                        f"[Celery] Suscripción {suscripcion.id}: "
+                        f"{len(cobros_res)} cobro(s) procesado(s) durante sync"
+                    )
             except Exception as e:
-                logger.error(f"❌ [Celery] Error en suscripción {suscripcion.id}: {e}")
+                logger.error(f"[Celery] Error en suscripción {suscripcion.id}: {e}")
                 errores += 1
                 continue
 
         logger.info(
-            f"✅ [Celery] Sincronización completada: {actualizadas} actualizadas, "
+            f"[Celery] Sincronización completada: {actualizadas} actualizadas, "
             f"{errores} errores de {total} total"
         )
         return {'total': total, 'actualizadas': actualizadas, 'errores': errores}

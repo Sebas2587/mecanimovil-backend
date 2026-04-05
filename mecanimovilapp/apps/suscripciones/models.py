@@ -671,7 +671,13 @@ class SuscripcionProveedor(models.Model):
         blank=True,
         null=True,
         verbose_name='Último Charge ID',
-        help_text='ID del último cobro procesado (para idempotencia)'
+        help_text='ID del último cobro procesado (legacy, conservado por compatibilidad)'
+    )
+    processed_charge_ids = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name='IDs de Cobros Procesados',
+        help_text='Lista de todos los charge_ids ya acreditados (idempotencia robusta)'
     )
     fecha_inicio = models.DateTimeField(
         auto_now_add=True,

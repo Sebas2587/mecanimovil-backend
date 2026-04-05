@@ -1004,10 +1004,14 @@ class SuscripcionProveedorViewSet(viewsets.GenericViewSet):
           - subscription_preapproval        → cambio de estado → sincroniza localmente
         """
         import json
-        from .suscripcion_services import acreditar_creditos_suscripcion, sincronizar_estado_suscripcion
+        from .suscripcion_services import (
+            acreditar_creditos_suscripcion,
+            sincronizar_estado_suscripcion,
+            obtener_preapproval_id_desde_pago,
+        )
 
         logger.info(
-            f"📨 [Webhook Preapproval] Datos: {json.dumps(request.data, default=str)[:600]}"
+            f"[Webhook Preapproval] Datos: {json.dumps(request.data, default=str)[:600]}"
         )
 
         notification_type = (
@@ -1017,31 +1021,39 @@ class SuscripcionProveedorViewSet(viewsets.GenericViewSet):
             or ''
         )
         data = request.data.get('data') or {}
-        preapproval_id = data.get('id') or request.query_params.get('id')
+        resource_id = data.get('id') or request.query_params.get('id')
 
         logger.info(
-            f"📨 [Webhook Preapproval] type={notification_type!r}, preapproval_id={preapproval_id!r}"
+            f"[Webhook Preapproval] type={notification_type!r}, resource_id={resource_id!r}"
         )
 
         # ── Cobro mensual exitoso → acreditar créditos ──────────────────────
         if notification_type in ('subscription_authorized_payment', 'authorized_payment'):
-            if not preapproval_id:
-                preapproval_id = request.data.get('preapproval_id')
+            # data.id es el authorized_payment_id, NO el preapproval_id.
+            # Hay que llamar a GET /authorized_payments/{id} para obtener
+            # el preapproval_id real al que pertenece este cobro.
+            authorized_payment_id = resource_id
 
-            authorized_payment_id = request.data.get('id') or data.get('id')
-
-            if preapproval_id:
+            if authorized_payment_id:
                 try:
-                    resultado = acreditar_creditos_suscripcion(
-                        preapproval_id=preapproval_id,
-                        charge_id=authorized_payment_id,
-                    )
-                    logger.info(f"✅ [Webhook] Resultado acreditación: {resultado}")
+                    preapproval_id = obtener_preapproval_id_desde_pago(authorized_payment_id)
+                    if preapproval_id:
+                        resultado = acreditar_creditos_suscripcion(
+                            preapproval_id=preapproval_id,
+                            charge_id=authorized_payment_id,
+                        )
+                        logger.info(f"[Webhook] Resultado acreditación: {resultado}")
+                    else:
+                        logger.warning(
+                            f"[Webhook] No se pudo obtener preapproval_id "
+                            f"para authorized_payment {authorized_payment_id}"
+                        )
                 except Exception as e:
-                    logger.error(f"❌ [Webhook] Error acreditando créditos: {e}", exc_info=True)
+                    logger.error(f"[Webhook] Error acreditando créditos: {e}", exc_info=True)
 
         # ── Cambio de estado de la suscripción → sincronizar ────────────────
         elif notification_type in ('subscription_preapproval', 'preapproval'):
+            preapproval_id = resource_id
             if preapproval_id:
                 try:
                     suscripcion = SuscripcionProveedor.objects.filter(
@@ -1049,9 +1061,9 @@ class SuscripcionProveedorViewSet(viewsets.GenericViewSet):
                     ).select_related('plan').first()
                     if suscripcion:
                         sincronizar_estado_suscripcion(suscripcion)
-                        logger.info(f"🔄 [Webhook] Suscripción {preapproval_id} sincronizada")
+                        logger.info(f"[Webhook] Suscripción {preapproval_id} sincronizada")
                 except Exception as e:
-                    logger.error(f"❌ [Webhook] Error sincronizando suscripción: {e}", exc_info=True)
+                    logger.error(f"[Webhook] Error sincronizando suscripción: {e}", exc_info=True)
 
         # Siempre 200 OK para que MercadoPago no reintente el webhook
         return Response({'status': 'ok'}, status=status.HTTP_200_OK)
