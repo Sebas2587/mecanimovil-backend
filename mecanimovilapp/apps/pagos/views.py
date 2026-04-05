@@ -639,13 +639,81 @@ def webhook_notification(request):
                     logger.info("✅ Firma del webhook verificada correctamente")
         
         # Registrar la notificación
+        notification_type = (
+            request.data.get('type')
+            or request.data.get('action')
+            or request.query_params.get('type')
+            or 'payment'
+        )
+
         webhook = WebhookNotificacion.objects.create(
-            notification_type=request.data.get('type', 'payment'),
+            notification_type=notification_type,
             payment_id_mp=request.data.get('data', {}).get('id'),
             data=request.data,
         )
-        
-        # Procesar el webhook
+
+        # Suscripciones: delegar a su propio handler y retornar temprano
+        SUBSCRIPTION_TYPES = (
+            'subscription_authorized_payment',
+            'authorized_payment',
+            'subscription_preapproval',
+            'preapproval',
+        )
+        if notification_type in SUBSCRIPTION_TYPES:
+            from mecanimovilapp.apps.suscripciones.suscripcion_services import (
+                acreditar_creditos_suscripcion,
+                sincronizar_estado_suscripcion,
+                obtener_preapproval_id_desde_pago,
+            )
+            from mecanimovilapp.apps.suscripciones.models import SuscripcionProveedor
+
+            data = request.data.get('data') or {}
+            resource_id = (
+                data.get('id')
+                or request.query_params.get('data.id')
+                or request.query_params.get('id')
+            )
+            logger.info(
+                f"[Webhook General → Suscripciones] type={notification_type}, resource_id={resource_id}"
+            )
+
+            if notification_type in ('subscription_authorized_payment', 'authorized_payment'):
+                if resource_id:
+                    try:
+                        preapproval_id = obtener_preapproval_id_desde_pago(resource_id)
+                        if preapproval_id:
+                            resultado = acreditar_creditos_suscripcion(
+                                preapproval_id=preapproval_id,
+                                charge_id=resource_id,
+                            )
+                            logger.info(f"[Webhook General] Acreditación: {resultado}")
+                        else:
+                            logger.warning(
+                                f"[Webhook General] No se resolvió preapproval_id "
+                                f"para authorized_payment {resource_id}"
+                            )
+                    except Exception as e:
+                        logger.error(f"[Webhook General] Error acreditando: {e}", exc_info=True)
+
+            elif notification_type in ('subscription_preapproval', 'preapproval'):
+                preapproval_id = resource_id
+                if preapproval_id:
+                    try:
+                        suscripcion = SuscripcionProveedor.objects.filter(
+                            mp_preapproval_id=preapproval_id
+                        ).select_related('plan').first()
+                        if suscripcion:
+                            sincronizar_estado_suscripcion(suscripcion)
+                            logger.info(f"[Webhook General] Suscripción {preapproval_id} sincronizada")
+                    except Exception as e:
+                        logger.error(f"[Webhook General] Error sincronizando: {e}", exc_info=True)
+
+            webhook.procesado = True
+            webhook.fecha_procesamiento = timezone.now()
+            webhook.save()
+            return Response({'status': 'ok'}, status=status.HTTP_200_OK)
+
+        # Procesar el webhook de pagos
         servicio = get_mercado_pago_service()
         webhook_result = servicio.process_webhook(request.data)
         
