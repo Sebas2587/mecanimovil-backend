@@ -80,7 +80,9 @@ def send_expo_push_notification(self, user_id, title, body, data=None):
             data=data or {},
             sound='default',
             channel_id=channel_id,
-            priority='high' if notif_type in ('health_alert', 'global_health_alert', 'cambio_estado') else 'default',
+            priority='high' if notif_type in (
+                'health_alert', 'global_health_alert', 'salud_actualizada', 'cambio_estado',
+            ) else 'default',
         )
 
         try:

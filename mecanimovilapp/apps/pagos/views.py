@@ -1511,9 +1511,10 @@ class CuentaMercadoPagoProveedorViewSet(viewsets.GenericViewSet):
         # Calcular estadísticas desde las ofertas pagadas
         from mecanimovilapp.apps.ordenes.models import OfertaProveedor
         
-        # Obtener inicio del mes actual
+        # Obtener inicio del mes actual y del mes anterior
         now = timezone.now()
         inicio_mes = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        inicio_mes_anterior = (inicio_mes - timezone.timedelta(days=1)).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         
         # Filtrar ofertas pagadas del proveedor
         try:
@@ -1607,6 +1608,35 @@ class CuentaMercadoPagoProveedorViewSet(viewsets.GenericViewSet):
             
             cantidad_transacciones_mes = ofertas_mes.count()
             
+            # Mes anterior
+            ofertas_mes_anterior = ofertas_base.filter(
+                (Q(estado__in=['pagada', 'pagada_parcialmente', 'en_ejecucion', 'completada']) |
+                 Q(estado_pago_repuestos='pagado') |
+                 Q(estado_pago_servicio='pagado')),
+                fecha_respuesta_cliente__gte=inicio_mes_anterior,
+                fecha_respuesta_cliente__lt=inicio_mes
+            )
+            
+            total_recibido_mes_anterior = 0
+            for oferta in ofertas_mes_anterior:
+                if (oferta.estado_pago_repuestos == 'pagado' and 
+                    oferta.estado_pago_servicio in ['pendiente', None]):
+                    costo_repuestos = float(oferta.costo_repuestos or 0)
+                    costo_gestion = float(oferta.costo_gestion_compra or 0)
+                    total_recibido_mes_anterior += costo_repuestos + (costo_gestion * 1.19)
+                elif oferta.estado == 'pagada_parcialmente':
+                    costo_repuestos = float(oferta.costo_repuestos or 0)
+                    costo_gestion = float(oferta.costo_gestion_compra or 0)
+                    total_recibido_mes_anterior += costo_repuestos + (costo_gestion * 1.19)
+                elif (oferta.estado_pago_servicio == 'pagado' and 
+                      oferta.estado_pago_repuestos in ['pendiente', 'no_aplica', None]):
+                    costo_mano_obra = float(oferta.costo_mano_obra or 0)
+                    total_recibido_mes_anterior += costo_mano_obra * 1.19
+                else:
+                    total_recibido_mes_anterior += float(oferta.precio_total_ofrecido or 0)
+            
+            cantidad_transacciones_mes_anterior = ofertas_mes_anterior.count()
+            
             # Última transacción - usar fecha_respuesta_cliente o fecha_envio como fallback
             ultima = ofertas_pagadas.order_by('-fecha_respuesta_cliente', '-fecha_envio').first()
             ultima_transaccion = None
@@ -1628,8 +1658,10 @@ class CuentaMercadoPagoProveedorViewSet(viewsets.GenericViewSet):
             logger.warning(f"Error calculando estadísticas: {e}")
             total_recibido = 0
             total_recibido_mes = 0
+            total_recibido_mes_anterior = 0
             cantidad_transacciones = 0
             cantidad_transacciones_mes = 0
+            cantidad_transacciones_mes_anterior = 0
             ultima_transaccion = None
             cantidad_pagos_repuestos = 0
             total_repuestos = 0
@@ -1637,8 +1669,10 @@ class CuentaMercadoPagoProveedorViewSet(viewsets.GenericViewSet):
         return Response({
             'total_recibido': float(total_recibido),
             'total_recibido_mes': float(total_recibido_mes),
+            'total_recibido_mes_anterior': float(total_recibido_mes_anterior),
             'cantidad_transacciones': cantidad_transacciones,
             'cantidad_transacciones_mes': cantidad_transacciones_mes,
+            'cantidad_transacciones_mes_anterior': cantidad_transacciones_mes_anterior,
             'ultima_transaccion': ultima_transaccion,
             'cantidad_pagos_repuestos': cantidad_pagos_repuestos if 'cantidad_pagos_repuestos' in dir() else 0,
             'total_repuestos': float(total_repuestos) if 'total_repuestos' in dir() else 0,
