@@ -664,6 +664,8 @@ def webhook_notification(request):
                 acreditar_creditos_suscripcion,
                 sincronizar_estado_suscripcion,
                 obtener_detalle_pago_autorizado,
+                verificar_pago_mp,
+                MECANIMOVIL_COLLECTOR_ID,
             )
             from mecanimovilapp.apps.suscripciones.models import SuscripcionProveedor
 
@@ -709,11 +711,32 @@ def webhook_notification(request):
                                     f"sin preapproval_id en la respuesta de MP."
                                 )
                             else:
-                                resultado = acreditar_creditos_suscripcion(
-                                    preapproval_id=preapproval_id,
-                                    charge_id=resource_id,
-                                )
-                                logger.info(f"[Webhook General] Acreditación: {resultado}")
+                                payment_inner = detalle_pago.get('payment') or {}
+                                payment_id = payment_inner.get('id')
+                                pago_verificado_data = None
+                                if payment_id:
+                                    pago_verificado_data = verificar_pago_mp(payment_id)
+                                    if pago_verificado_data:
+                                        if pago_verificado_data.get('status') != 'approved':
+                                            logger.warning(
+                                                f"[Webhook General] Payment {payment_id} no aprobado."
+                                            )
+                                            pago_verificado_data = None
+                                        elif pago_verificado_data.get('collector_id') != MECANIMOVIL_COLLECTOR_ID:
+                                            logger.error(
+                                                f"[Webhook General] ALERTA FRAUDE: "
+                                                f"collector {pago_verificado_data.get('collector_id')} "
+                                                f"!= {MECANIMOVIL_COLLECTOR_ID}"
+                                            )
+                                            pago_verificado_data = None
+
+                                if pago_verificado_data or not payment_id:
+                                    resultado = acreditar_creditos_suscripcion(
+                                        preapproval_id=preapproval_id,
+                                        charge_id=resource_id,
+                                        pago_verificado=pago_verificado_data,
+                                    )
+                                    logger.info(f"[Webhook General] Acreditación: {resultado}")
                     except Exception as e:
                         logger.error(f"[Webhook General] Error acreditando: {e}", exc_info=True)
 

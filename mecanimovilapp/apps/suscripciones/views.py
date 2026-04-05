@@ -995,9 +995,10 @@ class SuscripcionProveedorViewSet(viewsets.GenericViewSet):
         GET /api/suscripciones/mi-suscripcion/historial-cobros/
 
         Consulta MercadoPago para obtener los cobros reales realizados
-        contra la suscripción del proveedor. Retorna SOLO pagos verificados.
+        contra la suscripción del proveedor. Cada cobro pasa por
+        VERIFICACIÓN DE DOBLE NIVEL contra la API de pagos de MP.
         """
-        from .suscripcion_services import buscar_cobros_mp, obtener_suscripcion_activa
+        from .suscripcion_services import buscar_cobros_mp, verificar_pago_mp
 
         suscripcion = SuscripcionProveedor.objects.filter(
             proveedor=request.user
@@ -1016,14 +1017,37 @@ class SuscripcionProveedorViewSet(viewsets.GenericViewSet):
         cobros = []
         for pago in pagos_mp:
             charge_id = str(pago.get('id', ''))
-            cobros.append({
+            payment_obj = pago.get('payment') or {}
+            payment_id = payment_obj.get('id')
+
+            cobro = {
                 'id': charge_id,
                 'status': pago.get('status', 'unknown'),
                 'monto': pago.get('transaction_amount'),
                 'moneda': pago.get('currency_id', 'CLP'),
                 'fecha': pago.get('date_created') or pago.get('debit_date'),
                 'acreditado': charge_id in processed_ids,
-            })
+                'verificado': False,
+                'payment_id': payment_id,
+                'card_last_four': None,
+                'payment_status': payment_obj.get('status'),
+                'payment_status_detail': payment_obj.get('status_detail'),
+                'net_received': None,
+                'date_approved': None,
+                'payer_email': None,
+            }
+
+            if payment_id:
+                detalle = verificar_pago_mp(payment_id)
+                if detalle and detalle.get('status') == 'approved' and detalle.get('status_detail') == 'accredited':
+                    cobro['verificado'] = True
+                    cobro['card_last_four'] = detalle.get('card_last_four')
+                    cobro['net_received'] = detalle.get('net_received_amount')
+                    cobro['date_approved'] = detalle.get('date_approved')
+                    cobro['payer_email'] = detalle.get('payer_email')
+                    cobro['payment_method'] = detalle.get('payment_type_id')
+
+            cobros.append(cobro)
 
         cobros.sort(key=lambda c: c.get('fecha') or '', reverse=True)
 
@@ -1053,6 +1077,8 @@ class SuscripcionProveedorViewSet(viewsets.GenericViewSet):
             acreditar_creditos_suscripcion,
             sincronizar_estado_suscripcion,
             obtener_detalle_pago_autorizado,
+            verificar_pago_mp,
+            MECANIMOVIL_COLLECTOR_ID,
         )
 
         logger.info(
@@ -1086,7 +1112,8 @@ class SuscripcionProveedorViewSet(viewsets.GenericViewSet):
                     else:
                         pago_status = detalle_pago.get('status', '')
                         preapproval_id = detalle_pago.get('preapproval_id')
-                        monto = detalle_pago.get('transaction_amount')
+                        payment_inner = detalle_pago.get('payment') or {}
+                        payment_id = payment_inner.get('id')
 
                         ESTADOS_PAGO_EXITOSO = ('approved', 'authorized', 'processed')
                         if pago_status not in ESTADOS_PAGO_EXITOSO:
@@ -1094,20 +1121,39 @@ class SuscripcionProveedorViewSet(viewsets.GenericViewSet):
                                 f"[Webhook] Cobro {authorized_payment_id} status={pago_status} "
                                 f"(NO aprobado). No se acreditan créditos."
                             )
-                        elif preapproval_id:
-                            resultado = acreditar_creditos_suscripcion(
-                                preapproval_id=preapproval_id,
-                                charge_id=authorized_payment_id,
-                            )
-                            logger.info(
-                                f"[Webhook] Cobro {authorized_payment_id} APROBADO "
-                                f"(monto={monto}). Acreditación: {resultado}"
-                            )
-                        else:
+                        elif not preapproval_id:
                             logger.warning(
                                 f"[Webhook] Cobro {authorized_payment_id} aprobado "
                                 f"pero sin preapproval_id en respuesta MP."
                             )
+                        else:
+                            pago_verificado_data = None
+                            if payment_id:
+                                pago_verificado_data = verificar_pago_mp(payment_id)
+                                if pago_verificado_data:
+                                    if pago_verificado_data.get('status') != 'approved':
+                                        logger.warning(
+                                            f"[Webhook] Payment {payment_id} no aprobado. "
+                                            f"Créditos NO otorgados."
+                                        )
+                                        pago_verificado_data = None
+                                    elif pago_verificado_data.get('collector_id') != MECANIMOVIL_COLLECTOR_ID:
+                                        logger.error(
+                                            f"[Webhook] ALERTA FRAUDE: Payment {payment_id} "
+                                            f"collector_id != Mecanimovil"
+                                        )
+                                        pago_verificado_data = None
+
+                            if pago_verificado_data or not payment_id:
+                                resultado = acreditar_creditos_suscripcion(
+                                    preapproval_id=preapproval_id,
+                                    charge_id=authorized_payment_id,
+                                    pago_verificado=pago_verificado_data,
+                                )
+                                logger.info(
+                                    f"[Webhook] Cobro {authorized_payment_id} verificado. "
+                                    f"Acreditación: {resultado}"
+                                )
                 except Exception as e:
                     logger.error(f"[Webhook] Error acreditando créditos: {e}", exc_info=True)
 

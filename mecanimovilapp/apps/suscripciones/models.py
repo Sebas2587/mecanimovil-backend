@@ -718,3 +718,64 @@ class SuscripcionProveedor(models.Model):
         """Retorna True si la suscripción está activa y otorga créditos."""
         return self.estado == 'activa'
 
+
+class CobroSuscripcion(models.Model):
+    """
+    Registro de auditoría para cada cobro recurrente verificado en MercadoPago.
+    Se crea SOLO cuando un cobro pasa la verificación de doble nivel:
+      1. authorized_payment.status in (approved, processed, authorized)
+      2. GET /v1/payments/{id} confirma status=approved, status_detail=accredited,
+         collector_id=Mecanimovil
+    """
+    suscripcion = models.ForeignKey(
+        SuscripcionProveedor,
+        on_delete=models.CASCADE,
+        related_name='cobros',
+        verbose_name='Suscripción',
+    )
+    charge_id = models.CharField(
+        max_length=50,
+        verbose_name='Authorized Payment ID',
+        help_text='ID del authorized_payment en MP',
+    )
+    payment_id = models.CharField(
+        max_length=50,
+        verbose_name='Payment ID',
+        help_text='ID del payment real en MP (/v1/payments/{id})',
+    )
+    status = models.CharField(max_length=30, verbose_name='Estado del cobro en MP')
+    status_detail = models.CharField(max_length=50, verbose_name='Detalle del estado')
+    transaction_amount = models.DecimalField(max_digits=12, decimal_places=2, verbose_name='Monto cobrado')
+    net_received_amount = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+        verbose_name='Monto neto recibido',
+    )
+    currency_id = models.CharField(max_length=5, default='CLP')
+    collector_id = models.BigIntegerField(
+        verbose_name='ID de cuenta receptora',
+        help_text='Debe coincidir con la cuenta de Mecanimovil',
+    )
+    payer_email = models.EmailField(blank=True, default='')
+    payer_id = models.CharField(max_length=50, blank=True, default='')
+    card_last_four = models.CharField(max_length=4, blank=True, default='')
+    payment_method = models.CharField(max_length=30, blank=True, default='')
+    date_approved = models.DateTimeField(null=True, blank=True, verbose_name='Fecha aprobación MP')
+    creditos_otorgados = models.IntegerField(default=0, verbose_name='Créditos otorgados')
+    fecha_registro = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Cobro de Suscripción'
+        verbose_name_plural = 'Cobros de Suscripción'
+        ordering = ['-date_approved']
+        unique_together = [('suscripcion', 'charge_id')]
+        indexes = [
+            models.Index(fields=['charge_id']),
+            models.Index(fields=['payment_id']),
+        ]
+
+    def __str__(self):
+        return (
+            f"Cobro #{self.charge_id} — ${self.transaction_amount} "
+            f"({self.status}) → {self.creditos_otorgados} créditos"
+        )
+

@@ -14,7 +14,7 @@ import logging
 import requests as http_requests
 import mercadopago
 
-from .models import PlanSuscripcion, SuscripcionProveedor
+from .models import PlanSuscripcion, SuscripcionProveedor, CobroSuscripcion
 from .creditos_services import obtener_credito_proveedor
 
 logger = logging.getLogger(__name__)
@@ -256,7 +256,7 @@ def crear_suscripcion_mp(proveedor, plan_id):
 
 
 @transaction.atomic
-def acreditar_creditos_suscripcion(preapproval_id, charge_id=None):
+def acreditar_creditos_suscripcion(preapproval_id, charge_id=None, pago_verificado=None):
     """
     Acredita créditos mensuales al proveedor SOLO cuando existe un cobro
     real verificado en MercadoPago (authorized_payment con status approved).
@@ -270,6 +270,7 @@ def acreditar_creditos_suscripcion(preapproval_id, charge_id=None):
     Args:
         preapproval_id: ID del preapproval en MP.
         charge_id: ID del authorized_payment en MP (OBLIGATORIO).
+        pago_verificado: dict con datos de verificar_pago_mp() para auditoría.
     """
     if not charge_id:
         logger.warning(f"[acreditar] Intento sin charge_id para {preapproval_id}. Rechazado.")
@@ -277,7 +278,6 @@ def acreditar_creditos_suscripcion(preapproval_id, charge_id=None):
 
     charge_id_str = str(charge_id)
 
-    # Rechazar IDs ficticios que no vienen de MP
     if not charge_id_str.isdigit():
         logger.warning(f"[acreditar] charge_id no numérico '{charge_id_str}' para {preapproval_id}. Rechazado.")
         return {'acreditado': False, 'motivo': f'charge_id inválido: {charge_id_str}'}
@@ -319,6 +319,32 @@ def acreditar_creditos_suscripcion(preapproval_id, charge_id=None):
     suscripcion.processed_charge_ids = sorted(processed_ids)
     suscripcion.estado = 'activa'
     suscripcion.save(update_fields=['estado', 'ultimo_charge_id', 'processed_charge_ids', 'fecha_actualizacion'])
+
+    # Guardar registro de auditoría si tenemos datos verificados
+    if pago_verificado:
+        from django.utils.dateparse import parse_datetime
+        date_approved_str = pago_verificado.get('date_approved')
+        date_approved = parse_datetime(date_approved_str) if date_approved_str else None
+
+        CobroSuscripcion.objects.update_or_create(
+            suscripcion=suscripcion,
+            charge_id=charge_id_str,
+            defaults={
+                'payment_id': str(pago_verificado.get('payment_id', '')),
+                'status': pago_verificado.get('status', ''),
+                'status_detail': pago_verificado.get('status_detail', ''),
+                'transaction_amount': pago_verificado.get('transaction_amount', 0),
+                'net_received_amount': pago_verificado.get('net_received_amount'),
+                'currency_id': pago_verificado.get('currency_id', 'CLP'),
+                'collector_id': pago_verificado.get('collector_id', 0),
+                'payer_email': pago_verificado.get('payer_email', ''),
+                'payer_id': str(pago_verificado.get('payer_id', '')),
+                'card_last_four': pago_verificado.get('card_last_four', ''),
+                'payment_method': pago_verificado.get('payment_type_id', ''),
+                'date_approved': date_approved,
+                'creditos_otorgados': creditos,
+            },
+        )
 
     logger.info(
         f"[acreditar] +{creditos} créditos para proveedor {suscripcion.proveedor.id} "
@@ -670,6 +696,16 @@ def sincronizar_suscripcion_por_email(proveedor):
     }
 
 
+MECANIMOVIL_COLLECTOR_ID = int(config('MERCADOPAGO_COLLECTOR_ID', default='2679548244'))
+
+
+def _mp_headers():
+    token = config('MERCADOPAGO_ACCESS_TOKEN', default='')
+    if not token:
+        raise ValueError("MERCADOPAGO_ACCESS_TOKEN no configurado")
+    return {"Authorization": f"Bearer {token}"}
+
+
 def buscar_cobros_mp(preapproval_id):
     """
     Busca authorized_payments (cobros recurrentes) en MercadoPago para un
@@ -678,20 +714,16 @@ def buscar_cobros_mp(preapproval_id):
 
     Retorna lista de dicts con los cobros, o [] si falla / no hay cobros.
     """
-    token = config('MERCADOPAGO_ACCESS_TOKEN', default='')
-    if not token:
-        logger.error("[buscar_cobros_mp] MERCADOPAGO_ACCESS_TOKEN no configurado")
+    try:
+        headers = _mp_headers()
+    except ValueError as e:
+        logger.error(f"[buscar_cobros_mp] {e}")
         return []
 
     url = "https://api.mercadopago.com/authorized_payments/search"
     params = {"preapproval_id": preapproval_id}
     try:
-        resp = http_requests.get(
-            url,
-            params=params,
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=15,
-        )
+        resp = http_requests.get(url, params=params, headers=headers, timeout=15)
         if resp.status_code == 200:
             data = resp.json()
             results = data.get('results', [])
@@ -711,17 +743,91 @@ def buscar_cobros_mp(preapproval_id):
         return []
 
 
+def verificar_pago_mp(payment_id):
+    """
+    VERIFICACIÓN ANTI-FRAUDE: Consulta GET /v1/payments/{id} para obtener
+    la prueba definitiva de que el dinero fue cobrado y acreditado al
+    collector (Mecanimovil).
+
+    Retorna dict con los campos esenciales, o None si no se pudo verificar.
+    Verifica:
+      1. payment.status == 'approved'
+      2. payment.status_detail == 'accredited'
+      3. payment.collector_id == MECANIMOVIL_COLLECTOR_ID
+    """
+    try:
+        headers = _mp_headers()
+    except ValueError as e:
+        logger.error(f"[verificar_pago_mp] {e}")
+        return None
+
+    url = f"https://api.mercadopago.com/v1/payments/{payment_id}"
+    try:
+        resp = http_requests.get(url, headers=headers, timeout=15)
+        if resp.status_code != 200:
+            logger.warning(
+                f"[verificar_pago_mp] MP devolvió HTTP {resp.status_code} "
+                f"para payment {payment_id}: {resp.text[:300]}"
+            )
+            return None
+
+        p = resp.json()
+        resultado = {
+            'payment_id': p.get('id'),
+            'status': p.get('status'),
+            'status_detail': p.get('status_detail'),
+            'transaction_amount': p.get('transaction_amount'),
+            'currency_id': p.get('currency_id'),
+            'collector_id': p.get('collector_id'),
+            'payer_email': (p.get('payer') or {}).get('email'),
+            'payer_id': (p.get('payer') or {}).get('id'),
+            'card_last_four': (p.get('card') or {}).get('last_four_digits'),
+            'payment_method_id': p.get('payment_method_id'),
+            'payment_type_id': p.get('payment_type_id'),
+            'date_approved': p.get('date_approved'),
+            'date_created': p.get('date_created'),
+            'net_received_amount': (p.get('transaction_details') or {}).get('net_received_amount'),
+            'operation_type': p.get('operation_type'),
+        }
+
+        logger.info(
+            f"[verificar_pago_mp] Payment #{payment_id}: "
+            f"status={resultado['status']}, detail={resultado['status_detail']}, "
+            f"collector={resultado['collector_id']}, amount={resultado['transaction_amount']}, "
+            f"card=***{resultado['card_last_four']}"
+        )
+        return resultado
+
+    except Exception as e:
+        logger.error(f"[verificar_pago_mp] Error HTTP: {e}")
+        return None
+
+
 def sincronizar_cobros_preapproval(preapproval_id):
     """
     Busca cobros REALES en MercadoPago para un preapproval y acredita créditos
-    SOLO si el cobro tiene status approved/authorized/processed.
+    con VERIFICACIÓN ANTI-FRAUDE DE DOBLE NIVEL:
 
-    NUNCA otorga créditos sin un charge_id numérico real de MP.
+      Nivel 1: authorized_payment.status in (approved, processed, authorized)
+      Nivel 2: GET /v1/payments/{payment_id} confirma:
+               - status == 'approved'
+               - status_detail == 'accredited'
+               - collector_id == cuenta Mecanimovil
+
+    NUNCA otorga créditos sin un charge_id numérico real y verificado.
     """
     if not preapproval_id:
         return []
 
     logger.info(f"[sincronizar_cobros] Buscando cobros reales para preapproval {preapproval_id}...")
+
+    try:
+        suscripcion = SuscripcionProveedor.objects.filter(
+            mp_preapproval_id=preapproval_id
+        ).select_related('plan').first()
+        precio_plan = float(suscripcion.plan.precio) if suscripcion else None
+    except Exception:
+        precio_plan = None
 
     try:
         pagos = buscar_cobros_mp(preapproval_id)
@@ -732,25 +838,92 @@ def sincronizar_cobros_preapproval(preapproval_id):
             mp_status = pago.get('status')
             monto = pago.get('transaction_amount')
             fecha = pago.get('date_created', pago.get('debit_date', ''))
+            payment_obj = pago.get('payment') or {}
+            payment_id = payment_obj.get('id')
+            payment_status = payment_obj.get('status')
 
             logger.info(
                 f"[sincronizar_cobros] Cobro MP #{charge_id}: "
-                f"status={mp_status}, monto={monto}, fecha={fecha}"
+                f"status={mp_status}, monto={monto}, fecha={fecha}, "
+                f"payment_id={payment_id}, payment_status={payment_status}"
             )
 
-            if mp_status in ('authorized', 'processed', 'approved') and charge_id:
-                try:
-                    res = acreditar_creditos_suscripcion(
-                        preapproval_id, charge_id=str(charge_id)
-                    )
-                    resultados.append(res)
-                except Exception as e:
-                    logger.error(f"[sincronizar_cobros] Error acreditando cobro {charge_id}: {e}")
-            else:
+            if mp_status not in ('authorized', 'processed', 'approved') or not charge_id:
                 logger.info(
                     f"[sincronizar_cobros] Cobro #{charge_id} con status '{mp_status}' "
-                    f"NO es elegible para acreditación"
+                    f"NO es elegible para acreditación (Nivel 1 fallido)"
                 )
+                continue
+
+            # NIVEL 2: Verificar el pago real en /v1/payments/
+            if not payment_id:
+                logger.warning(
+                    f"[sincronizar_cobros] Cobro #{charge_id} no tiene payment_id. "
+                    f"No se puede verificar el pago real."
+                )
+                continue
+
+            pago_verificado = verificar_pago_mp(payment_id)
+            if not pago_verificado:
+                logger.warning(
+                    f"[sincronizar_cobros] No se pudo verificar payment {payment_id} "
+                    f"para cobro #{charge_id}. Créditos NO otorgados."
+                )
+                continue
+
+            if pago_verificado['status'] != 'approved':
+                logger.warning(
+                    f"[sincronizar_cobros] Payment {payment_id} status='{pago_verificado['status']}' "
+                    f"(no es approved). Créditos NO otorgados."
+                )
+                continue
+
+            if pago_verificado['status_detail'] != 'accredited':
+                logger.warning(
+                    f"[sincronizar_cobros] Payment {payment_id} status_detail='{pago_verificado['status_detail']}' "
+                    f"(no es accredited). Créditos NO otorgados."
+                )
+                continue
+
+            if pago_verificado['collector_id'] != MECANIMOVIL_COLLECTOR_ID:
+                logger.error(
+                    f"[sincronizar_cobros] ALERTA FRAUDE: Payment {payment_id} "
+                    f"collector_id={pago_verificado['collector_id']} != {MECANIMOVIL_COLLECTOR_ID}. "
+                    f"Créditos RECHAZADOS."
+                )
+                continue
+
+            if precio_plan and pago_verificado['transaction_amount'] != precio_plan:
+                logger.warning(
+                    f"[sincronizar_cobros] Payment {payment_id} amount={pago_verificado['transaction_amount']} "
+                    f"!= plan price={precio_plan}. Verificar manualmente."
+                )
+
+            logger.info(
+                f"[sincronizar_cobros] ✅ Cobro #{charge_id} VERIFICADO: "
+                f"payment={payment_id}, status=approved/accredited, "
+                f"collector={MECANIMOVIL_COLLECTOR_ID}, "
+                f"card=***{pago_verificado.get('card_last_four')}, "
+                f"net=${pago_verificado.get('net_received_amount')}"
+            )
+
+            try:
+                res = acreditar_creditos_suscripcion(
+                    preapproval_id,
+                    charge_id=str(charge_id),
+                    pago_verificado=pago_verificado,
+                )
+                if res.get('acreditado'):
+                    res['verificacion'] = {
+                        'payment_id': payment_id,
+                        'card_last_four': pago_verificado.get('card_last_four'),
+                        'net_received': pago_verificado.get('net_received_amount'),
+                        'date_approved': pago_verificado.get('date_approved'),
+                        'payer_email': pago_verificado.get('payer_email'),
+                    }
+                resultados.append(res)
+            except Exception as e:
+                logger.error(f"[sincronizar_cobros] Error acreditando cobro {charge_id}: {e}")
 
         if not resultados:
             logger.info(
