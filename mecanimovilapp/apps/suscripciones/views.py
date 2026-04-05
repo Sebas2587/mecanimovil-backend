@@ -1007,7 +1007,7 @@ class SuscripcionProveedorViewSet(viewsets.GenericViewSet):
         from .suscripcion_services import (
             acreditar_creditos_suscripcion,
             sincronizar_estado_suscripcion,
-            obtener_preapproval_id_desde_pago,
+            obtener_detalle_pago_autorizado,
         )
 
         logger.info(
@@ -1027,27 +1027,42 @@ class SuscripcionProveedorViewSet(viewsets.GenericViewSet):
             f"[Webhook Preapproval] type={notification_type!r}, resource_id={resource_id!r}"
         )
 
-        # ── Cobro mensual exitoso → acreditar créditos ──────────────────────
+        # ── Cobro mensual → verificar estado real antes de acreditar ────────
         if notification_type in ('subscription_authorized_payment', 'authorized_payment'):
-            # data.id es el authorized_payment_id, NO el preapproval_id.
-            # Hay que llamar a GET /authorized_payments/{id} para obtener
-            # el preapproval_id real al que pertenece este cobro.
             authorized_payment_id = resource_id
 
             if authorized_payment_id:
                 try:
-                    preapproval_id = obtener_preapproval_id_desde_pago(authorized_payment_id)
-                    if preapproval_id:
-                        resultado = acreditar_creditos_suscripcion(
-                            preapproval_id=preapproval_id,
-                            charge_id=authorized_payment_id,
-                        )
-                        logger.info(f"[Webhook] Resultado acreditación: {resultado}")
-                    else:
+                    detalle_pago = obtener_detalle_pago_autorizado(authorized_payment_id)
+                    if not detalle_pago:
                         logger.warning(
-                            f"[Webhook] No se pudo obtener preapproval_id "
-                            f"para authorized_payment {authorized_payment_id}"
+                            f"[Webhook] No se pudo consultar authorized_payment {authorized_payment_id}"
                         )
+                    else:
+                        pago_status = detalle_pago.get('status', '')
+                        preapproval_id = detalle_pago.get('preapproval_id')
+                        monto = detalle_pago.get('transaction_amount')
+
+                        ESTADOS_PAGO_EXITOSO = ('approved', 'authorized', 'processed')
+                        if pago_status not in ESTADOS_PAGO_EXITOSO:
+                            logger.warning(
+                                f"[Webhook] Cobro {authorized_payment_id} status={pago_status} "
+                                f"(NO aprobado). No se acreditan créditos."
+                            )
+                        elif preapproval_id:
+                            resultado = acreditar_creditos_suscripcion(
+                                preapproval_id=preapproval_id,
+                                charge_id=authorized_payment_id,
+                            )
+                            logger.info(
+                                f"[Webhook] Cobro {authorized_payment_id} APROBADO "
+                                f"(monto={monto}). Acreditación: {resultado}"
+                            )
+                        else:
+                            logger.warning(
+                                f"[Webhook] Cobro {authorized_payment_id} aprobado "
+                                f"pero sin preapproval_id en respuesta MP."
+                            )
                 except Exception as e:
                     logger.error(f"[Webhook] Error acreditando créditos: {e}", exc_info=True)
 

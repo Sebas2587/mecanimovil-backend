@@ -29,17 +29,21 @@ def _get_mp_sdk():
     return mercadopago.SDK(token)
 
 
-def obtener_preapproval_id_desde_pago(authorized_payment_id):
+def obtener_detalle_pago_autorizado(authorized_payment_id):
     """
-    Dado un authorized_payment_id (cobro recurrente), consulta la API de
-    MercadoPago para obtener el preapproval_id al que pertenece.
+    Consulta GET /authorized_payments/{id} en MercadoPago y retorna
+    los datos completos del cobro recurrente.
 
-    El webhook subscription_authorized_payment envía data.id = authorized_payment_id,
-    NO el preapproval_id. Esta función resuelve esa indirección.
+    Retorna dict con claves: preapproval_id, status, transaction_amount,
+    currency_id, date_created, payment_id, etc.  O None si falla.
+
+    IMPORTANTE: El caller DEBE verificar que response['status'] == 'approved'
+    antes de acreditar créditos; el webhook se dispara tanto para pagos
+    aprobados como para rechazados/pendientes.
     """
     token = config('MERCADOPAGO_ACCESS_TOKEN', default='')
     if not token:
-        logger.error("[obtener_preapproval_id_desde_pago] MERCADOPAGO_ACCESS_TOKEN no configurado")
+        logger.error("[obtener_detalle_pago_autorizado] MERCADOPAGO_ACCESS_TOKEN no configurado")
         return None
 
     url = f"https://api.mercadopago.com/authorized_payments/{authorized_payment_id}"
@@ -47,21 +51,30 @@ def obtener_preapproval_id_desde_pago(authorized_payment_id):
         resp = http_requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=15)
         if resp.status_code == 200:
             data = resp.json()
-            preapproval_id = data.get('preapproval_id')
             logger.info(
-                f"[obtener_preapproval_id_desde_pago] authorized_payment {authorized_payment_id} "
-                f"-> preapproval_id {preapproval_id}"
+                f"[obtener_detalle_pago_autorizado] authorized_payment {authorized_payment_id}: "
+                f"status={data.get('status')}, preapproval_id={data.get('preapproval_id')}, "
+                f"amount={data.get('transaction_amount')}, payment={data.get('payment', {}).get('id')}"
             )
-            return preapproval_id
+            return data
         else:
             logger.warning(
-                f"[obtener_preapproval_id_desde_pago] MP devolvió {resp.status_code} "
+                f"[obtener_detalle_pago_autorizado] MP devolvió {resp.status_code} "
                 f"para authorized_payment {authorized_payment_id}: {resp.text[:300]}"
             )
             return None
     except Exception as e:
-        logger.error(f"[obtener_preapproval_id_desde_pago] Error HTTP: {e}")
+        logger.error(f"[obtener_detalle_pago_autorizado] Error HTTP: {e}")
         return None
+
+
+# Alias retrocompatible
+def obtener_preapproval_id_desde_pago(authorized_payment_id):
+    """Wrapper que retorna solo el preapproval_id (retrocompatibilidad)."""
+    detalle = obtener_detalle_pago_autorizado(authorized_payment_id)
+    if detalle:
+        return detalle.get('preapproval_id')
+    return None
 
 
 

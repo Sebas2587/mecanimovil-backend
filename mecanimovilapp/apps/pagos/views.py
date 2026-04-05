@@ -663,7 +663,7 @@ def webhook_notification(request):
             from mecanimovilapp.apps.suscripciones.suscripcion_services import (
                 acreditar_creditos_suscripcion,
                 sincronizar_estado_suscripcion,
-                obtener_preapproval_id_desde_pago,
+                obtener_detalle_pago_autorizado,
             )
             from mecanimovilapp.apps.suscripciones.models import SuscripcionProveedor
 
@@ -680,18 +680,40 @@ def webhook_notification(request):
             if notification_type in ('subscription_authorized_payment', 'authorized_payment'):
                 if resource_id:
                     try:
-                        preapproval_id = obtener_preapproval_id_desde_pago(resource_id)
-                        if preapproval_id:
-                            resultado = acreditar_creditos_suscripcion(
-                                preapproval_id=preapproval_id,
-                                charge_id=resource_id,
-                            )
-                            logger.info(f"[Webhook General] Acreditación: {resultado}")
-                        else:
+                        detalle_pago = obtener_detalle_pago_autorizado(resource_id)
+                        if not detalle_pago:
                             logger.warning(
-                                f"[Webhook General] No se resolvió preapproval_id "
-                                f"para authorized_payment {resource_id}"
+                                f"[Webhook General] No se pudo obtener detalle del "
+                                f"authorized_payment {resource_id}"
                             )
+                        else:
+                            pago_status = detalle_pago.get('status', '')
+                            preapproval_id = detalle_pago.get('preapproval_id')
+                            monto = detalle_pago.get('transaction_amount')
+
+                            logger.info(
+                                f"[Webhook General] Cobro {resource_id}: "
+                                f"status={pago_status}, monto={monto}, "
+                                f"preapproval_id={preapproval_id}"
+                            )
+
+                            ESTADOS_PAGO_EXITOSO = ('approved', 'authorized', 'processed')
+                            if pago_status not in ESTADOS_PAGO_EXITOSO:
+                                logger.warning(
+                                    f"[Webhook General] Cobro {resource_id} NO aprobado "
+                                    f"(status={pago_status}). No se acreditan créditos."
+                                )
+                            elif not preapproval_id:
+                                logger.warning(
+                                    f"[Webhook General] Cobro {resource_id} aprobado pero "
+                                    f"sin preapproval_id en la respuesta de MP."
+                                )
+                            else:
+                                resultado = acreditar_creditos_suscripcion(
+                                    preapproval_id=preapproval_id,
+                                    charge_id=resource_id,
+                                )
+                                logger.info(f"[Webhook General] Acreditación: {resultado}")
                     except Exception as e:
                         logger.error(f"[Webhook General] Error acreditando: {e}", exc_info=True)
 
