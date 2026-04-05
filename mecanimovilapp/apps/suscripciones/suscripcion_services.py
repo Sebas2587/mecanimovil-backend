@@ -13,7 +13,6 @@ from decouple import config
 import logging
 import requests as http_requests
 import mercadopago
-from mercadopago.core import MPBase
 
 from .models import PlanSuscripcion, SuscripcionProveedor
 from .creditos_services import obtener_credito_proveedor
@@ -257,48 +256,55 @@ def crear_suscripcion_mp(proveedor, plan_id):
 
 
 @transaction.atomic
-def acreditar_creditos_suscripcion(preapproval_id, charge_id=None, force_initial=False):
+def acreditar_creditos_suscripcion(preapproval_id, charge_id=None):
     """
-    Acredita créditos mensuales al proveedor cuando MercadoPago confirma
-    un cobro recurrente (evento subscription_authorized_payment).
+    Acredita créditos mensuales al proveedor SOLO cuando existe un cobro
+    real verificado en MercadoPago (authorized_payment con status approved).
+
+    REGLA ESTRICTA: charge_id es OBLIGATORIO y debe ser un ID numérico
+    real de MercadoPago. No se acreditan créditos sin un cobro verificado.
 
     Idempotente: verifica contra processed_charge_ids (lista completa)
     para nunca acreditar el mismo cobro dos veces.
 
     Args:
         preapproval_id: ID del preapproval en MP.
-        charge_id: ID del cobro específico (para idempotencia).
-        force_initial: Si es True, acredita los créditos del plan incluso si no hay charge_id.
-                       Se usa solo para la activación inicial garantizada.
+        charge_id: ID del authorized_payment en MP (OBLIGATORIO).
     """
+    if not charge_id:
+        logger.warning(f"[acreditar] Intento sin charge_id para {preapproval_id}. Rechazado.")
+        return {'acreditado': False, 'motivo': 'charge_id obligatorio — no se acredita sin cobro real'}
+
+    charge_id_str = str(charge_id)
+
+    # Rechazar IDs ficticios que no vienen de MP
+    if not charge_id_str.isdigit():
+        logger.warning(f"[acreditar] charge_id no numérico '{charge_id_str}' para {preapproval_id}. Rechazado.")
+        return {'acreditado': False, 'motivo': f'charge_id inválido: {charge_id_str}'}
+
     try:
         suscripcion = SuscripcionProveedor.objects.select_for_update().get(
             mp_preapproval_id=preapproval_id
         )
     except SuscripcionProveedor.DoesNotExist:
-        logger.warning(f"Suscripción {preapproval_id} no encontrada en BD")
+        logger.warning(f"[acreditar] Suscripción {preapproval_id} no encontrada en BD")
         return {'acreditado': False, 'motivo': 'Suscripción no encontrada'}
 
     processed_ids = set(suscripcion.processed_charge_ids or [])
 
-    if force_initial:
-        if processed_ids:
-            logger.info(f"Suscripción {preapproval_id} ya tiene créditos acreditados ({len(processed_ids)} cobros)")
-            return {'acreditado': False, 'motivo': 'Ya tiene créditos acreditados'}
-        charge_id = 'inicial_autorizacion'
-        logger.info(f"Iniciando acreditación inicial forzada para {preapproval_id}")
-
-    # Idempotencia robusta: verificar contra la lista completa de cobros procesados
-    if charge_id and str(charge_id) in processed_ids:
-        logger.info(f"Charge {charge_id} ya fue procesado para suscripción {preapproval_id}")
+    if charge_id_str in processed_ids:
+        logger.info(f"[acreditar] Charge {charge_id_str} ya procesado para {preapproval_id}")
         return {'acreditado': False, 'motivo': 'Cobro ya procesado'}
 
     if suscripcion.estado == 'pendiente':
         suscripcion.estado = 'activa'
-        logger.info(f"Suscripción {preapproval_id} activada tras primer cobro")
+        logger.info(f"[acreditar] Suscripción {preapproval_id} activada tras cobro {charge_id_str}")
 
     if suscripcion.estado not in ('activa', 'pendiente'):
-        logger.warning(f"Suscripción {preapproval_id} en estado '{suscripcion.estado}', no se acreditan créditos")
+        logger.warning(
+            f"[acreditar] Suscripción {preapproval_id} en estado '{suscripcion.estado}', "
+            f"no se acreditan créditos"
+        )
         return {'acreditado': False, 'motivo': f"Estado inválido: {suscripcion.estado}"}
 
     creditos = suscripcion.plan.creditos_mensuales
@@ -308,18 +314,17 @@ def acreditar_creditos_suscripcion(preapproval_id, charge_id=None, force_initial
     credito_proveedor.fecha_ultima_compra = timezone.now()
     credito_proveedor.save(update_fields=['saldo_creditos', 'fecha_ultima_compra', 'fecha_actualizacion'])
 
-    if charge_id:
-        suscripcion.ultimo_charge_id = str(charge_id)
-        processed_ids.add(str(charge_id))
-        suscripcion.processed_charge_ids = sorted(processed_ids)
+    suscripcion.ultimo_charge_id = charge_id_str
+    processed_ids.add(charge_id_str)
+    suscripcion.processed_charge_ids = sorted(processed_ids)
     suscripcion.estado = 'activa'
     suscripcion.save(update_fields=['estado', 'ultimo_charge_id', 'processed_charge_ids', 'fecha_actualizacion'])
 
     logger.info(
-        f"Créditos acreditados: {creditos} para proveedor {suscripcion.proveedor.id} "
-        f"(preapproval: {preapproval_id}, charge: {charge_id}). "
+        f"[acreditar] +{creditos} créditos para proveedor {suscripcion.proveedor.id} "
+        f"(preapproval={preapproval_id}, charge_mp={charge_id_str}). "
         f"Nuevo saldo: {credito_proveedor.saldo_creditos}. "
-        f"Total cobros procesados: {len(processed_ids)}"
+        f"Cobros procesados: {len(processed_ids)}"
     )
 
     return {
@@ -327,7 +332,7 @@ def acreditar_creditos_suscripcion(preapproval_id, charge_id=None, force_initial
         'creditos': creditos,
         'saldo_nuevo': credito_proveedor.saldo_creditos,
         'proveedor_id': suscripcion.proveedor.id,
-        'charge_id': charge_id
+        'charge_id': charge_id_str,
     }
 
 
@@ -665,79 +670,96 @@ def sincronizar_suscripcion_por_email(proveedor):
     }
 
 
-class PreapprovalPayment(MPBase):
+def buscar_cobros_mp(preapproval_id):
     """
-    Clase auxiliar para extender el SDK de Mercado Pago (v2.2.0) que no incluye 
-    el cliente para /preapproval_payment/search.
+    Busca authorized_payments (cobros recurrentes) en MercadoPago para un
+    preapproval específico usando el endpoint oficial:
+      GET /authorized_payments/search?preapproval_id={id}
+
+    Retorna lista de dicts con los cobros, o [] si falla / no hay cobros.
     """
-    def search(self, filters=None, request_options=None):
-        return self._get(uri="/v1/preapproval_payments/search", filters=filters, request_options=request_options)
+    token = config('MERCADOPAGO_ACCESS_TOKEN', default='')
+    if not token:
+        logger.error("[buscar_cobros_mp] MERCADOPAGO_ACCESS_TOKEN no configurado")
+        return []
+
+    url = "https://api.mercadopago.com/authorized_payments/search"
+    params = {"preapproval_id": preapproval_id}
+    try:
+        resp = http_requests.get(
+            url,
+            params=params,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            results = data.get('results', [])
+            logger.info(
+                f"[buscar_cobros_mp] MP retornó {len(results)} cobros "
+                f"para preapproval {preapproval_id}"
+            )
+            return results
+        else:
+            logger.warning(
+                f"[buscar_cobros_mp] MP devolvió HTTP {resp.status_code} "
+                f"para preapproval {preapproval_id}: {resp.text[:500]}"
+            )
+            return []
+    except Exception as e:
+        logger.error(f"[buscar_cobros_mp] Error HTTP: {e}")
+        return []
 
 
 def sincronizar_cobros_preapproval(preapproval_id):
     """
-    Busca cobros/pagos en MercadoPago para un preapproval específico
-    y los procesa para acreditar créditos si aún no han sido procesados.
+    Busca cobros REALES en MercadoPago para un preapproval y acredita créditos
+    SOLO si el cobro tiene status approved/authorized/processed.
 
-    Sincroniza estados: 'authorized', 'processed' y 'approved'.
+    NUNCA otorga créditos sin un charge_id numérico real de MP.
     """
     if not preapproval_id:
         return []
 
-    logger.info(f"🔍 Iniciando sincronización de cobros para preapproval {preapproval_id}...")
-    
-    try:
-        sdk = _get_mp_sdk()
-        
-        # Instanciar nuestro cliente auxiliar para buscar pagos de preapproval
-        pp_client = PreapprovalPayment(sdk.request_options, sdk.http_client)
-        
-        # Buscar pagos asociados a este preapproval
-        result = pp_client.search({
-            "preapproval_id": preapproval_id,
-            "limit": 20,
-        })
+    logger.info(f"[sincronizar_cobros] Buscando cobros reales para preapproval {preapproval_id}...")
 
-        pagos = []
+    try:
+        pagos = buscar_cobros_mp(preapproval_id)
         resultados = []
 
-        if result.get('status') in [200, 201]:
-            pagos = result.get('response', {}).get('results', [])
-            logger.info(f"📦 Se encontraron {len(pagos)} cobros en total para {preapproval_id}")
-            
-            for pago in pagos:
-                charge_id = pago.get('id')
-                mp_status = pago.get('status')
-                monto = pago.get('transaction_amount')
-                
-                logger.info(f"📋 Analizando cobro MP {charge_id} con estado '{mp_status}' y monto {monto}")
+        for pago in pagos:
+            charge_id = pago.get('id')
+            mp_status = pago.get('status')
+            monto = pago.get('transaction_amount')
+            fecha = pago.get('date_created', pago.get('debit_date', ''))
 
-                if mp_status in ('authorized', 'processed', 'approved') and charge_id:
-                    try:
-                        res = acreditar_creditos_suscripcion(preapproval_id, charge_id=charge_id)
-                        resultados.append(res)
-                    except Exception as e:
-                        logger.error(f"❌ Error acreditando cobro {charge_id}: {e}")
-        else:
-            logger.warning(f"⚠️ Error al buscar cobros para {preapproval_id} en MP: {result.get('status')}")
-        
-        # GARANTÍA INICIAL: Si no se acreditó nada vía pagos individuales,
-        # y la suscripción NUNCA ha recibido créditos, los otorgamos como cortesía de activación.
+            logger.info(
+                f"[sincronizar_cobros] Cobro MP #{charge_id}: "
+                f"status={mp_status}, monto={monto}, fecha={fecha}"
+            )
+
+            if mp_status in ('authorized', 'processed', 'approved') and charge_id:
+                try:
+                    res = acreditar_creditos_suscripcion(
+                        preapproval_id, charge_id=str(charge_id)
+                    )
+                    resultados.append(res)
+                except Exception as e:
+                    logger.error(f"[sincronizar_cobros] Error acreditando cobro {charge_id}: {e}")
+            else:
+                logger.info(
+                    f"[sincronizar_cobros] Cobro #{charge_id} con status '{mp_status}' "
+                    f"NO es elegible para acreditación"
+                )
+
         if not resultados:
-            try:
-                suscripcion = SuscripcionProveedor.objects.get(mp_preapproval_id=preapproval_id)
-                if not suscripcion.processed_charge_ids:
-                    logger.info(f"Aplicando garantía inicial de créditos para preapproval {preapproval_id}")
-                    res = acreditar_creditos_suscripcion(preapproval_id, force_initial=True)
-                    if res.get('acreditado'):
-                        resultados.append(res)
-                else:
-                    logger.info(f"No se requieren créditos iniciales para {preapproval_id} (ya procesados)")
-            except Exception as e:
-                logger.error(f"Error en lógica de garantía inicial: {e}")
+            logger.info(
+                f"[sincronizar_cobros] Sin cobros nuevos para acreditar en {preapproval_id}. "
+                f"Solo se otorgan créditos contra cobros reales verificados en MP."
+            )
 
         return resultados
 
     except Exception as e:
-        logger.error(f"❌ Error crítico en sincronizar_cobros_preapproval para {preapproval_id}: {e}")
+        logger.error(f"[sincronizar_cobros] Error crítico para {preapproval_id}: {e}")
         return []

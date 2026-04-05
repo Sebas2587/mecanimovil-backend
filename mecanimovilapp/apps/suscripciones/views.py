@@ -989,6 +989,51 @@ class SuscripcionProveedorViewSet(viewsets.GenericViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+    @action(detail=False, methods=['get'], url_path='historial-cobros')
+    def historial_cobros(self, request):
+        """
+        GET /api/suscripciones/mi-suscripcion/historial-cobros/
+
+        Consulta MercadoPago para obtener los cobros reales realizados
+        contra la suscripción del proveedor. Retorna SOLO pagos verificados.
+        """
+        from .suscripcion_services import buscar_cobros_mp, obtener_suscripcion_activa
+
+        suscripcion = SuscripcionProveedor.objects.filter(
+            proveedor=request.user
+        ).exclude(estado__in=['cancelada', 'expirada']).select_related('plan').first()
+
+        if not suscripcion or not suscripcion.mp_preapproval_id:
+            return Response({
+                'cobros': [],
+                'total': 0,
+                'mensaje': 'No tienes una suscripción activa.',
+            })
+
+        pagos_mp = buscar_cobros_mp(suscripcion.mp_preapproval_id)
+        processed_ids = set(suscripcion.processed_charge_ids or [])
+
+        cobros = []
+        for pago in pagos_mp:
+            charge_id = str(pago.get('id', ''))
+            cobros.append({
+                'id': charge_id,
+                'status': pago.get('status', 'unknown'),
+                'monto': pago.get('transaction_amount'),
+                'moneda': pago.get('currency_id', 'CLP'),
+                'fecha': pago.get('date_created') or pago.get('debit_date'),
+                'acreditado': charge_id in processed_ids,
+            })
+
+        cobros.sort(key=lambda c: c.get('fecha') or '', reverse=True)
+
+        return Response({
+            'cobros': cobros,
+            'total': len(cobros),
+            'preapproval_id': suscripcion.mp_preapproval_id,
+            'processed_charge_ids': sorted(processed_ids),
+        })
+
     @action(
         detail=False,
         methods=['post'],
