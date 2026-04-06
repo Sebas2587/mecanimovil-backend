@@ -1418,6 +1418,10 @@ class Notificacion(models.Model):
         ('order_update', 'Actualización de Orden'),
         ('nueva_oferta', 'Nueva Oferta'),
         ('solicitud_adjudicada', 'Solicitud Adjudicada'),
+        ('suscripcion_por_vencer', 'Suscripción Por Vencer'),
+        ('suscripcion_vencida', 'Suscripción Vencida'),
+        ('suscripcion_pago_fallido', 'Pago de Suscripción Fallido'),
+        ('creditos_agotados', 'Créditos Agotados'),
         ('system', 'Sistema'),
     ]
     

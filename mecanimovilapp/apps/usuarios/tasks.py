@@ -5,14 +5,18 @@ import logging
 logger = logging.getLogger(__name__)
 
 THROTTLE_WINDOWS = {
-    'health_alert':        3600,
-    'global_health_alert': 3600 * 6,
-    'viaje_registrado':    300,
-    'salud_actualizada':   1800,
-    'recordatorio_pago':   3600 * 4,
-    'cambio_estado':       60,
-    'nueva_oferta':        120,
-    'solicitud_adjudicada': 60,
+    'health_alert':              3600,
+    'global_health_alert':       3600 * 6,
+    'viaje_registrado':          300,
+    'salud_actualizada':         1800,
+    'recordatorio_pago':         3600 * 4,
+    'cambio_estado':             60,
+    'nueva_oferta':              120,
+    'solicitud_adjudicada':      60,
+    'suscripcion_por_vencer':    3600 * 12,  # Max 1 push cada 12 h
+    'suscripcion_vencida':       3600 * 12,
+    'suscripcion_pago_fallido':  3600 * 12,
+    'creditos_agotados':         3600 * 12,
 }
 
 DEFAULT_THROTTLE_SECONDS = 300
@@ -72,6 +76,8 @@ def send_expo_push_notification(self, user_id, title, body, data=None):
             channel_id = 'viajes'
         elif notif_type in ('recordatorio_pago', 'cambio_estado', 'nueva_oferta', 'solicitud_adjudicada'):
             channel_id = 'servicios'
+        elif notif_type in ('suscripcion_por_vencer', 'suscripcion_vencida', 'suscripcion_pago_fallido', 'creditos_agotados'):
+            channel_id = 'suscripciones'
 
         message = PushMessage(
             to=token,

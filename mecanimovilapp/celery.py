@@ -99,6 +99,11 @@ app.conf.beat_schedule = {
         'schedule': crontab(hour=4, minute=0),  # Diariamente a las 04:00 AM
         'options': {'queue': 'default'},
     },
+    'verificar-salud-suscripciones': {
+        'task': 'suscripciones.verificar_salud_suscripciones',
+        'schedule': crontab(hour='*/6', minute=30),  # Cada 6 horas (00:30, 06:30, 12:30, 18:30)
+        'options': {'queue': 'default'},
+    },
 }
 
 @app.task(bind=True)

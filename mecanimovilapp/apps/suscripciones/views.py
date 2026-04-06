@@ -6,6 +6,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.conf import settings
+from django.utils import timezone
 from decouple import config
 import logging
 
@@ -988,6 +989,102 @@ class SuscripcionProveedorViewSet(viewsets.GenericViewSet):
                 {'error': 'Error al sincronizar la suscripción. Inténtelo nuevamente.'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+    @action(detail=False, methods=['get'], url_path='estado-salud')
+    def estado_salud(self, request):
+        """
+        GET /api/suscripciones/mi-suscripcion/estado-salud/
+
+        Retorna el estado de salud de la suscripción del proveedor para que
+        el frontend muestre banners/alertas apropiados.
+
+        Campos clave en la respuesta:
+          - estado_salud: 'ok' | 'por_vencer' | 'pago_fallido' | 'vencida' | 'sin_suscripcion'
+          - puede_ofertar: bool (tiene créditos > 0)
+          - saldo_creditos: int
+          - mensaje: str (texto para mostrar al usuario)
+          - accion: str | null (ruta sugerida para resolver el problema)
+        """
+        from .suscripcion_services import obtener_suscripcion_activa
+        from .creditos_services import obtener_credito_proveedor
+        from datetime import timedelta
+
+        proveedor = request.user
+        ahora = timezone.now()
+
+        credito = obtener_credito_proveedor(proveedor)
+        saldo = credito.saldo_creditos
+        puede_ofertar = saldo > 0
+
+        suscripcion = SuscripcionProveedor.objects.filter(
+            proveedor=proveedor,
+        ).select_related('plan').order_by('-fecha_inicio').first()
+
+        if not suscripcion or suscripcion.estado in ('cancelada', 'expirada'):
+            estado_salud = 'vencida' if suscripcion else 'sin_suscripcion'
+            return Response({
+                'estado_salud': estado_salud,
+                'puede_ofertar': puede_ofertar,
+                'saldo_creditos': saldo,
+                'suscripcion_estado': suscripcion.estado if suscripcion else None,
+                'plan_nombre': suscripcion.plan.nombre if suscripcion else None,
+                'mensaje': (
+                    'Tu suscripción ha vencido. No recibirás más créditos mensuales. '
+                    'Renueva tu plan para seguir ofertando.'
+                    if suscripcion else
+                    'No tienes una suscripción activa. Activa un plan para recibir créditos mensuales.'
+                ),
+                'accion': '/creditos?tab=suscripcion',
+            })
+
+        if suscripcion.estado == 'pausada':
+            return Response({
+                'estado_salud': 'pago_fallido',
+                'puede_ofertar': puede_ofertar,
+                'saldo_creditos': saldo,
+                'suscripcion_estado': 'pausada',
+                'plan_nombre': suscripcion.plan.nombre,
+                'mensaje': (
+                    f'No se pudo cobrar tu plan {suscripcion.plan.nombre}. '
+                    f'Revisa tu método de pago en MercadoPago.'
+                ),
+                'accion': '/creditos?tab=suscripcion',
+            })
+
+        if (
+            suscripcion.estado == 'activa'
+            and suscripcion.fecha_proximo_cobro
+            and suscripcion.fecha_proximo_cobro <= ahora + timedelta(days=3)
+            and suscripcion.fecha_proximo_cobro > ahora
+        ):
+            fecha_fmt = suscripcion.fecha_proximo_cobro.strftime('%d/%m/%Y')
+            return Response({
+                'estado_salud': 'por_vencer',
+                'puede_ofertar': puede_ofertar,
+                'saldo_creditos': saldo,
+                'suscripcion_estado': 'activa',
+                'plan_nombre': suscripcion.plan.nombre,
+                'fecha_proximo_cobro': fecha_fmt,
+                'mensaje': (
+                    f'Tu plan se renueva el {fecha_fmt}. '
+                    f'Asegúrate de tener saldo en tu método de pago.'
+                ),
+                'accion': None,
+            })
+
+        return Response({
+            'estado_salud': 'ok',
+            'puede_ofertar': puede_ofertar,
+            'saldo_creditos': saldo,
+            'suscripcion_estado': suscripcion.estado,
+            'plan_nombre': suscripcion.plan.nombre,
+            'fecha_proximo_cobro': (
+                suscripcion.fecha_proximo_cobro.strftime('%d/%m/%Y')
+                if suscripcion.fecha_proximo_cobro else None
+            ),
+            'mensaje': None,
+            'accion': None,
+        })
 
     @action(detail=False, methods=['get'], url_path='historial-cobros')
     def historial_cobros(self, request):
