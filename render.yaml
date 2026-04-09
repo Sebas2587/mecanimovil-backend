@@ -24,7 +24,7 @@ services:
   - type: web
     name: mecanimovil-api
     runtime: python
-    plan: free  # Planes: free, starter ($7/mes), standard ($25/mes)
+    plan: standard  # Producción: standard ($25/mes). NO cambiar a free.
     region: oregon  # Cambiar según tu ubicación preferida
     buildCommand: ./build.sh
     startCommand: daphne -b 0.0.0.0 -p $PORT mecanimovilapp.asgi:application
