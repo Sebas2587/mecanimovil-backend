@@ -1252,7 +1252,7 @@ class ClientStatusConsumer(AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps({
             'type': 'salud_vehiculo_actualizada',
             'vehicle_id': event['vehicle_id'],
-            'checklist_id': event['checklist_id'],
+            'checklist_id': event.get('checklist_id'),
             'vehiculo_info': event.get('vehiculo_info', 'Vehículo'),
             'componentes_actualizados': event.get('componentes_actualizados', 0),
             'mensaje': event.get('mensaje', 'Las métricas de salud de tu vehículo han sido actualizadas'),

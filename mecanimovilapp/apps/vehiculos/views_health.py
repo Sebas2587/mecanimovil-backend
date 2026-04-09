@@ -251,11 +251,9 @@ class VehicleHealthViewSet(viewsets.ReadOnlyModelViewSet):
     def vehicle_health_sync(self, request, vehicle_id=None):
         """
         Sincronizar métricas de salud para este vehículo (botón en app).
-        Invalida cache, encola recálculo forzado. Respuesta 202: el cliente puede
-        reconsultar GET vehicle_health tras unos segundos.
-        Marketplace: los serializers leen ComponenteSaludVehiculo/EstadoSaludVehiculo
-        desde BD; al terminar la tarea, listados/detalle muestran valores actualizados
-        (no quedan "desactualizados" respecto al dueño: es la misma fuente).
+        Invalida cache y encola recálculo en Celery; responde 202 inmediatamente
+        para NO bloquear Daphne (evita los 150s+ de respuesta que causaban caídas).
+        El frontend debe re-consultar GET vehicle_health tras unos segundos.
         """
         user = request.user
         from .models import Vehiculo
@@ -271,76 +269,23 @@ class VehicleHealthViewSet(viewsets.ReadOnlyModelViewSet):
                 {'error': 'Vehículo no encontrado o no tienes permisos'},
                 status=status.HTTP_404_NOT_FOUND
             )
-        invalidate_vehicle_health_cache(vehicle_id)
-        logger.info(f"sync salud: vehículo {vehicle_id} invalidado, recálculo forzado")
 
-        # Siempre recalcular en este request para que GET siguiente (o el mismo cliente
-        # al refrescar) vea ya BD actualizada. Solo encolar Celery adicional para pushes
-        # duplicaría trabajo; la tasync invalida cache otra vez al terminar.
-        try:
-            from .tasks import calcular_estado_salud_interno
-            calcular_estado_salud_interno(int(vehicle_id))
-        except Exception as e:
-            logger.error(f"sync salud síncrono falló: {e}", exc_info=True)
-            # Fallback: encolar por si el síncrono falló por timeout/memoria
-            if CELERY_AVAILABLE and calcular_salud_vehiculo_async:
-                try:
-                    calcular_salud_vehiculo_async.delay(int(vehicle_id), force_recalculate=True)
-                except Exception as e2:
-                    logger.warning(f"sync salud: Celery fallback falló: {e2}")
-            return Response(
-                {'error': 'No se pudo actualizar ahora. Intenta de nuevo.'},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE
-            )
-
-        # Refrescar resumen desde BD y devolverlo para que la app no dependa de "esperar al worker"
         invalidate_vehicle_health_cache(vehicle_id)
-        estado = EstadoSaludVehiculo.objects.filter(vehiculo_id=vehicle_id).select_related('vehiculo').first()
-        if estado:
-            componentes = (
-                ComponenteSaludVehiculo.objects.filter(vehiculo_id=vehicle_id)
-                .select_related('componente')
-                .prefetch_related('componente__servicios_asociados')[:20]
-            )
+        logger.info(f"sync salud: vehículo {vehicle_id} invalidado, recálculo encolado")
+
+        if CELERY_AVAILABLE and calcular_salud_vehiculo_async:
             try:
-                componentes_data = ComponenteSaludVehiculoSerializer(componentes, many=True).data
-            except Exception:
-                componentes_data = []
-            ultima = getattr(estado, 'ultima_actualizacion', None)
-            payload = {
-                'ok': True,
-                'mensaje': 'Salud actualizada.',
-                'async': False,
-                'salud_general_porcentaje': estado.salud_general_porcentaje or 0,
-                'componentes_optimos': estado.componentes_optimos or 0,
-                'componentes_atencion': estado.componentes_atencion or 0,
-                'componentes_urgentes': estado.componentes_urgentes or 0,
-                'componentes_criticos': estado.componentes_criticos or 0,
-                'ultima_actualizacion': ultima.isoformat() if ultima else None,
-                'componentes': componentes_data,
-            }
-            set_cached_health(vehicle_id, {
-                'salud_general_porcentaje': payload['salud_general_porcentaje'],
-                'componentes_optimos': payload['componentes_optimos'],
-                'componentes_atencion': payload['componentes_atencion'],
-                'componentes_urgentes': payload['componentes_urgentes'],
-                'componentes_criticos': payload['componentes_criticos'],
-                'fecha_calculo': estado.fecha_calculo.isoformat() if estado.fecha_calculo else None,
-                'ultima_actualizacion': payload['ultima_actualizacion'],
-                'tiene_alertas_activas': estado.tiene_alertas_activas or False,
-                'costo_estimado_mantenimiento': float(estado.costo_estimado_mantenimiento or 0),
-                'componentes': componentes_data,
-                'alertas': [],
-            }, 'health_summary')
-            return Response(payload, status=status.HTTP_200_OK)
+                calcular_salud_vehiculo_async.delay(int(vehicle_id), force_recalculate=True)
+            except Exception as e:
+                logger.warning(f"sync salud: Celery falló: {e}")
 
         return Response(
             {
                 'ok': True,
-                'mensaje': 'Recálculo ejecutado; vuelve a cargar la pantalla.',
-                'async': False,
+                'mensaje': 'Recálculo iniciado. Los datos se actualizarán en unos segundos.',
+                'async': True,
             },
-            status=status.HTTP_200_OK
+            status=status.HTTP_202_ACCEPTED
         )
 
     @action(detail=False, methods=['get'], url_path='vehicle/(?P<vehicle_id>[^/.]+)/components')
@@ -371,16 +316,14 @@ class VehicleHealthViewSet(viewsets.ReadOnlyModelViewSet):
                 status=status.HTTP_404_NOT_FOUND
             )
         
-        # Intentar cache
-        cached = get_cached_health(vehicle_id, 'health_components')
-        if cached:
-            return Response(cached)
-        
-        # Cargar desde DB con paginación
         page = int(request.query_params.get('page', 1))
         page_size = int(request.query_params.get('page_size', 20))
+
+        cached = get_cached_health(vehicle_id, 'health_components', page=page)
+        if cached:
+            return Response(cached)
+
         offset = (page - 1) * page_size
-        
         componentes = (
             ComponenteSaludVehiculo.objects.filter(vehiculo_id=vehicle_id)
             .select_related('componente')
@@ -388,18 +331,18 @@ class VehicleHealthViewSet(viewsets.ReadOnlyModelViewSet):
                 offset : offset + page_size
             ]
         )
-        
+
         data = ComponenteSaludVehiculoSerializer(componentes, many=True).data
-        
-        # Cache por 10 minutos
-        set_cached_health(vehicle_id, data, 'health_components')
-        
-        return Response({
+
+        response_data = {
             'results': data,
             'page': page,
             'page_size': page_size,
             'has_more': len(data) == page_size
-        })
+        }
+        set_cached_health(vehicle_id, response_data, 'health_components', page=page)
+
+        return Response(response_data)
     
     @action(detail=False, methods=['post'], url_path='vehicle/(?P<vehicle_id>[^/.]+)/procesar-historicos')
     def procesar_checklists_historicos(self, request, vehicle_id=None):

@@ -105,14 +105,24 @@ if DATABASE_URL:
 # ============================================
 REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379')
 
+# Separar workloads en Redis DBs distintas para evitar que LRU evicte
+# claves de un workload cuando otro presiona memoria:
+#   DB 0 = Channel Layer (mensajes WS efímeros)
+#   DB 1 = Django Cache (health data, respuestas)
+#   DB 2 = Celery Broker + Results (tareas)
+REDIS_CHANNELS_URL = os.environ.get('REDIS_CHANNELS_URL', f'{REDIS_URL}/0')
+REDIS_CACHE_URL = os.environ.get('REDIS_CACHE_URL', f'{REDIS_URL}/1')
+REDIS_CELERY_URL = os.environ.get('REDIS_CELERY_URL', f'{REDIS_URL}/2')
+
 # Django Channels con Redis
 CHANNEL_LAYERS = {
     'default': {
         'BACKEND': 'channels_redis.core.RedisChannelLayer',
         'CONFIG': {
-            "hosts": [REDIS_URL],
+            "hosts": [REDIS_CHANNELS_URL],
             "capacity": 1500,
-            "expiry": 10,
+            "expiry": 60,
+            "group_expiry": 86400,
         },
     },
 }
@@ -121,10 +131,13 @@ CHANNEL_LAYERS = {
 CACHES = {
     'default': {
         'BACKEND': 'django_redis.cache.RedisCache',
-        'LOCATION': f'{REDIS_URL}/1',
+        'LOCATION': REDIS_CACHE_URL,
         'OPTIONS': {
             'CLIENT_CLASS': 'django_redis.client.DefaultClient',
             'IGNORE_EXCEPTIONS': True,
+            'SOCKET_CONNECT_TIMEOUT': 5,
+            'SOCKET_TIMEOUT': 5,
+            'COMPRESSOR': 'django_redis.compressors.zlib.ZlibCompressor',
         },
         'KEY_PREFIX': 'mecanimovil',
         'TIMEOUT': 300,
@@ -132,8 +145,8 @@ CACHES = {
 }
 
 # Celery con Redis
-CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', f'{REDIS_URL}/2')
-CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', f'{REDIS_URL}/2')
+CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', REDIS_CELERY_URL)
+CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', REDIS_CELERY_URL)
 
 # ============================================
 # CONFIGURACIÓN DE ARCHIVOS ESTÁTICOS

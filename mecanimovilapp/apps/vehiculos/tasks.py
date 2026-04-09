@@ -139,10 +139,35 @@ def calcular_salud_vehiculo_async(self, vehicle_id, force_recalculate=False):
             ),
         }
         
-        # Tras recálculo forzado, invalidar resumen para que el próximo GET reconstruya desde BD
         invalidate_vehicle_health_cache(vehicle_id)
         set_cached_health(vehicle_id, data, 'health_calculation', timeout=3600)
-        
+
+        # Notificar al frontend via WebSocket para que recargue datos inmediatamente
+        try:
+            from channels.layers import get_channel_layer
+            from asgiref.sync import async_to_sync
+            vehiculo = estado.vehiculo
+            if vehiculo.cliente and vehiculo.cliente.usuario:
+                channel_layer = get_channel_layer()
+                if channel_layer:
+                    nombre = (
+                        f"{vehiculo.marca} {vehiculo.modelo}"
+                        if vehiculo.marca else f"Vehículo {vehiculo.patente or ''}"
+                    )
+                    async_to_sync(channel_layer.group_send)(
+                        f"cliente_{vehiculo.cliente.usuario.id}",
+                        {
+                            'type': 'salud_vehiculo_actualizada',
+                            'vehicle_id': str(vehicle_id),
+                            'vehiculo_info': nombre,
+                            'componentes_actualizados': 0,
+                            'mensaje': f'Salud de {nombre} recalculada',
+                            'timestamp': timezone.now().isoformat(),
+                        }
+                    )
+        except Exception as ws_err:
+            logger.warning(f"WS notification failed for vehicle {vehicle_id}: {ws_err}")
+
         logger.info(f"Salud de vehículo {vehicle_id} calculada exitosamente")
         return data
         
@@ -529,6 +554,8 @@ def _recalcular_salud_vehiculos_core(
 ):
     """
     Núcleo compartido: arma el conjunto de vehículos y encola calcular_salud_vehiculo_async.
+    Aplica backpressure: escalonamiento mínimo de 5s entre tareas para no
+    saturar Redis ni la cola default (un solo worker con pool=solo).
     """
     from django.utils import timezone
     from datetime import timedelta
@@ -543,18 +570,18 @@ def _recalcular_salud_vehiculos_core(
         vehiculos = Vehiculo.objects.filter(q).values_list('id', flat=True).distinct()
         ids = list(vehiculos)
         count = 0
+        effective_stagger = max(stagger_seconds, 5)
         for i, vehicle_id in enumerate(ids):
-            if stagger_seconds and i > 0:
-                calcular_salud_vehiculo_async.apply_async(
-                    args=[vehicle_id, force_recalculate],
-                    countdown=min(i * stagger_seconds, 3600),
-                )
-            else:
-                calcular_salud_vehiculo_async.delay(vehicle_id, force_recalculate)
+            countdown = i * effective_stagger
+            calcular_salud_vehiculo_async.apply_async(
+                args=[vehicle_id, force_recalculate],
+                countdown=min(countdown, 7200),
+            )
             count += 1
         logger.info(
             f"Recálculo batch: {count} vehículos encolados "
-            f"(force={force_recalculate}, publicados={incluir_publicados})"
+            f"(force={force_recalculate}, publicados={incluir_publicados}, "
+            f"stagger={effective_stagger}s)"
         )
         return count
     except Exception as e:

@@ -124,9 +124,15 @@ services:
   # ============================================
   # REDIS (Cache, Channels, Celery Broker)
   # ============================================
+  # IMPORTANTE: Un solo Redis sirve 3 workloads en DBs lógicas separadas:
+  #   DB 0 = Channel Layer (mensajes WS)
+  #   DB 1 = Django Cache (health data, responses)
+  #   DB 2 = Celery Broker + Results
+  # Con plan free (25MB) + allkeys-lru, la evicción puede matar mensajes
+  # de Channels o tareas de Celery. Recomendación: mínimo starter ($10/mes).
   - type: redis
     name: mecanimovil-redis
-    plan: free  # Planes: free (25MB), starter ($10/mes), standard ($20/mes)
+    plan: starter  # Upgraded: free (25MB) es insuficiente para 3 workloads concurrentes
     region: oregon
     maxmemoryPolicy: allkeys-lru
-    ipAllowList: []  # Permite conexiones solo desde servicios Render
+    ipAllowList: []
