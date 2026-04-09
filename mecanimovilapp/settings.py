@@ -376,7 +376,8 @@ else:
             'CONFIG': {
                 "hosts": [REDIS_URL],
                 "capacity": 1500,
-                "expiry": 10,
+                "expiry": 60,
+                "group_expiry": 86400,
             },
         },
     }
@@ -464,7 +465,7 @@ CELERY_BROKER_CONNECTION_MAX_RETRIES = 10
 
 # Result backend optimizations
 CELERY_RESULT_BACKEND_MAX_RETRIES = 10
-CELERY_RESULT_EXPIRES = 300  # Expirar resultados después de 5 minutos (libera memoria)
+CELERY_RESULT_EXPIRES = 3600  # 1 hora: alineado con celery.py app.conf.result_expires
 
 # Task ignore result: no guardar resultados si no se necesitan (ahorra memoria)
 # Se puede configurar por tarea, aquí es el default
