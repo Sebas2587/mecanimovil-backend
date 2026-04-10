@@ -21,7 +21,9 @@ router.register(r'notificaciones', views.NotificacionViewSet, basename='notifica
 urlpatterns = [
     # URLs personalizadas primero (tienen prioridad)
     path('login/', views.custom_login, name='custom_login'),
-    path('login-proveedor/', views.login_proveedor, name='login_proveedor'),  # Login exclusivo para proveedores
+    path('login-proveedor/', views.login_proveedor, name='login_proveedor'),
+    path('logout/', views.logout_user, name='logout'),
+    path('change-password/', views.change_password, name='change-password'),
     path('forgot-password/', views.forgot_password, name='forgot-password'),
     path('reset-password/', views.reset_password, name='reset-password'),
     path('estado-proveedor/', views.EstadoProveedorView.as_view(), name='estado-proveedor'),

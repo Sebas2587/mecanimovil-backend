@@ -135,8 +135,9 @@ def custom_login(request):
                 )
             
             # Si llegamos aquí, el usuario NO es proveedor, continuar con el login normal
-            # Obtener o crear token
-            token, created = Token.objects.get_or_create(user=user)
+            # Rotar token: eliminar el anterior y crear uno nuevo para invalidar sesiones previas
+            Token.objects.filter(user=user).delete()
+            token = Token.objects.create(user=user)
             
             # Serializar usuario para respuesta
             user_data = UsuarioSerializer(user).data
@@ -164,6 +165,31 @@ def custom_login(request):
         logger.error(f"Error en login: {str(e)}")
         return Response(
             {'error': f'Error de servidor: {str(e)}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def logout_user(request):
+    """
+    Cierra la sesión del usuario: elimina el token de autenticación del servidor
+    y desactiva todos los push tokens asociados al usuario.
+    DRF TokenAuthentication coloca la instancia Token en request.auth.
+    """
+    try:
+        PushToken.objects.filter(usuario=request.user, activo=True).update(activo=False)
+        logger.info(f"🔕 Push tokens desactivados para usuario {request.user.id}")
+
+        if request.auth:
+            request.auth.delete()
+            logger.info(f"🔒 Token eliminado para usuario {request.user.id}")
+
+        return Response({'message': 'Sesión cerrada correctamente'}, status=status.HTTP_200_OK)
+    except Exception as e:
+        logger.error(f"Error en logout: {str(e)}", exc_info=True)
+        return Response(
+            {'error': 'Error al cerrar sesión'},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
@@ -245,7 +271,9 @@ def login_proveedor(request):
                 )
             
             # Si llegamos aquí, el usuario ES proveedor, continuar con el login
-            token, created = Token.objects.get_or_create(user=user)
+            # Rotar token: eliminar el anterior y crear uno nuevo para invalidar sesiones previas
+            Token.objects.filter(user=user).delete()
+            token = Token.objects.create(user=user)
             
             # Construir respuesta con datos del usuario incluyendo email
             user_data = {
