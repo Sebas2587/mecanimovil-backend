@@ -1016,57 +1016,42 @@ class ClientStatusConsumer(AsyncWebsocketConsumer):
     
     async def connect(self):
         """
-        Maneja la conexión del WebSocket para clientes
+        Maneja la conexión del WebSocket para clientes.
+        Siempre acepta la conexión: con token válido el cliente recibe
+        notificaciones personales; sin token (o token inválido) solo
+        recibe broadcasts. Nunca rechaza para evitar bucles de reconexión
+        en el frontend.
         """
-        # Autenticar al cliente usando token de query params
         query_string = self.scope.get('query_string', b'').decode()
         token = None
-        
-        # Buscar token en query string
         for param in query_string.split('&'):
             if param.startswith('token='):
                 token = param.split('=')[1]
                 break
-        
+
+        self.user = None
         if token:
-            # Autenticar el token
             self.user = await self.authenticate_token(token)
-            if self.user:
-                logger.info(f"👤 Cliente autenticado: {self.user.username} (ID: {self.user.id})")
-                
-                # Añadir al grupo específico del cliente
-                await self.channel_layer.group_add(
-                    f"cliente_{self.user.id}",
-                    self.channel_name
-                )
-                
-                # También añadir al grupo general de clientes
-                await self.channel_layer.group_add(
-                    "clientes",
-                    self.channel_name
-                )
-                
-                # Aceptar la conexión
-                await self.accept()
-                
-                logger.info(f"✅ Cliente {self.user.username} conectado al WebSocket")
-                
-                # Enviar estados actuales de todos los proveedores
-                await self.send_current_statuses()
-            else:
-                logger.warning("❌ Token inválido, rechazando conexión")
-                await self.close()
-        else:
-            # Si no hay token, permitir conexión pero solo al grupo general
-            self.user = None
+
+        if self.user:
+            logger.info(f"👤 Cliente autenticado: {self.user.username} (ID: {self.user.id})")
             await self.channel_layer.group_add(
-                "clientes",
+                f"cliente_{self.user.id}",
                 self.channel_name
             )
-            
-            await self.accept()
-            logger.info("👤 Cliente conectado al WebSocket (sin autenticación)")
-            await self.send_current_statuses()
+        elif token:
+            logger.warning(f"⚠️ Token inválido, aceptando como anónimo")
+
+        await self.channel_layer.group_add("clientes", self.channel_name)
+        await self.accept()
+
+        if not self.user and token:
+            await self.send(text_data=json.dumps({
+                'type': 'auth_invalid',
+                'message': 'Token expirado o inválido, reconectar con token vigente',
+            }))
+
+        await self.send_current_statuses()
     
     async def disconnect(self, close_code):
         """

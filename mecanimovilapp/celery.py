@@ -45,7 +45,7 @@ app.conf.worker_prefetch_multiplier = 4  # Cada worker pre-fetcha máximo 4 tare
 # Worker max tasks per child: reinicia workers después de N tareas
 # Esto previene memory leaks acumulativos
 # Valor recomendado: 50-100 tareas antes de reiniciar el worker
-app.conf.worker_max_tasks_per_child = 100
+app.conf.worker_max_tasks_per_child = 50  # Alineado con render.yaml --max-tasks-per-child=50
 
 # Worker max memory per child: reinicia worker si excede memoria (en KB)
 # Previene workers que consumen demasiada memoria

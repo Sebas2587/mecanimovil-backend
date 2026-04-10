@@ -6,10 +6,16 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.throttling import UserRateThrottle
 from django.core.cache import cache
 from django.db.models import Prefetch
 from django.conf import settings
 import logging
+
+
+class HealthSyncThrottle(UserRateThrottle):
+    """Limita POST /sync a 6 peticiones por minuto por usuario (artículo: rate limiting)."""
+    rate = '6/min'
 
 from .models_health import (
     EstadoSaludVehiculo,
@@ -247,13 +253,15 @@ class VehicleHealthViewSet(viewsets.ReadOnlyModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-    @action(detail=False, methods=['post'], url_path='vehicle/(?P<vehicle_id>[^/.]+)/sync')
+    @action(detail=False, methods=['post'], url_path='vehicle/(?P<vehicle_id>[^/.]+)/sync',
+            throttle_classes=[HealthSyncThrottle])
     def vehicle_health_sync(self, request, vehicle_id=None):
         """
         Sincronizar métricas de salud para este vehículo (botón en app).
         Invalida cache y encola recálculo en Celery; responde 202 inmediatamente
         para NO bloquear Daphne (evita los 150s+ de respuesta que causaban caídas).
         El frontend debe re-consultar GET vehicle_health tras unos segundos.
+        Rate limited: 6/min por usuario.
         """
         user = request.user
         from .models import Vehiculo
