@@ -36,10 +36,17 @@ def weather_prediction(request):
     address_label = None
     address_obj_id = None
 
+    def _build_address_text(addr_obj):
+        """Concatena direccion + detalles para maximizar las chances de match de estación."""
+        parts = [addr_obj.direccion or '']
+        if addr_obj.detalles:
+            parts.append(addr_obj.detalles)
+        return ' '.join(filter(None, parts))
+
     if address_id:
         try:
             addr = DireccionUsuario.objects.get(id=address_id, usuario=user)
-            address_text = addr.direccion
+            address_text = _build_address_text(addr)
             address_label = addr.etiqueta
             address_obj_id = addr.id
         except DireccionUsuario.DoesNotExist:
@@ -56,7 +63,7 @@ def weather_prediction(request):
         if not addr:
             addr = DireccionUsuario.objects.filter(usuario=user).first()
         if addr:
-            address_text = addr.direccion
+            address_text = _build_address_text(addr)
             address_label = addr.etiqueta
             address_obj_id = addr.id
         elif user.direccion:
