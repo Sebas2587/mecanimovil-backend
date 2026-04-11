@@ -305,7 +305,7 @@ def determine_climate_condition(weather):
 def calculate_component_risk(component_type, climate_cond, telemetry=None):
     """
     Calcula el porcentaje de riesgo de desgaste para un componente.
-    Si no hay telemetría del vehículo, usa valores por defecto conservadores.
+    Combina el estado de salud actual del componente con el multiplicador climático.
     """
     matrix_entry = WEAR_MATRIX.get(component_type)
     if not matrix_entry:
@@ -316,23 +316,40 @@ def calculate_component_risk(component_type, climate_cond, telemetry=None):
     else:
         cw = matrix_entry.get(climate_cond, 1.0)
 
-    if telemetry:
+    if telemetry and telemetry.get('salud_porcentaje') is not None:
+        # Tenemos datos reales de salud del componente.
+        # Desgaste base = 100 - salud actual del componente (0..100).
+        salud = telemetry['salud_porcentaje']
+        desgaste_base = max(0, 100 - salud)
+
+        # El coeficiente climático amplifica el desgaste proyectado a corto plazo.
+        # Fórmula: riesgo = desgaste_base * cw, normalizado al rango 0..100.
+        # Si el clima es normal (cw=1.0), el riesgo refleja solo el desgaste real.
+        risk = desgaste_base * cw
+
+        # Si además hay km restantes, afinamos con urgencia de mantenimiento
+        km_restantes = telemetry.get('km_estimados_restantes', 0)
+        vida_util = telemetry.get('vida_util_proyectada', 0)
+        if vida_util > 0 and km_restantes >= 0:
+            uso_pct = max(0, 100 - (km_restantes / vida_util * 100))
+            # Ponderar: 60% salud actual + 40% urgencia por km
+            risk = (desgaste_base * cw * 0.6) + (uso_pct * cw * 0.4)
+    elif telemetry and telemetry.get('current_odometer', 0) > 0:
+        # Vehículo sin datos de salud para este componente específico,
+        # pero tenemos odómetro. Usar estimación conservadora.
         avg_daily_km = telemetry.get('avg_daily_km', 30)
         driving_factor = telemetry.get('driving_profile_factor', 1.0)
-        current_odometer = telemetry.get('current_odometer', 0)
-        last_service_km = telemetry.get('last_service_km', 0)
         estimated_life_km = telemetry.get('estimated_life_km', 50000)
 
         distancia_real_dia = avg_daily_km * driving_factor
         desgaste_equiv = distancia_real_dia * cw
-        km_desde_cambio = max(current_odometer - last_service_km, 0)
-        vida_remanente = max(estimated_life_km - km_desde_cambio, 1)
-        risk = (desgaste_equiv / (vida_remanente * 0.05)) * 100
+        vida_remanente = max(estimated_life_km * 0.5, 500)
+        risk = (desgaste_equiv / vida_remanente) * 100
     else:
-        # Sin datos de telemetría: el riesgo lo determina solo el multiplicador
-        risk = (cw - 1.0) * 100 if cw > 1.0 else 0
+        # Sin ningún dato: riesgo basado solo en multiplicador climático
+        risk = round((cw - 1.0) * 100) if cw > 1.0 else 0
 
-    return min(round(risk), 100), round(cw, 2)
+    return min(max(round(risk), 0), 100), round(cw, 2)
 
 
 def get_prediction_for_address(address_text, vehicle=None):
@@ -357,19 +374,14 @@ def get_prediction_for_address(address_text, vehicle=None):
 
     climate_cond = determine_climate_condition(weather)
 
-    # Construir telemetría del vehículo si se proporcionó
     telemetry_data = None
     if vehicle:
-        try:
-            from mecanimovilapp.apps.vehiculos.models_health import ComponenteSaludVehiculo
-            odometer = vehicle.kilometraje or 0
-            telemetry_data = {
-                'avg_daily_km': 30,
-                'driving_profile_factor': 1.0,
-                'current_odometer': odometer,
-            }
-        except Exception:
-            pass
+        odometer = vehicle.kilometraje or 0
+        telemetry_data = {
+            'avg_daily_km': 30,
+            'driving_profile_factor': 1.0,
+            'current_odometer': odometer,
+        }
 
     components = []
     total_risk = 0
@@ -387,14 +399,21 @@ def get_prediction_for_address(address_text, vehicle=None):
 
         risk_pct, cw = calculate_component_risk(comp_type, climate_cond, comp_telemetry)
         reason = _build_reason(comp_type, climate_cond, weather)
-        components.append({
+
+        comp_entry = {
             'type': comp_type,
             'name': labels['name'],
             'icon': labels['icon'],
             'wear_increase': risk_pct,
             'coefficient': cw,
             'reason': reason,
-        })
+        }
+        if comp_telemetry and comp_telemetry.get('salud_porcentaje') is not None:
+            comp_entry['salud_actual'] = round(comp_telemetry['salud_porcentaje'], 1)
+            comp_entry['nivel_alerta'] = comp_telemetry.get('nivel_alerta', '')
+            comp_entry['km_restantes'] = comp_telemetry.get('km_estimados_restantes', 0)
+
+        components.append(comp_entry)
         total_risk += risk_pct
 
     avg_risk = round(total_risk / len(components)) if components else 0
@@ -417,11 +436,12 @@ def get_prediction_for_address(address_text, vehicle=None):
 
 
 def _enrich_telemetry_for_component(base_telemetry, vehicle, comp_type):
-    """Enriquece la telemetría con datos de salud del componente si existen."""
+    """Enriquece la telemetría con datos reales de salud del componente."""
     try:
         from mecanimovilapp.apps.vehiculos.models_health import ComponenteSaludVehiculo
+
         comp_qs = ComponenteSaludVehiculo.objects.filter(
-            estado_salud__vehiculo=vehicle
+            vehiculo=vehicle
         ).select_related('componente')
 
         keyword_map = {
@@ -436,8 +456,11 @@ def _enrich_telemetry_for_component(base_telemetry, vehicle, comp_type):
             name_lower = (comp.componente.nombre or '').lower()
             if any(kw in name_lower for kw in keywords):
                 enriched = dict(base_telemetry)
-                enriched['last_service_km'] = comp.km_ultimo_servicio or 0
-                enriched['estimated_life_km'] = comp.vida_util_km_restante or 50000
+                enriched['salud_porcentaje'] = comp.salud_porcentaje
+                enriched['km_ultimo_servicio'] = comp.km_ultimo_servicio or 0
+                enriched['km_estimados_restantes'] = comp.km_estimados_restantes or 0
+                enriched['vida_util_proyectada'] = comp.vida_util_proyectada or 0
+                enriched['nivel_alerta'] = comp.nivel_alerta
                 return enriched
     except Exception as exc:
         logger.debug("No se pudo enriquecer telemetría para %s: %s", comp_type, exc)
