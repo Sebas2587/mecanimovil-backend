@@ -5,12 +5,14 @@ y aplica el algoritmo IA-Weather-Telemetry de Mecanimóvil.
 """
 import logging
 import requests
+from datetime import datetime
 from django.core.cache import cache
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
 WEATHER_API_URL = "https://api.boostr.cl/weather/{code}.json"
-WEATHER_CACHE_TTL = 60 * 15  # 15 minutos
+WEATHER_CACHE_TTL = 60 * 5  # 5 minutos — balance between freshness and not saturating API
 
 STATION_MAP = {
     'SCFA': 'Antofagasta',
@@ -418,6 +420,9 @@ def get_prediction_for_address(address_text, vehicle=None):
 
     avg_risk = round(total_risk / len(components)) if components else 0
 
+    now = timezone.localtime()
+    api_updated = weather.get('updated_at', '')
+
     return {
         'available': True,
         'weather': {
@@ -426,12 +431,14 @@ def get_prediction_for_address(address_text, vehicle=None):
             'temperature': weather['temperature'],
             'humidity': weather['humidity'],
             'condition': weather['condition'],
-            'updated_at': weather['updated_at'],
+            'updated_at': api_updated,
         },
         'climate_condition': climate_cond,
         'total_wear_risk': avg_risk,
         'components': components,
         'ai_insight': AI_INSIGHTS.get(climate_cond, AI_INSIGHTS['normal']),
+        'fetched_at': now.strftime('%H:%M'),
+        'fetched_at_iso': now.isoformat(),
     }
 
 
