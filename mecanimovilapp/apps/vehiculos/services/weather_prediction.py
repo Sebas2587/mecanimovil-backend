@@ -1,7 +1,8 @@
 """
 Servicio de predicción de desgaste vehicular basado en clima.
-Consume la API pública de boostr.cl para obtener meteorología
-y aplica el algoritmo IA-Weather-Telemetry de Mecanimóvil.
+Fuente primaria: Open-Meteo (actualiza cada 15 min, coords directas).
+Fallback: boostr.cl (datos SYNOP, actualiza cada 6h).
+Aplica el algoritmo IA-Weather-Telemetry de Mecanimóvil.
 """
 import logging
 import requests
@@ -11,69 +12,68 @@ from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
-WEATHER_API_URL = "https://api.boostr.cl/weather/{code}.json"
-WEATHER_CACHE_TTL = 60 * 5  # 5 minutos — balance between freshness and not saturating API
+# ── API URLs ──
+OPEN_METEO_URL = (
+    'https://api.open-meteo.com/v1/forecast'
+    '?latitude={lat}&longitude={lng}'
+    '&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m'
+    '&timezone=America/Santiago'
+)
+BOOSTR_API_URL = "https://api.boostr.cl/weather/{code}.json"
 
+WEATHER_CACHE_TTL = 60 * 15  # 15 min — Open-Meteo updates every 15 min
+
+# ── WMO weather codes → Spanish condition text ──
+WMO_CONDITIONS = {
+    0: 'Despejado',
+    1: 'Mayormente despejado', 2: 'Parcialmente nublado', 3: 'Nublado',
+    45: 'Neblina', 48: 'Neblina con escarcha',
+    51: 'Llovizna ligera', 53: 'Llovizna moderada', 55: 'Llovizna intensa',
+    56: 'Llovizna helada ligera', 57: 'Llovizna helada intensa',
+    61: 'Lluvia ligera', 63: 'Lluvia moderada', 65: 'Lluvia intensa',
+    66: 'Lluvia helada ligera', 67: 'Lluvia helada intensa',
+    71: 'Nevada ligera', 73: 'Nevada moderada', 75: 'Nevada intensa',
+    77: 'Granizo fino',
+    80: 'Chubascos ligeros', 81: 'Chubascos moderados', 82: 'Chubascos intensos',
+    85: 'Nevada ligera con chubascos', 86: 'Nevada intensa con chubascos',
+    95: 'Tormenta eléctrica', 96: 'Tormenta con granizo ligero', 99: 'Tormenta con granizo',
+}
+
+# Códigos WMO que implican lluvia/precipitación
+WMO_RAIN_CODES = {51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82, 95, 96, 99}
+
+# ── Station maps (kept for boostr fallback and address-based lookups) ──
 STATION_MAP = {
-    'SCFA': 'Antofagasta',
-    'SCAR': 'Arica',
-    'SCBA': 'Balmaceda',
-    'SCCF': 'Calama',
-    'SCAT': 'Caldera',
-    'SCCH': 'Chillán',
-    'SCIE': 'Concepción',
-    'SCCY': 'Coyhaique',
-    'SCIC': 'Curicó',
-    'SCFT': 'Futaleufú',
-    'SCDA': 'Iquique',
-    'SCIP': 'Isla de Pascua',
-    'SCSE': 'La Serena',
-    'SCMK': 'Melinka',
-    'SCJO': 'Osorno',
-    'SCTE': 'Puerto Montt',
-    'SCCI': 'Punta Arenas',
-    'SCON': 'Quellón',
-    'SCSN': 'San Antonio',
-    'SCQN': 'Santiago',
-    'SCEL': 'Santiago',
-    'SCQP': 'Temuco',
-    'SCVD': 'Valdivia',
-    'SCVM': 'Viña del Mar',
-    'SCIR': 'Juan Fernández',
-    'SCRM': 'Antártica',
-    'SCGZ': 'Puerto Williams',
-    'SCFM': 'Porvenir',
-    'SCRG': 'Rancagua',
-    'SCGE': 'Los Ángeles',
-    'SCTN': 'Chaitén',
-    'SCCC': 'Chile Chico',
-    'SCHR': 'Cochrane',
+    'SCFA': 'Antofagasta', 'SCAR': 'Arica', 'SCBA': 'Balmaceda',
+    'SCCF': 'Calama', 'SCAT': 'Caldera', 'SCCH': 'Chillán',
+    'SCIE': 'Concepción', 'SCCY': 'Coyhaique', 'SCIC': 'Curicó',
+    'SCFT': 'Futaleufú', 'SCDA': 'Iquique', 'SCIP': 'Isla de Pascua',
+    'SCSE': 'La Serena', 'SCMK': 'Melinka', 'SCJO': 'Osorno',
+    'SCTE': 'Puerto Montt', 'SCCI': 'Punta Arenas', 'SCON': 'Quellón',
+    'SCSN': 'San Antonio', 'SCQN': 'Santiago', 'SCEL': 'Santiago',
+    'SCQP': 'Temuco', 'SCVD': 'Valdivia', 'SCVM': 'Viña del Mar',
+    'SCIR': 'Juan Fernández', 'SCRM': 'Antártica', 'SCGZ': 'Puerto Williams',
+    'SCFM': 'Porvenir', 'SCRG': 'Rancagua', 'SCGE': 'Los Ángeles',
+    'SCTN': 'Chaitén', 'SCCC': 'Chile Chico', 'SCHR': 'Cochrane',
     'SCNT': 'Puerto Natales',
 }
 
-# Mapeo de comunas → código de estación.
-# Las comunas se normalizan a minúsculas sin tildes para matching flexible.
 COMUNA_TO_STATION = {
-    # Arica y Parinacota
     'arica': 'SCAR', 'putre': 'SCAR', 'camarones': 'SCAR',
     'general lagos': 'SCAR',
-    # Tarapacá
     'iquique': 'SCDA', 'alto hospicio': 'SCDA', 'pozo almonte': 'SCDA',
     'pica': 'SCDA', 'huara': 'SCDA',
-    # Antofagasta
     'antofagasta': 'SCFA', 'mejillones': 'SCFA', 'taltal': 'SCFA',
     'tocopilla': 'SCFA', 'maria elena': 'SCFA', 'sierra gorda': 'SCFA',
     'calama': 'SCCF', 'san pedro de atacama': 'SCCF', 'ollague': 'SCCF',
     'caldera': 'SCAT', 'copiapo': 'SCAT', 'tierra amarilla': 'SCAT',
     'diego de almagro': 'SCAT', 'chanaral': 'SCAT', 'freirina': 'SCAT',
     'vallenar': 'SCAT', 'huasco': 'SCAT',
-    # Coquimbo
     'la serena': 'SCSE', 'coquimbo': 'SCSE', 'andacollo': 'SCSE',
     'la higuera': 'SCSE', 'ovalle': 'SCSE', 'monte patria': 'SCSE',
     'combarbala': 'SCSE', 'punitaqui': 'SCSE', 'rio hurtado': 'SCSE',
     'illapel': 'SCSE', 'salamanca': 'SCSE', 'los vilos': 'SCSE',
     'canela': 'SCSE', 'vicuna': 'SCSE', 'paiguano': 'SCSE',
-    # Valparaíso
     'valparaiso': 'SCVM', 'vina del mar': 'SCVM', 'quilpue': 'SCVM',
     'villa alemana': 'SCVM', 'concon': 'SCVM', 'quintero': 'SCVM',
     'puchuncavi': 'SCVM', 'casablanca': 'SCVM', 'limache': 'SCVM',
@@ -87,7 +87,6 @@ COMUNA_TO_STATION = {
     'isla de pascua': 'SCIP', 'juan fernandez': 'SCIR',
     'petorca': 'SCVM', 'la ligua': 'SCVM', 'cabildo': 'SCVM',
     'papudo': 'SCVM', 'zapallar': 'SCVM',
-    # Metropolitana
     'santiago': 'SCQN', 'santiago centro': 'SCQN',
     'providencia': 'SCQN', 'las condes': 'SCQN', 'vitacura': 'SCQN',
     'lo barnechea': 'SCQN', 'nunoa': 'SCQN', 'la reina': 'SCQN',
@@ -107,7 +106,6 @@ COMUNA_TO_STATION = {
     'talagante': 'SCEL', 'el monte': 'SCEL', 'isla de maipo': 'SCEL',
     'melipilla': 'SCEL', 'san pedro': 'SCEL', 'alhue': 'SCEL',
     'curacavi': 'SCEL', 'maria pinto': 'SCEL',
-    # O'Higgins
     'rancagua': 'SCRG', 'machali': 'SCRG', 'graneros': 'SCRG',
     'san fernando': 'SCRG', 'santa cruz': 'SCRG', 'rengo': 'SCRG',
     'requinoa': 'SCRG', 'olivar': 'SCRG', 'coinco': 'SCRG',
@@ -117,7 +115,6 @@ COMUNA_TO_STATION = {
     'placilla': 'SCRG', 'chepica': 'SCRG', 'lolol': 'SCRG',
     'pichilemu': 'SCRG', 'litueche': 'SCRG', 'marchihue': 'SCRG',
     'navidad': 'SCRG', 'la estrella': 'SCRG', 'paredones': 'SCRG',
-    # Maule
     'curico': 'SCIC', 'talca': 'SCIC', 'linares': 'SCIC',
     'cauquenes': 'SCIC', 'constitucion': 'SCIC', 'molina': 'SCIC',
     'sagrada familia': 'SCIC', 'teno': 'SCIC', 'romeral': 'SCIC',
@@ -127,7 +124,6 @@ COMUNA_TO_STATION = {
     'san javier': 'SCIC', 'villa alegre': 'SCIC', 'yerbas buenas': 'SCIC',
     'colbun': 'SCIC', 'longavi': 'SCIC', 'parral': 'SCIC',
     'retiro': 'SCIC', 'pelluhue': 'SCIC', 'chanco': 'SCIC',
-    # Ñuble
     'chillan': 'SCCH', 'chillan viejo': 'SCCH', 'san carlos': 'SCCH',
     'bulnes': 'SCCH', 'coihueco': 'SCCH', 'el carmen': 'SCCH',
     'ninhue': 'SCCH', 'pinto': 'SCCH', 'quillon': 'SCCH',
@@ -135,7 +131,6 @@ COMUNA_TO_STATION = {
     'san ignacio': 'SCCH', 'san nicolas': 'SCCH', 'treguaco': 'SCCH',
     'yungay': 'SCCH', 'cobquecura': 'SCCH', 'portezuelo': 'SCCH',
     'coelemu': 'SCCH', 'pemuco': 'SCCH',
-    # Biobío
     'concepcion': 'SCIE', 'talcahuano': 'SCIE', 'hualpen': 'SCIE',
     'chiguayante': 'SCIE', 'san pedro de la paz': 'SCIE', 'coronel': 'SCIE',
     'lota': 'SCIE', 'penco': 'SCIE', 'tome': 'SCIE', 'hualqui': 'SCIE',
@@ -147,7 +142,6 @@ COMUNA_TO_STATION = {
     'tucapel': 'SCGE', 'antuco': 'SCGE', 'quilleco': 'SCGE',
     'santa barbara': 'SCGE', 'alto biobio': 'SCGE', 'mulchen': 'SCGE',
     'negrete': 'SCGE', 'quilaco': 'SCGE',
-    # Araucanía
     'temuco': 'SCQP', 'padre las casas': 'SCQP', 'villarrica': 'SCQP',
     'pucon': 'SCQP', 'freire': 'SCQP', 'pitrufquen': 'SCQP',
     'gorbea': 'SCQP', 'loncoche': 'SCQP', 'tolten': 'SCQP',
@@ -160,12 +154,10 @@ COMUNA_TO_STATION = {
     'curacautin': 'SCQP', 'lonquimay': 'SCQP', 'melipeuco': 'SCQP',
     'vilcun': 'SCQP', 'lautaro': 'SCQP', 'perquenco': 'SCQP',
     'galvarino': 'SCQP',
-    # Los Ríos
     'valdivia': 'SCVD', 'corral': 'SCVD', 'lanco': 'SCVD',
     'mariquina': 'SCVD', 'mafil': 'SCVD', 'los lagos': 'SCVD',
     'panguipulli': 'SCVD', 'la union': 'SCVD', 'rio bueno': 'SCVD',
     'paillaco': 'SCVD', 'futrono': 'SCVD', 'lago ranco': 'SCVD',
-    # Los Lagos
     'osorno': 'SCJO', 'san pablo': 'SCJO', 'puyehue': 'SCJO',
     'rio negro': 'SCJO', 'purranque': 'SCJO', 'entre lagos': 'SCJO',
     'san juan de la costa': 'SCJO',
@@ -177,13 +169,11 @@ COMUNA_TO_STATION = {
     'chonchi': 'SCTE', 'queilen': 'SCTE', 'puqueldon': 'SCTE',
     'quellon': 'SCON', 'chaiten': 'SCTN', 'hualaihue': 'SCTN',
     'futaleufu': 'SCFT', 'palena': 'SCFT',
-    # Aysén
     'coyhaique': 'SCCY', 'aysen': 'SCCY', 'cisnes': 'SCCY',
     'guaitecas': 'SCMK', 'melinka': 'SCMK',
     'chile chico': 'SCCC', 'rio ibanez': 'SCCC',
     'cochrane': 'SCHR', 'ohiggins': 'SCHR', 'tortel': 'SCHR',
     'lago verde': 'SCCY',
-    # Magallanes
     'punta arenas': 'SCCI', 'rio verde': 'SCCI', 'laguna blanca': 'SCCI',
     'san gregorio': 'SCCI', 'cabo de hornos': 'SCCI',
     'puerto natales': 'SCNT', 'torres del paine': 'SCNT',
@@ -191,8 +181,7 @@ COMUNA_TO_STATION = {
     'puerto williams': 'SCGZ', 'antartica': 'SCRM',
 }
 
-
-# Matriz de coeficientes de desgaste según algoritmo IA-Weather-Telemetry
+# ── Wear matrix & insights ──
 WEAR_MATRIX = {
     'frenos':       {'rain': 1.8, 'heat': 1.2, 'cold': 1.0},
     'neumaticos':   {'rain': 1.3, 'heat': 1.5, 'cold': 1.4},
@@ -217,9 +206,158 @@ def normalize_text(text):
     return ''.join(c for c in nfkd if not unicodedata.combining(c))
 
 
+# ─────────────────────────────────────────────────────────────
+# Weather fetching: Open-Meteo (primary) → boostr.cl (fallback)
+# ─────────────────────────────────────────────────────────────
+
+def fetch_weather_by_coords(lat, lng, force_refresh=False):
+    """
+    Obtiene clima actual via Open-Meteo (coords directas, actualiza cada 15 min).
+    Fallback a boostr.cl si Open-Meteo falla.
+    Retorna dict compatible con el resto del pipeline o None.
+    """
+    cache_key = f'openmeteo_{round(lat, 2)}_{round(lng, 2)}'
+    if not force_refresh:
+        cached = cache.get(cache_key)
+        if cached:
+            return cached
+
+    result = _fetch_open_meteo(lat, lng)
+    if result:
+        cache.set(cache_key, result, WEATHER_CACHE_TTL)
+        return result
+
+    logger.warning("Open-Meteo falló para (%s, %s), intentando boostr fallback", lat, lng)
+    return _fetch_boostr_fallback(lat, lng, force_refresh)
+
+
+def _fetch_open_meteo(lat, lng):
+    """Llama Open-Meteo y normaliza la respuesta."""
+    try:
+        url = OPEN_METEO_URL.format(lat=lat, lng=lng)
+        resp = requests.get(url, timeout=8)
+        resp.raise_for_status()
+        data = resp.json()
+
+        current = data.get('current')
+        if not current:
+            return None
+
+        temp = current.get('temperature_2m')
+        humidity = current.get('relative_humidity_2m')
+        wmo_code = current.get('weather_code', 0)
+        condition = WMO_CONDITIONS.get(wmo_code, 'Despejado')
+        report_time = current.get('time', '')
+
+        report_age_min = _calc_open_meteo_age(report_time)
+
+        return {
+            'source': 'open-meteo',
+            'station_code': None,
+            'city': '',
+            'temperature': round(temp) if temp is not None else None,
+            'humidity': round(humidity) if humidity is not None else None,
+            'condition': condition,
+            'weather_code': wmo_code,
+            'updated_at': report_time,
+            'report_age_min': report_age_min,
+        }
+    except Exception as exc:
+        logger.error("Error Open-Meteo (%s, %s): %s", lat, lng, exc)
+        return None
+
+
+def _calc_open_meteo_age(time_str):
+    """
+    Calcula minutos desde el timestamp ISO de Open-Meteo.
+    time_str example: '2026-04-13T18:15'
+    """
+    if not time_str:
+        return None
+    try:
+        report_naive = datetime.strptime(time_str[:16], '%Y-%m-%dT%H:%M')
+        now_local = timezone.localtime()
+        report_local = now_local.replace(
+            year=report_naive.year, month=report_naive.month,
+            day=report_naive.day, hour=report_naive.hour,
+            minute=report_naive.minute, second=0, microsecond=0,
+        )
+        delta = int((now_local - report_local).total_seconds() / 60)
+        return max(delta, 0)
+    except Exception:
+        return None
+
+
+def _fetch_boostr_fallback(lat, lng, force_refresh=False):
+    """Intenta resolver estación desde coords y consultar boostr."""
+    station_code, station_city, _ = resolve_station_from_coords(lat, lng)
+    if not station_code:
+        return None
+    return fetch_weather_boostr(station_code, force_refresh=force_refresh)
+
+
+def fetch_weather_boostr(station_code, force_refresh=False):
+    """
+    Consulta la API de boostr.cl (datos SYNOP, actualiza cada ~6h).
+    Retorna dict normalizado o None.
+    """
+    cache_key = f'boostr_weather_{station_code}'
+    if not force_refresh:
+        cached = cache.get(cache_key)
+        if cached:
+            return cached
+
+    try:
+        url = BOOSTR_API_URL.format(code=station_code)
+        response = requests.get(url, headers={'accept': 'application/json'}, timeout=8)
+        response.raise_for_status()
+        payload = response.json()
+
+        if payload.get('status') != 'success' or not payload.get('data'):
+            logger.warning("API boostr respuesta inesperada para %s: %s", station_code, payload)
+            return None
+
+        data = payload['data']
+        raw_updated_at = data.get('updated_at', '')
+
+        result = {
+            'source': 'boostr',
+            'station_code': station_code,
+            'city': data.get('city', ''),
+            'temperature': _safe_int(data.get('temperature')),
+            'humidity': _safe_int(data.get('humidity')),
+            'condition': data.get('condition', ''),
+            'weather_code': None,
+            'updated_at': raw_updated_at,
+            'report_age_min': _calc_boostr_age(raw_updated_at),
+        }
+        cache.set(cache_key, result, 60 * 5)
+        return result
+    except requests.RequestException as exc:
+        logger.error("Error consultando API boostr (%s): %s", station_code, exc)
+        return None
+
+
+def _calc_boostr_age(updated_at_str):
+    """Calcula minutos desde el ciclo SYNOP (formato HH:MM:SS UTC)."""
+    if not updated_at_str:
+        return None
+    try:
+        now_utc = timezone.now()
+        h, m, s = (int(x) for x in updated_at_str.split(':'))
+        report_dt = now_utc.replace(hour=h, minute=m, second=s, microsecond=0)
+        if report_dt > now_utc:
+            report_dt -= timezone.timedelta(days=1)
+        return int((now_utc - report_dt).total_seconds() / 60)
+    except Exception:
+        return None
+
+
+# ── Station resolution (for boostr fallback & address-based lookups) ──
+
 def resolve_station_from_coords(lat, lng):
     """
-    Convierte coordenadas GPS → estación meteorológica usando Nominatim.
+    Coordenadas GPS → estación meteorológica via Nominatim reverse geocoding.
     Retorna (station_code, station_city, address_text) o (None, None, None).
     """
     cache_key = f'nominatim_reverse_{round(lat, 2)}_{round(lng, 2)}'
@@ -228,7 +366,6 @@ def resolve_station_from_coords(lat, lng):
         return cached['station_code'], cached['station_city'], cached['address_text']
 
     try:
-        # zoom=14 = nivel comuna/suburb (zoom=10 devuelve solo "Santiago" para toda la RM)
         url = (
             f'https://nominatim.openstreetmap.org/reverse'
             f'?lat={lat}&lon={lng}&format=json&addressdetails=1&accept-language=es&zoom=14'
@@ -238,44 +375,23 @@ def resolve_station_from_coords(lat, lng):
         data = resp.json()
 
         addr = data.get('address', {})
-
-        # En Chile, la "comuna" aparece en suburb para Nominatim zoom=14.
-        # Intentar suburb primero (más específico), luego city_district, luego city.
         comuna = (
-            addr.get('suburb') or
-            addr.get('city_district') or
-            addr.get('municipality') or
-            addr.get('town') or
-            addr.get('village') or
-            ''
+            addr.get('suburb') or addr.get('city_district') or
+            addr.get('municipality') or addr.get('town') or
+            addr.get('village') or ''
         )
-        # city suele ser "Santiago" genérico en la RM — solo usar si no hay comuna
         city = addr.get('city') or ''
         province = addr.get('state') or addr.get('region') or ''
         display = data.get('display_name', '')
 
         address_text = ', '.join(filter(None, [comuna or city, province, 'Chile']))
 
-        # Intentar resolver estación primero solo con la comuna
         station_code, station_city = None, None
-        if comuna:
-            station_code, station_city = resolve_station_from_address(comuna)
-
-        # Si no matchea la comuna, probar comuna + city
-        if not station_code and comuna and city and comuna != city:
-            station_code, station_city = resolve_station_from_address(f'{comuna} {city}')
-
-        # Probar con city sola
-        if not station_code and city:
-            station_code, station_city = resolve_station_from_address(city)
-
-        # Probar con province
-        if not station_code and province:
-            station_code, station_city = resolve_station_from_address(province)
-
-        # Último recurso: display_name completo
-        if not station_code:
-            station_code, station_city = resolve_station_from_address(display)
+        for text_attempt in [comuna, f'{comuna} {city}', city, province, display]:
+            if text_attempt and text_attempt.strip():
+                station_code, station_city = resolve_station_from_address(text_attempt)
+                if station_code:
+                    break
 
         result = {
             'station_code': station_code,
@@ -291,22 +407,16 @@ def resolve_station_from_coords(lat, lng):
 
 
 def resolve_station_from_address(address_text):
-    """
-    Intenta encontrar la estación meteorológica más cercana
-    a partir del texto de la dirección del usuario.
-    Retorna (station_code, station_city) o (None, None).
-    """
+    """Resuelve texto de dirección → (station_code, station_city) o (None, None)."""
     if not address_text:
         return None, None
 
     normalized = normalize_text(address_text)
 
-    # Búsqueda exacta en comunas mapeadas
     for comuna, station_code in COMUNA_TO_STATION.items():
         if normalize_text(comuna) in normalized:
             return station_code, STATION_MAP.get(station_code, comuna)
 
-    # Búsqueda en nombres de estaciones
     for code, city in STATION_MAP.items():
         if normalize_text(city) in normalized:
             return code, city
@@ -314,46 +424,31 @@ def resolve_station_from_address(address_text):
     return None, None
 
 
-def fetch_weather(station_code, force_refresh=False):
-    """
-    Consulta la API de boostr.cl con cache de 5 min.
-    Retorna dict con temperature, humidity, condition, city o None.
-    """
-    cache_key = f'boostr_weather_{station_code}'
-    if not force_refresh:
-        cached = cache.get(cache_key)
-        if cached:
-            return cached
+def _resolve_city_name(lat, lng):
+    """Obtiene nombre de ciudad desde coords usando cache de Nominatim si existe."""
+    cache_key = f'nominatim_reverse_{round(lat, 2)}_{round(lng, 2)}'
+    cached = cache.get(cache_key)
+    if cached:
+        return cached.get('station_city') or cached.get('address_text', '')
 
+    # Light reverse geocode solo para nombre de ciudad
     try:
-        url = WEATHER_API_URL.format(code=station_code)
-        response = requests.get(url, headers={'accept': 'application/json'}, timeout=8)
-        response.raise_for_status()
-        payload = response.json()
+        url = (
+            f'https://nominatim.openstreetmap.org/reverse'
+            f'?lat={lat}&lon={lng}&format=json&addressdetails=1&accept-language=es&zoom=10'
+        )
+        resp = requests.get(url, headers={'User-Agent': 'MecaniMovil/1.0'}, timeout=4)
+        resp.raise_for_status()
+        addr = resp.json().get('address', {})
+        return (
+            addr.get('city') or addr.get('town') or
+            addr.get('municipality') or addr.get('suburb') or ''
+        )
+    except Exception:
+        return ''
 
-        if payload.get('status') != 'success' or not payload.get('data'):
-            logger.warning("API boostr respuesta inesperada para %s: %s", station_code, payload)
-            return None
 
-        data = payload['data']
-        raw_updated_at = data.get('updated_at', '')
-        report_age_min = _calc_report_age_minutes(raw_updated_at)
-
-        result = {
-            'station_code': station_code,
-            'city': data.get('city', ''),
-            'temperature': _safe_int(data.get('temperature')),
-            'humidity': _safe_int(data.get('humidity')),
-            'condition': data.get('condition', ''),
-            'updated_at': raw_updated_at,
-            'report_age_min': report_age_min,
-        }
-        cache.set(cache_key, result, WEATHER_CACHE_TTL)
-        return result
-    except requests.RequestException as exc:
-        logger.error("Error consultando API boostr (%s): %s", station_code, exc)
-        return None
-
+# ── Helpers ──
 
 def _safe_int(val):
     try:
@@ -362,40 +457,21 @@ def _safe_int(val):
         return None
 
 
-def _calc_report_age_minutes(updated_at_str):
-    """
-    Calcula cuántos minutos han pasado desde el ciclo SYNOP reportado por boostr.
-    updated_at_str viene en formato "HH:MM:SS" en UTC (la API boostr usa UTC).
-    Retorna entero de minutos o None si no se puede parsear.
-    """
-    if not updated_at_str:
-        return None
-    try:
-        now_utc = timezone.now()  # siempre UTC cuando USE_TZ=True
-        h, m, s = (int(x) for x in updated_at_str.split(':'))
-        report_dt = now_utc.replace(hour=h, minute=m, second=s, microsecond=0)
-        # Si la hora del reporte es futura respecto a ahora (UTC), pertenece al día anterior
-        if report_dt > now_utc:
-            report_dt -= timezone.timedelta(days=1)
-        delta_min = int((now_utc - report_dt).total_seconds() / 60)
-        return delta_min
-    except Exception:
-        return None
-
-
 def determine_climate_condition(weather):
-    """Clasifica la condición climática para seleccionar columna de la matriz."""
+    """Clasifica condición climática para la matriz de desgaste."""
     if not weather:
         return 'normal'
 
-    condition_lower = normalize_text(weather.get('condition', ''))
-    temp = weather.get('temperature')
-
-    rain_keywords = ['lluvia', 'llovizna', 'chubascos', 'tormenta', 'precipita']
-    is_raining = any(kw in condition_lower for kw in rain_keywords)
-
-    if is_raining:
+    wmo_code = weather.get('weather_code')
+    if wmo_code is not None and wmo_code in WMO_RAIN_CODES:
         return 'rain'
+
+    condition_lower = normalize_text(weather.get('condition', ''))
+    rain_keywords = ['lluvia', 'llovizna', 'chubascos', 'tormenta', 'precipita']
+    if any(kw in condition_lower for kw in rain_keywords):
+        return 'rain'
+
+    temp = weather.get('temperature')
     if temp is not None and temp > 30:
         return 'heat'
     if temp is not None and temp < 5:
@@ -406,40 +482,19 @@ def determine_climate_condition(weather):
 def calculate_component_risk(component_type, climate_cond, telemetry=None):
     """
     Calcula riesgo de conducción para un componente considerando salud + clima.
-
-    Retorna (driving_risk, climate_extra_pct, cw):
-    - driving_risk: 0..100 — riesgo total de conducir hoy con este componente.
-      Basado en desgaste actual del componente, amplificado por clima.
-    - climate_extra_pct: 0..100 — cuántos puntos EXTRAS agrega el clima.
-    - cw: coeficiente climático crudo.
-
-    Lógica:
-      desgaste_base = 100 - salud (cuánto se ha gastado)
-      driving_risk = desgaste_base * cw (el clima amplifica el riesgo existente)
-      climate_extra = desgaste_base * (cw - 1.0) (solo la parte que agrega el clima)
-
-    Ejemplos (neumáticos, heat cw=1.5):
-      salud=0%  → desgaste=100, risk=100*1.5=150→100, extra=100*0.5=50
-      salud=80% → desgaste=20,  risk=20*1.5=30,       extra=20*0.5=10
-      salud=0%  normal cw=1.0 → risk=100*1.0=100,     extra=0
-      salud=100% heat  cw=1.5 → risk=0*1.5=0,         extra=0
+    Retorna (driving_risk, climate_extra_pct, cw).
     """
     matrix_entry = WEAR_MATRIX.get(component_type)
     if not matrix_entry:
         return 0, 0, 1.0
 
-    if climate_cond == 'normal':
-        cw = 1.0
-    else:
-        cw = matrix_entry.get(climate_cond, 1.0)
-
+    cw = 1.0 if climate_cond == 'normal' else matrix_entry.get(climate_cond, 1.0)
     climate_delta = max(0, cw - 1.0)
 
     if telemetry and telemetry.get('salud_porcentaje') is not None:
         salud = telemetry['salud_porcentaje']
         desgaste_base = max(0, 100 - salud)
 
-        # Si hay km restantes reales, ponderar desgaste con urgencia km
         km_restantes = telemetry.get('km_estimados_restantes', 0)
         vida_util = telemetry.get('vida_util_proyectada', 0)
         if vida_util > 0 and km_restantes > 0:
@@ -469,10 +524,6 @@ def calculate_component_risk(component_type, climate_cond, telemetry=None):
 
 
 def _risk_level_and_label(driving_risk, salud=None):
-    """
-    Genera nivel semántico y texto claro para el usuario.
-    Evita que "100%" se interprete como bueno — explicita que es peligro.
-    """
     if salud is not None and salud <= 5:
         return 'critico', 'Requiere cambio inmediato'
     if driving_risk >= 80:
@@ -486,34 +537,61 @@ def _risk_level_and_label(driving_risk, salud=None):
     return 'optimo', 'Condiciones óptimas'
 
 
+# ─────────────────────────────────────────────────────────────
+# Public prediction pipelines
+# ─────────────────────────────────────────────────────────────
+
 def get_prediction_for_coords(lat, lng, vehicle=None, force_refresh=False):
-    """
-    Pipeline completo a partir de coordenadas GPS: coords → estación → clima → predicción.
-    """
-    station_code, station_city, address_text = resolve_station_from_coords(lat, lng)
+    """Pipeline: coords → Open-Meteo (direct) → predicción."""
+    weather = fetch_weather_by_coords(lat, lng, force_refresh=force_refresh)
+    if not weather:
+        return {
+            'available': False,
+            'reason': 'No se pudo obtener datos climáticos para tu ubicación.',
+        }
+
+    city_name = weather.get('city') or ''
+    if not city_name:
+        city_name = _resolve_city_name(lat, lng)
+        weather['city'] = city_name
+
+    return _build_prediction(weather, vehicle, source='gps', address_info={
+        'id': None,
+        'direccion': city_name or f'{round(lat, 4)}, {round(lng, 4)}',
+        'etiqueta': 'Ubicación actual',
+    })
+
+
+def get_prediction_for_address(address_text, vehicle=None, force_refresh=False):
+    """Pipeline: dirección texto → estación → boostr → predicción."""
+    station_code, station_city = resolve_station_from_address(address_text)
 
     if not station_code:
         return {
             'available': False,
-            'reason': 'No hay estación meteorológica disponible para tu ubicación GPS.',
+            'reason': 'No hay estación meteorológica disponible para esta ubicación.',
         }
 
-    weather = fetch_weather(station_code, force_refresh=force_refresh)
+    weather = fetch_weather_boostr(station_code, force_refresh=force_refresh)
     if not weather:
         return {
             'available': False,
             'reason': 'No se pudo obtener datos climáticos en este momento.',
         }
 
+    return _build_prediction(weather, vehicle)
+
+
+def _build_prediction(weather, vehicle, source=None, address_info=None):
+    """Construye respuesta de predicción completa a partir de datos climáticos."""
     climate_cond = determine_climate_condition(weather)
 
     telemetry_data = None
     if vehicle:
-        odometer = vehicle.kilometraje or 0
         telemetry_data = {
             'avg_daily_km': 30,
             'driving_profile_factor': 1.0,
-            'current_odometer': odometer,
+            'current_odometer': vehicle.kilometraje or 0,
         }
 
     components = []
@@ -562,12 +640,12 @@ def get_prediction_for_coords(lat, lng, vehicle=None, force_refresh=False):
     overall_level, overall_label = _risk_level_and_label(avg_risk)
     now = timezone.localtime()
 
-    return {
+    result = {
         'available': True,
-        'source': 'gps',
         'weather': {
-            'station_code': weather['station_code'],
-            'city': weather['city'],
+            'source': weather.get('source', 'unknown'),
+            'station_code': weather.get('station_code'),
+            'city': weather.get('city', ''),
             'temperature': weather['temperature'],
             'humidity': weather['humidity'],
             'condition': weather['condition'],
@@ -582,115 +660,14 @@ def get_prediction_for_coords(lat, lng, vehicle=None, force_refresh=False):
         'ai_insight': AI_INSIGHTS.get(climate_cond, AI_INSIGHTS['normal']),
         'fetched_at': now.strftime('%H:%M'),
         'fetched_at_iso': now.isoformat(),
-        'address': {
-            'id': None,
-            'direccion': address_text,
-            'etiqueta': 'Ubicación actual',
-        },
     }
 
+    if source:
+        result['source'] = source
+    if address_info:
+        result['address'] = address_info
 
-def get_prediction_for_address(address_text, vehicle=None, force_refresh=False):
-    """
-    Pipeline completo: dirección → estación → clima → predicción.
-    Retorna dict listo para la UI.
-    """
-    station_code, station_city = resolve_station_from_address(address_text)
-
-    if not station_code:
-        return {
-            'available': False,
-            'reason': 'No hay estación meteorológica disponible para esta ubicación.',
-        }
-
-    weather = fetch_weather(station_code, force_refresh=force_refresh)
-    if not weather:
-        return {
-            'available': False,
-            'reason': 'No se pudo obtener datos climáticos en este momento.',
-        }
-
-    climate_cond = determine_climate_condition(weather)
-
-    telemetry_data = None
-    if vehicle:
-        odometer = vehicle.kilometraje or 0
-        telemetry_data = {
-            'avg_daily_km': 30,
-            'driving_profile_factor': 1.0,
-            'current_odometer': odometer,
-        }
-
-    components = []
-    total_risk = 0
-    for comp_type, labels in [
-        ('frenos', {'name': 'Frenos', 'icon': 'disc'}),
-        ('neumaticos', {'name': 'Neumáticos', 'icon': 'wind'}),
-        ('bateria', {'name': 'Batería', 'icon': 'zap'}),
-        ('refrigerante', {'name': 'Refrigerante', 'icon': 'droplets'}),
-    ]:
-        comp_telemetry = None
-        if telemetry_data and vehicle:
-            comp_telemetry = _enrich_telemetry_for_component(
-                telemetry_data, vehicle, comp_type
-            )
-
-        driving_risk, climate_extra, cw = calculate_component_risk(
-            comp_type, climate_cond, comp_telemetry
-        )
-        reason = _build_reason(comp_type, climate_cond, weather)
-
-        salud_val = None
-        if comp_telemetry and comp_telemetry.get('salud_porcentaje') is not None:
-            salud_val = comp_telemetry['salud_porcentaje']
-
-        risk_level, risk_label = _risk_level_and_label(driving_risk, salud_val)
-
-        comp_entry = {
-            'type': comp_type,
-            'name': labels['name'],
-            'icon': labels['icon'],
-            'driving_risk': driving_risk,
-            'wear_increase': climate_extra,
-            'risk_level': risk_level,
-            'risk_label': risk_label,
-            'coefficient': cw,
-            'reason': reason,
-        }
-        if salud_val is not None:
-            comp_entry['salud_actual'] = round(salud_val, 1)
-            comp_entry['nivel_alerta'] = comp_telemetry.get('nivel_alerta', '')
-            comp_entry['km_restantes'] = comp_telemetry.get('km_estimados_restantes', 0)
-
-        components.append(comp_entry)
-        total_risk += driving_risk
-
-    avg_risk = round(total_risk / len(components)) if components else 0
-    overall_level, overall_label = _risk_level_and_label(avg_risk)
-
-    now = timezone.localtime()
-    api_updated = weather.get('updated_at', '')
-
-    return {
-        'available': True,
-        'weather': {
-            'station_code': weather['station_code'],
-            'city': weather['city'],
-            'temperature': weather['temperature'],
-            'humidity': weather['humidity'],
-            'condition': weather['condition'],
-            'updated_at': api_updated,
-            'report_age_min': weather.get('report_age_min'),
-        },
-        'climate_condition': climate_cond,
-        'total_wear_risk': avg_risk,
-        'risk_level': overall_level,
-        'risk_label': overall_label,
-        'components': components,
-        'ai_insight': AI_INSIGHTS.get(climate_cond, AI_INSIGHTS['normal']),
-        'fetched_at': now.strftime('%H:%M'),
-        'fetched_at_iso': now.isoformat(),
-    }
+    return result
 
 
 def _enrich_telemetry_for_component(base_telemetry, vehicle, comp_type):
@@ -727,7 +704,7 @@ def _enrich_telemetry_for_component(base_telemetry, vehicle, comp_type):
 
 
 def _build_reason(comp_type, climate_cond, weather):
-    """Genera una razón legible para el desgaste de un componente."""
+    """Genera razón legible para desgaste de un componente."""
     temp = weather.get('temperature')
     humidity = weather.get('humidity')
 
