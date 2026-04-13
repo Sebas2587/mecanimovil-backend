@@ -12,6 +12,7 @@ from mecanimovilapp.apps.usuarios.models import DireccionUsuario
 from mecanimovilapp.apps.vehiculos.models import Vehiculo
 from mecanimovilapp.apps.vehiculos.services.weather_prediction import (
     get_prediction_for_address,
+    get_prediction_for_coords,
     STATION_MAP,
 )
 
@@ -30,14 +31,39 @@ def weather_prediction(request):
     user = request.user
     address_id = request.query_params.get('address_id')
     vehicle_id = request.query_params.get('vehicle_id')
+    lat_param = request.query_params.get('lat')
+    lng_param = request.query_params.get('lng')
 
-    # Resolver dirección
+    # Resolver vehículo (opcional)
+    vehicle = None
+    if vehicle_id:
+        try:
+            vehicle = Vehiculo.objects.select_related('cliente').get(
+                id=vehicle_id,
+                cliente__usuario=user,
+            )
+        except Vehiculo.DoesNotExist:
+            pass
+
+    # Prioridad 1: coordenadas GPS enviadas desde el dispositivo
+    if lat_param and lng_param:
+        try:
+            lat = float(lat_param)
+            lng = float(lng_param)
+        except ValueError:
+            return Response(
+                {'error': 'Parámetros lat/lng inválidos.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        prediction = get_prediction_for_coords(lat, lng, vehicle)
+        return Response(prediction)
+
+    # Prioridad 2: dirección guardada en el backend
     address_text = None
     address_label = None
     address_obj_id = None
 
     def _build_address_text(addr_obj):
-        """Concatena direccion + detalles para maximizar las chances de match de estación."""
         parts = [addr_obj.direccion or '']
         if addr_obj.detalles:
             parts.append(addr_obj.detalles)
@@ -73,19 +99,8 @@ def weather_prediction(request):
     if not address_text:
         return Response({
             'available': False,
-            'reason': 'No tienes una dirección registrada. Agrega una dirección para ver el clima.',
+            'reason': 'No tienes una dirección registrada. Agrega una dirección o activa el GPS para ver el clima.',
         })
-
-    # Resolver vehículo (opcional)
-    vehicle = None
-    if vehicle_id:
-        try:
-            vehicle = Vehiculo.objects.select_related('cliente').get(
-                id=vehicle_id,
-                cliente__usuario=user,
-            )
-        except Vehiculo.DoesNotExist:
-            pass
 
     prediction = get_prediction_for_address(address_text, vehicle)
     prediction['address'] = {

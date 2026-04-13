@@ -217,6 +217,62 @@ def normalize_text(text):
     return ''.join(c for c in nfkd if not unicodedata.combining(c))
 
 
+def resolve_station_from_coords(lat, lng):
+    """
+    Convierte coordenadas GPS → estación meteorológica usando Nominatim.
+    Retorna (station_code, station_city, address_text) o (None, None, None).
+    """
+    cache_key = f'nominatim_reverse_{round(lat, 3)}_{round(lng, 3)}'
+    cached = cache.get(cache_key)
+    if cached:
+        return cached['station_code'], cached['station_city'], cached['address_text']
+
+    try:
+        url = (
+            f'https://nominatim.openstreetmap.org/reverse'
+            f'?lat={lat}&lon={lng}&format=json&addressdetails=1&accept-language=es&zoom=10'
+        )
+        resp = requests.get(url, headers={'User-Agent': 'MecaniMovil/1.0'}, timeout=6)
+        resp.raise_for_status()
+        data = resp.json()
+
+        addr = data.get('address', {})
+        # Intentar obtener la unidad administrativa más específica disponible
+        comuna = (
+            addr.get('city_district') or
+            addr.get('suburb') or
+            addr.get('municipality') or
+            addr.get('city') or
+            addr.get('town') or
+            addr.get('village') or
+            ''
+        )
+        province = addr.get('state') or addr.get('region') or ''
+        display = data.get('display_name', '')
+
+        # Construir texto de dirección para logs / UI
+        address_text = ', '.join(filter(None, [comuna, province, 'Chile']))
+
+        # Resolver estación desde la comuna
+        station_code, station_city = resolve_station_from_address(f'{comuna} {province}')
+        if not station_code:
+            # Último recurso: buscar en el display_name completo
+            station_code, station_city = resolve_station_from_address(display)
+
+        result = {
+            'station_code': station_code,
+            'station_city': station_city,
+            'address_text': address_text,
+        }
+        # Cache de 30 min para coords (la estación más cercana no cambia)
+        cache.set(cache_key, result, 60 * 30)
+        return station_code, station_city, address_text
+
+    except Exception as exc:
+        logger.error("Error reverse geocoding Nominatim (%s, %s): %s", lat, lng, exc)
+        return None, None, None
+
+
 def resolve_station_from_address(address_text):
     """
     Intenta encontrar la estación meteorológica más cercana
@@ -262,13 +318,17 @@ def fetch_weather(station_code):
             return None
 
         data = payload['data']
+        raw_updated_at = data.get('updated_at', '')
+        report_age_min = _calc_report_age_minutes(raw_updated_at)
+
         result = {
             'station_code': station_code,
             'city': data.get('city', ''),
             'temperature': _safe_int(data.get('temperature')),
             'humidity': _safe_int(data.get('humidity')),
             'condition': data.get('condition', ''),
-            'updated_at': data.get('updated_at', ''),
+            'updated_at': raw_updated_at,
+            'report_age_min': report_age_min,
         }
         cache.set(cache_key, result, WEATHER_CACHE_TTL)
         return result
@@ -281,6 +341,27 @@ def _safe_int(val):
     try:
         return int(val)
     except (TypeError, ValueError):
+        return None
+
+
+def _calc_report_age_minutes(updated_at_str):
+    """
+    Calcula cuántos minutos han pasado desde el ciclo SYNOP reportado por boostr.
+    updated_at_str viene en formato "HH:MM:SS" (hora local Chile).
+    Retorna entero de minutos o None si no se puede parsear.
+    """
+    if not updated_at_str:
+        return None
+    try:
+        now = timezone.localtime()
+        h, m, s = (int(x) for x in updated_at_str.split(':'))
+        report_dt = now.replace(hour=h, minute=m, second=s, microsecond=0)
+        # Si la hora del reporte es futura respecto al reloj actual, pertenece al día anterior
+        if report_dt > now:
+            report_dt -= timezone.timedelta(days=1)
+        delta_min = int((now - report_dt).total_seconds() / 60)
+        return delta_min
+    except Exception:
         return None
 
 
@@ -352,6 +433,96 @@ def calculate_component_risk(component_type, climate_cond, telemetry=None):
         risk = round((cw - 1.0) * 100) if cw > 1.0 else 0
 
     return min(max(round(risk), 0), 100), round(cw, 2)
+
+
+def get_prediction_for_coords(lat, lng, vehicle=None):
+    """
+    Pipeline completo a partir de coordenadas GPS: coords → estación → clima → predicción.
+    """
+    station_code, station_city, address_text = resolve_station_from_coords(lat, lng)
+
+    if not station_code:
+        return {
+            'available': False,
+            'reason': 'No hay estación meteorológica disponible para tu ubicación GPS.',
+        }
+
+    weather = fetch_weather(station_code)
+    if not weather:
+        return {
+            'available': False,
+            'reason': 'No se pudo obtener datos climáticos en este momento.',
+        }
+
+    climate_cond = determine_climate_condition(weather)
+
+    telemetry_data = None
+    if vehicle:
+        odometer = vehicle.kilometraje or 0
+        telemetry_data = {
+            'avg_daily_km': 30,
+            'driving_profile_factor': 1.0,
+            'current_odometer': odometer,
+        }
+
+    components = []
+    total_risk = 0
+    for comp_type, labels in [
+        ('frenos', {'name': 'Frenos', 'icon': 'disc'}),
+        ('neumaticos', {'name': 'Neumáticos', 'icon': 'wind'}),
+        ('bateria', {'name': 'Batería', 'icon': 'zap'}),
+        ('refrigerante', {'name': 'Refrigerante', 'icon': 'droplets'}),
+    ]:
+        comp_telemetry = None
+        if telemetry_data and vehicle:
+            comp_telemetry = _enrich_telemetry_for_component(telemetry_data, vehicle, comp_type)
+
+        risk_pct, cw = calculate_component_risk(comp_type, climate_cond, comp_telemetry)
+        reason = _build_reason(comp_type, climate_cond, weather)
+
+        comp_entry = {
+            'type': comp_type,
+            'name': labels['name'],
+            'icon': labels['icon'],
+            'wear_increase': risk_pct,
+            'coefficient': cw,
+            'reason': reason,
+        }
+        if comp_telemetry and comp_telemetry.get('salud_porcentaje') is not None:
+            comp_entry['salud_actual'] = round(comp_telemetry['salud_porcentaje'], 1)
+            comp_entry['nivel_alerta'] = comp_telemetry.get('nivel_alerta', '')
+            comp_entry['km_restantes'] = comp_telemetry.get('km_estimados_restantes', 0)
+
+        components.append(comp_entry)
+        total_risk += risk_pct
+
+    avg_risk = round(total_risk / len(components)) if components else 0
+    now = timezone.localtime()
+
+    return {
+        'available': True,
+        'source': 'gps',
+        'weather': {
+            'station_code': weather['station_code'],
+            'city': weather['city'],
+            'temperature': weather['temperature'],
+            'humidity': weather['humidity'],
+            'condition': weather['condition'],
+            'updated_at': weather.get('updated_at', ''),
+            'report_age_min': weather.get('report_age_min'),
+        },
+        'climate_condition': climate_cond,
+        'total_wear_risk': avg_risk,
+        'components': components,
+        'ai_insight': AI_INSIGHTS.get(climate_cond, AI_INSIGHTS['normal']),
+        'fetched_at': now.strftime('%H:%M'),
+        'fetched_at_iso': now.isoformat(),
+        'address': {
+            'id': None,
+            'direccion': address_text,
+            'etiqueta': 'Ubicación actual',
+        },
+    }
 
 
 def get_prediction_for_address(address_text, vehicle=None):
@@ -432,6 +603,7 @@ def get_prediction_for_address(address_text, vehicle=None):
             'humidity': weather['humidity'],
             'condition': weather['condition'],
             'updated_at': api_updated,
+            'report_age_min': weather.get('report_age_min'),
         },
         'climate_condition': climate_cond,
         'total_wear_risk': avg_risk,
