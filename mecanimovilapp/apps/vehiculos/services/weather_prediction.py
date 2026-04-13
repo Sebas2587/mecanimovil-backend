@@ -387,44 +387,49 @@ def determine_climate_condition(weather):
 
 def calculate_component_risk(component_type, climate_cond, telemetry=None):
     """
-    Calcula el porcentaje de riesgo de conducción para un componente.
+    Calcula riesgo de conducción para un componente considerando salud + clima.
 
-    wear_increase = cuánto riesgo EXTRA agrega el clima al componente.
-    - Componente sano (100%) + clima normal → 0% extra.
-    - Componente sano (100%) + lluvia        → pequeño incremento (solo clima).
-    - Componente dañado (0%) + clima normal → 0% extra (ya está destruido, clima no suma).
-    - Componente dañado (30%) + calor       → incremento moderado (clima acelera el desgaste restante).
+    Retorna (driving_risk, climate_extra_pct, cw):
+    - driving_risk: 0..100 — riesgo total de conducir hoy con este componente.
+      Basado en desgaste actual del componente, amplificado por clima.
+    - climate_extra_pct: 0..100 — cuántos puntos EXTRAS agrega el clima.
+    - cw: coeficiente climático crudo.
 
-    Fórmula: wear_increase = salud_restante * (cw - 1.0)
-    Solo la salud que queda puede ser afectada por el clima. Un componente al 0%
-    no tiene salud que el clima pueda desgastar más.
+    Lógica:
+      desgaste_base = 100 - salud (cuánto se ha gastado)
+      driving_risk = desgaste_base * cw (el clima amplifica el riesgo existente)
+      climate_extra = desgaste_base * (cw - 1.0) (solo la parte que agrega el clima)
+
+    Ejemplos (neumáticos, heat cw=1.5):
+      salud=0%  → desgaste=100, risk=100*1.5=150→100, extra=100*0.5=50
+      salud=80% → desgaste=20,  risk=20*1.5=30,       extra=20*0.5=10
+      salud=0%  normal cw=1.0 → risk=100*1.0=100,     extra=0
+      salud=100% heat  cw=1.5 → risk=0*1.5=0,         extra=0
     """
     matrix_entry = WEAR_MATRIX.get(component_type)
     if not matrix_entry:
-        return 0, 1.0
+        return 0, 0, 1.0
 
     if climate_cond == 'normal':
         cw = 1.0
     else:
         cw = matrix_entry.get(climate_cond, 1.0)
 
-    climate_extra = max(0, cw - 1.0)  # ej: 1.5 → 0.5, 1.0 → 0
+    climate_delta = max(0, cw - 1.0)
 
     if telemetry and telemetry.get('salud_porcentaje') is not None:
-        salud = telemetry['salud_porcentaje']  # 0..100
+        salud = telemetry['salud_porcentaje']
+        desgaste_base = max(0, 100 - salud)
 
-        # Solo la salud restante es vulnerable al efecto climático.
-        # Si salud=0 → nada que desgastar → wear_increase=0.
-        # Si salud=80 → 80 * 0.5 = 40 → clima agrega +40% de desgaste extra.
-        risk = salud * climate_extra
-
-        # Si hay km restantes reales, ponderar con urgencia
+        # Si hay km restantes reales, ponderar desgaste con urgencia km
         km_restantes = telemetry.get('km_estimados_restantes', 0)
         vida_util = telemetry.get('vida_util_proyectada', 0)
         if vida_util > 0 and km_restantes > 0:
-            km_salud = (km_restantes / vida_util) * 100  # 0..100 salud por km
-            salud_ponderada = (salud * 0.6) + (km_salud * 0.4)
-            risk = salud_ponderada * climate_extra
+            km_desgaste = max(0, 100 - (km_restantes / vida_util * 100))
+            desgaste_base = (desgaste_base * 0.6) + (km_desgaste * 0.4)
+
+        driving_risk = desgaste_base * cw
+        climate_extra = desgaste_base * climate_delta
 
     elif telemetry and telemetry.get('current_odometer', 0) > 0:
         avg_daily_km = telemetry.get('avg_daily_km', 30)
@@ -432,13 +437,17 @@ def calculate_component_risk(component_type, climate_cond, telemetry=None):
         estimated_life_km = telemetry.get('estimated_life_km', 50000)
 
         distancia_real_dia = avg_daily_km * driving_factor
-        desgaste_equiv = distancia_real_dia * climate_extra
         vida_remanente = max(estimated_life_km * 0.5, 500)
-        risk = (desgaste_equiv / vida_remanente) * 100
+        base_daily_risk = (distancia_real_dia / vida_remanente) * 100
+        driving_risk = base_daily_risk * cw
+        climate_extra = base_daily_risk * climate_delta
     else:
-        risk = round(climate_extra * 100)
+        driving_risk = round(climate_delta * 50)
+        climate_extra = driving_risk
 
-    return min(max(round(risk), 0), 100), round(cw, 2)
+    driving_risk = min(max(round(driving_risk), 0), 100)
+    climate_extra = min(max(round(climate_extra), 0), 100)
+    return driving_risk, climate_extra, round(cw, 2)
 
 
 def get_prediction_for_coords(lat, lng, vehicle=None):
@@ -483,14 +492,17 @@ def get_prediction_for_coords(lat, lng, vehicle=None):
         if telemetry_data and vehicle:
             comp_telemetry = _enrich_telemetry_for_component(telemetry_data, vehicle, comp_type)
 
-        risk_pct, cw = calculate_component_risk(comp_type, climate_cond, comp_telemetry)
+        driving_risk, climate_extra, cw = calculate_component_risk(
+            comp_type, climate_cond, comp_telemetry
+        )
         reason = _build_reason(comp_type, climate_cond, weather)
 
         comp_entry = {
             'type': comp_type,
             'name': labels['name'],
             'icon': labels['icon'],
-            'wear_increase': risk_pct,
+            'driving_risk': driving_risk,
+            'wear_increase': climate_extra,
             'coefficient': cw,
             'reason': reason,
         }
@@ -500,7 +512,7 @@ def get_prediction_for_coords(lat, lng, vehicle=None):
             comp_entry['km_restantes'] = comp_telemetry.get('km_estimados_restantes', 0)
 
         components.append(comp_entry)
-        total_risk += risk_pct
+        total_risk += driving_risk
 
     avg_risk = round(total_risk / len(components)) if components else 0
     now = timezone.localtime()
@@ -576,14 +588,17 @@ def get_prediction_for_address(address_text, vehicle=None):
                 telemetry_data, vehicle, comp_type
             )
 
-        risk_pct, cw = calculate_component_risk(comp_type, climate_cond, comp_telemetry)
+        driving_risk, climate_extra, cw = calculate_component_risk(
+            comp_type, climate_cond, comp_telemetry
+        )
         reason = _build_reason(comp_type, climate_cond, weather)
 
         comp_entry = {
             'type': comp_type,
             'name': labels['name'],
             'icon': labels['icon'],
-            'wear_increase': risk_pct,
+            'driving_risk': driving_risk,
+            'wear_increase': climate_extra,
             'coefficient': cw,
             'reason': reason,
         }
@@ -593,7 +608,7 @@ def get_prediction_for_address(address_text, vehicle=None):
             comp_entry['km_restantes'] = comp_telemetry.get('km_estimados_restantes', 0)
 
         components.append(comp_entry)
-        total_risk += risk_pct
+        total_risk += driving_risk
 
     avg_risk = round(total_risk / len(components)) if components else 0
 
