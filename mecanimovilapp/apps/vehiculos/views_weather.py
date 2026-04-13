@@ -59,56 +59,64 @@ def weather_prediction(request):
         return Response(prediction)
 
     # Prioridad 2: dirección guardada en el backend
-    address_text = None
-    address_label = None
-    address_obj_id = None
-
     def _build_address_text(addr_obj):
         parts = [addr_obj.direccion or '']
         if addr_obj.detalles:
             parts.append(addr_obj.detalles)
         return ' '.join(filter(None, parts))
 
+    def _prediction_from_addr(addr_obj):
+        """Usa coords del PointField si existen (más preciso), si no hace string-match."""
+        label = addr_obj.etiqueta
+        addr_text = _build_address_text(addr_obj)
+        addr_id = addr_obj.id
+
+        if addr_obj.ubicacion:
+            # PointField: .x = longitud, .y = latitud
+            lat = addr_obj.ubicacion.y
+            lng = addr_obj.ubicacion.x
+            pred = get_prediction_for_coords(lat, lng, vehicle)
+        else:
+            pred = get_prediction_for_address(addr_text, vehicle)
+
+        pred['address'] = {
+            'id': addr_id,
+            'direccion': addr_text,
+            'etiqueta': label,
+        }
+        return pred
+
     if address_id:
         try:
             addr = DireccionUsuario.objects.get(id=address_id, usuario=user)
-            address_text = _build_address_text(addr)
-            address_label = addr.etiqueta
-            address_obj_id = addr.id
+            return Response(_prediction_from_addr(addr))
         except DireccionUsuario.DoesNotExist:
             return Response(
                 {'error': 'Dirección no encontrada.'},
                 status=status.HTTP_404_NOT_FOUND,
             )
-    else:
-        addr = (
-            DireccionUsuario.objects
-            .filter(usuario=user, es_principal=True)
-            .first()
-        )
-        if not addr:
-            addr = DireccionUsuario.objects.filter(usuario=user).first()
-        if addr:
-            address_text = _build_address_text(addr)
-            address_label = addr.etiqueta
-            address_obj_id = addr.id
-        elif user.direccion:
-            address_text = user.direccion
-            address_label = 'Perfil'
 
-    if not address_text:
-        return Response({
-            'available': False,
-            'reason': 'No tienes una dirección registrada. Agrega una dirección o activa el GPS para ver el clima.',
-        })
+    # Sin address_id: usar principal o primera disponible
+    addr = (
+        DireccionUsuario.objects
+        .filter(usuario=user, es_principal=True)
+        .first()
+    )
+    if not addr:
+        addr = DireccionUsuario.objects.filter(usuario=user).first()
 
-    prediction = get_prediction_for_address(address_text, vehicle)
-    prediction['address'] = {
-        'id': address_obj_id,
-        'direccion': address_text,
-        'etiqueta': address_label,
-    }
-    return Response(prediction)
+    if addr:
+        return Response(_prediction_from_addr(addr))
+
+    if user.direccion:
+        prediction = get_prediction_for_address(user.direccion, vehicle)
+        prediction['address'] = {'id': None, 'direccion': user.direccion, 'etiqueta': 'Perfil'}
+        return Response(prediction)
+
+    return Response({
+        'available': False,
+        'reason': 'No tienes una dirección registrada. Agrega una dirección o activa el GPS para ver el clima.',
+    })
 
 
 @api_view(['GET'])
