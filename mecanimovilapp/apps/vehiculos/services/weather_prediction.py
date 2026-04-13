@@ -467,6 +467,24 @@ def calculate_component_risk(component_type, climate_cond, telemetry=None):
     return driving_risk, climate_extra, round(cw, 2)
 
 
+def _risk_level_and_label(driving_risk, salud=None):
+    """
+    Genera nivel semántico y texto claro para el usuario.
+    Evita que "100%" se interprete como bueno — explicita que es peligro.
+    """
+    if salud is not None and salud <= 5:
+        return 'critico', 'Requiere cambio inmediato'
+    if driving_risk >= 80:
+        return 'critico', 'Riesgo alto — evita conducir'
+    if driving_risk >= 50:
+        return 'alto', 'Precaución al conducir'
+    if driving_risk >= 25:
+        return 'moderado', 'Riesgo moderado'
+    if driving_risk > 0:
+        return 'bajo', 'Riesgo bajo'
+    return 'optimo', 'Condiciones óptimas'
+
+
 def get_prediction_for_coords(lat, lng, vehicle=None):
     """
     Pipeline completo a partir de coordenadas GPS: coords → estación → clima → predicción.
@@ -514,17 +532,25 @@ def get_prediction_for_coords(lat, lng, vehicle=None):
         )
         reason = _build_reason(comp_type, climate_cond, weather)
 
+        salud_val = None
+        if comp_telemetry and comp_telemetry.get('salud_porcentaje') is not None:
+            salud_val = comp_telemetry['salud_porcentaje']
+
+        risk_level, risk_label = _risk_level_and_label(driving_risk, salud_val)
+
         comp_entry = {
             'type': comp_type,
             'name': labels['name'],
             'icon': labels['icon'],
             'driving_risk': driving_risk,
             'wear_increase': climate_extra,
+            'risk_level': risk_level,
+            'risk_label': risk_label,
             'coefficient': cw,
             'reason': reason,
         }
-        if comp_telemetry and comp_telemetry.get('salud_porcentaje') is not None:
-            comp_entry['salud_actual'] = round(comp_telemetry['salud_porcentaje'], 1)
+        if salud_val is not None:
+            comp_entry['salud_actual'] = round(salud_val, 1)
             comp_entry['nivel_alerta'] = comp_telemetry.get('nivel_alerta', '')
             comp_entry['km_restantes'] = comp_telemetry.get('km_estimados_restantes', 0)
 
@@ -532,6 +558,7 @@ def get_prediction_for_coords(lat, lng, vehicle=None):
         total_risk += driving_risk
 
     avg_risk = round(total_risk / len(components)) if components else 0
+    overall_level, overall_label = _risk_level_and_label(avg_risk)
     now = timezone.localtime()
 
     return {
@@ -548,6 +575,8 @@ def get_prediction_for_coords(lat, lng, vehicle=None):
         },
         'climate_condition': climate_cond,
         'total_wear_risk': avg_risk,
+        'risk_level': overall_level,
+        'risk_label': overall_label,
         'components': components,
         'ai_insight': AI_INSIGHTS.get(climate_cond, AI_INSIGHTS['normal']),
         'fetched_at': now.strftime('%H:%M'),
@@ -610,17 +639,25 @@ def get_prediction_for_address(address_text, vehicle=None):
         )
         reason = _build_reason(comp_type, climate_cond, weather)
 
+        salud_val = None
+        if comp_telemetry and comp_telemetry.get('salud_porcentaje') is not None:
+            salud_val = comp_telemetry['salud_porcentaje']
+
+        risk_level, risk_label = _risk_level_and_label(driving_risk, salud_val)
+
         comp_entry = {
             'type': comp_type,
             'name': labels['name'],
             'icon': labels['icon'],
             'driving_risk': driving_risk,
             'wear_increase': climate_extra,
+            'risk_level': risk_level,
+            'risk_label': risk_label,
             'coefficient': cw,
             'reason': reason,
         }
-        if comp_telemetry and comp_telemetry.get('salud_porcentaje') is not None:
-            comp_entry['salud_actual'] = round(comp_telemetry['salud_porcentaje'], 1)
+        if salud_val is not None:
+            comp_entry['salud_actual'] = round(salud_val, 1)
             comp_entry['nivel_alerta'] = comp_telemetry.get('nivel_alerta', '')
             comp_entry['km_restantes'] = comp_telemetry.get('km_estimados_restantes', 0)
 
@@ -628,6 +665,7 @@ def get_prediction_for_address(address_text, vehicle=None):
         total_risk += driving_risk
 
     avg_risk = round(total_risk / len(components)) if components else 0
+    overall_level, overall_label = _risk_level_and_label(avg_risk)
 
     now = timezone.localtime()
     api_updated = weather.get('updated_at', '')
@@ -645,6 +683,8 @@ def get_prediction_for_address(address_text, vehicle=None):
         },
         'climate_condition': climate_cond,
         'total_wear_risk': avg_risk,
+        'risk_level': overall_level,
+        'risk_label': overall_label,
         'components': components,
         'ai_insight': AI_INSIGHTS.get(climate_cond, AI_INSIGHTS['normal']),
         'fetched_at': now.strftime('%H:%M'),
