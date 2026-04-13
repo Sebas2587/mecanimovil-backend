@@ -222,7 +222,7 @@ def resolve_station_from_coords(lat, lng):
     Convierte coordenadas GPS → estación meteorológica usando Nominatim.
     Retorna (station_code, station_city, address_text) o (None, None, None).
     """
-    cache_key = f'nominatim_reverse_{round(lat, 4)}_{round(lng, 4)}'
+    cache_key = f'nominatim_reverse_{round(lat, 2)}_{round(lng, 2)}'
     cached = cache.get(cache_key)
     if cached:
         return cached['station_code'], cached['station_city'], cached['address_text']
