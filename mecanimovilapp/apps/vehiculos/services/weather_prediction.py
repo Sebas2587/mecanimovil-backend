@@ -222,41 +222,59 @@ def resolve_station_from_coords(lat, lng):
     Convierte coordenadas GPS → estación meteorológica usando Nominatim.
     Retorna (station_code, station_city, address_text) o (None, None, None).
     """
-    cache_key = f'nominatim_reverse_{round(lat, 3)}_{round(lng, 3)}'
+    cache_key = f'nominatim_reverse_{round(lat, 4)}_{round(lng, 4)}'
     cached = cache.get(cache_key)
     if cached:
         return cached['station_code'], cached['station_city'], cached['address_text']
 
     try:
+        # zoom=14 = nivel comuna/suburb (zoom=10 devuelve solo "Santiago" para toda la RM)
         url = (
             f'https://nominatim.openstreetmap.org/reverse'
-            f'?lat={lat}&lon={lng}&format=json&addressdetails=1&accept-language=es&zoom=10'
+            f'?lat={lat}&lon={lng}&format=json&addressdetails=1&accept-language=es&zoom=14'
         )
         resp = requests.get(url, headers={'User-Agent': 'MecaniMovil/1.0'}, timeout=6)
         resp.raise_for_status()
         data = resp.json()
 
         addr = data.get('address', {})
-        # Intentar obtener la unidad administrativa más específica disponible
+
+        # En Chile, la "comuna" aparece en suburb para Nominatim zoom=14.
+        # Intentar suburb primero (más específico), luego city_district, luego city.
         comuna = (
-            addr.get('city_district') or
             addr.get('suburb') or
+            addr.get('city_district') or
             addr.get('municipality') or
-            addr.get('city') or
             addr.get('town') or
             addr.get('village') or
             ''
         )
+        # city suele ser "Santiago" genérico en la RM — solo usar si no hay comuna
+        city = addr.get('city') or ''
         province = addr.get('state') or addr.get('region') or ''
         display = data.get('display_name', '')
 
-        # Construir texto de dirección para logs / UI
-        address_text = ', '.join(filter(None, [comuna, province, 'Chile']))
+        address_text = ', '.join(filter(None, [comuna or city, province, 'Chile']))
 
-        # Resolver estación desde la comuna
-        station_code, station_city = resolve_station_from_address(f'{comuna} {province}')
+        # Intentar resolver estación primero solo con la comuna
+        station_code, station_city = None, None
+        if comuna:
+            station_code, station_city = resolve_station_from_address(comuna)
+
+        # Si no matchea la comuna, probar comuna + city
+        if not station_code and comuna and city and comuna != city:
+            station_code, station_city = resolve_station_from_address(f'{comuna} {city}')
+
+        # Probar con city sola
+        if not station_code and city:
+            station_code, station_city = resolve_station_from_address(city)
+
+        # Probar con province
+        if not station_code and province:
+            station_code, station_city = resolve_station_from_address(province)
+
+        # Último recurso: display_name completo
         if not station_code:
-            # Último recurso: buscar en el display_name completo
             station_code, station_city = resolve_station_from_address(display)
 
         result = {
@@ -264,7 +282,6 @@ def resolve_station_from_coords(lat, lng):
             'station_city': station_city,
             'address_text': address_text,
         }
-        # Cache de 30 min para coords (la estación más cercana no cambia)
         cache.set(cache_key, result, 60 * 30)
         return station_code, station_city, address_text
 
