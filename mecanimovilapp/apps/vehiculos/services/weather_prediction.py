@@ -387,8 +387,17 @@ def determine_climate_condition(weather):
 
 def calculate_component_risk(component_type, climate_cond, telemetry=None):
     """
-    Calcula el porcentaje de riesgo de desgaste para un componente.
-    Combina el estado de salud actual del componente con el multiplicador climático.
+    Calcula el porcentaje de riesgo de conducción para un componente.
+
+    wear_increase = cuánto riesgo EXTRA agrega el clima al componente.
+    - Componente sano (100%) + clima normal → 0% extra.
+    - Componente sano (100%) + lluvia        → pequeño incremento (solo clima).
+    - Componente dañado (0%) + clima normal → 0% extra (ya está destruido, clima no suma).
+    - Componente dañado (30%) + calor       → incremento moderado (clima acelera el desgaste restante).
+
+    Fórmula: wear_increase = salud_restante * (cw - 1.0)
+    Solo la salud que queda puede ser afectada por el clima. Un componente al 0%
+    no tiene salud que el clima pueda desgastar más.
     """
     matrix_entry = WEAR_MATRIX.get(component_type)
     if not matrix_entry:
@@ -399,39 +408,35 @@ def calculate_component_risk(component_type, climate_cond, telemetry=None):
     else:
         cw = matrix_entry.get(climate_cond, 1.0)
 
+    climate_extra = max(0, cw - 1.0)  # ej: 1.5 → 0.5, 1.0 → 0
+
     if telemetry and telemetry.get('salud_porcentaje') is not None:
-        # Tenemos datos reales de salud del componente.
-        # Desgaste base = 100 - salud actual del componente (0..100).
-        salud = telemetry['salud_porcentaje']
-        desgaste_base = max(0, 100 - salud)
+        salud = telemetry['salud_porcentaje']  # 0..100
 
-        # El coeficiente climático amplifica el desgaste proyectado a corto plazo.
-        # Fórmula: riesgo = desgaste_base * cw, normalizado al rango 0..100.
-        # Si el clima es normal (cw=1.0), el riesgo refleja solo el desgaste real.
-        risk = desgaste_base * cw
+        # Solo la salud restante es vulnerable al efecto climático.
+        # Si salud=0 → nada que desgastar → wear_increase=0.
+        # Si salud=80 → 80 * 0.5 = 40 → clima agrega +40% de desgaste extra.
+        risk = salud * climate_extra
 
-        # Si además hay km restantes reales (> 0), afinamos con urgencia de mantenimiento.
-        # km_restantes=0 en DB = dato no calculado (missing), no "0 km reales".
+        # Si hay km restantes reales, ponderar con urgencia
         km_restantes = telemetry.get('km_estimados_restantes', 0)
         vida_util = telemetry.get('vida_util_proyectada', 0)
         if vida_util > 0 and km_restantes > 0:
-            uso_pct = max(0, 100 - (km_restantes / vida_util * 100))
-            # Ponderar: 60% salud actual + 40% urgencia por km
-            risk = (desgaste_base * cw * 0.6) + (uso_pct * cw * 0.4)
+            km_salud = (km_restantes / vida_util) * 100  # 0..100 salud por km
+            salud_ponderada = (salud * 0.6) + (km_salud * 0.4)
+            risk = salud_ponderada * climate_extra
+
     elif telemetry and telemetry.get('current_odometer', 0) > 0:
-        # Vehículo sin datos de salud para este componente específico,
-        # pero tenemos odómetro. Usar estimación conservadora.
         avg_daily_km = telemetry.get('avg_daily_km', 30)
         driving_factor = telemetry.get('driving_profile_factor', 1.0)
         estimated_life_km = telemetry.get('estimated_life_km', 50000)
 
         distancia_real_dia = avg_daily_km * driving_factor
-        desgaste_equiv = distancia_real_dia * cw
+        desgaste_equiv = distancia_real_dia * climate_extra
         vida_remanente = max(estimated_life_km * 0.5, 500)
         risk = (desgaste_equiv / vida_remanente) * 100
     else:
-        # Sin ningún dato: riesgo basado solo en multiplicador climático
-        risk = round((cw - 1.0) * 100) if cw > 1.0 else 0
+        risk = round(climate_extra * 100)
 
     return min(max(round(risk), 0), 100), round(cw, 2)
 
