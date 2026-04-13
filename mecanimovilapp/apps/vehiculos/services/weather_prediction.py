@@ -314,15 +314,16 @@ def resolve_station_from_address(address_text):
     return None, None
 
 
-def fetch_weather(station_code):
+def fetch_weather(station_code, force_refresh=False):
     """
-    Consulta la API de boostr.cl con cache de 15 min.
+    Consulta la API de boostr.cl con cache de 5 min.
     Retorna dict con temperature, humidity, condition, city o None.
     """
     cache_key = f'boostr_weather_{station_code}'
-    cached = cache.get(cache_key)
-    if cached:
-        return cached
+    if not force_refresh:
+        cached = cache.get(cache_key)
+        if cached:
+            return cached
 
     try:
         url = WEATHER_API_URL.format(code=station_code)
@@ -485,7 +486,7 @@ def _risk_level_and_label(driving_risk, salud=None):
     return 'optimo', 'Condiciones óptimas'
 
 
-def get_prediction_for_coords(lat, lng, vehicle=None):
+def get_prediction_for_coords(lat, lng, vehicle=None, force_refresh=False):
     """
     Pipeline completo a partir de coordenadas GPS: coords → estación → clima → predicción.
     """
@@ -497,7 +498,7 @@ def get_prediction_for_coords(lat, lng, vehicle=None):
             'reason': 'No hay estación meteorológica disponible para tu ubicación GPS.',
         }
 
-    weather = fetch_weather(station_code)
+    weather = fetch_weather(station_code, force_refresh=force_refresh)
     if not weather:
         return {
             'available': False,
@@ -589,7 +590,7 @@ def get_prediction_for_coords(lat, lng, vehicle=None):
     }
 
 
-def get_prediction_for_address(address_text, vehicle=None):
+def get_prediction_for_address(address_text, vehicle=None, force_refresh=False):
     """
     Pipeline completo: dirección → estación → clima → predicción.
     Retorna dict listo para la UI.
@@ -602,7 +603,7 @@ def get_prediction_for_address(address_text, vehicle=None):
             'reason': 'No hay estación meteorológica disponible para esta ubicación.',
         }
 
-    weather = fetch_weather(station_code)
+    weather = fetch_weather(station_code, force_refresh=force_refresh)
     if not weather:
         return {
             'available': False,

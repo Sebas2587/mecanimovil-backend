@@ -33,6 +33,7 @@ def weather_prediction(request):
     vehicle_id = request.query_params.get('vehicle_id')
     lat_param = request.query_params.get('lat')
     lng_param = request.query_params.get('lng')
+    force_refresh = request.query_params.get('force_refresh', '').lower() in ('1', 'true')
 
     # Resolver vehículo (opcional)
     vehicle = None
@@ -55,7 +56,7 @@ def weather_prediction(request):
                 {'error': 'Parámetros lat/lng inválidos.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        prediction = get_prediction_for_coords(lat, lng, vehicle)
+        prediction = get_prediction_for_coords(lat, lng, vehicle, force_refresh=force_refresh)
         return Response(prediction)
 
     # Prioridad 2: dirección guardada en el backend
@@ -72,12 +73,11 @@ def weather_prediction(request):
         addr_id = addr_obj.id
 
         if addr_obj.ubicacion:
-            # PointField: .x = longitud, .y = latitud
             lat = addr_obj.ubicacion.y
             lng = addr_obj.ubicacion.x
-            pred = get_prediction_for_coords(lat, lng, vehicle)
+            pred = get_prediction_for_coords(lat, lng, vehicle, force_refresh=force_refresh)
         else:
-            pred = get_prediction_for_address(addr_text, vehicle)
+            pred = get_prediction_for_address(addr_text, vehicle, force_refresh=force_refresh)
 
         pred['address'] = {
             'id': addr_id,
@@ -109,7 +109,7 @@ def weather_prediction(request):
         return Response(_prediction_from_addr(addr))
 
     if user.direccion:
-        prediction = get_prediction_for_address(user.direccion, vehicle)
+        prediction = get_prediction_for_address(user.direccion, vehicle, force_refresh=force_refresh)
         prediction['address'] = {'id': None, 'direccion': user.direccion, 'etiqueta': 'Perfil'}
         return Response(prediction)
 
