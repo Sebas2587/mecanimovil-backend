@@ -347,19 +347,19 @@ def _safe_int(val):
 def _calc_report_age_minutes(updated_at_str):
     """
     Calcula cuántos minutos han pasado desde el ciclo SYNOP reportado por boostr.
-    updated_at_str viene en formato "HH:MM:SS" (hora local Chile).
+    updated_at_str viene en formato "HH:MM:SS" en UTC (la API boostr usa UTC).
     Retorna entero de minutos o None si no se puede parsear.
     """
     if not updated_at_str:
         return None
     try:
-        now = timezone.localtime()
+        now_utc = timezone.now()  # siempre UTC cuando USE_TZ=True
         h, m, s = (int(x) for x in updated_at_str.split(':'))
-        report_dt = now.replace(hour=h, minute=m, second=s, microsecond=0)
-        # Si la hora del reporte es futura respecto al reloj actual, pertenece al día anterior
-        if report_dt > now:
+        report_dt = now_utc.replace(hour=h, minute=m, second=s, microsecond=0)
+        # Si la hora del reporte es futura respecto a ahora (UTC), pertenece al día anterior
+        if report_dt > now_utc:
             report_dt -= timezone.timedelta(days=1)
-        delta_min = int((now - report_dt).total_seconds() / 60)
+        delta_min = int((now_utc - report_dt).total_seconds() / 60)
         return delta_min
     except Exception:
         return None
@@ -410,10 +410,11 @@ def calculate_component_risk(component_type, climate_cond, telemetry=None):
         # Si el clima es normal (cw=1.0), el riesgo refleja solo el desgaste real.
         risk = desgaste_base * cw
 
-        # Si además hay km restantes, afinamos con urgencia de mantenimiento
+        # Si además hay km restantes reales (> 0), afinamos con urgencia de mantenimiento.
+        # km_restantes=0 en DB = dato no calculado (missing), no "0 km reales".
         km_restantes = telemetry.get('km_estimados_restantes', 0)
         vida_util = telemetry.get('vida_util_proyectada', 0)
-        if vida_util > 0 and km_restantes >= 0:
+        if vida_util > 0 and km_restantes > 0:
             uso_pct = max(0, 100 - (km_restantes / vida_util * 100))
             # Ponderar: 60% salud actual + 40% urgencia por km
             risk = (desgaste_base * cw * 0.6) + (uso_pct * cw * 0.4)

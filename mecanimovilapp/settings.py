@@ -203,7 +203,7 @@ REST_FRAMEWORK = {
 
 LANGUAGE_CODE = 'es-mx'
 
-TIME_ZONE = 'America/Mexico_City'
+TIME_ZONE = 'America/Santiago'
 
 USE_I18N = True
 
