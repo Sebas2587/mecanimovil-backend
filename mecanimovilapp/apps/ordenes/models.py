@@ -172,6 +172,16 @@ class SolicitudServicio(models.Model):
         help_text='Oferta de proveedor que originó esta solicitud',
         verbose_name='Oferta Proveedor'
     )
+    # Trazabilidad marketplace: oferta de compra que origina inspección pre-compra
+    oferta_marketplace = models.ForeignKey(
+        'vehiculos.OfertaVehiculo',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='solicitudes_inspeccion',
+        help_text='Oferta de compra marketplace que originó esta inspección pre-compra',
+        verbose_name='Oferta Marketplace',
+    )
     
     class Meta:
         verbose_name = _('solicitud de servicio')
@@ -369,6 +379,15 @@ class CarritoAgendamiento(models.Model):
         null=True,
         blank=True,
         help_text=_('Notas adicionales sobre el carrito')
+    )
+    # Inspección pre-compra: oferta marketplace que habilita vehículo ajeno
+    oferta_marketplace = models.ForeignKey(
+        'vehiculos.OfertaVehiculo',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='carritos_inspeccion',
+        help_text=_('Oferta de compra marketplace (inspección pre-compra)'),
     )
     
     class Meta:

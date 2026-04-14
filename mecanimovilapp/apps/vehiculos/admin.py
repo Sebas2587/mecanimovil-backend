@@ -101,8 +101,8 @@ class VehiculoAdmin(admin.ModelAdmin):
     """
     Administrador para el modelo Vehiculo
     """
-    list_display = ('patente', 'marca', 'modelo', 'year', 'cliente_nombre', 'tipo_motor', 'mostrar_foto')
-    list_filter = ('marca', 'modelo', 'tipo_motor', 'year')
+    list_display = ('patente', 'marca', 'modelo', 'year', 'cliente_nombre', 'tipo_motor', 'is_certified_mecanimovil', 'mostrar_foto')
+    list_filter = ('marca', 'modelo', 'tipo_motor', 'year', 'is_certified_mecanimovil')
     search_fields = ('patente', 'marca__nombre', 'modelo__nombre', 'cliente__usuario__email', 'cliente__usuario__username')
     readonly_fields = ('fecha_creacion', 'fecha_actualizacion', 'mostrar_foto_detalle')
     autocomplete_fields = ['marca', 'modelo', 'cliente']
@@ -112,7 +112,7 @@ class VehiculoAdmin(admin.ModelAdmin):
             'fields': ('cliente', 'patente', 'marca', 'modelo')
         }),
         ('Detalles Técnicos', {
-            'fields': ('year', 'cilindraje', 'tipo_motor', 'kilometraje')
+            'fields': ('year', 'cilindraje', 'tipo_motor', 'kilometraje', 'is_certified_mecanimovil')
         }),
         ('Multimedia', {
             'fields': ('foto', 'mostrar_foto_detalle')

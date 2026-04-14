@@ -992,12 +992,13 @@ class CarritoAgendamientoViewSet(viewsets.ModelViewSet):
                     hora_servicio=item.hora_servicio,
                     metodo_pago=metodo_pago,
                     total=item.precio_estimado,
-                    estado='confirmado',  # ✅ Directamente confirmado (el proveedor ya ofreció)
+                    estado='confirmado',
                     notas_cliente=notas_cliente,
                     ubicacion_servicio=ubicacion_servicio,
                     comprobante_validado=False,
                     devolucion_procesada=False,
-                    requiere_devolucion=False
+                    requiere_devolucion=False,
+                    oferta_marketplace=carrito.oferta_marketplace,
                 )
                 
                 # Crear línea de servicio
@@ -1079,9 +1080,11 @@ class CarritoAgendamientoViewSet(viewsets.ModelViewSet):
         """
         Crea un nuevo carrito de agendamiento
         NUEVO: Implementa UN SOLO CARRITO TEMPORAL POR CLIENTE
+        Soporta bypass de propiedad vía oferta_marketplace_id (inspección pre-compra).
         """
         try:
             from mecanimovilapp.apps.usuarios.models import Cliente
+            from .precompra_marketplace import validar_precompra_marketplace
             cliente = Cliente.objects.get(usuario=request.user)
             
             # NUEVA LÓGICA: UN SOLO CARRITO TEMPORAL POR CLIENTE
@@ -1100,12 +1103,22 @@ class CarritoAgendamientoViewSet(viewsets.ModelViewSet):
             data = request.data.copy()
             data['cliente'] = cliente.id
             
+            # --- Bypass pre-compra marketplace ---
+            oferta_marketplace_id = request.data.get('oferta_marketplace_id')
+            oferta_obj = None
+            if oferta_marketplace_id:
+                vehiculo_id = request.data.get('vehiculo')
+                vehiculo = Vehiculo.objects.get(id=vehiculo_id)
+                oferta_obj = validar_precompra_marketplace(cliente, vehiculo, oferta_marketplace_id)
+            
             # Crear el nuevo carrito (único para el cliente)
             serializer = self.get_serializer(data=data)
             serializer.is_valid(raise_exception=True)
             
-            # Ya no necesitamos asignar cliente aquí porque está en los datos validados
             carrito = serializer.save()
+            if oferta_obj:
+                carrito.oferta_marketplace = oferta_obj
+                carrito.save(update_fields=['oferta_marketplace'])
             
             logger = logging.getLogger(__name__)
             logger.info(f"Nuevo carrito temporal {carrito.id} creado para cliente {cliente.id}")
@@ -1300,12 +1313,13 @@ class AgendamientoViewSet(viewsets.ViewSet):
                     hora_servicio=item.hora_servicio,
                     metodo_pago=metodo_pago,
                     total=item.precio_estimado,
-                    estado='confirmado',  # ✅ Directamente confirmado (el proveedor ya ofreció)
+                    estado='confirmado',
                     notas_cliente=notas_cliente,
                     ubicacion_servicio=ubicacion_servicio,
                     comprobante_validado=False,
                     devolucion_procesada=False,
-                    requiere_devolucion=False
+                    requiere_devolucion=False,
+                    oferta_marketplace=carrito.oferta_marketplace,
                 )
                 
                 # Crear línea de servicio

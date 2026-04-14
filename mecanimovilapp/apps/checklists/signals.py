@@ -31,6 +31,22 @@ def invalidar_cache_salud_vehiculo(sender, instance, created, **kwargs):
         if not vehicle_id:
             return
 
+        # --- Inspección pre-compra: skip salud, certificar vehículo ---
+        from mecanimovilapp.apps.ordenes.precompra_marketplace import es_servicio_precompra
+
+        linea = orden.lineas.select_related('oferta_servicio__servicio').first()
+        servicio = linea.oferta_servicio.servicio if linea and linea.oferta_servicio else None
+        if es_servicio_precompra(servicio):
+            def _certificar():
+                from mecanimovilapp.apps.vehiculos.models import Vehiculo
+                Vehiculo.objects.filter(id=vehicle_id).update(is_certified_mecanimovil=True)
+                logger.info(
+                    "🛡️ Vehículo %s certificado MecaniMóvil (checklist %s, inspección pre-compra)",
+                    vehicle_id, instance.id,
+                )
+            transaction.on_commit(_certificar)
+            return
+
         from mecanimovilapp.apps.vehiculos.utils.cache_health import invalidate_vehicle_health_cache
 
         invalidate_vehicle_health_cache(vehicle_id)

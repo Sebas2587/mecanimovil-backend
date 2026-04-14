@@ -125,6 +125,11 @@ class Vehiculo(models.Model):
     views_count = models.PositiveIntegerField(default=0, verbose_name=_('vistas'))
     favorites_count = models.PositiveIntegerField(default=0, verbose_name=_('favoritos'))
     leads_count = models.PositiveIntegerField(default=0, verbose_name=_('interesados'))
+    is_certified_mecanimovil = models.BooleanField(
+        default=False,
+        verbose_name=_('certificado MecaniMóvil'),
+        help_text=_('Se activa al completar inspección pre-compra'),
+    )
     
     class Meta:
         verbose_name = _('vehículo')

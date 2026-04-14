@@ -90,7 +90,8 @@ class VehiculoSerializer(serializers.ModelSerializer):
             'health_score',
             'active_requests_count',
             'ofertas_activas_count',
-            'health_report'
+            'health_report',
+            'is_certified_mecanimovil',
         )
         extra_kwargs = {
             'cliente': {'write_only': True, 'required': False},
@@ -568,9 +569,9 @@ class VehiculoMarketplaceSerializer(serializers.ModelSerializer):
             'marca_nombre', 'modelo_nombre', 'year', 'foto_url', 'health_score',
             'seller', 'cilindraje', 'tipo_motor', 'kilometraje', 'color', 'transmision',
             'vin', 'numero_motor', 'version', 'puertas', 'mes_revision_tecnica',
-            'is_reserved'
+            'is_reserved', 'is_certified_mecanimovil',
         )
-        read_only_fields = ('suggested_price', 'views_count', 'favorites_count', 'leads_count', 'health_bonus_percentage', 'health_score', 'seller', 'is_reserved')
+        read_only_fields = ('suggested_price', 'views_count', 'favorites_count', 'leads_count', 'health_bonus_percentage', 'health_score', 'seller', 'is_reserved', 'is_certified_mecanimovil')
 
     def get_is_reserved(self, obj):
         # A vehicle is reserved if it has any accepted offer
