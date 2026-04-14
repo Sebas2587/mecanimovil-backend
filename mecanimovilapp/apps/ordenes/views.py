@@ -4972,6 +4972,18 @@ class OfertaProveedorViewSet(viewsets.ModelViewSet):
                                 'motivo': oferta.motivo_servicio_adicional
                             }
                         )
+                        send_expo_push_notification.delay(
+                            solicitud.cliente.usuario.id,
+                            'Nueva oferta adicional',
+                            f'{oferta.nombre_proveedor} propone un servicio adicional por '
+                            f'${oferta.precio_total_ofrecido:,.0f}',
+                            {
+                                'type': 'new_offer',
+                                'solicitud_id': str(solicitud.id),
+                                'oferta_id': str(oferta.id),
+                                'oferta_secundaria': 'true',
+                            },
+                        )
                     else:
                         # Notificación para oferta original
                         async_to_sync(channel_layer.group_send)(
@@ -6058,7 +6070,37 @@ class ChatSolicitudViewSet(viewsets.ModelViewSet):
                 )
             
             print(f"🔵 [CHAT BACKEND OLD API] Broadcast completado")
-            
+
+            # Push al destinatario (app en segundo plano)
+            try:
+                from mecanimovilapp.apps.chat.models import Conversation
+                from django.contrib.contenttypes.models import ContentType
+
+                ct = ContentType.objects.get_for_model(SolicitudServicioPublica)
+                conv = Conversation.objects.filter(
+                    content_type=ct,
+                    object_id=str(oferta.solicitud.id),
+                ).first()
+                cid = str(conv.id) if conv else ''
+
+                for participante in participantes:
+                    if participante.id == mensaje.enviado_por.id:
+                        continue
+                    preview = (mensaje.mensaje or '')[:140] or 'Nuevo mensaje'
+                    send_expo_push_notification.delay(
+                        participante.id,
+                        f"Mensaje de {mensaje.enviado_por.get_full_name() or 'Chat'}",
+                        preview,
+                        {
+                            'type': 'chat_message',
+                            'conversation_id': cid,
+                            'solicitud_id': str(oferta.solicitud.id),
+                            'oferta_id': str(oferta.id),
+                        },
+                    )
+            except Exception as push_exc:
+                logger.error(f"Error enviando push chat (ChatSolicitud): {push_exc}", exc_info=True)
+
         except Exception as e:
             logger.error(f"Error enviando notificación WebSocket: {e}")
     

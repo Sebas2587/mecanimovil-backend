@@ -1,9 +1,12 @@
+import logging
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from .models import Conversation, Message
 from .serializers import ConversationSerializer, MessageSerializer
+
+logger = logging.getLogger(__name__)
 
 class ConversationViewSet(viewsets.ReadOnlyModelViewSet):
     """
@@ -273,7 +276,29 @@ class ConversationViewSet(viewsets.ReadOnlyModelViewSet):
             )
             
         print(f"🔵 [CHAT BACKEND] Broadcast completado")
-        
+
+        # Push al destinatario (app en segundo plano / sin WebSocket)
+        try:
+            from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
+
+            for participant in participants:
+                if participant.id == request.user.id:
+                    continue
+                preview = (message.content or '')[:140] or 'Nuevo mensaje'
+                send_expo_push_notification.delay(
+                    participant.id,
+                    f"Mensaje de {(message.sender.first_name or '').strip() or 'Chat'}",
+                    preview,
+                    {
+                        'type': 'chat_message',
+                        'conversation_id': str(conversation.id),
+                        'solicitud_id': str(solicitud_id) if solicitud_id else '',
+                        'oferta_id': str(oferta_id) if oferta_id else '',
+                    },
+                )
+        except Exception as exc:
+            logger.error('Error enviando push chat (ConversationViewSet): %s', exc, exc_info=True)
+
         # Also broadcast to legacy chat group if needed
         async_to_sync(channel_layer.group_send)(
             f'chat_{conversation.id}',
