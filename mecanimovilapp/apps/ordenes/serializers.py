@@ -1371,6 +1371,7 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
         geo_field = 'ubicacion_servicio'
         fields = [
             'id', 'cliente', 'cliente_nombre', 'cliente_info', 'vehiculo', 'vehiculo_info',
+            'vehiculo_inspeccion_precompra',
             'descripcion_problema', 'urgencia', 'requiere_repuestos', 'tipo_solicitud',
             'proveedores_dirigidos', 'proveedores_dirigidos_detail',
             'servicios_solicitados', 'servicios_solicitados_detail',
@@ -1942,6 +1943,33 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
                         'servicios_solicitados': (
                             'Ya tienes una solicitud activa con uno o más de estos servicios para este '
                             'vehículo. Revisa Mis solicitudes o espera a que finalice.'
+                        )
+                    })
+
+        # Inspección pre-compra (marketplace): mismo comprador no puede duplicar para el mismo
+        # vehículo del vendedor mientras haya una solicitud "activa" (pipeline o completada con
+        # ofertas secundarias pendientes).
+        veh_ins = attrs.get('vehiculo_inspeccion_precompra')
+        if veh_ins is not None and request and hasattr(request.user, 'cliente'):
+            vid = getattr(veh_ins, 'pk', None) or getattr(veh_ins, 'id', None)
+            if vid:
+                base = SolicitudServicioPublica.objects.filter(
+                    cliente=request.user.cliente,
+                    vehiculo_inspeccion_precompra_id=vid,
+                )
+                if self.instance:
+                    base = base.exclude(pk=self.instance.pk)
+                activas_pipeline = base.filter(estado__in=estados_bloquean_duplicado).exists()
+                activas_completada_con_secundarias = base.filter(
+                    estado='completada',
+                    ofertas__es_oferta_secundaria=True,
+                    ofertas__estado__in=self.ESTADOS_OFERTA_SECUNDARIA_PENDIENTES,
+                ).exists()
+                if activas_pipeline or activas_completada_con_secundarias:
+                    raise serializers.ValidationError({
+                        'vehiculo_inspeccion_precompra': (
+                            'Ya tienes una inspección pre-compra activa para este vehículo. '
+                            'Revisa Mis solicitudes o espera a que finalice o expire.'
                         )
                     })
 

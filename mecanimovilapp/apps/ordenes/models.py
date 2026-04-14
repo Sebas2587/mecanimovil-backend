@@ -669,6 +669,17 @@ class SolicitudServicioPublica(models.Model):
         null=True,  # Added to allow NULL when vehicle is deleted
         blank=True
     )
+
+    # Vehículo del vendedor (marketplace) en inspección pre-compra sin vehículo registrado del comprador
+    vehiculo_inspeccion_precompra = models.ForeignKey(
+        Vehiculo,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='solicitudes_publicas_inspeccion_precompra',
+        verbose_name='Vehículo inspección pre-compra (marketplace)',
+        help_text='Vehículo ofertado por el vendedor; permite evitar duplicados de pre-compra por comprador.',
+    )
     
     # Descripción general (antes de seleccionar servicios)
     descripcion_problema = models.TextField(
