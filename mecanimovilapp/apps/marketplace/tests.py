@@ -1,5 +1,6 @@
 from django.test import TestCase, override_settings
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 from mecanimovilapp.apps.vehiculos.models import Vehiculo, OfertaVehiculo, MarcaVehiculo, Modelo
 from mecanimovilapp.apps.usuarios.models import Cliente
 from .models import TransferenciaVehiculo
@@ -52,6 +53,61 @@ class TransferenciaVehiculoTests(TestCase):
         transfer = TransferenciaVehiculo.objects.first()
         self.assertIsNotNone(transfer)
         self.assertEqual(transfer.token_transferencia, response.data['token'])
+
+    def test_generate_token_second_call_reuses_pending(self):
+        """Segundo POST con misma oferta no duplica fila (OneToOne) y devuelve el mismo token."""
+        self.client.force_authenticate(user=self.seller_user)
+        r1 = self.client.post(
+            '/api/marketplace/transferencias/generate_transfer_token/',
+            {'offer_id': self.offer.id},
+        )
+        self.assertEqual(r1.status_code, status.HTTP_201_CREATED)
+        token1 = r1.data['token']
+
+        r2 = self.client.post(
+            '/api/marketplace/transferencias/generate_transfer_token/',
+            {'offer_id': self.offer.id},
+        )
+        self.assertEqual(r2.status_code, status.HTTP_200_OK)
+        self.assertEqual(r2.data['token'], token1)
+        self.assertEqual(TransferenciaVehiculo.objects.filter(oferta_asociada=self.offer).count(), 1)
+
+    def test_generate_token_after_expiry_regenerates_same_row(self):
+        """Si el token venció, se reutiliza la misma fila y no viola la restricción única."""
+        self.client.force_authenticate(user=self.seller_user)
+        r1 = self.client.post(
+            '/api/marketplace/transferencias/generate_transfer_token/',
+            {'offer_id': self.offer.id},
+        )
+        self.assertEqual(r1.status_code, status.HTTP_201_CREATED)
+        transfer = TransferenciaVehiculo.objects.get(oferta_asociada=self.offer)
+        transfer.fecha_expiracion = timezone.now() - timezone.timedelta(minutes=1)
+        transfer.save(update_fields=['fecha_expiracion'])
+
+        r2 = self.client.post(
+            '/api/marketplace/transferencias/generate_transfer_token/',
+            {'offer_id': self.offer.id},
+        )
+        self.assertEqual(r2.status_code, status.HTTP_200_OK)
+        self.assertNotEqual(r2.data['token'], r1.data['token'])
+        self.assertEqual(TransferenciaVehiculo.objects.filter(oferta_asociada=self.offer).count(), 1)
+
+    def test_generate_token_fails_when_already_completed(self):
+        """No se puede generar QR si la transferencia ya se completó."""
+        TransferenciaVehiculo.objects.create(
+            vehiculo=self.vehiculo,
+            vendedor=self.seller_user,
+            comprador=self.buyer_user,
+            oferta_asociada=self.offer,
+            qr_data='{}',
+            estado='COMPLETADO',
+        )
+        self.client.force_authenticate(user=self.seller_user)
+        response = self.client.post(
+            '/api/marketplace/transferencias/generate_transfer_token/',
+            {'offer_id': self.offer.id},
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_generate_token_not_owner(self):
         """Test que un no-dueño no puede generar el token"""

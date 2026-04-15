@@ -1,7 +1,7 @@
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from django.db import transaction
+from django.db import transaction, IntegrityError
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from .models import TransferenciaVehiculo
@@ -10,6 +10,7 @@ from mecanimovilapp.apps.usuarios.models import Cliente
 import logging
 import json
 import uuid
+import secrets
 
 logger = logging.getLogger(__name__)
 
@@ -39,44 +40,84 @@ class TransferenciaViewSet(viewsets.GenericViewSet):
             # Nota: Asumimos que 'aceptada' es el estado correcto. Ajustar si es diferente.
             if oferta.estado != 'aceptada':
                 return Response({'error': f'La oferta debe estar aceptada. Estado actual: {oferta.estado}'}, status=status.HTTP_400_BAD_REQUEST)
-                
-            # Verificar si ya existe una transferencia activa
-            existing_transfer = TransferenciaVehiculo.objects.filter(
-                oferta_asociada=oferta,
-                estado='PENDIENTE',
-                fecha_expiracion__gt=timezone.now()
-            ).first()
-            
-            if existing_transfer:
-                return Response({
-                    'token': existing_transfer.token_transferencia,
-                    'expires_at': existing_transfer.fecha_expiracion,
-                    'qr_data': existing_transfer.qr_data
-                })
-                
-            # Crear nueva transferencia
+
             # Generamos un payload simple para el QR. Podría ser enriquecido o encriptado.
             qr_payload = {
-                't_id': str(uuid.uuid4()), # ID temporal random
+                't_id': str(uuid.uuid4()),  # ID temporal random
                 'o_id': oferta.id,
                 'v_id': oferta.vehiculo.id,
                 'type': 'transfer_vehicle'
             }
-            
-            transferencia = TransferenciaVehiculo.objects.create(
-                vehiculo=oferta.vehiculo,
-                vendedor=request.user,
-                comprador=oferta.comprador,
-                oferta_asociada=oferta,
-                qr_data=json.dumps(qr_payload)
+            qr_json = json.dumps(qr_payload)
+
+            # oferta_asociada es OneToOne: solo puede existir una TransferenciaVehiculo por oferta.
+            # Si ya hubo un intento (token expirado, EXPIRADO, etc.), hay que reutilizar la fila o
+            # regenerar el token, nunca crear un segundo registro para la misma oferta.
+            with transaction.atomic():
+                transferencia = (
+                    TransferenciaVehiculo.objects.select_for_update()
+                    .filter(oferta_asociada=oferta)
+                    .first()
+                )
+                if transferencia is None:
+                    try:
+                        transferencia = TransferenciaVehiculo.objects.create(
+                            vehiculo=oferta.vehiculo,
+                            vendedor=request.user,
+                            comprador=oferta.comprador,
+                            oferta_asociada=oferta,
+                            qr_data=qr_json,
+                        )
+                    except IntegrityError:
+                        # Carrera: otro request creó la fila entre el filter y el create.
+                        transferencia = (
+                            TransferenciaVehiculo.objects.select_for_update()
+                            .get(oferta_asociada=oferta)
+                        )
+                    else:
+                        return Response(
+                            {
+                                'token': transferencia.token_transferencia,
+                                'expires_at': transferencia.fecha_expiracion,
+                                'qr_data': transferencia.qr_data,
+                                'transfer_id': transferencia.id,
+                            },
+                            status=status.HTTP_201_CREATED,
+                        )
+
+                if transferencia.estado == 'COMPLETADO':
+                    return Response(
+                        {'error': 'La transferencia para esta oferta ya fue completada.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                if transferencia.estado == 'PENDIENTE' and not transferencia.is_expired:
+                    return Response(
+                        {
+                            'token': transferencia.token_transferencia,
+                            'expires_at': transferencia.fecha_expiracion,
+                            'qr_data': transferencia.qr_data,
+                            'transfer_id': transferencia.id,
+                        },
+                        status=status.HTTP_200_OK,
+                    )
+
+                # Token vencido, EXPIRADO o CANCELADO: mismo registro, nuevo token y ventana de tiempo.
+                transferencia.token_transferencia = secrets.token_urlsafe(32)
+                transferencia.fecha_expiracion = timezone.now() + timezone.timedelta(minutes=15)
+                transferencia.qr_data = qr_json
+                transferencia.estado = 'PENDIENTE'
+                transferencia.save()
+
+            return Response(
+                {
+                    'token': transferencia.token_transferencia,
+                    'expires_at': transferencia.fecha_expiracion,
+                    'qr_data': transferencia.qr_data,
+                    'transfer_id': transferencia.id,
+                },
+                status=status.HTTP_200_OK,
             )
-            
-            return Response({
-                'token': transferencia.token_transferencia,
-                'expires_at': transferencia.fecha_expiracion,
-                'qr_data': transferencia.qr_data,
-                'transfer_id': transferencia.id
-            }, status=status.HTTP_201_CREATED)
             
         except OfertaVehiculo.DoesNotExist:
             return Response({'error': 'Oferta no encontrada'}, status=status.HTTP_404_NOT_FOUND)
