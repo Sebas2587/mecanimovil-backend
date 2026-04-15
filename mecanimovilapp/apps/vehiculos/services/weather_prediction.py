@@ -3,23 +3,24 @@ Servicio de predicción de desgaste vehicular basado en clima.
 Fuente primaria: Open-Meteo (actualiza cada 15 min, coords directas).
 Fallback: boostr.cl (datos SYNOP, actualiza cada 6h).
 Aplica el algoritmo IA-Weather-Telemetry de Mecanimóvil.
+
+Límites API pública (no comercial): ~600 req/min, 5000/h, 10k/día por IP
+(ver https://open-meteo.com/en/pricing ). Tras 429, cooldown en Redis para
+no insistir. Producción: opcional OPEN_METEO_API_KEY → customer-api (sin
+límite por minuto en planes de pago).
 """
 import logging
+import os
 import time
+import random
 import requests
 from datetime import datetime
+from urllib.parse import quote
 from django.core.cache import cache
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
-# ── API URLs ──
-OPEN_METEO_URL = (
-    'https://api.open-meteo.com/v1/forecast'
-    '?latitude={lat}&longitude={lng}'
-    '&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m'
-    '&timezone=America/Santiago'
-)
 BOOSTR_API_URL = "https://api.boostr.cl/weather/{code}.json"
 
 WEATHER_CACHE_TTL = 60 * 15  # 15 min — Open-Meteo updates every 15 min
@@ -33,6 +34,38 @@ OPENMETEO_FETCH_WAIT_ATTEMPTS = 30
 OPENMETEO_FETCH_WAIT_STEP = 0.2
 # boostr actualiza ~cada 6h; cachear más tiempo evita martillar su API cuando Open-Meteo falla.
 BOOSTR_WEATHER_CACHE_TTL = 60 * 30
+# Tras un 429, no volver a llamar a Open-Meteo (pública) por esta celda durante unos minutos.
+OPENMETEO_429_COOLDOWN_SECONDS = int(os.environ.get('OPEN_METEO_429_COOLDOWN', '180'))
+
+OPEN_METEO_HTTP_HEADERS = {
+    'User-Agent': 'Mecanimovil/1.0 (+https://mecanimovil-api.onrender.com; weather)',
+    'Accept': 'application/json',
+}
+
+
+def _open_meteo_api_key():
+    return os.environ.get('OPEN_METEO_API_KEY', '').strip()
+
+
+def _build_open_meteo_url(lat, lng):
+    """API pública sin key; con OPEN_METEO_API_KEY usa customer-api (recomendado en producción)."""
+    key = _open_meteo_api_key()
+    if key:
+        root = os.environ.get(
+            'OPEN_METEO_API_BASE',
+            'https://customer-api.open-meteo.com/v1/forecast',
+        ).strip()
+    else:
+        root = 'https://api.open-meteo.com/v1/forecast'
+    url = (
+        f'{root}?latitude={lat}&longitude={lng}'
+        '&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m'
+        '&timezone=America/Santiago'
+    )
+    if key:
+        url += f'&apikey={quote(key, safe="")}'
+    return url
+
 
 # ── WMO weather codes → Spanish condition text ──
 WMO_CONDITIONS = {
@@ -228,6 +261,7 @@ def _openmeteo_cache_keys(lat_g, lng_g):
         f'openmeteo_{base}',
         f'openmeteo_lastgood_{base}',
         f'openmeteo_lock_{base}',
+        f'openmeteo_rl_cooldown_{base}',
     )
 
 
@@ -242,7 +276,7 @@ def fetch_weather_by_coords(lat, lng, force_refresh=False):
     Retorna dict compatible con el resto del pipeline o None.
     """
     lat_g, lng_g = _weather_grid(lat, lng)
-    cache_key, last_good_key, lock_key = _openmeteo_cache_keys(lat_g, lng_g)
+    cache_key, last_good_key, lock_key, rl_cooldown_key = _openmeteo_cache_keys(lat_g, lng_g)
 
     if not force_refresh:
         cached = cache.get(cache_key)
@@ -261,15 +295,26 @@ def fetch_weather_by_coords(lat, lng, force_refresh=False):
                 return hit
         # Si nadie completó el fetch, seguimos nosotros (sin lock) para no dejar al usuario sin datos.
 
-    result, err_kind = _fetch_open_meteo(lat_g, lng_g)
+    if cache.get(rl_cooldown_key):
+        logger.info(
+            "Open-Meteo omitido (cooldown post-429) para grilla (%s, %s)",
+            lat_g,
+            lng_g,
+        )
+        result, err_kind = None, 'rate_limited'
+    else:
+        result, err_kind = _fetch_open_meteo(lat_g, lng_g)
+
     if result:
         cache.set(cache_key, result, WEATHER_CACHE_TTL)
         cache.set(last_good_key, result, OPENMETEO_LAST_GOOD_TTL)
+        cache.delete(rl_cooldown_key)
         return result
 
     if err_kind == 'rate_limited':
+        cache.set(rl_cooldown_key, 1, OPENMETEO_429_COOLDOWN_SECONDS)
         logger.warning(
-            "Open-Meteo 429 para grilla (%s, %s); usando cache extendida o fallback",
+            "Open-Meteo 429 o cooldown para grilla (%s, %s); usando cache extendida o fallback",
             lat_g,
             lng_g,
         )
@@ -286,40 +331,55 @@ def fetch_weather_by_coords(lat, lng, force_refresh=False):
 
 def _fetch_open_meteo(lat, lng):
     """Llama Open-Meteo y normaliza la respuesta. (lat,lng) ya en grilla estable."""
-    try:
-        url = OPEN_METEO_URL.format(lat=lat, lng=lng)
-        resp = requests.get(url, timeout=8)
-        if resp.status_code == 429:
-            return None, 'rate_limited'
-        resp.raise_for_status()
-        data = resp.json()
+    url = _build_open_meteo_url(lat, lng)
+    max_attempts = 2
+    for attempt in range(1, max_attempts + 1):
+        try:
+            resp = requests.get(url, timeout=10, headers=OPEN_METEO_HTTP_HEADERS)
+            if resp.status_code == 429:
+                if attempt < max_attempts:
+                    delay = 2.0 + random.random()
+                    logger.warning(
+                        "Open-Meteo 429 intento %s/%s (%s, %s); reintento en %.1fs",
+                        attempt,
+                        max_attempts,
+                        lat,
+                        lng,
+                        delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                return None, 'rate_limited'
+            resp.raise_for_status()
+            data = resp.json()
 
-        current = data.get('current')
-        if not current:
-            return None, 'empty'
+            current = data.get('current')
+            if not current:
+                return None, 'empty'
 
-        temp = current.get('temperature_2m')
-        humidity = current.get('relative_humidity_2m')
-        wmo_code = current.get('weather_code', 0)
-        condition = WMO_CONDITIONS.get(wmo_code, 'Despejado')
-        report_time = current.get('time', '')
+            temp = current.get('temperature_2m')
+            humidity = current.get('relative_humidity_2m')
+            wmo_code = current.get('weather_code', 0)
+            condition = WMO_CONDITIONS.get(wmo_code, 'Despejado')
+            report_time = current.get('time', '')
 
-        report_age_min = _calc_open_meteo_age(report_time)
+            report_age_min = _calc_open_meteo_age(report_time)
 
-        return {
-            'source': 'open-meteo',
-            'station_code': None,
-            'city': '',
-            'temperature': round(temp) if temp is not None else None,
-            'humidity': round(humidity) if humidity is not None else None,
-            'condition': condition,
-            'weather_code': wmo_code,
-            'updated_at': report_time,
-            'report_age_min': report_age_min,
-        }, None
-    except Exception as exc:
-        logger.error("Error Open-Meteo (%s, %s): %s", lat, lng, exc)
-        return None, 'error'
+            return {
+                'source': 'open-meteo-customer' if _open_meteo_api_key() else 'open-meteo',
+                'station_code': None,
+                'city': '',
+                'temperature': round(temp) if temp is not None else None,
+                'humidity': round(humidity) if humidity is not None else None,
+                'condition': condition,
+                'weather_code': wmo_code,
+                'updated_at': report_time,
+                'report_age_min': report_age_min,
+            }, None
+        except Exception as exc:
+            logger.error("Error Open-Meteo (%s, %s): %s", lat, lng, exc)
+            return None, 'error'
+    return None, 'error'
 
 
 def _calc_open_meteo_age(time_str):
