@@ -5,6 +5,7 @@ Fallback: boostr.cl (datos SYNOP, actualiza cada 6h).
 Aplica el algoritmo IA-Weather-Telemetry de Mecanimóvil.
 """
 import logging
+import time
 import requests
 from datetime import datetime
 from django.core.cache import cache
@@ -22,6 +23,16 @@ OPEN_METEO_URL = (
 BOOSTR_API_URL = "https://api.boostr.cl/weather/{code}.json"
 
 WEATHER_CACHE_TTL = 60 * 15  # 15 min — Open-Meteo updates every 15 min
+# Copia de respaldo si Open-Meteo responde 429 o falla temporalmente (no satura reintentos).
+OPENMETEO_LAST_GOOD_TTL = 60 * 60 * 12
+# Redondeo de grilla: el GPS “tiembla” en 4+ decimales y fragmentaba la cache → muchas URLs a Open-Meteo.
+WEATHER_GRID_DECIMALS = 3
+# Antiráfaga: un solo fetch a Open-Meteo por celda cada pocos segundos al expirar la cache.
+OPENMETEO_FETCH_LOCK_SECONDS = 10
+OPENMETEO_FETCH_WAIT_ATTEMPTS = 30
+OPENMETEO_FETCH_WAIT_STEP = 0.2
+# boostr actualiza ~cada 6h; cachear más tiempo evita martillar su API cuando Open-Meteo falla.
+BOOSTR_WEATHER_CACHE_TTL = 60 * 30
 
 # ── WMO weather codes → Spanish condition text ──
 WMO_CONDITIONS = {
@@ -206,6 +217,20 @@ def normalize_text(text):
     return ''.join(c for c in nfkd if not unicodedata.combining(c))
 
 
+def _weather_grid(lat, lng):
+    """Coordenadas normalizadas para cache y llamadas a Open-Meteo (menos keys = menos 429)."""
+    return round(float(lat), WEATHER_GRID_DECIMALS), round(float(lng), WEATHER_GRID_DECIMALS)
+
+
+def _openmeteo_cache_keys(lat_g, lng_g):
+    base = f'{lat_g}_{lng_g}'
+    return (
+        f'openmeteo_{base}',
+        f'openmeteo_lastgood_{base}',
+        f'openmeteo_lock_{base}',
+    )
+
+
 # ─────────────────────────────────────────────────────────────
 # Weather fetching: Open-Meteo (primary) → boostr.cl (fallback)
 # ─────────────────────────────────────────────────────────────
@@ -216,32 +241,62 @@ def fetch_weather_by_coords(lat, lng, force_refresh=False):
     Fallback a boostr.cl si Open-Meteo falla.
     Retorna dict compatible con el resto del pipeline o None.
     """
-    cache_key = f'openmeteo_{round(lat, 2)}_{round(lng, 2)}'
+    lat_g, lng_g = _weather_grid(lat, lng)
+    cache_key, last_good_key, lock_key = _openmeteo_cache_keys(lat_g, lng_g)
+
     if not force_refresh:
         cached = cache.get(cache_key)
         if cached:
             return cached
+    else:
+        cache.delete(cache_key)
 
-    result = _fetch_open_meteo(lat, lng)
+    # Evitar tormenta de peticiones cuando expira el TTL y muchos workers pegan a la vez.
+    got_lock = cache.add(lock_key, 1, OPENMETEO_FETCH_LOCK_SECONDS)
+    if not got_lock:
+        for _ in range(OPENMETEO_FETCH_WAIT_ATTEMPTS):
+            time.sleep(OPENMETEO_FETCH_WAIT_STEP)
+            hit = cache.get(cache_key)
+            if hit:
+                return hit
+        # Si nadie completó el fetch, seguimos nosotros (sin lock) para no dejar al usuario sin datos.
+
+    result, err_kind = _fetch_open_meteo(lat_g, lng_g)
     if result:
         cache.set(cache_key, result, WEATHER_CACHE_TTL)
+        cache.set(last_good_key, result, OPENMETEO_LAST_GOOD_TTL)
         return result
 
-    logger.warning("Open-Meteo falló para (%s, %s), intentando boostr fallback", lat, lng)
-    return _fetch_boostr_fallback(lat, lng, force_refresh)
+    if err_kind == 'rate_limited':
+        logger.warning(
+            "Open-Meteo 429 para grilla (%s, %s); usando cache extendida o fallback",
+            lat_g,
+            lng_g,
+        )
+
+    stale = cache.get(last_good_key)
+    if stale:
+        stale = {**stale, 'served_from_stale_cache': True}
+        cache.set(cache_key, stale, min(WEATHER_CACHE_TTL, 60 * 5))
+        return stale
+
+    logger.warning("Open-Meteo falló para (%s, %s), intentando boostr fallback", lat_g, lng_g)
+    return _fetch_boostr_fallback(lat_g, lng_g, force_refresh)
 
 
 def _fetch_open_meteo(lat, lng):
-    """Llama Open-Meteo y normaliza la respuesta."""
+    """Llama Open-Meteo y normaliza la respuesta. (lat,lng) ya en grilla estable."""
     try:
         url = OPEN_METEO_URL.format(lat=lat, lng=lng)
         resp = requests.get(url, timeout=8)
+        if resp.status_code == 429:
+            return None, 'rate_limited'
         resp.raise_for_status()
         data = resp.json()
 
         current = data.get('current')
         if not current:
-            return None
+            return None, 'empty'
 
         temp = current.get('temperature_2m')
         humidity = current.get('relative_humidity_2m')
@@ -261,10 +316,10 @@ def _fetch_open_meteo(lat, lng):
             'weather_code': wmo_code,
             'updated_at': report_time,
             'report_age_min': report_age_min,
-        }
+        }, None
     except Exception as exc:
         logger.error("Error Open-Meteo (%s, %s): %s", lat, lng, exc)
-        return None
+        return None, 'error'
 
 
 def _calc_open_meteo_age(time_str):
@@ -331,7 +386,7 @@ def fetch_weather_boostr(station_code, force_refresh=False):
             'updated_at': raw_updated_at,
             'report_age_min': _calc_boostr_age(raw_updated_at),
         }
-        cache.set(cache_key, result, 60 * 5)
+        cache.set(cache_key, result, BOOSTR_WEATHER_CACHE_TTL)
         return result
     except requests.RequestException as exc:
         logger.error("Error consultando API boostr (%s): %s", station_code, exc)
