@@ -187,6 +187,20 @@ class ProveedorServicio(models.Model):
         
     def __str__(self):
         return self.nombre
+
+    def save(self, *args, **kwargs):
+        """
+        Invariante: `verificado` en BD solo puede ser True si el estado administrativo es `aprobado`.
+        Evita datos legacy donde verificado=True con estado pendiente/en_revision/rechazado.
+        """
+        self.verificado = self.estado_verificacion == "aprobado"
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None:
+            update_fields = list(update_fields)
+            if "verificado" not in update_fields:
+                update_fields.append("verificado")
+            kwargs["update_fields"] = update_fields
+        super().save(*args, **kwargs)
     
     def aprobar_verificacion(self, usuario_verificador=None):
         """Método para aprobar la verificación del proveedor"""

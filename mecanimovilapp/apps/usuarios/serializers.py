@@ -464,6 +464,9 @@ class TallerSerializer(serializers.ModelSerializer):
     
     # NUEVO: URL de foto de perfil compatible con cPanel
     foto_perfil_url = serializers.SerializerMethodField()
+
+    # Verificado para clientes: estado aprobado + documentos obligatorios validados en BD
+    verificado = serializers.SerializerMethodField()
     
     class Meta:
         model = Taller
@@ -490,6 +493,11 @@ class TallerSerializer(serializers.ModelSerializer):
         """Retorna la URL completa de la foto de perfil usando cPanel si está configurado"""
         request = self.context.get('request')
         return get_image_url(obj.foto_perfil, request)
+
+    def get_verificado(self, obj):
+        from mecanimovilapp.apps.usuarios.verification_utils import proveedor_visible_como_verificado
+
+        return proveedor_visible_como_verificado(obj)
     
     def get_especialidades_nombres(self, obj):
         """Devuelve los nombres de las especialidades"""
@@ -710,6 +718,8 @@ class MecanicoDomicilioSerializer(serializers.ModelSerializer):
     
     # NUEVO: URL de foto de perfil compatible con cPanel
     foto_perfil_url = serializers.SerializerMethodField()
+
+    verificado = serializers.SerializerMethodField()
     
     class Meta:
         model = MecanicoDomicilio
@@ -735,6 +745,11 @@ class MecanicoDomicilioSerializer(serializers.ModelSerializer):
         """Retorna la URL completa de la foto de perfil usando cPanel si está configurado"""
         request = self.context.get('request')
         return get_image_url(obj.foto_perfil, request)
+
+    def get_verificado(self, obj):
+        from mecanimovilapp.apps.usuarios.verification_utils import proveedor_visible_como_verificado
+
+        return proveedor_visible_como_verificado(obj)
     
     def get_especialidades_nombres(self, obj):
         """Devuelve los nombres de las especialidades"""

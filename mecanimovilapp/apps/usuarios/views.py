@@ -9,6 +9,7 @@ from django.contrib.gis.geos import Point
 from django.contrib.gis.measure import D
 from django_filters.rest_framework import DjangoFilterBackend
 from .models import Usuario, Cliente, Taller, MecanicoDomicilio, ZonaCobertura, Resena, DireccionUsuario, DocumentoOnboarding, HorarioProveedor, MechanicServiceArea, ChileanCommune, ConnectionStatus, ProviderProfile, Review, TallerDireccion, PushToken, Notificacion
+from .verification_utils import proveedor_visible_como_verificado
 from .serializers import (
     UsuarioSerializer, ClienteSerializer, UserProfileSerializer, 
     TallerSerializer, MecanicoDomicilioSerializer, ZonaCoberturaSerializer, ResenaSerializer,
@@ -2636,7 +2637,7 @@ class EstadoProveedorView(APIView):
             'tipo_proveedor': 'mecanico' if mecanico else 'taller',
             'nombre': proveedor.nombre,
             'estado_verificacion': proveedor.estado_verificacion,
-            'verificado': proveedor.verificado,
+            'verificado': proveedor_visible_como_verificado(proveedor),
             'onboarding_completado': proveedor.onboarding_completado,
             'onboarding_iniciado': proveedor.onboarding_iniciado,
             'fecha_registro': proveedor.fecha_registro,

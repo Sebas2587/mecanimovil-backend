@@ -955,10 +955,12 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
     def get_proveedor_verificado(self, obj):
         """Retorna si el proveedor est? verificado"""
         try:
+            from mecanimovilapp.apps.usuarios.verification_utils import proveedor_visible_como_verificado
+
             if obj.tipo_proveedor == 'taller' and hasattr(obj.proveedor, 'taller'):
-                return obj.proveedor.taller.verificado
+                return proveedor_visible_como_verificado(obj.proveedor.taller)
             elif obj.tipo_proveedor == 'mecanico' and hasattr(obj.proveedor, 'mecanico_domicilio'):
-                return obj.proveedor.mecanico_domicilio.verificado
+                return proveedor_visible_como_verificado(obj.proveedor.mecanico_domicilio)
             return False
         except Exception:
             return False
