@@ -15,8 +15,30 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.shortcuts import get_object_or_404
 from mecanimovilapp.apps.vehiculos.models import Marca, Vehiculo, Modelo
 from django.db import models
+from django.db.models import Count
 from django.utils.decorators import method_decorator
 from django.views.decorators.cache import cache_page
+
+
+def servicios_catalogo_por_marca_queryset(marca_id):
+    """
+    Servicios del catálogo filtrados solo por compatibilidad de marca/modelo,
+    sin usar las categorías/especialidades del proveedor.
+    - marca_id 0: servicios sin modelos asignados (genéricos).
+    - otro id: servicios con al menos un modelo de esa marca.
+    """
+    marca_key = str(marca_id)
+    if marca_key == '0':
+        return (
+            Servicio.objects.annotate(_mc=Count('modelos_compatibles'))
+            .filter(_mc=0)
+            .order_by('nombre')
+        )
+    return (
+        Servicio.objects.filter(modelos_compatibles__marca_id=marca_id)
+        .distinct()
+        .order_by('nombre')
+    )
 
 
 class CategoriaServicioViewSet(viewsets.ModelViewSet):
@@ -121,7 +143,30 @@ class ServicioViewSet(viewsets.ModelViewSet):
         ).distinct()[:50]
         serializer = ServicioListSerializer(qs, many=True)
         return Response(serializer.data)
-    
+
+    @action(detail=False, methods=['get'], url_path='catalogo_por_marca')
+    def catalogo_por_marca(self, request):
+        """
+        Catálogo público de servicios por marca (onboarding / referencia).
+        No depende de las especialidades del proveedor.
+        """
+        marca_id = request.query_params.get('marca_id')
+        if not marca_id:
+            return Response(
+                {'error': 'Debe especificar marca_id'},
+                status=400
+            )
+        try:
+            qs = servicios_catalogo_por_marca_queryset(marca_id)
+            return Response(
+                list(qs.values('id', 'nombre', 'descripcion', 'requiere_repuestos'))
+            )
+        except Exception as e:
+            return Response(
+                {'error': f'Error obteniendo servicios: {str(e)}'},
+                status=500
+            )
+
     @action(detail=False, methods=['get'])
     def por_categoria(self, request):
         """
@@ -803,32 +848,10 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
                     {'error': 'No se encontró información del proveedor'},
                     status=404
                 )
-            
-            proveedor = proveedor_data['proveedor']
-            
-            # Permitimos que el endpoint responda incluso si el proveedor ha desmarcado esta marca,
-            # para no romper la pantalla de EDICIÓN de un servicio previamente configurado.
-            
-            # Obtener especialidades del proveedor
-            especialidades_ids = proveedor.especialidades.values_list('id', flat=True)
-            
-            # Soporte para "Marca Genérica/Todas las marcas" (ID 0)
-            if str(marca_id) == '0':
-                servicios = Servicio.objects.filter(
-                    categorias__in=especialidades_ids,
-                    modelos_compatibles__isnull=True  # 🛠️ Servicios que no requieren modelos/marcas específicas
-                ).prefetch_related('categorias').values(
-                    'id', 'nombre', 'descripcion', 'requiere_repuestos'
-                ).distinct()
-            else:
-                # Obtener servicios relacionados con las especialidades del proveedor Y la marca específica
-                servicios = Servicio.objects.filter(
-                    categorias__in=especialidades_ids,
-                    modelos_compatibles__marca_id=marca_id  # ✅ FILTRAR POR MARCA
-                ).prefetch_related('categorias').values(
-                    'id', 'nombre', 'descripcion', 'requiere_repuestos'
-                ).distinct()  # ✅ EVITAR DUPLICADOS
-            
+
+            # Catálogo por compatibilidad de marca/modelo únicamente (sin filtrar por categorías del proveedor).
+            qs = servicios_catalogo_por_marca_queryset(marca_id)
+            servicios = qs.values('id', 'nombre', 'descripcion', 'requiere_repuestos')
             return Response(list(servicios))
             
         except Exception as e:
