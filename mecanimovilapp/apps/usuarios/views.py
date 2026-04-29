@@ -10,6 +10,11 @@ from django.contrib.gis.measure import D
 from django_filters.rest_framework import DjangoFilterBackend
 from .models import Usuario, Cliente, Taller, MecanicoDomicilio, ZonaCobertura, Resena, DireccionUsuario, DocumentoOnboarding, HorarioProveedor, MechanicServiceArea, ChileanCommune, ConnectionStatus, ProviderProfile, Review, TallerDireccion, PushToken, Notificacion
 from .verification_utils import proveedor_visible_como_verificado
+from .chile_rut_phone import (
+    normalizar_rut_chile,
+    rut_modulo11_valido,
+    normalizar_telefono_movil_cl,
+)
 from .serializers import (
     UsuarioSerializer, ClienteSerializer, UserProfileSerializer, 
     TallerSerializer, MecanicoDomicilioSerializer, ZonaCoberturaSerializer, ResenaSerializer,
@@ -2808,6 +2813,81 @@ def cancelar_onboarding(request):
         'mensaje': f'Onboarding de {tipo_proveedor} cancelado. Aparecerá nuevamente en el próximo login.',
         'tipo_proveedor': tipo_proveedor
     })
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def verificar_datos_onboarding(request):
+    """
+    Comprueba si un RUT (taller o mecánico) o un teléfono móvil chileno ya están en uso.
+    Query: tipo=rut|telefono, valor=..., contexto=taller|mecanico (contexto informativo).
+    """
+    tipo = (request.query_params.get('tipo') or '').strip().lower()
+    valor = (request.query_params.get('valor') or '').strip()
+    usuario = request.user
+
+    if tipo == 'rut':
+        nr = normalizar_rut_chile(valor)
+        if not nr:
+            return Response(
+                {'valido': False, 'disponible': False, 'mensaje': 'El documento ingresado no es un RUT válido.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not rut_modulo11_valido(nr):
+            return Response(
+                {'valido': False, 'disponible': False, 'mensaje': 'El dígito verificador del RUT no es correcto.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        msg = _documento_proveedor_en_uso(nr, usuario)
+        if msg:
+            return Response({'valido': True, 'disponible': False, 'mensaje': msg})
+        return Response({'valido': True, 'disponible': True})
+
+    if tipo == 'telefono':
+        nt = normalizar_telefono_movil_cl(valor)
+        if not nt:
+            return Response(
+                {
+                    'valido': False,
+                    'disponible': False,
+                    'mensaje': 'Ingresa un número móvil válido de 9 dígitos (comenzando en 9).',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        msg = _telefono_movil_en_uso(nt, usuario)
+        if msg:
+            return Response({'valido': True, 'disponible': False, 'mensaje': msg})
+        return Response({'valido': True, 'disponible': True})
+
+    return Response(
+        {'error': 'Parámetro tipo debe ser rut o telefono'},
+        status=status.HTTP_400_BAD_REQUEST,
+    )
+
+
+def _documento_proveedor_en_uso(normalizado: str, usuario_actual: Usuario) -> str | None:
+    """Retorna mensaje de error si el RUT ya existe en otro proveedor."""
+    for t in Taller.objects.exclude(usuario=usuario_actual):
+        ot = normalizar_rut_chile(t.rut or '')
+        if ot and ot == normalizado:
+            return 'Este RUT ya está registrado en otro taller.'
+    for m in MecanicoDomicilio.objects.exclude(usuario=usuario_actual):
+        od = normalizar_rut_chile(m.dni or '')
+        if od and od == normalizado:
+            return 'Este RUT ya está registrado en otro perfil de mecánico.'
+    return None
+
+
+def _telefono_movil_en_uso(canon: str, usuario_actual: Usuario) -> str | None:
+    for u in Usuario.objects.exclude(pk=usuario_actual.pk).only('id', 'telefono'):
+        ou = normalizar_telefono_movil_cl(u.telefono or '')
+        if ou and ou == canon:
+            return 'Este número de teléfono ya está en uso por otra cuenta.'
+    for c in Cliente.objects.exclude(usuario=usuario_actual).only('telefono'):
+        oc = normalizar_telefono_movil_cl(c.telefono or '')
+        if oc and oc == canon:
+            return 'Este número ya está asociado a otra cuenta de cliente.'
+    return None
 
 
 class DocumentoOnboardingViewSet(viewsets.ModelViewSet):

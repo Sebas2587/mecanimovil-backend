@@ -43,6 +43,7 @@ urlpatterns = [
     # Endpoints para onboarding de proveedores
     path('inicializar-onboarding/', views.inicializar_onboarding, name='inicializar-onboarding'),
     path('completar-onboarding/', views.completar_onboarding, name='completar-onboarding'),
+    path('verificar-datos-onboarding/', views.verificar_datos_onboarding, name='verificar-datos-onboarding'),
     # Endpoints para push notifications
     path('register-expo-push-token/', views.RegisterPushTokenView.as_view(), name='register-expo-push-token'),
     path('registrar-push-token/', views.registrar_push_token, name='registrar-push-token'),
