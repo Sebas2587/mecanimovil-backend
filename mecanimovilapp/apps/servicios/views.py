@@ -728,6 +728,90 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
         else:
             return OfertaServicio.objects.none()
     
+    @action(detail=False, methods=['post'])
+    def crear_catalogo_inicial(self, request):
+        """
+        Crea registros OfertaServicio como catálogo inicial de onboarding.
+        Body: { "servicios": [{"servicio_id": 1, "marca_id": 2}, ...] }
+        Los registros se crean con disponible=False y precios en 0 para configurar después.
+        Si el par (proveedor, servicio, marca) ya existe, se omite silenciosamente.
+        """
+        proveedor_data = self._get_proveedor_data(request.user)
+        if not proveedor_data['proveedor']:
+            return Response({'error': 'No se encontró información del proveedor'}, status=404)
+
+        servicios_raw = request.data.get('servicios', [])
+        if not isinstance(servicios_raw, list):
+            return Response({'error': 'El campo "servicios" debe ser una lista'}, status=400)
+
+        tipo = proveedor_data['tipo']
+        proveedor = proveedor_data['proveedor']
+
+        from mecanimovilapp.apps.vehiculos.models import MarcaVehiculo
+
+        creados = 0
+        omitidos = 0
+        errores = []
+
+        for item in servicios_raw:
+            servicio_id = item.get('servicio_id')
+            marca_id = item.get('marca_id')
+
+            if not servicio_id:
+                errores.append({'item': item, 'error': 'Falta servicio_id'})
+                continue
+
+            try:
+                servicio = Servicio.objects.get(id=servicio_id)
+            except Servicio.DoesNotExist:
+                errores.append({'item': item, 'error': f'Servicio {servicio_id} no encontrado'})
+                continue
+
+            marca = None
+            if marca_id:
+                try:
+                    marca = MarcaVehiculo.objects.get(id=marca_id)
+                except MarcaVehiculo.DoesNotExist:
+                    errores.append({'item': item, 'error': f'Marca {marca_id} no encontrada'})
+                    continue
+
+            # Verificar duplicado
+            filtros = {'servicio': servicio, 'marca_vehiculo_seleccionada': marca}
+            if tipo == 'taller':
+                filtros['taller'] = proveedor
+            else:
+                filtros['mecanico'] = proveedor
+
+            if OfertaServicio.objects.filter(**filtros).exists():
+                omitidos += 1
+                continue
+
+            try:
+                kwargs = {
+                    'servicio': servicio,
+                    'marca_vehiculo_seleccionada': marca,
+                    'tipo_proveedor': tipo,
+                    'disponible': False,
+                    'tipo_servicio': 'sin_repuestos',
+                    'costo_mano_de_obra_sin_iva': 0,
+                    'costo_repuestos_sin_iva': 0,
+                }
+                if tipo == 'taller':
+                    kwargs['taller'] = proveedor
+                else:
+                    kwargs['mecanico'] = proveedor
+
+                OfertaServicio.objects.create(**kwargs)
+                creados += 1
+            except Exception as e:
+                errores.append({'item': item, 'error': str(e)})
+
+        return Response({
+            'creados': creados,
+            'omitidos': omitidos,
+            'errores': errores,
+        }, status=201 if creados > 0 else 200)
+
     @action(detail=False, methods=['get'])
     def resumen_estadisticas(self, request):
         """Obtiene estadísticas resumen para el proveedor"""
