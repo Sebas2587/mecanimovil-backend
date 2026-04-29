@@ -38,6 +38,35 @@ import hashlib
 
 logger = logging.getLogger(__name__)
 
+
+def respuesta_estadisticas_pagos_vacia():
+    """
+    Payload estable para GET estadisticas-pagos cuando no hay cuenta MP conectada.
+    Evita HTTP 400 en casos esperados (la app móvil ya mapeaba 400 a ceros).
+    """
+    return {
+        'total_recibido': 0.0,
+        'total_recibido_mes': 0.0,
+        'total_recibido_mes_anterior': 0.0,
+        'cantidad_transacciones': 0,
+        'cantidad_transacciones_mes': 0,
+        'cantidad_transacciones_mes_anterior': 0,
+        'ultima_transaccion': None,
+        'cantidad_pagos_repuestos': 0,
+        'total_repuestos': 0.0,
+        'moneda': 'CLP',
+    }
+
+
+def respuesta_historial_pagos_vacio():
+    """Historial vacío sin error HTTP cuando no hay cuenta MP."""
+    return {
+        'historial': [],
+        'total_resultados': 0,
+        'moneda': 'CLP',
+    }
+
+
 class PreferenciaPagoViewSet(viewsets.ReadOnlyModelViewSet):
     """
     ViewSet para gestionar preferencias de pago
@@ -1605,21 +1634,15 @@ class CuentaMercadoPagoProveedorViewSet(viewsets.GenericViewSet):
         Obtiene estadísticas de pagos recibidos por el proveedor.
         """
         cuenta = self.get_cuenta(request.user)
-        
+
         if not cuenta or cuenta.estado != 'conectada':
-            return Response(
-                {'error': 'No tienes una cuenta de Mercado Pago conectada'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
+            return Response(respuesta_estadisticas_pagos_vacia())
+
         # Obtener el proveedor
         proveedor, _ = self.get_proveedor(request.user)
-        
+
         if not proveedor:
-            return Response(
-                {'error': 'No eres un proveedor registrado'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response(respuesta_estadisticas_pagos_vacia())
         
         # Calcular estadísticas desde las ofertas pagadas
         from mecanimovilapp.apps.ordenes.models import OfertaProveedor
@@ -1799,15 +1822,12 @@ class CuentaMercadoPagoProveedorViewSet(viewsets.GenericViewSet):
         Incluye información del cliente y detalles del servicio.
         """
         cuenta = self.get_cuenta(request.user)
-        
+
         if not cuenta or cuenta.estado != 'conectada':
-            return Response(
-                {'error': 'No tienes una cuenta de Mercado Pago conectada'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
+            return Response(respuesta_historial_pagos_vacio())
+
         from mecanimovilapp.apps.ordenes.models import OfertaProveedor
-        
+
         # Obtener ofertas pagadas del proveedor
         try:
             # Primero, actualizar fecha_respuesta_cliente para ofertas pagadas que no la tengan
