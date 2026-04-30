@@ -4616,6 +4616,7 @@ class ReviewViewSet(viewsets.ReadOnlyModelViewSet):
         """Crear una nueva reseña"""
         # Importar el modelo al inicio del método
         from mecanimovilapp.apps.ordenes.models import SolicitudServicio
+        from mecanimovilapp.apps.usuarios.models import Resena
         
         try:
             
@@ -4707,6 +4708,65 @@ class ReviewViewSet(viewsets.ReadOnlyModelViewSet):
             serializer = self.get_serializer(data=review_data)
             serializer.is_valid(raise_exception=True)
             self.perform_create(serializer)
+
+            # --- Mirror a Resena (fuente de KPIs proveedor) ---
+            # Acepta aspectos como objeto (recomendado) o campos planos.
+            aspects = request.data.get('aspects') or {}
+            if not isinstance(aspects, dict):
+                aspects = {}
+
+            def pick(key, *fallback_keys):
+                if key in aspects:
+                    return aspects.get(key)
+                for fk in fallback_keys:
+                    if fk in aspects:
+                        return aspects.get(fk)
+                # fallback: keys en payload raíz
+                if key in request.data:
+                    return request.data.get(key)
+                for fk in fallback_keys:
+                    if fk in request.data:
+                        return request.data.get(fk)
+                return None
+
+            resena_defaults = {
+                'comentario': (request.data.get('comment', '') or '').strip() or None,
+                'calificacion': request.data.get('rating'),
+                'puntualidad': pick('puntualidad'),
+                'recepcion_a_tiempo': pick('recepcion_a_tiempo', 'recepcionTiempo', 'recepcion_tiempo'),
+                'limpieza_auto': pick('limpieza_auto', 'limpiezaAuto'),
+                'zona_limpia': pick('zona_limpia', 'zonaLimpia'),
+                'claridad_explicacion': pick('claridad_explicacion', 'claridad', 'claridadExplicacion'),
+                'informacion_relevante': pick('informacion_relevante', 'info', 'informacion', 'comunicacion'),
+                'trato': pick('trato', 'educacion'),
+                'entrego_repuestos': pick('entrego_repuestos', 'repuestos', 'entregoRepuestos'),
+            }
+
+            # Resena.solicitud es OneToOne → usamos update_or_create por seguridad.
+            try:
+                if provider_type == 'taller':
+                    Resena.objects.update_or_create(
+                        solicitud=service_order,
+                        defaults={
+                            'cliente': cliente,
+                            'taller': service_order.taller,
+                            'mecanico': None,
+                            **resena_defaults,
+                        },
+                    )
+                else:
+                    Resena.objects.update_or_create(
+                        solicitud=service_order,
+                        defaults={
+                            'cliente': cliente,
+                            'taller': None,
+                            'mecanico': service_order.mecanico,
+                            **resena_defaults,
+                        },
+                    )
+            except Exception:
+                # No bloquea la creación del Review (compatibilidad); KPIs usarán lo que exista.
+                pass
             
             return Response(serializer.data, status=status.HTTP_201_CREATED)
                 

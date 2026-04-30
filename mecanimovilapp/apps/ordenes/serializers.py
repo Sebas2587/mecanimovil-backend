@@ -718,6 +718,7 @@ class ProveedorKpisResumenSerializer(serializers.Serializer):
     calificacion_promedio_todas_resenas = serializers.FloatField(allow_null=True)
     score_tiempo_respuesta = serializers.IntegerField(allow_null=True)
     score_calificacion_cliente = serializers.IntegerField(allow_null=True)
+    score_calidad_servicio = serializers.IntegerField(allow_null=True)
     score_checklist = serializers.IntegerField(allow_null=True)
     score_tiempo_ejecucion = serializers.IntegerField(allow_null=True)
     score_rendimiento = serializers.IntegerField()

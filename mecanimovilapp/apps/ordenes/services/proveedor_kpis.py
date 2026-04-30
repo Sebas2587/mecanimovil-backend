@@ -47,6 +47,56 @@ def _merge_score(components: list[int | None]) -> int:
     return max(0, min(100, int(round(sum(vals) / len(vals)))))
 
 
+def _score_aspectos_resena(
+    *,
+    avg_puntualidad: float | None,
+    avg_recepcion_a_tiempo: float | None,
+    avg_limpieza_auto: float | None,
+    avg_zona_limpia: float | None,
+    avg_claridad: float | None,
+    avg_info: float | None,
+    avg_trato: float | None,
+    pct_entrego_repuestos: float | None,
+) -> int | None:
+    """
+    Convierte promedios 1–5 y booleanos a un score 0–100.
+    - Promedios 1–5 → 0–100 usando la misma normalización que estrellas.
+    - entrego_repuestos: porcentaje True (0–100).
+    Solo promedia señales presentes.
+    """
+    parts: list[int] = []
+
+    def norm_1_5(v: float | None) -> int | None:
+        if v is None:
+            return None
+        try:
+            return max(0, min(100, int(round((float(v) - 1.0) / 4.0 * 100))))
+        except Exception:
+            return None
+
+    for v in [
+        norm_1_5(avg_puntualidad),
+        norm_1_5(avg_recepcion_a_tiempo),
+        norm_1_5(avg_limpieza_auto),
+        norm_1_5(avg_zona_limpia),
+        norm_1_5(avg_claridad),
+        norm_1_5(avg_info),
+        norm_1_5(avg_trato),
+    ]:
+        if v is not None:
+            parts.append(v)
+
+    if pct_entrego_repuestos is not None:
+        try:
+            parts.append(max(0, min(100, int(round(float(pct_entrego_repuestos))))))
+        except Exception:
+            pass
+
+    if not parts:
+        return None
+    return max(0, min(100, int(round(sum(parts) / len(parts)))))
+
+
 def _resenas_qs(taller, mecanico):
     from mecanimovilapp.apps.usuarios.models import Resena
 
@@ -137,6 +187,32 @@ def compute_proveedor_kpis_resumen(user, dias: int = 30) -> dict[str, Any]:
     calificacion_muestra_ui = (
         float(avg_rating_periodo) if n_resenas_periodo > 0 and avg_rating_periodo is not None
         else (float(avg_rating_all) if avg_rating_all is not None else None)
+    )
+
+    # --- Aspectos estructurados desde reseñas (opcional; mejora señal de calidad) ---
+    agg_aspects = rq_periodo.aggregate(
+        punctual=Avg('puntualidad'),
+        recep=Avg('recepcion_a_tiempo'),
+        clean_car=Avg('limpieza_auto'),
+        clean_zone=Avg('zona_limpia'),
+        clarity=Avg('claridad_explicacion'),
+        info=Avg('informacion_relevante'),
+        trato=Avg('trato'),
+        repuestos_true=Count('id', filter=Q(entrego_repuestos=True)),
+        repuestos_total=Count('id', filter=Q(entrego_repuestos__isnull=False)),
+    )
+    repuestos_total = agg_aspects.get('repuestos_total') or 0
+    repuestos_true = agg_aspects.get('repuestos_true') or 0
+    pct_repuestos = (100.0 * repuestos_true / repuestos_total) if repuestos_total > 0 else None
+    score_calidad_servicio = _score_aspectos_resena(
+        avg_puntualidad=agg_aspects.get('punctual'),
+        avg_recepcion_a_tiempo=agg_aspects.get('recep'),
+        avg_limpieza_auto=agg_aspects.get('clean_car'),
+        avg_zona_limpia=agg_aspects.get('clean_zone'),
+        avg_claridad=agg_aspects.get('clarity'),
+        avg_info=agg_aspects.get('info'),
+        avg_trato=agg_aspects.get('trato'),
+        pct_entrego_repuestos=pct_repuestos,
     )
 
     # --- Ofertas con actividad en ventana (envío o solicitud publicada en periodo) ---
@@ -236,7 +312,9 @@ def compute_proveedor_kpis_resumen(user, dias: int = 30) -> dict[str, Any]:
 
     score_calificacion = _score_calificacion(calificacion_para_score)
     score_checklist = _score_checklist_cumplimiento(pct_checklist)
-    score_rendimiento = _merge_score([score_respuesta, score_calificacion, score_checklist, score_ejecucion])
+    score_rendimiento = _merge_score(
+        [score_respuesta, score_calificacion, score_calidad_servicio, score_checklist, score_ejecucion]
+    )
 
     return {
         'ventana_dias': dias,
@@ -260,6 +338,7 @@ def compute_proveedor_kpis_resumen(user, dias: int = 30) -> dict[str, Any]:
         'calificacion_promedio_todas_resenas': round(float(avg_rating_all), 2) if avg_rating_all is not None else None,
         'score_tiempo_respuesta': score_respuesta,
         'score_calificacion_cliente': score_calificacion,
+        'score_calidad_servicio': score_calidad_servicio,
         'score_checklist': score_checklist,
         'score_tiempo_ejecucion': score_ejecucion,
         'score_rendimiento': score_rendimiento,
@@ -290,6 +369,7 @@ def _empty_payload(dias: int) -> dict[str, Any]:
         'calificacion_promedio_todas_resenas': None,
         'score_tiempo_respuesta': None,
         'score_calificacion_cliente': None,
+        'score_calidad_servicio': None,
         'score_checklist': None,
         'score_tiempo_ejecucion': None,
         'score_rendimiento': 50,

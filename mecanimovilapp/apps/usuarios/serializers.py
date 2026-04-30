@@ -1121,7 +1121,11 @@ class ResenaSerializer(serializers.ModelSerializer):
     class Meta:
         model = Resena
         fields = ('id', 'cliente', 'cliente_nombre', 'cliente_avatar', 'comentario', 'calificacion', 
-                  'fecha_hora_resena', 'taller', 'mecanico', 'solicitud', 'service_context', 'photos')
+                  'fecha_hora_resena', 'taller', 'mecanico', 'solicitud',
+                  # Aspectos estructurados (KPIs)
+                  'puntualidad', 'recepcion_a_tiempo', 'limpieza_auto', 'zona_limpia',
+                  'claridad_explicacion', 'informacion_relevante', 'trato', 'entrego_repuestos',
+                  'service_context', 'photos')
         read_only_fields = ('fecha_hora_resena',)
     
     def get_cliente_nombre(self, obj):

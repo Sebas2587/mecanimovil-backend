@@ -602,6 +602,56 @@ class Resena(models.Model):
         related_name='resena',
         help_text='Solicitud de servicio asociada a esta reseña'
     )
+
+    # --- Aspectos estructurados (alimentan KPIs de calidad) ---
+    # Escala 1–5 (mismo rango que estrellas) y nullable para compatibilidad / no aplica.
+    puntualidad = models.IntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(5)],
+        help_text="Puntualidad del proveedor (1-5)"
+    )
+    recepcion_a_tiempo = models.IntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(5)],
+        help_text="Recepción/entrega a tiempo (taller) (1-5)"
+    )
+    limpieza_auto = models.IntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(5)],
+        help_text="Limpieza del auto (taller) (1-5)"
+    )
+    zona_limpia = models.IntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(5)],
+        help_text="Limpieza de la zona (domicilio) (1-5)"
+    )
+    claridad_explicacion = models.IntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(5)],
+        help_text="Claridad al explicar fallas/solución (1-5)"
+    )
+    informacion_relevante = models.IntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(5)],
+        help_text="Envió información relevante del servicio (1-5)"
+    )
+    trato = models.IntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(5)],
+        help_text="Trato y educación (1-5)"
+    )
+    entrego_repuestos = models.BooleanField(
+        null=True,
+        blank=True,
+        help_text="Entregó repuestos al cliente (True/False) o null si no aplica"
+    )
     
     class Meta:
         verbose_name = _('reseña')
