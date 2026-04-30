@@ -1247,7 +1247,16 @@ class TallerViewSet(viewsets.ModelViewSet):
             distance=Distance('ubicacion', user_location, spheroid=True)
         ).filter(
             ubicacion__distance_lte=(user_location, D(km=max_distance))
-        ).order_by('distance')
+        )
+        # Opcional: solo talleres que atienden la marca del vehículo seleccionado (mismo criterio que proveedores_filtrados)
+        marca_vehiculo = request.query_params.get('marca')
+        if marca_vehiculo:
+            try:
+                marca_id = int(marca_vehiculo)
+                queryset = queryset.filter(marcas_atendidas__id=marca_id).distinct()
+            except ValueError:
+                queryset = queryset.filter(marcas_atendidas__nombre__icontains=marca_vehiculo).distinct()
+        queryset = queryset.order_by('distance')
         
         page = self.paginate_queryset(queryset)
         if page is not None:

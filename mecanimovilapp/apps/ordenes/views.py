@@ -549,6 +549,102 @@ class SolicitudServicioViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
     
+    @action(detail=False, methods=['get'], url_path='actividad_mercado')
+    def actividad_mercado(self, request):
+        """
+        Feed anonimizado: últimas solicitudes de otros clientes con la misma marca y modelo
+        que el vehículo indicado. `vehiculo_id` debe pertenecer al cliente autenticado.
+        No expone datos personales de otros usuarios.
+        """
+        vehiculo_id = request.query_params.get('vehiculo_id')
+        if not vehiculo_id:
+            return Response(
+                {'error': 'Se requiere el parámetro vehiculo_id'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            vehiculo_id = int(vehiculo_id)
+        except (TypeError, ValueError):
+            return Response(
+                {'error': 'vehiculo_id debe ser un entero válido'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            cliente = Cliente.objects.get(usuario=request.user)
+        except Cliente.DoesNotExist:
+            return Response(
+                {'error': 'No se encontró perfil de cliente para este usuario'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        try:
+            vehiculo = Vehiculo.objects.select_related('marca', 'modelo').get(
+                id=vehiculo_id,
+                cliente=cliente,
+            )
+        except Vehiculo.DoesNotExist:
+            return Response(
+                {'error': 'Vehículo no encontrado o no pertenece a tu cuenta'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        if not vehiculo.marca_id or not vehiculo.modelo_id:
+            return Response(
+                {'marca': None, 'modelo': None, 'items': []},
+                status=status.HTTP_200_OK,
+            )
+        estados_visibles = [
+            'completado',
+            'en_proceso',
+            'checklist_completado',
+            'checklist_en_progreso',
+            'aceptada_por_proveedor',
+            'pendiente_aceptacion_proveedor',
+            'confirmado',
+            'pago_validado',
+            'pendiente',
+        ]
+        estado_labels = dict(SolicitudServicio.ESTADO_CHOICES)
+        limite = request.query_params.get('limit', '20')
+        try:
+            limite = max(1, min(int(limite), 50))
+        except (TypeError, ValueError):
+            limite = 20
+        qs = (
+            SolicitudServicio.objects.filter(
+                vehiculo__isnull=False,
+                vehiculo__marca_id=vehiculo.marca_id,
+                vehiculo__modelo_id=vehiculo.modelo_id,
+                estado__in=estados_visibles,
+            )
+            .exclude(cliente=cliente)
+            .select_related('vehiculo__marca', 'vehiculo__modelo')
+            .prefetch_related('lineas__oferta_servicio__servicio')
+            .order_by('-fecha_hora_solicitud')[:limite]
+        )
+        items = []
+        for sol in qs:
+            nombres = []
+            for ln in sol.lineas.all()[:4]:
+                os = getattr(ln, 'oferta_servicio', None)
+                if os and getattr(os, 'servicio', None):
+                    nombres.append(os.servicio.nombre)
+            resumen = ', '.join(nombres[:3]) if nombres else 'Servicio mecánico'
+            items.append(
+                {
+                    'cuando': sol.fecha_hora_solicitud,
+                    'tipo_servicio': sol.tipo_servicio,
+                    'estado': sol.estado,
+                    'estado_display': estado_labels.get(sol.estado, sol.estado),
+                    'servicio_resumen': resumen,
+                }
+            )
+        return Response(
+            {
+                'marca': vehiculo.marca.nombre if vehiculo.marca else None,
+                'modelo': vehiculo.modelo.nombre if vehiculo.modelo else None,
+                'items': items,
+            }
+        )
+    
     @action(detail=True, methods=['post'])
     def cancelar(self, request, pk=None):
         """
