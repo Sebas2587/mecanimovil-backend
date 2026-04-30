@@ -467,6 +467,7 @@ class TallerSerializer(serializers.ModelSerializer):
 
     # Verificado para clientes: estado aprobado + documentos obligatorios validados en BD
     verificado = serializers.SerializerMethodField()
+    kpi_badge = serializers.SerializerMethodField()
     
     class Meta:
         model = Taller
@@ -477,7 +478,7 @@ class TallerSerializer(serializers.ModelSerializer):
                   'descripcion', 'calificacion_promedio', 'numero_de_calificaciones', 'activo',
                   'foto_perfil', 'foto_perfil_url',  # NUEVO: foto de perfil
                   'estado_verificacion', 'estado_verificacion_display', 
-                  'verificado', 'onboarding_completado', 'onboarding_iniciado', 'fecha_verificacion',
+                  'verificado', 'kpi_badge', 'onboarding_completado', 'onboarding_iniciado', 'fecha_verificacion',
                   'fecha_registro', 'ultima_actualizacion', 'distance',
                   'ultima_conexion', 'esta_conectado', 'status', 'total_resenas',
                   'servicios_completados', 'comunas_atendidas', 'experiencia_anos',
@@ -498,6 +499,21 @@ class TallerSerializer(serializers.ModelSerializer):
         from mecanimovilapp.apps.usuarios.verification_utils import proveedor_visible_como_verificado
 
         return proveedor_visible_como_verificado(obj)
+
+    def get_kpi_badge(self, obj):
+        """
+        Etiqueta KPI visible a usuarios. Se computa solo en `retrieve`
+        para evitar costo en listados.
+        """
+        include = bool(self.context.get('include_kpi_badge'))
+        if not include:
+            return None
+        try:
+            from mecanimovilapp.apps.usuarios.kpi_badge_utils import compute_kpi_badge_for_proveedor
+
+            return compute_kpi_badge_for_proveedor(proveedor_usuario=obj.usuario, window_days=30)
+        except Exception:
+            return None
     
     def get_especialidades_nombres(self, obj):
         """Devuelve los nombres de las especialidades"""
@@ -720,6 +736,7 @@ class MecanicoDomicilioSerializer(serializers.ModelSerializer):
     foto_perfil_url = serializers.SerializerMethodField()
 
     verificado = serializers.SerializerMethodField()
+    kpi_badge = serializers.SerializerMethodField()
     
     class Meta:
         model = MecanicoDomicilio
@@ -730,7 +747,7 @@ class MecanicoDomicilioSerializer(serializers.ModelSerializer):
                   'radio_cobertura', 'calificacion_promedio', 'numero_de_calificaciones', 'activo',
                   'descripcion', 'dni', 'experiencia_anos',
                   'estado_verificacion', 'estado_verificacion_display', 
-                  'verificado', 'onboarding_completado', 'onboarding_iniciado', 'fecha_verificacion',
+                  'verificado', 'kpi_badge', 'onboarding_completado', 'onboarding_iniciado', 'fecha_verificacion',
                   'fecha_registro', 'ultima_actualizacion', 'zonas_servicio',
                   'ultima_conexion', 'esta_conectado', 'status', 'total_resenas',
                   'servicios_completados',
@@ -750,6 +767,18 @@ class MecanicoDomicilioSerializer(serializers.ModelSerializer):
         from mecanimovilapp.apps.usuarios.verification_utils import proveedor_visible_como_verificado
 
         return proveedor_visible_como_verificado(obj)
+
+    def get_kpi_badge(self, obj):
+        """Ver `TallerSerializer.get_kpi_badge`."""
+        include = bool(self.context.get('include_kpi_badge'))
+        if not include:
+            return None
+        try:
+            from mecanimovilapp.apps.usuarios.kpi_badge_utils import compute_kpi_badge_for_proveedor
+
+            return compute_kpi_badge_for_proveedor(proveedor_usuario=obj.usuario, window_days=30)
+        except Exception:
+            return None
     
     def get_especialidades_nombres(self, obj):
         """Devuelve los nombres de las especialidades"""

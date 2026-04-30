@@ -1,4 +1,5 @@
 from rest_framework import viewsets, permissions, status, generics, filters
+from rest_framework import serializers
 from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -49,6 +50,80 @@ from mecanimovilapp.storage.utils import get_image_url
 
 # Configurar logger
 logger = logging.getLogger(__name__)
+
+
+def _kpi_rank_tuple(badge: dict | None):
+    """
+    Retorna una tupla ordenable (mayor = mejor) para relevancia por KPI.
+    `badge` viene de `compute_kpi_badge_for_proveedor`.
+    """
+    if not badge:
+        return (0, 0, 0, 0)
+    is_active = 1 if badge.get("is_active") else 0
+    code = str(badge.get("code") or "")
+    tier = {"ELITE": 4, "MASTER": 3, "PRO": 2, "ASCENSO": 1}.get(code, 0)
+    try:
+        score = int(badge.get("score") or 0)
+    except Exception:
+        score = 0
+    try:
+        sample_points = int(badge.get("sample_points") or 0)
+    except Exception:
+        sample_points = 0
+    return (is_active, tier, score, sample_points)
+
+
+def _order_proveedores_by_kpi_relevancia(
+    proveedores: list,
+    *,
+    window_days: int = 30,
+    max_compute: int = 140,
+):
+    """
+    Ordena proveedores por KPI (desc) para relevancia en listados.
+    Salvaguarda: si hay demasiados candidatos, fallback por rating/servicios.
+    """
+    if not proveedores:
+        return proveedores
+
+    if len(proveedores) > max_compute:
+        return sorted(
+            proveedores,
+            key=lambda p: (
+                getattr(p, "calificacion_promedio", 0) or 0,
+                getattr(p, "servicios_completados_count", 0) or 0,
+            ),
+            reverse=True,
+        )
+
+    try:
+        from mecanimovilapp.apps.usuarios.kpi_badge_utils import compute_kpi_badge_for_proveedor
+    except Exception:
+        return proveedores
+
+    ranked = []
+    for p in proveedores:
+        try:
+            usuario = getattr(p, "usuario", None)
+            badge = (
+                compute_kpi_badge_for_proveedor(proveedor_usuario=usuario, window_days=window_days)
+                if usuario is not None
+                else None
+            )
+        except Exception:
+            badge = None
+        ranked.append((p, _kpi_rank_tuple(badge)))
+
+    ranked.sort(
+        key=lambda t: (
+            t[1],
+            (getattr(t[0], "calificacion_promedio", 0) or 0),
+            (getattr(t[0], "servicios_completados_count", 0) or 0),
+        ),
+        reverse=True,
+    )
+
+    return [p for (p, _rk) in ranked]
 
 @api_view(['POST'])
 @permission_classes([permissions.AllowAny])  # Explícitamente permitir acceso sin autenticación
@@ -1002,6 +1077,12 @@ class TallerViewSet(viewsets.ModelViewSet):
                 return [permissions.IsAuthenticated()]
             return [permissions.AllowAny()]
         return [permissions.IsAdminUser()]
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        # Solo en detalle: evitar cómputo pesado en listados.
+        ctx['include_kpi_badge'] = self.action == 'retrieve'
+        return ctx
     
     @action(detail=True, methods=['get'])
     def horarios_disponibles(self, request, pk=None):
@@ -1686,7 +1767,8 @@ class TallerViewSet(viewsets.ModelViewSet):
         
         # Serializar resultados
         logger.info(f"✅ Talleres encontrados: {queryset.count()}")
-        serializer = TallerSerializer(queryset, many=True)
+        ordered = _order_proveedores_by_kpi_relevancia(list(queryset), window_days=30)
+        serializer = TallerSerializer(ordered, many=True)
         return Response({
             "talleres": serializer.data,
             "total": queryset.count(),
@@ -1733,6 +1815,11 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
                 return [permissions.IsAuthenticated()]
             return [permissions.AllowAny()]
         return [permissions.IsAdminUser()]
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx['include_kpi_badge'] = self.action == 'retrieve'
+        return ctx
     
     @action(detail=True, methods=['get'])
     def horarios_disponibles(self, request, pk=None):
@@ -2306,7 +2393,8 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
         
         # Serializar resultados
         logger.info(f"✅ Mecánicos encontrados: {queryset.count()}")
-        serializer = MecanicoDomicilioSerializer(queryset, many=True)
+        ordered = _order_proveedores_by_kpi_relevancia(list(queryset), window_days=30)
+        serializer = MecanicoDomicilioSerializer(ordered, many=True)
         return Response({
             "mecanicos": serializer.data,
             "total": queryset.count(),
