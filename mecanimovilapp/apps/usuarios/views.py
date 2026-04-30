@@ -2037,9 +2037,18 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
                 if isinstance(experiencia_raw, str):
                     experiencia_raw = int(experiencia_raw) if experiencia_raw.strip() else None
                 request.data['experiencia_anos'] = experiencia_raw
-            
-            # Actualizar el mecánico con los datos proporcionados
-            serializer = self.get_serializer(mecanico, data=request.data, partial=True)
+
+            # `direccion` en el perfil es texto del usuario (SerializerMethodField `direccion` del mecánico es solo lectura / zonas).
+            payload = {}
+            for key in request.data:
+                payload[key] = request.data.get(key)
+            direccion_perfil = payload.pop('direccion', None)
+            if direccion_perfil is not None:
+                txt = str(direccion_perfil).strip()
+                user.direccion = txt[:255] if txt else ''
+                user.save(update_fields=['direccion'])
+
+            serializer = self.get_serializer(mecanico, data=payload, partial=True)
             serializer.is_valid(raise_exception=True)
             serializer.save()
             
@@ -2759,6 +2768,13 @@ class EstadoProveedorView(APIView):
                 'ciudad': taller.direccion_fisica.ciudad,
                 'region': taller.direccion_fisica.region,
             }
+
+        # Mecánico: dirección de perfil (Usuario) + punto para mapa / "cerca"
+        if mecanico:
+            datos_proveedor['direccion'] = (usuario.direccion or '').strip()
+            if mecanico.ubicacion is not None:
+                datos_proveedor['ubicacion_lat'] = mecanico.ubicacion.y
+                datos_proveedor['ubicacion_lng'] = mecanico.ubicacion.x
         
         return Response({
             'tiene_perfil': True,
