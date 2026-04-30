@@ -1,12 +1,10 @@
 """
 Política de etiqueta KPI visible a usuarios (no acumulable, ventana móvil).
 
-Objetivo: incentivar buen desempeño reciente y reflejarlo en relevancia/etiqueta pública.
-
-Notas de diseño:
-- Ventana recomendada para etiqueta pública: 30 días (mobile dashboard puede explorar 7/90).
-- La etiqueta requiere muestra mínima para evitar "congelar" un nivel alto sin actividad.
-- Si no hay actividad reciente, la etiqueta se considera inactiva.
+Objetivo: la pill pública (Elite / Máster / Pro / En ascenso) refleja el mismo
+`score_rendimiento` que ve el proveedor en su app. La muestra mínima y la
+actividad reciente solo afectan `is_active` (relevancia / orden en listados),
+no el texto ni los colores del nivel.
 """
 
 from __future__ import annotations
@@ -37,7 +35,7 @@ class KpiBadge:
     score: int
     window_days: int
     sample_points: int
-    # True si hay actividad suficiente y la etiqueta es "válida" para ranking/visibilidad.
+    # True si hay actividad y muestra suficiente (relevancia / ranking en listados).
     is_active: bool
     # Mensaje corto para tooltips/ayuda.
     reason: str
@@ -68,6 +66,67 @@ def _sample_points_from_kpis(kpis: dict[str, Any]) -> int:
     return ofertas + ordenes + resenas
 
 
+def _tier_from_score(score: int) -> KpiBadge:
+    """
+    Nivel visible siempre según score (umbrales alineados con la app proveedor).
+    """
+    if score >= 90:
+        return KpiBadge(
+            code="ELITE",
+            label="KPI Elite",
+            short_label="Elite",
+            bg_color="#7C3AED",
+            text_color="#FFFFFF",
+            border_color="#A78BFA",
+            score=score,
+            window_days=0,
+            sample_points=0,
+            is_active=True,
+            reason="",
+        )
+    if score >= 75:
+        return KpiBadge(
+            code="MASTER",
+            label="KPI Máster",
+            short_label="Máster",
+            bg_color="#2563EB",
+            text_color="#FFFFFF",
+            border_color="#93C5FD",
+            score=score,
+            window_days=0,
+            sample_points=0,
+            is_active=True,
+            reason="",
+        )
+    if score >= 55:
+        return KpiBadge(
+            code="PRO",
+            label="KPI Pro",
+            short_label="Pro",
+            bg_color="#059669",
+            text_color="#FFFFFF",
+            border_color="#6EE7B7",
+            score=score,
+            window_days=0,
+            sample_points=0,
+            is_active=True,
+            reason="",
+        )
+    return KpiBadge(
+        code="ASCENSO",
+        label="KPI En ascenso",
+        short_label="En ascenso",
+        bg_color="#F59E0B",
+        text_color="#111827",
+        border_color="#FCD34D",
+        score=score,
+        window_days=0,
+        sample_points=0,
+        is_active=True,
+        reason="",
+    )
+
+
 def compute_kpi_badge_for_proveedor(
     *,
     proveedor_usuario,
@@ -76,6 +135,10 @@ def compute_kpi_badge_for_proveedor(
     """
     Calcula etiqueta KPI visible para usuarios.
     Retorna dict serializable o None si no se puede computar.
+
+    La etiqueta (code / short_label / colores) sigue siempre al score de
+    rendimiento. `is_active` indica si hay muestra suficiente en la ventana
+    para tratar el KPI como “confiable” en ranking.
     """
     try:
         from mecanimovilapp.apps.ordenes.services.proveedor_kpis import compute_proveedor_kpis_resumen
@@ -92,101 +155,43 @@ def compute_kpi_badge_for_proveedor(
     score = _clamp_int(kpis.get("score_rendimiento", 50), 0, 100)
     sample_points = _sample_points_from_kpis(kpis)
 
-    # Caducidad: sin actividad -> etiqueta inactiva (no aporta relevancia).
-    if sample_points <= 0:
-        badge = KpiBadge(
-            code="SIN_ACTIVIDAD",
-            label="KPI sin actividad reciente",
-            short_label="Sin actividad",
-            bg_color="#334155",  # slate-700 aprox
-            text_color="#F8FAFC",
-            border_color="#475569",
-            score=score,
-            window_days=window_days,
-            sample_points=sample_points,
-            is_active=False,
-            reason=f"Sin ofertas/órdenes/reseñas en los últimos {window_days} días.",
-        )
-        return badge.to_dict()
-
-    # Muestra mínima recomendada para 30 días:
-    # - Evita que 1 reseña o 1 oferta "pinte" una etiqueta alta.
     min_sample_points = 5 if window_days <= 30 else 8
     has_min_sample = sample_points >= min_sample_points
+    has_any_activity = sample_points > 0
+    is_active = bool(has_any_activity and has_min_sample)
 
-    if not has_min_sample:
-        badge = KpiBadge(
-            code="EN_PROGRESO",
-            label="KPI en progreso",
-            short_label="En progreso",
-            bg_color="#0F172A",  # slate-900
-            text_color="#E2E8F0",
-            border_color="#1F2937",
-            score=score,
-            window_days=window_days,
-            sample_points=sample_points,
-            is_active=False,
-            reason=f"Muestra insuficiente ({sample_points} pts). Requiere ≥ {min_sample_points} pts en {window_days} días.",
-        )
-        return badge.to_dict()
+    tier = _tier_from_score(score)
 
-    # Umbrales de tier (alineados al provider app; consistentes y fáciles de entender).
-    if score >= 90:
-        badge = KpiBadge(
-            code="ELITE",
-            label="KPI Elite",
-            short_label="Elite",
-            bg_color="#7C3AED",  # violeta distintivo
-            text_color="#FFFFFF",
-            border_color="#A78BFA",
-            score=score,
-            window_days=window_days,
-            sample_points=sample_points,
-            is_active=True,
-            reason=f"Score ≥ 90 con muestra suficiente en {window_days} días.",
+    if not has_any_activity:
+        reason = (
+            f"Nivel por score de rendimiento ({score}/100). "
+            f"Sin ofertas, órdenes de mercado ni reseñas en los últimos {window_days} días."
         )
-    elif score >= 75:
-        badge = KpiBadge(
-            code="MASTER",
-            label="KPI Máster",
-            short_label="Máster",
-            bg_color="#2563EB",  # azul
-            text_color="#FFFFFF",
-            border_color="#93C5FD",
-            score=score,
-            window_days=window_days,
-            sample_points=sample_points,
-            is_active=True,
-            reason=f"Score ≥ 75 con muestra suficiente en {window_days} días.",
+    elif not has_min_sample:
+        reason = (
+            f"Nivel por score de rendimiento ({score}/100). "
+            f"Muestra insuficiente ({sample_points} pts; se recomiendan ≥ {min_sample_points} en {window_days} días)."
         )
-    elif score >= 55:
-        badge = KpiBadge(
-            code="PRO",
-            label="KPI Pro",
-            short_label="Pro",
-            bg_color="#059669",  # verde
-            text_color="#FFFFFF",
-            border_color="#6EE7B7",
-            score=score,
-            window_days=window_days,
-            sample_points=sample_points,
-            is_active=True,
-            reason=f"Score ≥ 55 con muestra suficiente en {window_days} días.",
-        )
+    elif tier.code == "ELITE":
+        reason = f"Score ≥ 90 con muestra suficiente en {window_days} días."
+    elif tier.code == "MASTER":
+        reason = f"Score ≥ 75 con muestra suficiente en {window_days} días."
+    elif tier.code == "PRO":
+        reason = f"Score ≥ 55 con muestra suficiente en {window_days} días."
     else:
-        badge = KpiBadge(
-            code="ASCENSO",
-            label="KPI En ascenso",
-            short_label="En ascenso",
-            bg_color="#F59E0B",  # ámbar (incentivo a mejorar)
-            text_color="#111827",
-            border_color="#FCD34D",
-            score=score,
-            window_days=window_days,
-            sample_points=sample_points,
-            is_active=True,
-            reason=f"Score < 55 pero con muestra suficiente en {window_days} días.",
-        )
+        reason = f"Score < 55 con muestra suficiente en {window_days} días."
 
+    badge = KpiBadge(
+        code=tier.code,
+        label=tier.label,
+        short_label=tier.short_label,
+        bg_color=tier.bg_color,
+        text_color=tier.text_color,
+        border_color=tier.border_color,
+        score=score,
+        window_days=window_days,
+        sample_points=sample_points,
+        is_active=is_active,
+        reason=reason,
+    )
     return badge.to_dict()
-
