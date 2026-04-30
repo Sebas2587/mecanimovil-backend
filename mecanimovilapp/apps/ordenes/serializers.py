@@ -693,6 +693,31 @@ class OrdenEstadisticasSerializer(serializers.Serializer):
     ingresos_mes_actual = serializers.DecimalField(max_digits=10, decimal_places=2)
     calificacion_promedio = serializers.DecimalField(max_digits=3, decimal_places=2)
 
+
+class ProveedorKpisResumenSerializer(serializers.Serializer):
+    """Resumen de KPIs para dashboard proveedor (ventana móvil, sin PII)."""
+
+    ventana_dias = serializers.IntegerField()
+    desde = serializers.CharField()
+    ofertas_dirigidas_muestra = serializers.IntegerField()
+    ofertas_globales_muestra = serializers.IntegerField()
+    tiempo_respuesta_dirigida_media_minutos = serializers.FloatField(allow_null=True)
+    tiempo_respuesta_global_media_minutos = serializers.FloatField(allow_null=True)
+    ordenes_mercado_completadas = serializers.IntegerField()
+    ordenes_con_checklist = serializers.IntegerField()
+    checklist_completados = serializers.IntegerField()
+    checklist_cumplimiento_pct = serializers.FloatField(allow_null=True)
+    checklist_tiempo_promedio_minutos = serializers.FloatField(allow_null=True)
+    tiempo_ejecucion_vs_estimado_promedio = serializers.FloatField(allow_null=True)
+    tiempo_ejecucion_vs_estimado_muestra = serializers.IntegerField()
+    resenas_muestra = serializers.IntegerField()
+    calificacion_cliente_promedio = serializers.FloatField(allow_null=True)
+    score_tiempo_respuesta = serializers.IntegerField(allow_null=True)
+    score_calificacion_cliente = serializers.IntegerField(allow_null=True)
+    score_checklist = serializers.IntegerField(allow_null=True)
+    score_tiempo_ejecucion = serializers.IntegerField(allow_null=True)
+    score_rendimiento = serializers.IntegerField()
+
 class SolicitudServicioProveedorLegacySerializer(serializers.ModelSerializer):
     """
     Serializador LEGACY espec?fico para la vista de proveedores (SIN PROTECCIONES)

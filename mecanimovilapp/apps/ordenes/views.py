@@ -18,6 +18,7 @@ from .serializers import (
     ConfirmarAgendamientoSerializer, SolicitudServicioProveedorSerializer,
     AcceptOrderSerializer, RejectOrderSerializer, UpdateOrderStatusSerializer,
     OrdenEstadisticasSerializer,
+    ProveedorKpisResumenSerializer,
     SolicitudServicioPublicaSerializer, OfertaProveedorSerializer,
     DetalleServicioOfertaSerializer, ChatSolicitudSerializer
 )
@@ -2364,16 +2365,43 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
             fecha_respuesta_proveedor__gte=mes_actual
         ).aggregate(total=Sum('total'))['total'] or 0
         
+        calificacion_promedio = Decimal('0')
+        try:
+            if hasattr(request.user, 'taller') and request.user.taller:
+                calificacion_promedio = Decimal(str(request.user.taller.calificacion_promedio or 0))
+            elif hasattr(request.user, 'mecanico_domicilio') and request.user.mecanico_domicilio:
+                calificacion_promedio = Decimal(str(request.user.mecanico_domicilio.calificacion_promedio or 0))
+        except Exception:
+            calificacion_promedio = Decimal('0')
+
         estadisticas = {
             'total_ordenes': total_ordenes,
             'ordenes_pendientes': ordenes_pendientes,
             'ordenes_completadas': ordenes_completadas,
             'ordenes_rechazadas': ordenes_rechazadas,
             'ingresos_mes_actual': ingresos_mes,
-            'calificacion_promedio': 4.5  # Placeholder - implementar sistema de calificaciones
+            'calificacion_promedio': calificacion_promedio,
         }
         
         serializer = OrdenEstadisticasSerializer(estadisticas)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'], url_path='kpis-resumen')
+    def kpis_resumen(self, request):
+        """
+        KPIs agregados para el proveedor (respuesta en ofertas, checklist, tiempos, reseñas).
+        Query params: dias (1-365, default 30).
+        """
+        from mecanimovilapp.apps.ordenes.services.proveedor_kpis import compute_proveedor_kpis_resumen
+
+        try:
+            dias = int(request.query_params.get('dias', '30'))
+        except (TypeError, ValueError):
+            dias = 30
+
+        payload = compute_proveedor_kpis_resumen(request.user, dias=dias)
+        serializer = ProveedorKpisResumenSerializer(data=payload)
+        serializer.is_valid(raise_exception=True)
         return Response(serializer.data)
     
     @action(detail=True, methods=['post'])
