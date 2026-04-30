@@ -1,7 +1,7 @@
 from rest_framework import viewsets, permissions, filters, status
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
-from django.db.models import Q, Avg, Count, Sum, Exists, OuterRef
+from django.db.models import Q, Avg, Count, Sum, Exists, OuterRef, Max
 from django.utils import timezone
 from datetime import datetime, timedelta, time
 from .models import (
@@ -552,9 +552,9 @@ class SolicitudServicioViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], url_path='actividad_mercado')
     def actividad_mercado(self, request):
         """
-        Feed anonimizado: últimas solicitudes de otros clientes con la misma marca y modelo
-        que el vehículo indicado. `vehiculo_id` debe pertenecer al cliente autenticado.
-        No expone datos personales de otros usuarios.
+        Servicios pedidos por otros con la misma marca/modelo que el vehículo indicado.
+        Cada ítem: nombre de servicio, personas distintas que lo pidieron, fecha de la última solicitud.
+        `vehiculo_id` debe pertenecer al cliente autenticado. Sin datos personales.
         """
         vehiculo_id = request.query_params.get('vehiculo_id')
         if not vehiculo_id:
@@ -602,41 +602,49 @@ class SolicitudServicioViewSet(viewsets.ModelViewSet):
             'pago_validado',
             'pendiente',
         ]
-        estado_labels = dict(SolicitudServicio.ESTADO_CHOICES)
         limite = request.query_params.get('limit', '20')
         try:
             limite = max(1, min(int(limite), 50))
         except (TypeError, ValueError):
             limite = 20
-        qs = (
-            SolicitudServicio.objects.filter(
-                vehiculo__isnull=False,
-                vehiculo__marca_id=vehiculo.marca_id,
-                vehiculo__modelo_id=vehiculo.modelo_id,
-                estado__in=estados_visibles,
+
+        lineas_qs = (
+            LineaServicio.objects.filter(
+                solicitud__vehiculo__isnull=False,
+                solicitud__vehiculo__marca_id=vehiculo.marca_id,
+                solicitud__vehiculo__modelo_id=vehiculo.modelo_id,
+                solicitud__estado__in=estados_visibles,
+                oferta_servicio__isnull=False,
+                oferta_servicio__servicio__isnull=False,
             )
-            .exclude(cliente=cliente)
-            .select_related('vehiculo__marca', 'vehiculo__modelo')
-            .prefetch_related('lineas__oferta_servicio__servicio')
-            .order_by('-fecha_hora_solicitud')[:limite]
+            .exclude(solicitud__cliente=cliente)
         )
+
+        agregados = (
+            lineas_qs.values(
+                'oferta_servicio__servicio_id',
+                'oferta_servicio__servicio__nombre',
+            )
+            .annotate(
+                personas=Count('solicitud__cliente_id', distinct=True),
+                ultima_solicitud=Max('solicitud__fecha_hora_solicitud'),
+            )
+            .order_by('-ultima_solicitud')[:limite]
+        )
+
         items = []
-        for sol in qs:
-            nombres = []
-            for ln in sol.lineas.all()[:4]:
-                os = getattr(ln, 'oferta_servicio', None)
-                if os and getattr(os, 'servicio', None):
-                    nombres.append(os.servicio.nombre)
-            resumen = ', '.join(nombres[:3]) if nombres else 'Servicio mecánico'
+        for row in agregados:
+            sid = row.get('oferta_servicio__servicio_id')
+            nombre = (row.get('oferta_servicio__servicio__nombre') or '').strip() or 'Servicio'
             items.append(
                 {
-                    'cuando': sol.fecha_hora_solicitud,
-                    'tipo_servicio': sol.tipo_servicio,
-                    'estado': sol.estado,
-                    'estado_display': estado_labels.get(sol.estado, sol.estado),
-                    'servicio_resumen': resumen,
+                    'servicio_id': sid,
+                    'servicio_nombre': nombre,
+                    'personas': int(row.get('personas') or 0),
+                    'ultima_solicitud': row.get('ultima_solicitud'),
                 }
             )
+
         return Response(
             {
                 'marca': vehiculo.marca.nombre if vehiculo.marca else None,
