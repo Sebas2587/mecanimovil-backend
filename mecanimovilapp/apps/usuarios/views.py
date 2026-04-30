@@ -1470,21 +1470,32 @@ class TallerViewSet(viewsets.ModelViewSet):
             direccion = request.data.get('direccion')
             latitud = request.data.get('latitud')
             longitud = request.data.get('longitud')
-            
-            if not direccion and not (latitud and longitud):
+
+            has_coords = latitud is not None and longitud is not None
+            partial_coords = (latitud is not None) ^ (longitud is not None)
+            if partial_coords:
+                return Response({
+                    'error': 'Debes enviar latitud y longitud juntas'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            if not direccion and not has_coords:
                 return Response({
                     'error': 'Se requiere una dirección o coordenadas (latitud y longitud)'
                 }, status=status.HTTP_400_BAD_REQUEST)
-            
+
+            from .geocoding_utils import geocode_address_chile
+
             # Si se proporcionan coordenadas directamente
-            if latitud and longitud:
+            if has_coords:
                 try:
                     lat = float(latitud)
                     lng = float(longitud)
                     ubicacion = Point(lng, lat, srid=4326)
                     taller.ubicacion = ubicacion
-                    taller.save()
-                    
+                    taller.save(update_fields=['ubicacion'])
+                    if direccion and str(direccion).strip():
+                        user.direccion = str(direccion).strip()
+                        user.save(update_fields=['direccion'])
+
                     return Response({
                         'mensaje': 'Ubicación actualizada exitosamente con coordenadas proporcionadas',
                         'ubicacion': {
@@ -1492,65 +1503,36 @@ class TallerViewSet(viewsets.ModelViewSet):
                             'longitud': lng
                         }
                     }, status=status.HTTP_200_OK)
-                    
+
                 except (ValueError, TypeError):
                     return Response({
                         'error': 'Las coordenadas deben ser números válidos'
                     }, status=status.HTTP_400_BAD_REQUEST)
-            
-            # Si solo se proporciona dirección, geocodificar
+
+            # Solo dirección → geocodificar (misma lógica que mecánicos)
             if direccion:
                 try:
-                    # Geocodificar usando Nominatim
-                    geocode_url = "https://nominatim.openstreetmap.org/search"
-                    params = {
-                        'q': f"{direccion}, Chile",
-                        'format': 'json',
-                        'limit': 1,
-                        'countrycodes': 'cl'
-                    }
-                    
-                    headers = {
-                        'User-Agent': 'MecaniMovil/1.0'
-                    }
-                    
-                    response = requests.get(geocode_url, params=params, headers=headers, timeout=10)
-                    time.sleep(1)  # Respetar rate limiting
-                    
-                    if response.status_code == 200:
-                        results = response.json()
-                        if results:
-                            result = results[0]
-                            lat = float(result['lat'])
-                            lng = float(result['lon'])
-                            
-                            # Validar que esté en Chile
-                            if -56 <= lat <= -17 and -76 <= lng <= -66:
-                                ubicacion = Point(lng, lat, srid=4326)
-                                taller.ubicacion = ubicacion
-                                taller.save()
-                                
-                                return Response({
-                                    'mensaje': 'Ubicación actualizada exitosamente mediante geocodificación',
-                                    'ubicacion': {
-                                        'latitud': lat,
-                                        'longitud': lng,
-                                        'direccion_geocodificada': result.get('display_name', '')
-                                    }
-                                }, status=status.HTTP_200_OK)
-                            else:
-                                return Response({
-                                    'error': 'La dirección no parece estar en Chile'
-                                }, status=status.HTTP_400_BAD_REQUEST)
-                        else:
-                            return Response({
-                                'error': 'No se pudo encontrar la dirección especificada'
-                            }, status=status.HTTP_400_BAD_REQUEST)
-                    else:
+                    geo = geocode_address_chile(direccion)
+                    if not geo:
                         return Response({
-                            'error': 'Error en el servicio de geocodificación'
-                        }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-                        
+                            'error': 'No se pudo encontrar la dirección especificada'
+                        }, status=status.HTTP_400_BAD_REQUEST)
+                    lat = geo['lat']
+                    lng = geo['lng']
+                    taller.ubicacion = Point(lng, lat, srid=4326)
+                    taller.save(update_fields=['ubicacion'])
+                    user.direccion = str(direccion).strip()
+                    user.save(update_fields=['direccion'])
+
+                    return Response({
+                        'mensaje': 'Ubicación actualizada exitosamente mediante geocodificación',
+                        'ubicacion': {
+                            'latitud': lat,
+                            'longitud': lng,
+                            'direccion_geocodificada': geo.get('display_name', '')
+                        }
+                    }, status=status.HTTP_200_OK)
+
                 except Exception as geocode_error:
                     logger.error(f"Error en geocodificación: {str(geocode_error)}")
                     return Response({
@@ -2145,49 +2127,80 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['patch'], permission_classes=[permissions.IsAuthenticated])
     def actualizar_ubicacion_domicilio(self, request):
         """
-        Endpoint para que los mecánicos a domicilio actualicen su ubicación
+        Punto base del mecánico para búsquedas `cerca`: `ubicacion` (PostGIS).
+        Acepta (latitud + longitud) y/o texto `direccion`. Si solo hay dirección, se geocodifica (Chile).
+        El texto queda también en `Usuario.direccion` para perfil / consistencia.
         """
         try:
-            # Obtener el mecánico autenticado
+            from .geocoding_utils import geocode_address_chile
+
             mecanico = MecanicoDomicilio.objects.get(usuario=request.user)
-            
-            # Obtener datos de la solicitud
+            user = request.user
+            direccion = request.data.get('direccion')
             latitud = request.data.get('latitud')
             longitud = request.data.get('longitud')
-            direccion = request.data.get('direccion')
-            
-            if not all([latitud, longitud, direccion]):
+
+            has_coords = latitud is not None and longitud is not None
+            partial_coords = (latitud is not None) ^ (longitud is not None)
+            if partial_coords:
                 return Response({
-                    'error': 'Se requieren latitud, longitud y dirección'
+                    'error': 'Debes enviar latitud y longitud juntas'
                 }, status=status.HTTP_400_BAD_REQUEST)
-            
-            # Actualizar ubicación
-            mecanico.latitud = float(latitud)
-            mecanico.longitud = float(longitud)
-            mecanico.direccion = direccion
-            
-            # Crear punto geográfico
-            from django.contrib.gis.geos import Point
-            mecanico.ubicacion = Point(float(longitud), float(latitud), srid=4326)
-            
-            mecanico.save()
-            
-            print(f"✅ Ubicación actualizada para {mecanico.nombre}: {latitud}, {longitud}")
-            
+            if not direccion and not has_coords:
+                return Response({
+                    'error': 'Se requiere una dirección o coordenadas (latitud y longitud)'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            if has_coords:
+                try:
+                    lat = float(latitud)
+                    lng = float(longitud)
+                except (ValueError, TypeError):
+                    return Response({
+                        'error': 'Las coordenadas deben ser números válidos'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+
+                mecanico.ubicacion = Point(lng, lat, srid=4326)
+                mecanico.save(update_fields=['ubicacion'])
+                if direccion and str(direccion).strip():
+                    user.direccion = str(direccion).strip()
+                    user.save(update_fields=['direccion'])
+
+                return Response({
+                    'message': 'Ubicación actualizada correctamente',
+                    'mecanico': mecanico.nombre,
+                    'ubicacion': {'latitud': lat, 'longitud': lng},
+                })
+
+            geo = geocode_address_chile(direccion)
+            if not geo:
+                return Response({
+                    'error': 'No se pudo encontrar la dirección. Sé más específico o envía latitud/longitud (GPS).'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            lat = geo['lat']
+            lng = geo['lng']
+            mecanico.ubicacion = Point(lng, lat, srid=4326)
+            mecanico.save(update_fields=['ubicacion'])
+            user.direccion = str(direccion).strip()
+            user.save(update_fields=['direccion'])
+
             return Response({
-                'message': 'Ubicación actualizada correctamente',
+                'message': 'Ubicación actualizada mediante geocodificación',
                 'mecanico': mecanico.nombre,
-                'latitud': latitud,
-                'longitud': longitud,
-                'direccion': direccion
+                'ubicacion': {
+                    'latitud': lat,
+                    'longitud': lng,
+                    'direccion_geocodificada': geo.get('display_name', ''),
+                },
             })
-            
+
         except MecanicoDomicilio.DoesNotExist:
             return Response({
                 'error': 'No se encontró un mecánico asociado a tu cuenta'
             }, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
-            print(f"❌ Error actualizando ubicación: {str(e)}")
+            logger.error(f"Error actualizando ubicación mecánico: {e}")
             return Response({
                 'error': 'Error interno del servidor'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
