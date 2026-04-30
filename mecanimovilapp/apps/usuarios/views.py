@@ -1055,7 +1055,10 @@ class TallerViewSet(viewsets.ModelViewSet):
         - Para administradores: todos los talleres
         """
         # Base queryset con prefetch_related para cargar especialidades y marcas
-        queryset = Taller.objects.select_related('usuario').prefetch_related(
+        queryset = Taller.objects.select_related(
+            'usuario',
+            'usuario__suscripcion_proveedor',
+        ).prefetch_related(
             'especialidades',
             'marcas_atendidas'
         )
@@ -1081,7 +1084,7 @@ class TallerViewSet(viewsets.ModelViewSet):
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
         # Solo en detalle: evitar cómputo pesado en listados.
-        ctx['include_kpi_badge'] = self.action == 'retrieve'
+        ctx['include_kpi_badge'] = self.action in ('retrieve', 'cerca')
         return ctx
     
     @action(detail=True, methods=['get'])
@@ -1243,7 +1246,11 @@ class TallerViewSet(viewsets.ModelViewSet):
         from django.contrib.gis.db.models.functions import Distance
         from django.contrib.gis.measure import D
         
-        queryset = Taller.objects.annotate(
+        queryset = Taller.objects.select_related(
+            'usuario',
+            'usuario__suscripcion_proveedor',
+            'direccion_fisica',
+        ).prefetch_related('especialidades', 'marcas_atendidas').annotate(
             distance=Distance('ubicacion', user_location, spheroid=True)
         ).filter(
             ubicacion__distance_lte=(user_location, D(km=max_distance))
@@ -1802,7 +1809,10 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
         - Para administradores: todos los mecánicos
         """
         # Base queryset con prefetch_related para cargar especialidades y marcas
-        queryset = MecanicoDomicilio.objects.select_related('usuario').prefetch_related(
+        queryset = MecanicoDomicilio.objects.select_related(
+            'usuario',
+            'usuario__suscripcion_proveedor',
+        ).prefetch_related(
             'especialidades',
             'marcas_atendidas'
         )
@@ -1827,7 +1837,7 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
-        ctx['include_kpi_badge'] = self.action == 'retrieve'
+        ctx['include_kpi_badge'] = self.action in ('retrieve', 'cerca')
         return ctx
     
     @action(detail=True, methods=['get'])
@@ -2095,7 +2105,10 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
         user_location = Point(lng, lat, srid=4326)
         
         # Filtrar mecánicos cercanos, verificados y activos
-        queryset = MecanicoDomicilio.objects.select_related('usuario').prefetch_related(
+        queryset = MecanicoDomicilio.objects.select_related(
+            'usuario',
+            'usuario__suscripcion_proveedor',
+        ).prefetch_related(
             'especialidades',
             'marcas_atendidas'
         ).filter(

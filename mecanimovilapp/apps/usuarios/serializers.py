@@ -18,6 +18,18 @@ from mecanimovilapp.storage.utils import get_image_url
 # Configurar logger
 logger = logging.getLogger(__name__)
 
+
+def _proveedor_suscripcion_mensual_activa(usuario):
+    """
+    True si el usuario proveedor tiene SuscripcionProveedor en estado 'activa'.
+    Excluye 'pausada': no se muestran insignias KPI a clientes sin cobro mensual vigente.
+    """
+    if usuario is None:
+        return False
+    sus = getattr(usuario, 'suscripcion_proveedor', None)
+    return sus is not None and getattr(sus, 'estado', None) == 'activa'
+
+
 class TallerDireccionSerializer(serializers.ModelSerializer):
     """
     Serializer para el modelo TallerDireccion
@@ -502,11 +514,13 @@ class TallerSerializer(serializers.ModelSerializer):
 
     def get_kpi_badge(self, obj):
         """
-        Etiqueta KPI visible a usuarios. Se computa solo en `retrieve`
-        para evitar costo en listados.
+        Etiqueta KPI visible a usuarios solo con suscripción mensual activa.
+        Se computa en `retrieve` y en `cerca` (contexto include_kpi_badge).
         """
         include = bool(self.context.get('include_kpi_badge'))
         if not include:
+            return None
+        if not _proveedor_suscripcion_mensual_activa(obj.usuario):
             return None
         try:
             from mecanimovilapp.apps.usuarios.kpi_badge_utils import compute_kpi_badge_for_proveedor
@@ -772,6 +786,8 @@ class MecanicoDomicilioSerializer(serializers.ModelSerializer):
         """Ver `TallerSerializer.get_kpi_badge`."""
         include = bool(self.context.get('include_kpi_badge'))
         if not include:
+            return None
+        if not _proveedor_suscripcion_mensual_activa(obj.usuario):
             return None
         try:
             from mecanimovilapp.apps.usuarios.kpi_badge_utils import compute_kpi_badge_for_proveedor
