@@ -1492,15 +1492,20 @@ class TallerViewSet(viewsets.ModelViewSet):
                     ubicacion = Point(lng, lat, srid=4326)
                     taller.ubicacion = ubicacion
                     taller.save(update_fields=['ubicacion'])
-                    if direccion and str(direccion).strip():
-                        user.direccion = str(direccion).strip()
-                        user.save(update_fields=['direccion'])
+                    direccion_text = (direccion or "").strip() if direccion else ""
+                    if not direccion_text:
+                        from .geocoding_utils import reverse_geocode_chile
+                        rev = reverse_geocode_chile(lat, lng)
+                        direccion_text = (rev or {}).get("display_name") or f"{lat:.5f}, {lng:.5f}"
+                    user.direccion = direccion_text
+                    user.save(update_fields=['direccion'])
 
                     return Response({
                         'mensaje': 'Ubicación actualizada exitosamente con coordenadas proporcionadas',
                         'ubicacion': {
                             'latitud': lat,
-                            'longitud': lng
+                            'longitud': lng,
+                            'direccion_registrada': direccion_text,
                         }
                     }, status=status.HTTP_200_OK)
 
@@ -2171,14 +2176,22 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
 
                 mecanico.ubicacion = Point(lng, lat, srid=4326)
                 mecanico.save(update_fields=['ubicacion'])
-                if direccion and str(direccion).strip():
-                    user.direccion = str(direccion).strip()
-                    user.save(update_fields=['direccion'])
+                direccion_text = (direccion or "").strip() if direccion else ""
+                if not direccion_text:
+                    from .geocoding_utils import reverse_geocode_chile
+                    rev = reverse_geocode_chile(lat, lng)
+                    direccion_text = (rev or {}).get("display_name") or f"{lat:.5f}, {lng:.5f}"
+                user.direccion = direccion_text
+                user.save(update_fields=['direccion'])
 
                 return Response({
                     'message': 'Ubicación actualizada correctamente',
                     'mecanico': mecanico.nombre,
-                    'ubicacion': {'latitud': lat, 'longitud': lng},
+                    'ubicacion': {
+                        'latitud': lat,
+                        'longitud': lng,
+                        'direccion_registrada': direccion_text,
+                    },
                 })
 
             geo = geocode_address_chile(direccion)
