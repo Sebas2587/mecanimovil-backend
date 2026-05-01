@@ -2771,10 +2771,16 @@ class EstadoProveedorView(APIView):
 
         # Mecánico: dirección de perfil (Usuario) + punto para mapa / "cerca"
         if mecanico:
-            datos_proveedor['direccion'] = (usuario.direccion or '').strip()
+            dir_u = getattr(usuario, "direccion", None) or ""
+            datos_proveedor["direccion"] = (
+                dir_u.strip() if isinstance(dir_u, str) else str(dir_u).strip()
+            )
             if mecanico.ubicacion is not None:
-                datos_proveedor['ubicacion_lat'] = mecanico.ubicacion.y
-                datos_proveedor['ubicacion_lng'] = mecanico.ubicacion.x
+                try:
+                    datos_proveedor["ubicacion_lat"] = mecanico.ubicacion.y
+                    datos_proveedor["ubicacion_lng"] = mecanico.ubicacion.x
+                except Exception:
+                    pass
         
         return Response({
             'tiene_perfil': True,

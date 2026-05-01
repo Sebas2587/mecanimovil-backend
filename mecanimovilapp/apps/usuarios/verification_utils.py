@@ -49,8 +49,11 @@ def proveedor_visible_como_verificado(proveedor: "ProveedorServicio") -> bool:
     Valor unificado para serializers y estado-proveedor:
     aprobado administrativamente y documentación obligatoria validada en BD.
     """
-    if proveedor.estado_verificacion != "aprobado":
+    try:
+        if proveedor.estado_verificacion != "aprobado":
+            return False
+        if not getattr(proveedor, "verificado", False):
+            return False
+        return documentos_obligatorios_aprobados(proveedor)
+    except Exception:
         return False
-    if not getattr(proveedor, "verificado", False):
-        return False
-    return documentos_obligatorios_aprobados(proveedor)

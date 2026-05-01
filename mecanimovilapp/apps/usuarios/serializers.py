@@ -499,7 +499,9 @@ class TallerSerializer(serializers.ModelSerializer):
                             'verificado', 'estado_verificacion', 'onboarding_completado', 'onboarding_iniciado',
                             'distance')
         extra_kwargs = {
-            'ubicacion': {'required': False}  # Hacer opcional durante el onboarding
+            # Evita que ModelSerializer serialice el PointField antes de nuestro GeoJSON:
+            # geometrías corruptas o errores GEOS rompían toda la respuesta (500 HTML).
+            'ubicacion': {'required': False, 'write_only': True}
         }
     
     def get_foto_perfil_url(self, obj):
@@ -650,11 +652,16 @@ class TallerSerializer(serializers.ModelSerializer):
         Convierte la ubicación a formato GeoJSON para la respuesta API
         """
         ret = super().to_representation(instance)
-        if instance.ubicacion:
-            ret['ubicacion'] = {
-                'type': 'Point',
-                'coordinates': [instance.ubicacion.x, instance.ubicacion.y]
-            }
+        try:
+            if instance.ubicacion:
+                ret['ubicacion'] = {
+                    'type': 'Point',
+                    'coordinates': [instance.ubicacion.x, instance.ubicacion.y]
+                }
+            else:
+                ret['ubicacion'] = None
+        except Exception:
+            ret['ubicacion'] = None
         return ret
     
     def update(self, instance, validated_data):
@@ -769,7 +776,7 @@ class MecanicoDomicilioSerializer(serializers.ModelSerializer):
         read_only_fields = ('fecha_registro', 'ultima_actualizacion', 'fecha_verificacion', 
                             'verificado', 'estado_verificacion', 'onboarding_completado', 'onboarding_iniciado')
         extra_kwargs = {
-            'ubicacion': {'required': False}  # Hacer opcional durante el onboarding
+            'ubicacion': {'required': False, 'write_only': True}
         }
     
     def get_foto_perfil_url(self, obj):
@@ -981,11 +988,16 @@ class MecanicoDomicilioSerializer(serializers.ModelSerializer):
         Convierte la ubicación a formato GeoJSON para la respuesta API
         """
         ret = super().to_representation(instance)
-        if instance.ubicacion:
-            ret['ubicacion'] = {
-                'type': 'Point',
-                'coordinates': [instance.ubicacion.x, instance.ubicacion.y]
-            }
+        try:
+            if instance.ubicacion:
+                ret['ubicacion'] = {
+                    'type': 'Point',
+                    'coordinates': [instance.ubicacion.x, instance.ubicacion.y]
+                }
+            else:
+                ret['ubicacion'] = None
+        except Exception:
+            ret['ubicacion'] = None
         return ret
     
     def create(self, validated_data):
