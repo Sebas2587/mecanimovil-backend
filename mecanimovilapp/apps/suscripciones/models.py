@@ -9,6 +9,7 @@ from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator, MaxValueValidator
 from django.db.models import Q
 import logging
+from decimal import Decimal, ROUND_HALF_UP
 
 logger = logging.getLogger(__name__)
 
@@ -418,11 +419,14 @@ class ConfiguracionCreditos(models.Model):
     
     def calcular_precio_credito(self):
         """Calcula el precio del crédito según la fórmula: C = (AOV × Tasa) / K_avg"""
+        q = Decimal('0.01')
         if self.k_promedio > 0:
-            precio = (self.aov_promedio * self.tasa_comision) / self.k_promedio
-            return precio
-        return self.precio_credito_base
-    
+            precio = (self.aov_promedio * self.tasa_comision) / Decimal(self.k_promedio)
+            return precio.quantize(q, rounding=ROUND_HALF_UP)
+        if self.precio_credito_base is not None:
+            return Decimal(str(self.precio_credito_base)).quantize(q, rounding=ROUND_HALF_UP)
+        return Decimal('0')
+
     def save(self, *args, **kwargs):
         """Sobrescribir save para calcular precio_credito_base automáticamente"""
         self.precio_credito_base = self.calcular_precio_credito()
