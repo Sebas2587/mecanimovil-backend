@@ -894,6 +894,11 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
     
     # Campos para informaci?n de pago directo al proveedor
     proveedor_puede_recibir_pagos = serializers.SerializerMethodField()
+    # Créditos para confirmar adjudicación (solo proveedor dueño, oferta pendiente_creditos)
+    fecha_limite_confirmacion_creditos = serializers.SerializerMethodField()
+    creditos_necesarios_adjudicacion = serializers.SerializerMethodField()
+    saldo_creditos_proveedor = serializers.SerializerMethodField()
+    creditos_faltantes_para_confirmar = serializers.SerializerMethodField()
     
     class Meta:
         model = OfertaProveedor
@@ -912,9 +917,63 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
             'metodo_pago_cliente', 'estado_pago_repuestos', 'estado_pago_servicio',
             'proveedor_puede_recibir_pagos',
             # Campos de tiempo para pago
-            'fecha_limite_pago', 'tiempo_restante_pago'
+            'fecha_limite_pago', 'tiempo_restante_pago',
+            # Reserva por créditos (confirmación post-selección)
+            'fecha_limite_confirmacion_creditos',
+            'creditos_necesarios_adjudicacion', 'saldo_creditos_proveedor', 'creditos_faltantes_para_confirmar',
         ]
         read_only_fields = ['estado', 'fecha_envio', 'fecha_visualizacion_cliente', 'proveedor', 'tipo_proveedor', 'es_oferta_secundaria']
+    
+    def _contexto_creditos_adjudicacion(self, obj):
+        """
+        Créditos para adjudicar el primer servicio de la oferta (misma regla que seleccionar_oferta).
+        Solo visible para el proveedor dueño y cuando la oferta está pendiente de compra de créditos.
+        """
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return None
+        if getattr(obj, 'proveedor_id', None) != request.user.pk:
+            return None
+        if obj.estado != 'pendiente_creditos':
+            return None
+        if obj.es_oferta_secundaria:
+            return None
+        try:
+            det = obj.detalles_servicios.first()
+            if not det or not det.servicio_id:
+                return None
+            from mecanimovilapp.apps.suscripciones.creditos_services import (
+                validar_creditos_suficientes,
+                obtener_credito_proveedor,
+            )
+            _ok, _msg, necesarios = validar_creditos_suficientes(obj.proveedor, det.servicio)
+            saldo = obtener_credito_proveedor(obj.proveedor).saldo_creditos
+            nec = int(necesarios)
+            s = int(saldo)
+            return {'necesarios': nec, 'saldo': s, 'faltantes': max(0, nec - s)}
+        except Exception:
+            return None
+    
+    def get_fecha_limite_confirmacion_creditos(self, obj):
+        if obj.estado != 'pendiente_creditos' or not obj.solicitud_id:
+            return None
+        sol = obj.solicitud
+        fl = getattr(sol, 'fecha_limite_confirmacion_creditos', None)
+        if fl:
+            return fl.isoformat()
+        return None
+    
+    def get_creditos_necesarios_adjudicacion(self, obj):
+        ctx = self._contexto_creditos_adjudicacion(obj)
+        return ctx['necesarios'] if ctx else None
+    
+    def get_saldo_creditos_proveedor(self, obj):
+        ctx = self._contexto_creditos_adjudicacion(obj)
+        return ctx['saldo'] if ctx else None
+    
+    def get_creditos_faltantes_para_confirmar(self, obj):
+        ctx = self._contexto_creditos_adjudicacion(obj)
+        return ctx['faltantes'] if ctx else None
     
     def get_nombre_proveedor(self, obj):
         return obj.nombre_proveedor
