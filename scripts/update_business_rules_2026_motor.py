@@ -14,12 +14,16 @@ Mercado Pago (suscripciones y compra de créditos):
     `mp_preapproval_plan_id` ni otros campos MP, para no borrar vínculos existentes.
   - Se desactivan planes que no están en la lista canónica (mismo patrón que v3);
     las filas de PlanSuscripcion se reutilizan por nombre, conservando IDs y MP.
-  - Compra de créditos (top-up) usa ConfiguracionCreditos vía creditos_services; aquí
-    se deja una sola configuración activa con fórmula que da ~400 CLP/crédito.
+  - Compra de créditos (top-up) usa ConfiguracionCreditos vía creditos_services; el precio
+    unitario en BD es BRUTO (lo que paga el usuario en MP) para que, tras comisión 3,19%
+    + IVA 19% sobre esa comisión, la liquidación neta se acerque al objetivo (~400 CLP/crédito neto).
+
+Precios de planes: también BRUTOS; el valor “objetivo neto” histórico era 19.990 / 44.990 / 89.990
+antes de absorber el costo MP (ver `mercado_pago_pricing`).
 """
 import os
 import sys
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 _BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if _BACKEND_ROOT not in sys.path:
@@ -36,14 +40,19 @@ from mecanimovilapp.apps.suscripciones.models import (  # noqa: E402
     ConfiguracionCreditosServicio,
     ConfiguracionCreditos,
 )
+from mecanimovilapp.apps.suscripciones.mercado_pago_pricing import (  # noqa: E402
+    monto_bruto_para_neto_pesos_enteros,
+    monto_bruto_para_neto,
+)
 from mecanimovilapp.apps.servicios.models import Servicio  # noqa: E402
 
 NOMBRES_PLANES_CANONICOS = ('Plan Básico', 'Plan Profesional', 'Plan Premium')
 
+# precio_* = objetivo de liquidación neta mensual (antes de absorber MP); se persiste precio BRUTO.
 PLANS_DATA = [
     {
         'nombre': 'Plan Básico',
-        'precio': 19990,
+        'precio_neto_objetivo': Decimal('19990'),
         'creditos': 80,
         'descripcion': 'Ideal para mecánicos independientes que inician.',
         'orden': 1,
@@ -51,7 +60,7 @@ PLANS_DATA = [
     },
     {
         'nombre': 'Plan Profesional',
-        'precio': 44990,
+        'precio_neto_objetivo': Decimal('44990'),
         'creditos': 225,
         'descripcion': 'El plan más equilibrado para talleres medianos.',
         'orden': 2,
@@ -59,13 +68,15 @@ PLANS_DATA = [
     },
     {
         'nombre': 'Plan Premium',
-        'precio': 89990,
+        'precio_neto_objetivo': Decimal('89990'),
         'creditos': 450,
         'descripcion': 'Máxima visibilidad y volumen de leads para expertos.',
         'orden': 3,
         'destacado': False,
     },
 ]
+
+NETO_OBJETIVO_POR_CREDITO_TOPUP = Decimal('400')
 
 SERVICE_CREDITS_MAPPING = {
     'Lavado a domicilio': 5,
@@ -93,10 +104,11 @@ def update_planes():
     PlanSuscripcion.objects.exclude(nombre__in=NOMBRES_PLANES_CANONICOS).update(activo=False)
 
     for data in PLANS_DATA:
+        precio_bruto = monto_bruto_para_neto_pesos_enteros(data['precio_neto_objetivo'])
         plan, created = PlanSuscripcion.objects.update_or_create(
             nombre=data['nombre'],
             defaults={
-                'precio': Decimal(str(data['precio'])),
+                'precio': precio_bruto,
                 'creditos_mensuales': data['creditos'],
                 'descripcion': data.get('descripcion', ''),
                 'orden': data.get('orden', 0),
@@ -105,28 +117,41 @@ def update_planes():
             },
         )
         mp_hint = f"mp_plan={plan.mp_preapproval_plan_id!r}" if plan.mp_preapproval_plan_id else 'sin mp_preapproval_plan_id'
-        print(f"   - {'Creado' if created else 'Actualizado'}: {plan.nombre} (${plan.precio:,.0f}, {plan.creditos_mensuales} cr/mes) [{mp_hint}]")
+        print(
+            f"   - {'Creado' if created else 'Actualizado'}: {plan.nombre} "
+            f"(bruto ${plan.precio:,.0f} / neto ref. ~${data['precio_neto_objetivo']:,.0f}, "
+            f"{plan.creditos_mensuales} cr/mes) [{mp_hint}]"
+        )
 
 
 def update_configuracion_creditos_globales():
-    print('\n2. ConfiguracionCreditos global (top-up / precio unitario)...')
+    print('\n2. ConfiguracionCreditos global (top-up: bruto MP ≈ neto tras comisión + IVA sobre comisión)...')
+    precio_bruto_credito = monto_bruto_para_neto(NETO_OBJETIVO_POR_CREDITO_TOPUP)
+    # (AOV × tasa) / k = precio_bruto_credito  →  AOV = precio_bruto_credito × k / tasa
+    aov_para_bruto = (precio_bruto_credito * Decimal('20') / Decimal('0.1')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
     cfg = ConfiguracionCreditos.objects.order_by('-fecha_creacion').first()
     if cfg:
         ConfiguracionCreditos.objects.exclude(pk=cfg.pk).update(activo=False)
-        cfg.aov_promedio = Decimal('80000')
+        cfg.aov_promedio = aov_para_bruto
         cfg.tasa_comision = Decimal('0.1000')
         cfg.k_promedio = 20
         cfg.activo = True
         cfg.save()
-        print(f'   - Actualizado registro id={cfg.pk}: precio_credito_base={cfg.precio_credito_base}')
+        print(
+            f'   - Actualizado id={cfg.pk}: precio_credito_base (bruto)={cfg.precio_credito_base} '
+            f'(neto ref. crédito ${NETO_OBJETIVO_POR_CREDITO_TOPUP:,.0f}, AOV={cfg.aov_promedio})'
+        )
     else:
         n = ConfiguracionCreditos.objects.create(
-            aov_promedio=Decimal('80000'),
+            aov_promedio=aov_para_bruto,
             tasa_comision=Decimal('0.1000'),
             k_promedio=20,
             activo=True,
         )
-        print(f'   - Creado registro id={n.pk}: precio_credito_base={n.precio_credito_base}')
+        print(
+            f'   - Creado id={n.pk}: precio_credito_base (bruto)={n.precio_credito_base} '
+            f'(neto ref. crédito ${NETO_OBJETIVO_POR_CREDITO_TOPUP:,.0f})'
+        )
 
 
 def update_creditos_por_servicio():
