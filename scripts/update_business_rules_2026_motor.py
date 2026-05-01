@@ -1,25 +1,18 @@
 """
 Actualización idempotente de reglas de negocio 2026 (motor de créditos y planes).
 
+Incluye:
+  - Precios de planes en BRUTO Mercado Pago para lograr una liquidación neta mensual objetivo.
+  - Precio por crédito (Tienda) en BRUTO para neto objetivo por crédito (NETO_OBJETIVO_POR_CREDITO_TOPUP).
+  - Créditos por servicio según arquetipos de ticket (`pricing_arquetipos`), con tope por postulación.
+
 Ejecutar desde la raíz del backend (con venv activo):
   cd mecanimovil-backend && python scripts/update_business_rules_2026_motor.py
 
-Staging / producción:
-  - Hacer backup o snapshot de BD antes de correr.
-  - Verificar después: GET planes (app prov), estadísticas de créditos (precio unitario),
-    y que los servicios mapeados tengan 5 / 7 / 10 créditos según tabla.
+Simulación sin BD:
+  python scripts/simular_pricing_arquetipos.py --precio-bruto 520
 
-Mercado Pago (suscripciones y compra de créditos):
-  - PlanSuscripcion: solo se usa update_or_create por `nombre`. Los defaults NO incluyen
-    `mp_preapproval_plan_id` ni otros campos MP, para no borrar vínculos existentes.
-  - Se desactivan planes que no están en la lista canónica (mismo patrón que v3);
-    las filas de PlanSuscripcion se reutilizan por nombre, conservando IDs y MP.
-  - Compra de créditos (top-up) usa ConfiguracionCreditos vía creditos_services; el precio
-    unitario en BD es BRUTO (lo que paga el usuario en MP) para que, tras comisión 3,19%
-    + IVA 19% sobre esa comisión, la liquidación neta se acerque al objetivo (~400 CLP/crédito neto).
-
-Precios de planes: también BRUTOS; el valor “objetivo neto” histórico era 19.990 / 44.990 / 89.990
-antes de absorber el costo MP (ver `mercado_pago_pricing`).
+Mercado Pago: ver `mercado_pago_pricing` (3,19% + IVA sobre esa comisión).
 """
 import os
 import sys
@@ -44,15 +37,20 @@ from mecanimovilapp.apps.suscripciones.mercado_pago_pricing import (  # noqa: E4
     monto_bruto_para_neto_pesos_enteros,
     monto_bruto_para_neto,
 )
+from mecanimovilapp.apps.suscripciones.pricing_arquetipos import (  # noqa: E402
+    creditos_requeridos_por_servicio_desde_arquetipos,
+    filas_simulacion,
+    ARQUETIPOS_DEFAULT,
+)
 from mecanimovilapp.apps.servicios.models import Servicio  # noqa: E402
 
 NOMBRES_PLANES_CANONICOS = ('Plan Básico', 'Plan Profesional', 'Plan Premium')
 
-# precio_* = objetivo de liquidación neta mensual (antes de absorber MP); se persiste precio BRUTO.
+# Objetivo de liquidación neta mensual (CLP); en BD se guarda precio BRUTO vía MP.
 PLANS_DATA = [
     {
         'nombre': 'Plan Básico',
-        'precio_neto_objetivo': Decimal('19990'),
+        'precio_neto_objetivo': Decimal('22990'),
         'creditos': 80,
         'descripcion': 'Ideal para mecánicos independientes que inician.',
         'orden': 1,
@@ -60,7 +58,7 @@ PLANS_DATA = [
     },
     {
         'nombre': 'Plan Profesional',
-        'precio_neto_objetivo': Decimal('44990'),
+        'precio_neto_objetivo': Decimal('51990'),
         'creditos': 225,
         'descripcion': 'El plan más equilibrado para talleres medianos.',
         'orden': 2,
@@ -68,7 +66,7 @@ PLANS_DATA = [
     },
     {
         'nombre': 'Plan Premium',
-        'precio_neto_objetivo': Decimal('89990'),
+        'precio_neto_objetivo': Decimal('102990'),
         'creditos': 450,
         'descripcion': 'Máxima visibilidad y volumen de leads para expertos.',
         'orden': 3,
@@ -76,27 +74,12 @@ PLANS_DATA = [
     },
 ]
 
-NETO_OBJETIVO_POR_CREDITO_TOPUP = Decimal('400')
+# Neto objetivo por crédito (Tienda / fórmula); el bruto en MP se calcula con `monto_bruto_para_neto`.
+NETO_OBJETIVO_POR_CREDITO_TOPUP = Decimal('500')
 
-SERVICE_CREDITS_MAPPING = {
-    'Lavado a domicilio': 5,
-    'Cambio de ampolletas': 5,
-    'Cambio de batería': 5,
-    'Cambio de filtro habitáculo': 5,
-    'Cambio de filtro de aire': 5,
-    'Revisión técnica': 5,
-    'Servicio escáner automotriz': 5,
-    'Cambio de pastillas de frenos y rectificado': 7,
-    'Cambio de pastillas y discos de freno': 7,
-    'Cambio de pastillas de frenos': 7,
-    'Cambio de bujías': 7,
-    'Cambio aceite motor y filtro': 7,
-    'Cambio de aceite motor': 7,
-    'Revisión precompra': 7,
-    'Diagnóstico electromecánico': 7,
-    'Diagnóstico mecánico': 10,
-    'Mantenimiento por kilometraje': 10,
-}
+
+def _precio_bruto_credito_actual() -> Decimal:
+    return monto_bruto_para_neto(NETO_OBJETIVO_POR_CREDITO_TOPUP)
 
 
 def update_planes():
@@ -126,8 +109,7 @@ def update_planes():
 
 def update_configuracion_creditos_globales():
     print('\n2. ConfiguracionCreditos global (top-up: bruto MP ≈ neto tras comisión + IVA sobre comisión)...')
-    precio_bruto_credito = monto_bruto_para_neto(NETO_OBJETIVO_POR_CREDITO_TOPUP)
-    # (AOV × tasa) / k = precio_bruto_credito  →  AOV = precio_bruto_credito × k / tasa
+    precio_bruto_credito = _precio_bruto_credito_actual()
     aov_para_bruto = (precio_bruto_credito * Decimal('20') / Decimal('0.1')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
     cfg = ConfiguracionCreditos.objects.order_by('-fecha_creacion').first()
     if cfg:
@@ -155,13 +137,21 @@ def update_configuracion_creditos_globales():
 
 
 def update_creditos_por_servicio():
-    print('\n3. ConfiguracionCreditosServicio (banda 5 / 7 / 10)...')
+    precio_bruto_credito = _precio_bruto_credito_actual()
+    service_credit_mapping = creditos_requeridos_por_servicio_desde_arquetipos(
+        precio_bruto_credito,
+        max_creditos=25,
+    )
+
+    print('\n3. ConfiguracionCreditosServicio (arquetipos de ticket; tope 25 cr/postulación)...')
+    print(f'   (precio bruto/crédito de referencia: ${precio_bruto_credito:,.2f})\n')
+
     ConfiguracionCreditosServicio.objects.all().update(activo=False)
 
-    for service_name, credits in SERVICE_CREDITS_MAPPING.items():
+    for service_name, credits in service_credit_mapping.items():
         servicio = Servicio.objects.filter(nombre__iexact=service_name).first()
         if servicio:
-            row, created = ConfiguracionCreditosServicio.objects.update_or_create(
+            _row, created = ConfiguracionCreditosServicio.objects.update_or_create(
                 servicio=servicio,
                 defaults={
                     'creditos_requeridos': credits,
@@ -176,6 +166,13 @@ def update_creditos_por_servicio():
 
 def run_update():
     print('--- [INICIO] Actualización reglas de negocio 2026 ---')
+    pb = _precio_bruto_credito_actual()
+    print('\n0. Vista rápida arquetipos (postulación, bruto sobre ticket):')
+    for row in filas_simulacion(pb, ARQUETIPOS_DEFAULT):
+        print(
+            f"   - {row['id']}: ticket ${int(row['ticket_clp']):,} → "
+            f"{row['creditos_sugeridos']} cr/post (~{float(row['fraccion_ticket_bruta_efectiva']) * 100:.1f}% ticket bruto)"
+        )
     update_planes()
     update_configuracion_creditos_globales()
     update_creditos_por_servicio()

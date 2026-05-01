@@ -2,6 +2,8 @@
 
 Este texto es solo para entender el negocio. No hace falta saber de programación.
 
+> Para una guía aún más accesible (postulación, arquetipos, porcentajes, Mercado Pago), ver [modelo-negocio-creditos-para-todos.md](modelo-negocio-creditos-para-todos.md).
+
 ## ¿Qué es un crédito?
 
 Un **crédito** es como una moneda interna del taller. Cuando querés **postularte** a un trabajo que publicó un cliente, el sistema te pide **gastar algunos créditos**. Así nos aseguramos de que solo se postulen talleres que de verdad quieren ese trabajo.
