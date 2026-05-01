@@ -38,7 +38,9 @@ from mecanimovilapp.apps.suscripciones.mercado_pago_pricing import (  # noqa: E4
     monto_bruto_para_neto,
 )
 from mecanimovilapp.apps.suscripciones.pricing_arquetipos import (  # noqa: E402
+    arquetipos_por_id,
     creditos_requeridos_por_servicio_desde_arquetipos,
+    creditos_sugeridos_para_ticket,
     filas_simulacion,
     ARQUETIPOS_DEFAULT,
 )
@@ -138,15 +140,18 @@ def update_configuracion_creditos_globales():
 
 def update_creditos_por_servicio():
     precio_bruto_credito = _precio_bruto_credito_actual()
+    max_cr = 25
     service_credit_mapping = creditos_requeridos_por_servicio_desde_arquetipos(
         precio_bruto_credito,
-        max_creditos=25,
+        max_creditos=max_cr,
     )
 
     print('\n3. ConfiguracionCreditosServicio (arquetipos de ticket; tope 25 cr/postulación)...')
     print(f'   (precio bruto/crédito de referencia: ${precio_bruto_credito:,.2f})\n')
 
     ConfiguracionCreditosServicio.objects.all().update(activo=False)
+
+    processed_ids: set[int] = set()
 
     for service_name, credits in service_credit_mapping.items():
         servicio = Servicio.objects.filter(nombre__iexact=service_name).first()
@@ -158,10 +163,34 @@ def update_creditos_por_servicio():
                     'activo': True,
                 },
             )
+            processed_ids.add(servicio.pk)
             label = 'Creado' if created else 'Actualizado'
             print(f'   - {label}: {service_name[:40]:40} -> {credits} cr')
         else:
             print(f'   - NO ENCONTRADO (servicios.Servicio): {service_name}')
+
+    # Servicios en catálogo sin entrada en SERVICIO_A_ARQUETIPO (p. ej. nuevos en BD).
+    arq_medio = arquetipos_por_id()['medio']
+    cred_fallback = creditos_sugeridos_para_ticket(
+        arq_medio.ticket_referencia_clp,
+        arq_medio.fraccion_captura_objetivo,
+        precio_bruto_credito,
+        min_creditos=1,
+        max_creditos=max_cr,
+    )
+    extra = Servicio.objects.exclude(pk__in=processed_ids).order_by('nombre')
+    if extra.exists():
+        print(f'\n   [Fallback arquetipo "medio" → {cred_fallback} cr] servicios sin mapeo explícito:')
+    for servicio in extra:
+        _row, created = ConfiguracionCreditosServicio.objects.update_or_create(
+            servicio=servicio,
+            defaults={
+                'creditos_requeridos': cred_fallback,
+                'activo': True,
+            },
+        )
+        label = 'Creado' if created else 'Actualizado'
+        print(f'   - {label} (fallback): {servicio.nombre[:44]:44} -> {cred_fallback} cr')
 
 
 def run_update():

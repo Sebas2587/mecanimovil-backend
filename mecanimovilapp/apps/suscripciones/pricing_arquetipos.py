@@ -167,6 +167,8 @@ def creditos_mensuales_sugeridos_plan(
 
 
 # Mapeo servicio (nombre exacto en BD) → id de arquetipo (ajustar si cambian nombres).
+# Cualquier servicio nuevo en catálogo sin fila aquí recibe arquetipo "medio" al ejecutar
+# `scripts/update_business_rules_2026_motor.py` (fallback en el script).
 SERVICIO_A_ARQUETIPO: Dict[str, str] = {
     'Lavado a domicilio': 'basico',
     'Cambio de ampolletas': 'basico',
@@ -175,6 +177,7 @@ SERVICIO_A_ARQUETIPO: Dict[str, str] = {
     'Cambio de filtro de aire': 'basico',
     'Revisión técnica': 'basico',
     'Servicio escáner automotriz': 'basico',
+    'Cambio liquido de frenos': 'basico',
     'Cambio de pastillas de frenos y rectificado': 'medio',
     'Cambio de pastillas y discos de freno': 'medio',
     'Cambio de pastillas de frenos': 'medio',
@@ -182,6 +185,8 @@ SERVICIO_A_ARQUETIPO: Dict[str, str] = {
     'Cambio aceite motor y filtro': 'medio',
     'Cambio de aceite motor': 'medio',
     'Revisión precompra': 'medio',
+    'Cambio refrigerante motor': 'medio',
+    'Cambio amortiguadores': 'alto',
     'Diagnóstico electromecánico': 'alto',
     'Diagnóstico mecánico': 'alto',
     'Mantenimiento por kilometraje': 'premium',
