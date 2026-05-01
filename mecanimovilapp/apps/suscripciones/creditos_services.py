@@ -247,10 +247,8 @@ def comprar_creditos(proveedor, metodo_pago, paquete_id=None, cantidad_creditos=
         
         meses_expiracion = config.creditos_expiracion_meses
         fecha_expiracion = timezone.now() + timedelta(days=30 * meses_expiracion)
-        
-        # Calcular cantidad total de créditos (incluye bonificación)
-        cantidad_total = paquete.total_creditos
-        
+        # cantidad_total y precio_total ya vienen del paquete o de cantidad_creditos (no pisar con paquete)
+
         # Crear registro de compra
         compra = CompraCreditos.objects.create(
             proveedor=proveedor,
@@ -432,8 +430,10 @@ def obtener_estadisticas_creditos(proveedor):
             proveedor=proveedor
         ).order_by('-fecha_compra')[:10]
         
+        precio_unit = calcular_precio_credito()
         estadisticas = {
             'saldo_actual': credito_proveedor.saldo_creditos,
+            'precio_credito_unitario_clp': float(precio_unit.quantize(Decimal('0.01'))),
             'creditos_consumidos_mes': creditos_consumidos_mes,
             'creditos_comprados_mes': creditos_comprados_mes,
             'creditos_expirados': credito_proveedor.creditos_expirados,
@@ -464,20 +464,24 @@ def obtener_estadisticas_creditos(proveedor):
                     'id': c.id,
                     'proveedor': c.proveedor.id,
                     'proveedor_nombre': c.proveedor.username,
-                    'paquete': {
-                        'id': c.paquete.id,
-                        'nombre': c.paquete.nombre,
-                        'cantidad_creditos': c.paquete.cantidad_creditos,
-                        'precio': float(c.paquete.precio),
-                        'precio_por_credito': float(c.paquete.precio_por_credito),
-                        'bonificacion_creditos': c.paquete.bonificacion_creditos,
-                        'total_creditos': c.paquete.total_creditos,
-                        'activo': c.paquete.activo,
-                        'orden': c.paquete.orden,
-                        'destacado': c.paquete.destacado,
-                        'fecha_creacion': c.paquete.fecha_creacion.isoformat(),
-                        'fecha_actualizacion': c.paquete.fecha_actualizacion.isoformat(),
-                    },
+                    'paquete': (
+                        {
+                            'id': c.paquete.id,
+                            'nombre': c.paquete.nombre,
+                            'cantidad_creditos': c.paquete.cantidad_creditos,
+                            'precio': float(c.paquete.precio),
+                            'precio_por_credito': float(c.paquete.precio_por_credito),
+                            'bonificacion_creditos': c.paquete.bonificacion_creditos,
+                            'total_creditos': c.paquete.total_creditos,
+                            'activo': c.paquete.activo,
+                            'orden': c.paquete.orden,
+                            'destacado': c.paquete.destacado,
+                            'fecha_creacion': c.paquete.fecha_creacion.isoformat(),
+                            'fecha_actualizacion': c.paquete.fecha_actualizacion.isoformat(),
+                        }
+                        if c.paquete_id
+                        else None
+                    ),
                     'cantidad_creditos': c.cantidad_creditos,
                     'precio_total': float(c.precio_total),
                     'metodo_pago': c.metodo_pago,

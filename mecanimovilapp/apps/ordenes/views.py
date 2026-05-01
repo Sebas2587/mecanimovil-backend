@@ -2496,7 +2496,10 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
         KPIs agregados para el proveedor (respuesta en ofertas, checklist, tiempos, reseñas).
         Query params: dias (1-365, default 30).
         """
-        from mecanimovilapp.apps.ordenes.services.proveedor_kpis import compute_proveedor_kpis_resumen
+        from mecanimovilapp.apps.ordenes.services.proveedor_kpis import (
+            compute_proveedor_kpis_resumen,
+            merge_kpi_resumen_insignia_cliente_fields,
+        )
 
         try:
             dias = int(request.query_params.get('dias', '30'))
@@ -2504,6 +2507,7 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
             dias = 30
 
         payload = compute_proveedor_kpis_resumen(request.user, dias=dias)
+        payload = merge_kpi_resumen_insignia_cliente_fields(request.user, dias, payload)
         serializer = ProveedorKpisResumenSerializer(data=payload)
         serializer.is_valid(raise_exception=True)
         return Response(serializer.data)

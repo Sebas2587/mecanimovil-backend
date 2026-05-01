@@ -159,6 +159,7 @@ class EstadisticasCreditosSerializer(serializers.Serializer):
     No está basado en un modelo, sino en el resultado de obtener_estadisticas_creditos()
     """
     saldo_actual = serializers.IntegerField()
+    precio_credito_unitario_clp = serializers.FloatField()
     creditos_consumidos_mes = serializers.IntegerField()
     creditos_comprados_mes = serializers.IntegerField()
     creditos_expirados = serializers.IntegerField()

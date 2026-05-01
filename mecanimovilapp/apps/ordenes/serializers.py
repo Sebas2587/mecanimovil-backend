@@ -722,6 +722,12 @@ class ProveedorKpisResumenSerializer(serializers.Serializer):
     score_checklist = serializers.IntegerField(allow_null=True)
     score_tiempo_ejecucion = serializers.IntegerField(allow_null=True)
     score_rendimiento = serializers.IntegerField()
+    suscripcion_mensual_activa = serializers.BooleanField()
+    insignia_visible_a_clientes = serializers.BooleanField()
+    sugerencia_suscripcion_para_insignia = serializers.BooleanField()
+    mensaje_sugerencia_suscripcion = serializers.CharField(
+        allow_null=True, allow_blank=True, required=False
+    )
 
 class SolicitudServicioProveedorLegacySerializer(serializers.ModelSerializer):
     """

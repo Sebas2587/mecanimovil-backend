@@ -374,3 +374,32 @@ def _empty_payload(dias: int) -> dict[str, Any]:
         'score_tiempo_ejecucion': None,
         'score_rendimiento': 0,
     }
+
+
+def merge_kpi_resumen_insignia_cliente_fields(usuario, dias: int, payload: dict[str, Any]) -> dict[str, Any]:
+    """
+    Añade flags de suscripción / visibilidad de insignia KPI en app usuarios (misma regla que serializers usuarios).
+    """
+    from mecanimovilapp.apps.usuarios.kpi_badge_utils import compute_kpi_badge_for_proveedor
+
+    sus = getattr(usuario, 'suscripcion_proveedor', None)
+    suscripcion_mensual_activa = sus is not None and getattr(sus, 'estado', None) == 'activa'
+    payload['suscripcion_mensual_activa'] = suscripcion_mensual_activa
+    payload['insignia_visible_a_clientes'] = suscripcion_mensual_activa
+
+    badge = compute_kpi_badge_for_proveedor(proveedor_usuario=usuario, window_days=dias)
+    good_tiers = {'PRO', 'MASTER', 'ELITE'}
+    sugerencia = False
+    mensaje = None
+    if not suscripcion_mensual_activa and isinstance(badge, dict):
+        code = str(badge.get('code') or '').strip().upper()
+        score = int(badge.get('score') or 0)
+        if badge.get('is_active') and (code in good_tiers or score >= 55):
+            sugerencia = True
+            mensaje = (
+                'Tu rendimiento califica para mostrar la insignia KPI a los clientes. '
+                'Activa una suscripción mensual para destacar tu perfil en la app de usuarios.'
+            )
+    payload['sugerencia_suscripcion_para_insignia'] = sugerencia
+    payload['mensaje_sugerencia_suscripcion'] = mensaje
+    return payload
