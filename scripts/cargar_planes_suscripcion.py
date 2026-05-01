@@ -2,6 +2,10 @@
 Script de carga inicial de datos para la base de datos de producción en Render.
 Crea los planes de suscripción mensual por defecto en MecaniMovil.
 
+IMPORTANTE: solo crea planes que no existan (mismo `nombre`). No modifica
+precio ni créditos de filas ya guardadas, para no pisar valores aplicados con
+`scripts/update_business_rules_2026_motor.py`, Admin u otros scripts.
+
 INSTRUCCIONES DE USO EN RENDER:
 1. Ve a tu servicio web en render.com
 2. Shell tab → abre la shell del servicio
@@ -73,23 +77,29 @@ PLANES = [
 def cargar_planes():
     print("\n🚀 Cargando planes de suscripción en la base de datos...\n")
     creados = 0
-    actualizados = 0
+    sin_cambios = 0
 
     for plan_data in PLANES:
-        mp_id = plan_data.pop('mp_preapproval_plan_id', '')
-        plan, created = PlanSuscripcion.objects.update_or_create(
-            nombre=plan_data['nombre'],
-            defaults={**plan_data, 'mp_preapproval_plan_id': mp_id or None},
+        row = dict(plan_data)
+        mp_id = row.pop('mp_preapproval_plan_id', '') or ''
+        nombre = row['nombre']
+        plan, created = PlanSuscripcion.objects.get_or_create(
+            nombre=nombre,
+            defaults={**row, 'mp_preapproval_plan_id': mp_id or None},
         )
 
         if created:
             print(f"  ✅ CREADO   → {plan.nombre} | ${plan.precio:,.0f}/mes | {plan.creditos_mensuales} créditos")
             creados += 1
         else:
-            print(f"  🔄 ACTUALIZADO → {plan.nombre} | ${plan.precio:,.0f}/mes | {plan.creditos_mensuales} créditos")
-            actualizados += 1
+            print(
+                f"  ⏭️  YA EXISTE (sin modificar) → {plan.nombre} | "
+                f"${plan.precio:,.0f}/mes | {plan.creditos_mensuales} créditos — "
+                f"usá Admin o scripts/update_business_rules_2026_motor.py para cambiar precios"
+            )
+            sin_cambios += 1
 
-    print(f"\n📊 Resultado: {creados} creados, {actualizados} actualizados")
+    print(f"\n📊 Resultado: {creados} creados, {sin_cambios} ya existentes (no pisados)")
     print(f"📋 Total planes en BD: {PlanSuscripcion.objects.count()}")
 
     print("\n✅ ¡Planes cargados correctamente!\n")
