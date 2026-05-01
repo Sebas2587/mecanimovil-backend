@@ -82,11 +82,14 @@ import dj_database_url
 DATABASE_URL = os.environ.get('DATABASE_URL')
 
 if DATABASE_URL:
+    # conn_max_age=0: en Render/ASGI las conexiones largas suelen romperse (proxy PG,
+    # límites de conexión, reinicios). Cerrar al terminar cada request evita 503 en
+    # ráfagas por conexiones zombie; el costo es un connect extra por request.
     db_config = dj_database_url.config(
         default=DATABASE_URL,
         engine='django.contrib.gis.db.backends.postgis',
-        conn_max_age=60,  # Reducido a 1 minuto para evitar conexiones muertas cuando BD se reinicia
-        conn_health_checks=True,  # Verificar salud de conexiones antes de usar
+        conn_max_age=0,
+        conn_health_checks=True,
     )
     # Agregar opciones adicionales para mejorar estabilidad
     db_config['OPTIONS'] = {
