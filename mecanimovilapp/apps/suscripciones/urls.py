@@ -32,6 +32,13 @@ router_suscripciones.register(r'planes', PlanSuscripcionViewSet, basename='plan-
 router_suscripciones.register(r'mi-suscripcion', SuscripcionProveedorViewSet, basename='suscripcion-proveedor')
 
 urlpatterns = [
+    # Tabla servicio ↔ créditos (ruta explícita): evita que el router trate
+    # "tabla-servicios-creditos" como pk de GET .../mi-saldo/<pk>/ (retrieve).
+    path(
+        'creditos/tabla-servicios-creditos/',
+        CreditoProveedorViewSet.as_view({'get': 'tabla_servicios_creditos'}),
+        name='credito-tabla-servicios-creditos',
+    ),
     # Créditos en api/suscripciones/creditos/...
     path('creditos/', include(router_creditos.urls)),
     # Suscripciones directamente en api/suscripciones/planes/ y mi-suscripcion/

@@ -742,6 +742,31 @@ class CreditoProveedorViewSet(viewsets.ReadOnlyModelViewSet):
         
         serializer = CompraCreditosSerializer(compras, many=True)
         return Response(serializer.data)
+
+    @action(detail=False, methods=['get'], url_path='tabla-servicios-creditos')
+    def tabla_servicios_creditos(self, request):
+        """
+        Lista todos los servicios registrados con precio de referencia y créditos por postulación.
+        GET /api/suscripciones/creditos/tabla-servicios-creditos/  (preferida)
+        o GET /api/suscripciones/creditos/mi-saldo/tabla-servicios-creditos/
+        """
+        from mecanimovilapp.apps.servicios.models import Servicio
+
+        from .creditos_services import obtener_creditos_servicio
+
+        filas = []
+        for servicio in Servicio.objects.all().order_by('nombre'):
+            creditos = obtener_creditos_servicio(servicio)
+            precio_ref = servicio.precio_referencia or 0
+            filas.append(
+                {
+                    'servicio_id': servicio.id,
+                    'nombre': servicio.nombre,
+                    'precio_referencia_clp': float(precio_ref),
+                    'creditos_requeridos': creditos,
+                }
+            )
+        return Response({'servicios': filas})
     
     @action(detail=False, methods=['post'], url_path='verificar-creditos-oferta')
     def verificar_creditos_oferta(self, request):
