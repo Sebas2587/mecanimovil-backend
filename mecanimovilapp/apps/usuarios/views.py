@@ -2769,6 +2769,19 @@ class EstadoProveedorView(APIView):
                 'region': taller.direccion_fisica.region,
             }
 
+        # Taller: misma semántica que mecánico para app proveedor (texto usuario + punto PostGIS)
+        if taller:
+            dir_u = getattr(usuario, "direccion", None) or ""
+            datos_proveedor["direccion"] = (
+                dir_u.strip() if isinstance(dir_u, str) else str(dir_u).strip()
+            )
+            if taller.ubicacion is not None:
+                try:
+                    datos_proveedor["ubicacion_lat"] = taller.ubicacion.y
+                    datos_proveedor["ubicacion_lng"] = taller.ubicacion.x
+                except Exception:
+                    pass
+
         # Mecánico: dirección de perfil (Usuario) + punto para mapa / "cerca"
         if mecanico:
             dir_u = getattr(usuario, "direccion", None) or ""
