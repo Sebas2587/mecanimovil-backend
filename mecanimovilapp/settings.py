@@ -180,6 +180,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 # Rest Framework settings
 REST_FRAMEWORK = {
+    'EXCEPTION_HANDLER': 'mecanimovilapp.db_exception_handler.custom_exception_handler',
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework.authentication.TokenAuthentication',
         'rest_framework.authentication.SessionAuthentication',
