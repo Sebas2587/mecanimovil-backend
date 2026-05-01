@@ -1437,6 +1437,7 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
             'seleccionando_servicios': 'Seleccionando Servicios',
             'publicada': 'Publicada',
             'con_ofertas': 'Con Ofertas',
+            'esperando_creditos_proveedor': 'Esperando confirmación del proveedor (créditos)',
             'adjudicada': 'Adjudicada',
             'pendiente_pago': 'Pendiente de Pago',
             'pagada': 'Pagada',
@@ -1448,7 +1449,7 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
         return estado_dict.get(obj.estado, obj.estado.replace('_', ' ').title())
 
     ESTADOS_OFERTA_SECUNDARIA_PENDIENTES = [
-        'enviada', 'vista', 'en_chat', 'aceptada', 'pendiente_pago',
+        'enviada', 'vista', 'en_chat', 'pendiente_creditos', 'aceptada', 'pendiente_pago',
         'pagada_parcialmente', 'pagada', 'en_ejecucion'
     ]
 
@@ -1553,8 +1554,18 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
             elif request.user.is_staff:
                 puede_ver_info_basica = True
             elif hasattr(request.user, 'taller') or hasattr(request.user, 'mecanico_domicilio'):
-                # Los proveedores siempre pueden ver nombre y foto
-                puede_ver_info_basica = True
+                sel = obj.oferta_seleccionada
+                if (
+                    sel
+                    and sel.proveedor_id == request.user.id
+                    and (
+                        obj.estado == 'esperando_creditos_proveedor'
+                        or sel.estado == 'pendiente_creditos'
+                    )
+                ):
+                    puede_ver_info_basica = False
+                else:
+                    puede_ver_info_basica = True
         
         # Obtener nombre
         if puede_ver_info_basica:
@@ -1573,10 +1584,17 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
         }
     
     def _proveedor_puede_ver_datos_cliente(self, user, solicitud):
-        """Verifica si el proveedor tiene una oferta aceptada en esta solicitud"""
-        if not solicitud.oferta_seleccionada:
+        """Proveedor ve datos sensibles solo tras adjudicación confirmada (no en reserva por créditos)."""
+        sel = solicitud.oferta_seleccionada
+        if not sel or sel.proveedor != user:
             return False
-        return solicitud.oferta_seleccionada.proveedor == user and solicitud.oferta_seleccionada.estado == 'aceptada'
+        if solicitud.estado == 'esperando_creditos_proveedor' or sel.estado == 'pendiente_creditos':
+            return False
+        if solicitud.estado == 'adjudicada' and sel.estado == 'aceptada':
+            return True
+        if solicitud.estado in ('pendiente_pago', 'pagada', 'en_ejecucion', 'completada'):
+            return True
+        return False
     
     def get_tiempo_restante(self, obj):
         return obj.tiempo_restante

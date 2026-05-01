@@ -322,7 +322,27 @@ def confirmar_compra_creditos(compra_id, payment_id_mp=None):
             f"Créditos agregados: {compra.cantidad_creditos}. "
             f"Nuevo saldo: {credito_proveedor.saldo_creditos}"
         )
-        
+
+        proveedor_id = compra.proveedor_id
+
+        def _intentar_adjudicaciones_pendientes():
+            try:
+                from django.contrib.auth import get_user_model
+                from mecanimovilapp.apps.ordenes.services.adjudicacion_publica import (
+                    reintentar_adjudicaciones_pendientes_tras_acreditacion,
+                )
+
+                User = get_user_model()
+                prov = User.objects.get(pk=proveedor_id)
+                reintentar_adjudicaciones_pendientes_tras_acreditacion(prov)
+            except Exception as hook_err:
+                logger.error(
+                    f"Hook adjudicaciones tras compra créditos (proveedor {proveedor_id}): {hook_err}",
+                    exc_info=True,
+                )
+
+        transaction.on_commit(_intentar_adjudicaciones_pendientes)
+
         # Refrescar la compra desde la base de datos para obtener los campos actualizados
         compra.refresh_from_db()
         return compra

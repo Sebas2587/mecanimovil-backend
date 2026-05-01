@@ -40,6 +40,9 @@ from django.contrib.gis.geos import Point
 from rest_framework import serializers
 from django.core.exceptions import ValidationError
 
+from mecanimovilapp.apps.ordenes import adjudicacion_helpers
+from mecanimovilapp.apps.ordenes.services import adjudicacion_publica
+
 logger = logging.getLogger(__name__)
 
 # ============================================================================
@@ -84,6 +87,65 @@ def procesar_solicitudes_expiradas():
         procesadas = 0
         channel_layer = get_channel_layer()
         fecha_limite_aceptacion = ahora - plazo_maximo_pago
+
+        # =========================================================================
+        # PASO 0: Reserva "esperando créditos del proveedor" vencida sin confirmar
+        # =========================================================================
+        try:
+            reservas_vencidas = SolicitudServicioPublica.objects.filter(
+                estado='esperando_creditos_proveedor',
+                fecha_limite_confirmacion_creditos__isnull=False,
+                fecha_limite_confirmacion_creditos__lt=ahora,
+            ).select_related('oferta_seleccionada', 'cliente', 'cliente__usuario')
+            for sol in reservas_vencidas:
+                try:
+                    with transaction.atomic():
+                        sol_b = SolicitudServicioPublica.objects.select_for_update().get(pk=sol.pk)
+                        if sol_b.estado != 'esperando_creditos_proveedor':
+                            continue
+                        off_sel = sol_b.oferta_seleccionada
+                        if off_sel:
+                            OfertaProveedor.objects.filter(pk=off_sel.pk).update(
+                                estado='expirada',
+                                fecha_respuesta_cliente=ahora,
+                            )
+                        sol_b.oferta_seleccionada = None
+                        sol_b.fecha_limite_confirmacion_creditos = None
+                        tiene_abiertas = OfertaProveedor.objects.filter(
+                            solicitud=sol_b,
+                            estado__in=['enviada', 'vista', 'en_chat'],
+                            es_oferta_secundaria=False,
+                        ).exists()
+                        sol_b.estado = 'con_ofertas' if tiene_abiertas else 'expirada'
+                        sol_b.save(
+                            update_fields=[
+                                'estado',
+                                'oferta_seleccionada',
+                                'fecha_limite_confirmacion_creditos',
+                                'fecha_actualizacion',
+                            ]
+                        )
+                        procesadas += 1
+                        logger.info(
+                            f"Reserva créditos expirada: solicitud {sol_b.id} -> {sol_b.estado}"
+                        )
+                        try:
+                            if channel_layer and sol_b.cliente and sol_b.cliente.usuario:
+                                async_to_sync(channel_layer.group_send)(
+                                    f"cliente_{sol_b.cliente.usuario.id}",
+                                    {
+                                        'type': 'reserva_creditos_expirada',
+                                        'solicitud_id': str(sol_b.id),
+                                        'mensaje': 'El proveedor no confirmó a tiempo con créditos.',
+                                        'timestamp': ahora.isoformat(),
+                                    },
+                                )
+                        except Exception as notify_e:
+                            logger.error(f"WS cliente reserva expirada: {notify_e}", exc_info=True)
+                except Exception as e:
+                    logger.error(f"Error expirando reserva créditos solicitud {sol.id}: {e}", exc_info=True)
+        except Exception as e:
+            logger.error(f"Error listando reservas créditos vencidas: {e}", exc_info=True)
         
         # =========================================================================
         # PASO 1: Procesar ofertas individuales expiradas (PRINCIPAL y SECUNDARIAS)
@@ -299,91 +361,7 @@ def procesar_solicitudes_expiradas():
         logger.error(f"Error en procesar_solicitudes_expiradas: {e}", exc_info=True)
         return 0
 
-# ============================================================================
-# FUNCIONES HELPER PARA INTEGRACIÓN CON CARRITO
-# ============================================================================
-
-def obtener_o_crear_carrito(cliente, vehiculo):
-    """
-    Obtiene o crea un carrito activo para el cliente y vehículo.
-    Si ya existe un carrito activo para ese vehículo, lo retorna.
-    Si no existe, crea uno nuevo.
-    """
-    # CarritoAgendamiento ya está importado al inicio del archivo
-    # Buscar carrito activo para el cliente y vehículo
-    carrito = CarritoAgendamiento.objects.filter(
-        cliente=cliente,
-        vehiculo=vehiculo,
-        activo=True
-    ).first()
-    
-    if carrito:
-        logger.info(f"Carrito existente encontrado: {carrito.id}")
-        return carrito
-    
-    # Si no existe, crear uno nuevo
-    # CRÍTICO: Si hay un carrito activo para otro vehículo, desactivarlo
-    # (solo puede haber un carrito activo por cliente)
-    CarritoAgendamiento.objects.filter(
-        cliente=cliente,
-        activo=True
-    ).update(activo=False)
-    
-    carrito = CarritoAgendamiento.objects.create(
-        cliente=cliente,
-        vehiculo=vehiculo,
-        activo=True
-    )
-    logger.info(f"Carrito nuevo creado: {carrito.id}")
-    
-    return carrito
-
-def crear_chat_inicial_oferta(oferta, solicitud):
-    """
-    Crea un mensaje inicial en el chat mostrando la solicitud original.
-    Este mensaje se envía automáticamente cuando se acepta una oferta.
-    """
-    from .models import ChatSolicitud
-    
-    # Obtener información de los servicios solicitados
-    servicios_nombres = list(solicitud.servicios_solicitados.values_list('nombre', flat=True))
-    servicios_texto = ", ".join(servicios_nombres) if servicios_nombres else "Servicios varios"
-    
-    # Construir mensaje con información de la solicitud
-    mensaje_parts = [
-        "¡Hola! He aceptado tu oferta para mi solicitud de servicio.",
-        "",
-        "📋 **Detalles de la solicitud original:**",
-        f"• Descripción: {solicitud.descripcion_problema or 'Sin descripción adicional'}",
-        f"• Servicios: {servicios_texto}",
-        f"• Ubicación: {solicitud.direccion_servicio_texto or 'Ubicación no especificada'}",
-        f"• Fecha preferida: {solicitud.fecha_preferida.strftime('%d/%m/%Y') if solicitud.fecha_preferida else 'No especificada'}",
-    ]
-    
-    if solicitud.hora_preferida:
-        mensaje_parts.append(f"• Hora preferida: {solicitud.hora_preferida.strftime('%H:%M')}")
-    
-    if solicitud.detalles_ubicacion:
-        mensaje_parts.append(f"• Detalles adicionales: {solicitud.detalles_ubicacion}")
-    
-    mensaje_parts.extend([
-        "",
-        "Puedes contactarme a través de este chat para coordinar los detalles del servicio.",
-    ])
-    
-    mensaje = "\n".join(mensaje_parts)
-    
-    # Crear mensaje del chat (enviado por el cliente)
-    chat_mensaje = ChatSolicitud.objects.create(
-        oferta=oferta,
-        mensaje=mensaje,
-        enviado_por=solicitud.cliente.usuario,
-        es_proveedor=False
-    )
-    
-    logger.info(f"Mensaje inicial del chat creado: {chat_mensaje.id} para oferta: {oferta.id}")
-    
-    return chat_mensaje
+# Helpers carrito/chat: mecanimovilapp.apps.ordenes.adjudicacion_helpers
 
 # DISPONIBILIDADVIEWSET ELIMINADO - REEMPLAZADO POR ENDPOINTS EN USUARIOS APP
 # (Los horarios ahora se manejan desde usuarios/talleres/{id}/horarios_disponibles/ y usuarios/mecanicos-domicilio/{id}/horarios_disponibles/)
@@ -2769,7 +2747,10 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
         # Incluir estados que permiten crear ofertas secundarias: pagada, en_ejecucion
         query |= Q(
             ofertas__proveedor=user,
-            ofertas__estado__in=['enviada', 'vista', 'en_chat', 'aceptada', 'pendiente_pago', 'pagada', 'en_ejecucion']
+            ofertas__estado__in=[
+                'enviada', 'vista', 'en_chat', 'pendiente_creditos',
+                'aceptada', 'pendiente_pago', 'pagada', 'en_ejecucion',
+            ]
         )
         
         # Excluir la condición imposible y aplicar distinct para evitar duplicados
@@ -3366,12 +3347,13 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
                 })
             
             # Lógica para ofertas originales (sin cambios)
-            if solicitud.estado in ['adjudicada', 'cancelada', 'expirada']:
+            if solicitud.estado in ['adjudicada', 'cancelada', 'expirada', 'esperando_creditos_proveedor']:
                 logger.warning(f"No se puede seleccionar oferta - Solicitud en estado: {solicitud.estado}")
                 mensaje_error = {
                     'adjudicada': 'Esta solicitud ya tiene una oferta aceptada. No se pueden aceptar más ofertas.',
                     'cancelada': 'Esta solicitud ha sido cancelada. No se pueden aceptar ofertas.',
-                    'expirada': 'Esta solicitud ha expirado. No se pueden aceptar ofertas.'
+                    'expirada': 'Esta solicitud ha expirado. No se pueden aceptar ofertas.',
+                    'esperando_creditos_proveedor': 'Hay un proveedor pendiente de confirmar con créditos. No se puede elegir otra oferta por ahora.',
                 }.get(solicitud.estado, f'No se puede seleccionar oferta en estado: {solicitud.estado}')
                 return Response(
                     {'error': mensaje_error},
@@ -3410,399 +3392,91 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
                 )
             
             logger.info(f"Oferta tiene {len(detalles_servicios)} servicios")
-            
-            # ✅ VALIDAR CRÉDITOS ANTES DE ADJUDICAR (solo para ofertas originales)
+
+            use_reserve_por_creditos = False
+            creditos_necesarios_reserva = 0
+
+            # ✅ VALIDAR CRÉDITOS: si no alcanza, reservar adjudicación hasta que compre créditos
             if not oferta.es_oferta_secundaria:
                 try:
-                    from mecanimovilapp.apps.suscripciones.creditos_services import (
-                        validar_creditos_suficientes,
-                        obtener_creditos_servicio
-                    )
+                    from mecanimovilapp.apps.suscripciones.creditos_services import validar_creditos_suficientes
                     from mecanimovilapp.apps.suscripciones.creditos_services import puede_adjudicar as puede_adjudicar_creditos
-                    
-                    # Validar que puede adjudicar (anti-gaming)
-                    puede, mensaje_anti_gaming = puede_adjudicar_creditos(oferta.proveedor)
-                    if not puede:
+
+                    puede_ag, mensaje_anti_gaming = puede_adjudicar_creditos(oferta.proveedor)
+                    if not puede_ag:
                         logger.warning(f"Proveedor {oferta.proveedor.id} no puede adjudicar: {mensaje_anti_gaming}")
                         return Response(
                             {'error': mensaje_anti_gaming},
                             status=status.HTTP_400_BAD_REQUEST
                         )
-                    
-                    # Obtener servicio principal para validar créditos
+
                     if detalles_servicios:
                         servicio_principal = detalles_servicios[0].servicio
                         puede_adjudicar, mensaje, creditos_necesarios = validar_creditos_suficientes(
                             oferta.proveedor,
                             servicio_principal
                         )
-                        
                         if not puede_adjudicar:
-                            logger.warning(
-                                f"Proveedor {oferta.proveedor.id} no tiene créditos suficientes: {mensaje}"
+                            use_reserve_por_creditos = True
+                            creditos_necesarios_reserva = creditos_necesarios
+                            logger.info(
+                                f"Proveedor {oferta.proveedor.id} sin saldo suficiente; "
+                                f"reserva adjudicación ({creditos_necesarios} créditos requeridos)"
                             )
-                            return Response(
-                                {
-                                    'error': mensaje,
-                                    'creditos_necesarios': creditos_necesarios,
-                                    'creditos_disponibles': None  # Se puede obtener del servicio si es necesario
-                                },
-                                status=status.HTTP_400_BAD_REQUEST
+                        else:
+                            logger.info(
+                                f"Validación de créditos OK para proveedor {oferta.proveedor.id}: "
+                                f"necesita {creditos_necesarios} créditos"
                             )
-                        
-                        logger.info(
-                            f"Validación de créditos OK para proveedor {oferta.proveedor.id}: "
-                            f"necesita {creditos_necesarios} créditos"
-                        )
                 except ImportError:
                     logger.warning("Módulo de créditos no disponible, omitiendo validación")
                 except Exception as e:
                     logger.error(f"Error validando créditos: {e}", exc_info=True)
-                    # No bloquear adjudicación si hay error en validación de créditos
-                    # (por compatibilidad durante transición)
-            
+
+            if use_reserve_por_creditos:
+                reserva = adjudicacion_publica.aplicar_reserva_por_falta_creditos(
+                    solicitud.id,
+                    oferta.id,
+                    creditos_necesarios_reserva,
+                )
+                solicitud.refresh_from_db()
+                oferta.refresh_from_db()
+                solicitud_serializer = SolicitudServicioPublicaSerializer(
+                    solicitud, context={'request': request}
+                )
+                return Response({
+                    'estado_resultado': 'esperando_creditos_proveedor',
+                    'message': 'El proveedor elegido debe confirmar comprando créditos antes de continuar el flujo.',
+                    'creditos_necesarios': creditos_necesarios_reserva,
+                    'fecha_limite_confirmacion_creditos': reserva['fecha_limite_confirmacion_creditos'].isoformat(),
+                    'solicitud': solicitud_serializer.data,
+                    'oferta_id': str(oferta.id),
+                })
+
             # Variable para almacenar el ID del carrito fuera de la transacción
             carrito_id = None
-            
-            with transaction.atomic():
-                # Marcar oferta como aceptada
-                logger.info("Marcando oferta como aceptada")
-                oferta.estado = 'aceptada'
-                oferta.fecha_respuesta_cliente = timezone.now()
-                oferta.save(update_fields=['estado', 'fecha_respuesta_cliente'])
-                
-                # Actualizar solicitud
-                logger.info("Actualizando solicitud")
-                solicitud.estado = 'adjudicada'
-                solicitud.oferta_seleccionada = oferta
-                
-                # ✅ Establecer fecha_limite_pago = fecha del servicio (fecha_disponible de la oferta)
-                if oferta.fecha_disponible:
-                    from datetime import datetime
-                    hora_disponible = oferta.hora_disponible or timezone.now().time()
-                    fecha_limite = timezone.make_aware(
-                        datetime.combine(oferta.fecha_disponible, hora_disponible)
-                    )
-                    solicitud.fecha_limite_pago = fecha_limite
-                    logger.info(f"Fecha límite de pago establecida: {fecha_limite} (fecha del servicio)")
-                
-                solicitud.save(update_fields=['estado', 'oferta_seleccionada', 'fecha_limite_pago'])
-                
-                # Rechazar otras ofertas ORIGINALES (no afectar ofertas secundarias)
-                logger.info("Rechazando otras ofertas originales")
-                ofertas_rechazadas = OfertaProveedor.objects.filter(
-                    solicitud=solicitud,
-                    estado__in=['enviada', 'vista', 'en_chat'],
-                    es_oferta_secundaria=False  # Solo rechazar ofertas originales
-                ).exclude(id=oferta.id).update(
-                    estado='rechazada',
-                    fecha_respuesta_cliente=timezone.now()
-                )
-                logger.info(f"Rechazadas {ofertas_rechazadas} ofertas originales")
-                
-                # ✅ CONSUMIR CRÉDITOS AL ADJUDICAR (solo para ofertas originales)
-                # Se consumen inmediatamente cuando el cliente acepta la oferta
-                # 
-                # ✅ POLÍTICA DE CRÉDITOS:
-                # - Los créditos se consumen SOLO cuando la oferta es adjudicada (cliente acepta)
-                # - Los créditos NO se consumen cuando se envía la oferta
-                # - Los créditos NO se devuelven NUNCA una vez adjudicados (previene gaming)
-                # - Esto es justo para el proveedor y previene que clientes cancelen después de adjudicar
-                if not oferta.es_oferta_secundaria and detalles_servicios:
-                    try:
-                        from mecanimovilapp.apps.suscripciones.creditos_services import (
-                            consumir_creditos_adjudicacion
-                        )
-                        
-                        servicio_principal = detalles_servicios[0].servicio
-                        
-                        logger.info(
-                            f"🔄 Intentando consumir créditos al adjudicar oferta {oferta.id} - "
-                            f"Proveedor: {oferta.proveedor.id}, Servicio: {servicio_principal.nombre}"
-                        )
-                        
-                        consumo = consumir_creditos_adjudicacion(
-                            proveedor=oferta.proveedor,
-                            oferta=oferta,
-                            servicio=servicio_principal
-                        )
-                        
-                        logger.info(
-                            f"✅ Créditos consumidos exitosamente al adjudicar: {consumo.creditos_consumidos} créditos "
-                            f"para oferta {oferta.id}, servicio {servicio_principal.nombre}, "
-                            f"proveedor {oferta.proveedor.id} (ID de consumo: {consumo.id})"
-                        )
-                    except ImportError as e:
-                        logger.error(f"❌ Módulo de créditos no disponible: {e}", exc_info=True)
-                        # No bloquear adjudicación si el módulo no está disponible
-                        # pero loggear el error para debugging
-                    except Exception as e:
-                        logger.error(
-                            f"❌ Error consumiendo créditos al adjudicar oferta {oferta.id}: {e}",
-                            exc_info=True
-                        )
-                        # Rollback de la transacción si falla el consumo de créditos
-                        raise
-                else:
-                    if oferta.es_oferta_secundaria:
-                        logger.info(f"ℹ️ Oferta {oferta.id} es secundaria, no se consumen créditos")
-                    elif not detalles_servicios:
-                        logger.warning(f"⚠️ Oferta {oferta.id} no tiene detalles_servicios, no se pueden consumir créditos")
-                
-                # Sin vehículo (ej. precompra): sin carrito; pago vía pagar_solicitud_adjudicada
-                carrito = None
-                if solicitud.vehiculo_id is not None:
-                    # Obtener o crear carrito para el cliente y vehículo
-                    logger.info("Obteniendo o creando carrito para cliente y vehículo")
-                    try:
-                        # Obtener o crear carrito (CarritoAgendamiento ya está importado al inicio del archivo)
-                        carrito = obtener_o_crear_carrito(solicitud.cliente, solicitud.vehiculo)
-                        logger.info(f"Carrito obtenido/creado: {carrito.id}")
-                        
-                        # Copiar notas de la solicitud al carrito (si existen y el carrito no tiene notas)
-                        if solicitud.descripcion_problema and not carrito.notas:
-                            carrito.notas = solicitud.descripcion_problema
-                            carrito.fecha_programada = oferta.fecha_disponible
-                            carrito.hora_programada = oferta.hora_disponible
-                            carrito.save(update_fields=['notas', 'fecha_programada', 'hora_programada'])
-                            logger.info(f"Notas copiadas al carrito: {carrito.id}")
-                    except Exception as e:
-                        logger.error(f"Error obteniendo/creando carrito: {e}", exc_info=True)
-                        return Response(
-                            {'error': f'Error al obtener o crear el carrito: {str(e)}'},
-                            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                        )
-                    
-                    # Agregar servicios al carrito
-                    logger.info("Agregando servicios al carrito")
-                    from mecanimovilapp.apps.servicios.models import OfertaServicio
-                    
-                    # Obtener tipo_proveedor correcto para usar en OfertaServicio
-                    # CRÍTICO: Usar el tipo_proveedor de la oferta directamente, no inferirlo
-                    tipo_proveedor_servicio = oferta.tipo_proveedor
-                    logger.info(f"Tipo de proveedor para OfertaServicio: {tipo_proveedor_servicio} (de oferta: {oferta.id})")
-                    
-                    # Validar que tipo_proveedor_servicio coincida con taller/mecanico
-                    if tipo_proveedor_servicio == 'taller' and not taller:
-                        logger.error(f"Inconsistencia: tipo_proveedor='taller' pero taller es None")
-                        raise ValueError("Inconsistencia: tipo_proveedor es 'taller' pero no hay taller asociado")
-                    elif tipo_proveedor_servicio == 'mecanico' and not mecanico:
-                        logger.error(f"Inconsistencia: tipo_proveedor='mecanico' pero mecanico es None")
-                        raise ValueError("Inconsistencia: tipo_proveedor es 'mecanico' pero no hay mecánico asociado")
-                    elif tipo_proveedor_servicio not in ['taller', 'mecanico']:
-                        logger.error(f"Tipo de proveedor inválido: {tipo_proveedor_servicio}")
-                        raise ValueError(f"Tipo de proveedor inválido: {tipo_proveedor_servicio}")
-                    
-                    for detalle in detalles_servicios:
-                        try:
-                            logger.info(f"Procesando detalle de servicio: {detalle.servicio.id}, Precio: {detalle.precio_servicio}")
-                            
-                            # Buscar o crear OfertaServicio correspondiente
-                            # CRÍTICO: Incluir tipo_proveedor en la búsqueda para evitar ambigüedades
-                            try:
-                                oferta_servicio = OfertaServicio.objects.get(
-                                    servicio=detalle.servicio,
-                                    tipo_proveedor=tipo_proveedor_servicio,
-                                    taller=taller,
-                                    mecanico=mecanico
-                                )
-                                logger.info(f"OfertaServicio encontrada: {oferta_servicio.id}")
-                            except OfertaServicio.DoesNotExist:
-                                # Crear OfertaServicio temporal
-                                logger.info("Creando OfertaServicio temporal")
-                                
-                                # IMPORTANTE: El modelo OfertaServicio tiene un método save() que llama a calcular_precios()
-                                # calcular_precios() calcula precios basándose en costo_mano_de_obra_sin_iva y costo_repuestos_sin_iva
-                                # El precio que viene de detalle.precio_servicio es el precio final que el proveedor ofreció
-                                # Necesitamos trabajar hacia atrás para calcular los costos sin IVA
-                                
-                                from decimal import Decimal
-                                precio_ofrecido = Decimal(str(detalle.precio_servicio))
-                                
-                                # El precio_ofrecido es el precio final que el cliente pagará (con IVA)
-                                # Necesitamos calcular los costos sin IVA que resulten en ese precio
-                                # Fórmula: precio_final = (costo_mano_de_obra + costo_repuestos) * 1.19
-                                # Por lo tanto: costo_total_sin_iva = precio_ofrecido / 1.19
-                                IVA_RATE = Decimal('0.19')
-                                costo_total_sin_iva = precio_ofrecido / (Decimal('1') + IVA_RATE)
-                                
-                                # Dividir el costo total entre mano de obra y repuestos
-                                if oferta.incluye_repuestos:
-                                    # Si incluye repuestos, dividir aproximadamente 70% mano de obra, 30% repuestos
-                                    costo_mano_de_obra = costo_total_sin_iva * Decimal('0.7')
-                                    costo_repuestos = costo_total_sin_iva * Decimal('0.3')
-                                    tipo_servicio = 'con_repuestos'
-                                else:
-                                    # Si no incluye repuestos, todo es mano de obra
-                                    costo_mano_de_obra = costo_total_sin_iva
-                                    costo_repuestos = Decimal('0')
-                                    tipo_servicio = 'sin_repuestos'
-                                
-                                logger.info(f"Creando OfertaServicio: tipo_proveedor={tipo_proveedor_servicio}, taller={taller.id if taller else None}, mecanico={mecanico.id if mecanico else None}")
-                                logger.info(f"  Precio ofrecido: {precio_ofrecido}, Costo total sin IVA: {costo_total_sin_iva}")
-                                logger.info(f"  Costo mano de obra: {costo_mano_de_obra}, Costo repuestos: {costo_repuestos}, Tipo: {tipo_servicio}")
-                                
-                                try:
-                                    # CRÍTICO: Validar que tipo_proveedor coincida con taller/mecanico ANTES de crear
-                                    if tipo_proveedor_servicio == 'taller':
-                                        if not taller:
-                                            raise ValueError(f"Inconsistencia: tipo_proveedor='taller' pero taller es None")
-                                        if mecanico:
-                                            raise ValueError(f"Inconsistencia: tipo_proveedor='taller' pero mecanico no es None")
-                                    elif tipo_proveedor_servicio == 'mecanico':
-                                        if not mecanico:
-                                            raise ValueError(f"Inconsistencia: tipo_proveedor='mecanico' pero mecanico es None")
-                                        if taller:
-                                            raise ValueError(f"Inconsistencia: tipo_proveedor='mecanico' pero taller no es None")
-                                    else:
-                                        raise ValueError(f"Tipo de proveedor inválido: {tipo_proveedor_servicio}")
-                                    
-                                    # Crear OfertaServicio con los costos correctos
-                                    # CRÍTICO: Asegurar que taller y mecanico se establezcan correctamente según tipo_proveedor
-                                    # El modelo valida que tipo_proveedor=='taller' implica taller!=None y mecanico==None
-                                    # Y que tipo_proveedor=='mecanico' implica mecanico!=None y taller==None
-                                    
-                                    taller_final = taller if tipo_proveedor_servicio == 'taller' else None
-                                    mecanico_final = mecanico if tipo_proveedor_servicio == 'mecanico' else None
-                                    
-                                    logger.info(f"Valores finales para OfertaServicio:")
-                                    logger.info(f"  tipo_proveedor: '{tipo_proveedor_servicio}' (type: {type(tipo_proveedor_servicio)})")
-                                    logger.info(f"  taller: {taller_final.id if taller_final else None}")
-                                    logger.info(f"  mecanico: {mecanico_final.id if mecanico_final else None}")
-                                    logger.info(f"  servicio: {detalle.servicio.id}")
-                                    logger.info(f"  costo_mano_de_obra: {costo_mano_de_obra}, costo_repuestos: {costo_repuestos}")
-                                    
-                                    # Crear instancia sin guardar primero para validar
-                                    oferta_servicio = OfertaServicio(
-                                        servicio=detalle.servicio,
-                                        tipo_proveedor=str(tipo_proveedor_servicio).strip(),  # Asegurar que sea string y sin espacios
-                                        taller=taller_final,
-                                        mecanico=mecanico_final,
-                                        costo_mano_de_obra_sin_iva=costo_mano_de_obra,
-                                        costo_repuestos_sin_iva=costo_repuestos,
-                                        tipo_servicio=tipo_servicio
-                                    )
-                                    
-                                    # Llamar a clean() manualmente para validar antes de guardar
-                                    logger.info(f"Validando OfertaServicio antes de guardar...")
-                                    try:
-                                        oferta_servicio.clean()
-                                        logger.info(f"Validación exitosa")
-                                    except ValidationError as ve:
-                                        logger.error(f"Error de validación en clean(): {ve}", exc_info=True)
-                                        logger.error(f"Estado del objeto: tipo_proveedor='{oferta_servicio.tipo_proveedor}', taller={oferta_servicio.taller}, mecanico={oferta_servicio.mecanico}")
-                                        raise
-                                    
-                                    # Guardar (calcular_precios() se ejecutará automáticamente en save())
-                                    logger.info(f"Guardando OfertaServicio...")
-                                    try:
-                                        oferta_servicio.save()
-                                    except Exception as e:
-                                        logger.error(f"Error en save() de OfertaServicio: {e}", exc_info=True)
-                                        raise
-                                    
-                                    logger.info(f"OfertaServicio creada exitosamente: {oferta_servicio.id}")
-                                    logger.info(f"  Precios calculados: con_repuestos={oferta_servicio.precio_con_repuestos}, sin_repuestos={oferta_servicio.precio_sin_repuestos}")
-                                    logger.info(f"  Precio publicado cliente: {oferta_servicio.precio_publicado_cliente}")
-                                except ValidationError as ve:
-                                    logger.error(f"Error de validación creando OfertaServicio: {ve}", exc_info=True)
-                                    logger.error(f"Datos intentados: tipo_proveedor={tipo_proveedor_servicio}, taller={taller.id if taller else None}, mecanico={mecanico.id if mecanico else None}")
-                                    logger.error(f"  servicio={detalle.servicio.id}, costo_mano_de_obra={costo_mano_de_obra}, costo_repuestos={costo_repuestos}")
-                                    raise
-                                except Exception as e:
-                                    logger.error(f"Error creando OfertaServicio: {e}", exc_info=True)
-                                    logger.error(f"Datos intentados: tipo_proveedor={tipo_proveedor_servicio}, taller={taller}, mecanico={mecanico}")
-                                    logger.error(f"  servicio={detalle.servicio.id}, costo_mano_de_obra={costo_mano_de_obra}, costo_repuestos={costo_repuestos}")
-                                    raise
-                            
-                            # Crear línea de servicio
-                            # Usar el precio calculado de oferta_servicio (después de calcular_precios())
-                            # Si incluye_repuestos, usar precio_con_repuestos, sino precio_sin_repuestos
-                            precio_unitario_linea = oferta_servicio.precio_con_repuestos if oferta.incluye_repuestos else oferta_servicio.precio_sin_repuestos
-                            
-                            logger.info(f"Agregando servicio al carrito: precio_unitario={precio_unitario_linea}, con_repuestos={oferta.incluye_repuestos}")
-                            
-                            # Crear o actualizar item del carrito
-                            item_carrito, created = ItemCarritoAgendamiento.objects.get_or_create(
-                                carrito=carrito,
-                                oferta_servicio=oferta_servicio,
-                                defaults={
-                                    'con_repuestos': oferta.incluye_repuestos,
-                                    'cantidad': 1,
-                                    'fecha_servicio': oferta.fecha_disponible,
-                                    'hora_servicio': oferta.hora_disponible,
-                                }
-                            )
-                            
-                            if not created:
-                                # Si el item ya existe, actualizar información
-                                item_carrito.con_repuestos = oferta.incluye_repuestos
-                                item_carrito.fecha_servicio = oferta.fecha_disponible
-                                item_carrito.hora_servicio = oferta.hora_disponible
-                                item_carrito.save(update_fields=['con_repuestos', 'fecha_servicio', 'hora_servicio'])
-                                logger.info(f"Item del carrito actualizado: {item_carrito.id}")
-                            else:
-                                logger.info(f"Item del carrito creado: {item_carrito.id}, precio_estimado={item_carrito.precio_estimado}")
-                        except Exception as e:
-                            logger.error(f"Error agregando servicio al carrito para {detalle.servicio.id}: {e}", exc_info=True)
-                            # Re-lanzar la excepción para que se revierta la transacción
-                            raise
-                    
-                    logger.info(f"Total de servicios agregados al carrito: {len(detalles_servicios)}")
-                else:
-                    logger.info(
-                        "Solicitud sin vehículo: adjudicada sin carrito; usar POST pagar_solicitud_adjudicada para pagar"
-                    )
-                
-                # Crear mensaje inicial en el chat
-                logger.info("Creando mensaje inicial en el chat")
-                try:
-                    chat_mensaje = crear_chat_inicial_oferta(oferta, solicitud)
-                    logger.info(f"Mensaje inicial del chat creado: {chat_mensaje.id}")
-                except Exception as e:
-                    logger.error(f"Error creando mensaje inicial en el chat: {e}", exc_info=True)
-                    # No fallar la operación si falla la creación del chat, pero loguear el error
-                
-                # Notificar al proveedor vía WebSocket
-                try:
-                    channel_layer = get_channel_layer()
-                    if channel_layer:
-                        async_to_sync(channel_layer.group_send)(
-                            f"proveedor_{oferta.proveedor.id}",
-                            {
-                                'type': 'oferta_aceptada',
-                                'oferta_id': str(oferta.id),
-                                'solicitud_id': str(solicitud.id),
-                                'carrito_id': carrito.id if carrito else None,
-                                'mensaje': '¡Tu oferta fue aceptada! El cliente procederá con el pago.',
-                                'estado_oferta': 'aceptada',
-                                'monto_total': float(oferta.precio_total_ofrecido),
-                                'timestamp': timezone.now().isoformat()
-                            }
-                        )
-                        logger.info(f"Notificación WebSocket 'oferta_aceptada' enviada al proveedor: {oferta.proveedor.id}")
 
-                        # NUEVO: Notificación vía Push al proveedor
-                        push_body = (
-                            f"Has ganado la solicitud para un {solicitud.vehiculo.marca} {solicitud.vehiculo.modelo}"
-                            if solicitud.vehiculo_id
-                            else "Has ganado una solicitud de servicio (sin vehículo registrado)"
-                        )
-                        send_expo_push_notification.delay(
-                            oferta.proveedor.id,
-                            "¡Felicidades! Oferta adjudicada 🎉",
-                            push_body,
-                            {"type": "offer_accepted", "solicitud_id": str(solicitud.id), "oferta_id": str(oferta.id)}
-                        )
-                except Exception as e:
-                    logger.error(f"Error enviando notificación WebSocket: {e}", exc_info=True)
-                    # No fallar la operación si falla la notificación
-                
-                # Guardar el ID del carrito para usar después de la transacción (solo si hubo carrito)
-                if carrito is not None:
-                    carrito_id = carrito.id
-                    logger.info(f"Carrito ID guardado: {carrito_id}")
-            
+            try:
+                with transaction.atomic():
+                    solicitud_tx = SolicitudServicioPublica.objects.select_for_update().get(pk=solicitud.pk)
+                    oferta_tx = OfertaProveedor.objects.select_for_update().get(pk=oferta.pk)
+                    detalles_tx = list(oferta_tx.detalles_servicios.all())
+                    carrito_id = adjudicacion_publica.ejecutar_finalizacion_adjudicacion(
+                        solicitud_tx,
+                        oferta_tx,
+                        taller,
+                        mecanico,
+                        detalles_tx,
+                    )
+            except adjudicacion_publica.AdjudicacionCarritoError as e:
+                return Response(
+                    {'error': str(e), 'estado_resultado': 'error'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+
+            solicitud.refresh_from_db()
+            oferta.refresh_from_db()
+
             # Sin carrito (solicitud sin vehículo): respuesta indica pagar con pagar_solicitud_adjudicada
             if not carrito_id:
                 try:
@@ -3810,6 +3484,7 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
                         solicitud, context={'request': request}
                     )
                     return Response({
+                        'estado_resultado': 'adjudicada',
                         'message': 'Oferta adjudicada sin carrito; use pagar_solicitud_adjudicada para confirmar y pagar',
                         'sin_carrito': True,
                         'carrito': None,
@@ -3852,9 +3527,10 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
                 solicitud_serializer = SolicitudServicioPublicaSerializer(solicitud, context={'request': request})
                 
                 return Response({
+                    'estado_resultado': 'adjudicada',
                     'message': 'Oferta agregada al carrito exitosamente',
                     'carrito': carrito_serializer.data,
-                    'solicitud': solicitud_serializer.data
+                    'solicitud': solicitud_serializer.data,
                 })
             except Exception as e:
                 logger.error(f"Error serializando carrito o solicitud: {e}", exc_info=True)
@@ -3869,6 +3545,30 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
                 {'error': f'Error al seleccionar la oferta: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+    @action(detail=True, methods=['post'], url_path='reintentar-completar-adjudicacion')
+    def reintentar_completar_adjudicacion(self, request, pk=None):
+        """
+        El proveedor de la oferta seleccionada fuerza reintento de cierre tras acreditarse créditos.
+        """
+        solicitud = self.get_object()
+        if not (hasattr(request.user, 'taller') or hasattr(request.user, 'mecanico_domicilio')):
+            return Response(
+                {'error': 'Solo proveedores pueden usar este endpoint'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if not solicitud.oferta_seleccionada_id:
+            return Response(
+                {'error': 'No hay oferta seleccionada en esta solicitud'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if solicitud.oferta_seleccionada.proveedor_id != request.user.id:
+            return Response(
+                {'error': 'No autorizado'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        result = adjudicacion_publica.completar_adjudicacion_si_listo(solicitud.oferta_seleccionada_id)
+        return Response(result, status=status.HTTP_200_OK)
     
     @action(detail=True, methods=['post'])
     def pagar_solicitud_adjudicada(self, request, pk=None):
@@ -6065,6 +5765,13 @@ class ChatSolicitudViewSet(viewsets.ModelViewSet):
                 "No se puede chatear en una oferta rechazada, retirada o expirada"
             )
         
+        # ✅ Reserva por créditos: solo la oferta elegida puede seguir en chat
+        if oferta.solicitud.estado == 'esperando_creditos_proveedor':
+            if oferta.solicitud.oferta_seleccionada_id != oferta.id:
+                raise permissions.PermissionDenied(
+                    "No se puede chatear en esta oferta: el cliente espera confirmación de créditos del proveedor elegido."
+                )
+
         # ✅ Validar que si la solicitud está adjudicada, la oferta debe ser la seleccionada o estar en estado válido
         if oferta.solicitud.estado == 'adjudicada':
             # Solo permitir chat si la oferta es la seleccionada o está en estados válidos

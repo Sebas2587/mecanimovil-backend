@@ -506,6 +506,9 @@ if not DEBUG:
 # ============================================
 # LOGGING
 # ============================================
+# Horas para que el proveedor elegido confirme adjudicación comprando créditos (solicitud pública)
+ADJUDICACION_CREDITOS_RESERVA_HORAS = int(config('ADJUDICACION_CREDITOS_RESERVA_HORAS', default=48))
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,

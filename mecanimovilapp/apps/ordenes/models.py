@@ -786,6 +786,7 @@ class SolicitudServicioPublica(models.Model):
             ('seleccionando_servicios', 'Seleccionando Servicios'),
             ('publicada', 'Publicada - Esperando Ofertas'),
             ('con_ofertas', 'Con Ofertas Recibidas'),
+            ('esperando_creditos_proveedor', 'Esperando confirmación de créditos del proveedor'),
             ('adjudicada', 'Adjudicada a Proveedor'),
             ('pendiente_pago', 'Cliente Procesando Pago'),
             ('pagada', 'Pago Completado - Listo para Iniciar'),
@@ -822,6 +823,13 @@ class SolicitudServicioPublica(models.Model):
         blank=True,
         help_text='Fecha límite para pagar después de adjudicar (fecha del servicio)',
         verbose_name='Fecha Límite de Pago'
+    )
+
+    fecha_limite_confirmacion_creditos = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='Plazo para que el proveedor elegido acredite créditos y confirme la adjudicación',
+        verbose_name='Fecha límite confirmación créditos proveedor'
     )
     
     fecha_actualizacion = models.DateTimeField(
@@ -1188,6 +1196,7 @@ class OfertaProveedor(models.Model):
             ('enviada', 'Enviada'),
             ('vista', 'Vista por Cliente'),
             ('en_chat', 'En Conversación'),
+            ('pendiente_creditos', 'Pendiente créditos proveedor'),
             ('aceptada', 'Aceptada por Cliente'),
             ('pendiente_pago', 'Cliente Procesando Pago'),
             ('pagada_parcialmente', 'Pagada Parcialmente - Pendiente Saldo'),

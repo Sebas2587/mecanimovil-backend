@@ -353,6 +353,26 @@ def acreditar_creditos_suscripcion(preapproval_id, charge_id=None, pago_verifica
         f"Cobros procesados: {len(processed_ids)}"
     )
 
+    proveedor_id = suscripcion.proveedor_id
+
+    def _intentar_adjudicaciones_pendientes():
+        try:
+            from django.contrib.auth import get_user_model
+            from mecanimovilapp.apps.ordenes.services.adjudicacion_publica import (
+                reintentar_adjudicaciones_pendientes_tras_acreditacion,
+            )
+
+            User = get_user_model()
+            prov = User.objects.get(pk=proveedor_id)
+            reintentar_adjudicaciones_pendientes_tras_acreditacion(prov)
+        except Exception as hook_err:
+            logger.error(
+                f"Hook adjudicaciones tras suscripción (proveedor {proveedor_id}): {hook_err}",
+                exc_info=True,
+            )
+
+    transaction.on_commit(_intentar_adjudicaciones_pendientes)
+
     return {
         'acreditado': True,
         'creditos': creditos,
