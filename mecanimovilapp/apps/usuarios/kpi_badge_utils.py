@@ -152,7 +152,7 @@ def compute_kpi_badge_for_proveedor(
     except Exception:
         return None
 
-    score = _clamp_int(kpis.get("score_rendimiento", 50), 0, 100)
+    score = _clamp_int(kpis.get("score_rendimiento", 0), 0, 100)
     sample_points = _sample_points_from_kpis(kpis)
 
     min_sample_points = 5 if window_days <= 30 else 8

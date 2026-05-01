@@ -43,7 +43,7 @@ def _score_checklist_cumplimiento(pct: float | None) -> int | None:
 def _merge_score(components: list[int | None]) -> int:
     vals = [c for c in components if c is not None]
     if not vals:
-        return 50
+        return 0
     return max(0, min(100, int(round(sum(vals) / len(vals)))))
 
 
@@ -372,5 +372,5 @@ def _empty_payload(dias: int) -> dict[str, Any]:
         'score_calidad_servicio': None,
         'score_checklist': None,
         'score_tiempo_ejecucion': None,
-        'score_rendimiento': 50,
+        'score_rendimiento': 0,
     }
