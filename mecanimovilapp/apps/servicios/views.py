@@ -697,6 +697,8 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     filter_backends = [filters.SearchFilter]
     search_fields = ['servicio__nombre', 'tipo_servicio']
+    # Lista completa: la app proveedor usa badges/filtros por marca; paginar en 10 ocultaba ofertas.
+    pagination_class = None
     
     def _get_proveedor_data(self, user):
         """
@@ -721,12 +723,15 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
         """Filtrar ofertas solo del proveedor autenticado"""
         proveedor_data = self._get_proveedor_data(self.request.user)
         
+        base = OfertaServicio.objects.select_related(
+            'marca_vehiculo_seleccionada',
+            'servicio',
+        )
         if proveedor_data['tipo'] == 'mecanico':
-            return OfertaServicio.objects.filter(mecanico=proveedor_data['proveedor'])
-        elif proveedor_data['tipo'] == 'taller':
-            return OfertaServicio.objects.filter(taller=proveedor_data['proveedor'])
-        else:
-            return OfertaServicio.objects.none()
+            return base.filter(mecanico=proveedor_data['proveedor'])
+        if proveedor_data['tipo'] == 'taller':
+            return base.filter(taller=proveedor_data['proveedor'])
+        return OfertaServicio.objects.none()
     
     @action(detail=False, methods=['post'])
     def crear_catalogo_inicial(self, request):

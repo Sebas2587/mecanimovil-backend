@@ -204,12 +204,24 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
     def get_marca_vehiculo_info(self, obj):
         """Retorna información de la marca de vehículo seleccionada por el proveedor"""
         request = self.context.get('request')
-        if obj.marca_vehiculo_seleccionada:
+        marca = getattr(obj, 'marca_vehiculo_seleccionada', None)
+        if marca:
             return {
-                'id': obj.marca_vehiculo_seleccionada.id,
-                'nombre': obj.marca_vehiculo_seleccionada.nombre,
-                'logo': get_image_url(obj.marca_vehiculo_seleccionada.logo, request)
+                'id': marca.id,
+                'nombre': marca.nombre,
+                'logo': get_image_url(marca.logo, request),
             }
+        pk = getattr(obj, 'marca_vehiculo_seleccionada_id', None)
+        if pk:
+            from mecanimovilapp.apps.vehiculos.models import MarcaVehiculo
+
+            m = MarcaVehiculo.objects.filter(pk=pk).only('id', 'nombre', 'logo').first()
+            if m:
+                return {
+                    'id': m.id,
+                    'nombre': m.nombre,
+                    'logo': get_image_url(m.logo, request),
+                }
         return None
     
     def get_repuestos_info(self, obj):
