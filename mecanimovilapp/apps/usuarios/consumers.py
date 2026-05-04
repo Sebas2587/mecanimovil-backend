@@ -8,6 +8,7 @@ from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.tokens import AccessToken
 from rest_framework_simplejwt.exceptions import TokenError
 from .models import MecanicoDomicilio, Taller, ConnectionStatus
+from .connection_throttle import reserve_ws_heartbeat_db_write
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
@@ -443,6 +444,8 @@ class ConnectionConsumer(AsyncWebsocketConsumer):
         Actualiza el heartbeat del proveedor
         """
         try:
+            if not reserve_ws_heartbeat_db_write(self.tipo_proveedor, self.proveedor.pk):
+                return
             # Crear filtro según el tipo de proveedor
             if self.tipo_proveedor == 'mecanico':
                 filter_kwargs = {'proveedor': self.proveedor}
@@ -993,6 +996,9 @@ class MechanicStatusConsumer(AsyncWebsocketConsumer):
         Actualiza solo el heartbeat del proveedor
         """
         try:
+            tipo = 'mecanico' if isinstance(self.proveedor, MecanicoDomicilio) else 'taller'
+            if not reserve_ws_heartbeat_db_write(tipo, self.proveedor.pk):
+                return
             # Crear filtro según el tipo de proveedor
             if isinstance(self.proveedor, MecanicoDomicilio):
                 filter_kwargs = {'proveedor': self.proveedor}

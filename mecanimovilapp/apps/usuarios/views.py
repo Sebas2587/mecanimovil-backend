@@ -10,6 +10,7 @@ from django.contrib.gis.geos import Point
 from django.contrib.gis.measure import D
 from django_filters.rest_framework import DjangoFilterBackend
 from .models import Usuario, Cliente, Taller, MecanicoDomicilio, ZonaCobertura, Resena, DireccionUsuario, DocumentoOnboarding, HorarioProveedor, MechanicServiceArea, ChileanCommune, ConnectionStatus, ProviderProfile, Review, TallerDireccion, PushToken, Notificacion
+from .connection_throttle import try_begin_conectar_http_window, clear_conectar_http_window
 from .verification_utils import proveedor_visible_como_verificado
 from .chile_rut_phone import (
     normalizar_rut_chile,
@@ -4456,24 +4457,39 @@ def actualizar_estado_conexion_generico(request):
     try:
         # Obtener el proveedor autenticado
         user = request.user
-        print(f"🔍 Buscando proveedor para usuario: {user.username} (ID: {user.id})")
-        
+        logger.debug("Buscando proveedor para conectar: user_id=%s", user.id)
+
+        # Ventana por usuario: menos carga en Postgres/Render con muchos proveedores en radar.
+        if not try_begin_conectar_http_window(user.id):
+            from django.utils import timezone as django_timezone
+            logger.debug("conectar throttled user_id=%s", user.id)
+            return Response(
+                {
+                    "message": "Estado de conexión actualizado",
+                    "proveedor": "",
+                    "tipo": "mecanico",
+                    "esta_conectado": True,
+                    "ultima_conexion": django_timezone.now().isoformat(),
+                    "throttled": True,
+                },
+                status=status.HTTP_200_OK,
+            )
+
         # Buscar si es un mecánico a domicilio
         try:
             mecanico = MecanicoDomicilio.objects.get(usuario=user)
             proveedor = mecanico
             tipo_proveedor = 'mecanico'
-            print(f"✅ Encontrado como mecánico a domicilio: {proveedor.nombre}")
+            logger.debug("Conectar: mecánico a domicilio id=%s", proveedor.pk)
         except MecanicoDomicilio.DoesNotExist:
-            print(f"❌ No encontrado como mecánico a domicilio")
             # Buscar si es un taller
             try:
                 taller = Taller.objects.get(usuario=user)
                 proveedor = taller
                 tipo_proveedor = 'taller'
-                print(f"✅ Encontrado como taller: {proveedor.nombre}")
+                logger.debug("Conectar: taller id=%s", proveedor.pk)
             except Taller.DoesNotExist:
-                print(f"❌ No encontrado como taller")
+                clear_conectar_http_window(user.id)
                 return Response({
                     'error': 'No se encontró un proveedor asociado a tu cuenta'
                 }, status=status.HTTP_404_NOT_FOUND)
@@ -4504,7 +4520,7 @@ def actualizar_estado_conexion_generico(request):
         connection_status.user_agent = user_agent
         connection_status.update_status('online')
         
-        print(f"✅ Proveedor {proveedor.nombre} ({tipo_proveedor}) marcado como conectado")
+        logger.info("Proveedor conectado vía HTTP: %s (%s)", proveedor.nombre, tipo_proveedor)
         
         return Response({
             'message': 'Estado de conexión actualizado',
@@ -4515,9 +4531,11 @@ def actualizar_estado_conexion_generico(request):
         })
         
     except Exception as e:
-        print(f"❌ Error actualizando estado de conexión: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        try:
+            clear_conectar_http_window(request.user.id)
+        except Exception:
+            pass
+        logger.exception("Error actualizando estado de conexión: %s", e)
         return Response({
             'error': 'Error interno del servidor'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
