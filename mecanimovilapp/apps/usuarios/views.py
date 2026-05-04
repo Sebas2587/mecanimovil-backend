@@ -4494,19 +4494,15 @@ def actualizar_estado_conexion_generico(request):
         connection_status, created = ConnectionStatus.objects.get_or_create(
             **filter_kwargs,
             defaults={
-                'esta_conectado': True,
+                'esta_conectado': False,
                 'ultima_conexion': timezone.now(),
                 'ip_address': client_info,
-                'user_agent': user_agent
+                'user_agent': user_agent,
             }
         )
-        
-        if not created:
-            connection_status.esta_conectado = True
-            connection_status.ultima_conexion = timezone.now()
-            connection_status.ip_address = client_info
-            connection_status.user_agent = user_agent
-            connection_status.save()
+        connection_status.ip_address = client_info
+        connection_status.user_agent = user_agent
+        connection_status.update_status('online')
         
         print(f"✅ Proveedor {proveedor.nombre} ({tipo_proveedor}) marcado como conectado")
         
@@ -4569,9 +4565,7 @@ def desconectar_generico(request):
         connection_status = ConnectionStatus.objects.filter(**filter_kwargs).first()
         
         if connection_status:
-            connection_status.esta_conectado = False
-            connection_status.ultima_desconexion = timezone.now()
-            connection_status.save()
+            connection_status.update_status('offline', update_heartbeat=False)
         
         print(f"✅ Proveedor {proveedor.nombre} ({tipo_proveedor}) marcado como desconectado")
         

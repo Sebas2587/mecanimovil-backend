@@ -570,7 +570,8 @@ class TallerSerializer(serializers.ModelSerializer):
     
     def get_esta_conectado(self, obj):
         """
-        Obtiene el estado de conexión desde ConnectionStatus
+        Obtiene el estado de conexión desde ConnectionStatus.
+        Sin registro de conexión: se asume disponible (no forzar “no disponible” en clientes).
         """
         try:
             if hasattr(obj, 'connection_status'):
@@ -580,9 +581,9 @@ class TallerSerializer(serializers.ModelSerializer):
             conn_status = ConnectionStatus.objects.filter(taller=obj).first()
             if conn_status:
                 return conn_status.esta_conectado
-            return False
+            return True
         except Exception:
-            return False
+            return True
     
     def get_ultima_conexion(self, obj):
         """
@@ -870,7 +871,8 @@ class MecanicoDomicilioSerializer(serializers.ModelSerializer):
     
     def get_esta_conectado(self, obj):
         """
-        Obtiene el estado de conexión desde ConnectionStatus
+        Obtiene el estado de conexión desde ConnectionStatus.
+        Sin registro de conexión: se asume disponible (no forzar “no disponible” en clientes).
         """
         try:
             # **OPTIMIZACIÓN**: Intentar usar relación inversa pre-cargada
@@ -887,10 +889,10 @@ class MecanicoDomicilioSerializer(serializers.ModelSerializer):
             # Sin embargo, proveedores_filtrados usa prefetch_related('connection_status').
             # En ese caso, Django asigna el objeto a la instancia si coincide.
             
-            return False
+            return True
         except Exception as e:
             # print(f"Error obteniendo estado de conexión: {e}")
-            return False
+            return True
     
     def get_ultima_conexion(self, obj):
         """
