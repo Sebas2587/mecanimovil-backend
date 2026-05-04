@@ -1149,23 +1149,39 @@ class FotoServicioViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     
     def get_queryset(self):
-        """Filtrar fotos por ofertas del proveedor autenticado"""
+        """
+        Fotos solo de ofertas del proveedor autenticado.
+        Si viene ?oferta_servicio=<id>, limitar a esa oferta (evita devolver todas las fotos
+        en cada detalle y que parezcan “compartidas” entre servicios).
+        """
         user = self.request.user
-        
-        # Obtener ofertas del proveedor autenticado
+
         from mecanimovilapp.apps.usuarios.models import MecanicoDomicilio, Taller
-        
+
         try:
             mecanico = MecanicoDomicilio.objects.get(usuario=user)
-            ofertas_ids = OfertaServicio.objects.filter(mecanico=mecanico).values_list('id', flat=True)
+            ofertas_ids_qs = OfertaServicio.objects.filter(mecanico=mecanico).values_list('id', flat=True)
         except MecanicoDomicilio.DoesNotExist:
             try:
                 taller = Taller.objects.get(usuario=user)
-                ofertas_ids = OfertaServicio.objects.filter(taller=taller).values_list('id', flat=True)
+                ofertas_ids_qs = OfertaServicio.objects.filter(taller=taller).values_list('id', flat=True)
             except Taller.DoesNotExist:
                 return FotoServicio.objects.none()
-        
-        return FotoServicio.objects.filter(oferta_servicio_id__in=ofertas_ids)
+
+        ofertas_ids = set(ofertas_ids_qs)
+        qs = FotoServicio.objects.filter(oferta_servicio_id__in=ofertas_ids)
+
+        oferta_param = self.request.query_params.get('oferta_servicio')
+        if oferta_param is not None and str(oferta_param).strip() != '':
+            try:
+                oid = int(oferta_param)
+            except (TypeError, ValueError):
+                return FotoServicio.objects.none()
+            if oid not in ofertas_ids:
+                return FotoServicio.objects.none()
+            qs = qs.filter(oferta_servicio_id=oid)
+
+        return qs
     
     def get_serializer_class(self):
         if self.action in ['create', 'update', 'partial_update']:
