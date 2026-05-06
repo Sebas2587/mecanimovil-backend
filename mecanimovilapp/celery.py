@@ -29,6 +29,7 @@ app.conf.task_routes = {
     'mecanimovilapp.apps.vehiculos.tasks.procesar_checklists_historicos_vehiculo': {'queue': 'heavy'},
     'mecanimovilapp.apps.vehiculos.tasks.recalcular_salud_vehiculos_batch': {'queue': 'heavy'},
     'mecanimovilapp.apps.vehiculos.tasks.recalcular_salud_vehiculos_diario': {'queue': 'heavy'},
+    'mecanimovilapp.apps.vehiculos.tasks.entrenar_modelos_salud_async': {'queue': 'heavy'},
     # Tareas ligeras van a la cola 'default' (o se puede omitir)
     'mecanimovilapp.apps.vehiculos.tasks.calcular_salud_vehiculo_async': {'queue': 'default'},
     'mecanimovilapp.apps.vehiculos.tasks.actualizar_salud_desde_checklist': {'queue': 'default'},
@@ -82,6 +83,13 @@ app.conf.beat_schedule = {
     'recalcular-salud-vehiculos-diario': {
         'task': 'mecanimovilapp.apps.vehiculos.tasks.recalcular_salud_vehiculos_diario',
         'schedule': crontab(hour=5, minute=15),  # 05:15 UTC (baja carga)
+        'options': {'queue': 'heavy'},
+    },
+    # Semanal: re-entrena modelos predictivos scikit-learn con eventos acumulados
+    # (SERVICIO_REALIZADO + NIVEL_CRITICO). Solo entrena componentes con >=30 muestras.
+    'entrenar-modelos-salud-semanal': {
+        'task': 'mecanimovilapp.apps.vehiculos.tasks.entrenar_modelos_salud_async',
+        'schedule': crontab(day_of_week=0, hour=6, minute=0),  # Domingos 06:00 UTC
         'options': {'queue': 'heavy'},
     },
     'verificar-pagos-pendientes': {

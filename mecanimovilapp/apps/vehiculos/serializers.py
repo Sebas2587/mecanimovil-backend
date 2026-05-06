@@ -301,6 +301,24 @@ class VehiculoSerializer(serializers.ModelSerializer):
                         'historial_conocido': True,
                     }
                 )
+                # Capturar evento ML de registro inicial: km del componente vs km del vehículo
+                try:
+                    from .models_health import EventoSaludVehiculo, ComponenteSalud as _CS
+                    EventoSaludVehiculo.objects.create(
+                        vehiculo=vehiculo,
+                        componente_id=comp_id,
+                        tipo_evento='REGISTRO_INICIAL',
+                        marca=vehiculo.marca.nombre if vehiculo.marca else '',
+                        modelo=vehiculo.modelo.nombre if vehiculo.modelo else '',
+                        year=vehiculo.year,
+                        tipo_motor=(vehiculo.tipo_motor or '').upper(),
+                        kilometraje=vehiculo.kilometraje or 0,
+                        km_desde_ultimo_servicio=max(
+                            0, (vehiculo.kilometraje or 0) - km_ultimo,
+                        ),
+                    )
+                except Exception:
+                    pass
             logger.info(f"📋 Componentes historial aplicados para vehículo {vehiculo.id}: {len(items_to_process)} items")
 
         # --- INICIALIZACIÓN INTELIGENTE DE SALUD ---

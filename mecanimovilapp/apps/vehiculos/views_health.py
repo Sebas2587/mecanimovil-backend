@@ -352,6 +352,67 @@ class VehicleHealthViewSet(viewsets.ReadOnlyModelViewSet):
 
         return Response(response_data)
     
+    @action(detail=False, methods=['get'], url_path='vehicle/(?P<vehicle_id>[^/.]+)/predicciones')
+    def vehicle_predictions(self, request, vehicle_id=None):
+        """
+        Predicciones inteligentes por componente (bootstrap + scikit-learn + similares).
+        - Bootstrap: aritmética sobre km/uso/clima del usuario (siempre disponible).
+        - ML: si hay modelos entrenados con eventos suficientes, refina la predicción.
+        - Similares: vehículos cercanos en marca/modelo/año del dataset colaborativo.
+        """
+        user = request.user
+        from .models import Vehiculo
+
+        if not hasattr(user, 'cliente'):
+            return Response(
+                {'error': 'Usuario no tiene un cliente asociado'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        try:
+            vehiculo = Vehiculo.objects.select_related('marca', 'modelo').get(
+                id=vehicle_id, cliente=user.cliente,
+            )
+        except Vehiculo.DoesNotExist:
+            return Response(
+                {'error': 'Vehículo no encontrado o no tienes permisos'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        force = str(request.query_params.get('force', '0')).lower() in ('1', 'true', 'yes')
+        try:
+            from .services.predictor_salud import predecir_vehiculo
+            predicciones = predecir_vehiculo(vehiculo, force_refresh=force)
+        except Exception as e:
+            logger.error(f"Error generando predicciones para {vehicle_id}: {e}", exc_info=True)
+            return Response(
+                {'error': 'No se pudieron generar predicciones', 'detail': str(e) if settings.DEBUG else None},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        # Resumen ejecutivo: top 3 más urgentes + alertas accionables
+        criticos = [p for p in predicciones if p['salud_actual'] < 40]
+        proximos_30_dias = [
+            p for p in predicciones
+            if p.get('dias_hasta_atencion') is not None and p['dias_hasta_atencion'] <= 30
+        ]
+
+        return Response({
+            'vehicle_id': int(vehicle_id),
+            'kilometraje_actual': vehiculo.kilometraje or 0,
+            'predicciones': predicciones,
+            'resumen': {
+                'total_componentes': len(predicciones),
+                'componentes_criticos': len(criticos),
+                'componentes_atencion_30d': len(proximos_30_dias),
+                'top_3_urgentes': [p['componente'] for p in predicciones[:3]],
+            },
+            'modelo_info': {
+                'capa_1_bootstrap': 'siempre activa (datos del usuario)',
+                'capa_2_ml': 'activa cuando hay >=30 eventos por componente',
+                'capa_3_similares': 'activa cuando hay vehículos similares en el sistema',
+            },
+        })
+
     @action(detail=False, methods=['post'], url_path='vehicle/(?P<vehicle_id>[^/.]+)/procesar-historicos')
     def procesar_checklists_historicos(self, request, vehicle_id=None):
         """

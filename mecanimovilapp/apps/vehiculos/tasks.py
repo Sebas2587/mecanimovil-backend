@@ -35,6 +35,47 @@ from mecanimovilapp.apps.checklists.km_extraction import extraer_kilometraje_des
 logger = logging.getLogger(__name__)
 
 
+def _construir_evento_ml(
+    vehiculo,
+    componente,
+    tipo_evento,
+    km_desde_servicio=None,
+    meses_desde_servicio=None,
+    salud_porcentaje=None,
+    vida_util_eta=None,
+    checklist_id=None,
+    orden_id=None,
+    viaje_id=None,
+    metadata=None,
+):
+    """
+    Construye un EventoSaludVehiculo (sin guardarlo) con snapshot del vehículo.
+    Reusable desde signals, tareas y registro inicial. La idea es que cada evento
+    sea autosuficiente para el entrenamiento ML aún si el vehículo cambia luego.
+    """
+    from .models_health import EventoSaludVehiculo
+
+    return EventoSaludVehiculo(
+        vehiculo=vehiculo,
+        componente=componente,
+        tipo_evento=tipo_evento,
+        marca=vehiculo.marca.nombre if vehiculo.marca else '',
+        modelo=vehiculo.modelo.nombre if vehiculo.modelo else '',
+        year=getattr(vehiculo, 'year', None),
+        tipo_motor=(getattr(vehiculo, 'tipo_motor', '') or '').upper(),
+        transmision=getattr(vehiculo, 'transmision', '') or '',
+        kilometraje=int(getattr(vehiculo, 'kilometraje', 0) or 0),
+        km_desde_ultimo_servicio=km_desde_servicio,
+        meses_desde_ultimo_servicio=meses_desde_servicio,
+        vida_util_referencia_km=vida_util_eta,
+        salud_porcentaje=salud_porcentaje,
+        checklist_id=checklist_id,
+        orden_id=orden_id,
+        viaje_id=viaje_id,
+        metadata=metadata or {},
+    )
+
+
 def calcular_estado_salud_interno(vehicle_id):
     """
     Función helper para calcular el estado de salud de un vehículo
@@ -182,8 +223,10 @@ def procesar_post_viaje(self, vehicle_id, viaje_id, km_recorridos, km_anterior, 
     """
     Procesa todo lo que sigue al registro de un viaje, fuera del request HTTP:
     1. Recálculo de salud del vehículo
-    2. Push notification al usuario
-    3. Notificación in-app
+    2. Captura de evento ML (VIAJE_KM)
+    3. Invalidación de predicciones cacheadas
+    4. Push notification al usuario
+    5. Notificación in-app
     """
     try:
         from .models import Vehiculo
@@ -200,6 +243,27 @@ def procesar_post_viaje(self, vehicle_id, viaje_id, km_recorridos, km_anterior, 
             logger.info(f"Salud recalculada para vehículo {vehicle_id} post-viaje")
         except Exception as e:
             logger.error(f"Error recalculando salud post-viaje para {vehicle_id}: {e}")
+
+        # 1b. Capturar evento ML: viaje añade km y permite calcular tasa de uso real.
+        try:
+            from .models_health import EventoSaludVehiculo
+            from .services.predictor_salud import invalidar_predicciones_vehiculo
+
+            evento = _construir_evento_ml(
+                vehiculo=vehiculo,
+                componente=None,
+                tipo_evento='VIAJE_KM',
+                viaje_id=viaje_id,
+                metadata={
+                    'km_recorridos': float(km_recorridos),
+                    'km_anterior':   int(km_anterior),
+                    'km_nuevo':      int(km_nuevo),
+                },
+            )
+            EventoSaludVehiculo.objects.bulk_create([evento], ignore_conflicts=True)
+            invalidar_predicciones_vehiculo(vehicle_id)
+        except Exception as evt_err:
+            logger.debug("No se capturó evento VIAJE_KM (%s): %s", vehicle_id, evt_err)
 
         # 2. Push + notificación in-app
         user_id = None
@@ -392,7 +456,8 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
         # Actualizar componentes basados en el checklist
         componentes_para_actualizar = {}
         respuestas_count = 0
-        
+        eventos_ml_a_crear = []  # Eventos SERVICIO_REALIZADO para dataset
+
         for respuesta in checklist.respuestas.all():
             respuestas_count += 1
             item_nombre = respuesta.item_template.catalog_item.nombre if respuesta.item_template.catalog_item else ''
@@ -420,7 +485,31 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
                                     'historial_conocido': True,
                                 }
                             )
-                            
+
+                            # Capturar evento de aprendizaje ML: km/meses transcurridos
+                            # entre servicios reales por componente. Es el dato más
+                            # valioso para entrenar Random Forest.
+                            km_anterior = comp_salud.km_ultimo_servicio or 0
+                            fecha_anterior = comp_salud.fecha_ultimo_servicio
+                            km_delta = max(0, km_para_servicio - km_anterior)
+                            meses_delta = None
+                            if fecha_anterior:
+                                dias = (timezone.now() - fecha_anterior).days
+                                meses_delta = round(max(0, dias) / 30.44, 2)
+
+                            if km_delta > 0 or (created and km_para_servicio > 0):
+                                eventos_ml_a_crear.append(_construir_evento_ml(
+                                    vehiculo=vehiculo,
+                                    componente=config,
+                                    tipo_evento='SERVICIO_REALIZADO',
+                                    km_desde_servicio=km_delta,
+                                    meses_desde_servicio=meses_delta,
+                                    salud_porcentaje=comp_salud.salud_porcentaje,
+                                    vida_util_eta=comp_salud.vida_util_proyectada,
+                                    checklist_id=checklist_id,
+                                    orden_id=getattr(checklist, 'orden_id', None),
+                                ))
+
                             if not created:
                                 comp_salud.km_ultimo_servicio = km_para_servicio
                                 comp_salud.fecha_ultimo_servicio = checklist.fecha_finalizacion or timezone.now()
@@ -433,6 +522,18 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
                             componentes_para_actualizar[comp_salud.id] = comp_salud
                     except Exception as e:
                         logger.warning(f"Error actualizando componente {nombre_config}: {str(e)}")
+
+        # Persistir eventos ML capturados (dataset para scikit-learn)
+        if eventos_ml_a_crear:
+            try:
+                from .models_health import EventoSaludVehiculo
+                EventoSaludVehiculo.objects.bulk_create(eventos_ml_a_crear, ignore_conflicts=True)
+                logger.info(
+                    "%d eventos SERVICIO_REALIZADO capturados desde checklist %s",
+                    len(eventos_ml_a_crear), checklist_id,
+                )
+            except Exception as evt_err:
+                logger.warning("Error guardando eventos ML: %s", evt_err)
         
         if not componentes_para_actualizar and respuestas_count > 0:
             logger.warning(
@@ -449,6 +550,13 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
                  'requiere_servicio_inmediato', 'mensaje_alerta', 'historial_conocido']
             )
         
+        # Invalidar predicciones de scikit-learn (los km_ultimo_servicio cambiaron)
+        try:
+            from .services.predictor_salud import invalidar_predicciones_vehiculo
+            invalidar_predicciones_vehiculo(vehicle_id)
+        except Exception:
+            pass
+
         # Recalcular salud (cola o mismo proceso si Celery no entrega el trabajo)
         try:
             calcular_salud_vehiculo_async.delay(vehicle_id, force_recalculate=True)
@@ -589,6 +697,26 @@ def _recalcular_salud_vehiculos_core(
     except Exception as e:
         logger.error(f"Error en recálculo batch: {str(e)}")
         return 0
+
+
+@shared_task(queue='heavy', time_limit=1800, soft_time_limit=1500)
+def entrenar_modelos_salud_async():
+    """
+    Re-entrena los modelos predictivos scikit-learn semanalmente.
+    Lee EventoSaludVehiculo y produce un .joblib por componente con datos suficientes.
+    Si scikit-learn no está disponible o no hay datos, simplemente loguea y termina.
+    """
+    try:
+        from django.core.management import call_command
+        call_command('entrenar_modelos_salud')
+        # Limpia cache de modelos en memoria para que el siguiente request los re-cargue.
+        from .services import predictor_salud as ps
+        ps._loaded_models.clear()
+        logger.info('Re-entrenamiento de modelos de salud completado')
+        return True
+    except Exception as e:
+        logger.warning('Re-entrenamiento ML falló: %s', e)
+        return False
 
 
 @shared_task(queue='heavy', time_limit=1200, soft_time_limit=900)

@@ -221,3 +221,96 @@ class AlertaMantenimiento(models.Model):
     class Meta:
         verbose_name = 'Alerta de Mantenimiento'
         verbose_name_plural = 'Alertas de Mantenimiento'
+
+
+# ==========================================
+# DATASET DE EVENTOS (PARA APRENDIZAJE ML)
+# ==========================================
+
+class EventoSaludVehiculo(models.Model):
+    """
+    Registro inmutable de eventos relevantes para entrenar modelos predictivos.
+
+    Cada fila es un punto de datos para scikit-learn:
+      - Cuando se completa un checklist real → se registra el km y meses transcurridos
+        desde el último servicio registrado para ese componente. Esto entrena al
+        modelo con la pregunta: "¿cuántos km/meses sobrevivió este componente
+        antes de necesitar mantenimiento?"
+      - Cuando un vehículo registra un viaje → se acumulan km en el odómetro.
+      - Cuando un componente cae a salud crítica → se registra el evento de "near-fail".
+
+    El management command `entrenar_modelos_salud` consume esta tabla para
+    entrenar Random Forest / Linear Regression por tipo de componente.
+
+    Diseño:
+      - Inmutable (auditoría / dataset histórico).
+      - Indexado por (componente, marca, modelo) para queries de entrenamiento.
+      - Captura snapshot de variables al momento del evento (evita drift de marca/modelo).
+    """
+    TIPO_EVENTO_CHOICES = [
+        ('SERVICIO_REALIZADO', 'Servicio realizado (checklist completado)'),
+        ('FALLA_REPORTADA',    'Componente reportó falla / 0 % salud'),
+        ('NIVEL_CRITICO',      'Componente alcanzó nivel CRÍTICO'),
+        ('VIAJE_KM',           'Acumulación de km por viaje GPS'),
+        ('CHECKLIST_KM',       'Lectura de odómetro desde checklist'),
+        ('REGISTRO_INICIAL',   'Vehículo registrado con historial inicial'),
+    ]
+
+    vehiculo = models.ForeignKey(
+        Vehiculo, on_delete=models.CASCADE, related_name='eventos_salud',
+    )
+    componente = models.ForeignKey(
+        ComponenteSalud, on_delete=models.CASCADE, null=True, blank=True,
+        related_name='eventos_salud',
+        help_text='Componente afectado. Null para eventos globales (viaje, registro).',
+    )
+    tipo_evento = models.CharField(max_length=30, choices=TIPO_EVENTO_CHOICES)
+
+    # ── Snapshot del vehículo al momento del evento ─────────────────
+    marca       = models.CharField(max_length=100, blank=True)
+    modelo      = models.CharField(max_length=100, blank=True)
+    year        = models.IntegerField(null=True, blank=True)
+    tipo_motor  = models.CharField(max_length=20, blank=True)
+    transmision = models.CharField(max_length=20, blank=True)
+    kilometraje = models.PositiveIntegerField(default=0,
+        help_text='Odómetro del vehículo al momento del evento.')
+
+    # ── Métricas relacionadas con el componente / regla ─────────────
+    km_desde_ultimo_servicio    = models.IntegerField(null=True, blank=True,
+        help_text='Distancia entre el km del evento y el km del último servicio (positivo).')
+    meses_desde_ultimo_servicio = models.FloatField(null=True, blank=True)
+    vida_util_referencia_km     = models.PositiveIntegerField(null=True, blank=True,
+        help_text='eta de la regla aplicada (Weibull) al momento del evento.')
+    salud_porcentaje            = models.FloatField(null=True, blank=True,
+        help_text='Salud calculada al momento del evento.')
+
+    # ── Variables ambientales y de uso ──────────────────────────────
+    clima_condicion   = models.CharField(max_length=20, blank=True,
+        help_text='rain | heat | cold | normal (al momento del evento).')
+    temperatura_c     = models.FloatField(null=True, blank=True)
+    humedad_pct       = models.FloatField(null=True, blank=True)
+    promedio_km_dia   = models.FloatField(null=True, blank=True,
+        help_text='km/día calculado a partir de viajes recientes (si aplica).')
+
+    # ── Contexto del evento ─────────────────────────────────────────
+    checklist_id = models.IntegerField(null=True, blank=True)
+    orden_id     = models.IntegerField(null=True, blank=True)
+    viaje_id     = models.IntegerField(null=True, blank=True)
+    metadata     = models.JSONField(default=dict, blank=True,
+        help_text='Datos adicionales del evento (ej. detalles_clima, geolocalización).')
+
+    fecha_evento = models.DateTimeField(default=timezone.now, db_index=True)
+
+    class Meta:
+        verbose_name = 'Evento de Salud (ML)'
+        verbose_name_plural = 'Eventos de Salud (ML)'
+        ordering = ['-fecha_evento']
+        indexes = [
+            models.Index(fields=['componente', 'tipo_evento']),
+            models.Index(fields=['marca', 'modelo']),
+            models.Index(fields=['tipo_evento', 'fecha_evento']),
+        ]
+
+    def __str__(self):
+        comp = self.componente.nombre if self.componente else 'global'
+        return f"{self.get_tipo_evento_display()} — {comp} ({self.marca} {self.modelo})"

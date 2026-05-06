@@ -25,11 +25,16 @@ class HealthEngine:
       salud_pct    = min(salud_km, salud_tiempo)
 
     Modo historial desconocido (historial_conocido=False y km_recorridos > eta):
-      Supuesto conservador: el componente se encuentra exactamente a 1 ciclo de vida útil
-      desde el último servicio (km_recorridos_efectivos = eta).
-      Esto da salud ≈ exp(-1) ≈ 37% (ATENCIÓN) en lugar de 0% (CRÍTICO falso).
+      Estimación inteligente por ciclo de vida útil:
+        ciclos_consumidos = km_total // eta
+        km_en_ciclo_actual = km_total % eta
+        km_efectivos = max(km_en_ciclo_actual, eta * 0.5)  # mínimo medio ciclo
+      Esto da valores diferenciados POR COMPONENTE según su eta individual:
+        Aceite (eta=10k, km=150k):     150k % 10k = 0    → ~100% (recién en ciclo)
+        Distribución (eta=100k, 150k): 150k % 100k = 50k → ~e^-0.5 = 61%
+        Neumáticos (eta=40k, km=150k): 150k % 40k = 30k  → ~e^-0.75 = 47%
       El anchor de tiempo usa vehiculo.fecha_creacion para no escribir fechas irracionales.
-      El mensaje informa que los datos son estimados.
+      El mensaje informa que los datos son estimados y cuántos ciclos se consumieron.
 
     Optimizaciones:
       - 4 queries prefetch al inicio en lugar de N×5 por componente.
@@ -134,18 +139,26 @@ class HealthEngine:
             km_recorridos_real = max(0, vehiculo.kilometraje - comp_estado.km_ultimo_servicio)
 
             # ── Modo historial desconocido ──────────────────────────────────
-            # Si no hay datos reales de servicio y el vehículo ya superó un ciclo completo,
-            # usamos exactamente 1 ciclo como estimación conservadora (~37 % salud).
-            # Esto evita fechas proxy absurdas y el falso 0 % CRÍTICO.
+            # Estimación inteligente: si el vehículo no tiene historial conocido,
+            # usamos km_total % eta para saber en qué fracción del ciclo actual está
+            # el componente. Cada pieza tiene un eta distinto, por lo que la salud
+            # estimada varía POR COMPONENTE en lugar de fijarse en ~37 % universal.
             historial_desconocido = (
                 not comp_estado.historial_conocido
                 and comp_estado.km_ultimo_servicio == 0
                 and km_recorridos_real > eta
                 and eta > 0
             )
+            ciclos_consumidos_est = 0
 
             if historial_desconocido:
-                km_recorridos = eta  # 1 ciclo de vida útil → salud ≈ 37 %
+                ciclos_consumidos_est = int(vehiculo.kilometraje // eta)
+                km_en_ciclo_actual = vehiculo.kilometraje % eta
+                # Piso de medio ciclo: si un componente recién "renovó" en el módulo
+                # (km_en_ciclo_actual ~ 0) sería irreal mostrarlo al 100 % sin historial.
+                # El piso de eta*0.5 fuerza mostrar al menos un desgaste razonable
+                # mientras el usuario no aporte historial real.
+                km_recorridos = max(km_en_ciclo_actual, int(eta * 0.5))
                 # Usar fecha de registro como referencia temporal (no se persiste como proxy)
                 fecha_ref_tiempo = fecha_reg if fecha_reg else now
             else:
@@ -233,11 +246,16 @@ class HealthEngine:
             comp_estado.requiere_servicio_inmediato = (status in ('CRITICO', 'URGENTE'))
 
             if historial_desconocido:
+                ciclo_label = (
+                    f"~{ciclos_consumidos_est} ciclos previos estimados"
+                    if ciclos_consumidos_est >= 1
+                    else "estimación conservadora"
+                )
                 comp_estado.mensaje_alerta = (
                     f"Historial no registrado para {comp_maestro.nombre}. "
-                    f"Estimación conservadora: ~{round(salud_pct)}% "
-                    f"(basada en 1 ciclo de {int(eta):,} km). "
-                    f"Actualiza el km de tu último servicio para mayor precisión."
+                    f"Estimación inteligente: {round(salud_pct)}% "
+                    f"({ciclo_label} de {int(eta):,} km). "
+                    f"Registra tu próximo servicio para predicciones precisas."
                 )
             elif comp_estado.requiere_servicio_inmediato:
                 comp_estado.mensaje_alerta = (
@@ -269,6 +287,9 @@ class HealthEngine:
                 'es_especifica':    es_especifica,
                 'historial_conocido': comp_estado.historial_conocido,
             }
+            if historial_desconocido:
+                reporte_item['ciclos_estimados'] = ciclos_consumidos_est
+                reporte_item['km_en_ciclo_actual'] = int(vehiculo.kilometraje % eta) if eta > 0 else 0
             if months_elapsed is not None:
                 reporte_item['meses_desde_servicio'] = round(months_elapsed, 1)
             if intervalo_meses:
@@ -324,4 +345,93 @@ class HealthEngine:
             vehiculo_id, promedio_global,
             stats['optimo'], stats['atencion'], stats['urgente'], stats['critico'],
         )
+
+        # ── Captura de eventos para dataset ML ──────────────────────────────
+        # Solo cuando un componente cae a CRÍTICO o se reporta 0 % salud por
+        # primera vez, registramos el punto en EventoSaludVehiculo. Esto alimenta
+        # el dataset que usa scikit-learn (Random Forest / Linear Regression)
+        # para predecir vida útil real por marca/modelo/año/clima.
+        try:
+            HealthEngine._capturar_eventos_criticos(
+                vehiculo, reporte_salud, marca_nombre, modelo_nombre,
+                tipo_motor_norm,
+            )
+        except Exception as evt_err:
+            logger.warning(
+                "HealthEngine: error capturando eventos ML para vehículo %s: %s",
+                vehiculo_id, evt_err,
+            )
+
         return reporte_salud
+
+    @staticmethod
+    def _capturar_eventos_criticos(vehiculo, reporte, marca, modelo, tipo_motor):
+        """
+        Registra eventos NIVEL_CRITICO en EventoSaludVehiculo, con dedupe:
+        solo crea un evento por (vehículo, componente, día) para no inundar la tabla.
+        Estos eventos alimentan el dataset de entrenamiento de scikit-learn.
+        """
+        from ..models_health import (
+            EventoSaludVehiculo,
+            ComponenteSalud,
+            ComponenteSaludVehiculo,
+        )
+
+        criticos = [r for r in reporte if r.get('status') == 'CRITICO']
+        if not criticos:
+            return
+
+        hoy = timezone.now().date()
+        slugs_criticos = {r['slug'] for r in criticos}
+        comp_map = {
+            c.slug: c
+            for c in ComponenteSalud.objects.filter(slug__in=slugs_criticos)
+        }
+        # dedupe: ¿ya hay un evento NIVEL_CRITICO hoy para alguno de estos slugs?
+        existing = EventoSaludVehiculo.objects.filter(
+            vehiculo=vehiculo,
+            tipo_evento='NIVEL_CRITICO',
+            componente__slug__in=slugs_criticos,
+            fecha_evento__date=hoy,
+        ).values_list('componente__slug', flat=True)
+        ya_registrados = set(existing)
+
+        nuevos = []
+        for r in criticos:
+            slug = r['slug']
+            if slug in ya_registrados or slug not in comp_map:
+                continue
+            comp_estado = ComponenteSaludVehiculo.objects.filter(
+                vehiculo=vehiculo, componente=comp_map[slug],
+            ).first()
+            km_desde = (
+                vehiculo.kilometraje - comp_estado.km_ultimo_servicio
+                if comp_estado and comp_estado.km_ultimo_servicio else None
+            )
+            meses_desde = None
+            if comp_estado and comp_estado.fecha_ultimo_servicio:
+                delta_dias = (timezone.now() - comp_estado.fecha_ultimo_servicio).days
+                meses_desde = round(delta_dias / 30.44, 2) if delta_dias > 0 else 0.0
+
+            nuevos.append(EventoSaludVehiculo(
+                vehiculo=vehiculo,
+                componente=comp_map[slug],
+                tipo_evento='NIVEL_CRITICO',
+                marca=marca,
+                modelo=modelo,
+                year=getattr(vehiculo, 'year', None),
+                tipo_motor=tipo_motor,
+                transmision=getattr(vehiculo, 'transmision', '') or '',
+                kilometraje=vehiculo.kilometraje or 0,
+                km_desde_ultimo_servicio=km_desde,
+                meses_desde_ultimo_servicio=meses_desde,
+                vida_util_referencia_km=r.get('vida_util_total'),
+                salud_porcentaje=r.get('salud'),
+            ))
+
+        if nuevos:
+            EventoSaludVehiculo.objects.bulk_create(nuevos, ignore_conflicts=True)
+            logger.info(
+                "HealthEngine: %s eventos NIVEL_CRITICO capturados para vehículo %s",
+                len(nuevos), vehiculo.id,
+            )
