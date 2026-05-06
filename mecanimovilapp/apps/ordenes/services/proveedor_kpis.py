@@ -3,6 +3,9 @@ Agregación de KPIs para proveedores (solicitudes públicas / marketplace).
 
 Criterios de ventana: actividad reciente (orden creada, checklist o reseña en el periodo),
 no solo fecha_hora_solicitud. Reseñas: todas las del taller/mecánico, no solo las ligadas a solicitud.
+
+Calificación por servicios: promedio de estrellas de reseñas aplicadas a líneas de orden cuya
+OfertaServicio pertenece al proveedor (misma lógica que catálogo en app usuarios).
 """
 from __future__ import annotations
 
@@ -105,6 +108,38 @@ def _resenas_qs(taller, mecanico):
     return Resena.objects.filter(mecanico=mecanico)
 
 
+def _calificacion_servicios_lineas_agg(taller, mecanico, since=None) -> dict[str, Any]:
+    """
+    Promedio de estrellas (1–5) desde reseñas de clientes aplicadas a líneas de orden
+    cuya OfertaServicio pertenece al mismo proveedor. Una orden con varias líneas
+    repite la misma calificación por línea (peso por servicio contratado).
+    """
+    from mecanimovilapp.apps.ordenes.models import LineaServicio
+
+    qs = LineaServicio.objects.filter(
+        solicitud__resena__isnull=False,
+        oferta_servicio__isnull=False,
+    )
+    if since is not None:
+        qs = qs.filter(solicitud__resena__fecha_hora_resena__gte=since)
+
+    if taller:
+        qs = qs.filter(
+            solicitud__taller_id=taller.id,
+            oferta_servicio__taller_id=taller.id,
+        )
+    elif mecanico:
+        qs = qs.filter(
+            solicitud__mecanico_id=mecanico.id,
+            oferta_servicio__mecanico_id=mecanico.id,
+        )
+    else:
+        return {'avg': None, 'n': 0}
+
+    agg = qs.aggregate(avg=Avg('solicitud__resena__calificacion'), n=Count('id'))
+    return {'avg': agg['avg'], 'n': int(agg['n'] or 0)}
+
+
 def _orden_mercado_base(taller, mecanico):
     from mecanimovilapp.apps.ordenes.models import SolicitudServicio
 
@@ -187,6 +222,19 @@ def compute_proveedor_kpis_resumen(user, dias: int = 30) -> dict[str, Any]:
     calificacion_muestra_ui = (
         float(avg_rating_periodo) if n_resenas_periodo > 0 and avg_rating_periodo is not None
         else (float(avg_rating_all) if avg_rating_all is not None else None)
+    )
+
+    # --- Calificación atada a servicios del proveedor (líneas con OfertaServicio) ---
+    agg_srv_periodo = _calificacion_servicios_lineas_agg(taller, mecanico, since)
+    agg_srv_all = _calificacion_servicios_lineas_agg(taller, mecanico, None)
+    n_srv_periodo = agg_srv_periodo['n']
+    n_srv_total = agg_srv_all['n']
+    avg_srv_periodo = agg_srv_periodo['avg']
+    avg_srv_all = agg_srv_all['avg']
+    calificacion_servicios_muestra_ui = (
+        float(avg_srv_periodo)
+        if n_srv_periodo > 0 and avg_srv_periodo is not None
+        else (float(avg_srv_all) if n_srv_total > 0 and avg_srv_all is not None else None)
     )
 
     # --- Aspectos estructurados desde reseñas (opcional; mejora señal de calidad) ---
@@ -336,6 +384,11 @@ def compute_proveedor_kpis_resumen(user, dias: int = 30) -> dict[str, Any]:
         'resenas_totales_proveedor': n_resenas_total,
         'calificacion_cliente_promedio': round(calificacion_muestra_ui, 2) if calificacion_muestra_ui is not None else None,
         'calificacion_promedio_todas_resenas': round(float(avg_rating_all), 2) if avg_rating_all is not None else None,
+        'calificacion_servicios_promedio': (
+            round(calificacion_servicios_muestra_ui, 2) if calificacion_servicios_muestra_ui is not None else None
+        ),
+        'calificacion_servicios_lineas_muestra': n_srv_periodo,
+        'calificacion_servicios_lineas_total': n_srv_total,
         'score_tiempo_respuesta': score_respuesta,
         'score_calificacion_cliente': score_calificacion,
         'score_calidad_servicio': score_calidad_servicio,
@@ -367,6 +420,9 @@ def _empty_payload(dias: int) -> dict[str, Any]:
         'resenas_totales_proveedor': 0,
         'calificacion_cliente_promedio': None,
         'calificacion_promedio_todas_resenas': None,
+        'calificacion_servicios_promedio': None,
+        'calificacion_servicios_lineas_muestra': 0,
+        'calificacion_servicios_lineas_total': 0,
         'score_tiempo_respuesta': None,
         'score_calificacion_cliente': None,
         'score_calidad_servicio': None,
