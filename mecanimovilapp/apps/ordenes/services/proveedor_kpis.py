@@ -51,6 +51,54 @@ def _merge_score(components: list[int | None]) -> int:
     return max(0, min(100, int(round(sum(vals) / len(vals)))))
 
 
+def _merge_score_activity_aware(
+    *,
+    score_respuesta: int | None,
+    score_calificacion: int | None,
+    score_calidad_servicio: int | None,
+    score_checklist: int | None,
+    score_ejecucion: int | None,
+    has_offers: bool,
+    has_orders: bool,
+    has_ratings_in_period: bool,
+) -> int:
+    """
+    Score compuesto 0–100 que no "infla" a 100% cuando solo existe una señal.
+
+    Regla:
+    - Si NO hay actividad (ni ofertas ni órdenes) → 0.
+    - Si hay actividad, cada dimensión "activa" cuenta; si no hay dato en esa dimensión se
+      penaliza con 0 (en vez de excluirla del promedio).
+    - La calificación solo se considera "activa" si hay reseñas dentro de la ventana; si no,
+      se muestra en UI como histórico, pero no debe dominar el score del periodo.
+    """
+    if not has_offers and not has_orders:
+        return 0
+
+    parts: list[int] = []
+
+    # Respuesta: solo tiene sentido si hubo ofertas.
+    if has_offers:
+        parts.append(int(score_respuesta) if score_respuesta is not None else 0)
+
+    # Checklist y ejecución: dependen de órdenes/checklists (actividad marketplace).
+    if has_orders:
+        parts.append(int(score_checklist) if score_checklist is not None else 0)
+        parts.append(int(score_ejecucion) if score_ejecucion is not None else 0)
+
+        # Calidad desde aspectos es opcional; si hay órdenes pero no hay aspectos no penaliza.
+        if score_calidad_servicio is not None:
+            parts.append(int(score_calidad_servicio))
+
+    # Calificación: solo activa si hay reseñas dentro del periodo.
+    if has_ratings_in_period:
+        parts.append(int(score_calificacion) if score_calificacion is not None else 0)
+
+    if not parts:
+        return 0
+    return max(0, min(100, int(round(sum(parts) / len(parts)))))
+
+
 def _score_aspectos_resena(
     *,
     avg_puntualidad: float | None,
@@ -436,8 +484,19 @@ def compute_proveedor_kpis_resumen(user, dias: int = 30) -> dict[str, Any]:
 
     score_calificacion = _score_calificacion(calificacion_para_score)
     score_checklist = _score_checklist_cumplimiento(pct_checklist)
-    score_rendimiento = _merge_score(
-        [score_respuesta, score_calificacion, score_calidad_servicio, score_checklist, score_ejecucion]
+    has_offers = bool(base_ofertas.exists())
+    has_orders = bool(ordenes_periodo.exists())
+    has_ratings_in_period = n_resenas_muestra_eff > 0
+
+    score_rendimiento = _merge_score_activity_aware(
+        score_respuesta=score_respuesta,
+        score_calificacion=score_calificacion,
+        score_calidad_servicio=score_calidad_servicio,
+        score_checklist=score_checklist,
+        score_ejecucion=score_ejecucion,
+        has_offers=has_offers,
+        has_orders=has_orders,
+        has_ratings_in_period=has_ratings_in_period,
     )
 
     return {
