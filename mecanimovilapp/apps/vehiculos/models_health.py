@@ -145,6 +145,9 @@ class EstadoSaludVehiculo(models.Model):
         verbose_name = 'Estado de Salud de Vehículo'
         verbose_name_plural = 'Estados de Salud de Vehículos'
         ordering = ['-fecha_calculo']
+        constraints = [
+            models.UniqueConstraint(fields=['vehiculo'], name='unique_estado_salud_per_vehiculo'),
+        ]
 
 
 class ComponenteSaludVehiculo(models.Model):

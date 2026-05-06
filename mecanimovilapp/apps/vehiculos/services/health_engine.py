@@ -2,9 +2,10 @@ import math
 import logging
 from datetime import timedelta
 from django.utils import timezone
+from django.db import transaction
 from ..models_health import (
-    ComponenteSalud, 
-    ReglaMantenimientoEspecifica, 
+    ComponenteSalud,
+    ReglaMantenimientoEspecifica,
     ReglaMantenimientoGenerica,
     ComponenteSaludVehiculo,
     EstadoSaludVehiculo,
@@ -14,35 +15,36 @@ from ..models import Vehiculo
 
 logger = logging.getLogger(__name__)
 
+
 class HealthEngine:
     """
     Motor inteligente de cálculo de salud vehicular.
     Implementa arquitectura de Reglas en Cascada (Waterfall) y algoritmo Weibull.
+
+    Optimizaciones aplicadas:
+    - Prefetch completo de reglas y estados al inicio (4 queries fijas en lugar de N×5).
+    - select_for_update() + unique constraint en EstadoSaludVehiculo evita duplicados bajo concurrencia.
+    - bulk_update al final del loop en lugar de save() por componente.
     """
-    
+
     @staticmethod
     def calcular_salud_vehiculo(vehiculo_id):
         """
         Calcula la salud de todos los componentes para un vehículo dado.
         Actualiza el estado persistente y retorna un reporte detallado.
-        
-        Args:
-            vehiculo_id: ID del vehículo
-            
+
         Returns:
-            list[dict]: Lista de componentes con su estado calculado.
+            list[dict]: Lista de componentes con su estado calculado (orden ascendente por salud).
         """
         try:
-            vehiculo = Vehiculo.objects.get(id=vehiculo_id)
+            vehiculo = Vehiculo.objects.select_related('marca', 'modelo').get(id=vehiculo_id)
         except Vehiculo.DoesNotExist:
             logger.error(f"Vehículo {vehiculo_id} no encontrado para cálculo de salud")
             return []
 
-        # 1. Normalizar datos del vehículo (marca/modelo son FKs; necesitamos el nombre)
         marca_nombre = vehiculo.marca.nombre if vehiculo.marca else ""
         modelo_nombre = vehiculo.modelo.nombre if vehiculo.modelo else ""
-        
-        # Mapeo de Motor para coincidir con Choices
+
         tipo_motor_raw = str(vehiculo.tipo_motor).upper().strip()
         if 'DIESEL' in tipo_motor_raw or 'DÍESEL' in tipo_motor_raw:
             tipo_motor_norm = 'DIESEL'
@@ -51,186 +53,142 @@ class HealthEngine:
         elif 'HYBRID' in tipo_motor_raw:
             tipo_motor_norm = 'HIBRIDO'
         else:
-            tipo_motor_norm = 'GASOLINA' # Default safe fallback
-            
-        logger.info(f"HealthEngine: Calculando para {vehiculo.patente} ({marca_nombre} {modelo_nombre}) - Motor: {tipo_motor_norm}")
+            tipo_motor_norm = 'GASOLINA'
 
-        # 2. Obtener todos los componentes activos del catálogo maestro
-        # TODO: Filtrar componentes relevantes? Por ahora traemos todos y filtramos por reglas.
-        componentes_maestros = ComponenteSalud.objects.all()
-        
+        logger.info(
+            f"HealthEngine: Calculando para {vehiculo.patente} ({marca_nombre} {modelo_nombre}) - Motor: {tipo_motor_norm}"
+        )
+
+        # ----------------------------------------------------------------
+        # PREFETCH ÚNICO — 4 queries totales independientemente de cuántos
+        # componentes existan en el catálogo.
+        # ----------------------------------------------------------------
+        componentes_maestros = list(ComponenteSalud.objects.all())
+
+        # Reglas específicas para este vehículo (marca + modelo)
+        reglas_especificas_map = {
+            r.componente_id: r
+            for r in ReglaMantenimientoEspecifica.objects.filter(
+                marca=marca_nombre, modelo=modelo_nombre
+            )
+        }
+
+        # Reglas genéricas para este tipo de motor
+        reglas_genericas_map = {
+            r.componente_id: r
+            for r in ReglaMantenimientoGenerica.objects.filter(
+                tipo_motor=tipo_motor_norm
+            )
+        }
+
+        # Estados actuales de componentes del vehículo
+        estados_map = {
+            c.componente_id: c
+            for c in ComponenteSaludVehiculo.objects.filter(vehiculo=vehiculo)
+        }
+
         reporte_salud = []
         stats = {
-            'total': 0, 'optimo': 0, 'atencion': 0, 
+            'total': 0, 'optimo': 0, 'atencion': 0,
             'urgente': 0, 'critico': 0, 'sum_health': 0
         }
 
-        # Cache de Reglas para optimización (aunque con pocos componentes no es critico)
-        # Podríamos hacer prefetch, pero iterar es mas claro para la lógica de cascada
-        
+        nuevos_estados = []
+        estados_a_actualizar = []
+
         for comp_maestro in componentes_maestros:
-            regla_aplicada = None
-            es_especifica = False
-            
-            # --------------------------------------------------------
-            # NIVEL 1: Regla Específica (Marca + Modelo)
-            # --------------------------------------------------------
-            try:
-                regla_especifica = ReglaMantenimientoEspecifica.objects.get(
-                    componente=comp_maestro,
-                    marca=marca_nombre,
-                    modelo=modelo_nombre
-                )
+            # ---- Cascada de reglas ----
+            regla_especifica = reglas_especificas_map.get(comp_maestro.id)
+            regla_generica = reglas_genericas_map.get(comp_maestro.id)
+
+            if regla_especifica:
                 regla_aplicada = regla_especifica
                 es_especifica = True
-                # logger.debug(f"  - Regla Específica encontrada para {comp_maestro.nombre}")
-            except ReglaMantenimientoEspecifica.DoesNotExist:
-                pass
-            
-            # --------------------------------------------------------
-            # NIVEL 2: Regla Genérica (Tipo Motor) - Fallback
-            # --------------------------------------------------------
-            if not regla_aplicada:
-                try:
-                    regla_generica = ReglaMantenimientoGenerica.objects.get(
-                        componente=comp_maestro,
-                        tipo_motor=tipo_motor_norm
-                    )
-                    regla_aplicada = regla_generica
-                    es_especifica = False
-                    # logger.debug(f"  - Regla Genérica encontrada para {comp_maestro.nombre}")
-                except ReglaMantenimientoGenerica.DoesNotExist:
-                    # Nivel 3: Skip
-                    # Si no hay regla para este motor (ej: Bujías en Diesel), ignoramos el componente
-                    continue
-
-            # --------------------------------------------------------
-            # Cálculo de Salud (Weibull Algorithm)
-            # --------------------------------------------------------
-            # Obtener estado persistente actual para saber el último servicio
-            comp_estado, created = ComponenteSaludVehiculo.objects.get_or_create(
-                vehiculo=vehiculo,
-                componente=comp_maestro,
-                defaults={
-                    'salud_porcentaje': 100,
-                    'nivel_alerta': 'OPTIMO',
-                    'km_ultimo_servicio': 0 # Default riesgo: 0 (nunca mantenido)
-                }
-            )
-            
-            # Kilometraje recorrido desde último servicio
-            km_recorridos = max(0, vehiculo.kilometraje - comp_estado.km_ultimo_servicio)
-
-            # Parámetros Weibull (eje km)
-            eta = float(regla_aplicada.vida_util_km)  # Scale Parameter (Vida característica)
-            beta = float(regla_aplicada.beta)  # Shape Parameter
-
-            # Salud por km: R(km) = exp(-(km_recorridos/eta)^beta)
-            if eta > 0:
-                salud_km = math.exp(-((km_recorridos / eta) ** beta)) * 100.0
+            elif regla_generica:
+                regla_aplicada = regla_generica
+                es_especifica = False
             else:
-                salud_km = 0.0
+                continue  # Sin regla → skip (no cuenta en promedio)
 
+            # ---- Estado del componente ----
+            comp_estado = estados_map.get(comp_maestro.id)
+            if comp_estado is None:
+                comp_estado = ComponenteSaludVehiculo(
+                    vehiculo=vehiculo,
+                    componente=comp_maestro,
+                    salud_porcentaje=100,
+                    nivel_alerta='OPTIMO',
+                    km_ultimo_servicio=0,
+                )
+                nuevos_estados.append(comp_estado)
+                estados_map[comp_maestro.id] = comp_estado
+
+            # ---- Algoritmo Weibull (eje km) ----
+            km_recorridos = max(0, vehiculo.kilometraje - comp_estado.km_ultimo_servicio)
+            eta = float(regla_aplicada.vida_util_km)
+            beta = float(regla_aplicada.beta)
+
+            salud_km = math.exp(-((km_recorridos / eta) ** beta)) * 100.0 if eta > 0 else 0.0
             salud_pct = salud_km
             months_elapsed = None
+
+            # Intervalo por tiempo: preferir regla específica, fallback a genérica
             intervalo_meses = getattr(regla_aplicada, 'intervalo_meses', None)
+            if not intervalo_meses and es_especifica and regla_generica:
+                intervalo_meses = getattr(regla_generica, 'intervalo_meses', None)
 
-            # Si regla específica no trae intervalo_meses, intentar genérica solo para el eje tiempo
-            if not intervalo_meses and es_especifica:
-                try:
-                    reg_gen = ReglaMantenimientoGenerica.objects.get(
-                        componente=comp_maestro, tipo_motor=tipo_motor_norm
-                    )
-                    intervalo_meses = getattr(reg_gen, 'intervalo_meses', None)
-                except ReglaMantenimientoGenerica.DoesNotExist:
-                    pass
-
-            # Eje tiempo: misma forma Weibull sobre "meses desde último servicio" vs intervalo_meses.
-            # Sin fecha_ultimo_servicio el eje tiempo no aplicaba → métricas no cambiaban solo por tiempo.
-            # Anclaje cuando hay intervalo_meses pero fecha null (checklist nunca matcheó o fila antigua):
-            # - km_recorridos == 0 → último servicio "en este km" ahora (decae a partir de hoy).
-            # - km_recorridos > 0 → proxy: fecha = ahora - fracción del intervalo acorde al desgaste km/eta
-            #   para que el primer cálculo sea coherente; los días siguientes el tiempo sigue corriendo.
+            # ---- Eje tiempo (Weibull sobre meses) ----
             if intervalo_meses and intervalo_meses > 0:
+                now = timezone.now()
                 if not comp_estado.fecha_ultimo_servicio:
-                    now = timezone.now()
                     if km_recorridos <= 0:
                         comp_estado.fecha_ultimo_servicio = now
-                        ComponenteSaludVehiculo.objects.filter(pk=comp_estado.pk).update(
-                            fecha_ultimo_servicio=now
-                        )
-                        comp_estado.fecha_ultimo_servicio = now
                         logger.info(
-                            "HealthEngine: anclaje fecha_ultimo_servicio=now (km_recorridos=0) "
-                            "componente=%s vehiculo=%s intervalo_meses=%s",
-                            comp_maestro.nombre,
-                            vehiculo_id,
-                            intervalo_meses,
+                            "HealthEngine: anclaje fecha=now (km=0) componente=%s vehiculo=%s",
+                            comp_maestro.nombre, vehiculo_id,
                         )
                     elif eta > 0:
-                        # Fracción de vida km consumida → misma fracción del intervalo en meses (tope 2x intervalo)
                         frac = min(2.0, km_recorridos / eta)
-                        months_proxy = frac * float(intervalo_meses)
-                        anchor = now - timedelta(days=months_proxy * 30.44)
+                        anchor = now - timedelta(days=frac * float(intervalo_meses) * 30.44)
                         if timezone.is_naive(anchor):
                             anchor = timezone.make_aware(anchor)
-                        ComponenteSaludVehiculo.objects.filter(pk=comp_estado.pk).update(
-                            fecha_ultimo_servicio=anchor
-                        )
                         comp_estado.fecha_ultimo_servicio = anchor
                         logger.info(
-                            "HealthEngine: anclaje fecha_ultimo_servicio proxy meses=%.2f componente=%s "
-                            "vehiculo=%s intervalo_meses=%s km_recorridos=%s",
-                            months_proxy,
-                            comp_maestro.nombre,
-                            vehiculo_id,
-                            intervalo_meses,
-                            km_recorridos,
+                            "HealthEngine: anclaje fecha proxy meses=%.2f componente=%s vehiculo=%s",
+                            frac * float(intervalo_meses), comp_maestro.nombre, vehiculo_id,
                         )
                     else:
                         logger.warning(
-                            "HealthEngine: intervalo_meses=%s pero sin fecha y eta=0; eje tiempo omitido "
-                            "componente=%s vehiculo=%s",
-                            intervalo_meses,
-                            comp_maestro.nombre,
-                            vehiculo_id,
+                            "HealthEngine: intervalo_meses=%s pero eta=0; eje tiempo omitido componente=%s",
+                            intervalo_meses, comp_maestro.nombre,
                         )
 
                 if comp_estado.fecha_ultimo_servicio:
                     fecha_ref = comp_estado.fecha_ultimo_servicio
                     if timezone.is_naive(fecha_ref):
                         fecha_ref = timezone.make_aware(fecha_ref)
-                    delta = timezone.now() - fecha_ref
-                    months_elapsed = max(0.0, delta.days / 30.44)
+                    months_elapsed = max(0.0, (now - fecha_ref).days / 30.44)
                     salud_tiempo = math.exp(
                         -((months_elapsed / float(intervalo_meses)) ** beta)
                     ) * 100.0
                     salud_pct = min(salud_km, salud_tiempo)
                 elif intervalo_meses:
                     logger.warning(
-                        "HealthEngine: regla con intervalo_meses=%s sin fecha anclable componente=%s "
-                        "vehiculo=%s (revisar checklist/mapeo)",
-                        intervalo_meses,
-                        comp_maestro.nombre,
-                        vehiculo_id,
+                        "HealthEngine: sin fecha anclable componente=%s vehiculo=%s (revisar checklist/mapeo)",
+                        comp_maestro.nombre, vehiculo_id,
                     )
 
-            # meses_critico solo en genérica: umbral duro opcional
+            # ---- Cap duro por meses_critico ----
             meses_critico = None
             if not es_especifica:
                 meses_critico = getattr(regla_aplicada, 'meses_critico', None)
-            else:
-                try:
-                    reg_gen = ReglaMantenimientoGenerica.objects.get(
-                        componente=comp_maestro, tipo_motor=tipo_motor_norm
-                    )
-                    meses_critico = getattr(reg_gen, 'meses_critico', None)
-                except ReglaMantenimientoGenerica.DoesNotExist:
-                    pass
+            elif regla_generica:
+                meses_critico = getattr(regla_generica, 'meses_critico', None)
+
             if meses_critico and months_elapsed is not None and months_elapsed >= meses_critico:
                 salud_pct = min(salud_pct, 25.0)
 
-            # Determinar Status
+            # ---- Status ----
             if salud_pct >= 70:
                 status = 'OPTIMO'
                 stats['optimo'] += 1
@@ -243,31 +201,32 @@ class HealthEngine:
             else:
                 status = 'CRITICO'
                 stats['critico'] += 1
-            
+
             stats['total'] += 1
             stats['sum_health'] += salud_pct
 
-            # Predicciones
             km_restantes = max(0, int(eta - km_recorridos))
-            
-            # Actualizar Estado Persistente
+
+            # ---- Actualizar objeto en memoria (sin save aún) ----
             comp_estado.salud_porcentaje = round(salud_pct, 1)
             comp_estado.nivel_alerta = status
             comp_estado.vida_util_proyectada = int(eta)
             comp_estado.es_regla_especifica = es_especifica
             comp_estado.km_estimados_restantes = km_restantes
-            comp_estado.requiere_servicio_inmediato = (status == 'CRITICO' or status == 'URGENTE')
-            
+            comp_estado.requiere_servicio_inmediato = (status in ('CRITICO', 'URGENTE'))
+
             if comp_estado.requiere_servicio_inmediato:
                 comp_estado.mensaje_alerta = f"Atención requerida: {comp_maestro.nombre} al {round(salud_pct)}%."
             else:
                 comp_estado.mensaje_alerta = ""
+
             if months_elapsed is not None and intervalo_meses and salud_pct < salud_km - 0.5:
                 extra = f" Intervalo por tiempo (~{int(months_elapsed)} meses desde último servicio)."
                 comp_estado.mensaje_alerta = (comp_estado.mensaje_alerta or "").strip() + extra
-                
-            comp_estado.save()
-            
+
+            if comp_estado.pk:
+                estados_a_actualizar.append(comp_estado)
+
             reporte_item = {
                 'componente': comp_maestro.nombre,
                 'slug': comp_maestro.slug,
@@ -283,35 +242,50 @@ class HealthEngine:
                 reporte_item['intervalo_meses_regla'] = int(intervalo_meses)
             reporte_salud.append(reporte_item)
 
-        # --------------------------------------------------------
-        # Actualizar Snapshot General (EstadoSaludVehiculo)
-        # --------------------------------------------------------
+        # ---- Persistir en bulk ----
+        update_fields = [
+            'salud_porcentaje', 'nivel_alerta', 'vida_util_proyectada', 'es_regla_especifica',
+            'km_estimados_restantes', 'requiere_servicio_inmediato', 'mensaje_alerta',
+            'fecha_ultimo_servicio',
+        ]
+        if nuevos_estados:
+            ComponenteSaludVehiculo.objects.bulk_create(nuevos_estados, ignore_conflicts=True)
+        if estados_a_actualizar:
+            ComponenteSaludVehiculo.objects.bulk_update(estados_a_actualizar, update_fields)
+
+        # ---- Snapshot global (con select_for_update para evitar race condition) ----
         promedio_global = (stats['sum_health'] / stats['total']) if stats['total'] > 0 else 0
-        
-        # Verificar alertas activas
         tiene_alertas = (stats['urgente'] > 0 or stats['critico'] > 0)
-        
-        estado_general, _ = EstadoSaludVehiculo.objects.update_or_create(
-            vehiculo=vehiculo,
-            defaults={
-                'salud_general_porcentaje': round(promedio_global, 1),
-                'kilometraje_snapshot': vehiculo.kilometraje,
-                'total_componentes_evaluados': stats['total'],
-                'componentes_optimos': stats['optimo'],
-                'componentes_atencion': stats['atencion'],
-                'componentes_urgentes': stats['urgente'],
-                'componentes_criticos': stats['critico'],
-                'tiene_alertas_activas': tiene_alertas
-            }
-        )
-        # Marcar momento del recálculo (staleness / sync / marketplace coherente)
-        EstadoSaludVehiculo.objects.filter(pk=estado_general.pk).update(
-            ultima_actualizacion=timezone.now()
-        )
-        
-        # Sort report by criticality (ascending health)
+        now = timezone.now()
+
+        with transaction.atomic():
+            estado_general, _ = EstadoSaludVehiculo.objects.select_for_update().get_or_create(
+                vehiculo=vehiculo,
+                defaults={
+                    'salud_general_porcentaje': round(promedio_global, 1),
+                    'kilometraje_snapshot': vehiculo.kilometraje,
+                    'total_componentes_evaluados': stats['total'],
+                    'componentes_optimos': stats['optimo'],
+                    'componentes_atencion': stats['atencion'],
+                    'componentes_urgentes': stats['urgente'],
+                    'componentes_criticos': stats['critico'],
+                    'tiene_alertas_activas': tiene_alertas,
+                    'ultima_actualizacion': now,
+                }
+            )
+            # Actualizar campos si la fila ya existía
+            EstadoSaludVehiculo.objects.filter(pk=estado_general.pk).update(
+                salud_general_porcentaje=round(promedio_global, 1),
+                kilometraje_snapshot=vehiculo.kilometraje,
+                total_componentes_evaluados=stats['total'],
+                componentes_optimos=stats['optimo'],
+                componentes_atencion=stats['atencion'],
+                componentes_urgentes=stats['urgente'],
+                componentes_criticos=stats['critico'],
+                tiene_alertas_activas=tiene_alertas,
+                ultima_actualizacion=now,
+            )
+
         reporte_salud.sort(key=lambda x: x['salud'])
-        
-        logger.info(f"HealthEngine: Cálculo completado. Salud Global: {promedio_global}%")
-        
+        logger.info(f"HealthEngine: Cálculo completado. Salud Global: {round(promedio_global, 1)}%")
         return reporte_salud

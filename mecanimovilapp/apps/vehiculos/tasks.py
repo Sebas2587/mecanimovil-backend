@@ -840,32 +840,18 @@ def _procesar_checklists_historicos_vehiculo_interno(vehicle_id):
                 f"(diferencia: +{diferencia} km)"
             )
         
-        # Recalcular salud de todos los componentes y guardar en bulk
-        # Recalcular usando Health Engine en lugar de lógica manual
-        # El Engine leerá los km_ultimo_servicio que acabamos de actualizar
-        HealthEngine.calcular_salud_vehiculo(vehicle_id)
-        
-        # componentes = list(ComponenteSaludVehiculo.objects.filter(vehiculo=vehiculo))
-        # for comp in componentes:
-        #    comp.calcular_salud(commit=False)
-        
-        # if componentes:
-        #    ComponenteSaludVehiculo.objects.bulk_update(...)
-        
-        # Recalcular estado general (usar Celery si está disponible, sino calcular directamente)
+        # Recalcular estado de salud delegando siempre al HealthEngine via Celery.
+        # Se evita correr el Engine síncronamente aquí porque ya fue actualizado el km_ultimo_servicio
+        # y el Engine se ejecutará en el worker con los datos frescos.
         try:
-            if CELERY_AVAILABLE:
-                calcular_salud_vehiculo_async.delay(vehicle_id, force_recalculate=True)
-            else:
-                # Si Celery no está disponible, calcular directamente
-                calcular_estado_salud_interno(vehicle_id)
+            calcular_salud_vehiculo_async.delay(vehicle_id, force_recalculate=True)
+            logger.info(f"Recálculo de salud encolado para vehículo {vehicle_id} (post checklists históricos)")
         except Exception as e:
-            logger.warning(f"Error recalculando salud del vehículo {vehicle_id}: {str(e)}")
-            # Intentar calcular directamente como fallback
+            logger.warning(f"No se pudo encolar recálculo para vehículo {vehicle_id}: {e} — recalculando en proceso")
             try:
                 calcular_estado_salud_interno(vehicle_id)
             except Exception as e2:
-                logger.error(f"Error calculando salud directamente: {str(e2)}")
+                logger.error(f"Error en recálculo fallback para vehículo {vehicle_id}: {e2}")
         
         logger.info(
             f"✅ Procesamiento de checklists históricos completado para vehículo {vehicle_id}. "

@@ -523,17 +523,11 @@ class VehiculoLiteSerializer(serializers.ModelSerializer):
         return count
 
     def get_health_score(self, obj):
-        """Retorna el puntaje promedio de salud del vehículo"""
-        from django.db.models import Avg
-        from mecanimovilapp.apps.vehiculos.models_health import ComponenteSaludVehiculo
-        
-        avg_health = ComponenteSaludVehiculo.objects.filter(vehiculo=obj).aggregate(Avg('salud_porcentaje'))['salud_porcentaje__avg']
-        
-        if avg_health is not None:
-            return int(avg_health)
-            
-        # Si no hay componentes reportados, NO asumir 100%.
-        # Retornar 0 indica que falta inicialización o datos.
+        """Retorna el score de salud del snapshot de EstadoSaludVehiculo (fuente única de verdad)."""
+        from mecanimovilapp.apps.vehiculos.models_health import EstadoSaludVehiculo
+        snapshot = EstadoSaludVehiculo.objects.filter(vehiculo=obj).first()
+        if snapshot:
+            return int(snapshot.salud_general_porcentaje)
         return 0
 
     def get_pending_alerts_count(self, obj):
@@ -606,15 +600,12 @@ class VehiculoMarketplaceSerializer(serializers.ModelSerializer):
         return get_image_url(obj.foto, request)
     
     def get_health_score(self, obj):
-        # Calcular promedio de salud de componentes
-        from .models_health import ComponenteSaludVehiculo
-        from django.db.models import Avg
-        
-        avg_health = ComponenteSaludVehiculo.objects.filter(vehiculo=obj).aggregate(Avg('salud_porcentaje'))['salud_porcentaje__avg']
-        
-        if avg_health is not None:
-            return int(avg_health)
-        return 0 # Default para nuevos vehículos sin datos (evita falso 100%)
+        """Retorna el score de salud del snapshot de EstadoSaludVehiculo (fuente única de verdad)."""
+        from .models_health import EstadoSaludVehiculo
+        snapshot = EstadoSaludVehiculo.objects.filter(vehiculo=obj).first()
+        if snapshot:
+            return int(snapshot.salud_general_porcentaje)
+        return 0
 
     def get_health_bonus_percentage(self, obj):
         # We repurpose this field to return the Monetary Value of Potential Gain for now, 
