@@ -2,17 +2,18 @@
 Agregación de KPIs para proveedores (solicitudes públicas / marketplace).
 
 Criterios de ventana: actividad reciente (orden creada, checklist o reseña en el periodo),
-no solo fecha_hora_solicitud. Reseñas: todas las del taller/mecánico, no solo las ligadas a solicitud.
+no solo fecha_hora_solicitud.
 
-Calificación por servicios: promedio de estrellas de reseñas aplicadas a líneas de orden cuya
-OfertaServicio pertenece al proveedor (misma lógica que catálogo en app usuarios).
+Calificaciones mostradas al proveedor combinan modelo Resena y Review (app usuarios): si el mirror
+a Resena falló, sigue contando Review. La nota por orden prefiere Resena; las líneas de servicio
+usan la misma nota por orden sobre LineaServicio + OfertaServicio del proveedor.
 """
 from __future__ import annotations
 
 from datetime import timedelta
 from typing import Any
 
-from django.db.models import Avg, Count, Q
+from django.db.models import Avg, Count, Exists, OuterRef, Q
 from django.utils import timezone
 
 
@@ -108,36 +109,95 @@ def _resenas_qs(taller, mecanico):
     return Resena.objects.filter(mecanico=mecanico)
 
 
-def _calificacion_servicios_lineas_agg(taller, mecanico, since=None) -> dict[str, Any]:
+def _merged_rating_by_solicitud(taller, mecanico, solicitud_ids: list[int] | None) -> dict[int, float]:
     """
-    Promedio de estrellas (1–5) desde reseñas de clientes aplicadas a líneas de orden
-    cuya OfertaServicio pertenece al mismo proveedor. Una orden con varias líneas
-    repite la misma calificación por línea (peso por servicio contratado).
+    Por orden: calificación 1–5. Prefiere Resena; si no hay, usa Review (app usuarios).
     """
+    from mecanimovilapp.apps.usuarios.models import Resena, Review
+
+    rq = Resena.objects.exclude(solicitud_id__isnull=True)
+    if taller:
+        rq = rq.filter(taller=taller)
+    else:
+        rq = rq.filter(mecanico=mecanico)
+    if solicitud_ids is not None:
+        if not solicitud_ids:
+            return {}
+        rq = rq.filter(solicitud_id__in=solicitud_ids)
+
+    out: dict[int, float] = {}
+    for r in rq.only('solicitud_id', 'calificacion').iterator(chunk_size=400):
+        out[int(r.solicitud_id)] = float(r.calificacion)
+
+    rv = Review.objects.all()
+    if taller:
+        rv = rv.filter(provider_type='taller', provider_id=taller.id)
+    else:
+        rv = rv.filter(provider_type='mecanico', provider_id=mecanico.id)
+    if solicitud_ids is not None:
+        rv = rv.filter(service_order_id__in=solicitud_ids)
+
+    for row in rv.only('service_order_id', 'rating').iterator(chunk_size=400):
+        oid = int(row.service_order_id)
+        if oid not in out:
+            out[oid] = float(row.rating)
+    return out
+
+
+def _merged_global_rating_samples(taller, mecanico) -> list[float]:
+    """
+    Muestras globales: cada Resena del proveedor + cada Review cuya orden no tiene Resena
+    (evita duplicar cuando el mirror Resena sí existió).
+    """
+    from mecanimovilapp.apps.usuarios.models import Review, Resena
+
+    rq = _resenas_qs(taller, mecanico)
+    vals = [float(x) for x in rq.values_list('calificacion', flat=True)]
+
+    rev_q = Review.objects.all()
+    if taller:
+        rev_q = rev_q.filter(provider_type='taller', provider_id=taller.id)
+    else:
+        rev_q = rev_q.filter(provider_type='mecanico', provider_id=mecanico.id)
+
+    covered = Resena.objects.filter(solicitud_id=OuterRef('service_order_id'))
+    orphan = rev_q.annotate(has_resena=Exists(covered)).filter(has_resena=False).values_list('rating', flat=True)
+    vals.extend(float(x) for x in orphan)
+    return vals
+
+
+def _service_line_rating_samples(
+    taller,
+    mecanico,
+    solicitud_ids: list[int],
+    rating_by_sol: dict[int, float],
+) -> list[float]:
+    """Por cada línea con OfertaServicio del proveedor, una muestra = rating de la orden."""
     from mecanimovilapp.apps.ordenes.models import LineaServicio
 
+    if not solicitud_ids or not rating_by_sol:
+        return []
+
     qs = LineaServicio.objects.filter(
-        solicitud__resena__isnull=False,
+        solicitud_id__in=solicitud_ids,
         oferta_servicio__isnull=False,
     )
-    if since is not None:
-        qs = qs.filter(solicitud__resena__fecha_hora_resena__gte=since)
-
     if taller:
-        qs = qs.filter(
-            solicitud__taller_id=taller.id,
-            oferta_servicio__taller_id=taller.id,
-        )
+        qs = qs.filter(solicitud__taller_id=taller.id, oferta_servicio__taller_id=taller.id)
     elif mecanico:
         qs = qs.filter(
             solicitud__mecanico_id=mecanico.id,
             oferta_servicio__mecanico_id=mecanico.id,
         )
     else:
-        return {'avg': None, 'n': 0}
+        return []
 
-    agg = qs.aggregate(avg=Avg('solicitud__resena__calificacion'), n=Count('id'))
-    return {'avg': agg['avg'], 'n': int(agg['n'] or 0)}
+    vals: list[float] = []
+    for sid in qs.values_list('solicitud_id', flat=True).iterator(chunk_size=600):
+        r = rating_by_sol.get(int(sid))
+        if r is not None:
+            vals.append(r)
+    return vals
 
 
 def _orden_mercado_base(taller, mecanico):
@@ -206,36 +266,8 @@ def compute_proveedor_kpis_resumen(user, dias: int = 30) -> dict[str, Any]:
     if not taller and not mecanico:
         return _empty_payload(dias)
 
-    # --- Reseñas del proveedor (todas las que dejó un cliente al taller/mecánico) ---
-    rq_all = _resenas_qs(taller, mecanico)
-    rq_periodo = rq_all.filter(fecha_hora_resena__gte=since)
-    agg_all = rq_all.aggregate(avg=Avg('calificacion'), n=Count('id'))
-    agg_periodo = rq_periodo.aggregate(avg=Avg('calificacion'), n=Count('id'))
-    n_resenas_total = agg_all['n'] or 0
-    n_resenas_periodo = agg_periodo['n'] or 0
-    avg_rating_all = agg_all['avg']
-    avg_rating_periodo = agg_periodo['avg']
-    calificacion_para_score = (
-        float(avg_rating_periodo) if n_resenas_periodo > 0 and avg_rating_periodo is not None
-        else (float(avg_rating_all) if n_resenas_total > 0 and avg_rating_all is not None else None)
-    )
-    calificacion_muestra_ui = (
-        float(avg_rating_periodo) if n_resenas_periodo > 0 and avg_rating_periodo is not None
-        else (float(avg_rating_all) if avg_rating_all is not None else None)
-    )
-
-    # --- Calificación atada a servicios del proveedor (líneas con OfertaServicio) ---
-    agg_srv_periodo = _calificacion_servicios_lineas_agg(taller, mecanico, since)
-    agg_srv_all = _calificacion_servicios_lineas_agg(taller, mecanico, None)
-    n_srv_periodo = agg_srv_periodo['n']
-    n_srv_total = agg_srv_all['n']
-    avg_srv_periodo = agg_srv_periodo['avg']
-    avg_srv_all = agg_srv_all['avg']
-    calificacion_servicios_muestra_ui = (
-        float(avg_srv_periodo)
-        if n_srv_periodo > 0 and avg_srv_periodo is not None
-        else (float(avg_srv_all) if n_srv_total > 0 and avg_srv_all is not None else None)
-    )
+    # --- Reseñas con aspectos (solo modelo Resena en ventana calendario; KPI de estrellas se calcula más abajo) ---
+    rq_periodo = _resenas_qs(taller, mecanico).filter(fecha_hora_resena__gte=since)
 
     # --- Aspectos estructurados desde reseñas (opcional; mejora señal de calidad) ---
     agg_aspects = rq_periodo.aggregate(
@@ -293,6 +325,50 @@ def compute_proveedor_kpis_resumen(user, dias: int = 30) -> dict[str, Any]:
     orden_base = _orden_mercado_base(taller, mecanico)
     ordenes_periodo = _ordenes_en_ventana_actividad(orden_base, since)
     ordenes_completadas_periodo = ordenes_periodo.filter(estado='completado')
+
+    orden_ids_period = list(ordenes_periodo.values_list('id', flat=True))
+    rating_map_period = _merged_rating_by_solicitud(taller, mecanico, orden_ids_period)
+    rated_in_period = [rating_map_period[oid] for oid in orden_ids_period if oid in rating_map_period]
+
+    samples_global = _merged_global_rating_samples(taller, mecanico)
+    avg_global_merged = sum(samples_global) / len(samples_global) if samples_global else None
+
+    if rated_in_period:
+        calificacion_muestra_ui = sum(rated_in_period) / len(rated_in_period)
+        calificacion_para_score = calificacion_muestra_ui
+        n_resenas_muestra_eff = len(rated_in_period)
+    elif avg_global_merged is not None:
+        calificacion_muestra_ui = avg_global_merged
+        calificacion_para_score = avg_global_merged
+        # Sin órdenes calificadas dentro de la ventana de actividad; el promedio es histórico.
+        n_resenas_muestra_eff = 0
+    else:
+        calificacion_muestra_ui = None
+        calificacion_para_score = None
+        n_resenas_muestra_eff = 0
+
+    n_resenas_total_merged = len(samples_global)
+
+    rating_map_all = _merged_rating_by_solicitud(taller, mecanico, None)
+    srv_samples_period = _service_line_rating_samples(taller, mecanico, orden_ids_period, rating_map_period)
+    srv_samples_all = _service_line_rating_samples(
+        taller,
+        mecanico,
+        list(rating_map_all.keys()),
+        rating_map_all,
+    )
+
+    if srv_samples_period:
+        calificacion_servicios_muestra_ui = sum(srv_samples_period) / len(srv_samples_period)
+        n_srv_periodo = len(srv_samples_period)
+    elif srv_samples_all:
+        calificacion_servicios_muestra_ui = sum(srv_samples_all) / len(srv_samples_all)
+        n_srv_periodo = 0
+    else:
+        calificacion_servicios_muestra_ui = None
+        n_srv_periodo = 0
+
+    n_srv_total = len(srv_samples_all)
 
     estados_checklist = [
         'aceptada_por_proveedor',
@@ -380,10 +456,12 @@ def compute_proveedor_kpis_resumen(user, dias: int = 30) -> dict[str, Any]:
         'checklist_tiempo_promedio_minutos': avg_checklist_min,
         'tiempo_ejecucion_vs_estimado_promedio': ratio_promedio,
         'tiempo_ejecucion_vs_estimado_muestra': n_ratio,
-        'resenas_muestra': n_resenas_periodo,
-        'resenas_totales_proveedor': n_resenas_total,
+        'resenas_muestra': n_resenas_muestra_eff,
+        'resenas_totales_proveedor': n_resenas_total_merged,
         'calificacion_cliente_promedio': round(calificacion_muestra_ui, 2) if calificacion_muestra_ui is not None else None,
-        'calificacion_promedio_todas_resenas': round(float(avg_rating_all), 2) if avg_rating_all is not None else None,
+        'calificacion_promedio_todas_resenas': (
+            round(float(avg_global_merged), 2) if avg_global_merged is not None else None
+        ),
         'calificacion_servicios_promedio': (
             round(calificacion_servicios_muestra_ui, 2) if calificacion_servicios_muestra_ui is not None else None
         ),
