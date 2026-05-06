@@ -1,0 +1,24 @@
+---
+description: Enforce OpenSpec workflow for all changes
+alwaysApply: true
+---
+
+# OpenSpec-first workflow (MANDATORY)
+
+For **any** implementation, bugfix, refactor, or feature in this repository, ALWAYS follow this workflow without being reminded:
+
+1. **Describe the change** briefly (what/where/why).
+2. **Read related specs** in `openspec/specs/` (and any relevant existing archived changes).
+3. **Create an OpenSpec change** under `openspec/changes/<change-name>/` using the `spec-driven` schema:
+   - `proposal.md` (must include `## Why` and `## What Changes`)
+   - `specs/` deltas using headers `## ADDED Requirements`, `## MODIFIED Requirements`, etc. (Requirements must contain **SHALL/MUST** and include at least one `#### Scenario:`)
+   - `design.md`
+   - `tasks.md` (checkbox tasks)
+4. **Implement** strictly guided by the tasks/specs; update tasks `[ ] → [x]` as you complete them.
+5. **Validate** the change (`openspec validate <change>`) and ensure required artifacts are complete.
+6. **Archive** the change (`openspec archive <change>`). If the CLI prompts interactively, re-run non-interactively (pipe `y`) so the archive completes.
+
+## Guardrails
+- Never implement code changes first and “document later” (except emergency hotfixes; if so, immediately backfill an OpenSpec change and archive it).
+- If specs do not exist for the feature area, create them as part of the change (via spec deltas).
+

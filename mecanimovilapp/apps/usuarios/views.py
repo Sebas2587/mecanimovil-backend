@@ -1075,7 +1075,7 @@ class TallerViewSet(viewsets.ModelViewSet):
         Permitir GET y CREATE sin autenticación, pero requerir 
         autenticación y admin para otras operaciones
         """
-        if self.action in ['list', 'retrieve', 'horarios_disponibles', 'create', 'actualizar_propio', 'cerca', 'actualizar_ubicacion_domicilio', 'proveedores_filtrados', 'reviews']:
+        if self.action in ['list', 'retrieve', 'horarios_disponibles', 'horarios_semanales', 'create', 'actualizar_propio', 'cerca', 'actualizar_ubicacion_domicilio', 'proveedores_filtrados', 'reviews']:
             if self.action in ['actualizar_propio', 'actualizar_ubicacion_domicilio']:
                 # Solo requiere autenticación para actualizar propio perfil o ubicación
                 return [permissions.IsAuthenticated()]
@@ -1166,6 +1166,47 @@ class TallerViewSet(viewsets.ModelViewSet):
             "slots_disponibles_count": len([s for s in slots_base if s['disponible']]),
             "tipo_servicio": "taller"
         })
+
+    @action(detail=True, methods=['get'])
+    def horarios_semanales(self, request, pk=None):
+        """
+        Retorna la configuración semanal de HorarioProveedor para un taller (público).
+        Si no existe configuración, entrega un fallback por defecto coherente.
+        """
+        from datetime import time
+        from mecanimovilapp.apps.usuarios.models import HorarioProveedor
+
+        taller = self.get_object()
+        qs = HorarioProveedor.objects.filter(taller=taller).order_by('dia_semana')
+        if qs.exists():
+            return Response(HorarioProveedorSerializer(qs, many=True).data)
+
+        # Fallback: construir 7 días (domingo inactivo; sábado corto; lunes-viernes estándar)
+        class HorarioTemporal:
+            def __init__(self, dia_semana, activo, hora_inicio=None, hora_fin=None):
+                self.id = None
+                self.dia_semana = dia_semana
+                self.activo = activo
+                self.hora_inicio = hora_inicio
+                self.hora_fin = hora_fin
+                self.duracion_slot = 60
+                self.tiempo_descanso = 0
+                self.proveedor = taller
+                self.tipo_proveedor = 'taller'
+
+            def get_dia_semana_display(self):
+                return ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"][self.dia_semana]
+
+        temporales = []
+        for d in range(7):
+            if d == 6:  # domingo
+                temporales.append(HorarioTemporal(d, False))
+            elif d == 5:  # sábado
+                temporales.append(HorarioTemporal(d, True, time(8, 0), time(13, 0)))
+            else:  # lunes a viernes
+                temporales.append(HorarioTemporal(d, True, time(8, 0), time(18, 0)))
+
+        return Response(HorarioProveedorSerializer(temporales, many=True).data)
     
     def _generar_horario_defecto_taller(self, dia_semana):
         """
@@ -1816,7 +1857,7 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
         Permitir GET y CREATE sin autenticación, pero requerir 
         autenticación y admin para otras operaciones
         """
-        if self.action in ['list', 'retrieve', 'horarios_disponibles', 'create', 'actualizar_propio', 'cerca', 'actualizar_ubicacion_domicilio', 'proveedores_filtrados', 'reviews']:
+        if self.action in ['list', 'retrieve', 'horarios_disponibles', 'horarios_semanales', 'create', 'actualizar_propio', 'cerca', 'actualizar_ubicacion_domicilio', 'proveedores_filtrados', 'reviews']:
             if self.action in ['actualizar_propio', 'actualizar_ubicacion_domicilio']:
                 # Solo requiere autenticación para actualizar propio perfil o ubicación
                 return [permissions.IsAuthenticated()]
@@ -1906,6 +1947,46 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
             "slots_disponibles_count": len([s for s in slots_base if s['disponible']]),
             "tipo_servicio": "domicilio"
         })
+
+    @action(detail=True, methods=['get'])
+    def horarios_semanales(self, request, pk=None):
+        """
+        Retorna la configuración semanal de HorarioProveedor para un mecánico (público).
+        Si no existe configuración, entrega un fallback por defecto coherente.
+        """
+        from datetime import time
+        from mecanimovilapp.apps.usuarios.models import HorarioProveedor
+
+        mecanico = self.get_object()
+        qs = HorarioProveedor.objects.filter(mecanico=mecanico).order_by('dia_semana')
+        if qs.exists():
+            return Response(HorarioProveedorSerializer(qs, many=True).data)
+
+        class HorarioTemporal:
+            def __init__(self, dia_semana, activo, hora_inicio=None, hora_fin=None):
+                self.id = None
+                self.dia_semana = dia_semana
+                self.activo = activo
+                self.hora_inicio = hora_inicio
+                self.hora_fin = hora_fin
+                self.duracion_slot = 60
+                self.tiempo_descanso = 0
+                self.proveedor = mecanico
+                self.tipo_proveedor = 'mecanico'
+
+            def get_dia_semana_display(self):
+                return ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"][self.dia_semana]
+
+        temporales = []
+        for d in range(7):
+            if d == 6:  # domingo
+                temporales.append(HorarioTemporal(d, False))
+            elif d == 5:  # sábado
+                temporales.append(HorarioTemporal(d, True, time(8, 0), time(13, 0)))
+            else:
+                temporales.append(HorarioTemporal(d, True, time(8, 0), time(18, 0)))
+
+        return Response(HorarioProveedorSerializer(temporales, many=True).data)
     
     def _generar_horario_defecto_mecanico(self, dia_semana):
         """

@@ -1,0 +1,23 @@
+schema: spec-driven
+
+context: |
+  Tech stack: Python 3, Django, Django REST Framework, Celery, Redis, PostgreSQL, WebSockets (Django Channels)
+  Deploy: Render (Web Service + Celery Worker + Redis + PostgreSQL)
+  Domain: Marketplace de servicios automotrices — conecta usuarios con proveedores de mecánica, diagnóstico, revisión técnica, etc.
+  Auth: JWT (SimpleJWT) — roles: usuario_final, proveedor, admin
+  Storage: Cloudinary (imágenes), S3-compatible para documentos
+  Convenciones: PEP 8, DRF Serializers para todas las respuestas, vistas con permisos explícitos (IsAuthenticated, IsProveedor, etc.)
+  Módulos Django: ordenes, solicitudes, proveedores, usuarios, vehiculos, checklists, pagos, creditos, notificaciones, websockets
+
+rules:
+  proposal:
+    - Incluir sección "Non-goals" para evitar scope creep
+    - Especificar qué endpoints de la API se crean/modifican
+    - Indicar si requiere migración de base de datos
+  tasks:
+    - Máximo 4 horas por tarea
+    - Cada tarea debe incluir qué app Django se modifica
+    - Indicar si la tarea requiere test unitario o de integración
+  spec:
+    - Documentar permisos requeridos para cada endpoint
+    - Incluir escenarios de error (401, 403, 404, 500)
