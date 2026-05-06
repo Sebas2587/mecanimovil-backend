@@ -53,7 +53,7 @@ class ComponenteSaludVehiculoSerializer(serializers.ModelSerializer):
             'salud_porcentaje', 'nivel_alerta', 'nivel_alerta_display', 'color',
             'km_ultimo_servicio', 'fecha_ultimo_servicio', 'km_estimados_restantes',
             'requiere_servicio_inmediato', 'mensaje_alerta', 'nombre', 'icono',
-            'ultima_actualizacion', 'servicios_asociados'
+            'historial_conocido', 'ultima_actualizacion', 'servicios_asociados'
         )
 
     def get_servicios_asociados(self, obj):

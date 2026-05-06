@@ -417,6 +417,7 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
                                     'fecha_ultimo_servicio': checklist.fecha_finalizacion or timezone.now(),
                                     'salud_porcentaje': 100.0,
                                     'nivel_alerta': 'OPTIMO',
+                                    'historial_conocido': True,
                                 }
                             )
                             
@@ -427,7 +428,8 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
                                 comp_salud.nivel_alerta = 'OPTIMO'
                                 comp_salud.requiere_servicio_inmediato = False
                                 comp_salud.mensaje_alerta = ''
-                            
+                            # Dato confirmado por checklist del proveedor → historial real
+                            comp_salud.historial_conocido = True
                             componentes_para_actualizar[comp_salud.id] = comp_salud
                     except Exception as e:
                         logger.warning(f"Error actualizando componente {nombre_config}: {str(e)}")
@@ -444,7 +446,7 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
                 list(componentes_para_actualizar.values()),
                 ['km_ultimo_servicio', 'fecha_ultimo_servicio',
                  'salud_porcentaje', 'nivel_alerta', 'km_estimados_restantes',
-                 'requiere_servicio_inmediato', 'mensaje_alerta']
+                 'requiere_servicio_inmediato', 'mensaje_alerta', 'historial_conocido']
             )
         
         # Recalcular salud (cola o mismo proceso si Celery no entrega el trabajo)
@@ -798,6 +800,7 @@ def _procesar_checklists_historicos_vehiculo_interno(vehicle_id):
                                         'fecha_ultimo_servicio': checklist.fecha_finalizacion or timezone.now(),
                                         'salud_porcentaje': 100,
                                         'nivel_alerta': 'OPTIMO',
+                                        'historial_conocido': True,
                                     }
                                 )
                                 
@@ -811,6 +814,7 @@ def _procesar_checklists_historicos_vehiculo_interno(vehicle_id):
                                     if fecha_checklist >= fecha_ultimo:
                                         comp_salud.km_ultimo_servicio = km_para_servicio
                                         comp_salud.fecha_ultimo_servicio = fecha_checklist
+                                        comp_salud.historial_conocido = True
                                         # NO guardamos todavía, lo haremos en bulk al final del proceso cronológico o por vehículo
                                         # NO calculamos salud individualmente aquí, delegamos al HealthEngine al final
                                         # comp_salud.calcular_salud(commit=False) # DEPRECATED

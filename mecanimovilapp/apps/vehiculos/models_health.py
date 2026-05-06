@@ -176,6 +176,15 @@ class ComponenteSaludVehiculo(models.Model):
     # Historial Servicios
     km_ultimo_servicio = models.PositiveIntegerField(default=0)
     fecha_ultimo_servicio = models.DateTimeField(null=True, blank=True)
+
+    # True cuando el dato de km_ultimo_servicio proviene de una fuente real confirmada
+    # (registro de vehículo con historial, checklist completado, viaje GPS registrado).
+    # False cuando fue auto-creado por el Engine sin historial → se usa estimación conservadora.
+    historial_conocido = models.BooleanField(
+        default=False,
+        help_text='Indica si km_ultimo_servicio proviene de datos reales (checklist/registro). '
+                  'Si False, el Engine usa estimación conservadora de ~1 ciclo de mantenimiento.',
+    )
     
     # Predicciones
     km_estimados_restantes = models.PositiveIntegerField(default=0)

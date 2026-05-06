@@ -155,9 +155,11 @@ class VehiculoSerializer(serializers.ModelSerializer):
                 'status': c.nivel_alerta,
                 'nivel_alerta': c.nivel_alerta,
                 'km_estimados_restantes': c.km_estimados_restantes,
+                'km_ultimo_servicio': c.km_ultimo_servicio,
                 'vida_util_total': c.vida_util_proyectada,
                 'es_especifica': c.es_regla_especifica,
                 'mensaje_alerta': c.mensaje_alerta or '',
+                'historial_conocido': c.historial_conocido,
                 'servicios_asociados': servicios_asociados,
             })
         return report
@@ -295,6 +297,8 @@ class VehiculoSerializer(serializers.ModelSerializer):
                         'km_estimados_restantes': 0,
                         'requiere_servicio_inmediato': False,
                         'mensaje_alerta': '',
+                        # Historial provisto por el usuario al registrar → dato real confirmado
+                        'historial_conocido': True,
                     }
                 )
             logger.info(f"📋 Componentes historial aplicados para vehículo {vehiculo.id}: {len(items_to_process)} items")
