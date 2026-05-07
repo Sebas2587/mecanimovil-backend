@@ -5,7 +5,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.db.models import Q
 from .models import Vehiculo, Marca, MarcaVehiculo, Modelo, OfertaVehiculo, ViajeRegistrado
-from .models_health import ComponenteSalud, ReglaMantenimientoGenerica
+from .models_health import ComponenteSalud, ReglaMantenimientoGenerica, ComponenteSaludVehiculo
 from .serializers import (
     VehiculoSerializer, VehiculoLiteSerializer, MarcaSerializer, 
     MarcaVehiculoSerializer, ModeloSerializer, VehiculoMarketplaceSerializer,
@@ -612,14 +612,37 @@ class VehiculoViewSet(viewsets.ModelViewSet):
             return Response(serializer.data)
         
         elif request.method == 'PATCH':
-            print(f"DEBUG: Updating marketplace data for {vehiculo.id}")
-            print(f"DEBUG: Request Data: {request.data}")
+            # Bloquear publicación si hay componentes declarados sin verificar por taller.
+            # El usuario debe contratar una inspección técnica que certifique lo que declaró.
+            intentando_publicar = request.data.get('is_published') is True
+            if intentando_publicar and not vehiculo.is_published:
+                componentes_sin_verificar = ComponenteSaludVehiculo.objects.filter(
+                    vehiculo=vehiculo,
+                    historial_fuente='USUARIO_DECLARADO',
+                ).select_related('componente')
+
+                if componentes_sin_verificar.exists():
+                    nombres = [
+                        c.componente.nombre if c.componente else 'Componente desconocido'
+                        for c in componentes_sin_verificar
+                    ]
+                    return Response(
+                        {
+                            'error_code': 'INSPECCION_REQUERIDA',
+                            'error': (
+                                'Tu vehículo tiene componentes declarados manualmente que no han sido '
+                                'verificados por un taller. Debes contratar una inspección técnica que '
+                                'certifique esos componentes antes de publicar.'
+                            ),
+                            'componentes_sin_verificar': nombres,
+                        },
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
+
             serializer = VehiculoMarketplaceSerializer(vehiculo, data=request.data, partial=True)
             if serializer.is_valid():
                 serializer.save()
-                print(f"DEBUG: Saved data. New precio_venta: {vehiculo.precio_venta}")
                 return Response(serializer.data)
-            print(f"DEBUG: Serializer Errors: {serializer.errors}")
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     @action(detail=True, methods=['get'], url_path='marketplace-stats')
