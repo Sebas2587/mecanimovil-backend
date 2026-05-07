@@ -37,26 +37,42 @@ from django.utils import timezone
 logger = logging.getLogger(__name__)
 
 # ── Bootstrap data: estadísticas de la industria automotriz ──────────────
-# Promedios publicados por fabricantes / asociaciones automotrices para
-# vida útil esperada por componente y tipo de motor. Sirve como prior
-# cuando aún no hay datos propios suficientes.
+# Promedios revisados con fuentes de talleres y fabricantes.
+# Para componentes de fricción (frenos) la vida útil varía MUCHO según
+# perfil de conducción: los valores son para conducción mixta urbana-suburbana.
+# Conducción ciudad puro: -30% a -40% de vida útil en pastillas.
+# Conducción autopista: +20% a +30%.
 INDUSTRY_PRIORS = {
     # slug                  : (vida_util_km, intervalo_meses, std_km)
-    'aceite-motor':           (10000,  6,  1500),
-    'filtro-aceite':          (10000,  6,  1500),
-    'filtro-aire':            (20000,  12, 3000),
-    'filtro-combustible':     (40000,  24, 5000),
-    'bujias':                 (40000,  24, 5000),
-    'bateria':                (60000,  48, 10000),
-    'neumaticos':             (40000,  36, 7000),
-    'pastillas-freno':        (40000,  24, 8000),
-    'discos-freno':           (80000,  48, 12000),
-    'amortiguadores':         (80000,  60, 15000),
-    'correa-distribucion':    (100000, 84, 15000),
-    'liquido-frenos':         (40000,  24, 5000),
-    'refrigerante':           (40000,  36, 6000),
-    'aceite-transmision':     (60000,  48, 10000),
-    'embrague':               (120000, 96, 20000),
+    'aceite-motor':           (10000,   6,   1500),
+    'filtro-aceite':          (10000,   6,   1500),
+    'filtro-aire':            (20000,  12,   3000),
+    'filtro-combustible':     (40000,  24,   5000),
+    'bujias':                 (40000,  24,   5000),
+    'bateria':                (50000,  36,   8000),
+    'neumaticos':             (40000,  36,   6000),   # age_cap 5 años por goma en engine
+    'pastillas-freno':        (18000,  18,   4000),   # CORREGIDO: 18k mixto (era 40k)
+    'discos-freno':           (50000,  36,  10000),   # CORREGIDO: 50k / 3 años (era 80k)
+    'amortiguadores':         (80000,  48,  12000),   # age_cap 8 años en engine
+    'correa-distribucion':    (90000,  60,  12000),   # age_cap 6 años goma en engine
+    'liquido-frenos':         (40000,  24,   4000),   # higroscópico: 2 años crit
+    'refrigerante':           (40000,  24,   5000),
+    'aceite-transmision':     (60000,  48,  10000),
+    'embrague':               (100000, 72,  18000),
+    # aliases por slug del engine (usan slugs cortos)
+    'oil':                    (10000,   6,   1500),
+    'oil-filter':             (10000,   6,   1500),
+    'air-filter':             (20000,  12,   3000),
+    'cabin-filter':           (20000,  12,   3000),
+    'spark-plug':             (40000,  24,   5000),
+    'brakes':                 (18000,  18,   4000),
+    'brake-discs':            (50000,  36,  10000),
+    'brake-fluid':            (40000,  24,   4000),
+    'battery':                (50000,  36,   8000),
+    'tires':                  (40000,  36,   6000),
+    'coolant':                (40000,  24,   5000),
+    'shocks':                 (80000,  48,  12000),
+    'timing-belt':            (90000,  60,  12000),
 }
 
 PREDICTION_CACHE_TTL = 60 * 30  # 30 min
@@ -69,6 +85,51 @@ _loaded_models = {}  # cache en memoria del proceso
 def _industry_prior(slug):
     """Retorna prior de la industria para un slug. None si no hay."""
     return INDUSTRY_PRIORS.get(slug)
+
+
+# Slugs sensibles al perfil de conducción (mismos que en health_engine)
+_WEAR_BY_DRIVING_SLUGS = {'brakes', 'brake-discs', 'tires', 'brake-fluid', 'shocks',
+                           'pastillas-freno', 'discos-freno', 'neumaticos', 'liquido-frenos',
+                           'amortiguadores'}
+
+# Componentes con degradación por antigüedad (goma/química)
+_AGE_HARD_CAPS_PREDICTOR = {
+    'tires':             (5,  10),
+    'neumaticos':        (5,  10),
+    'timing-belt':       (6,  10),
+    'correa-distribucion': (6, 10),
+    'brake-fluid':       (2,   4),
+    'liquido-frenos':    (2,   4),
+    'coolant':           (3,   5),
+    'refrigerante':      (3,   5),
+    'shocks':            (8,  15),
+    'amortiguadores':    (8,  15),
+}
+
+
+def _predictor_driving_factor(km_por_dia: float, slug: str) -> float:
+    """
+    Factor de aceleración de desgaste para el predictor bootstrap.
+    Afecta la proyección de km/días restantes en componentes de fricción.
+    """
+    if slug not in _WEAR_BY_DRIVING_SLUGS:
+        return 1.0
+    if km_por_dia <= 15:
+        return 1.35   # uso urbano intenso
+    elif km_por_dia <= 30:
+        return 1.15
+    elif km_por_dia <= 60:
+        return 1.0
+    else:
+        return 0.90   # largo recorrido autopista
+
+
+def _predictor_vehicle_age_years(vehiculo) -> int | None:
+    """Años de vida del vehículo desde su año de fabricación."""
+    year = getattr(vehiculo, 'year', None)
+    if not year:
+        return None
+    return max(0, timezone.now().year - int(year))
 
 
 def _get_avg_km_per_day(vehiculo):
@@ -205,12 +266,19 @@ def predecir_componente_bootstrap(vehiculo, componente_estado, regla_eta_km, reg
     # km/día del usuario y proyección temporal
     km_por_dia = _get_avg_km_per_day(vehiculo)
 
+    slug = componente_estado.componente.slug if componente_estado.componente else ''
+
     # Ajuste climático (puede acelerar el desgaste hasta 1.9x según WEAR_MATRIX)
-    factor_clima = _climate_factor_for_component(
-        vehiculo, componente_estado.componente.slug if componente_estado.componente else '',
-    )
-    km_hasta_atencion_aj = int(km_hasta_atencion / max(factor_clima, 1.0))
-    km_hasta_critico_aj  = int(km_hasta_critico / max(factor_clima, 1.0))
+    factor_clima = _climate_factor_for_component(vehiculo, slug)
+
+    # Factor de intensidad de conducción para componentes de fricción
+    factor_conduccion = _predictor_driving_factor(km_por_dia, slug)
+
+    # Factor combinado: clima × conducción (ambos aceleran desgaste si > 1)
+    factor_total = factor_clima * factor_conduccion
+
+    km_hasta_atencion_aj = int(km_hasta_atencion / max(factor_total, 1.0))
+    km_hasta_critico_aj  = int(km_hasta_critico  / max(factor_total, 1.0))
 
     dias_atencion = int(km_hasta_atencion_aj / km_por_dia) if km_por_dia > 0 else None
     dias_critico  = int(km_hasta_critico_aj  / km_por_dia) if km_por_dia > 0 else None
@@ -220,7 +288,7 @@ def predecir_componente_bootstrap(vehiculo, componente_estado, regla_eta_km, reg
     def cdf_falla(dias):
         if dias is None or km_por_dia <= 0:
             return None
-        km_proyectado = km_recorridos + dias * km_por_dia * factor_clima
+        km_proyectado = km_recorridos + dias * km_por_dia * factor_total
         return min(1.0, max(0.0, 1 - math.exp(-((km_proyectado / eta) ** beta))))
 
     p30 = cdf_falla(30)
@@ -254,6 +322,32 @@ def predecir_componente_bootstrap(vehiculo, componente_estado, regla_eta_km, reg
             f'{int((factor_clima - 1) * 100)} %.'
         )
 
+    if factor_conduccion > 1.0:
+        recomendacion += (
+            f' Tu patrón de uso ({round(km_por_dia, 0):.0f} km/día) '
+            f'sugiere conducción urbana que acelera el desgaste en este componente.'
+        )
+
+    # Aviso por antigüedad del vehículo para componentes de goma/química
+    age_cap = _AGE_HARD_CAPS_PREDICTOR.get(slug)
+    if age_cap:
+        años_vehiculo = _predictor_vehicle_age_years(vehiculo)
+        if años_vehiculo is not None:
+            max_optimo, max_critico = age_cap
+            if años_vehiculo > max_critico:
+                recomendacion += (
+                    f' ATENCIÓN: vehículo de {años_vehiculo} años — '
+                    f'este componente supera su vida útil por antigüedad '
+                    f'(máximo recomendado {max_critico} años). '
+                    f'Revisar independientemente del kilometraje.'
+                )
+            elif años_vehiculo > max_optimo:
+                recomendacion += (
+                    f' Vehículo de {años_vehiculo} años: '
+                    f'revisar este componente por antigüedad '
+                    f'(se recomienda cada {max_optimo} años).'
+                )
+
     return {
         'km_recorridos_componente':   km_recorridos,
         'km_hasta_atencion':          km_hasta_atencion_aj,
@@ -265,6 +359,8 @@ def predecir_componente_bootstrap(vehiculo, componente_estado, regla_eta_km, reg
         'probabilidad_falla_90':      round(p90 * 100, 1) if p90 is not None else None,
         'km_por_dia_usuario':         round(km_por_dia, 1),
         'factor_clima':               round(factor_clima, 2),
+        'factor_conduccion':          round(factor_conduccion, 2),
+        'factor_total_desgaste':      round(factor_total, 2),
         'recomendacion':              recomendacion,
         'basado_en':                  basado_en,
         'confianza':                  confianza,
