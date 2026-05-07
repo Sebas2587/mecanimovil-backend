@@ -241,6 +241,42 @@ AI_INSIGHTS = {
 }
 
 
+def _norm_component_slug(slug):
+    if not slug:
+        return ''
+    return str(slug).strip().lower().replace('_', '-')
+
+
+# Slugs por grupo climático (catálogo init_smart_health + alias español / legacy).
+# Cualquier slug listado en WEATHER_SLUG_EXCLUDE nunca se agrupa aunque el nombre
+# contenga palabras clave (evita líquido de frenos / embrague en «frenos»).
+WEATHER_SLUG_GROUPS = {
+    'frenos': frozenset({
+        'brakes', 'brake', 'brake-pads', 'brake-pad', 'brakepads',
+        'pastillas-freno', 'pastillas-de-freno', 'pastilla-freno',
+        'discos-freno', 'discos-de-freno', 'disco-freno',
+        'brake-discs', 'brake-disc', 'brakediscs',
+    }),
+    'neumaticos': frozenset({
+        'tires', 'tire', 'tyres', 'tyre',
+        'neumaticos', 'neumatico', 'neumáticos', 'neumático',
+        'cubiertas', 'cubierta',
+    }),
+    'bateria': frozenset({
+        'battery', 'bateria', 'batería', 'baterias',
+    }),
+    'refrigerante': frozenset({
+        'coolant', 'refrigerante', 'anticongelante', 'refrigeracion',
+    }),
+}
+
+WEATHER_SLUG_EXCLUDE = frozenset({
+    'brake-fluid', 'brakefluid', 'liquido-frenos', 'liquido-de-frenos',
+    'embrague', 'clutch', 'clutch-kit', 'kit-embreaje',
+    'master-cylinder', 'cilindro-maestro', 'abs-pump',
+})
+
+
 def normalize_text(text):
     """Normaliza texto eliminando tildes y convirtiendo a minúsculas."""
     import unicodedata
@@ -598,6 +634,10 @@ def calculate_component_risk(component_type, climate_cond, telemetry=None):
     """
     Calcula riesgo de conducción para un componente considerando salud + clima.
     Retorna (driving_risk, climate_extra_pct, cw).
+
+    Si la telemetría incluye ``salud_porcentaje`` (motor de salud del vehículo),
+    el desgaste base es **solo** ``100 - salud``: mezclar además km restantes / vida
+    útil duplicaba señal y podía marcar riesgo ~100 % con salud óptima al 100 %.
     """
     matrix_entry = WEAR_MATRIX.get(component_type)
     if not matrix_entry:
@@ -607,14 +647,12 @@ def calculate_component_risk(component_type, climate_cond, telemetry=None):
     climate_delta = max(0, cw - 1.0)
 
     if telemetry and telemetry.get('salud_porcentaje') is not None:
-        salud = telemetry['salud_porcentaje']
-        desgaste_base = max(0, 100 - salud)
-
-        km_restantes = telemetry.get('km_estimados_restantes', 0)
-        vida_util = telemetry.get('vida_util_proyectada', 0)
-        if vida_util > 0 and km_restantes > 0:
-            km_desgaste = max(0, 100 - (km_restantes / vida_util * 100))
-            desgaste_base = (desgaste_base * 0.6) + (km_desgaste * 0.4)
+        try:
+            salud = float(telemetry['salud_porcentaje'])
+        except (TypeError, ValueError):
+            salud = 0.0
+        salud = max(0.0, min(100.0, salud))
+        desgaste_base = max(0.0, 100.0 - salud)
 
         driving_risk = desgaste_base * cw
         climate_extra = desgaste_base * climate_delta
@@ -789,13 +827,10 @@ def _enrich_telemetry_for_component(base_telemetry, vehicle, comp_type):
     """
     Enriquece la telemetría con datos reales de salud del componente.
 
-    Estrategia de matching (en orden de prioridad):
-      1. Slug exacto contra slug_priority_map → más confiable, no ambiguo.
-      2. Palabra clave en nombre → fallback; keywords restringidas para evitar
-         falsos positivos (e.g. 'liquido-frenos' no es fricción de freno).
-
-    Cuando varios componentes coinciden (e.g. pastillas + discos para 'frenos'),
-    se toma el de peor salud (conservador) como representativo del conjunto.
+    Usa WEATHER_SLUG_GROUPS + slug normalizado (guiones, minúsculas) y
+    WEATHER_SLUG_EXCLUDE para no mezclar fluidos/embrague con frenos de fricción.
+    Respaldo por nombre solo si no hay slug excluido.
+    Varios candidatos: salud = promedio; km/vida del peor caso.
     """
     try:
         from mecanimovilapp.apps.vehiculos.models_health import ComponenteSaludVehiculo
@@ -806,61 +841,42 @@ def _enrich_telemetry_for_component(base_telemetry, vehicle, comp_type):
             .select_related('componente')
         )
 
-        # Slugs primarios por tipo de componente climático.
-        # IMPORTANTE: 'liquido-frenos' se excluye de 'frenos' adrede — es un fluido
-        # higroscópico, no un componente de fricción; tiene su propio ciclo de desgaste
-        # y confunde el riesgo de conducción asociado a frenos (pastillas/discos).
-        slug_priority_map = {
-            'frenos':       {'pastillas-freno', 'discos-freno', 'brakes', 'brake-discs',
-                             'pastilla-freno', 'disco-freno'},
-            'neumaticos':   {'neumaticos', 'tires', 'neumatico'},
-            'bateria':      {'bateria', 'battery'},
-            'refrigerante': {'refrigerante', 'coolant'},
-        }
-
-        # Palabras clave de respaldo en nombre.
-        # Para 'frenos': excluye 'freno' genérico (coincide con "líquido de frenos")
-        # y en su lugar usa términos que identifican fricción real.
-        keyword_map = {
-            'frenos':       ['pastilla', 'disco freno', 'disco de freno'],
-            'neumaticos':   ['neum', 'goma', 'llanta', 'tire', 'cubierta'],
-            'bateria':      ['bater', 'battery'],
+        priority_slugs = WEATHER_SLUG_GROUPS.get(comp_type, frozenset())
+        keywords = {
+            'frenos': ['pastilla', 'balata', 'discos de freno', 'disco de freno', 'disco freno'],
+            'neumaticos': ['neum', 'goma', 'llanta', 'tire', 'cubierta'],
+            'bateria': ['bater', 'battery'],
             'refrigerante': ['refrige', 'coolant', 'anticongelante'],
-        }
-
-        priority_slugs = slug_priority_map.get(comp_type, set())
-        keywords       = keyword_map.get(comp_type, [])
+        }.get(comp_type, [])
 
         slug_matches = []
         name_matches = []
         for comp in comp_qs:
             if not comp.componente or comp.salud_porcentaje is None:
                 continue
-            slug      = (comp.componente.slug or '').lower()
-            name_low  = (comp.componente.nombre or '').lower()
+            slug = _norm_component_slug(comp.componente.slug)
+            if slug in WEATHER_SLUG_EXCLUDE:
+                continue
+            name_low = (comp.componente.nombre or '').lower()
 
             if slug in priority_slugs:
                 slug_matches.append(comp)
             elif any(kw in name_low for kw in keywords):
                 name_matches.append(comp)
 
-        # Slug matches tienen precedencia sobre name matches
         candidates = slug_matches if slug_matches else name_matches
         if not candidates:
             return base_telemetry
 
-        # Componente representativo: el de menor salud (caso más crítico / conservador)
         worst = min(candidates, key=lambda c: float(c.salud_porcentaje))
-
-        # Salud agregada: promedio de todos los candidatos del mismo tipo
         avg_salud = sum(float(c.salud_porcentaje) for c in candidates) / len(candidates)
 
         enriched = dict(base_telemetry)
-        enriched['salud_porcentaje']       = round(avg_salud, 1)
-        enriched['km_ultimo_servicio']     = worst.km_ultimo_servicio or 0
+        enriched['salud_porcentaje'] = round(avg_salud, 1)
+        enriched['km_ultimo_servicio'] = worst.km_ultimo_servicio or 0
         enriched['km_estimados_restantes'] = worst.km_estimados_restantes or 0
-        enriched['vida_util_proyectada']   = worst.vida_util_proyectada or 0
-        enriched['nivel_alerta']           = worst.nivel_alerta
+        enriched['vida_util_proyectada'] = worst.vida_util_proyectada or 0
+        enriched['nivel_alerta'] = worst.nivel_alerta
         return enriched
 
     except Exception as exc:

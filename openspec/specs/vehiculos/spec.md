@@ -82,3 +82,26 @@ NO puede ser un valor fijo de ~37 % universal. Cada componente tiene una vida
   produciendo valores diferenciados (ej. aceite ≈ 60 %, distribución ≈ 61 %,
   neumáticos ≈ 47 %) en lugar de un 37 % fijo
 - AND el `mensaje_alerta` indica cuántos ciclos previos fueron estimados
+
+### Requirement: Predicción climática de desgaste al conducir
+El endpoint `GET /api/vehiculos/weather-prediction/` entrega riesgo de desgaste
+por condición meteorológica. Si se envía `vehicle_id`, la respuesta **SHALL**
+enriquecer cada grupo (`frenos`, `neumaticos`, `bateria`, `refrigerante`) con
+datos de `ComponenteSaludVehiculo` coherentes con el motor de salud.
+
+#### Scenario: Salud mostrada alinea con componentes reales
+- GIVEN un vehículo con pastillas y discos en estado óptimo (salud alta)
+- WHEN se consulta la predicción con `vehicle_id` válido
+- THEN el agregado «frenos» usa solo slugs de fricción (p. ej. `brakes`,
+  `brake-discs`, alias `pastillas-freno` / `discos-freno`) y **excluye**
+  fluidos o embrague (`brake-fluid`, `liquido-frenos`, etc.)
+- AND `salud_actual` en cada componente del JSON refleja el promedio de salud
+  de los registros agrupados (no un componente ajeno al grupo)
+
+#### Scenario: Riesgo de conducción no contradice la salud del motor
+- GIVEN telemetría enriquecida con `salud_porcentaje` del motor de salud
+- WHEN se calcula `driving_risk` para un grupo
+- THEN el desgaste base es `(100 - salud_porcentaje)` acotado a 0–100,
+  multiplicado por el coeficiente climático (`WEAR_MATRIX`)
+- AND **no** se mezcla en ese cálculo `km_estimados_restantes` /
+  `vida_util_proyectada` (evita duplicar señal y marcar riesgo ~100 % con salud óptima)
