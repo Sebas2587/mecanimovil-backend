@@ -786,32 +786,83 @@ def _build_prediction(weather, vehicle, source=None, address_info=None):
 
 
 def _enrich_telemetry_for_component(base_telemetry, vehicle, comp_type):
-    """Enriquece la telemetría con datos reales de salud del componente."""
+    """
+    Enriquece la telemetría con datos reales de salud del componente.
+
+    Estrategia de matching (en orden de prioridad):
+      1. Slug exacto contra slug_priority_map → más confiable, no ambiguo.
+      2. Palabra clave en nombre → fallback; keywords restringidas para evitar
+         falsos positivos (e.g. 'liquido-frenos' no es fricción de freno).
+
+    Cuando varios componentes coinciden (e.g. pastillas + discos para 'frenos'),
+    se toma el de peor salud (conservador) como representativo del conjunto.
+    """
     try:
         from mecanimovilapp.apps.vehiculos.models_health import ComponenteSaludVehiculo
 
-        comp_qs = ComponenteSaludVehiculo.objects.filter(
-            vehiculo=vehicle
-        ).select_related('componente')
+        comp_qs = (
+            ComponenteSaludVehiculo.objects
+            .filter(vehiculo=vehicle)
+            .select_related('componente')
+        )
 
+        # Slugs primarios por tipo de componente climático.
+        # IMPORTANTE: 'liquido-frenos' se excluye de 'frenos' adrede — es un fluido
+        # higroscópico, no un componente de fricción; tiene su propio ciclo de desgaste
+        # y confunde el riesgo de conducción asociado a frenos (pastillas/discos).
+        slug_priority_map = {
+            'frenos':       {'pastillas-freno', 'discos-freno', 'brakes', 'brake-discs',
+                             'pastilla-freno', 'disco-freno'},
+            'neumaticos':   {'neumaticos', 'tires', 'neumatico'},
+            'bateria':      {'bateria', 'battery'},
+            'refrigerante': {'refrigerante', 'coolant'},
+        }
+
+        # Palabras clave de respaldo en nombre.
+        # Para 'frenos': excluye 'freno' genérico (coincide con "líquido de frenos")
+        # y en su lugar usa términos que identifican fricción real.
         keyword_map = {
-            'frenos': ['freno', 'fren', 'brake', 'pastilla'],
-            'neumaticos': ['neum', 'goma', 'llanta', 'tire', 'cubierta'],
-            'bateria': ['bater', 'battery'],
+            'frenos':       ['pastilla', 'disco freno', 'disco de freno'],
+            'neumaticos':   ['neum', 'goma', 'llanta', 'tire', 'cubierta'],
+            'bateria':      ['bater', 'battery'],
             'refrigerante': ['refrige', 'coolant', 'anticongelante'],
         }
 
-        keywords = keyword_map.get(comp_type, [])
+        priority_slugs = slug_priority_map.get(comp_type, set())
+        keywords       = keyword_map.get(comp_type, [])
+
+        slug_matches = []
+        name_matches = []
         for comp in comp_qs:
-            name_lower = (comp.componente.nombre or '').lower()
-            if any(kw in name_lower for kw in keywords):
-                enriched = dict(base_telemetry)
-                enriched['salud_porcentaje'] = comp.salud_porcentaje
-                enriched['km_ultimo_servicio'] = comp.km_ultimo_servicio or 0
-                enriched['km_estimados_restantes'] = comp.km_estimados_restantes or 0
-                enriched['vida_util_proyectada'] = comp.vida_util_proyectada or 0
-                enriched['nivel_alerta'] = comp.nivel_alerta
-                return enriched
+            if not comp.componente or comp.salud_porcentaje is None:
+                continue
+            slug      = (comp.componente.slug or '').lower()
+            name_low  = (comp.componente.nombre or '').lower()
+
+            if slug in priority_slugs:
+                slug_matches.append(comp)
+            elif any(kw in name_low for kw in keywords):
+                name_matches.append(comp)
+
+        # Slug matches tienen precedencia sobre name matches
+        candidates = slug_matches if slug_matches else name_matches
+        if not candidates:
+            return base_telemetry
+
+        # Componente representativo: el de menor salud (caso más crítico / conservador)
+        worst = min(candidates, key=lambda c: float(c.salud_porcentaje))
+
+        # Salud agregada: promedio de todos los candidatos del mismo tipo
+        avg_salud = sum(float(c.salud_porcentaje) for c in candidates) / len(candidates)
+
+        enriched = dict(base_telemetry)
+        enriched['salud_porcentaje']       = round(avg_salud, 1)
+        enriched['km_ultimo_servicio']     = worst.km_ultimo_servicio or 0
+        enriched['km_estimados_restantes'] = worst.km_estimados_restantes or 0
+        enriched['vida_util_proyectada']   = worst.vida_util_proyectada or 0
+        enriched['nivel_alerta']           = worst.nivel_alerta
+        return enriched
+
     except Exception as exc:
         logger.debug("No se pudo enriquecer telemetría para %s: %s", comp_type, exc)
 
