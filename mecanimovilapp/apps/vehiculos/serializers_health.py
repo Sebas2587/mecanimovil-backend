@@ -46,6 +46,14 @@ class ComponenteSaludVehiculoSerializer(serializers.ModelSerializer):
     # Servicios ligados al componente maestro (Admin: ComponenteSalud.servicios_asociados)
     servicios_asociados = serializers.SerializerMethodField()
 
+    # Fuente del historial en formato legible para el frontend
+    historial_fuente_display = serializers.CharField(
+        source='get_historial_fuente_display',
+        read_only=True,
+    )
+    # Nivel de confianza derivado de la fuente
+    confianza_historial = serializers.SerializerMethodField()
+
     class Meta:
         model = ComponenteSaludVehiculo
         fields = (
@@ -53,7 +61,8 @@ class ComponenteSaludVehiculoSerializer(serializers.ModelSerializer):
             'salud_porcentaje', 'nivel_alerta', 'nivel_alerta_display', 'color',
             'km_ultimo_servicio', 'fecha_ultimo_servicio', 'km_estimados_restantes',
             'requiere_servicio_inmediato', 'mensaje_alerta', 'nombre', 'icono',
-            'historial_conocido', 'ultima_actualizacion', 'servicios_asociados'
+            'historial_conocido', 'historial_fuente', 'historial_fuente_display',
+            'confianza_historial', 'ultima_actualizacion', 'servicios_asociados',
         )
 
     def get_servicios_asociados(self, obj):
@@ -74,6 +83,22 @@ class ComponenteSaludVehiculoSerializer(serializers.ModelSerializer):
             })
         return out
     
+    def get_confianza_historial(self, obj):
+        """
+        Nivel de confianza del historial para el frontend.
+        Permite mostrar íconos/badges distintos según la fuente del dato.
+        - alta:   Confirmado por checklist de taller (dato duro)
+        - media:  Declarado por el usuario retroactivamente
+        - baja:   Estimado automáticamente por el engine sin historial real
+        """
+        fuente = getattr(obj, 'historial_fuente', 'ENGINE')
+        return {
+            'CHECKLIST':         'alta',
+            'REGISTRO_INICIAL':  'alta',
+            'USUARIO_DECLARADO': 'media',
+            'ENGINE':            'baja',
+        }.get(fuente, 'baja')
+
     def get_color(self, obj):
         """
         Retorna el color según el nivel de alerta
@@ -141,7 +166,10 @@ class EstadoSaludVehiculoSerializer(serializers.ModelSerializer):
     """
     vehiculo_detail = VehiculoSerializer(source='vehiculo', read_only=True)
     fecha_calculo_formatted = serializers.SerializerMethodField()
-    
+    # Métricas de integridad: qué porcentaje de los componentes tiene datos
+    # verificados por un taller (vs. estimados o declarados por el usuario).
+    integridad_datos = serializers.SerializerMethodField()
+
     class Meta:
         model = EstadoSaludVehiculo
         fields = (
@@ -149,14 +177,55 @@ class EstadoSaludVehiculoSerializer(serializers.ModelSerializer):
             'kilometraje_snapshot', 'fecha_calculo', 'fecha_calculo_formatted',
             'total_componentes_evaluados', 'componentes_optimos', 'componentes_atencion',
             'componentes_urgentes', 'componentes_criticos', 'tiene_alertas_activas',
-            'costo_estimado_mantenimiento'
+            'costo_estimado_mantenimiento', 'integridad_datos',
         )
-    
+
     def get_fecha_calculo_formatted(self, obj):
-        """
-        Retorna la fecha de cálculo formateada
-        """
         if obj.fecha_calculo:
             return obj.fecha_calculo.strftime('%Y-%m-%d %H:%M:%S')
         return None
+
+    def get_integridad_datos(self, obj):
+        """
+        Resumen de integridad para el frontend y para compradores en el marketplace.
+
+        Calcula cuántos componentes tienen datos verificados (CHECKLIST o REGISTRO_INICIAL)
+        vs. declarados por el usuario vs. estimados automáticamente.
+
+        Esto le permite a un comprador saber qué tan confiable es el historial
+        que está viendo — es imposible de falsificar porque es derivado de la fuente
+        real de cada dato en ComponenteSaludVehiculo.
+        """
+        try:
+            componentes = ComponenteSaludVehiculo.objects.filter(
+                vehiculo=obj.vehiculo
+            ).values_list('historial_fuente', flat=True)
+
+            total = len(componentes)
+            if total == 0:
+                return {'total': 0, 'verificados': 0, 'declarados': 0, 'estimados': 0, 'porcentaje_verificado': 0}
+
+            fuentes_verificadas = {'CHECKLIST', 'REGISTRO_INICIAL'}
+            verificados  = sum(1 for f in componentes if f in fuentes_verificadas)
+            declarados   = sum(1 for f in componentes if f == 'USUARIO_DECLARADO')
+            estimados    = sum(1 for f in componentes if f == 'ENGINE')
+
+            porcentaje = round((verificados / total) * 100, 1)
+
+            nivel_confianza = 'alta' if porcentaje >= 70 else ('media' if porcentaje >= 40 else 'baja')
+
+            return {
+                'total_componentes':      total,
+                'verificados_taller':     verificados,
+                'declarados_usuario':     declarados,
+                'estimados_engine':       estimados,
+                'porcentaje_verificado':  porcentaje,
+                'nivel_confianza':        nivel_confianza,
+                'advertencia': (
+                    None if declarados == 0 else
+                    f'{declarados} componente(s) con datos declarados por el propietario sin verificación de taller.'
+                ),
+            }
+        except Exception:
+            return None
 

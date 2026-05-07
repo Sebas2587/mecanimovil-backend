@@ -14,6 +14,103 @@ from ..models import Vehiculo
 
 logger = logging.getLogger(__name__)
 
+# ── Integridad de datos: caps de salud según fuente del historial ────────────
+# Un componente cuyo último servicio fue declarado retroactivamente por el usuario
+# (sin confirmación de taller) NUNCA puede aparecer como ÓPTIMO en la app.
+# Esto impide que un vendedor infle artificialmente las métricas de su vehículo.
+#
+# Escala de confianza → salud máxima permitida:
+#   CHECKLIST / REGISTRO_INICIAL → sin cap (dato confirmado)
+#   USUARIO_DECLARADO            → máx 65 % (ATENCIÓN, nunca ÓPTIMO)
+#   ENGINE                       → sin cap adicional (ya es estimación, no puede "fingir")
+SALUD_MAX_POR_FUENTE = {
+    'USUARIO_DECLARADO': 65.0,
+}
+
+# ── Componentes que degradan por EDAD (goma/química), independiente del km ──
+# Si el vehículo supera esta edad, la salud se fuerza a ≤ umbral indicado.
+# Formato: slug → (max_años_optimo, max_años_critico, salud_max_tras_critico)
+_AGE_HARD_CAPS = {
+    'tires':        (5,  10, 15.0),   # goma: óptimo ≤5 años, crítico >10 años
+    'timing-belt':  (6,  10, 10.0),   # correa distribución (caucho)
+    'brake-fluid':  (2,   4, 20.0),   # líquido higroscópico: crítico a los 4 años
+    'coolant':      (3,   5, 20.0),   # refrigerante se degrada
+    'shocks':       (8,  15, 15.0),   # amortiguadores (goma + aceite)
+}
+
+# ── Slugs de componentes sensibles al perfil de conducción ──────────────────
+_WEAR_BY_DRIVING_SLUGS = {'brakes', 'brake-discs', 'tires', 'brake-fluid', 'shocks'}
+
+# Multiplicadores de desgaste por intensidad de uso (km/día como proxy).
+# El factor acelera la degradación: 1.0 = normal, >1 = desgaste acelerado.
+def _driving_intensity_factor(km_por_dia: float, slug: str) -> float:
+    """
+    Retorna factor de aceleración de desgaste para componentes de fricción
+    según la intensidad de uso diario del usuario.
+
+    La lógica: en ciudad (muchos frenos/día con km cortos) el desgaste de
+    pastillas y discos es mucho mayor que en carretera. Un usuario que hace
+    10 km/día en ciudad gasta más pastillas que uno que hace 60 km/día en
+    autopista — pero como no tenemos aún perfil declarado, usamos km/día
+    como indicador de patrón de uso hasta que el usuario lo declare.
+    """
+    if slug not in _WEAR_BY_DRIVING_SLUGS:
+        return 1.0
+
+    if km_por_dia <= 15:
+        # Muy pocos km/día → probable uso urbano puro (mucho freno, poco km)
+        return 1.35
+    elif km_por_dia <= 30:
+        # Uso mixto urbano-suburbano
+        return 1.15
+    elif km_por_dia <= 60:
+        # Uso normal / suburbano-autopista
+        return 1.0
+    else:
+        # Alto kilometraje diario → probable largo recorrido (autopista, menos frenadas)
+        return 0.90
+
+
+def _age_health_cap(vehiculo, slug: str, salud_pct: float) -> tuple[float, str | None]:
+    """
+    Aplica un cap duro a la salud según la edad real del vehículo para
+    componentes cuya vida útil depende del tiempo más que del kilometraje.
+
+    Retorna (salud_ajustada, mensaje_extra | None).
+    """
+    cap_info = _AGE_HARD_CAPS.get(slug)
+    if not cap_info:
+        return salud_pct, None
+
+    vehicle_year = getattr(vehiculo, 'year', None)
+    if not vehicle_year:
+        return salud_pct, None
+
+    current_year = timezone.now().year
+    años_vehiculo = max(0, current_year - vehicle_year)
+    max_años_optimo, max_años_critico, salud_min_critico = cap_info
+
+    if años_vehiculo > max_años_critico:
+        # Más antiguo que el límite crítico → forzar salud mínima degradada
+        salud_ajustada = min(salud_pct, salud_min_critico)
+        msg = (
+            f"Vehículo de {años_vehiculo} años: este componente supera su vida "
+            f"útil recomendada por antigüedad ({max_años_critico} años)."
+        )
+        return salud_ajustada, msg
+    elif años_vehiculo > max_años_optimo:
+        # Entre límite óptimo y crítico → degradar proporcionalmente
+        fraccion = (años_vehiculo - max_años_optimo) / max(max_años_critico - max_años_optimo, 1)
+        salud_max = 70.0 - (fraccion * (70.0 - salud_min_critico))
+        salud_ajustada = min(salud_pct, salud_max)
+        msg = (
+            f"Vehículo de {años_vehiculo} años: este componente puede estar "
+            f"degradado por antigüedad (recomendado revisar cada {max_años_optimo} años)."
+        )
+        return salud_ajustada, msg
+
+    return salud_pct, None
+
 
 class HealthEngine:
     """
@@ -159,8 +256,20 @@ class HealthEngine:
                 # El piso de eta*0.5 fuerza mostrar al menos un desgaste razonable
                 # mientras el usuario no aporte historial real.
                 km_recorridos = max(km_en_ciclo_actual, int(eta * 0.5))
-                # Usar fecha de registro como referencia temporal (no se persiste como proxy)
-                fecha_ref_tiempo = fecha_reg if fecha_reg else now
+
+                # ── Ancla de tiempo correcta para historial desconocido ──────
+                # BUG-FIX: NO usar fecha_creacion del vehículo en la app (que
+                # refleja cuándo el usuario registró el auto, no cuándo se hizo
+                # el último servicio). En cambio, estimamos los meses transcurridos
+                # desde el último servicio usando los ciclos consumidos y el año
+                # real del vehículo como tope máximo.
+                #
+                # Ejemplo: vehículo 2010, 158.000 km, neumáticos eta=45.000 km,
+                # intervalo=36 meses → 3 ciclos completos + fracción actual.
+                #   meses_estimados = 3×36 + (38k/45k)×36 ≈ 138 meses ≈ 11,5 años
+                #   meses_vehiculo  = 2026-2010 = 16 años = 192 meses
+                #   fecha_eje = now − min(138, 192) meses → salud temporal ~0%
+                fecha_ref_tiempo = None  # se calcula abajo si hay intervalo_meses
             else:
                 km_recorridos = km_recorridos_real
                 fecha_ref_tiempo = None  # se usará fecha_ultimo_servicio normal
@@ -176,12 +285,29 @@ class HealthEngine:
                 intervalo_meses = getattr(regla_generica, 'intervalo_meses', None)
 
             if intervalo_meses and intervalo_meses > 0:
-                # Determinar fecha de referencia para el eje tiempo
+                fecha_eje = None
+
                 if historial_desconocido:
-                    # Usar fecha de registro del vehículo (no escribimos proxy en DB)
-                    fecha_eje = fecha_ref_tiempo
-                    if timezone.is_naive(fecha_eje):
-                        fecha_eje = timezone.make_aware(fecha_eje)
+                    # Estimamos meses transcurridos desde el último servicio usando
+                    # ciclos consumidos × intervalo_meses + fracción del ciclo actual.
+                    # Se topa por la edad real del vehículo (vehicle.year) para no
+                    # proyectar más tiempo del que el auto lleva existiendo.
+                    frac_ciclo_actual = (km_en_ciclo_actual / eta) if eta > 0 else 0.0
+                    meses_estimados = (
+                        ciclos_consumidos_est * float(intervalo_meses)
+                        + frac_ciclo_actual * float(intervalo_meses)
+                    )
+                    vehicle_year = getattr(vehiculo, 'year', None)
+                    if vehicle_year:
+                        meses_vehiculo = max(0, (timezone.now().year - vehicle_year)) * 12
+                        meses_estimados = min(meses_estimados, float(meses_vehiculo))
+
+                    if meses_estimados > 0:
+                        fecha_eje = now - timedelta(days=meses_estimados * 30.44)
+                        logger.info(
+                            "HealthEngine: ancla tiempo estimada=%.1f meses componente=%s vehiculo=%s",
+                            meses_estimados, comp_maestro.nombre, vehiculo_id,
+                        )
                 else:
                     # Anclar fecha_ultimo_servicio si no existe (proxy normal para historial conocido)
                     if not comp_estado.fecha_ultimo_servicio:
@@ -221,6 +347,39 @@ class HealthEngine:
                 meses_critico = getattr(regla_generica, 'meses_critico', None)
             if meses_critico and months_elapsed is not None and months_elapsed >= meses_critico:
                 salud_pct = min(salud_pct, 25.0)
+
+            # ── Factor de conducción (componentes de fricción) ───────────────
+            # Ajusta la salud según la intensidad de uso del usuario. Dado que
+            # el cálculo Weibull ya consumió los km, aquí aplicamos el factor
+            # recalculando la salud_km con los km_recorridos amplificados.
+            slug_componente = comp_maestro.slug
+            if slug_componente in _WEAR_BY_DRIVING_SLUGS:
+                try:
+                    from .predictor_salud import _get_avg_km_per_day
+                    km_dia = _get_avg_km_per_day(vehiculo)
+                    intensity = _driving_intensity_factor(km_dia, slug_componente)
+                    if intensity != 1.0 and eta > 0:
+                        km_recorridos_int = km_recorridos * intensity
+                        salud_km_int = math.exp(-((km_recorridos_int / eta) ** beta)) * 100.0
+                        salud_pct = min(salud_pct, salud_km_int)
+                except Exception:
+                    pass  # No degradar si falla la obtención de km/día
+
+            # ── Cap duro por antigüedad (componentes de goma/química) ────────
+            salud_pct, msg_age = _age_health_cap(vehiculo, slug_componente, salud_pct)
+
+            # ── Cap por fuente del historial (integridad de datos) ───────────
+            # Si el dato proviene de una declaración del usuario sin verificación
+            # de taller, la salud se limita para que el componente nunca aparezca
+            # como ÓPTIMO. Esto previene falsificación de métricas en venta.
+            fuente_historial = getattr(comp_estado, 'historial_fuente', 'ENGINE')
+            salud_max_fuente = SALUD_MAX_POR_FUENTE.get(fuente_historial)
+            if salud_max_fuente is not None and salud_pct > salud_max_fuente:
+                salud_pct = salud_max_fuente
+                logger.debug(
+                    "HealthEngine: cap fuente=%s aplicado componente=%s vehiculo=%s salud=%.1f",
+                    fuente_historial, comp_maestro.nombre, vehiculo_id, salud_pct,
+                )
 
             # ── Status ──────────────────────────────────────────────────────
             if salud_pct >= 70:
@@ -272,6 +431,20 @@ class HealthEngine:
             ):
                 extra = f" Intervalo por tiempo (~{int(months_elapsed)} meses desde último servicio)."
                 comp_estado.mensaje_alerta = (comp_estado.mensaje_alerta or "").strip() + extra
+
+            if msg_age:
+                comp_estado.mensaje_alerta = (
+                    (comp_estado.mensaje_alerta or "").strip() + " " + msg_age
+                ).strip()
+
+            if salud_max_fuente is not None and fuente_historial == 'USUARIO_DECLARADO':
+                aviso_fuente = (
+                    "Datos declarados por el usuario. Para mostrar estado ÓPTIMO "
+                    "se requiere confirmación de un taller verificado."
+                )
+                comp_estado.mensaje_alerta = (
+                    (comp_estado.mensaje_alerta or "").strip() + " " + aviso_fuente
+                ).strip()
 
             if not es_nuevo:
                 estados_a_actualizar.append(comp_estado)

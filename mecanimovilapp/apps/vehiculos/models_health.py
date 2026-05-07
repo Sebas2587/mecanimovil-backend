@@ -185,6 +185,22 @@ class ComponenteSaludVehiculo(models.Model):
         help_text='Indica si km_ultimo_servicio proviene de datos reales (checklist/registro). '
                   'Si False, el Engine usa estimación conservadora de ~1 ciclo de mantenimiento.',
     )
+
+    # Fuente del último dato de historial.
+    # Permite al frontend mostrar distintos niveles de confianza y al
+    # engine saber si puede confiar plenamente en el dato.
+    FUENTE_CHOICES = [
+        ('ENGINE',           'Estimado automáticamente'),
+        ('CHECKLIST',        'Confirmado por checklist de taller'),
+        ('USUARIO_DECLARADO','Declarado por el usuario (retroactivo)'),
+        ('REGISTRO_INICIAL', 'Informado al registrar el vehículo'),
+    ]
+    historial_fuente = models.CharField(
+        max_length=20,
+        choices=FUENTE_CHOICES,
+        default='ENGINE',
+        help_text='Origen del último dato de km/fecha de servicio.',
+    )
     
     # Predicciones
     km_estimados_restantes = models.PositiveIntegerField(default=0)

@@ -413,6 +413,301 @@ class VehicleHealthViewSet(viewsets.ReadOnlyModelViewSet):
             },
         })
 
+    @action(detail=False, methods=['post'], url_path='vehicle/(?P<vehicle_id>[^/.]+)/registrar-mantenimiento')
+    def registrar_mantenimiento_retroactivo(self, request, vehicle_id=None):
+        """
+        Permite al usuario declarar retroactivamente un mantenimiento que olvidó registrar.
+
+        El engine penaliza componentes sin historial porque no puede saber si el
+        usuario simplemente olvidó registrarlo. Este endpoint le devuelve el control:
+        el usuario puede decir "yo cambié esta pieza en X km el día Y" y el sistema
+        recalcula la salud con esos datos, marcando el origen como USUARIO_DECLARADO
+        para que el frontend pueda mostrar un indicador de confianza distinto al de
+        un dato confirmado por checklist de taller.
+
+        Body esperado:
+            {
+                "componente_slug": "timing-belt",
+                "km_en_el_que_se_hizo": 120000,       // obligatorio
+                "fecha_realizado": "2023-06-15",       // opcional (ISO 8601)
+                "nota": "Cambié la correa pero no lo registré en su momento"  // opcional
+            }
+
+        Restricciones:
+            - km_en_el_que_se_hizo debe ser ≤ km actual del vehículo.
+            - km_en_el_que_se_hizo debe ser > 0.
+            - Si fecha_realizado no se provee, se estima desde el km informado y el
+              promedio de km/día del usuario.
+        """
+        from .models import Vehiculo
+        from .models_health import ComponenteSalud, ComponenteSaludVehiculo
+        from django.utils import timezone as tz
+        from datetime import datetime, date
+
+        user = request.user
+        if not hasattr(user, 'cliente'):
+            return Response({'error': 'Usuario no tiene un cliente asociado'}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            vehiculo = Vehiculo.objects.select_related('marca', 'modelo').get(
+                id=vehicle_id, cliente=user.cliente
+            )
+        except Vehiculo.DoesNotExist:
+            return Response({'error': 'Vehículo no encontrado o no tienes permisos'}, status=status.HTTP_404_NOT_FOUND)
+
+        # ── Validar input básico ───────────────────────────────────────────
+        slug = (request.data.get('componente_slug') or '').strip()
+        if not slug:
+            return Response({'error': 'componente_slug es obligatorio.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            km_servicio = int(request.data.get('km_en_el_que_se_hizo', 0))
+        except (TypeError, ValueError):
+            return Response({'error': 'km_en_el_que_se_hizo debe ser un número entero.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if km_servicio <= 0:
+            return Response({'error': 'km_en_el_que_se_hizo debe ser mayor a 0.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        km_actual = vehiculo.kilometraje or 0
+        if km_servicio > km_actual:
+            return Response(
+                {'error': f'El km declarado ({km_servicio:,}) no puede ser mayor al kilometraje actual ({km_actual:,}).'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ── Guardrail 1: rate limit por vehículo ──────────────────────────
+        # Máx 3 declaraciones retroactivas en total por vehículo en 30 días.
+        # Evita que un usuario borre todos sus componentes críticos en un solo día.
+        from .models_health import EventoSaludVehiculo
+        from django.utils import timezone as _tz
+        import datetime as _dt
+
+        ventana_30d = _tz.now() - _dt.timedelta(days=30)
+        declaraciones_recientes = EventoSaludVehiculo.objects.filter(
+            vehiculo=vehiculo,
+            tipo_evento='SERVICIO_REALIZADO',
+            metadata__fuente='USUARIO_DECLARADO',
+            fecha_evento__gte=ventana_30d,
+        ).count()
+        if declaraciones_recientes >= 3:
+            return Response(
+                {
+                    'error': (
+                        'Límite de declaraciones retroactivas alcanzado. '
+                        'Puedes realizar hasta 3 por vehículo cada 30 días. '
+                        'Para validar más componentes, agenda una revisión con un taller verificado.'
+                    ),
+                    'codigo': 'RATE_LIMIT_DECLARACIONES',
+                },
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
+        # ── Guardrail 2: cooldown por componente ──────────────────────────
+        # Un mismo componente no puede ser declarado más de una vez en 90 días.
+        # Evita que alguien "renueve" el mismo componente periódicamente sin taller.
+        ventana_90d = _tz.now() - _dt.timedelta(days=90)
+        ya_declarado = EventoSaludVehiculo.objects.filter(
+            vehiculo=vehiculo,
+            componente__slug=slug,
+            tipo_evento='SERVICIO_REALIZADO',
+            metadata__fuente='USUARIO_DECLARADO',
+            fecha_evento__gte=ventana_90d,
+        ).exists()
+        if ya_declarado:
+            return Response(
+                {
+                    'error': (
+                        f'Ya declaraste un mantenimiento para este componente en los últimos 90 días. '
+                        f'Para actualizar el estado necesitas un checklist confirmado por un taller.'
+                    ),
+                    'codigo': 'COOLDOWN_COMPONENTE',
+                },
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
+        # ── Guardrail 3: plausibilidad del km declarado ───────────────────
+        # El km declarado no puede ser demasiado reciente respecto al km actual
+        # de forma sospechosa. Si el usuario dice "lo hice a 157.999 km" cuando
+        # el auto tiene 158.000 km, eso es claramente una declaración fraudulenta
+        # para blanquear el estado. Exigimos que haya al menos 500 km de diferencia.
+        KM_MINIMO_DIFERENCIA = 500
+        if km_actual - km_servicio < KM_MINIMO_DIFERENCIA:
+            return Response(
+                {
+                    'error': (
+                        f'El km declarado ({km_servicio:,} km) está demasiado cerca del '
+                        f'km actual ({km_actual:,} km). '
+                        f'Debe haber al menos {KM_MINIMO_DIFERENCIA:,} km de diferencia para '
+                        f'que la declaración sea válida.'
+                    ),
+                    'codigo': 'KM_SOSPECHOSO',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ── Guardrail 4: el km declarado no puede ser anterior al km de registro ──
+        # Si el vehículo fue registrado en la app con X km (dato externo o manual),
+        # no tiene sentido declarar un mantenimiento anterior a eso — no habría forma
+        # de verificarlo y solo sirve para inflar métricas.
+        km_referencia_registro = vehiculo.kilometraje_api or 0
+        if km_referencia_registro > 500 and km_servicio < km_referencia_registro:
+            return Response(
+                {
+                    'error': (
+                        f'El km declarado ({km_servicio:,} km) es anterior al km con que '
+                        f'se registró el vehículo ({km_referencia_registro:,} km). '
+                        f'Solo puedes declarar mantenimientos realizados a partir de ese km.'
+                    ),
+                    'codigo': 'KM_ANTERIOR_REGISTRO',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ── Guardrail 5: no se puede declarar en un vehículo publicado en venta ─
+        # Si el vehículo está activamente publicado en el marketplace, el dueño
+        # podría usar declaraciones retroactivas para inflar la salud antes de
+        # mostrarlo a compradores. Bloqueamos por completo — solo un taller puede
+        # mejorar métricas en ese contexto.
+        if getattr(vehiculo, 'is_published', False):
+            return Response(
+                {
+                    'error': (
+                        'No puedes realizar declaraciones retroactivas mientras el vehículo '
+                        'está publicado en venta. Retira la publicación primero, o valida '
+                        'el mantenimiento con un checklist de taller verificado.'
+                    ),
+                    'codigo': 'VEHICULO_EN_VENTA',
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # ── Resolver fecha ─────────────────────────────────────────────────
+        fecha_raw = request.data.get('fecha_realizado')
+        fecha_servicio = None
+        if fecha_raw:
+            try:
+                parsed = date.fromisoformat(str(fecha_raw))
+                fecha_servicio = tz.make_aware(datetime(parsed.year, parsed.month, parsed.day))
+                if fecha_servicio > tz.now():
+                    return Response({'error': 'La fecha no puede ser futura.'}, status=status.HTTP_400_BAD_REQUEST)
+            except ValueError:
+                return Response({'error': 'fecha_realizado debe estar en formato YYYY-MM-DD.'}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            # Estimar fecha desde km diferencia y km/día del usuario
+            try:
+                from .services.predictor_salud import _get_avg_km_per_day
+                km_dia = _get_avg_km_per_day(vehiculo)
+                km_diff = max(0, km_actual - km_servicio)
+                dias_atras = int(km_diff / max(km_dia, 5.0))
+                fecha_servicio = tz.now() - __import__('datetime').timedelta(days=dias_atras)
+            except Exception:
+                fecha_servicio = tz.now()
+
+        # ── Buscar componente maestro ─────────────────────────────────────
+        try:
+            comp_maestro = ComponenteSalud.objects.get(slug=slug)
+        except ComponenteSalud.DoesNotExist:
+            slugs_disponibles = list(ComponenteSalud.objects.values_list('slug', flat=True))
+            return Response(
+                {
+                    'error': f'Componente "{slug}" no encontrado.',
+                    'slugs_disponibles': slugs_disponibles,
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # ── Actualizar o crear ComponenteSaludVehiculo ────────────────────
+        nota = str(request.data.get('nota') or '')[:500]
+
+        comp_estado, _ = ComponenteSaludVehiculo.objects.get_or_create(
+            vehiculo=vehiculo,
+            componente=comp_maestro,
+            defaults={
+                'salud_porcentaje': 100,
+                'nivel_alerta': 'OPTIMO',
+                'km_ultimo_servicio': km_servicio,
+                'fecha_ultimo_servicio': fecha_servicio,
+                'historial_conocido': True,
+                'historial_fuente': 'USUARIO_DECLARADO',
+                'mensaje_alerta': '',
+            }
+        )
+
+        comp_estado.km_ultimo_servicio  = km_servicio
+        comp_estado.fecha_ultimo_servicio = fecha_servicio
+        comp_estado.historial_conocido  = True
+        comp_estado.historial_fuente    = 'USUARIO_DECLARADO'
+        # Acumular notas sin borrar las previas
+        if nota:
+            prev = comp_estado.mensaje_alerta or ''
+            comp_estado.mensaje_alerta = f"[Usuario declaró: {nota}] {prev}".strip()[:500]
+        comp_estado.save(update_fields=[
+            'km_ultimo_servicio', 'fecha_ultimo_servicio',
+            'historial_conocido', 'historial_fuente', 'mensaje_alerta',
+        ])
+
+        # ── Registrar en EventoSaludVehiculo para el dataset ML ───────────
+        try:
+            from .models_health import EventoSaludVehiculo
+            marca_n  = vehiculo.marca.nombre  if vehiculo.marca  else ''
+            modelo_n = vehiculo.modelo.nombre if vehiculo.modelo else ''
+            EventoSaludVehiculo.objects.create(
+                vehiculo=vehiculo,
+                componente=comp_maestro,
+                tipo_evento='SERVICIO_REALIZADO',
+                marca=marca_n,
+                modelo=modelo_n,
+                year=getattr(vehiculo, 'year', None),
+                tipo_motor=str(getattr(vehiculo, 'tipo_motor', '') or '').upper(),
+                kilometraje=km_servicio,
+                km_desde_ultimo_servicio=0,
+                meses_desde_ultimo_servicio=0,
+                metadata={'fuente': 'USUARIO_DECLARADO', 'nota': nota, 'km_actual': km_actual},
+                fecha_evento=fecha_servicio,
+            )
+        except Exception as evt_err:
+            logger.warning("registrar_mantenimiento: error creando EventoSaludVehiculo: %s", evt_err)
+
+        # ── Invalidar cache y recalcular ──────────────────────────────────
+        invalidate_vehicle_health_cache(vehicle_id)
+        if CELERY_AVAILABLE and calcular_salud_vehiculo_async:
+            try:
+                calcular_salud_vehiculo_async.delay(int(vehicle_id), force_recalculate=True)
+            except Exception as e:
+                logger.warning("registrar_mantenimiento: Celery falló, recalculando síncronamente: %s", e)
+                try:
+                    from .tasks import calcular_estado_salud_interno
+                    calcular_estado_salud_interno(int(vehicle_id))
+                except Exception:
+                    pass
+        else:
+            try:
+                from .tasks import calcular_estado_salud_interno
+                calcular_estado_salud_interno(int(vehicle_id))
+            except Exception as sync_err:
+                logger.warning("registrar_mantenimiento: recálculo síncrono falló: %s", sync_err)
+
+        km_recorridos_desde = km_actual - km_servicio
+        return Response(
+            {
+                'ok': True,
+                'componente': comp_maestro.nombre,
+                'slug': slug,
+                'km_servicio_registrado': km_servicio,
+                'fecha_servicio': fecha_servicio.date().isoformat(),
+                'km_recorridos_desde_servicio': km_recorridos_desde,
+                'historial_fuente': 'USUARIO_DECLARADO',
+                'mensaje': (
+                    f'Mantenimiento de {comp_maestro.nombre} registrado a los {km_servicio:,} km. '
+                    f'Llevas {km_recorridos_desde:,} km desde ese servicio. '
+                    f'Las métricas se están recalculando.'
+                ),
+                'nota': 'Los datos declarados por el usuario se muestran con indicador de confianza '
+                        'distinto a los confirmados por checklist de taller.',
+            },
+            status=status.HTTP_200_OK,
+        )
+
     @action(detail=False, methods=['post'], url_path='vehicle/(?P<vehicle_id>[^/.]+)/procesar-historicos')
     def procesar_checklists_historicos(self, request, vehicle_id=None):
         """
