@@ -46,6 +46,10 @@ from django.utils.decorators import method_decorator
 from django.views.decorators.cache import cache_page
 from django.views.decorators.vary import vary_on_cookie
 
+# Google id_token verification
+from google.oauth2 import id_token as google_id_token
+from google.auth.transport import requests as google_requests
+
 # Helper para URLs de archivos en cPanel
 from mecanimovilapp.storage.utils import get_image_url
 
@@ -249,6 +253,102 @@ def custom_login(request):
             {'error': f'Error de servidor: {str(e)}'},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+
+
+@api_view(['POST'])
+@permission_classes([permissions.AllowAny])  # Login con Google sin auth previa
+def google_login(request):
+    """
+    Login/Registro con Google.
+    Recibe `id_token` (o `idToken`) desde el cliente, valida con Google y emite un Token DRF
+    devolviendo el mismo shape que `custom_login`: { token, user }.
+    """
+    raw = request.data or {}
+    id_token_raw = raw.get("id_token") or raw.get("idToken")
+    if not id_token_raw:
+        return Response({"error": "Se requiere id_token"}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not getattr(settings, "GOOGLE_OAUTH_CLIENT_IDS", None):
+        logger.error("GOOGLE_OAUTH_CLIENT_IDS no configurado en settings/env")
+        return Response({"error": "Google login no configurado"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    try:
+        claims = google_id_token.verify_oauth2_token(id_token_raw, google_requests.Request())
+        aud = claims.get("aud")
+        if aud not in settings.GOOGLE_OAUTH_CLIENT_IDS:
+            logger.warning(f"Google id_token aud no permitido: {aud}")
+            return Response({"error": "Token de Google inválido"}, status=status.HTTP_401_UNAUTHORIZED)
+
+        email = (claims.get("email") or "").strip().lower()
+        if not email:
+            return Response({"error": "Token de Google sin email"}, status=status.HTTP_400_BAD_REQUEST)
+        if claims.get("email_verified") is False:
+            return Response({"error": "Email de Google no verificado"}, status=status.HTTP_401_UNAUTHORIZED)
+
+        given_name = (claims.get("given_name") or "").strip()
+        family_name = (claims.get("family_name") or "").strip()
+
+        user, created = Usuario.objects.get_or_create(
+            email=email,
+            defaults={
+                "username": email,
+                "first_name": given_name,
+                "last_name": family_name,
+                "es_mecanico": False,
+            },
+        )
+
+        # Si existe, mantenerlo como cliente y completar nombres si faltan
+        dirty = False
+        if created:
+            user.set_unusable_password()
+            dirty = True
+        if user.username != email:
+            user.username = email
+            dirty = True
+        if not user.first_name and given_name:
+            user.first_name = given_name
+            dirty = True
+        if not user.last_name and family_name:
+            user.last_name = family_name
+            dirty = True
+        if user.es_mecanico:
+            # cuenta proveedor no puede entrar por app usuarios
+            return Response(
+                {"non_field_errors": ["Esta cuenta es de proveedor. Por favor, utiliza la aplicación de proveedores para iniciar sesión."]},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if dirty:
+            user.save()
+
+        # Asegurar perfil de cliente
+        try:
+            Cliente.objects.get_or_create(
+                usuario=user,
+                defaults={
+                    "nombre": user.first_name or "",
+                    "apellido": user.last_name or "",
+                    "email": user.email,
+                    "telefono": user.telefono or "",
+                    "direccion": user.direccion or "",
+                },
+            )
+        except Exception as e:
+            logger.warning(f"No se pudo asegurar perfil Cliente en google_login: {str(e)}")
+
+        # Rotar token igual que login normal
+        Token.objects.filter(user=user).delete()
+        token = Token.objects.create(user=user)
+        user_data = UsuarioSerializer(user).data
+        return Response({"token": token.key, "user": user_data}, status=status.HTTP_200_OK)
+
+    except ValueError as e:
+        # token inválido / expirado / firma incorrecta
+        logger.warning(f"google_login token inválido: {str(e)}")
+        return Response({"error": "Token de Google inválido"}, status=status.HTTP_401_UNAUTHORIZED)
+    except Exception as e:
+        logger.error(f"Error en google_login: {str(e)}", exc_info=True)
+        return Response({"error": "Error de servidor"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(['POST'])

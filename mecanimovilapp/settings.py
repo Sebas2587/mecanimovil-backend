@@ -198,6 +198,17 @@ REST_FRAMEWORK = {
     ],
 }
 
+# ===========================
+# Google OAuth (mobile login)
+# ===========================
+# Comma-separated list of allowed OAuth client IDs (iOS + Android + Expo/Web if used).
+# These are used to validate the `aud` claim of Google id_tokens.
+GOOGLE_OAUTH_CLIENT_IDS = [
+    cid.strip()
+    for cid in config("GOOGLE_OAUTH_CLIENT_IDS", default="").split(",")
+    if cid.strip()
+]
+
 
 # Internationalization
 # https://docs.djangoproject.com/en/5.2/topics/i18n/
