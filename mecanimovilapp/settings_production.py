@@ -172,7 +172,9 @@ MIDDLEWARE = [
     'django.contrib.sessions.middleware.SessionMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
-    'django.middleware.csrf.CsrfViewMiddleware',
+    # CsrfViewMiddleware removed: la API REST usa TokenAuthentication.
+    # CSRF no aporta seguridad aquí y bloqueaba peticiones cross-origin
+    # legítimas del web client (Vercel → onrender) bajo Daphne/ASGI.
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
