@@ -2697,29 +2697,40 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
             ).prefetch_related('servicios_solicitados', 'proveedores_dirigidos', 'ofertas')
         
         # Cliente: propias solicitudes + solicitudes ligadas a un vehículo que hoy es suyo.
-        # Usar Exists en lugar de OR + distinct() para evitar filas duplicadas por JOIN y
-        # errores con get()/retrieve en PostgreSQL.
-        if hasattr(user, 'cliente'):
+        # Consulta explícita por usuario (no depender solo del descriptor reverse O2O).
+        cliente = Cliente.objects.filter(usuario=user).first()
+        if cliente is not None:
             vehiculo_es_mio = Vehiculo.objects.filter(
                 pk=OuterRef('vehiculo_id'),
-                cliente_id=user.cliente.pk,
+                cliente_id=cliente.pk,
             )
             return SolicitudServicioPublica.objects.filter(
-                Q(cliente=user.cliente) | Exists(vehiculo_es_mio)
+                Q(cliente=cliente) | Exists(vehiculo_es_mio)
             ).select_related(
                 'cliente', 'cliente__usuario', 'vehiculo', 'direccion_usuario'
             ).prefetch_related('servicios_solicitados', 'proveedores_dirigidos', 'ofertas')
         
-        # Proveedor viendo solicitudes disponibles
+        # Proveedor viendo solicitudes disponibles (solo si tiene perfil taller o mecánico).
+        # Usuario autenticado sin Cliente ni perfil proveedor: lista vacía — evita filtrar
+        # como proveedor por error y exponer feed global en la app de clientes.
+        taller = Taller.objects.filter(usuario=user).first()
+        mecanico = MecanicoDomicilio.objects.filter(usuario=user).first()
+        if not taller and not mecanico:
+            logger.warning(
+                "solicitudes-publicas list: usuario id=%s sin Cliente ni perfil proveedor; devolviendo queryset vacío",
+                user.pk,
+            )
+            return SolicitudServicioPublica.objects.none()
+        
         # IMPORTANTE: Las solicitudes dirigidas SOLO deben aparecer para el proveedor seleccionado
         # Las solicitudes globales aparecen para todos los proveedores que atienden la marca
         
         # Obtener marcas atendidas del proveedor
         marcas_atendidas = []
-        if hasattr(user, 'taller') and user.taller:
-            marcas_atendidas = list(user.taller.marcas_atendidas.values_list('id', flat=True))
-        elif hasattr(user, 'mecanico_domicilio') and user.mecanico_domicilio:
-            marcas_atendidas = list(user.mecanico_domicilio.marcas_atendidas.values_list('id', flat=True))
+        if taller:
+            marcas_atendidas = list(taller.marcas_atendidas.values_list('id', flat=True))
+        elif mecanico:
+            marcas_atendidas = list(mecanico.marcas_atendidas.values_list('id', flat=True))
         
         # Q ya está importado a nivel de módulo; no reimportar aquí (rompe la rama cliente: UnboundLocalError).
         # Iniciar con una query imposible (que no devuelve nada)
