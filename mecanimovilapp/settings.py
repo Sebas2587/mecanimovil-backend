@@ -86,8 +86,6 @@ MIDDLEWARE = [
     'django.contrib.sessions.middleware.SessionMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
-    'mecanimovilapp.middleware.api_csrf.ApiCsrfExemptMiddleware',
-    'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
@@ -184,8 +182,9 @@ REST_FRAMEWORK = {
     'EXCEPTION_HANDLER': 'mecanimovilapp.db_exception_handler.custom_exception_handler',
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework.authentication.TokenAuthentication',
-        'rest_framework.authentication.SessionAuthentication',
-        'rest_framework.authentication.BasicAuthentication',
+        # SessionAuthentication removed: enforces CSRF independently (DRF interno),
+        # no aplica a esta API REST que usa solo TokenAuthentication.
+        # BasicAuthentication removed: no se usa en producción.
     ],
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.AllowAny',
