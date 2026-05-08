@@ -1,6 +1,7 @@
 from rest_framework import viewsets, permissions, status, generics, filters
 from rest_framework import serializers
 from rest_framework.decorators import api_view, permission_classes, action
+from django.views.decorators.csrf import csrf_exempt
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
@@ -255,6 +256,7 @@ def custom_login(request):
         )
 
 
+@csrf_exempt
 @api_view(['POST'])
 @permission_classes([permissions.AllowAny])  # Login con Google sin auth previa
 def google_login(request):
