@@ -265,6 +265,9 @@ def google_login(request):
     """
     raw = request.data or {}
     id_token_raw = raw.get("id_token") or raw.get("idToken")
+    flow = (raw.get("flow") or raw.get("intent") or "login").strip().lower()
+    if flow not in ("login", "register"):
+        flow = "login"
     if not id_token_raw:
         return Response({"error": "Se requiere id_token"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -288,21 +291,37 @@ def google_login(request):
         given_name = (claims.get("given_name") or "").strip()
         family_name = (claims.get("family_name") or "").strip()
 
-        user, created = Usuario.objects.get_or_create(
-            email=email,
-            defaults={
-                "username": email,
-                "first_name": given_name,
-                "last_name": family_name,
-                "es_mecanico": False,
-            },
-        )
+        created = False
+        try:
+            user = Usuario.objects.get(email=email)
+        except Usuario.DoesNotExist:
+            if flow == "login":
+                # Desde Login: si no existe, forzar a completar registro en app
+                return Response(
+                    {
+                        "code": "USER_NOT_FOUND",
+                        "error": "Usuario no existe. Completa el registro.",
+                        "email": email,
+                        "given_name": given_name,
+                        "family_name": family_name,
+                    },
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            # Desde Registro: crear usuario
+            user = Usuario.objects.create(
+                email=email,
+                username=email,
+                first_name=given_name,
+                last_name=family_name,
+                es_mecanico=False,
+            )
+            user.set_unusable_password()
+            user.save()
+            created = True
 
         # Si existe, mantenerlo como cliente y completar nombres si faltan
         dirty = False
-        if created:
-            user.set_unusable_password()
-            dirty = True
         if user.username != email:
             user.username = email
             dirty = True
