@@ -2265,12 +2265,18 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
         """
         Obtiene las órdenes completadas del proveedor (con restricciones de tiempo)
         """
-        # Solo mostrar órdenes completadas de los últimos 30 días
+        # Solo mostrar órdenes completadas de los últimos 30 días.
+        # Incluye marketplace sin fecha_respuesta_proveedor (no se setea al crear la orden).
         fecha_limite = timezone.now() - timezone.timedelta(days=30)
         
         ordenes = self.get_queryset().filter(
             estado='completado',
-            fecha_respuesta_proveedor__gte=fecha_limite
+        ).filter(
+            Q(fecha_respuesta_proveedor__gte=fecha_limite)
+            | Q(
+                fecha_respuesta_proveedor__isnull=True,
+                fecha_hora_solicitud__gte=fecha_limite,
+            )
         ).order_by('-fecha_servicio')
         
         serializer = self.get_serializer(ordenes, many=True)

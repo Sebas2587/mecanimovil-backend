@@ -272,6 +272,18 @@ class ConnectionConsumer(AsyncWebsocketConsumer):
             'mensaje': event.get('mensaje', 'El proveedor ha iniciado el servicio'),
             'timestamp': timezone.now().isoformat()
         }))
+
+    async def servicio_cerrado_por_cliente(self, event):
+        """
+        El cliente firmó el checklist; el proveedor debe refrescar órdenes/ofertas.
+        """
+        await self.send(text_data=json.dumps({
+            'type': 'servicio_cerrado_por_cliente',
+            'oferta_id': event.get('oferta_id'),
+            'solicitud_publica_id': event.get('solicitud_publica_id'),
+            'solicitud_servicio_id': event.get('solicitud_servicio_id'),
+            'timestamp': event.get('timestamp', timezone.now().isoformat()),
+        }))
     
     async def programar_verificacion_heartbeat(self):
         """
@@ -857,6 +869,18 @@ class MechanicStatusConsumer(AsyncWebsocketConsumer):
             'mensaje': event.get('mensaje', 'El proveedor ha iniciado el servicio'),
             'timestamp': timezone.now().isoformat()
         }))
+
+    async def servicio_cerrado_por_cliente(self, event):
+        """
+        El cliente firmó el checklist; el proveedor debe refrescar órdenes/ofertas.
+        """
+        await self.send(text_data=json.dumps({
+            'type': 'servicio_cerrado_por_cliente',
+            'oferta_id': event.get('oferta_id'),
+            'solicitud_publica_id': event.get('solicitud_publica_id'),
+            'solicitud_servicio_id': event.get('solicitud_servicio_id'),
+            'timestamp': event.get('timestamp', timezone.now().isoformat()),
+        }))
     
     @database_sync_to_async
     def get_proveedor_usuario_id(self):
@@ -1234,6 +1258,19 @@ class ClientStatusConsumer(AsyncWebsocketConsumer):
             'mensaje': event['mensaje'],
             'es_proveedor': event['es_proveedor'],
             'timestamp': timezone.now().isoformat()
+        }))
+
+    async def servicio_completado(self, event):
+        """
+        Servicio finalizado (proveedor terminó o cliente firmó checklist).
+        """
+        await self.send(text_data=json.dumps({
+            'type': 'servicio_completado',
+            'oferta_id': event.get('oferta_id'),
+            'solicitud_id': event.get('solicitud_id'),
+            'proveedor_nombre': event.get('proveedor_nombre'),
+            'mensaje': event.get('mensaje', 'El servicio ha sido completado.'),
+            'timestamp': event.get('timestamp', timezone.now().isoformat()),
         }))
     
     async def salud_vehiculo_actualizada(self, event):

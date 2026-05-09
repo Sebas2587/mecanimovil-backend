@@ -4,6 +4,8 @@ from rest_framework.response import Response
 from django.db import transaction
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
+from channels.layers import get_channel_layer
+from asgiref.sync import async_to_sync
 
 from .models import (
     ChecklistTemplate, ChecklistInstance, ChecklistItemResponse, 
@@ -854,12 +856,79 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
             tiempo_total = timezone.now() - instance.fecha_inicio
             instance.tiempo_total_minutos = int(tiempo_total.total_seconds() / 60)
 
-        instance.save()
-
         orden = instance.orden
         estado_anterior = orden.estado
-        orden.estado = 'completado'
-        orden.save(update_fields=['estado'])
+        oferta_marketplace = None
+
+        with transaction.atomic():
+            instance.save()
+
+            orden.estado = 'completado'
+            orden_update_fields = ['estado']
+            if orden.fecha_respuesta_proveedor is None:
+                orden.fecha_respuesta_proveedor = timezone.now()
+                orden_update_fields.append('fecha_respuesta_proveedor')
+            orden.save(update_fields=orden_update_fields)
+
+            # Marketplace: alinear oferta y solicitud pública (mismo cierre que terminar-servicio).
+            if orden.oferta_proveedor_id:
+                from mecanimovilapp.apps.ordenes.models import OfertaProveedor
+
+                oferta_marketplace = (
+                    OfertaProveedor.objects.select_for_update()
+                    .select_related(
+                        'solicitud',
+                        'solicitud__cliente__usuario',
+                        'proveedor',
+                    )
+                    .get(pk=orden.oferta_proveedor_id)
+                )
+                if oferta_marketplace.estado == 'en_ejecucion':
+                    oferta_marketplace.estado = 'completada'
+                    oferta_marketplace.save(update_fields=['estado'])
+
+                solicitud_pub = oferta_marketplace.solicitud
+                if solicitud_pub and solicitud_pub.estado == 'en_ejecucion':
+                    solicitud_pub.estado = 'completada'
+                    solicitud_pub.save(update_fields=['estado'])
+
+        # WebSocket (fuera del atomic; solo lectura de relaciones ya persistidas).
+        try:
+            channel_layer = get_channel_layer()
+            if channel_layer and oferta_marketplace:
+                solicitud = oferta_marketplace.solicitud
+                if solicitud.cliente and solicitud.cliente.usuario:
+                    async_to_sync(channel_layer.group_send)(
+                        f"cliente_{solicitud.cliente.usuario.id}",
+                        {
+                            'type': 'servicio_completado',
+                            'oferta_id': str(oferta_marketplace.id),
+                            'solicitud_id': str(solicitud.id),
+                            'proveedor_nombre': oferta_marketplace.nombre_proveedor,
+                            'mensaje': 'El servicio fue confirmado con tu firma.',
+                            'timestamp': timezone.now().isoformat(),
+                        },
+                    )
+                    logger.info(
+                        f"Notificación WebSocket 'servicio_completado' (firma cliente) "
+                        f"a usuario {solicitud.cliente.usuario.id}"
+                    )
+                if oferta_marketplace.proveedor_id:
+                    async_to_sync(channel_layer.group_send)(
+                        f"proveedor_{oferta_marketplace.proveedor_id}",
+                        {
+                            'type': 'servicio_cerrado_por_cliente',
+                            'oferta_id': str(oferta_marketplace.id),
+                            'solicitud_publica_id': str(solicitud.id),
+                            'solicitud_servicio_id': orden.id,
+                            'timestamp': timezone.now().isoformat(),
+                        },
+                    )
+        except Exception as ws_err:
+            logger.warning(
+                f"🔸 firmar_cliente: WebSocket post-cierre omitido: {ws_err}",
+                exc_info=True,
+            )
 
         logger.info(
             f"✅ Cliente {request.user.id} firmó checklist {instance.id} → orden {orden.id} completada"
