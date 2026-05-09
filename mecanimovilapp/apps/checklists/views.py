@@ -16,6 +16,50 @@ from .serializers import (
     ChecklistInstanceCreateSerializer, ChecklistItemResponseSerializer,
     ChecklistPhotoUploadSerializer
 )
+from mecanimovilapp.apps.ordenes.services.cierre_servicio_marketplace import (
+    sincronizar_cierre_marketplace,
+)
+
+
+def _notificar_websocket_cierre_marketplace(oferta_marketplace, orden_id, logger):
+    """Cliente + proveedor (misma carga que firmar_cliente / terminar-servicio)."""
+    try:
+        channel_layer = get_channel_layer()
+        if not channel_layer or not oferta_marketplace:
+            return
+        solicitud = oferta_marketplace.solicitud
+        if solicitud.cliente and solicitud.cliente.usuario:
+            async_to_sync(channel_layer.group_send)(
+                f"cliente_{solicitud.cliente.usuario.id}",
+                {
+                    'type': 'servicio_completado',
+                    'oferta_id': str(oferta_marketplace.id),
+                    'solicitud_id': str(solicitud.id),
+                    'proveedor_nombre': oferta_marketplace.nombre_proveedor,
+                    'mensaje': 'El servicio fue confirmado con tu firma.',
+                    'timestamp': timezone.now().isoformat(),
+                },
+            )
+            logger.info(
+                f"WS servicio_completado → cliente_{solicitud.cliente.usuario.id} "
+                f"(orden={orden_id})"
+            )
+        if oferta_marketplace.proveedor_id:
+            async_to_sync(channel_layer.group_send)(
+                f"proveedor_{oferta_marketplace.proveedor_id}",
+                {
+                    'type': 'servicio_cerrado_por_cliente',
+                    'oferta_id': str(oferta_marketplace.id),
+                    'solicitud_publica_id': str(solicitud.id),
+                    'solicitud_servicio_id': orden_id,
+                    'timestamp': timezone.now().isoformat(),
+                },
+            )
+    except Exception as ws_err:
+        logger.warning(
+            f"🔸 WebSocket cierre marketplace omitido (orden={orden_id}): {ws_err}",
+            exc_info=True,
+        )
 
 
 class ChecklistTemplateViewSet(viewsets.ReadOnlyModelViewSet):
@@ -454,6 +498,11 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
         # ✅ Idempotencia: ya completado, devolver 200 (evita fallos por reintentos).
         if instance.estado == 'COMPLETADO':
             logger.warning(f"🔸 finalize llamado pero checklist ya COMPLETADO: {instance.id}")
+            orden = instance.orden
+            if orden.estado == 'completado':
+                hubo, oferta_ref = sincronizar_cierre_marketplace(orden.id)
+                if hubo and oferta_ref:
+                    _notificar_websocket_cierre_marketplace(oferta_ref, orden.id, logger)
             return Response(
                 {
                     'message': 'El checklist ya fue finalizado anteriormente',
@@ -540,16 +589,16 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
         estado_anterior = orden.estado
 
         if firma_cliente_presente:
-            if orden.estado == 'checklist_en_progreso':
-                orden.estado = 'en_proceso'
+            # Cierre con ambas firmas: orden debe quedar completada y marketplace alineado.
+            if orden.estado != 'completado':
+                orden.estado = 'completado'
                 orden.save(update_fields=['estado'])
                 logger.info(
                     f"🔸 (legacy 2 firmas) Orden actualizada: {estado_anterior} → {orden.estado}"
                 )
-            else:
-                logger.warning(
-                    f"🔸 Orden en estado inesperado: {orden.estado}, no se cambió el estado"
-                )
+            hubo_sync, oferta_ref = sincronizar_cierre_marketplace(orden.id)
+            if hubo_sync and oferta_ref:
+                _notificar_websocket_cierre_marketplace(oferta_ref, orden.id, logger)
         else:
             if orden.estado in ('checklist_en_progreso', 'checklist_completado', 'en_proceso'):
                 orden.estado = 'pendiente_firma_cliente'
@@ -614,6 +663,11 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
             )
 
             if instance.estado == 'COMPLETADO':
+                orden = instance.orden
+                if orden.estado == 'completado':
+                    hubo, oferta_ref = sincronizar_cierre_marketplace(orden.id)
+                    if hubo and oferta_ref:
+                        _notificar_websocket_cierre_marketplace(oferta_ref, orden.id, logger)
                 return Response(
                     {
                         'message': 'El checklist ya fue finalizado anteriormente',
@@ -709,6 +763,9 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
             if firma_cliente_presente:
                 orden.estado = 'completado'
                 orden.save(update_fields=['estado'])
+                hubo_sync, oferta_ref = sincronizar_cierre_marketplace(orden.id)
+                if hubo_sync and oferta_ref:
+                    _notificar_websocket_cierre_marketplace(oferta_ref, orden.id, logger)
             else:
                 if orden.estado in (
                     'checklist_en_progreso',
@@ -797,8 +854,15 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        # Idempotencia: ya completado.
+        # Idempotencia: ya completado (repara oferta/solicitud si quedaron desfasadas).
         if instance.estado == 'COMPLETADO':
+            orden = instance.orden
+            if orden.estado == 'completado':
+                hubo, oferta_ref = sincronizar_cierre_marketplace(orden.id)
+                if hubo and oferta_ref:
+                    _notificar_websocket_cierre_marketplace(
+                        oferta_ref, orden.id, logger
+                    )
             return Response(
                 {
                     'message': 'El checklist ya fue completado anteriormente.',
@@ -858,77 +922,16 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
 
         orden = instance.orden
         estado_anterior = orden.estado
-        oferta_marketplace = None
 
         with transaction.atomic():
             instance.save()
 
             orden.estado = 'completado'
-            orden_update_fields = ['estado']
-            if orden.fecha_respuesta_proveedor is None:
-                orden.fecha_respuesta_proveedor = timezone.now()
-                orden_update_fields.append('fecha_respuesta_proveedor')
-            orden.save(update_fields=orden_update_fields)
+            orden.save(update_fields=['estado'])
 
-            # Marketplace: alinear oferta y solicitud pública (mismo cierre que terminar-servicio).
-            if orden.oferta_proveedor_id:
-                from mecanimovilapp.apps.ordenes.models import OfertaProveedor
-
-                oferta_marketplace = (
-                    OfertaProveedor.objects.select_for_update()
-                    .select_related(
-                        'solicitud',
-                        'solicitud__cliente__usuario',
-                        'proveedor',
-                    )
-                    .get(pk=orden.oferta_proveedor_id)
-                )
-                if oferta_marketplace.estado == 'en_ejecucion':
-                    oferta_marketplace.estado = 'completada'
-                    oferta_marketplace.save(update_fields=['estado'])
-
-                solicitud_pub = oferta_marketplace.solicitud
-                if solicitud_pub and solicitud_pub.estado == 'en_ejecucion':
-                    solicitud_pub.estado = 'completada'
-                    solicitud_pub.save(update_fields=['estado'])
-
-        # WebSocket (fuera del atomic; solo lectura de relaciones ya persistidas).
-        try:
-            channel_layer = get_channel_layer()
-            if channel_layer and oferta_marketplace:
-                solicitud = oferta_marketplace.solicitud
-                if solicitud.cliente and solicitud.cliente.usuario:
-                    async_to_sync(channel_layer.group_send)(
-                        f"cliente_{solicitud.cliente.usuario.id}",
-                        {
-                            'type': 'servicio_completado',
-                            'oferta_id': str(oferta_marketplace.id),
-                            'solicitud_id': str(solicitud.id),
-                            'proveedor_nombre': oferta_marketplace.nombre_proveedor,
-                            'mensaje': 'El servicio fue confirmado con tu firma.',
-                            'timestamp': timezone.now().isoformat(),
-                        },
-                    )
-                    logger.info(
-                        f"Notificación WebSocket 'servicio_completado' (firma cliente) "
-                        f"a usuario {solicitud.cliente.usuario.id}"
-                    )
-                if oferta_marketplace.proveedor_id:
-                    async_to_sync(channel_layer.group_send)(
-                        f"proveedor_{oferta_marketplace.proveedor_id}",
-                        {
-                            'type': 'servicio_cerrado_por_cliente',
-                            'oferta_id': str(oferta_marketplace.id),
-                            'solicitud_publica_id': str(solicitud.id),
-                            'solicitud_servicio_id': orden.id,
-                            'timestamp': timezone.now().isoformat(),
-                        },
-                    )
-        except Exception as ws_err:
-            logger.warning(
-                f"🔸 firmar_cliente: WebSocket post-cierre omitido: {ws_err}",
-                exc_info=True,
-            )
+        hubo_sync, oferta_marketplace = sincronizar_cierre_marketplace(orden.id)
+        if hubo_sync and oferta_marketplace:
+            _notificar_websocket_cierre_marketplace(oferta_marketplace, orden.id, logger)
 
         logger.info(
             f"✅ Cliente {request.user.id} firmó checklist {instance.id} → orden {orden.id} completada"
