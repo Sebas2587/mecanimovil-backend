@@ -1090,6 +1090,42 @@ class SolicitudServicioPublica(models.Model):
         return tiempo_restante.total_seconds() <= 21600
 
 
+class FotoSolicitudPublica(models.Model):
+    """
+    Fotos adjuntas por el cliente al describir la necesidad (máx. 3 por solicitud).
+    Se muestran al cliente en el detalle de la solicitud y al proveedor en el detalle de la oferta.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    solicitud = models.ForeignKey(
+        SolicitudServicioPublica,
+        on_delete=models.CASCADE,
+        related_name='fotos_necesidad',
+        verbose_name='Solicitud',
+    )
+    imagen = models.ImageField(
+        upload_to='solicitudes_publicas/fotos_necesidad/',
+        verbose_name='Imagen',
+    )
+    orden = models.PositiveSmallIntegerField(
+        default=1,
+        help_text='Orden de visualización (1–3)',
+        verbose_name='Orden',
+    )
+    fecha_subida = models.DateTimeField(auto_now_add=True, verbose_name='Fecha de subida')
+
+    class Meta:
+        verbose_name = 'Foto de solicitud pública'
+        verbose_name_plural = 'Fotos de solicitudes públicas'
+        ordering = ['orden', 'fecha_subida']
+        indexes = [
+            models.Index(fields=['solicitud', 'orden']),
+        ]
+
+    def __str__(self):
+        return f'Foto {self.orden} — {self.solicitud_id}'
+
+
 class OfertaProveedor(models.Model):
     """
     Oferta de un proveedor para una solicitud pública.

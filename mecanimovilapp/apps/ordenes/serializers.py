@@ -1,10 +1,16 @@
+import base64
+from io import BytesIO
+
+from PIL import Image
+from django.core.files.base import ContentFile
 from rest_framework import serializers
 from rest_framework_gis.serializers import GeoFeatureModelSerializer
 from .models import (
     SolicitudServicio, LineaServicio, CarritoAgendamiento, ItemCarritoAgendamiento,
-    SolicitudServicioPublica, OfertaProveedor, DetalleServicioOferta, ChatSolicitud,
+    SolicitudServicioPublica, FotoSolicitudPublica, OfertaProveedor, DetalleServicioOferta, ChatSolicitud,
     RechazoSolicitud
 )
+from mecanimovilapp.apps.checklists.firma_utils import firma_a_payload_base64
 from mecanimovilapp.apps.usuarios.models import Cliente, Usuario, DireccionUsuario
 from mecanimovilapp.apps.vehiculos.models import Vehiculo
 from mecanimovilapp.apps.usuarios.serializers import ClienteSerializer, MecanicoDomicilioSerializer, TallerSerializer, UsuarioSerializer
@@ -19,6 +25,34 @@ import logging
 from mecanimovilapp.storage.utils import get_image_url
 
 logger = logging.getLogger(__name__)
+
+MAX_FOTO_SOLICITUD_BYTES = 5 * 1024 * 1024
+
+
+def decode_foto_solicitud_base64(raw: str) -> ContentFile:
+    """Decodifica data URI o base64 puro y valida que sea imagen (máx. 5 MB)."""
+    if not raw or not isinstance(raw, str):
+        raise ValueError('Imagen inválida')
+    payload = firma_a_payload_base64(raw.strip())
+    if not payload:
+        raise ValueError('Imagen vacía')
+    try:
+        binary = base64.b64decode(payload, validate=True)
+    except Exception:
+        raise ValueError('Formato base64 inválido')
+    if len(binary) > MAX_FOTO_SOLICITUD_BYTES:
+        raise ValueError('La imagen supera el tamaño máximo permitido (5 MB)')
+    try:
+        img = Image.open(BytesIO(binary))
+        img.load()
+        fmt = (img.format or 'JPEG').upper()
+    except Exception:
+        raise ValueError('El archivo no es una imagen válida')
+    ext = 'jpg' if fmt in ('JPEG', 'JPG') else fmt.lower()
+    if ext not in ('jpg', 'jpeg', 'png', 'webp'):
+        ext = 'jpg'
+    return ContentFile(binary, name=f'necesidad.{ext}')
+
 
 class SolicitudServicioSerializer(serializers.ModelSerializer):
     """
@@ -1262,6 +1296,17 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
                     })
             except (AttributeError, Exception):
                 pass
+
+            fotos_necesidad = []
+            try:
+                for f in solicitud.fotos_necesidad.all().order_by('orden', 'fecha_subida'):
+                    fotos_necesidad.append({
+                        'id': str(f.id),
+                        'imagen_url': get_image_url(f.imagen, request) if f.imagen else None,
+                        'orden': f.orden,
+                    })
+            except (AttributeError, Exception):
+                pass
             
             return {
                 'id': str(solicitud.id),
@@ -1275,6 +1320,7 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
                 'hora_preferida': str(solicitud.hora_preferida) if solicitud.hora_preferida else None,
                 'direccion_servicio_texto': solicitud.direccion_servicio_texto or '',
                 'detalles_ubicacion': solicitud.detalles_ubicacion or '',
+                'fotos_necesidad': fotos_necesidad,
             }
         except Exception as e:
             # En caso de error, retornar estructura m?nima
@@ -1290,6 +1336,7 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
                 'hora_preferida': None,
                 'direccion_servicio_texto': '',
                 'detalles_ubicacion': '',
+                'fotos_necesidad': [],
             }
     
     def to_internal_value(self, data):
@@ -1465,7 +1512,16 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
     rechazos = serializers.SerializerMethodField()
     oferta_seleccionada_detail = serializers.SerializerMethodField()
     puede_reenviar = serializers.SerializerMethodField()
-    
+    fotos_necesidad = serializers.SerializerMethodField()
+    fotos_necesidad_data = serializers.ListField(
+        child=serializers.CharField(),
+        write_only=True,
+        required=False,
+        allow_empty=True,
+        max_length=3,
+        help_text='Hasta 3 imágenes en base64 o data URI (jpeg/png/webp)',
+    )
+
     class Meta:
         model = SolicitudServicioPublica
         geo_field = 'ubicacion_servicio'
@@ -1482,7 +1538,7 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
             'puede_recibir_ofertas', 'puede_ver_datos_cliente', 'total_ofertas', 'total_visualizaciones',
             'total_rechazos', 'oferta_seleccionada', 'oferta_seleccionada_detail', 'ofertas',
             'ofertas_secundarias', 'tiene_ofertas_secundarias_pendientes', 'estado_efectivo', 'estado_display_efectivo',
-            'rechazos', 'puede_reenviar'
+            'rechazos', 'puede_reenviar', 'fotos_necesidad', 'fotos_necesidad_data',
         ]
         read_only_fields = [
             'estado', 'fecha_creacion', 'fecha_publicacion', 'fecha_limite_pago',
@@ -1534,6 +1590,29 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
         if self.get_tiene_ofertas_secundarias_pendientes(obj):
             return 'Ofertas adicionales por revisar'
         return self.get_estado_display(obj)
+
+    def get_fotos_necesidad(self, obj):
+        request = self.context.get('request')
+        out = []
+        for f in obj.fotos_necesidad.all():
+            out.append({
+                'id': str(f.id),
+                'imagen_url': get_image_url(f.imagen, request) if f.imagen else None,
+                'orden': f.orden,
+            })
+        return out
+
+    def validate_fotos_necesidad_data(self, value):
+        if not value:
+            return []
+        for item in value:
+            if not isinstance(item, str) or not str(item).strip():
+                raise serializers.ValidationError('Cada foto debe ser una cadena base64 o data URI válida.')
+            try:
+                decode_foto_solicitud_base64(item)
+            except ValueError as e:
+                raise serializers.ValidationError(str(e))
+        return value
 
     def get_servicios_solicitados_detail(self, obj):
         """
@@ -2097,7 +2176,8 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
         # Extraer servicios y proveedores (ManyToMany)
         servicios = validated_data.pop('servicios_solicitados', [])
         proveedores = validated_data.pop('proveedores_dirigidos', [])
-        
+        fotos_raw = validated_data.pop('fotos_necesidad_data', None) or []
+
         # fecha_expiracion ya deber?a estar establecida en to_internal_value() y validate()
         # Si por alguna raz?n no est?, establecerla como respaldo
         if 'fecha_expiracion' not in validated_data or not validated_data.get('fecha_expiracion'):
@@ -2131,7 +2211,15 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
             solicitud.servicios_solicitados.set(servicios)
         if proveedores:
             solicitud.proveedores_dirigidos.set(proveedores)
-        
+
+        for idx, raw in enumerate(fotos_raw[:3]):
+            cf = decode_foto_solicitud_base64(raw)
+            FotoSolicitudPublica.objects.create(
+                solicitud=solicitud,
+                imagen=cf,
+                orden=idx + 1,
+            )
+
         return solicitud
 
 class ChatSolicitudSerializer(serializers.ModelSerializer):

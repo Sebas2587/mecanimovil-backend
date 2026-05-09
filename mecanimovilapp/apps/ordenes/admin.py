@@ -7,7 +7,7 @@ from django.utils.safestring import mark_safe
 from .models import (
     SolicitudServicio, LineaServicio, ConfiguracionPrecio, 
     CarritoAgendamiento, ItemCarritoAgendamiento, AuditAccesoCliente,
-    SolicitudServicioPublica, OfertaProveedor, DetalleServicioOferta, ChatSolicitud
+    SolicitudServicioPublica, FotoSolicitudPublica, OfertaProveedor, DetalleServicioOferta, ChatSolicitud
 )
 
 # ADMIN PARA DISPONIBILIDAD ELIMINADO - REEMPLAZADO POR HorarioProveedor EN USUARIOS APP
@@ -469,6 +469,15 @@ class ChatSolicitudInline(admin.TabularInline):
     readonly_fields = ('fecha_envio', 'leido', 'fecha_lectura')
     fields = ('enviado_por', 'mensaje', 'es_proveedor', 'fecha_envio', 'leido', 'fecha_lectura')
 
+
+class FotoSolicitudPublicaInline(admin.TabularInline):
+    """Fotos de la necesidad (cliente) en solicitud pública"""
+    model = FotoSolicitudPublica
+    extra = 0
+    fields = ('orden', 'imagen', 'fecha_subida')
+    readonly_fields = ('fecha_subida',)
+
+
 @admin.register(SolicitudServicioPublica)
 class SolicitudServicioPublicaAdmin(admin.ModelAdmin):
     """Administración para solicitudes públicas de servicios"""
@@ -491,7 +500,8 @@ class SolicitudServicioPublicaAdmin(admin.ModelAdmin):
     )
     date_hierarchy = 'fecha_creacion'
     filter_horizontal = ('servicios_solicitados', 'proveedores_dirigidos')
-    
+    inlines = (FotoSolicitudPublicaInline,)
+
     fieldsets = (
         ('Información Básica', {
             'fields': (

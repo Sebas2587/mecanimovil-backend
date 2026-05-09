@@ -2700,7 +2700,7 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
         if user.is_staff or user.is_superuser:
             return SolicitudServicioPublica.objects.select_related(
                 'cliente', 'cliente__usuario', 'vehiculo', 'direccion_usuario'
-            ).prefetch_related('servicios_solicitados', 'proveedores_dirigidos', 'ofertas')
+            ).prefetch_related('servicios_solicitados', 'proveedores_dirigidos', 'ofertas', 'fotos_necesidad')
         
         # Cliente: propias solicitudes + solicitudes ligadas a un vehículo que hoy es suyo.
         # Consulta explícita por usuario (no depender solo del descriptor reverse O2O).
@@ -2714,7 +2714,7 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
                 Q(cliente=cliente) | Exists(vehiculo_es_mio)
             ).select_related(
                 'cliente', 'cliente__usuario', 'vehiculo', 'direccion_usuario'
-            ).prefetch_related('servicios_solicitados', 'proveedores_dirigidos', 'ofertas')
+            ).prefetch_related('servicios_solicitados', 'proveedores_dirigidos', 'ofertas', 'fotos_necesidad')
         
         # Proveedor viendo solicitudes disponibles (solo si tiene perfil taller o mecánico).
         # Usuario autenticado sin Cliente ni perfil proveedor: lista vacía — evita filtrar
@@ -2775,7 +2775,7 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
         
         return queryset.select_related(
             'cliente', 'cliente__usuario', 'vehiculo', 'vehiculo__marca', 'direccion_usuario', 'oferta_seleccionada'
-        ).prefetch_related('servicios_solicitados', 'proveedores_dirigidos', 'ofertas', 'rechazos')
+        ).prefetch_related('servicios_solicitados', 'proveedores_dirigidos', 'ofertas', 'rechazos', 'fotos_necesidad')
     
     def list(self, request, *args, **kwargs):
         """
@@ -4063,7 +4063,7 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
         
         queryset = queryset.distinct().select_related(
             'cliente', 'cliente__usuario', 'vehiculo', 'vehiculo__marca', 'direccion_usuario'
-        ).prefetch_related('servicios_solicitados', 'proveedores_dirigidos', 'ofertas')
+        ).prefetch_related('servicios_solicitados', 'proveedores_dirigidos', 'ofertas', 'fotos_necesidad')
         
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
@@ -4489,7 +4489,9 @@ class OfertaProveedorViewSet(viewsets.ModelViewSet):
         if user.is_staff or user.is_superuser:
             queryset = OfertaProveedor.objects.select_related(
                 'solicitud', 'solicitud__cliente', 'proveedor'
-            ).prefetch_related('detalles_servicios__servicio', 'mensajes_chat')
+            ).prefetch_related(
+                'detalles_servicios__servicio', 'mensajes_chat', 'solicitud__fotos_necesidad'
+            )
         # Cliente: ofertas de solicitudes propias o de vehículos que hoy son suyos (sin OR+distinct).
         elif hasattr(user, 'cliente'):
             solicitud_vehiculo_mio = SolicitudServicioPublica.objects.filter(
@@ -4500,14 +4502,18 @@ class OfertaProveedorViewSet(viewsets.ModelViewSet):
                 Q(solicitud__cliente=user.cliente) | Exists(solicitud_vehiculo_mio)
             ).select_related(
                 'solicitud', 'solicitud__cliente', 'proveedor'
-            ).prefetch_related('detalles_servicios__servicio', 'mensajes_chat')
+            ).prefetch_related(
+                'detalles_servicios__servicio', 'mensajes_chat', 'solicitud__fotos_necesidad'
+            )
         # Proveedor viendo sus ofertas
         else:
             queryset = OfertaProveedor.objects.filter(
                 proveedor=user
             ).select_related(
                 'solicitud', 'solicitud__cliente', 'proveedor'
-            ).prefetch_related('detalles_servicios__servicio', 'mensajes_chat')
+            ).prefetch_related(
+                'detalles_servicios__servicio', 'mensajes_chat', 'solicitud__fotos_necesidad'
+            )
         
         # ✅ FILTRAR POR SOLICITUD si viene en query params
         # Compatible con WSGIRequest (query_params) y ASGIRequest (GET)
