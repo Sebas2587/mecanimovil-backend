@@ -19,6 +19,7 @@ from .serializers import (
 from mecanimovilapp.apps.ordenes.services.cierre_servicio_marketplace import (
     sincronizar_cierre_marketplace,
 )
+from .firma_utils import firma_a_payload_base64
 
 
 def _notificar_websocket_cierre_marketplace(oferta_marketplace, orden_id, logger):
@@ -555,13 +556,13 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
             f"ubicación: {'✅' if ubicacion_lat and ubicacion_lng else '❌'}"
         )
 
-        instance.firma_tecnico = firma_tecnico
+        instance.firma_tecnico = firma_a_payload_base64(firma_tecnico)
 
         if firma_cliente_presente:
             # Flujo legacy con cliente presente: cierre inmediato.
             instance.estado = 'COMPLETADO'
             instance.fecha_finalizacion = timezone.now()
-            instance.firma_cliente = firma_cliente
+            instance.firma_cliente = firma_a_payload_base64(firma_cliente)
             instance.progreso_porcentaje = 100
         else:
             # Flujo nuevo (firma diferida): el cliente firmará desde su app.
@@ -733,12 +734,12 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
                 )
 
             firma_cliente_presente = bool(firma_cliente)
-            instance.firma_tecnico = firma_tecnico
+            instance.firma_tecnico = firma_a_payload_base64(firma_tecnico)
 
             if firma_cliente_presente:
                 instance.estado = 'COMPLETADO'
                 instance.fecha_finalizacion = timezone.now()
-                instance.firma_cliente = firma_cliente
+                instance.firma_cliente = firma_a_payload_base64(firma_cliente)
                 instance.progreso_porcentaje = 100
             else:
                 instance.estado = 'PENDIENTE_FIRMA_CLIENTE'
@@ -900,7 +901,7 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
         ubicacion_lat = request.data.get('ubicacion_lat')
         ubicacion_lng = request.data.get('ubicacion_lng')
 
-        instance.firma_cliente = firma_cliente
+        instance.firma_cliente = firma_a_payload_base64(firma_cliente)
         instance.estado = 'COMPLETADO'
         instance.fecha_finalizacion = timezone.now()
         instance.progreso_porcentaje = 100
