@@ -1331,6 +1331,94 @@ def enviar_push_inspeccion_taller(vehiculo, componentes_inspeccionados, componen
         logger.error(f"Error en enviar_push_inspeccion_taller: {e}", exc_info=True)
 
 
+def enviar_push_pendiente_firma_cliente(orden):
+    """
+    Notifica al cliente que el técnico cerró el checklist y solo falta su
+    firma para terminar el servicio (change firma-cliente-diferida-checklist).
+
+    Se invoca desde `ChecklistInstanceViewSet.finalize` cuando la instancia
+    queda en `PENDIENTE_FIRMA_CLIENTE`.
+
+    Args:
+        orden: instancia de `SolicitudServicio`.
+    """
+    try:
+        if not orden:
+            return
+
+        cliente = getattr(orden, 'cliente', None)
+        usuario = getattr(cliente, 'usuario', None) if cliente else None
+        if not usuario:
+            return
+
+        user_id = usuario.id
+        vehiculo = getattr(orden, 'vehiculo', None)
+        if vehiculo and getattr(vehiculo, 'marca', None):
+            nombre_vehiculo = f"{vehiculo.marca} {vehiculo.modelo}".strip()
+        elif vehiculo:
+            nombre_vehiculo = f"Vehículo {getattr(vehiculo, 'patente', '') or ''}".strip()
+        else:
+            nombre_vehiculo = "tu vehículo"
+
+        title = "Tu servicio espera tu firma"
+        body = (
+            f"El técnico finalizó el checklist de {nombre_vehiculo}. "
+            f"Revisa el detalle y firma para cerrar el servicio."
+        )
+
+        try:
+            from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
+
+            send_expo_push_notification.delay(
+                user_id,
+                title,
+                body,
+                {
+                    "type": "servicio_pendiente_firma",
+                    "orden_id": str(orden.id),
+                    "checklist_instance_id": (
+                        str(getattr(orden, 'checklist_instance', None).id)
+                        if getattr(orden, 'checklist_instance', None)
+                        else None
+                    ),
+                },
+            )
+        except Exception as push_err:
+            logger.warning(
+                f"⚠️ Push pendiente firma no encolado para orden {orden.id}: {push_err}"
+            )
+
+        try:
+            from mecanimovilapp.apps.usuarios.models import Notificacion
+
+            Notificacion.crear_unica(
+                usuario=usuario,
+                tipo='servicio_pendiente_firma',
+                titulo=title,
+                mensaje=body,
+                data={
+                    "orden_id": str(orden.id),
+                },
+                ventana_horas=24,
+                dedup_key={
+                    "orden_id": str(orden.id),
+                    "tipo": 'servicio_pendiente_firma',
+                },
+            )
+        except Exception as notif_err:
+            logger.warning(
+                f"⚠️ Notificación in-app pendiente firma no creada para orden {orden.id}: {notif_err}"
+            )
+
+        logger.info(
+            f"📲 Push 'pendiente firma cliente' enviado a usuario {user_id} para orden {orden.id}"
+        )
+    except Exception as e:
+        logger.error(
+            f"Error en enviar_push_pendiente_firma_cliente: {e}", exc_info=True
+        )
+
+
 def enviar_salud_actualizada_push(vehiculo, salud_global):
     """
     Notificación informativa: recálculo de salud completado.

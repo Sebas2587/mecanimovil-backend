@@ -144,6 +144,9 @@ class ChecklistInstanceSerializer(serializers.ModelSerializer):
     orden_info = serializers.SerializerMethodField()
     progreso_info = serializers.SerializerMethodField()
     puede_finalizar_check = serializers.SerializerMethodField()
+    requiere_firma_cliente = serializers.SerializerMethodField()
+    firma_tecnico_disponible = serializers.SerializerMethodField()
+    firma_cliente_disponible = serializers.SerializerMethodField()
     
     def get_orden_info(self, obj):
         result = {
@@ -230,13 +233,25 @@ class ChecklistInstanceSerializer(serializers.ModelSerializer):
         
         # 🔧 LÓGICA MEJORADA: Más flexible, requiere progreso >= 80% y al menos una respuesta
         return obj.progreso_porcentaje >= 80 and obj.respuestas.filter(completado=True).exists()
-    
+
+    def get_requiere_firma_cliente(self, obj):
+        """Flag para que la app del cliente sepa cuándo mostrar el CTA de firma."""
+        return obj.estado == 'PENDIENTE_FIRMA_CLIENTE'
+
+    def get_firma_tecnico_disponible(self, obj):
+        return bool(obj.firma_tecnico)
+
+    def get_firma_cliente_disponible(self, obj):
+        return bool(obj.firma_cliente)
+
     class Meta:
         model = ChecklistInstance
         fields = [
             'id', 'orden', 'checklist_template', 'estado',
             'fecha_creacion', 'fecha_inicio', 'fecha_finalizacion',
             'ubicacion_finalizacion', 'firma_tecnico', 'firma_cliente',
+            'firma_tecnico_disponible', 'firma_cliente_disponible',
+            'requiere_firma_cliente',
             'progreso_porcentaje', 'tiempo_total_minutos',
             'respuestas', 'orden_info', 'progreso_info', 'puede_finalizar_check'
         ]

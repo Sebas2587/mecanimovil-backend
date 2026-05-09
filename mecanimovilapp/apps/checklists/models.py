@@ -414,6 +414,7 @@ class ChecklistInstance(models.Model):
         ('PENDIENTE', 'Pendiente de inicio'),
         ('EN_PROGRESO', 'En progreso'),
         ('PAUSADO', 'Pausado temporalmente'),
+        ('PENDIENTE_FIRMA_CLIENTE', 'Pendiente de firma del cliente'),
         ('COMPLETADO', 'Completado'),
         ('CANCELADO', 'Cancelado'),
     ]
@@ -435,7 +436,7 @@ class ChecklistInstance(models.Model):
     
     # Estado y timestamps
     estado = models.CharField(
-        max_length=20,
+        max_length=30,
         choices=ESTADO_CHOICES,
         default='PENDIENTE'
     )

@@ -341,21 +341,17 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_403_FORBIDDEN
                 )
             
-            # ✅ VALIDACIÓN ADICIONAL: Para clientes, solo permitir ver checklists completados
+            # ✅ VALIDACIÓN: Cliente puede ver checklists COMPLETADOS o PENDIENTE_FIRMA_CLIENTE
+            # (firma diferida: necesita revisar y firmar desde su app).
             if tipo_usuario == 'cliente_propietario':
-                if instance.estado != 'COMPLETADO':
-                    logger.warning(f"🔸 Cliente intenta ver checklist no completado: {instance.estado}")
-                    return Response(
-                        {'error': 'El checklist aún no está disponible. Solo puedes ver checklists de servicios completados.'}, 
-                        status=status.HTTP_403_FORBIDDEN
+                estados_visibles = ('COMPLETADO', 'PENDIENTE_FIRMA_CLIENTE')
+                if instance.estado not in estados_visibles:
+                    logger.warning(
+                        f"🔸 Cliente intenta ver checklist en estado no visible: {instance.estado}"
                     )
-                
-                # Verificar que la orden esté completada
-                if instance.orden.estado != 'completado':
-                    logger.warning(f"🔸 Cliente intenta ver checklist de orden no completada: {instance.orden.estado}")
                     return Response(
-                        {'error': 'Este checklist solo está disponible para servicios completados.'}, 
-                        status=status.HTTP_403_FORBIDDEN
+                        {'error': 'El checklist aún no está disponible para revisión.'},
+                        status=status.HTTP_403_FORBIDDEN,
                     )
             
             serializer = self.get_serializer(instance)
@@ -434,14 +430,26 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
     
     @action(detail=True, methods=['post'])
     def finalize(self, request, pk=None):
-        """Finalizar un checklist con firmas"""
+        """
+        Finaliza un checklist desde la app del proveedor.
+
+        Firma diferida (change firma-cliente-diferida-checklist):
+        - Si solo llega `firma_tecnico`, la instancia queda en
+          `PENDIENTE_FIRMA_CLIENTE` y la orden en `pendiente_firma_cliente`.
+          El cliente debe firmar después desde su app vía
+          `POST .../firmar-cliente/`.
+        - Si llegan ambas firmas (compat con clientes presentes), se cierra
+          el flujo de inmediato a `COMPLETADO` / `completado`.
+        """
         import logging
         logger = logging.getLogger(__name__)
-        
-        instance = self.get_object()
-        logger.info(f"🔸 Finalizando checklist ID: {instance.id} para orden: {instance.orden.id}")
 
-        # ✅ Idempotencia: si ya está completado, no devolver error (evita fallos por reintentos)
+        instance = self.get_object()
+        logger.info(
+            f"🔸 Finalizando checklist ID: {instance.id} para orden: {instance.orden.id}"
+        )
+
+        # ✅ Idempotencia: ya completado, devolver 200 (evita fallos por reintentos).
         if instance.estado == 'COMPLETADO':
             logger.warning(f"🔸 finalize llamado pero checklist ya COMPLETADO: {instance.id}")
             return Response(
@@ -450,190 +458,423 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
                     'checklist_id': instance.id,
                     'orden_id': instance.orden.id,
                     'estado': instance.estado,
+                    'requiere_firma_cliente': False,
                 },
-                status=status.HTTP_200_OK
+                status=status.HTTP_200_OK,
             )
-        
+
+        # ✅ Idempotencia: ya en pendiente firma cliente, devolver 200 con flag.
+        if instance.estado == 'PENDIENTE_FIRMA_CLIENTE':
+            logger.warning(
+                f"🔸 finalize llamado pero checklist ya PENDIENTE_FIRMA_CLIENTE: {instance.id}"
+            )
+            return Response(
+                {
+                    'message': 'El checklist ya fue cerrado por el técnico, esperando firma del cliente.',
+                    'checklist_id': instance.id,
+                    'orden_id': instance.orden.id,
+                    'estado': instance.estado,
+                    'requiere_firma_cliente': True,
+                },
+                status=status.HTTP_200_OK,
+            )
+
         if instance.estado not in ['EN_PROGRESO', 'PAUSADO']:
             logger.warning(f"🔸 Estado inválido para finalizar: {instance.estado}")
             return Response(
                 {'error': 'El checklist debe estar en progreso o pausado'},
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_400_BAD_REQUEST,
             )
-        
-        # Verificar que se proporcionaron las firmas
+
         firma_tecnico = request.data.get('firma_tecnico')
-        firma_cliente = request.data.get('firma_cliente')
+        firma_cliente = request.data.get('firma_cliente') or None
         ubicacion_lat = request.data.get('ubicacion_lat')
         ubicacion_lng = request.data.get('ubicacion_lng')
-        
-        logger.info(f"🔸 Datos recibidos - Firmas: {'✅' if firma_tecnico and firma_cliente else '❌'}, Ubicación: {'✅' if ubicacion_lat and ubicacion_lng else '❌'}")
-        
-        if not firma_tecnico or not firma_cliente:
+
+        if not firma_tecnico:
             return Response(
-                {'error': 'Se requieren ambas firmas para finalizar'},
-                status=status.HTTP_400_BAD_REQUEST
+                {'error': 'Se requiere la firma del técnico para finalizar el checklist.'},
+                status=status.HTTP_400_BAD_REQUEST,
             )
-        
-        # Actualizar la instancia del checklist
-        instance.estado = 'COMPLETADO'
-        instance.fecha_finalizacion = timezone.now()
+
+        firma_cliente_presente = bool(firma_cliente)
+        logger.info(
+            f"🔸 Firmas recibidas — técnico: ✅, cliente: "
+            f"{'✅' if firma_cliente_presente else 'pendiente (firma diferida)'}, "
+            f"ubicación: {'✅' if ubicacion_lat and ubicacion_lng else '❌'}"
+        )
+
         instance.firma_tecnico = firma_tecnico
-        instance.firma_cliente = firma_cliente
-        instance.progreso_porcentaje = 100
-        
-        # Guardar ubicación si se proporcionó
+
+        if firma_cliente_presente:
+            # Flujo legacy con cliente presente: cierre inmediato.
+            instance.estado = 'COMPLETADO'
+            instance.fecha_finalizacion = timezone.now()
+            instance.firma_cliente = firma_cliente
+            instance.progreso_porcentaje = 100
+        else:
+            # Flujo nuevo (firma diferida): el cliente firmará desde su app.
+            instance.estado = 'PENDIENTE_FIRMA_CLIENTE'
+            instance.progreso_porcentaje = 100
+
         if ubicacion_lat and ubicacion_lng:
             from django.contrib.gis.geos import Point
             try:
-                instance.ubicacion_finalizacion = Point(float(ubicacion_lng), float(ubicacion_lat), srid=4326)
+                instance.ubicacion_finalizacion = Point(
+                    float(ubicacion_lng), float(ubicacion_lat), srid=4326
+                )
                 logger.info(f"🔸 Ubicación guardada: {ubicacion_lat}, {ubicacion_lng}")
             except (ValueError, TypeError) as e:
                 logger.warning(f"🔸 Error guardando ubicación: {e}")
-        
-        # Calcular tiempo total
-        if instance.fecha_inicio:
+
+        if instance.fecha_inicio and firma_cliente_presente:
             tiempo_total = timezone.now() - instance.fecha_inicio
             instance.tiempo_total_minutos = int(tiempo_total.total_seconds() / 60)
-        
+
         instance.save()
-        logger.info(f"🔸 Checklist finalizado: ID {instance.id}")
-        
+
         # ✅ ACTUALIZAR ESTADO DE LA ORDEN
         orden = instance.orden
         estado_anterior = orden.estado
-        
-        # Cambiar estado de la orden según el flujo correcto
-        if orden.estado == 'checklist_en_progreso':
-            orden.estado = 'en_proceso'  # Próximo paso: realizar el servicio
-            orden.save()
-            logger.info(f"🔸 Orden actualizada: {estado_anterior} → {orden.estado}")
+
+        if firma_cliente_presente:
+            if orden.estado == 'checklist_en_progreso':
+                orden.estado = 'en_proceso'
+                orden.save(update_fields=['estado'])
+                logger.info(
+                    f"🔸 (legacy 2 firmas) Orden actualizada: {estado_anterior} → {orden.estado}"
+                )
+            else:
+                logger.warning(
+                    f"🔸 Orden en estado inesperado: {orden.estado}, no se cambió el estado"
+                )
         else:
-            logger.warning(f"🔸 Orden en estado inesperado: {orden.estado}, no se cambió el estado")
-        
-        return Response({
-            'message': 'Checklist finalizado correctamente',
-            'checklist_id': instance.id,
-            'orden_id': orden.id,
-            'orden_estado_anterior': estado_anterior,
-            'orden_estado_nuevo': orden.estado
-        })
+            if orden.estado in ('checklist_en_progreso', 'checklist_completado', 'en_proceso'):
+                orden.estado = 'pendiente_firma_cliente'
+                orden.save(update_fields=['estado'])
+                logger.info(
+                    f"🔸 Firma diferida — orden actualizada: {estado_anterior} → {orden.estado}"
+                )
+            else:
+                logger.warning(
+                    f"🔸 Firma diferida pero orden en estado inesperado: {orden.estado}"
+                )
+
+            # Notificación al cliente para que vaya a firmar.
+            try:
+                from mecanimovilapp.apps.vehiculos.tasks import (
+                    enviar_push_pendiente_firma_cliente,
+                )
+                enviar_push_pendiente_firma_cliente(orden)
+            except Exception as push_err:
+                logger.error(
+                    f"❌ Error enviando push de firma pendiente para orden {orden.id}: {push_err}",
+                    exc_info=True,
+                )
+
+        return Response(
+            {
+                'message': (
+                    'Checklist finalizado correctamente'
+                    if firma_cliente_presente
+                    else 'Firma del técnico registrada. Esperando firma del cliente para cerrar el servicio.'
+                ),
+                'checklist_id': instance.id,
+                'orden_id': orden.id,
+                'orden_estado_anterior': estado_anterior,
+                'orden_estado_nuevo': orden.estado,
+                'estado': instance.estado,
+                'requiere_firma_cliente': not firma_cliente_presente,
+            }
+        )
     
     @action(detail=False, methods=['post'], url_path='finalize_by_order/(?P<orden_id>[^/.]+)')
     def finalize_by_order(self, request, orden_id=None):
-        """Finalizar un checklist por ID de orden - Endpoint robusto para el frontend"""
+        """
+        Variante de `finalize` indexada por orden. Misma semántica de firma
+        diferida (change firma-cliente-diferida-checklist).
+        """
         import logging
         logger = logging.getLogger(__name__)
-        
+
         logger.info(f"🔸 finalize_by_order llamado para orden: {orden_id}")
-        logger.info(f"🔸 Datos recibidos: {request.data}")
-        
+
         if not orden_id:
             return Response(
-                {'error': 'Se requiere el ID de la orden'}, 
-                status=status.HTTP_400_BAD_REQUEST
+                {'error': 'Se requiere el ID de la orden'},
+                status=status.HTTP_400_BAD_REQUEST,
             )
-        
-        try:
-            # Buscar el checklist asociado a esta orden
-            instance = ChecklistInstance.objects.get(orden=orden_id)
-            logger.info(f"🔸 Instancia encontrada: ID {instance.id}, Estado: {instance.estado}")
 
-            # ✅ Idempotencia: si ya está completado, no devolver error
+        try:
+            instance = ChecklistInstance.objects.get(orden=orden_id)
+            logger.info(
+                f"🔸 Instancia encontrada: ID {instance.id}, Estado: {instance.estado}"
+            )
+
             if instance.estado == 'COMPLETADO':
-                logger.warning(f"🔸 finalize_by_order llamado pero checklist ya COMPLETADO: {instance.id}")
                 return Response(
                     {
                         'message': 'El checklist ya fue finalizado anteriormente',
                         'checklist_id': instance.id,
                         'orden_id': instance.orden.id,
                         'estado': instance.estado,
+                        'requiere_firma_cliente': False,
                     },
-                    status=status.HTTP_200_OK
+                    status=status.HTTP_200_OK,
                 )
-            
-            # Verificar que el usuario tenga acceso a esta orden
+
+            if instance.estado == 'PENDIENTE_FIRMA_CLIENTE':
+                return Response(
+                    {
+                        'message': 'El checklist ya fue cerrado por el técnico, esperando firma del cliente.',
+                        'checklist_id': instance.id,
+                        'orden_id': instance.orden.id,
+                        'estado': instance.estado,
+                        'requiere_firma_cliente': True,
+                    },
+                    status=status.HTTP_200_OK,
+                )
+
             user = self.request.user
             tiene_acceso = False
-            
             if hasattr(user, 'taller') and instance.orden.taller == user.taller:
                 tiene_acceso = True
-            elif hasattr(user, 'mecanico_domicilio') and instance.orden.mecanico == user.mecanico_domicilio:
+            elif (
+                hasattr(user, 'mecanico_domicilio')
+                and instance.orden.mecanico == user.mecanico_domicilio
+            ):
                 tiene_acceso = True
-                
+
             if not tiene_acceso:
-                logger.warning(f"🔸 Usuario {user.username} no tiene acceso a orden {orden_id}")
                 return Response(
-                    {'error': 'No tienes acceso a este checklist'}, 
-                    status=status.HTTP_403_FORBIDDEN
+                    {'error': 'No tienes acceso a este checklist'},
+                    status=status.HTTP_403_FORBIDDEN,
                 )
-            
+
             if instance.estado not in ['EN_PROGRESO', 'PAUSADO']:
                 return Response(
-                    {'error': f'El checklist debe estar en progreso o pausado. Estado actual: {instance.estado}'},
-                    status=status.HTTP_400_BAD_REQUEST
+                    {
+                        'error': (
+                            f'El checklist debe estar en progreso o pausado. '
+                            f'Estado actual: {instance.estado}'
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
-            
-            # Verificar que se proporcionaron las firmas
-            firma_tecnico = request.data.get('firma_tecnico') or request.data.get('firmaTecnico')
-            firma_cliente = request.data.get('firma_cliente') or request.data.get('firmaCliente')
+
+            firma_tecnico = (
+                request.data.get('firma_tecnico') or request.data.get('firmaTecnico')
+            )
+            firma_cliente = (
+                request.data.get('firma_cliente') or request.data.get('firmaCliente') or None
+            )
             ubicacion = request.data.get('ubicacion')
-            
-            logger.info(f"🔸 Firmas recibidas - Técnico: {'✅' if firma_tecnico else '❌'}, Cliente: {'✅' if firma_cliente else '❌'}")
-            
-            if not firma_tecnico or not firma_cliente:
+
+            if not firma_tecnico:
                 return Response(
-                    {'error': 'Se requieren ambas firmas para finalizar'},
-                    status=status.HTTP_400_BAD_REQUEST
+                    {'error': 'Se requiere la firma del técnico para finalizar el checklist.'},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
-            
-            # Actualizar la instancia
-            instance.estado = 'COMPLETADO'
-            instance.fecha_finalizacion = timezone.now()
+
+            firma_cliente_presente = bool(firma_cliente)
             instance.firma_tecnico = firma_tecnico
-            instance.firma_cliente = firma_cliente
-            instance.progreso_porcentaje = 100
-            
+
+            if firma_cliente_presente:
+                instance.estado = 'COMPLETADO'
+                instance.fecha_finalizacion = timezone.now()
+                instance.firma_cliente = firma_cliente
+                instance.progreso_porcentaje = 100
+            else:
+                instance.estado = 'PENDIENTE_FIRMA_CLIENTE'
+                instance.progreso_porcentaje = 100
+
             if ubicacion:
                 from django.contrib.gis.geos import Point
                 lat = ubicacion.get('latitude') or ubicacion.get('lat')
                 lng = ubicacion.get('longitude') or ubicacion.get('lng')
                 if lat and lng:
                     instance.ubicacion_finalizacion = Point(lng, lat, srid=4326)
-                    logger.info(f"🔸 Ubicación guardada: {lat}, {lng}")
-            
-            # Calcular tiempo total
-            if instance.fecha_inicio:
+
+            if instance.fecha_inicio and firma_cliente_presente:
                 tiempo_total = timezone.now() - instance.fecha_inicio
                 instance.tiempo_total_minutos = int(tiempo_total.total_seconds() / 60)
-            
+
             instance.save()
-            logger.info(f"🔸 Checklist finalizado exitosamente: ID {instance.id}")
-            
-            # Actualizar estado de la orden
-            instance.orden.estado = 'completado'
-            instance.orden.save()
-            logger.info(f"🔸 Orden actualizada a estado: completado")
-            
-            return Response({
-                'message': 'Checklist finalizado correctamente',
-                'checklist_id': instance.id,
-                'orden_id': instance.orden.id,
-                'siguiente_paso': 'El proceso ha sido completado exitosamente'
-            })
-            
+
+            orden = instance.orden
+            estado_anterior = orden.estado
+
+            if firma_cliente_presente:
+                orden.estado = 'completado'
+                orden.save(update_fields=['estado'])
+            else:
+                if orden.estado in (
+                    'checklist_en_progreso',
+                    'checklist_completado',
+                    'en_proceso',
+                ):
+                    orden.estado = 'pendiente_firma_cliente'
+                    orden.save(update_fields=['estado'])
+
+                try:
+                    from mecanimovilapp.apps.vehiculos.tasks import (
+                        enviar_push_pendiente_firma_cliente,
+                    )
+                    enviar_push_pendiente_firma_cliente(orden)
+                except Exception as push_err:
+                    logger.error(
+                        f"❌ Error enviando push firma pendiente (by_order) {orden.id}: {push_err}",
+                        exc_info=True,
+                    )
+
+            return Response(
+                {
+                    'message': (
+                        'Checklist finalizado correctamente'
+                        if firma_cliente_presente
+                        else 'Firma del técnico registrada. Esperando firma del cliente para cerrar el servicio.'
+                    ),
+                    'checklist_id': instance.id,
+                    'orden_id': instance.orden.id,
+                    'orden_estado_anterior': estado_anterior,
+                    'orden_estado_nuevo': orden.estado,
+                    'estado': instance.estado,
+                    'requiere_firma_cliente': not firma_cliente_presente,
+                }
+            )
+
         except ChecklistInstance.DoesNotExist:
             logger.error(f"🔸 No se encontró checklist para orden: {orden_id}")
             return Response(
-                {'error': f'No existe checklist para la orden {orden_id}'}, 
-                status=status.HTTP_404_NOT_FOUND
+                {'error': f'No existe checklist para la orden {orden_id}'},
+                status=status.HTTP_404_NOT_FOUND,
             )
         except Exception as e:
-            logger.error(f"🔸 Error inesperado: {str(e)}")
+            logger.error(f"🔸 Error inesperado: {str(e)}", exc_info=True)
             return Response(
-                {'error': f'Error interno: {str(e)}'}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                {'error': f'Error interno: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+
+    @action(
+        detail=True,
+        methods=['post'],
+        url_path='firmar-cliente',
+        permission_classes=[permissions.IsAuthenticated],
+    )
+    def firmar_cliente(self, request, pk=None):
+        """
+        Firma del cliente desde su app autenticada (firma diferida).
+
+        Permite al cliente dueño de la orden cerrar el servicio aportando
+        su firma cuando el checklist está en `PENDIENTE_FIRMA_CLIENTE`.
+        Tras firmar, el `post_save` de `ChecklistInstance` dispara la
+        actualización de salud del vehículo.
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        try:
+            instance = ChecklistInstance.objects.select_related(
+                'orden__cliente__usuario'
+            ).get(pk=pk)
+        except ChecklistInstance.DoesNotExist:
+            return Response(
+                {'error': 'No existe el checklist'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Validar permisos: cliente dueño de la orden.
+        usuario_cliente = getattr(getattr(instance.orden, 'cliente', None), 'usuario', None)
+        if usuario_cliente is None or usuario_cliente.id != request.user.id:
+            logger.warning(
+                f"🔸 firmar_cliente sin permiso (user={request.user.id}, instance={instance.id})"
+            )
+            return Response(
+                {'error': 'No tienes permiso para firmar este checklist.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Idempotencia: ya completado.
+        if instance.estado == 'COMPLETADO':
+            return Response(
+                {
+                    'message': 'El checklist ya fue completado anteriormente.',
+                    'checklist_id': instance.id,
+                    'orden_id': instance.orden.id,
+                    'estado': instance.estado,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        if instance.estado != 'PENDIENTE_FIRMA_CLIENTE':
+            return Response(
+                {
+                    'error': (
+                        'El checklist no está en espera de tu firma '
+                        f'(estado actual: {instance.estado}).'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not instance.firma_tecnico:
+            return Response(
+                {'error': 'Falta la firma del técnico, no se puede cerrar todavía.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        firma_cliente = request.data.get('firma_cliente')
+        if not firma_cliente:
+            return Response(
+                {'error': 'Se requiere la firma del cliente para finalizar.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        ubicacion_lat = request.data.get('ubicacion_lat')
+        ubicacion_lng = request.data.get('ubicacion_lng')
+
+        instance.firma_cliente = firma_cliente
+        instance.estado = 'COMPLETADO'
+        instance.fecha_finalizacion = timezone.now()
+        instance.progreso_porcentaje = 100
+
+        if ubicacion_lat and ubicacion_lng and instance.ubicacion_finalizacion is None:
+            from django.contrib.gis.geos import Point
+            try:
+                instance.ubicacion_finalizacion = Point(
+                    float(ubicacion_lng), float(ubicacion_lat), srid=4326
+                )
+            except (ValueError, TypeError) as geo_err:
+                logger.warning(
+                    f"🔸 firmar_cliente: ubicación inválida {ubicacion_lat},{ubicacion_lng}: {geo_err}"
+                )
+
+        if instance.fecha_inicio:
+            tiempo_total = timezone.now() - instance.fecha_inicio
+            instance.tiempo_total_minutos = int(tiempo_total.total_seconds() / 60)
+
+        instance.save()
+
+        orden = instance.orden
+        estado_anterior = orden.estado
+        orden.estado = 'completado'
+        orden.save(update_fields=['estado'])
+
+        logger.info(
+            f"✅ Cliente {request.user.id} firmó checklist {instance.id} → orden {orden.id} completada"
+        )
+
+        return Response(
+            {
+                'message': 'Servicio confirmado correctamente. ¡Gracias por tu firma!',
+                'checklist_id': instance.id,
+                'orden_id': orden.id,
+                'orden_estado_anterior': estado_anterior,
+                'orden_estado_nuevo': orden.estado,
+                'estado': instance.estado,
+            }
+        )
 
     @action(detail=True, methods=['get'], url_path='salud-snapshot')
     def salud_snapshot(self, request, pk=None):

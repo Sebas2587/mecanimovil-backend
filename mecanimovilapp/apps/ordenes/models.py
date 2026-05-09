@@ -29,6 +29,7 @@ class SolicitudServicio(models.Model):
         ('checklist_en_progreso', 'Checklist en Progreso'),
         ('checklist_completado', 'Checklist Completado'),
         ('en_proceso', 'En Proceso'),
+        ('pendiente_firma_cliente', 'Pendiente de Firma del Cliente'),
         ('completado', 'Completado'),
         ('cancelado', 'Cancelado'),
         ('solicitud_cancelacion', 'Solicitud de Cancelación'),
