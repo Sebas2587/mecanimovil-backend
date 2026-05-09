@@ -33,6 +33,8 @@ urlpatterns = [
 # POST /api/checklists/instances/{id}/pause/ - Pausar checklist
 # POST /api/checklists/instances/{id}/resume/ - Reanudar checklist
 # POST /api/checklists/instances/{id}/finalize/ - Finalizar con firmas
+# GET  /api/checklists/instances/{id}/salud-snapshot/ - Salud actual por ítem (para UI)
+# POST /api/checklists/instances/{id}/preview-impacto/ - Diff antes/después al finalizar
 
 # POST /api/checklists/responses/ - Crear respuesta
 # PUT /api/checklists/responses/{id}/ - Actualizar respuesta

@@ -17,6 +17,9 @@ python manage.py migrate --noinput
 echo "🔧 Inicializando sistema Smart Health..."
 python manage.py init_smart_health
 
+echo "🧰 Sincronizando templates de checklist por servicio (idempotente)..."
+python manage.py populate_checklists_por_servicio
+
 echo "🎨 Recolectando archivos estáticos..."
 python manage.py collectstatic --noinput
 

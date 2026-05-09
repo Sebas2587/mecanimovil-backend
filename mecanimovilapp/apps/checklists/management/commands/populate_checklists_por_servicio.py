@@ -1,10 +1,18 @@
 """
 Management command para poblar:
 1. ChecklistItemCatalog con items bien diseñados para inspección automotriz
-2. ChecklistTemplate por cada servicio existente
-3. ChecklistItemTemplate asociando items del catálogo en orden correcto
+   (incluye COMPONENT_HEALTH slider 0–100% para inspecciones cuantitativas).
+2. ChecklistTemplate por cada servicio existente — con tipo_intencion_default
+   (REPARACION / INSPECCION / PRECOMPRA / MIXTO).
+3. ChecklistItemTemplate asociando items del catálogo en orden correcto, con:
+   - tipo_actualizacion (REEMPLAZA / INSPECCIONA / INFORMATIVO),
+   - componente_salud_asociado (FK a vehiculos.ComponenteSalud).
+4. ComponenteSalud.servicios_asociados (M2M) para sugerir servicios de
+   reparación cuando el usuario toca un componente desde la app.
 
 Uso: python manage.py populate_checklists_por_servicio [--dry-run]
+
+Idempotente: seguro de ejecutar en cada deploy a Render (build.sh).
 """
 from django.core.management.base import BaseCommand
 
@@ -14,6 +22,7 @@ from mecanimovilapp.apps.checklists.models import (
     ChecklistItemTemplate,
 )
 from mecanimovilapp.apps.servicios.models import Servicio
+from mecanimovilapp.apps.vehiculos.models_health import ComponenteSalud
 
 
 # Lista de nombres de servicio a mapear (resolver por nombre en BD)
@@ -488,7 +497,181 @@ CATALOG_ITEMS = [
         'es_obligatorio_por_defecto': False,
         'uso_frecuente': True,
     },
+    # ── COMPONENT_HEALTH (slider 0–100%) — usados por servicios de inspección ──
+    # El técnico declara la vida útil restante por componente. La respuesta
+    # se persiste como salud_porcentaje + salud_anclada_pct y el HealthEngine
+    # ancla la curva Weibull en ese punto.
+    {
+        'nombre': 'Vida útil — Pastillas de freno',
+        'categoria': 'SISTEMA_FRENOS',
+        'tipo_pregunta': 'COMPONENT_HEALTH',
+        'pregunta_texto': '¿Qué porcentaje de vida útil restante tienen las pastillas?',
+        'descripcion_ayuda': 'Estima la vida útil restante (0% = al límite, 100% = nuevas).',
+        'valor_minimo': 0,
+        'valor_maximo': 100,
+        'es_obligatorio_por_defecto': False,
+        'uso_frecuente': True,
+    },
+    {
+        'nombre': 'Vida útil — Discos de freno',
+        'categoria': 'SISTEMA_FRENOS',
+        'tipo_pregunta': 'COMPONENT_HEALTH',
+        'pregunta_texto': '¿Qué porcentaje de vida útil restante tienen los discos?',
+        'descripcion_ayuda': 'Estima la vida útil restante considerando grosor y rayaduras.',
+        'valor_minimo': 0,
+        'valor_maximo': 100,
+        'es_obligatorio_por_defecto': False,
+        'uso_frecuente': False,
+    },
+    {
+        'nombre': 'Vida útil — Aceite motor',
+        'categoria': 'FLUIDOS_NIVELES',
+        'tipo_pregunta': 'COMPONENT_HEALTH',
+        'pregunta_texto': '¿Qué porcentaje de vida útil restante tiene el aceite del motor?',
+        'descripcion_ayuda': 'Estimación según km recorridos desde el último cambio y aspecto del aceite.',
+        'valor_minimo': 0,
+        'valor_maximo': 100,
+        'es_obligatorio_por_defecto': False,
+        'uso_frecuente': True,
+    },
+    {
+        'nombre': 'Vida útil — Batería',
+        'categoria': 'SISTEMA_ELECTRICO',
+        'tipo_pregunta': 'COMPONENT_HEALTH',
+        'pregunta_texto': '¿Qué porcentaje de vida útil restante tiene la batería?',
+        'descripcion_ayuda': 'Considera voltaje en reposo, carga bajo demanda y antigüedad.',
+        'valor_minimo': 0,
+        'valor_maximo': 100,
+        'es_obligatorio_por_defecto': False,
+        'uso_frecuente': True,
+    },
+    {
+        'nombre': 'Vida útil — Neumáticos',
+        'categoria': 'NEUMATICOS_LLANTAS',
+        'tipo_pregunta': 'COMPONENT_HEALTH',
+        'pregunta_texto': '¿Qué porcentaje de vida útil restante tienen los neumáticos?',
+        'descripcion_ayuda': 'Profundidad de dibujo, desgaste irregular, antigüedad de la goma.',
+        'valor_minimo': 0,
+        'valor_maximo': 100,
+        'es_obligatorio_por_defecto': False,
+        'uso_frecuente': True,
+    },
+    {
+        'nombre': 'Vida útil — Amortiguadores',
+        'categoria': 'SUSPENSION_DIRECCION',
+        'tipo_pregunta': 'COMPONENT_HEALTH',
+        'pregunta_texto': '¿Qué porcentaje de vida útil restante tienen los amortiguadores?',
+        'descripcion_ayuda': 'Rebote, filtraciones y ruidos en suspensión.',
+        'valor_minimo': 0,
+        'valor_maximo': 100,
+        'es_obligatorio_por_defecto': False,
+        'uso_frecuente': False,
+    },
+    {
+        'nombre': 'Vida útil — Correa de distribución',
+        'categoria': 'MOTOR_COMPARTIMIENTO',
+        'tipo_pregunta': 'COMPONENT_HEALTH',
+        'pregunta_texto': '¿Qué porcentaje de vida útil restante tiene la correa de distribución?',
+        'descripcion_ayuda': 'Desgaste, grietas, tensión y kilometraje desde el último cambio.',
+        'valor_minimo': 0,
+        'valor_maximo': 100,
+        'es_obligatorio_por_defecto': False,
+        'uso_frecuente': False,
+    },
+    {
+        'nombre': 'Vida útil — Líquido de frenos',
+        'categoria': 'SISTEMA_FRENOS',
+        'tipo_pregunta': 'COMPONENT_HEALTH',
+        'pregunta_texto': '¿Qué porcentaje de vida útil restante tiene el líquido de frenos?',
+        'descripcion_ayuda': 'Color, contaminación con humedad, antigüedad.',
+        'valor_minimo': 0,
+        'valor_maximo': 100,
+        'es_obligatorio_por_defecto': False,
+        'uso_frecuente': False,
+    },
+    {
+        'nombre': 'Vida útil — Refrigerante',
+        'categoria': 'FLUIDOS_NIVELES',
+        'tipo_pregunta': 'COMPONENT_HEALTH',
+        'pregunta_texto': '¿Qué porcentaje de vida útil restante tiene el refrigerante?',
+        'descripcion_ayuda': 'Color, mezcla agua/anticongelante, antigüedad.',
+        'valor_minimo': 0,
+        'valor_maximo': 100,
+        'es_obligatorio_por_defecto': False,
+        'uso_frecuente': False,
+    },
+    {
+        'nombre': 'Vida útil — Bujías',
+        'categoria': 'MOTOR_COMPARTIMIENTO',
+        'tipo_pregunta': 'COMPONENT_HEALTH',
+        'pregunta_texto': '¿Qué porcentaje de vida útil restante tienen las bujías?',
+        'descripcion_ayuda': 'Estado del electrodo, color del aislante, antigüedad.',
+        'valor_minimo': 0,
+        'valor_maximo': 100,
+        'es_obligatorio_por_defecto': False,
+        'uso_frecuente': False,
+    },
 ]
+
+
+# ── Intención por defecto del servicio (override por ítem cuando aplica) ──
+SERVICIO_TIPO_INTENCION = {
+    'Diagnóstico mecánico':              'INSPECCION',
+    'Diagnóstico electromecánico':       'INSPECCION',
+    'Servicio escáner automotriz':       'INSPECCION',
+    'Revisión técnica':                  'INSPECCION',
+    'Revisión precompra':                'PRECOMPRA',
+    'Cambio de aceite motor':            'REPARACION',
+    'Cambio de aceite motor y filtro':   'REPARACION',
+    'Cambio aceite motor y filtro':      'REPARACION',
+    'Cambio de filtro de aire':          'REPARACION',
+    'Cambio de filtro habitáculo':       'REPARACION',
+    'Mantenimiento por kilometraje':     'MIXTO',
+    'Cambio de bujías':                  'REPARACION',
+    'Cambio de pastillas de frenos':     'REPARACION',
+    'Cambio de pastillas y discos de freno': 'REPARACION',
+    'Cambio de pastillas de frenos y rectificado': 'REPARACION',
+    'Cambio de batería':                 'REPARACION',
+    'Cambio de ampolletas':              'REPARACION',
+    'Lavado a domicilio':                'MIXTO',
+}
+
+
+# ── Mapeo nombre del catálogo → (slug componente, tipo_actualizacion) ──
+# - REEMPLAZA: el ítem confirma reemplazo del componente (servicio realizado).
+# - INSPECCIONA: el ítem captura el estado actual declarado por el técnico.
+# Ítems no listados quedan como INFORMATIVO (no afectan salud).
+ITEM_NOMBRE_A_COMPONENTE = {
+    # Reemplazos
+    'Aceite Motor Reemplazado':         ('oil', 'REEMPLAZA'),
+    'Filtro de Aceite Reemplazado':     ('oil-filter', 'REEMPLAZA'),
+    'Filtro de Aire Reemplazado':       ('air-filter', 'REEMPLAZA'),
+    'Filtro Habitáculo Reemplazado':    ('cabin-filter', 'REEMPLAZA'),
+    'Bujías Reemplazadas':              ('spark-plug', 'REEMPLAZA'),
+    'Pastillas y Discos Reemplazados':  ('brakes', 'REEMPLAZA'),
+    'Batería Reemplazada':              ('battery', 'REEMPLAZA'),
+    # Inspecciones cualitativas (SELECT) → mapeadas en runtime por SALUD_DESDE_SELECT
+    'Estado Pastillas de Frenos':       ('brakes', 'INSPECCIONA'),
+    'Estado Discos de Frenos':          ('brake-discs', 'INSPECCIONA'),
+    'Estado de Batería':                ('battery', 'INSPECCIONA'),
+    'Estado de Neumáticos':             ('tires', 'INSPECCIONA'),
+    'Estado Amortiguadores':            ('shocks', 'INSPECCIONA'),
+    'Correa Distribución Revisada':     ('timing-belt', 'INSPECCIONA'),
+    'Líquido Frenos Revisado':          ('brake-fluid', 'INSPECCIONA'),
+    'Refrigerante Revisado':            ('coolant', 'INSPECCIONA'),
+    'Estado Cables Bujías':             ('spark-plug', 'INSPECCIONA'),
+    # Inspecciones cuantitativas (COMPONENT_HEALTH slider 0–100%)
+    'Vida útil — Pastillas de freno':       ('brakes', 'INSPECCIONA'),
+    'Vida útil — Discos de freno':          ('brake-discs', 'INSPECCIONA'),
+    'Vida útil — Aceite motor':             ('oil', 'INSPECCIONA'),
+    'Vida útil — Batería':                  ('battery', 'INSPECCIONA'),
+    'Vida útil — Neumáticos':               ('tires', 'INSPECCIONA'),
+    'Vida útil — Amortiguadores':           ('shocks', 'INSPECCIONA'),
+    'Vida útil — Correa de distribución':   ('timing-belt', 'INSPECCIONA'),
+    'Vida útil — Líquido de frenos':        ('brake-fluid', 'INSPECCIONA'),
+    'Vida útil — Refrigerante':             ('coolant', 'INSPECCIONA'),
+    'Vida útil — Bujías':                   ('spark-plug', 'INSPECCIONA'),
+}
 
 # FASE 2: Mapeo servicio -> lista de (nombre_item_catalogo, orden_visual, es_obligatorio)
 # es_obligatorio: True/False, o None para usar valor por defecto del catálogo
@@ -502,16 +685,22 @@ SERVICIO_TEMPLATE_ITEMS = {
         ('Estado del Sistema Eléctrico', 5, False),
         ('Nivel de Fluidos', 6, False),
         ('Estado de Frenos', 7, False),
-        ('Estado de Neumáticos', 8, False),
-        ('Estado Amortiguadores', 9, False),
-        ('Líquido Frenos Revisado', 10, False),
-        ('Refrigerante Revisado', 11, False),
-        ('Correa Distribución Revisada', 12, False),
-        ('Observaciones del Técnico', 13, False),
-        ('Recomendaciones', 14, False),
-        ('Fotos Evidencia', 15, False),
-        ('Firma del Técnico', 16, True),
-        ('Firma del Cliente', 17, True),
+        # Inspecciones cuantitativas (COMPONENT_HEALTH slider 0–100%)
+        ('Vida útil — Pastillas de freno', 8, False),
+        ('Vida útil — Discos de freno', 9, False),
+        ('Vida útil — Aceite motor', 10, False),
+        ('Vida útil — Batería', 11, False),
+        ('Vida útil — Neumáticos', 12, False),
+        ('Vida útil — Amortiguadores', 13, False),
+        ('Vida útil — Correa de distribución', 14, False),
+        ('Vida útil — Líquido de frenos', 15, False),
+        ('Vida útil — Refrigerante', 16, False),
+        ('Vida útil — Bujías', 17, False),
+        ('Observaciones del Técnico', 18, False),
+        ('Recomendaciones', 19, False),
+        ('Fotos Evidencia', 20, False),
+        ('Firma del Técnico', 21, True),
+        ('Firma del Cliente', 22, True),
     ],
     'Diagnóstico electromecánico': [
         ('Identificación del Técnico', 1, True),
@@ -521,12 +710,17 @@ SERVICIO_TEMPLATE_ITEMS = {
         ('Estado del Sistema Eléctrico', 5, True),
         ('Nivel de Fluidos', 6, False),
         ('Estado de Frenos', 7, False),
-        ('Estado de Neumáticos', 8, False),
-        ('Observaciones del Técnico', 9, False),
-        ('Recomendaciones', 10, False),
-        ('Fotos Evidencia', 11, False),
-        ('Firma del Técnico', 12, True),
-        ('Firma del Cliente', 13, True),
+        # Inspecciones cuantitativas (COMPONENT_HEALTH slider 0–100%)
+        ('Vida útil — Batería', 8, True),
+        ('Vida útil — Bujías', 9, False),
+        ('Vida útil — Pastillas de freno', 10, False),
+        ('Vida útil — Aceite motor', 11, False),
+        ('Vida útil — Neumáticos', 12, False),
+        ('Observaciones del Técnico', 13, False),
+        ('Recomendaciones', 14, False),
+        ('Fotos Evidencia', 15, False),
+        ('Firma del Técnico', 16, True),
+        ('Firma del Cliente', 17, True),
     ],
     'Servicio escáner automotriz': [
         ('Identificación del Técnico', 1, True),
@@ -536,12 +730,17 @@ SERVICIO_TEMPLATE_ITEMS = {
         ('Estado del Sistema Eléctrico', 5, True),
         ('Nivel de Fluidos', 6, False),
         ('Estado de Frenos', 7, False),
-        ('Estado de Neumáticos', 8, False),
-        ('Observaciones del Técnico', 9, False),
-        ('Recomendaciones', 10, False),
-        ('Fotos Evidencia', 11, False),
-        ('Firma del Técnico', 12, True),
-        ('Firma del Cliente', 13, True),
+        # Inspecciones cuantitativas (COMPONENT_HEALTH slider 0–100%)
+        ('Vida útil — Batería', 8, False),
+        ('Vida útil — Bujías', 9, False),
+        ('Vida útil — Pastillas de freno', 10, False),
+        ('Vida útil — Aceite motor', 11, False),
+        ('Vida útil — Refrigerante', 12, False),
+        ('Observaciones del Técnico', 13, False),
+        ('Recomendaciones', 14, False),
+        ('Fotos Evidencia', 15, False),
+        ('Firma del Técnico', 16, True),
+        ('Firma del Cliente', 17, True),
     ],
     # Revisión precompra / técnica: inventario, documentos, inspección exterior/interior, motor, fluidos, frenos, neumáticos, luces, fotos, firmas
     'Revisión precompra': [
@@ -578,13 +777,20 @@ SERVICIO_TEMPLATE_ITEMS = {
         ('Estado del Motor', 8, False),
         ('Nivel de Fluidos', 9, False),
         ('Estado de Frenos', 10, False),
-        ('Estado de Neumáticos', 11, False),
-        ('Verificación de Luces', 12, False),
-        ('Fotos Evidencia', 13, False),
-        ('Observaciones del Técnico', 14, False),
-        ('Resumen del Trabajo', 15, False),
-        ('Firma del Técnico', 16, True),
-        ('Firma del Cliente', 17, True),
+        ('Verificación de Luces', 11, False),
+        # Inspecciones cuantitativas (COMPONENT_HEALTH slider 0–100%)
+        ('Vida útil — Pastillas de freno', 12, False),
+        ('Vida útil — Discos de freno', 13, False),
+        ('Vida útil — Neumáticos', 14, False),
+        ('Vida útil — Amortiguadores', 15, False),
+        ('Vida útil — Batería', 16, False),
+        ('Vida útil — Líquido de frenos', 17, False),
+        ('Vida útil — Refrigerante', 18, False),
+        ('Fotos Evidencia', 19, False),
+        ('Observaciones del Técnico', 20, False),
+        ('Resumen del Trabajo', 21, False),
+        ('Firma del Técnico', 22, True),
+        ('Firma del Cliente', 23, True),
     ],
     # Cambio de aceite motor
     'Cambio de aceite motor': [
@@ -863,6 +1069,8 @@ class Command(BaseCommand):
                 )
                 continue
 
+            tipo_intencion = SERVICIO_TIPO_INTENCION.get(nombre_servicio, 'MIXTO')
+
             # ChecklistTemplate
             if dry_run:
                 template_exists = ChecklistTemplate.objects.filter(
@@ -872,11 +1080,16 @@ class Command(BaseCommand):
                     template = ChecklistTemplate.objects.get(
                         servicio=servicio, version='1.0'
                     )
-                    self.stdout.write(f"  ⏭️  Template ya existe: {servicio.nombre}")
+                    self.stdout.write(
+                        f"  ⏭️  Template ya existe: {servicio.nombre} (intención={tipo_intencion})"
+                    )
                 else:
                     total_templates_created += 1
                     template = None
-                    self.stdout.write(f"  [DRY] Crearía template: Checklist {servicio.nombre}")
+                    self.stdout.write(
+                        f"  [DRY] Crearía template: Checklist {servicio.nombre} "
+                        f"(intención={tipo_intencion})"
+                    )
             else:
                 template, created = ChecklistTemplate.objects.get_or_create(
                     servicio=servicio,
@@ -885,16 +1098,36 @@ class Command(BaseCommand):
                         'nombre': f"Checklist {servicio.nombre}",
                         'descripcion': f"Inspección y verificación para {servicio.nombre}",
                         'activo': True,
+                        'tipo_intencion_default': tipo_intencion,
                     },
                 )
                 if created:
                     total_templates_created += 1
-                    self.stdout.write(f"  ✅ Template creado: {template.nombre}")
+                    self.stdout.write(
+                        f"  ✅ Template creado: {template.nombre} (intención={tipo_intencion})"
+                    )
+                elif template.tipo_intencion_default != tipo_intencion:
+                    template.tipo_intencion_default = tipo_intencion
+                    template.save(update_fields=['tipo_intencion_default'])
+                    self.stdout.write(
+                        f"  🔄 Template actualizado: {template.nombre} "
+                        f"(nueva intención={tipo_intencion})"
+                    )
 
             if not template and not dry_run:
                 template = ChecklistTemplate.objects.get(
                     servicio=servicio, version='1.0'
                 )
+
+            # Cache: slug → ComponenteSalud (por servicio)
+            componentes_cache = {}
+
+            def _resolver_componente(slug):
+                if slug in componentes_cache:
+                    return componentes_cache[slug]
+                comp = ComponenteSalud.objects.filter(slug=slug).first()
+                componentes_cache[slug] = comp
+                return comp
 
             # ChecklistItemTemplate
             catalog_names_defined = {i['nombre'] for i in CATALOG_ITEMS}
@@ -920,6 +1153,30 @@ class Command(BaseCommand):
                     )
                     continue
 
+                # Resolver semántica de salud para este ítem.
+                #   1. Si el ítem está en ITEM_NOMBRE_A_COMPONENTE → usa esa tupla.
+                #   2. Si no, queda como INFORMATIVO (no afecta salud).
+                comp_slug, item_intencion = ITEM_NOMBRE_A_COMPONENTE.get(
+                    item_nombre, (None, None)
+                )
+                componente_salud = _resolver_componente(comp_slug) if comp_slug else None
+
+                if comp_slug and not componente_salud and not dry_run:
+                    self.stdout.write(
+                        self.style.WARNING(
+                            f"    ⚠️  ComponenteSalud(slug='{comp_slug}') no existe — "
+                            f"corre `init_smart_health` antes. Ítem {item_nombre} queda sin componente."
+                        )
+                    )
+
+                # Si el template es PRECOMPRA, ningún ítem afecta salud (la
+                # certificación se hace fuera de salud en signals.py).
+                if tipo_intencion == 'PRECOMPRA':
+                    item_tipo_actualizacion = 'INFORMATIVO'
+                    componente_salud = None
+                else:
+                    item_tipo_actualizacion = item_intencion  # None si no está mapeado
+
                 if dry_run:
                     exists = False
                     if template:
@@ -930,7 +1187,9 @@ class Command(BaseCommand):
                     if not exists:
                         total_template_items_created += 1
                         self.stdout.write(
-                            f"    [DRY] Crearía item: {item_nombre} (orden {orden_visual})"
+                            f"    [DRY] Crearía item: {item_nombre} "
+                            f"(orden {orden_visual}, tipo_actualizacion={item_tipo_actualizacion}, "
+                            f"componente={comp_slug})"
                         )
                 else:
                     _, created = ChecklistItemTemplate.objects.update_or_create(
@@ -939,10 +1198,18 @@ class Command(BaseCommand):
                         defaults={
                             'catalog_item': catalog_item,
                             'es_obligatorio': es_obligatorio,
+                            'tipo_actualizacion': item_tipo_actualizacion,
+                            'componente_salud_asociado': componente_salud,
                         },
                     )
                     if created:
                         total_template_items_created += 1
+
+                    # Poblar M2M ComponenteSalud.servicios_asociados para que
+                    # la app del usuario sugiera servicios de reparación
+                    # cuando el componente esté en alerta.
+                    if componente_salud and item_tipo_actualizacion == 'REEMPLAZA':
+                        componente_salud.servicios_asociados.add(servicio)
 
         # Resumen final
         self.stdout.write('\n' + '=' * 50)

@@ -39,7 +39,25 @@ class ChecklistItemTemplateSerializer(serializers.ModelSerializer):
     valor_maximo = serializers.DecimalField(source='catalog_item.valor_maximo', max_digits=10, decimal_places=2, read_only=True)
     min_fotos = serializers.IntegerField(source='catalog_item.min_fotos', read_only=True)
     max_fotos = serializers.IntegerField(source='catalog_item.max_fotos', read_only=True)
-    
+
+    # Semántica de salud (refactor 2026 — checklist inteligente)
+    tipo_actualizacion_efectivo = serializers.SerializerMethodField()
+    componente_salud_asociado = serializers.SerializerMethodField()
+
+    def get_tipo_actualizacion_efectivo(self, obj):
+        return obj.tipo_actualizacion_efectivo
+
+    def get_componente_salud_asociado(self, obj):
+        comp = obj.componente_salud_asociado
+        if comp is None:
+            return None
+        return {
+            'id': comp.id,
+            'nombre': comp.nombre,
+            'slug': comp.slug,
+            'icono': comp.icono,
+        }
+
     class Meta:
         model = ChecklistItemTemplate
         fields = [
@@ -49,7 +67,10 @@ class ChecklistItemTemplateSerializer(serializers.ModelSerializer):
             'categoria', 'tipo_pregunta', 'pregunta_texto',
             'descripcion_ayuda', 'placeholder', 'es_obligatorio_efectivo',
             'opciones_seleccion', 'valor_minimo', 'valor_maximo',
-            'min_fotos', 'max_fotos'
+            'min_fotos', 'max_fotos',
+            # Semántica de salud
+            'tipo_actualizacion', 'tipo_actualizacion_efectivo',
+            'componente_salud_asociado',
         ]
 
 
@@ -66,6 +87,7 @@ class ChecklistTemplateSerializer(serializers.ModelSerializer):
         model = ChecklistTemplate
         fields = [
             'id', 'nombre', 'descripcion', 'servicio', 'servicio_nombre',
+            'tipo_intencion_default',
             'activo', 'version', 'fecha_creacion', 'fecha_actualizacion',
             'items', 'total_items'
         ]

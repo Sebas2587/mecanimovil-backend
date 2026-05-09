@@ -31,6 +31,7 @@ class ChecklistItemCatalog(models.Model):
         ('KILOMETER_INPUT', 'Entrada de kilometraje'),
         ('FUEL_GAUGE', 'Medidor de combustible'),
         ('FLUID_LEVEL', 'Nivel de fluidos'),
+        ('COMPONENT_HEALTH', 'Vida útil de componente (slider 0–100%)'),
         
         # Tipos de inventario e inspección
         ('INVENTORY_CHECKLIST', 'Lista de inventario'),
@@ -193,6 +194,14 @@ class ChecklistTemplate(models.Model):
     """
     Template de checklist asociado a servicios específicos
     """
+
+    TIPO_INTENCION_CHOICES = [
+        ('REPARACION', 'Reparación / reemplazo de componentes'),
+        ('INSPECCION', 'Inspección / diagnóstico'),
+        ('PRECOMPRA', 'Inspección pre-compra (no afecta salud)'),
+        ('MIXTO', 'Mixto (definido a nivel de ítem)'),
+    ]
+
     nombre = models.CharField(
         max_length=255,
         help_text=_('Nombre descriptivo del template (ej. "Checklist Cambio de Aceite")')
@@ -207,6 +216,15 @@ class ChecklistTemplate(models.Model):
         on_delete=models.CASCADE,
         related_name='checklist_templates',
         help_text=_('Servicio al que aplica este checklist')
+    )
+    tipo_intencion_default = models.CharField(
+        max_length=20,
+        choices=TIPO_INTENCION_CHOICES,
+        default='MIXTO',
+        help_text=_(
+            'Intención por defecto del checklist sobre la salud del vehículo. '
+            'Cada ítem puede sobrescribirla con su propio tipo_actualizacion.'
+        ),
     )
     activo = models.BooleanField(
         default=True,
@@ -234,7 +252,13 @@ class ChecklistItemTemplate(models.Model):
     """
     Item específico dentro de un template, basado en items del catálogo
     """
-    
+
+    TIPO_ACTUALIZACION_CHOICES = [
+        ('REEMPLAZA', 'Reemplaza el componente (resetea salud a 100%)'),
+        ('INSPECCIONA', 'Inspecciona y declara estado actual del componente'),
+        ('INFORMATIVO', 'No afecta métricas de salud'),
+    ]
+
     checklist_template = models.ForeignKey(
         ChecklistTemplate,
         on_delete=models.CASCADE,
@@ -270,6 +294,30 @@ class ChecklistItemTemplate(models.Model):
         blank=True,
         null=True,
         help_text=_('Placeholder personalizado que sobrescribe el del catálogo')
+    )
+
+    # Semántica de salud: cómo afecta la respuesta a este ítem la salud del vehículo
+    tipo_actualizacion = models.CharField(
+        max_length=20,
+        choices=TIPO_ACTUALIZACION_CHOICES,
+        null=True,
+        blank=True,
+        help_text=_(
+            'Si null, hereda de checklist_template.tipo_intencion_default. '
+            'REEMPLAZA: setea salud=100. INSPECCIONA: usa el valor declarado. '
+            'INFORMATIVO: no toca métricas.'
+        ),
+    )
+    componente_salud_asociado = models.ForeignKey(
+        'vehiculos.ComponenteSalud',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='checklist_item_templates',
+        help_text=_(
+            'Componente cuya salud se actualiza con la respuesta a este ítem. '
+            'Sustituye al antiguo mapeo_componentes por substring.'
+        ),
     )
     
     class Meta:
@@ -334,6 +382,28 @@ class ChecklistItemTemplate(models.Model):
     @property
     def max_fotos(self):
         return self.catalog_item.max_fotos if self.catalog_item else None
+
+    @property
+    def tipo_actualizacion_efectivo(self):
+        """
+        Resuelve el tipo de actualización aplicado a la salud del vehículo.
+
+        Si el ítem define `tipo_actualizacion`, gana. En caso contrario hereda
+        del template:
+            REPARACION  → REEMPLAZA
+            INSPECCION  → INSPECCIONA
+            PRECOMPRA   → INFORMATIVO (la certificación se hace fuera de salud)
+            MIXTO       → INFORMATIVO (no se asume nada por defecto)
+        """
+        if self.tipo_actualizacion:
+            return self.tipo_actualizacion
+        intencion = getattr(self.checklist_template, 'tipo_intencion_default', 'MIXTO')
+        return {
+            'REPARACION': 'REEMPLAZA',
+            'INSPECCION': 'INSPECCIONA',
+            'PRECOMPRA': 'INFORMATIVO',
+            'MIXTO': 'INFORMATIVO',
+        }.get(intencion, 'INFORMATIVO')
 
 
 class ChecklistInstance(models.Model):

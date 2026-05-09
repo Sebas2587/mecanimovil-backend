@@ -35,6 +35,79 @@ from mecanimovilapp.apps.checklists.km_extraction import extraer_kilometraje_des
 logger = logging.getLogger(__name__)
 
 
+# ── Mapeo de respuestas categóricas (SELECT) a porcentaje de vida útil ─────
+# Permite reusar ítems SELECT existentes (ej. "Estado Pastillas: Excelente/Bueno/...")
+# como entrada para INSPECCIONA sin migrar todos los catálogos a COMPONENT_HEALTH.
+SALUD_DESDE_SELECT = {
+    'Excelente':            95.0,
+    'Bueno':                80.0,
+    'Regular':              60.0,
+    'Malo':                 35.0,
+    'Crítico':              15.0,
+    'Critico':              15.0,
+    'Requiere atención':    25.0,
+    'Requiere atencion':    25.0,
+    'Requiere Atención':    25.0,
+}
+
+
+def _nivel_alerta_desde_pct(salud_pct):
+    """Umbrales canónicos compartidos con HealthEngine."""
+    if salud_pct >= 80:
+        return 'OPTIMO'
+    if salud_pct >= 60:
+        return 'ATENCION'
+    if salud_pct >= 35:
+        return 'URGENTE'
+    return 'CRITICO'
+
+
+def _porcentaje_inspeccion_desde_respuesta(respuesta):
+    """
+    Extrae el porcentaje de vida útil declarado por el técnico para un ítem
+    de tipo INSPECCIONA. Soporta:
+      - COMPONENT_HEALTH → respuesta_numero (0–100)
+      - SELECT          → respuesta_seleccion (string mapeada por SALUD_DESDE_SELECT)
+
+    Devuelve None si la respuesta no se pudo interpretar (el caller debe loguear
+    y saltar el ítem sin actualizar la salud).
+    """
+    item_template = getattr(respuesta, 'item_template', None)
+    catalog_item = getattr(item_template, 'catalog_item', None) if item_template else None
+    tipo_pregunta = getattr(catalog_item, 'tipo_pregunta', None) if catalog_item else None
+
+    if tipo_pregunta == 'COMPONENT_HEALTH':
+        if respuesta.respuesta_numero is None:
+            return None
+        try:
+            valor = float(respuesta.respuesta_numero)
+        except (TypeError, ValueError):
+            return None
+        return max(0.0, min(100.0, valor))
+
+    if tipo_pregunta == 'SELECT':
+        seleccion = respuesta.respuesta_seleccion
+        if seleccion is None:
+            return None
+        valor_str = (
+            seleccion[0] if isinstance(seleccion, (list, tuple)) and seleccion else seleccion
+        )
+        if not isinstance(valor_str, str):
+            return None
+        return SALUD_DESDE_SELECT.get(valor_str.strip())
+
+    if tipo_pregunta in ('NUMBER', 'RATING') and respuesta.respuesta_numero is not None:
+        try:
+            valor = float(respuesta.respuesta_numero)
+        except (TypeError, ValueError):
+            return None
+        if tipo_pregunta == 'RATING':
+            return max(0.0, min(100.0, valor * 20.0))
+        return max(0.0, min(100.0, valor))
+
+    return None
+
+
 def _construir_evento_ml(
     vehiculo,
     componente,
@@ -423,113 +496,146 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
                         except Exception as e:
                             logger.warning(f"Error creando alerta de kilometraje: {str(e)}")
         
-        # Mapeo de items del checklist a componentes de salud
-        # La clave es el nombre del ComponenteSalud (debe coincidir exactamente).
-        # Cada valor es lista de subcadenas: si alguna está contenida en el nombre del ítem del catálogo, se asocia.
-        # Incluye nombres del catálogo (ej. populate_checklists_por_servicio) para máxima cobertura.
-        mapeo_componentes = {
-            'Aceite Motor': [
-                'Cambio de Aceite', 'Nivel de aceite', 'Aceite motor', 'Nivel Aceite', 'Nivel aceite', 'Aceite Motor',
-                'Aceite Motor Reemplazado', 'Nivel Aceite Antes', 'Nivel Aceite Después', 'Nivel de Fluidos',
-            ],
-            'Filtro de Aire': ['Filtro de Aire', 'Filtro aire', 'Filtro de Aire Reemplazado'],
-            'Filtro de Aceite': ['Filtro de Aceite', 'Filtro aceite', 'Filtro de Aceite Reemplazado'],
-            'Bujías': ['Bujías', 'Bujias', 'Cambio de bujías', 'Bujías Reemplazadas', 'Estado Cables Bujías'],
-            'Batería': ['Batería', 'Bateria', 'Cambio de batería', 'Batería Reemplazada', 'Estado de Batería'],
-            'Neumáticos': ['Neumáticos', 'Neumaticos', 'Llantas', 'Cambio de neumáticos', 'Estado de Neumáticos'],
-            'Pastillas de Freno': ['Pastillas de Freno', 'Pastillas freno', 'Estado Pastillas', 'Pastillas y Discos Reemplazados'],
-            'Discos de Freno': ['Discos de Freno', 'Discos freno', 'Estado Discos', 'Rectificado Realizado'],
-            'Amortiguadores': [
-                'Amortiguadores', 'Suspensión', 'Amortiguador Reemplazado', 'Estado Amortiguadores',
-            ],
-            'Correa de Distribución': [
-                'Correa de Distribución', 'Correa distribución', 'Correa Reemplazada', 'Correa Distribución Revisada',
-            ],
-            'Líquido de Frenos': [
-                'Líquido de Frenos', 'Liquido frenos', 'Líquido Frenos Reemplazado', 'Líquido Frenos Revisado', 'Estado de Frenos',
-            ],
-            'Refrigerante': [
-                'Refrigerante', 'Líquido refrigerante', 'Refrigerante Rellenado', 'Refrigerante Revisado',
-            ],
-        }
-        
-        # Actualizar componentes basados en el checklist
+        # ──────────────────────────────────────────────────────────────────
+        # Refactor 2026: las respuestas se asocian a componentes de salud vía
+        # FK explícita (`item_template.componente_salud_asociado`). El antiguo
+        # `mapeo_componentes` por substring queda eliminado: si un ítem debe
+        # afectar la salud, lo declara `populate_checklists_por_servicio`.
+        #
+        # Cada ítem también declara `tipo_actualizacion`:
+        #   REEMPLAZA   → resetea salud a 100 (servicio realizado)
+        #   INSPECCIONA → ancla la curva en el porcentaje declarado por el técnico
+        #   INFORMATIVO → no toca métricas
+        # ──────────────────────────────────────────────────────────────────
         componentes_para_actualizar = {}
         respuestas_count = 0
-        eventos_ml_a_crear = []  # Eventos SERVICIO_REALIZADO para dataset
+        respuestas_con_componente = 0
+        eventos_ml_a_crear = []
+        inspecciones_descartadas = []
+        # Detalle por tipo de actualización para alimentar el push al usuario.
+        componentes_inspeccionados = []  # list of (nombre, pct_declarado)
+        componentes_reemplazados = []    # list of nombre
 
         for respuesta in checklist.respuestas.all():
             respuestas_count += 1
-            item_nombre = respuesta.item_template.catalog_item.nombre if respuesta.item_template.catalog_item else ''
-            
-            for nombre_config, items_relacionados in mapeo_componentes.items():
-                if any(item.lower() in item_nombre.lower() for item in items_relacionados):
-                    try:
-                        # Buscar el componente maestro por su nombre exacto
-                        config = ComponenteSalud.objects.filter(
-                            nombre=nombre_config
-                        ).first()
-                        
-                        if config:
-                            # Usar el kilometraje del checklist si está disponible, sino el del vehículo
-                            km_para_servicio = kilometraje_checklist if kilometraje_checklist else vehiculo.kilometraje
+            item_template = respuesta.item_template
+            componente_maestro = getattr(item_template, 'componente_salud_asociado', None)
+            if componente_maestro is None:
+                continue
+            tipo_actualizacion = item_template.tipo_actualizacion_efectivo
+            if tipo_actualizacion == 'INFORMATIVO':
+                continue
+            respuestas_con_componente += 1
 
-                            comp_salud, created = ComponenteSaludVehiculo.objects.get_or_create(
-                                vehiculo=vehiculo,
-                                componente=config,
-                                defaults={
-                                    'km_ultimo_servicio': km_para_servicio,
-                                    'fecha_ultimo_servicio': checklist.fecha_finalizacion or timezone.now(),
-                                    'salud_porcentaje': 100.0,
-                                    'nivel_alerta': 'OPTIMO',
-                                    'historial_conocido': True,
-                                }
-                            )
+            try:
+                km_para_servicio = (
+                    kilometraje_checklist
+                    if kilometraje_checklist
+                    else vehiculo.kilometraje
+                )
+                fecha_servicio = checklist.fecha_finalizacion or timezone.now()
 
-                            # Capturar evento de aprendizaje ML: km/meses transcurridos
-                            # entre servicios reales por componente. Es el dato más
-                            # valioso para entrenar Random Forest.
-                            km_anterior = comp_salud.km_ultimo_servicio or 0
-                            fecha_anterior = comp_salud.fecha_ultimo_servicio
-                            km_delta = max(0, km_para_servicio - km_anterior)
-                            meses_delta = None
-                            if fecha_anterior:
-                                dias = (timezone.now() - fecha_anterior).days
-                                meses_delta = round(max(0, dias) / 30.44, 2)
+                comp_salud, created = ComponenteSaludVehiculo.objects.get_or_create(
+                    vehiculo=vehiculo,
+                    componente=componente_maestro,
+                    defaults={
+                        'km_ultimo_servicio': km_para_servicio,
+                        'fecha_ultimo_servicio': fecha_servicio,
+                        'salud_porcentaje': 100.0,
+                        'nivel_alerta': 'OPTIMO',
+                        'historial_conocido': True,
+                        'historial_fuente': 'CHECKLIST',
+                    },
+                )
 
-                            if km_delta > 0 or (created and km_para_servicio > 0):
-                                eventos_ml_a_crear.append(_construir_evento_ml(
-                                    vehiculo=vehiculo,
-                                    componente=config,
-                                    tipo_evento='SERVICIO_REALIZADO',
-                                    km_desde_servicio=km_delta,
-                                    meses_desde_servicio=meses_delta,
-                                    salud_porcentaje=comp_salud.salud_porcentaje,
-                                    vida_util_eta=comp_salud.vida_util_proyectada,
-                                    checklist_id=checklist_id,
-                                    orden_id=getattr(checklist, 'orden_id', None),
-                                ))
+                km_anterior = comp_salud.km_ultimo_servicio or 0
+                fecha_anterior = comp_salud.fecha_ultimo_servicio
+                km_delta = max(0, km_para_servicio - km_anterior)
+                meses_delta = None
+                if fecha_anterior:
+                    dias = (timezone.now() - fecha_anterior).days
+                    meses_delta = round(max(0, dias) / 30.44, 2)
 
-                            if not created:
-                                comp_salud.km_ultimo_servicio = km_para_servicio
-                                comp_salud.fecha_ultimo_servicio = checklist.fecha_finalizacion or timezone.now()
-                                comp_salud.salud_porcentaje = 100.0
-                                comp_salud.nivel_alerta = 'OPTIMO'
-                                comp_salud.requiere_servicio_inmediato = False
-                                comp_salud.mensaje_alerta = ''
-                            # Dato confirmado por checklist del proveedor → historial real
-                            comp_salud.historial_conocido = True
-                            componentes_para_actualizar[comp_salud.id] = comp_salud
-                    except Exception as e:
-                        logger.warning(f"Error actualizando componente {nombre_config}: {str(e)}")
+                if tipo_actualizacion == 'REEMPLAZA':
+                    comp_salud.km_ultimo_servicio = km_para_servicio
+                    comp_salud.fecha_ultimo_servicio = fecha_servicio
+                    comp_salud.salud_porcentaje = 100.0
+                    comp_salud.salud_anclada_pct = None
+                    comp_salud.nivel_alerta = 'OPTIMO'
+                    comp_salud.requiere_servicio_inmediato = False
+                    comp_salud.mensaje_alerta = ''
+                    comp_salud.historial_conocido = True
+                    comp_salud.historial_fuente = 'CHECKLIST'
 
-        # Persistir eventos ML capturados (dataset para scikit-learn)
+                    if km_delta > 0 or (created and km_para_servicio > 0):
+                        eventos_ml_a_crear.append(_construir_evento_ml(
+                            vehiculo=vehiculo,
+                            componente=componente_maestro,
+                            tipo_evento='SERVICIO_REALIZADO',
+                            km_desde_servicio=km_delta,
+                            meses_desde_servicio=meses_delta,
+                            salud_porcentaje=100.0,
+                            vida_util_eta=comp_salud.vida_util_proyectada,
+                            checklist_id=checklist_id,
+                            orden_id=getattr(checklist, 'orden_id', None),
+                        ))
+                    componentes_reemplazados.append(componente_maestro.nombre)
+                else:
+                    pct_declarado = _porcentaje_inspeccion_desde_respuesta(respuesta)
+                    if pct_declarado is None:
+                        inspecciones_descartadas.append(componente_maestro.nombre)
+                        continue
+
+                    comp_salud.km_ultimo_servicio = km_para_servicio
+                    comp_salud.fecha_ultimo_servicio = fecha_servicio
+                    comp_salud.salud_porcentaje = round(pct_declarado, 1)
+                    comp_salud.salud_anclada_pct = round(pct_declarado, 1)
+                    comp_salud.nivel_alerta = _nivel_alerta_desde_pct(pct_declarado)
+                    comp_salud.requiere_servicio_inmediato = (
+                        comp_salud.nivel_alerta in ('URGENTE', 'CRITICO')
+                    )
+                    comp_salud.mensaje_alerta = (
+                        f"Inspeccionado por taller en {fecha_servicio.strftime('%d/%m/%Y')}. "
+                        f"Vida útil declarada: {round(pct_declarado)}%."
+                    )
+                    comp_salud.historial_conocido = True
+                    comp_salud.historial_fuente = 'CHECKLIST'
+
+                    eventos_ml_a_crear.append(_construir_evento_ml(
+                        vehiculo=vehiculo,
+                        componente=componente_maestro,
+                        tipo_evento='INSPECCION_DECLARADA',
+                        km_desde_servicio=km_delta,
+                        meses_desde_servicio=meses_delta,
+                        salud_porcentaje=round(pct_declarado, 1),
+                        vida_util_eta=comp_salud.vida_util_proyectada,
+                        checklist_id=checklist_id,
+                        orden_id=getattr(checklist, 'orden_id', None),
+                    ))
+                    componentes_inspeccionados.append((componente_maestro.nombre, round(pct_declarado, 1)))
+
+                componentes_para_actualizar[comp_salud.id] = comp_salud
+            except Exception as e:
+                logger.warning(
+                    "Error actualizando componente %s desde checklist %s: %s",
+                    componente_maestro.nombre, checklist_id, e,
+                )
+
+        if inspecciones_descartadas:
+            logger.warning(
+                "Checklist %s: respuestas de inspección sin porcentaje interpretable "
+                "(no se actualiza salud) → %s",
+                checklist_id, inspecciones_descartadas,
+            )
+
+        # Persistir eventos ML capturados (dataset para scikit-learn).
+        # Mezcla SERVICIO_REALIZADO (REEMPLAZA) e INSPECCION_DECLARADA (INSPECCIONA).
         if eventos_ml_a_crear:
             try:
                 from .models_health import EventoSaludVehiculo
                 EventoSaludVehiculo.objects.bulk_create(eventos_ml_a_crear, ignore_conflicts=True)
                 logger.info(
-                    "%d eventos SERVICIO_REALIZADO capturados desde checklist %s",
+                    "%d eventos de salud capturados desde checklist %s",
                     len(eventos_ml_a_crear), checklist_id,
                 )
             except Exception as evt_err:
@@ -537,17 +643,28 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
         
         if not componentes_para_actualizar and respuestas_count > 0:
             logger.warning(
-                f"Checklist {checklist_id}: {respuestas_count} respuestas pero ningún ítem coincidió con el mapeo de salud. "
-                f"Revisar nombres de ítems del catálogo o ejecutar: python manage.py procesar_checklists_historicos"
+                "Checklist %s: %d respuestas pero ninguna actualizó salud. "
+                "Verifica que los ítems del template tengan componente_salud_asociado y "
+                "tipo_actualizacion. Si quedan templates sin migrar ejecuta: "
+                "python manage.py populate_checklists_por_servicio",
+                checklist_id, respuestas_count,
             )
-        
-        # ✅ OPTIMIZACIÓN: bulk_update
+
         if componentes_para_actualizar:
             ComponenteSaludVehiculo.objects.bulk_update(
                 list(componentes_para_actualizar.values()),
-                ['km_ultimo_servicio', 'fecha_ultimo_servicio',
-                 'salud_porcentaje', 'nivel_alerta', 'km_estimados_restantes',
-                 'requiere_servicio_inmediato', 'mensaje_alerta', 'historial_conocido']
+                [
+                    'km_ultimo_servicio',
+                    'fecha_ultimo_servicio',
+                    'salud_porcentaje',
+                    'salud_anclada_pct',
+                    'nivel_alerta',
+                    'km_estimados_restantes',
+                    'requiere_servicio_inmediato',
+                    'mensaje_alerta',
+                    'historial_conocido',
+                    'historial_fuente',
+                ],
             )
         
         # Invalidar predicciones de scikit-learn (los km_ultimo_servicio cambiaron)
@@ -595,13 +712,7 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
                     # Obtener información del vehículo para el mensaje
                     vehiculo_info = f"{vehiculo.marca} {vehiculo.modelo}" if vehiculo.marca else f"Vehículo {vehicle_id}"
                     
-                    # Contar componentes actualizados
-                    componentes_actualizados = sum(
-                        1 for respuesta in checklist.respuestas.all()
-                        for nombre_config, items_relacionados in mapeo_componentes.items()
-                        if any(item.lower() in (respuesta.item_template.catalog_item.nombre if respuesta.item_template.catalog_item else '').lower() 
-                               for item in items_relacionados)
-                    )
+                    componentes_actualizados = len(componentes_para_actualizar)
                     
                     # Enviar notificación WebSocket
                     async_to_sync(channel_layer.group_send)(
@@ -619,7 +730,22 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
                     logger.info(f"Notificación WebSocket enviada al usuario {usuario.id} para vehículo {vehicle_id}")
             except Exception as e:
                 logger.error(f"Error enviando notificación WebSocket: {e}", exc_info=True)
-        
+
+            # Push de inspección: solo cuando hubo declaraciones tipo INSPECCIONA.
+            # Se envía aparte del flujo de "salud actualizada" para poder usar un
+            # copy distinto y un deeplink directo al modal de detalle.
+            try:
+                if componentes_inspeccionados:
+                    enviar_push_inspeccion_taller(
+                        vehiculo=vehiculo,
+                        componentes_inspeccionados=componentes_inspeccionados,
+                        componentes_reemplazados=componentes_reemplazados,
+                    )
+            except Exception as push_err:
+                logger.warning(
+                    f"Error enviando push de inspección para vehículo {vehicle_id}: {push_err}"
+                )
+
         logger.info(f"Salud de vehículo {vehicle_id} actualizada desde checklist {checklist_id}")
         
     except Exception as e:
@@ -866,97 +992,93 @@ def _procesar_checklists_historicos_vehiculo_interno(vehicle_id):
                 'kilometraje_actualizado': False
             }
         
-        # Mapeo idéntico al de actualizar_salud_desde_checklist (misma lógica de coincidencia por nombre)
-        mapeo_componentes = {
-            'Aceite Motor': [
-                'Cambio de Aceite', 'Nivel de aceite', 'Aceite motor', 'Nivel Aceite', 'Nivel aceite', 'Aceite Motor',
-                'Aceite Motor Reemplazado', 'Nivel Aceite Antes', 'Nivel Aceite Después', 'Nivel de Fluidos',
-            ],
-            'Filtro de Aire': ['Filtro de Aire', 'Filtro aire', 'Filtro de Aire Reemplazado'],
-            'Filtro de Aceite': ['Filtro de Aceite', 'Filtro aceite', 'Filtro de Aceite Reemplazado'],
-            'Bujías': ['Bujías', 'Bujias', 'Cambio de bujías', 'Bujías Reemplazadas', 'Estado Cables Bujías'],
-            'Batería': ['Batería', 'Bateria', 'Cambio de batería', 'Batería Reemplazada', 'Estado de Batería'],
-            'Neumáticos': ['Neumáticos', 'Neumaticos', 'Llantas', 'Cambio de neumáticos', 'Estado de Neumáticos'],
-            'Pastillas de Freno': ['Pastillas de Freno', 'Pastillas freno', 'Estado Pastillas', 'Pastillas y Discos Reemplazados'],
-            'Discos de Freno': ['Discos de Freno', 'Discos freno', 'Estado Discos', 'Rectificado Realizado'],
-            'Amortiguadores': [
-                'Amortiguadores', 'Suspensión', 'Amortiguador Reemplazado', 'Estado Amortiguadores',
-            ],
-            'Correa de Distribución': [
-                'Correa de Distribución', 'Correa distribución', 'Correa Reemplazada', 'Correa Distribución Revisada',
-            ],
-            'Líquido de Frenos': [
-                'Líquido de Frenos', 'Liquido frenos', 'Líquido Frenos Reemplazado', 'Líquido Frenos Revisado', 'Estado de Frenos',
-            ],
-            'Refrigerante': [
-                'Refrigerante', 'Líquido refrigerante', 'Refrigerante Rellenado', 'Refrigerante Revisado',
-            ],
-        }
-        
+        # ──────────────────────────────────────────────────────────────────
+        # Refactor 2026: misma lógica que actualizar_salud_desde_checklist,
+        # pero recorriendo todos los checklists históricos en orden cronológico.
+        # El último ítem por componente gana (REEMPLAZA limpia ancla,
+        # INSPECCIONA setea ancla nueva).
+        # ──────────────────────────────────────────────────────────────────
         componentes_actualizados = 0
         kilometraje_maximo_encontrado = int(vehiculo.kilometraje or 0)
 
-        # Procesar cada checklist en orden cronológico
         for checklist in checklists_completados:
             kilometraje_checklist = extraer_kilometraje_desde_checklist_instance(checklist)
             if kilometraje_checklist is not None and kilometraje_checklist > kilometraje_maximo_encontrado:
                 kilometraje_maximo_encontrado = kilometraje_checklist
 
-            # Procesar componentes del checklist
             for respuesta in checklist.respuestas.all():
-                item_nombre = respuesta.item_template.catalog_item.nombre if respuesta.item_template.catalog_item else ''
-                
-                for nombre_config, items_relacionados in mapeo_componentes.items():
-                    if any(item.lower() in item_nombre.lower() for item in items_relacionados):
-                        try:
-                            # Buscar el config por su nombre exacto
-                            # Buscar el componente maestro por su nombre exacto
-                            componente_maestro = ComponenteSalud.objects.filter(
-                                nombre=nombre_config
-                            ).first()
-                            
-                            if componente_maestro:
-                                # Usar kilometraje del checklist si está disponible, sino el del vehículo
-                                km_para_servicio = kilometraje_checklist if kilometraje_checklist else vehiculo.kilometraje
-                                
-                                # Obtener o crear componente asociado a este vehículo
-                                comp_salud, created = ComponenteSaludVehiculo.objects.get_or_create(
-                                    vehiculo=vehiculo,
-                                    componente=componente_maestro,
-                                    defaults={
-                                        'km_ultimo_servicio': km_para_servicio,
-                                        'fecha_ultimo_servicio': checklist.fecha_finalizacion or timezone.now(),
-                                        'salud_porcentaje': 100,
-                                        'nivel_alerta': 'OPTIMO',
-                                        'historial_conocido': True,
-                                    }
-                                )
-                                
-                                # Si el componente ya existía, actualizar solo si este checklist es más reciente
-                                if not created:
-                                    # Verificar si este checklist es más reciente que el último servicio registrado
-                                    from datetime import datetime as dt
-                                    fecha_ultimo = comp_salud.fecha_ultimo_servicio or timezone.make_aware(dt.min)
-                                    fecha_checklist = checklist.fecha_finalizacion or timezone.now()
+                item_template = respuesta.item_template
+                componente_maestro = getattr(item_template, 'componente_salud_asociado', None)
+                if componente_maestro is None:
+                    continue
+                tipo_actualizacion = item_template.tipo_actualizacion_efectivo
+                if tipo_actualizacion == 'INFORMATIVO':
+                    continue
 
-                                    if fecha_checklist >= fecha_ultimo:
-                                        comp_salud.km_ultimo_servicio = km_para_servicio
-                                        comp_salud.fecha_ultimo_servicio = fecha_checklist
-                                        comp_salud.historial_conocido = True
-                                        # NO guardamos todavía, lo haremos en bulk al final del proceso cronológico o por vehículo
-                                        # NO calculamos salud individualmente aquí, delegamos al HealthEngine al final
-                                        # comp_salud.calcular_salud(commit=False) # DEPRECATED
-                                        comp_salud.save()  # Guardamos el km actualizado para que el Engine lo use
-                                        componentes_actualizados += 1
-                                        logger.info(
-                                            f"✅ Componente {nombre_config} preparado para actualización desde checklist histórico "
-                                            f"{checklist.id}"
-                                        )
-                                else:
-                                    comp_salud.save()
-                                    componentes_actualizados += 1
-                        except Exception as e:
-                            logger.warning(f"Error procesando componente {nombre_config} del checklist {checklist.id}: {str(e)}")
+                try:
+                    km_para_servicio = (
+                        kilometraje_checklist
+                        if kilometraje_checklist
+                        else vehiculo.kilometraje
+                    )
+                    fecha_servicio = checklist.fecha_finalizacion or timezone.now()
+
+                    comp_salud, created = ComponenteSaludVehiculo.objects.get_or_create(
+                        vehiculo=vehiculo,
+                        componente=componente_maestro,
+                        defaults={
+                            'km_ultimo_servicio': km_para_servicio,
+                            'fecha_ultimo_servicio': fecha_servicio,
+                            'salud_porcentaje': 100,
+                            'nivel_alerta': 'OPTIMO',
+                            'historial_conocido': True,
+                            'historial_fuente': 'CHECKLIST',
+                        },
+                    )
+
+                    if not created:
+                        from datetime import datetime as dt
+                        fecha_ultimo = (
+                            comp_salud.fecha_ultimo_servicio
+                            or timezone.make_aware(dt.min)
+                        )
+                        if fecha_servicio < fecha_ultimo:
+                            continue
+
+                    if tipo_actualizacion == 'REEMPLAZA':
+                        comp_salud.km_ultimo_servicio = km_para_servicio
+                        comp_salud.fecha_ultimo_servicio = fecha_servicio
+                        comp_salud.salud_porcentaje = 100.0
+                        comp_salud.salud_anclada_pct = None
+                        comp_salud.nivel_alerta = 'OPTIMO'
+                        comp_salud.requiere_servicio_inmediato = False
+                        comp_salud.mensaje_alerta = ''
+                    else:
+                        pct_declarado = _porcentaje_inspeccion_desde_respuesta(respuesta)
+                        if pct_declarado is None:
+                            continue
+                        comp_salud.km_ultimo_servicio = km_para_servicio
+                        comp_salud.fecha_ultimo_servicio = fecha_servicio
+                        comp_salud.salud_porcentaje = round(pct_declarado, 1)
+                        comp_salud.salud_anclada_pct = round(pct_declarado, 1)
+                        comp_salud.nivel_alerta = _nivel_alerta_desde_pct(pct_declarado)
+                        comp_salud.requiere_servicio_inmediato = (
+                            comp_salud.nivel_alerta in ('URGENTE', 'CRITICO')
+                        )
+                        comp_salud.mensaje_alerta = (
+                            f"Inspeccionado por taller en {fecha_servicio.strftime('%d/%m/%Y')}. "
+                            f"Vida útil declarada: {round(pct_declarado)}%."
+                        )
+
+                    comp_salud.historial_conocido = True
+                    comp_salud.historial_fuente = 'CHECKLIST'
+                    comp_salud.save()
+                    componentes_actualizados += 1
+                except Exception as e:
+                    logger.warning(
+                        "Error procesando componente %s del checklist histórico %s: %s",
+                        componente_maestro.nombre, checklist.id, e,
+                    )
         
         # Actualizar kilometraje del vehículo si se encontró uno mayor en los checklists
         kilometraje_actualizado = False
@@ -1124,6 +1246,89 @@ def enviar_alerta_salud_global_push(vehiculo, motivo_texto, es_critico=False):
         logger.info(f"📲 Alerta Push de salud GLOBAL enviada a usuario {user_id} para {nombre_vehiculo}")
     except Exception as e:
         logger.error(f"Error en enviar_alerta_salud_global_push: {e}")
+
+
+def enviar_push_inspeccion_taller(vehiculo, componentes_inspeccionados, componentes_reemplazados=None):
+    """
+    Notifica al cliente cuando un proveedor declaró una inspección sobre componentes
+    (refactor checklist inteligente). Distinta de `enviar_salud_actualizada_push` para
+    poder usar copy específico y deduplicación por checklist.
+
+    Args:
+        vehiculo: instancia de Vehiculo.
+        componentes_inspeccionados: lista de tuplas (nombre, pct_declarado).
+        componentes_reemplazados: lista opcional de nombres de componentes reemplazados.
+    """
+    try:
+        if not componentes_inspeccionados:
+            return
+        if not (vehiculo.cliente and vehiculo.cliente.usuario):
+            return
+
+        user_id = vehiculo.cliente.usuario.id
+        nombre_vehiculo = (
+            f"{vehiculo.marca} {vehiculo.modelo}"
+            if vehiculo.marca
+            else f"Vehículo {vehiculo.patente or ''}"
+        )
+
+        # Resumen compacto: máximo 2 componentes en el body para Expo (límite ~178 chars).
+        partes = [f"{nombre} ({int(round(pct))}%)" for nombre, pct in componentes_inspeccionados[:2]]
+        resumen = ', '.join(partes)
+        extras = len(componentes_inspeccionados) - len(partes)
+        if extras > 0:
+            resumen += f" y {extras} más"
+
+        title = f"Tu {nombre_vehiculo} fue inspeccionado"
+        body = (
+            f"El taller declaró el estado actual de: {resumen}. "
+            f"Revisa el detalle desde la salud de tu vehículo."
+        )
+
+        from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
+
+        send_expo_push_notification.delay(
+            user_id,
+            title,
+            body,
+            {
+                "type": "inspeccion_taller",
+                "vehicle_id": str(vehiculo.id),
+                "componentes_inspeccionados": [
+                    {"nombre": n, "salud_declarada": float(p)}
+                    for n, p in componentes_inspeccionados
+                ],
+                "componentes_reemplazados": list(componentes_reemplazados or []),
+            },
+        )
+
+        from mecanimovilapp.apps.usuarios.models import Notificacion
+
+        Notificacion.crear_unica(
+            usuario=vehiculo.cliente.usuario,
+            tipo='inspeccion_taller',
+            titulo=title,
+            mensaje=body,
+            data={
+                "vehicle_id": str(vehiculo.id),
+                "componentes": [
+                    {"nombre": n, "salud_declarada": float(p)}
+                    for n, p in componentes_inspeccionados
+                ],
+            },
+            ventana_horas=4,
+            dedup_key={
+                "vehicle_id": str(vehiculo.id),
+                "tipo": 'inspeccion_taller',
+            },
+        )
+
+        logger.info(
+            f"📲 Push de inspección enviado a usuario {user_id} para vehículo {vehiculo.id} "
+            f"({len(componentes_inspeccionados)} componentes inspeccionados)"
+        )
+    except Exception as e:
+        logger.error(f"Error en enviar_push_inspeccion_taller: {e}", exc_info=True)
 
 
 def enviar_salud_actualizada_push(vehiculo, salud_global):

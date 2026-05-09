@@ -635,6 +635,188 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+    @action(detail=True, methods=['get'], url_path='salud-snapshot')
+    def salud_snapshot(self, request, pk=None):
+        """
+        Devuelve, por cada ítem del template con `componente_salud_asociado`,
+        la salud actual del componente para el vehículo de la orden. Permite
+        al frontend del proveedor mostrar el estado actual sobre cada ítem
+        antes de que el técnico lo modifique.
+        """
+        instance = self.get_object()
+        vehiculo = getattr(instance.orden, 'vehiculo', None)
+        if vehiculo is None:
+            return Response(
+                {'error': 'La orden no tiene vehículo asociado'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from mecanimovilapp.apps.vehiculos.models_health import (
+            ComponenteSaludVehiculo,
+        )
+
+        items = list(
+            instance.checklist_template.items.select_related(
+                'componente_salud_asociado',
+                'catalog_item',
+            ).filter(componente_salud_asociado__isnull=False)
+        )
+        componente_ids = {it.componente_salud_asociado_id for it in items}
+        estados_map = {
+            c.componente_id: c
+            for c in ComponenteSaludVehiculo.objects.select_related('componente').filter(
+                vehiculo=vehiculo, componente_id__in=componente_ids,
+            )
+        }
+
+        items_payload = []
+        for it in items:
+            componente = it.componente_salud_asociado
+            estado = estados_map.get(componente.id)
+            items_payload.append({
+                'item_template_id': it.id,
+                'orden_visual': it.orden_visual,
+                'tipo_actualizacion': it.tipo_actualizacion_efectivo,
+                'componente': {
+                    'id': componente.id,
+                    'nombre': componente.nombre,
+                    'slug': componente.slug,
+                    'icono': componente.icono,
+                },
+                'salud_actual': (
+                    round(estado.salud_porcentaje, 1) if estado else None
+                ),
+                'nivel_alerta_actual': estado.nivel_alerta if estado else None,
+                'fuente_actual': estado.historial_fuente if estado else None,
+                'salud_anclada_pct': estado.salud_anclada_pct if estado else None,
+                'fecha_ultimo_servicio': (
+                    estado.fecha_ultimo_servicio.isoformat()
+                    if estado and estado.fecha_ultimo_servicio else None
+                ),
+                'km_ultimo_servicio': estado.km_ultimo_servicio if estado else None,
+            })
+
+        return Response({
+            'vehiculo_id': vehiculo.id,
+            'kilometraje_actual': int(getattr(vehiculo, 'kilometraje', 0) or 0),
+            'tipo_intencion_default': instance.checklist_template.tipo_intencion_default,
+            'items': items_payload,
+        })
+
+    @action(detail=True, methods=['post'], url_path='preview-impacto')
+    def preview_impacto(self, request, pk=None):
+        """
+        Calcula sin persistir el diff entre la salud actual y la proyectada
+        por las respuestas guardadas hasta el momento. Se usa antes de
+        finalizar el checklist para mostrarle al técnico el impacto.
+        """
+        from mecanimovilapp.apps.vehiculos.tasks import (
+            _porcentaje_inspeccion_desde_respuesta,
+            _nivel_alerta_desde_pct,
+        )
+        from mecanimovilapp.apps.vehiculos.models_health import (
+            ComponenteSaludVehiculo,
+            EstadoSaludVehiculo,
+        )
+
+        instance = self.get_object()
+        vehiculo = getattr(instance.orden, 'vehiculo', None)
+        if vehiculo is None:
+            return Response(
+                {'error': 'La orden no tiene vehículo asociado'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        respuestas = instance.respuestas.select_related(
+            'item_template__componente_salud_asociado',
+            'item_template__catalog_item',
+            'item_template__checklist_template',
+        ).all()
+
+        componente_ids = set()
+        for r in respuestas:
+            comp = getattr(r.item_template, 'componente_salud_asociado', None)
+            if comp is not None:
+                componente_ids.add(comp.id)
+
+        estados_map = {
+            c.componente_id: c
+            for c in ComponenteSaludVehiculo.objects.select_related('componente').filter(
+                vehiculo=vehiculo, componente_id__in=componente_ids,
+            )
+        }
+        # Snapshot global existente para "antes"
+        estado_general = EstadoSaludVehiculo.objects.filter(vehiculo=vehiculo).first()
+        salud_general_actual = (
+            round(estado_general.salud_general_porcentaje, 1)
+            if estado_general else None
+        )
+
+        diff = []
+        ya_visto = set()
+        for r in respuestas:
+            item_template = r.item_template
+            componente = getattr(item_template, 'componente_salud_asociado', None)
+            if componente is None:
+                continue
+            tipo_act = item_template.tipo_actualizacion_efectivo
+            if tipo_act == 'INFORMATIVO':
+                continue
+            if componente.id in ya_visto:
+                continue
+            ya_visto.add(componente.id)
+
+            estado = estados_map.get(componente.id)
+            salud_actual = (
+                round(estado.salud_porcentaje, 1) if estado else None
+            )
+
+            if tipo_act == 'REEMPLAZA':
+                salud_nueva = 100.0
+                nivel_nuevo = 'OPTIMO'
+            else:
+                pct = _porcentaje_inspeccion_desde_respuesta(r)
+                if pct is None:
+                    continue
+                salud_nueva = round(pct, 1)
+                nivel_nuevo = _nivel_alerta_desde_pct(pct)
+
+            delta = round(salud_nueva - (salud_actual or 0.0), 1)
+            diff.append({
+                'componente': {
+                    'id': componente.id,
+                    'nombre': componente.nombre,
+                    'slug': componente.slug,
+                },
+                'tipo_actualizacion': tipo_act,
+                'salud_actual': salud_actual,
+                'salud_nueva': salud_nueva,
+                'nivel_alerta_actual': estado.nivel_alerta if estado else None,
+                'nivel_alerta_nuevo': nivel_nuevo,
+                'delta': delta,
+            })
+
+        # Estimación grosera de salud_general nueva: promedio simple sobre los
+        # componentes evaluados aquí + los componentes existentes no tocados.
+        salud_general_estimada = None
+        if estado_general and estado_general.total_componentes_evaluados > 0:
+            tocados = {d['componente']['id']: d['salud_nueva'] for d in diff}
+            salud_existentes = ComponenteSaludVehiculo.objects.filter(
+                vehiculo=vehiculo,
+            ).exclude(componente_id__in=tocados.keys()).values_list(
+                'salud_porcentaje', flat=True,
+            )
+            valores = list(tocados.values()) + [float(s) for s in salud_existentes]
+            if valores:
+                salud_general_estimada = round(sum(valores) / len(valores), 1)
+
+        return Response({
+            'vehiculo_id': vehiculo.id,
+            'salud_general_actual': salud_general_actual,
+            'salud_general_estimada': salud_general_estimada,
+            'diff': diff,
+        })
+
 
 class ChecklistResponseViewSet(viewsets.ModelViewSet):
     """ViewSet para respuestas de checklist"""

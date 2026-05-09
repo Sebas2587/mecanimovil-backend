@@ -201,6 +201,21 @@ class ComponenteSaludVehiculo(models.Model):
         default='ENGINE',
         help_text='Origen del último dato de km/fecha de servicio.',
     )
+
+    # Ancla de la curva Weibull cuando un técnico declara un porcentaje de
+    # vida útil restante durante una INSPECCIÓN. Persistir el valor permite
+    # al HealthEngine recalcular en cada nuevo km usando este punto como
+    # origen de la curva (en lugar de km_ultimo_servicio).
+    salud_anclada_pct = models.FloatField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+        help_text=(
+            'Porcentaje de vida útil declarado en la última inspección de checklist. '
+            'Si no es null, el HealthEngine ancla la curva Weibull en este punto. '
+            'Se limpia (None) cuando el componente se reemplaza.'
+        ),
+    )
     
     # Predicciones
     km_estimados_restantes = models.PositiveIntegerField(default=0)
@@ -264,12 +279,13 @@ class EventoSaludVehiculo(models.Model):
       - Captura snapshot de variables al momento del evento (evita drift de marca/modelo).
     """
     TIPO_EVENTO_CHOICES = [
-        ('SERVICIO_REALIZADO', 'Servicio realizado (checklist completado)'),
-        ('FALLA_REPORTADA',    'Componente reportó falla / 0 % salud'),
-        ('NIVEL_CRITICO',      'Componente alcanzó nivel CRÍTICO'),
-        ('VIAJE_KM',           'Acumulación de km por viaje GPS'),
-        ('CHECKLIST_KM',       'Lectura de odómetro desde checklist'),
-        ('REGISTRO_INICIAL',   'Vehículo registrado con historial inicial'),
+        ('SERVICIO_REALIZADO',   'Servicio realizado (checklist completado)'),
+        ('INSPECCION_DECLARADA', 'Inspección con porcentaje declarado por técnico'),
+        ('FALLA_REPORTADA',      'Componente reportó falla / 0 % salud'),
+        ('NIVEL_CRITICO',        'Componente alcanzó nivel CRÍTICO'),
+        ('VIAJE_KM',             'Acumulación de km por viaje GPS'),
+        ('CHECKLIST_KM',         'Lectura de odómetro desde checklist'),
+        ('REGISTRO_INICIAL',     'Vehículo registrado con historial inicial'),
     ]
 
     vehiculo = models.ForeignKey(

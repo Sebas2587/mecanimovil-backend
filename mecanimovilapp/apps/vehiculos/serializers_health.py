@@ -63,6 +63,7 @@ class ComponenteSaludVehiculoSerializer(serializers.ModelSerializer):
             'requiere_servicio_inmediato', 'mensaje_alerta', 'nombre', 'icono',
             'historial_conocido', 'historial_fuente', 'historial_fuente_display',
             'confianza_historial', 'ultima_actualizacion', 'servicios_asociados',
+            'salud_anclada_pct',
         )
 
     def get_servicios_asociados(self, obj):

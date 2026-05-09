@@ -20,9 +20,13 @@ logger = logging.getLogger(__name__)
 # Esto impide que un vendedor infle artificialmente las métricas de su vehículo.
 #
 # Escala de confianza → salud máxima permitida:
-#   CHECKLIST / REGISTRO_INICIAL → sin cap (dato confirmado)
+#   CHECKLIST / REGISTRO_INICIAL → sin cap (dato confirmado por taller / al registrar)
 #   USUARIO_DECLARADO            → máx 65 % (ATENCIÓN, nunca ÓPTIMO)
 #   ENGINE                       → sin cap adicional (ya es estimación, no puede "fingir")
+#
+# Nota: cuando un técnico declara un porcentaje en una inspección, se persiste
+# en ComponenteSaludVehiculo.salud_anclada_pct y se usa como origen de la curva
+# Weibull (ver bloque "ancla" más abajo). La fuente queda en CHECKLIST.
 SALUD_MAX_POR_FUENTE = {
     'USUARIO_DECLARADO': 65.0,
 }
@@ -235,6 +239,29 @@ class HealthEngine:
             beta = float(regla_aplicada.beta)
             km_recorridos_real = max(0, vehiculo.kilometraje - comp_estado.km_ultimo_servicio)
 
+            # ── Ancla Weibull desde inspección de checklist ─────────────────
+            # Si un técnico declaró un porcentaje de vida útil durante una
+            # inspección (tipo_actualizacion='INSPECCIONA'), usamos ese punto
+            # como origen de la curva. Inferimos los km efectivamente consumidos:
+            #   km_consumido = eta * (1 - salud_declarada / 100)
+            # y los sumamos a los km que el vehículo recorre desde la inspección.
+            # Esto desplaza el origen de la curva sin perder el ancla en futuros
+            # recálculos cuando el vehículo siga acumulando kilometraje.
+            ancla_pct = getattr(comp_estado, 'salud_anclada_pct', None)
+            historial_fuente_pre = getattr(comp_estado, 'historial_fuente', 'ENGINE')
+            usa_ancla = (
+                ancla_pct is not None
+                and historial_fuente_pre == 'CHECKLIST'
+                and eta > 0
+            )
+            if usa_ancla:
+                km_consumido_inferido = eta * max(0.0, min(1.0, 1 - (ancla_pct / 100.0)))
+                km_desde_inspeccion = max(
+                    0,
+                    vehiculo.kilometraje - comp_estado.km_ultimo_servicio,
+                )
+                km_recorridos_real = int(km_consumido_inferido + km_desde_inspeccion)
+
             # ── Modo historial desconocido ──────────────────────────────────
             # Estimación inteligente: si el vehículo no tiene historial conocido,
             # usamos km_total % eta para saber en qué fracción del ciclo actual está
@@ -245,6 +272,7 @@ class HealthEngine:
                 and comp_estado.km_ultimo_servicio == 0
                 and km_recorridos_real > eta
                 and eta > 0
+                and not usa_ancla
             )
             ciclos_consumidos_est = 0
 
