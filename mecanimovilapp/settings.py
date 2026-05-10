@@ -237,8 +237,13 @@ if os.path.exists(_static_dir):
 else:
     STATICFILES_DIRS = []
 
-# Configuración de WhiteNoise para archivos estáticos en producción
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+# STORAGES global: whitenoise para archivos estáticos.
+# El backend de archivos de media se sobreescribe más abajo según el provider
+# configurado (R2, S3, cPanel). NUNCA definir STATICFILES_STORAGE junto a esto.
+STORAGES = {
+    'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
+    'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage'},
+}
 
 STATICFILES_FINDERS = [
     'django.contrib.staticfiles.finders.FileSystemFinder',
@@ -332,10 +337,7 @@ if not DEBUG:
         #   R2_PUBLIC_URL         - Solo si activas R2.dev subdomain o dominio custom
         #                            (no recomendado por seguridad)
         #   R2_URL_EXPIRE_SECONDS - Tiempo de validez de URLs firmadas (default: 604800 = 7 días)
-        STORAGES = {
-            'default': {'BACKEND': 'storages.backends.s3boto3.S3Boto3Storage'},
-            'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage'},
-        }
+        STORAGES['default'] = {'BACKEND': 'storages.backends.s3boto3.S3Boto3Storage'}
 
         AWS_ACCESS_KEY_ID = r2_access_key
         AWS_SECRET_ACCESS_KEY = r2_secret_key
@@ -381,10 +383,7 @@ if not DEBUG:
         # ============================================
         # AWS S3
         # ============================================
-        STORAGES = {
-            'default': {'BACKEND': 'storages.backends.s3boto3.S3Boto3Storage'},
-            'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage'},
-        }
+        STORAGES['default'] = {'BACKEND': 'storages.backends.s3boto3.S3Boto3Storage'}
         AWS_ACCESS_KEY_ID = aws_key
         AWS_SECRET_ACCESS_KEY = aws_secret
         AWS_STORAGE_BUCKET_NAME = aws_bucket
@@ -399,10 +398,7 @@ if not DEBUG:
         # ============================================
         # cPanel (FTP) - LEGACY
         # ============================================
-        STORAGES = {
-            'default': {'BACKEND': 'mecanimovilapp.storage.cpanel_storage.CPanelStorage'},
-            'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage'},
-        }
+        STORAGES['default'] = {'BACKEND': 'mecanimovilapp.storage.cpanel_storage.CPanelStorage'}
         CPANEL_FTP_HOST = cpanel_ftp_host
         CPANEL_FTP_PORT = cpanel_ftp_port
         CPANEL_FTP_USER = cpanel_ftp_user
