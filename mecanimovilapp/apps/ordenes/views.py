@@ -5860,6 +5860,7 @@ class ChatSolicitudViewSet(viewsets.ModelViewSet):
         
         # 🔄 BACKWARDS COMPATIBILITY: Also save to Message table
         # This ensures apps using the new API can see messages sent via old API
+        conversation = None
         try:
             from mecanimovilapp.apps.chat.models import Conversation, Message
             from mecanimovilapp.apps.ordenes.models import SolicitudServicioPublica
@@ -5870,10 +5871,13 @@ class ChatSolicitudViewSet(viewsets.ModelViewSet):
             # Both APIs must create/find the SAME conversation
             solicitud = oferta.solicitud
             solicitud_content_type = ContentType.objects.get_for_model(SolicitudServicioPublica)
+            # Misma clave que /chat/conversations/get_or_create/ (type SERVICE en mayúsculas).
+            # Antes: solo (content_type, object_id) + defaults type 'service' → conversación distinta
+            # o tipo inválido; el cliente abría otro hilo y no veía mensajes del proveedor.
             conversation, created = Conversation.objects.get_or_create(
                 content_type=solicitud_content_type,
-                object_id=str(solicitud.id),  # Use solicitud, not oferta
-                defaults={'type': 'service'}
+                object_id=str(solicitud.id),
+                type='SERVICE',
             )
             
             # Add participants if new conversation
@@ -5910,6 +5914,7 @@ class ChatSolicitudViewSet(viewsets.ModelViewSet):
             # Preparar payload con todos los campos necesarios
             payload = {
                 'type': 'nuevo_mensaje_chat',
+                'conversation_id': str(conversation.id) if conversation else None,
                 'mensaje_id': str(mensaje.id),
                 'oferta_id': str(oferta.id),
                 'solicitud_id': str(oferta.solicitud.id),

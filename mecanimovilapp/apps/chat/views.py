@@ -238,6 +238,7 @@ class ConversationViewSet(viewsets.ReadOnlyModelViewSet):
         # Prepare payload for Global Consumers (nuevo_mensaje_chat)
         payload = {
             'type': 'nuevo_mensaje_chat',
+            'conversation_id': str(conversation.id),
             'mensaje_id': str(message.id),
             'oferta_id': str(oferta_id) if oferta_id else None,
             'solicitud_id': str(solicitud_id) if solicitud_id else None,

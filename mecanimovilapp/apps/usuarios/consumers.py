@@ -264,13 +264,17 @@ class ConnectionConsumer(AsyncWebsocketConsumer):
         """
         await self.send(text_data=json.dumps({
             'type': 'nuevo_mensaje_chat',
+            'conversation_id': event.get('conversation_id'),
             'mensaje_id': event['mensaje_id'],
             'oferta_id': event['oferta_id'],
             'solicitud_id': event['solicitud_id'],
             'enviado_por': event['enviado_por'],
             'mensaje': event['mensaje'],
+            'content': event.get('content', event.get('mensaje')),
+            'message': event.get('message', event.get('mensaje')),
             'es_proveedor': event['es_proveedor'],
-            'timestamp': timezone.now().isoformat()
+            'sender_id': event.get('sender_id'),
+            'timestamp': event.get('timestamp') or timezone.now().isoformat(),
         }))
     
     async def servicio_iniciado(self, event):
@@ -874,13 +878,17 @@ class MechanicStatusConsumer(AsyncWebsocketConsumer):
         """
         await self.send(text_data=json.dumps({
             'type': 'nuevo_mensaje_chat',
+            'conversation_id': event.get('conversation_id'),
             'mensaje_id': event['mensaje_id'],
             'oferta_id': event['oferta_id'],
             'solicitud_id': event['solicitud_id'],
             'enviado_por': event['enviado_por'],
             'mensaje': event['mensaje'],
+            'content': event.get('content', event.get('mensaje')),
+            'message': event.get('message', event.get('mensaje')),
             'es_proveedor': event['es_proveedor'],
-            'timestamp': timezone.now().isoformat()
+            'sender_id': event.get('sender_id'),
+            'timestamp': event.get('timestamp') or timezone.now().isoformat(),
         }))
     
     async def servicio_iniciado(self, event):
@@ -1277,13 +1285,17 @@ class ClientStatusConsumer(AsyncWebsocketConsumer):
         """
         await self.send(text_data=json.dumps({
             'type': 'nuevo_mensaje_chat',
+            'conversation_id': event.get('conversation_id'),
             'mensaje_id': event['mensaje_id'],
             'oferta_id': event['oferta_id'],
             'solicitud_id': event['solicitud_id'],
             'enviado_por': event['enviado_por'],
             'mensaje': event['mensaje'],
+            'content': event.get('content', event.get('mensaje')),
+            'message': event.get('message', event.get('mensaje')),
             'es_proveedor': event['es_proveedor'],
-            'timestamp': timezone.now().isoformat()
+            'sender_id': event.get('sender_id'),
+            'timestamp': event.get('timestamp') or timezone.now().isoformat(),
         }))
 
     async def servicio_completado(self, event):
