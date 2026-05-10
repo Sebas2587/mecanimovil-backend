@@ -244,6 +244,19 @@ class ConnectionConsumer(AsyncWebsocketConsumer):
             'solicitud_id': event['solicitud_id'],
             'timestamp': timezone.now().isoformat()
         }))
+
+    async def solicitud_cancelada_cliente(self, event):
+        """
+        Cliente canceló la solicitud pública antes de adjudicar; el proveedor tenía oferta pendiente.
+        """
+        await self.send(text_data=json.dumps({
+            'type': 'solicitud_cancelada_cliente',
+            'solicitud_id': event['solicitud_id'],
+            'oferta_id': event.get('oferta_id', ''),
+            'mensaje': event.get('mensaje', 'El cliente canceló la solicitud.'),
+            'creditos_devueltos': event.get('creditos_devueltos', False),
+            'timestamp': timezone.now().isoformat(),
+        }))
     
     async def nuevo_mensaje_chat(self, event):
         """
@@ -840,6 +853,19 @@ class MechanicStatusConsumer(AsyncWebsocketConsumer):
             'type': 'solicitud_cancelada',
             'solicitud_id': event['solicitud_id'],
             'timestamp': timezone.now().isoformat()
+        }))
+
+    async def solicitud_cancelada_cliente(self, event):
+        """
+        Cliente canceló la solicitud pública antes de adjudicar; el proveedor tenía oferta pendiente.
+        """
+        await self.send(text_data=json.dumps({
+            'type': 'solicitud_cancelada_cliente',
+            'solicitud_id': event['solicitud_id'],
+            'oferta_id': event.get('oferta_id', ''),
+            'mensaje': event.get('mensaje', 'El cliente canceló la solicitud.'),
+            'creditos_devueltos': event.get('creditos_devueltos', False),
+            'timestamp': timezone.now().isoformat(),
         }))
     
     async def nuevo_mensaje_chat(self, event):

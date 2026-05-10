@@ -102,7 +102,14 @@ def send_expo_push_notification(self, user_id, title, body, data=None):
             channel_id = 'viajes'
         elif notif_type == 'chat_message':
             channel_id = 'chat'
-        elif notif_type in ('recordatorio_pago', 'cambio_estado', 'nueva_oferta', 'solicitud_adjudicada', 'new_offer'):
+        elif notif_type in (
+            'recordatorio_pago',
+            'cambio_estado',
+            'nueva_oferta',
+            'solicitud_adjudicada',
+            'new_offer',
+            'solicitud_cancelada_cliente',
+        ):
             channel_id = 'servicios'
         elif notif_type in ('suscripcion_por_vencer', 'suscripcion_vencida', 'suscripcion_pago_fallido', 'creditos_agotados'):
             channel_id = 'suscripciones'

@@ -4886,6 +4886,14 @@ class ReviewViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = ReviewSerializer
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
+
+    def get_permissions(self):
+        """Listado y estadísticas públicas; crear reseña requiere cliente autenticado."""
+        if self.action in ('list', 'stats'):
+            return [permissions.AllowAny()]
+        if self.action == 'create':
+            return [permissions.IsAuthenticated()]
+        return super().get_permissions()
     filterset_fields = ['rating']
     ordering_fields = ['created_at', 'rating']
     ordering = ['-created_at']

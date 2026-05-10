@@ -4070,13 +4070,13 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
     
     def destroy(self, request, *args, **kwargs):
         """
-        Cancela una solicitud (soft delete)
-        Permite cancelar solicitudes adjudicadas (no pagadas).
-        
-        ✅ POLÍTICA DE CRÉDITOS:
-        - Los créditos NO se devuelven cuando se cancela una solicitud adjudicada
-        - Una vez que la oferta es adjudicada, los créditos se consumen permanentemente
-        - Esto previene gaming y es más justo para el proveedor
+        Cancela una solicitud pública (cliente).
+
+        Solo permitido si aún no hay oferta elegida por el cliente (sin adjudicación)
+        y el estado es previo al flujo de pago: creada, seleccionando servicios,
+        publicada o con ofertas pendientes de aceptar.
+
+        Notifica por WebSocket y push a los proveedores que tenían ofertas enviadas/vistas/en chat.
         """
         solicitud = self.get_object()
         
@@ -4085,62 +4085,85 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
                 {'error': 'No tienes permiso para esta acción'},
                 status=status.HTTP_403_FORBIDDEN
             )
-        
-        # ✅ POLÍTICA: No permitir cancelar solicitudes adjudicadas manualmente
-        # Las solicitudes adjudicadas solo se cancelan automáticamente por expiración de pago
-        # Esto previene gaming y es más justo para el proveedor
-        if solicitud.estado == 'adjudicada':
+
+        estados_permite_cancelar_cliente = frozenset({
+            'creada', 'seleccionando_servicios', 'publicada', 'con_ofertas',
+        })
+        if solicitud.estado not in estados_permite_cancelar_cliente:
             return Response(
                 {
-                    'error': 'No se puede cancelar una solicitud adjudicada manualmente. '
-                             'La solicitud se cancelará automáticamente si no se paga antes de la fecha límite. '
-                             'Los créditos del proveedor ya fueron consumidos y no se devuelven.'
+                    'error': 'No se puede cancelar esta solicitud en su estado actual. '
+                             'Si ya elegiste una oferta o estás en pago, usa las opciones de la solicitud o espera la expiración.',
                 },
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_400_BAD_REQUEST,
             )
-        
-        # No permitir cancelar si ya está pagada o completada
-        if solicitud.estado in ['pagada', 'completada', 'en_ejecucion']:
+        if solicitud.oferta_seleccionada_id is not None:
             return Response(
-                {'error': f'No se puede cancelar una solicitud en estado: {solicitud.estado}'},
-                status=status.HTTP_400_BAD_REQUEST
+                {
+                    'error': 'No puedes cancelar: ya hay una oferta elegida. '
+                             'Si necesitas ayuda, contacta soporte.',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
             )
         
         with transaction.atomic():
-            # ✅ Cancelar solicitud (solo para estados no adjudicados)
-            # Las solicitudes adjudicadas se bloquean arriba
-            
-            # Cambiar estado a cancelada
-            solicitud.estado = 'cancelada'
-            solicitud.save()
-            
-            # Rechazar todas las ofertas pendientes de esta solicitud
-            OfertaProveedor.objects.filter(
+            # Snapshot de proveedores a notificar ANTES de marcar ofertas como rechazadas
+            pending_offers_qs = OfertaProveedor.objects.filter(
                 solicitud=solicitud,
-                estado__in=['enviada', 'vista', 'en_chat']
-            ).update(
-                estado='rechazada',
-                fecha_respuesta_cliente=timezone.now()
+                estado__in=['enviada', 'vista', 'en_chat'],
             )
-            
-            # Notificar a proveedores
+            proveedor_ids_a_notificar = list(
+                pending_offers_qs.values_list('proveedor_id', flat=True).distinct()
+            )
+            oferta_por_proveedor = dict(
+                pending_offers_qs.values_list('proveedor_id', 'id')
+            )
+
+            solicitud.estado = 'cancelada'
+            solicitud.save(update_fields=['estado'])
+
+            updated = pending_offers_qs.update(
+                estado='rechazada',
+                fecha_respuesta_cliente=timezone.now(),
+            )
+            logger.info(
+                'Solicitud pública %s cancelada por cliente; %s oferta(s) marcadas rechazada',
+                solicitud.id,
+                updated,
+            )
+
             try:
                 channel_layer = get_channel_layer()
-                # Notificar sobre todas las ofertas afectadas
-                ofertas_afectadas = solicitud.ofertas.filter(
-                    estado__in=['enviada', 'vista', 'en_chat', 'aceptada']
-                )
-                for oferta_notif in ofertas_afectadas:
+                for prov_id in proveedor_ids_a_notificar:
+                    oid = oferta_por_proveedor.get(prov_id)
                     async_to_sync(channel_layer.group_send)(
-                        f"proveedor_{oferta_notif.proveedor.id}",
+                        f"proveedor_{prov_id}",
                         {
-                            'type': 'solicitud_cancelada',
+                            'type': 'solicitud_cancelada_cliente',
                             'solicitud_id': str(solicitud.id),
-                            'oferta_id': str(oferta_notif.id)
-                        }
+                            'oferta_id': str(oid) if oid else '',
+                            'mensaje': 'El cliente canceló la solicitud. Ya no requiere tu oferta.',
+                            'creditos_devueltos': False,
+                        },
                     )
+                    try:
+                        send_expo_push_notification.delay(
+                            prov_id,
+                            'Solicitud cancelada',
+                            'El cliente canceló la solicitud. Ya no requiere tu oferta.',
+                            {
+                                'type': 'solicitud_cancelada_cliente',
+                                'solicitud_id': str(solicitud.id),
+                            },
+                        )
+                    except Exception as push_exc:
+                        logger.error(
+                            'Error encolando push solicitud_cancelada_cliente a usuario %s: %s',
+                            prov_id,
+                            push_exc,
+                        )
             except Exception as e:
-                logger.error(f"Error enviando notificación WebSocket: {e}")
+                logger.error(f"Error enviando notificaciones cancelación solicitud pública: {e}")
         
         return Response({'message': 'Solicitud cancelada exitosamente'}, status=status.HTTP_204_NO_CONTENT)
     
