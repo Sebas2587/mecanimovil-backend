@@ -27,37 +27,40 @@ def get_cpanel_file_url(file_field, request=None):
     """
     if not file_field:
         return None
-    
+
     try:
-        # Obtener configuración de cPanel
         cpanel_media_url = getattr(settings, 'CPANEL_MEDIA_URL', '')
-        storage_type = getattr(settings, 'STORAGE_TYPE', 'local')
-        
-        # Intentar obtener la URL del storage
+        media_url = getattr(settings, 'MEDIA_URL', '/media/') or '/media/'
+
         try:
             file_url = file_field.url
         except Exception:
-            # Si no se puede obtener URL, retornar None
             return None
-        
-        # Si la URL ya es completa (http/https), devolverla directamente
-        if file_url and (file_url.startswith('http://') or file_url.startswith('https://')):
+
+        if not file_url:
+            return None
+
+        # Si la URL ya es absoluta (http/https), devolverla tal cual.
+        # Esto cubre R2, S3 y cPanel correctamente configurado.
+        if file_url.startswith('http://') or file_url.startswith('https://'):
             return file_url
-        
-        # Si la URL es relativa (/media/...) y tenemos cPanel configurado
-        if file_url and file_url.startswith('/media/') and cpanel_media_url:
-            # Construir URL de cPanel
-            relative_path = file_url.replace('/media/', '')
-            full_url = f"{cpanel_media_url.rstrip('/')}/{relative_path}"
-            return full_url
-        
+
+        # Fallback legacy para cPanel cuando file_url viene como /media/...
+        if file_url.startswith('/media/') and cpanel_media_url:
+            relative_path = file_url.replace('/media/', '', 1)
+            return f"{cpanel_media_url.rstrip('/')}/{relative_path}"
+
+        # Si tenemos un MEDIA_URL absoluto configurado, construir desde ahí
+        if file_url.startswith('/media/') and media_url.startswith(('http://', 'https://')):
+            relative_path = file_url.replace('/media/', '', 1)
+            return f"{media_url.rstrip('/')}/{relative_path}"
+
         # Si tenemos request, construir URL absoluta
-        if request and file_url:
+        if request:
             return request.build_absolute_uri(file_url)
-        
-        # Fallback: devolver URL relativa
+
         return file_url
-        
+
     except Exception as e:
         logger.error(f"Error construyendo URL de archivo: {e}")
         return None

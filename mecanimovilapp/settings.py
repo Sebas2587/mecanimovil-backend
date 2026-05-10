@@ -64,6 +64,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'django_filters',  # Para filtrado avanzado
     'channels',  # Django Channels para WebSockets
+    'storages',  # django-storages para Cloudflare R2 / S3
     # Aplicaciones propias
     'mecanimovilapp.apps.usuarios',
     'mecanimovilapp.apps.servicios',
@@ -251,74 +252,171 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 # ============================================
 # Configuración de almacenamiento de archivos
 # ============================================
-# Opciones disponibles:
-# 1. cPanel (FTP) - Para usar servidor cPanel existente
-# 2. AWS S3 - Para producción escalable (recomendado a largo plazo)
-# 3. Local - Solo para desarrollo (no funciona en Render)
+# Opciones disponibles (en orden de prioridad):
+# 1. Cloudflare R2 (S3-compatible) - RECOMENDADO. Egress gratis, HTTPS nativo, sin FTP.
+# 2. AWS S3 - Estándar de la industria, más caro que R2.
+# 3. cPanel (FTP) - LEGACY/DEPRECATED. Frágil, propenso a baneos de IP.
+# 4. Local - Solo para desarrollo (no funciona en Render).
+#
+# La selección automática es: r2 > s3 > cpanel > local
+# Puedes forzar uno específico con STORAGE_TYPE=r2|s3|cpanel|local
 
-# Seleccionar el tipo de almacenamiento
-STORAGE_TYPE = config('STORAGE_TYPE', default='local')  # 'local', 'cpanel', 's3'
+STORAGE_TYPE = config('STORAGE_TYPE', default='').lower()  # vacío = autodetección
 
 if not DEBUG:
-    # Verificar si hay configuración de cPanel disponible (incluso si STORAGE_TYPE no está configurado)
+    import logging
+    _storage_logger = logging.getLogger(__name__)
+
+    # ----- Detectar credenciales de cada provider -----
+    # Cloudflare R2
+    r2_access_key = config('R2_ACCESS_KEY_ID', default='') or config('CLOUDFLARE_R2_ACCESS_KEY', default='')
+    r2_secret_key = config('R2_SECRET_ACCESS_KEY', default='') or config('CLOUDFLARE_R2_SECRET_KEY', default='')
+    r2_bucket = config('R2_BUCKET_NAME', default='') or config('CLOUDFLARE_R2_BUCKET', default='')
+    r2_endpoint = config('R2_ENDPOINT_URL', default='') or config('CLOUDFLARE_R2_ENDPOINT', default='')
+    r2_public_url = config('R2_PUBLIC_URL', default='') or config('CLOUDFLARE_R2_PUBLIC_URL', default='')
+    has_r2_config = all([r2_access_key, r2_secret_key, r2_bucket, r2_endpoint])
+
+    # AWS S3
+    aws_key = config('AWS_ACCESS_KEY_ID', default='')
+    aws_secret = config('AWS_SECRET_ACCESS_KEY', default='')
+    aws_bucket = config('AWS_STORAGE_BUCKET_NAME', default='')
+    has_s3_config = all([aws_key, aws_secret, aws_bucket])
+
+    # cPanel (legacy)
     cpanel_ftp_host = config('CPANEL_FTP_HOST', default='')
-    cpanel_ftp_port = config('CPANEL_FTP_PORT', default=21, cast=int)  # Puerto FTP (por defecto 21)
+    cpanel_ftp_port = config('CPANEL_FTP_PORT', default=21, cast=int)
     cpanel_ftp_user = config('CPANEL_FTP_USER', default='')
     cpanel_ftp_password = config('CPANEL_FTP_PASSWORD', default='')
     cpanel_ftp_root = config('CPANEL_FTP_ROOT', default='')
     cpanel_media_url = config('CPANEL_MEDIA_URL', default='')
-    
-    # Si hay configuración de cPanel completa, usarla automáticamente
     has_cpanel_config = all([cpanel_ftp_host, cpanel_ftp_user, cpanel_ftp_password, cpanel_ftp_root])
-    
-    if STORAGE_TYPE == 'cpanel' or (has_cpanel_config and STORAGE_TYPE != 's3'):
+
+    # ----- Resolver tipo efectivo de storage -----
+    if STORAGE_TYPE in ('r2', 's3', 'cpanel', 'local'):
+        effective_storage = STORAGE_TYPE
+    elif has_r2_config:
+        effective_storage = 'r2'
+        _storage_logger.info("🔍 [Settings] Detectada configuración R2. Usando Cloudflare R2 automáticamente.")
+    elif has_s3_config:
+        effective_storage = 's3'
+        _storage_logger.info("🔍 [Settings] Detectada configuración S3. Usando AWS S3 automáticamente.")
+    elif has_cpanel_config:
+        effective_storage = 'cpanel'
+        _storage_logger.warning("⚠️ [Settings] Usando cPanel FTP storage (legacy). Considera migrar a Cloudflare R2.")
+    else:
+        effective_storage = 'local'
+        _storage_logger.error("❌ [Settings] Ningún storage configurado. Los uploads fallarán.")
+
+    if effective_storage == 'r2':
         # ============================================
-        # Configuración para cPanel (FTP)
+        # Cloudflare R2 (S3-compatible) - RECOMENDADO
+        # ============================================
+        # ARQUITECTURA DE SEGURIDAD:
+        # - Bucket TOTALMENTE PRIVADO en R2 (sin acceso público).
+        # - Por defecto, todos los archivos se sirven con URLs firmadas
+        #   (presigned URLs) que expiran en R2_URL_EXPIRE_SECONDS (default 7 días).
+        # - Solo el backend con las credenciales puede generar URLs válidas.
+        # - Cuando un usuario pide los datos de un proveedor/vehículo/etc, el
+        #   serializer devuelve URLs firmadas frescas. Cuando expiren, basta
+        #   con volver a pedir los datos para regenerarlas.
+        # - Esto protege documentos sensibles (cédula, comprobantes, chats,
+        #   checklists) sin necesidad de exponer el bucket públicamente.
+        #
+        # Variables de entorno requeridas:
+        #   R2_ACCESS_KEY_ID      - Access Key del API token de R2
+        #   R2_SECRET_ACCESS_KEY  - Secret Key del API token de R2
+        #   R2_BUCKET_NAME        - Nombre del bucket (ej: 'mecanimovil-media')
+        #   R2_ENDPOINT_URL       - https://<account_id>.r2.cloudflarestorage.com
+        #
+        # Variables opcionales:
+        #   R2_PUBLIC_URL         - Solo si activas R2.dev subdomain o dominio custom
+        #                            (no recomendado por seguridad)
+        #   R2_URL_EXPIRE_SECONDS - Tiempo de validez de URLs firmadas (default: 604800 = 7 días)
+        DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
+        STORAGES = {
+            'default': {'BACKEND': 'storages.backends.s3boto3.S3Boto3Storage'},
+            'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage'},
+        }
+
+        AWS_ACCESS_KEY_ID = r2_access_key
+        AWS_SECRET_ACCESS_KEY = r2_secret_key
+        AWS_STORAGE_BUCKET_NAME = r2_bucket
+        AWS_S3_ENDPOINT_URL = r2_endpoint
+        AWS_S3_REGION_NAME = config('R2_REGION', default='auto')
+        AWS_S3_SIGNATURE_VERSION = 's3v4'
+        AWS_S3_ADDRESSING_STYLE = 'path'  # R2 requiere path-style addressing
+        AWS_S3_FILE_OVERWRITE = False
+        AWS_DEFAULT_ACL = None  # R2 no soporta ACLs (todo va con bucket policy)
+        AWS_S3_OBJECT_PARAMETERS = {
+            'CacheControl': 'private, max-age=86400',  # Cache cliente 24h
+        }
+
+        if r2_public_url:
+            # MODO PÚBLICO: el usuario configuró R2.dev o dominio custom.
+            # Las URLs son directas y NO expiran (cache infinito).
+            # NO RECOMENDADO si manejas documentos sensibles.
+            AWS_QUERYSTRING_AUTH = False
+            AWS_S3_CUSTOM_DOMAIN = r2_public_url.replace('https://', '').replace('http://', '').rstrip('/')
+            MEDIA_URL = f'https://{AWS_S3_CUSTOM_DOMAIN}/'
+            _storage_logger.warning(
+                "⚠️ [Settings R2] Modo PÚBLICO activo (R2_PUBLIC_URL configurado). "
+                "Cualquier persona con la URL puede acceder a los archivos. "
+                "Si manejas documentos sensibles, REMUEVE R2_PUBLIC_URL."
+            )
+        else:
+            # MODO PRIVADO (DEFAULT): bucket sin acceso público.
+            # Las URLs se generan firmadas y expiran. Los serializers regeneran
+            # las URLs en cada response.
+            AWS_QUERYSTRING_AUTH = True
+            AWS_QUERYSTRING_EXPIRE = config('R2_URL_EXPIRE_SECONDS', default=604800, cast=int)  # 7 días
+            # Sin AWS_S3_CUSTOM_DOMAIN: las URLs irán al endpoint de R2 firmadas
+            MEDIA_URL = '/media/'  # No se usa directamente, las URLs se generan vía boto3
+            _storage_logger.info(
+                f"🔒 [Settings R2] Modo PRIVADO activo. URLs firmadas con expiración "
+                f"de {AWS_QUERYSTRING_EXPIRE}s ({AWS_QUERYSTRING_EXPIRE // 86400} días)."
+            )
+
+        _storage_logger.info(f"✅ [Settings R2] Storage configurado: bucket={r2_bucket}")
+
+    elif effective_storage == 's3':
+        # ============================================
+        # AWS S3
+        # ============================================
+        DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
+        STORAGES = {
+            'default': {'BACKEND': 'storages.backends.s3boto3.S3Boto3Storage'},
+            'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage'},
+        }
+        AWS_ACCESS_KEY_ID = aws_key
+        AWS_SECRET_ACCESS_KEY = aws_secret
+        AWS_STORAGE_BUCKET_NAME = aws_bucket
+        AWS_S3_REGION_NAME = config('AWS_S3_REGION_NAME', default='us-east-1')
+        AWS_S3_FILE_OVERWRITE = False
+        AWS_DEFAULT_ACL = None
+        AWS_QUERYSTRING_AUTH = False
+        AWS_S3_CUSTOM_DOMAIN = f'{AWS_STORAGE_BUCKET_NAME}.s3.amazonaws.com'
+        MEDIA_URL = f'https://{AWS_S3_CUSTOM_DOMAIN}/'
+
+    elif effective_storage == 'cpanel':
+        # ============================================
+        # cPanel (FTP) - LEGACY
         # ============================================
         DEFAULT_FILE_STORAGE = 'mecanimovilapp.storage.cpanel_storage.CPanelStorage'
-        
-        # Credenciales FTP de cPanel
         CPANEL_FTP_HOST = cpanel_ftp_host
         CPANEL_FTP_PORT = cpanel_ftp_port
         CPANEL_FTP_USER = cpanel_ftp_user
         CPANEL_FTP_PASSWORD = cpanel_ftp_password
-        
-        # Ruta en el servidor cPanel donde se guardarán los archivos
         CPANEL_FTP_ROOT = cpanel_ftp_root
-        
-        # URL pública donde se servirán los archivos
-        # Normalizar URL: agregar www. si no está presente y es mecanimovil.cl
+
         if cpanel_media_url:
             if 'mecanimovil.cl' in cpanel_media_url and 'www.' not in cpanel_media_url:
                 cpanel_media_url = cpanel_media_url.replace('https://mecanimovil.cl', 'https://www.mecanimovil.cl')
                 cpanel_media_url = cpanel_media_url.replace('http://mecanimovil.cl', 'http://www.mecanimovil.cl')
-        
+
         CPANEL_MEDIA_URL = cpanel_media_url
-        
-        # Usar la URL de cPanel como MEDIA_URL
         if CPANEL_MEDIA_URL:
             MEDIA_URL = CPANEL_MEDIA_URL
-        
-        # Log para debugging
-        import logging
-        logger = logging.getLogger(__name__)
-        if STORAGE_TYPE != 'cpanel' and has_cpanel_config:
-            logger.info("🔍 [Settings] STORAGE_TYPE no configurado, pero detectada configuración de cPanel. Usando cPanel automáticamente.")
-        
-    elif STORAGE_TYPE == 's3':
-        # ============================================
-        # Configuración para AWS S3
-        # ============================================
-        DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
-        AWS_ACCESS_KEY_ID = config('AWS_ACCESS_KEY_ID', default='')
-        AWS_SECRET_ACCESS_KEY = config('AWS_SECRET_ACCESS_KEY', default='')
-        AWS_STORAGE_BUCKET_NAME = config('AWS_STORAGE_BUCKET_NAME', default='mecanimovil-media')
-        AWS_S3_REGION_NAME = config('AWS_S3_REGION_NAME', default='us-east-1')
-        AWS_S3_FILE_OVERWRITE = False
-        AWS_DEFAULT_ACL = None
-        AWS_S3_CUSTOM_DOMAIN = f'{AWS_STORAGE_BUCKET_NAME}.s3.amazonaws.com'
-        MEDIA_URL = f'https://{AWS_S3_CUSTOM_DOMAIN}/'
-    
+
     # Si STORAGE_TYPE es 'local' o no está configurado, se usa almacenamiento local
     # (solo para desarrollo, no funciona en Render)
 
