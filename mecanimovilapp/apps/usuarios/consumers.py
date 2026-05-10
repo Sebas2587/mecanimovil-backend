@@ -1324,6 +1324,50 @@ class ClientStatusConsumer(AsyncWebsocketConsumer):
             'mensaje': event.get('mensaje', 'Las métricas de salud de tu vehículo han sido actualizadas'),
             'timestamp': event.get('timestamp', timezone.now().isoformat())
         }))
+
+    async def servicio_iniciado(self, event):
+        """Proveedor inició el servicio: actualizar listas de solicitudes en la app cliente."""
+        await self.send(text_data=json.dumps({
+            'type': 'servicio_iniciado',
+            'solicitud_id': event['solicitud_id'],
+            'oferta_id': event.get('oferta_id'),
+            'proveedor_nombre': event.get('proveedor_nombre'),
+            'mensaje': event.get('mensaje', 'El proveedor ha iniciado el servicio.'),
+            'timestamp': event.get('timestamp', timezone.now().isoformat()),
+        }))
+
+    async def rechazo_solicitud(self, event):
+        """Un proveedor rechazó la solicitud pública."""
+        await self.send(text_data=json.dumps({
+            'type': 'rechazo_solicitud',
+            'solicitud_id': event['solicitud_id'],
+            'proveedor_nombre': event.get('proveedor_nombre', ''),
+            'motivo': event.get('motivo', ''),
+            'detalle': event.get('detalle', ''),
+            'timestamp': timezone.now().isoformat(),
+        }))
+
+    async def oferta_secundaria_creada(self, event):
+        """Nueva oferta adicional sobre una orden ya adjudicada."""
+        await self.send(text_data=json.dumps({
+            'type': 'oferta_secundaria_creada',
+            'oferta_id': event['oferta_id'],
+            'oferta_original_id': event.get('oferta_original_id'),
+            'solicitud_id': event['solicitud_id'],
+            'proveedor_nombre': event.get('proveedor_nombre', ''),
+            'precio': event.get('precio', ''),
+            'motivo': event.get('motivo', ''),
+            'timestamp': timezone.now().isoformat(),
+        }))
+
+    async def reserva_creditos_expirada(self, event):
+        """Proveedor no confirmó reserva con créditos a tiempo."""
+        await self.send(text_data=json.dumps({
+            'type': 'reserva_creditos_expirada',
+            'solicitud_id': event['solicitud_id'],
+            'mensaje': event.get('mensaje', ''),
+            'timestamp': event.get('timestamp', timezone.now().isoformat()),
+        }))
     
     @database_sync_to_async
     def authenticate_token(self, token):
