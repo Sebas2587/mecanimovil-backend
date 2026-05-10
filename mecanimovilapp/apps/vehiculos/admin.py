@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.utils.html import format_html
-from .models import Marca, MarcaVehiculo, Modelo, Vehiculo
+from .models import Marca, MarcaVehiculo, Modelo, Vehiculo, FotoVehiculoMarketplace
 from .models_health import (
     ComponenteSalud,
     ReglaMantenimientoGenerica,
@@ -218,4 +218,12 @@ class AlertaMantenimientoAdmin(admin.ModelAdmin):
     list_display = ['vehiculo', 'titulo', 'tipo_alerta', 'prioridad', 'activa', 'fecha_creacion']
     list_filter = ['tipo_alerta', 'prioridad', 'activa']
     search_fields = ['vehiculo__patente', 'titulo']
-    filter_horizontal = ['servicios_recomendados'] 
+    filter_horizontal = ['servicios_recomendados']
+
+
+@admin.register(FotoVehiculoMarketplace)
+class FotoVehiculoMarketplaceAdmin(admin.ModelAdmin):
+    list_display = ('id', 'vehiculo', 'orden', 'fecha_creacion')
+    list_filter = ('vehiculo__marca',)
+    search_fields = ('vehiculo__patente',)
+    ordering = ('vehiculo', 'orden')

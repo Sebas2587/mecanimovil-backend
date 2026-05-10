@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Vehiculo, Marca, MarcaVehiculo, Modelo, OfertaVehiculo, ViajeRegistrado
+from .models import Vehiculo, Marca, MarcaVehiculo, Modelo, OfertaVehiculo, ViajeRegistrado, FotoVehiculoMarketplace
 from .models_health import ComponenteSalud, ComponenteSaludVehiculo, EstadoSaludVehiculo
 from django.db.models import Q
 from mecanimovilapp.apps.usuarios.serializers import ClienteSerializer
@@ -552,6 +552,22 @@ class VehiculoLiteSerializer(serializers.ModelSerializer):
         ).count()
 
 
+class FotoVehiculoMarketplaceSerializer(serializers.ModelSerializer):
+    """
+    Serializador para fotos de vehículo en marketplace (carrusel).
+    """
+    foto_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = FotoVehiculoMarketplace
+        fields = ('id', 'foto_url', 'orden')
+
+    def get_foto_url(self, obj):
+        from mecanimovilapp.storage.utils import get_image_url
+        request = self.context.get('request')
+        return get_image_url(obj.foto, request)
+
+
 class VehiculoMarketplaceSerializer(serializers.ModelSerializer):
     """
     Serializador específico para la gestión de venta en Marketplace
@@ -565,7 +581,8 @@ class VehiculoMarketplaceSerializer(serializers.ModelSerializer):
     health_score = serializers.SerializerMethodField()
     seller = serializers.SerializerMethodField()
     is_reserved = serializers.SerializerMethodField()
-    
+    fotos = serializers.SerializerMethodField()
+
     class Meta:
         model = Vehiculo
         fields = (
@@ -575,8 +592,18 @@ class VehiculoMarketplaceSerializer(serializers.ModelSerializer):
             'seller', 'cilindraje', 'tipo_motor', 'kilometraje', 'color', 'transmision',
             'vin', 'numero_motor', 'version', 'puertas', 'mes_revision_tecnica',
             'is_reserved', 'is_certified_mecanimovil',
+            'descripcion_venta', 'fotos',
         )
-        read_only_fields = ('suggested_price', 'views_count', 'favorites_count', 'leads_count', 'health_bonus_percentage', 'health_score', 'seller', 'is_reserved', 'is_certified_mecanimovil')
+        read_only_fields = (
+            'suggested_price', 'views_count', 'favorites_count', 'leads_count',
+            'health_bonus_percentage', 'health_score', 'seller', 'is_reserved',
+            'is_certified_mecanimovil', 'fotos',
+        )
+
+    def get_fotos(self, obj):
+        request = self.context.get('request')
+        fotos_qs = obj.fotos_marketplace.all()
+        return FotoVehiculoMarketplaceSerializer(fotos_qs, many=True, context={'request': request}).data
 
     def get_is_reserved(self, obj):
         # A vehicle is reserved if it has any accepted offer

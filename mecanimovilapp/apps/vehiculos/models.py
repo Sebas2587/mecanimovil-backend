@@ -130,7 +130,13 @@ class Vehiculo(models.Model):
         verbose_name=_('certificado MecaniMóvil'),
         help_text=_('Se activa al completar inspección pre-compra'),
     )
-    
+    descripcion_venta = models.TextField(
+        blank=True,
+        null=True,
+        verbose_name=_('descripción de venta'),
+        help_text=_('Descripción libre del vehículo para el marketplace'),
+    )
+
     class Meta:
         verbose_name = _('vehículo')
         verbose_name_plural = _('vehículos')
@@ -146,6 +152,29 @@ class Vehiculo(models.Model):
     @property
     def modelo_nombre(self):
         return self.modelo.nombre
+
+class FotoVehiculoMarketplace(models.Model):
+    """
+    Fotos adicionales del vehículo para su publicación en el Marketplace.
+    Soporta hasta 10 fotos por vehículo, almacenadas en R2.
+    """
+    vehiculo = models.ForeignKey(
+        Vehiculo,
+        on_delete=models.CASCADE,
+        related_name='fotos_marketplace',
+    )
+    foto = models.ImageField(upload_to='marketplace/fotos/')
+    orden = models.PositiveSmallIntegerField(default=0, help_text='Posición en el carrusel')
+    fecha_creacion = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = _('foto de marketplace')
+        verbose_name_plural = _('fotos de marketplace')
+        ordering = ['orden', 'fecha_creacion']
+
+    def __str__(self):
+        return f"Foto {self.id} - {self.vehiculo}"
+
 
 class ViajeRegistrado(models.Model):
     """

@@ -4,13 +4,13 @@ from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.db.models import Q
-from .models import Vehiculo, Marca, MarcaVehiculo, Modelo, OfertaVehiculo, ViajeRegistrado
+from .models import Vehiculo, Marca, MarcaVehiculo, Modelo, OfertaVehiculo, ViajeRegistrado, FotoVehiculoMarketplace
 from .models_health import ComponenteSalud, ReglaMantenimientoGenerica, ComponenteSaludVehiculo
 from .serializers import (
-    VehiculoSerializer, VehiculoLiteSerializer, MarcaSerializer, 
+    VehiculoSerializer, VehiculoLiteSerializer, MarcaSerializer,
     MarcaVehiculoSerializer, ModeloSerializer, VehiculoMarketplaceSerializer,
     VehiculoMarketplaceDetailSerializer, OfertaVehiculoSerializer,
-    RegistrarViajeSerializer
+    RegistrarViajeSerializer, FotoVehiculoMarketplaceSerializer,
 )
 
 
@@ -652,6 +652,60 @@ class VehiculoViewSet(viewsets.ModelViewSet):
             'leads': vehiculo.leads_count
         }
         return Response(data)
+
+    @action(detail=True, methods=['get', 'post'], url_path='marketplace-fotos')
+    def marketplace_fotos(self, request, pk=None):
+        """
+        GET  — lista las fotos de venta del vehículo.
+        POST — sube una nueva foto (máx 10). Requiere campo `foto` (multipart).
+        """
+        vehiculo = self.get_object()
+
+        if vehiculo.cliente.usuario != request.user:
+            return Response({'error': 'No eres el dueño de este vehículo.'}, status=status.HTTP_403_FORBIDDEN)
+
+        if request.method == 'GET':
+            fotos = vehiculo.fotos_marketplace.all()
+            serializer = FotoVehiculoMarketplaceSerializer(fotos, many=True, context={'request': request})
+            return Response(serializer.data)
+
+        # POST: upload
+        fotos_count = vehiculo.fotos_marketplace.count()
+        if fotos_count >= 10:
+            return Response({'error': 'Límite de 10 fotos alcanzado.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        foto_file = request.FILES.get('foto')
+        if not foto_file:
+            return Response({'error': 'No se recibió ninguna foto.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        from django.core.files.storage import default_storage
+
+        foto_obj = FotoVehiculoMarketplace(vehiculo=vehiculo, orden=fotos_count)
+        foto_obj.foto.storage = default_storage
+        foto_obj.foto = foto_file
+        foto_obj.save()
+
+        serializer = FotoVehiculoMarketplaceSerializer(foto_obj, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['delete'], url_path=r'marketplace-fotos/(?P<foto_id>[^/.]+)')
+    def marketplace_foto_delete(self, request, pk=None, foto_id=None):
+        """
+        DELETE — elimina una foto específica de venta del vehículo.
+        """
+        vehiculo = self.get_object()
+
+        if vehiculo.cliente.usuario != request.user:
+            return Response({'error': 'No eres el dueño de este vehículo.'}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            foto = FotoVehiculoMarketplace.objects.get(id=foto_id, vehiculo=vehiculo)
+        except FotoVehiculoMarketplace.DoesNotExist:
+            return Response({'error': 'Foto no encontrada.'}, status=status.HTTP_404_NOT_FOUND)
+
+        foto.foto.delete(save=False)
+        foto.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=False, methods=['get'], url_path='marketplace-listings', permission_classes=[permissions.AllowAny])
     def marketplace_listings(self, request):
