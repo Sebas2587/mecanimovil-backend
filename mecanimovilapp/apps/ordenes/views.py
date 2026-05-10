@@ -2702,16 +2702,15 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
                 'cliente', 'cliente__usuario', 'vehiculo', 'direccion_usuario'
             ).prefetch_related('servicios_solicitados', 'proveedores_dirigidos', 'ofertas', 'fotos_necesidad')
         
-        # Cliente: propias solicitudes + solicitudes ligadas a un vehículo que hoy es suyo.
-        # Consulta explícita por usuario (no depender solo del descriptor reverse O2O).
+        # Cliente: ÚNICAMENTE sus propias solicitudes (creadas por él).
+        # NO incluir solicitudes de vehículos que el usuario ahora posee (comprados de segunda mano)
+        # porque eso expone historial de dueños anteriores en "Mis Solicitudes", que es una
+        # filtración de datos. El historial de servicios de un vehículo comprado está disponible
+        # en la pantalla de detalle del vehículo via /vehiculos/{id}/historial-servicios/.
         cliente = Cliente.objects.filter(usuario=user).first()
         if cliente is not None:
-            vehiculo_es_mio = Vehiculo.objects.filter(
-                pk=OuterRef('vehiculo_id'),
-                cliente_id=cliente.pk,
-            )
             return SolicitudServicioPublica.objects.filter(
-                Q(cliente=cliente) | Exists(vehiculo_es_mio)
+                cliente=cliente
             ).select_related(
                 'cliente', 'cliente__usuario', 'vehiculo', 'direccion_usuario'
             ).prefetch_related('servicios_solicitados', 'proveedores_dirigidos', 'ofertas', 'fotos_necesidad')
