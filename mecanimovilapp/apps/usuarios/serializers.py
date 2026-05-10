@@ -30,6 +30,32 @@ def _proveedor_suscripcion_mensual_activa(usuario):
     return sus is not None and getattr(sus, 'estado', None) == 'activa'
 
 
+def aggregate_public_provider_rating(provider_type, provider_id):
+    """
+    Misma fuente que `ReviewViewSet.list` (`/usuarios/providers/<id>/reviews/`):
+    promedio de `Review.rating` para ese proveedor.
+    Retorna (promedio redondeado a 1 decimal o None, cantidad de reseñas).
+    """
+    stats = Review.objects.filter(provider_type=provider_type, provider_id=provider_id).aggregate(
+        avg_rating=Avg('rating'),
+        total_reviews=Count('id'),
+    )
+    total = stats['total_reviews'] or 0
+    if not total:
+        return None, 0
+    avg = float(stats['avg_rating'] or 0.0)
+    return round(avg, 1), int(total)
+
+
+def _cached_public_review_stats(serializer, provider_type, obj):
+    """Una agregación por proveedor por serialización (rating_average + rating_reviews_count)."""
+    cache = serializer.context.setdefault('_public_review_stats_by_provider', {})
+    key = (provider_type, obj.pk)
+    if key not in cache:
+        cache[key] = aggregate_public_provider_rating(provider_type, obj.id)
+    return cache[key]
+
+
 class TallerDireccionSerializer(serializers.ModelSerializer):
     """
     Serializer para el modelo TallerDireccion
@@ -474,6 +500,9 @@ class TallerSerializer(serializers.ModelSerializer):
     # Verificado para clientes: estado aprobado + documentos obligatorios validados en BD
     verificado = serializers.SerializerMethodField()
     kpi_badge = serializers.SerializerMethodField()
+    # Misma media que `/usuarios/providers/<id>/reviews/` (modelo Review), no solo Resena en BD
+    rating_average = serializers.SerializerMethodField()
+    rating_reviews_count = serializers.SerializerMethodField()
     
     class Meta:
         model = Taller
@@ -481,7 +510,7 @@ class TallerSerializer(serializers.ModelSerializer):
                   'rut', 'capacidad_diaria', 'horario_atencion',
                   'especialidades', 'especialidades_nombres',
                   'marcas_atendidas', 'marcas_atendidas_nombres',
-                  'descripcion', 'calificacion_promedio', 'numero_de_calificaciones', 'activo',
+                  'descripcion', 'calificacion_promedio', 'rating_average', 'rating_reviews_count', 'numero_de_calificaciones', 'activo',
                   'foto_perfil', 'foto_perfil_url',  # NUEVO: foto de perfil
                   'estado_verificacion', 'estado_verificacion_display', 
                   'verificado', 'kpi_badge', 'onboarding_completado', 'onboarding_iniciado', 'fecha_verificacion',
@@ -524,6 +553,14 @@ class TallerSerializer(serializers.ModelSerializer):
             return compute_kpi_badge_for_proveedor(proveedor_usuario=obj.usuario, window_days=30)
         except Exception:
             return None
+
+    def get_rating_average(self, obj):
+        avg, _cnt = _cached_public_review_stats(self, 'taller', obj)
+        return avg
+
+    def get_rating_reviews_count(self, obj):
+        _avg, cnt = _cached_public_review_stats(self, 'taller', obj)
+        return cnt
     
     def get_especialidades_nombres(self, obj):
         """Devuelve los nombres de las especialidades"""
@@ -753,6 +790,8 @@ class MecanicoDomicilioSerializer(serializers.ModelSerializer):
 
     verificado = serializers.SerializerMethodField()
     kpi_badge = serializers.SerializerMethodField()
+    rating_average = serializers.SerializerMethodField()
+    rating_reviews_count = serializers.SerializerMethodField()
     
     class Meta:
         model = MecanicoDomicilio
@@ -760,7 +799,7 @@ class MecanicoDomicilioSerializer(serializers.ModelSerializer):
                   'especialidades', 'especialidades_nombres', 
                   'marcas_atendidas', 'marcas_atendidas_nombres',
                   'disponibilidad', 'foto_perfil', 'foto_perfil_url', 'distance',
-                  'radio_cobertura', 'calificacion_promedio', 'numero_de_calificaciones', 'activo',
+                  'radio_cobertura', 'calificacion_promedio', 'rating_average', 'rating_reviews_count', 'numero_de_calificaciones', 'activo',
                   'descripcion', 'dni', 'experiencia_anos',
                   'estado_verificacion', 'estado_verificacion_display', 
                   'verificado', 'kpi_badge', 'onboarding_completado', 'onboarding_iniciado', 'fecha_verificacion',
@@ -797,6 +836,14 @@ class MecanicoDomicilioSerializer(serializers.ModelSerializer):
             return compute_kpi_badge_for_proveedor(proveedor_usuario=obj.usuario, window_days=30)
         except Exception:
             return None
+
+    def get_rating_average(self, obj):
+        avg, _cnt = _cached_public_review_stats(self, 'mecanico', obj)
+        return avg
+
+    def get_rating_reviews_count(self, obj):
+        _avg, cnt = _cached_public_review_stats(self, 'mecanico', obj)
+        return cnt
     
     def get_especialidades_nombres(self, obj):
         """Devuelve los nombres de las especialidades"""
