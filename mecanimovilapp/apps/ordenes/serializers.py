@@ -10,6 +10,7 @@ from .models import (
     SolicitudServicioPublica, FotoSolicitudPublica, OfertaProveedor, DetalleServicioOferta, ChatSolicitud,
     RechazoSolicitud
 )
+from .oferta_precio_desglose import desglose_iva_oferta_proveedor
 from mecanimovilapp.apps.checklists.firma_utils import firma_a_payload_base64
 from mecanimovilapp.apps.usuarios.models import Cliente, Usuario, DireccionUsuario
 from mecanimovilapp.apps.vehiculos.models import Vehiculo
@@ -936,6 +937,7 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
     creditos_necesarios_adjudicacion = serializers.SerializerMethodField()
     saldo_creditos_proveedor = serializers.SerializerMethodField()
     creditos_faltantes_para_confirmar = serializers.SerializerMethodField()
+    desglose_iva = serializers.SerializerMethodField()
     
     class Meta:
         model = OfertaProveedor
@@ -951,6 +953,7 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
             'ofertas_secundarias', 'oferta_original_info', 'solicitud_servicio_id', 'rechazada_por_expiracion',
             # Campos de desglose de costos
             'costo_repuestos', 'costo_mano_obra', 'costo_gestion_compra', 'foto_cotizacion_repuestos',
+            'desglose_iva',
             'metodo_pago_cliente', 'estado_pago_repuestos', 'estado_pago_servicio',
             'proveedor_puede_recibir_pagos',
             # Campos de tiempo para pago
@@ -960,6 +963,10 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
             'creditos_necesarios_adjudicacion', 'saldo_creditos_proveedor', 'creditos_faltantes_para_confirmar',
         ]
         read_only_fields = ['estado', 'fecha_envio', 'fecha_visualizacion_cliente', 'proveedor', 'tipo_proveedor', 'es_oferta_secundaria']
+    
+    def get_desglose_iva(self, obj):
+        """Subtotal sin IVA, IVA y total coherentes con precio_total_ofrecido (misma lógica que apps)."""
+        return desglose_iva_oferta_proveedor(obj)
     
     def _contexto_creditos_adjudicacion(self, obj):
         """
