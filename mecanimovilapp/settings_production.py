@@ -154,8 +154,11 @@ CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', REDIS_CELERY_URL
 # ============================================
 # CONFIGURACIÓN DE ARCHIVOS ESTÁTICOS
 # ============================================
-# WhiteNoise para servir archivos estáticos
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+# WhiteNoise para servir archivos estáticos.
+# Se usa STORAGES (Django 4.2+). STATICFILES_STORAGE está deprecated y
+# es mutuamente exclusivo con STORAGES — NO definir ambos al mismo tiempo.
+# El backend 'staticfiles' se hereda del STORAGES definido en settings.py.
+# Si el dict STORAGES ya viene con whitenoise en 'staticfiles', no hay que tocarlo.
 
 # ============================================
 # OPTIMIZACIÓN: COMPRESIÓN GZIP DE RESPUESTAS
