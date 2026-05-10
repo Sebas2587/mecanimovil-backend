@@ -332,7 +332,6 @@ if not DEBUG:
         #   R2_PUBLIC_URL         - Solo si activas R2.dev subdomain o dominio custom
         #                            (no recomendado por seguridad)
         #   R2_URL_EXPIRE_SECONDS - Tiempo de validez de URLs firmadas (default: 604800 = 7 días)
-        DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
         STORAGES = {
             'default': {'BACKEND': 'storages.backends.s3boto3.S3Boto3Storage'},
             'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage'},
@@ -382,7 +381,6 @@ if not DEBUG:
         # ============================================
         # AWS S3
         # ============================================
-        DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
         STORAGES = {
             'default': {'BACKEND': 'storages.backends.s3boto3.S3Boto3Storage'},
             'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage'},
@@ -401,7 +399,10 @@ if not DEBUG:
         # ============================================
         # cPanel (FTP) - LEGACY
         # ============================================
-        DEFAULT_FILE_STORAGE = 'mecanimovilapp.storage.cpanel_storage.CPanelStorage'
+        STORAGES = {
+            'default': {'BACKEND': 'mecanimovilapp.storage.cpanel_storage.CPanelStorage'},
+            'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage'},
+        }
         CPANEL_FTP_HOST = cpanel_ftp_host
         CPANEL_FTP_PORT = cpanel_ftp_port
         CPANEL_FTP_USER = cpanel_ftp_user

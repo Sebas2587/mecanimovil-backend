@@ -84,7 +84,6 @@ class Command(BaseCommand):
 
         # Validar configuración
         cpanel_url = getattr(settings, 'CPANEL_MEDIA_URL', '')
-        storage_class = getattr(settings, 'DEFAULT_FILE_STORAGE', '')
 
         if not cpanel_url:
             raise CommandError(
@@ -92,14 +91,17 @@ class Command(BaseCommand):
                 "para descargar las fotos viejas desde cPanel."
             )
 
-        if 's3boto3' not in storage_class.lower():
+        # Detectar si el storage actual es S3/R2 (compatible con boto3)
+        from django.core.files.storage import default_storage
+        storage_backend = type(default_storage).__module__ + '.' + type(default_storage).__name__
+        if 's3boto3' not in storage_backend.lower() and 's3' not in storage_backend.lower():
             raise CommandError(
-                f"DEFAULT_FILE_STORAGE actual es '{storage_class}'. "
+                f"Storage actual: '{storage_backend}'. "
                 f"Debe estar configurado como S3/R2 antes de migrar. "
                 f"Configura R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, etc."
             )
 
-        self.stdout.write(self.style.SUCCESS(f"📦 Storage destino: {storage_class}"))
+        self.stdout.write(self.style.SUCCESS(f"📦 Storage destino: {storage_backend}"))
         self.stdout.write(self.style.SUCCESS(f"🌐 Bucket: {getattr(settings, 'AWS_STORAGE_BUCKET_NAME', '?')}"))
         self.stdout.write(self.style.SUCCESS(f"🔗 cPanel URL base: {cpanel_url}"))
         self.stdout.write(self.style.SUCCESS(f"🧪 Dry-run: {dry_run}"))

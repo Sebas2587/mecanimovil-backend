@@ -223,22 +223,16 @@ class VehiculoSerializer(serializers.ModelSerializer):
         # Crear el vehículo sin la foto primero
         vehiculo = Vehiculo.objects.create(**validated_data)
         
-        # Si hay una foto, guardarla usando el storage correcto
+        # Si hay una foto, guardarla usando el storage configurado (R2, S3, cPanel o local)
         if foto_file:
-            storage_class = getattr(settings, 'DEFAULT_FILE_STORAGE', None)
-            if storage_class:
-                from django.utils.module_loading import import_string
-                try:
-                    storage = import_string(storage_class)()
-                    filename = storage.save(foto_file.name, foto_file)
-                    vehiculo.foto = filename
-                    vehiculo.save()
-                    logger.info(f"✅ Foto de vehículo {vehiculo.id} guardada en storage: {filename}")
-                except Exception as e:
-                    logger.error(f"❌ Error guardando foto de vehículo: {e}")
-                    vehiculo.foto = foto_file
-                    vehiculo.save()
-            else:
+            from django.core.files.storage import default_storage
+            try:
+                filename = default_storage.save(foto_file.name, foto_file)
+                vehiculo.foto = filename
+                vehiculo.save()
+                logger.info(f"✅ Foto de vehículo {vehiculo.id} guardada en storage: {filename}")
+            except Exception as e:
+                logger.error(f"❌ Error guardando foto de vehículo: {e}")
                 vehiculo.foto = foto_file
                 vehiculo.save()
         
@@ -425,18 +419,13 @@ class VehiculoSerializer(serializers.ModelSerializer):
                 except:
                     pass
             
-            storage_class = getattr(settings, 'DEFAULT_FILE_STORAGE', None)
-            if storage_class:
-                from django.utils.module_loading import import_string
-                try:
-                    storage = import_string(storage_class)()
-                    filename = storage.save(foto_file.name, foto_file)
-                    instance.foto = filename
-                    logger.info(f"✅ Foto de vehículo {instance.id} actualizada: {filename}")
-                except Exception as e:
-                    logger.error(f"❌ Error actualizando foto de vehículo: {e}")
-                    instance.foto = foto_file
-            else:
+            from django.core.files.storage import default_storage
+            try:
+                filename = default_storage.save(foto_file.name, foto_file)
+                instance.foto = filename
+                logger.info(f"✅ Foto de vehículo {instance.id} actualizada: {filename}")
+            except Exception as e:
+                logger.error(f"❌ Error actualizando foto de vehículo: {e}")
                 instance.foto = foto_file
         
         # Recalcular valoración si cambia el precio de mercado

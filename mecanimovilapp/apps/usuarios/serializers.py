@@ -193,23 +193,17 @@ class UserProfileSerializer(serializers.ModelSerializer):
         if 'direccion' in validated_data:
             instance.direccion = validated_data.get('direccion', instance.direccion)
         
-        # Guardar foto usando storage configurado (cPanel o local)
+        # Guardar foto usando el storage configurado (R2, S3, cPanel o local)
         if foto_file:
-            storage_class = getattr(settings, 'DEFAULT_FILE_STORAGE', None)
-            if storage_class:
-                from django.utils.module_loading import import_string
-                try:
-                    storage = import_string(storage_class)()
-                    # Generar nombre con prefijo de perfil
-                    import time
-                    filename = f"perfiles/profile_{instance.id}_{int(time.time() * 1000)}.{foto_file.name.split('.')[-1]}"
-                    saved_name = storage.save(filename, foto_file)
-                    instance.foto_perfil = saved_name
-                    logger.info(f"✅ Foto de perfil guardada en storage: {saved_name}")
-                except Exception as e:
-                    logger.error(f"❌ Error guardando foto de perfil en storage: {e}")
-                    instance.foto_perfil = foto_file
-            else:
+            from django.core.files.storage import default_storage
+            import time
+            try:
+                filename = f"perfiles/profile_{instance.id}_{int(time.time() * 1000)}.{foto_file.name.split('.')[-1]}"
+                saved_name = default_storage.save(filename, foto_file)
+                instance.foto_perfil = saved_name
+                logger.info(f"✅ Foto de perfil guardada en storage: {saved_name}")
+            except Exception as e:
+                logger.error(f"❌ Error guardando foto de perfil en storage: {e}")
                 instance.foto_perfil = foto_file
             
         instance.save()
