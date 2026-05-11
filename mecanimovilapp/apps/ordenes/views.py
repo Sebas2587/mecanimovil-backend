@@ -4740,6 +4740,17 @@ class OfertaProveedorViewSet(viewsets.ModelViewSet):
                         serializer.validated_data['es_fecha_alternativa'] = True
                         # No sobrescribir motivo_fecha_alternativa si ya vino en el payload
             
+            # Si costo_mano_obra llega en 0 pero hay precio_total_ofrecido, derivarlo para que
+            # desglose_iva pueda siempre calcular IVA coherente desde los costos declarados.
+            vd = serializer.validated_data
+            precio_total = vd.get('precio_total_ofrecido')
+            costo_mo = vd.get('costo_mano_obra', 0) or 0
+            costo_rep = vd.get('costo_repuestos', 0) or 0
+            if precio_total and float(precio_total) > 0 and float(costo_mo) == 0 and float(costo_rep) == 0:
+                from decimal import Decimal
+                precio_sin_iva = float(precio_total) / 1.19
+                serializer.validated_data['costo_mano_obra'] = Decimal(str(round(precio_sin_iva, 2)))
+
             # Crear la oferta
             try:
                 logger.info(f"🔍 Intentando crear oferta con datos: {serializer.validated_data}")
