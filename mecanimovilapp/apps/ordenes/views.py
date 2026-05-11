@@ -4747,7 +4747,6 @@ class OfertaProveedorViewSet(viewsets.ModelViewSet):
             costo_mo = vd.get('costo_mano_obra', 0) or 0
             costo_rep = vd.get('costo_repuestos', 0) or 0
             if precio_total and float(precio_total) > 0 and float(costo_mo) == 0 and float(costo_rep) == 0:
-                from decimal import Decimal
                 precio_sin_iva = float(precio_total) / 1.19
                 serializer.validated_data['costo_mano_obra'] = Decimal(str(round(precio_sin_iva, 2)))
 
