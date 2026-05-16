@@ -824,6 +824,46 @@ class OfertaVehiculoViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(comprador=self.request.user)
 
+    @action(detail=False, methods=['get'], url_path='puede_ofertar')
+    def puede_ofertar(self, request):
+        """
+        Pre-check: ¿el comprador autenticado puede ofertar por este vehículo?
+        Query: vehiculo_id (requerido)
+        """
+        from .marketplace_ofertas import (
+            comprador_tiene_oferta_activa_con_vendedor,
+            vendedor_id_desde_vehiculo,
+            MENSAJE_OFERTA_ACTIVA_MISMO_VENDEDOR,
+        )
+
+        raw_id = request.query_params.get('vehiculo_id')
+        if not raw_id:
+            return Response(
+                {'detail': 'Parámetro vehiculo_id requerido.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            vehiculo = Vehiculo.objects.select_related('cliente__usuario').get(pk=int(raw_id))
+        except (ValueError, Vehiculo.DoesNotExist):
+            return Response({'detail': 'Vehículo no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+
+        vendedor_id = vendedor_id_desde_vehiculo(vehiculo)
+        if vendedor_id and int(vendedor_id) == int(request.user.id):
+            return Response({
+                'puede_ofertar': False,
+                'code': 'vehiculo_propio',
+                'mensaje': 'No puedes ofertar por tu propio vehículo.',
+            })
+
+        if comprador_tiene_oferta_activa_con_vendedor(request.user.id, vendedor_id):
+            return Response({
+                'puede_ofertar': False,
+                'code': 'oferta_activa_mismo_vendedor',
+                'mensaje': MENSAJE_OFERTA_ACTIVA_MISMO_VENDEDOR,
+            })
+
+        return Response({'puede_ofertar': True})
+
     @action(detail=False, methods=['get'])
     def mis_ofertas_enviadas(self, request):
         ofertas = OfertaVehiculo.objects.filter(comprador=request.user)

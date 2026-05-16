@@ -808,6 +808,41 @@ class OfertaVehiculoSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['comprador', 'fecha_creacion', 'fecha_actualizacion']
 
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return attrs
+
+        vehiculo = attrs.get('vehiculo')
+        if vehiculo is None and self.instance:
+            vehiculo = self.instance.vehiculo
+        if vehiculo is None:
+            return attrs
+
+        from .marketplace_ofertas import (
+            comprador_tiene_oferta_activa_con_vendedor,
+            vendedor_id_desde_vehiculo,
+            MENSAJE_OFERTA_ACTIVA_MISMO_VENDEDOR,
+        )
+
+        vendedor_id = vendedor_id_desde_vehiculo(vehiculo)
+        if vendedor_id and int(vendedor_id) == int(request.user.id):
+            raise serializers.ValidationError(
+                {'vehiculo': 'No puedes ofertar por tu propio vehículo.'}
+            )
+
+        excluir = self.instance.pk if self.instance else None
+        if comprador_tiene_oferta_activa_con_vendedor(
+            request.user.id, vendedor_id, excluir_oferta_id=excluir
+        ):
+            raise serializers.ValidationError({
+                'non_field_errors': [MENSAJE_OFERTA_ACTIVA_MISMO_VENDEDOR],
+                'code': 'oferta_activa_mismo_vendedor',
+            })
+
+        return attrs
+
     def get_conversacion_id(self, obj):
         # Self-healing: If accepted but no conversation, create it now
         if obj.estado == 'aceptada' and not obj.conversacion:
