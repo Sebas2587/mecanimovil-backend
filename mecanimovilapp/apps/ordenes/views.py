@@ -2684,12 +2684,27 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
     ordering_fields = ['fecha_creacion', 'fecha_expiracion', 'total_ofertas']
     ordering = ['-fecha_creacion']
     search_fields = ['descripcion_problema', 'direccion_servicio_texto']
+
+    # App usuarios: listados que NUNCA deben usar el feed de proveedor.
+    ACCIONES_SOLO_PROPIAS_CLIENTE = frozenset({
+        'list', 'activas', 'puede_crear_solicitud', 'mis_solicitudes',
+    })
+
+    def _queryset_solicitudes_del_cliente(self, cliente):
+        """Solicitudes creadas por el cliente (no por vehículo poseído hoy)."""
+        return SolicitudServicioPublica.objects.filter(
+            cliente=cliente
+        ).select_related(
+            'cliente', 'cliente__usuario', 'vehiculo', 'direccion_usuario'
+        ).prefetch_related(
+            'servicios_solicitados', 'proveedores_dirigidos', 'ofertas', 'fotos_necesidad'
+        )
     
     def get_queryset(self):
         """
         Filtra solicitudes según el rol del usuario
         - Cliente: solo sus propias solicitudes
-        - Proveedor: solicitudes disponibles para ofertar
+        - Proveedor: solicitudes disponibles para ofertar (retrieve; list usa ACCIONES_SOLO_PROPIAS_CLIENTE)
         - Admin: todas
         """
         # ✅ Procesar solicitudes expiradas antes de obtener el queryset
@@ -2702,18 +2717,21 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
                 'cliente', 'cliente__usuario', 'vehiculo', 'direccion_usuario'
             ).prefetch_related('servicios_solicitados', 'proveedores_dirigidos', 'ofertas', 'fotos_necesidad')
         
+        cliente = Cliente.objects.filter(usuario=user).first()
+
+        # Listados de app clientes: solo solicitudes donde él es el cliente creador.
+        if self.action in self.ACCIONES_SOLO_PROPIAS_CLIENTE:
+            if cliente is not None:
+                return self._queryset_solicitudes_del_cliente(cliente)
+            return SolicitudServicioPublica.objects.none()
+
         # Cliente: ÚNICAMENTE sus propias solicitudes (creadas por él).
         # NO incluir solicitudes de vehículos que el usuario ahora posee (comprados de segunda mano)
         # porque eso expone historial de dueños anteriores en "Mis Solicitudes", que es una
         # filtración de datos. El historial de servicios de un vehículo comprado está disponible
         # en la pantalla de detalle del vehículo via /vehiculos/{id}/historial-servicios/.
-        cliente = Cliente.objects.filter(usuario=user).first()
         if cliente is not None:
-            return SolicitudServicioPublica.objects.filter(
-                cliente=cliente
-            ).select_related(
-                'cliente', 'cliente__usuario', 'vehiculo', 'direccion_usuario'
-            ).prefetch_related('servicios_solicitados', 'proveedores_dirigidos', 'ofertas', 'fotos_necesidad')
+            return self._queryset_solicitudes_del_cliente(cliente)
         
         # Proveedor viendo solicitudes disponibles (solo si tiene perfil taller o mecánico).
         # Usuario autenticado sin Cliente ni perfil proveedor: lista vacía — evita filtrar
@@ -3893,6 +3911,27 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
     
+    @action(detail=False, methods=['get'], url_path='mis-solicitudes')
+    def mis_solicitudes(self, request):
+        """
+        Listado exclusivo del cliente autenticado (app usuarios — Mis solicitudes).
+        Nunca incluye feed de proveedor ni historial por vehículo comprado.
+        """
+        if not hasattr(request.user, 'cliente'):
+            return Response([])
+        queryset = SolicitudServicioPublica.objects.filter(
+            cliente=request.user.cliente
+        ).select_related(
+            'cliente', 'cliente__usuario', 'vehiculo', 'direccion_usuario'
+        ).prefetch_related(
+            'servicios_solicitados', 'proveedores_dirigidos', 'ofertas', 'fotos_necesidad'
+        ).order_by('-fecha_creacion')
+        estado = request.query_params.get('estado')
+        if estado:
+            queryset = queryset.filter(estado=estado)
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
     @action(detail=False, methods=['get'])
     def activas(self, request):
         """
@@ -4514,14 +4553,10 @@ class OfertaProveedorViewSet(viewsets.ModelViewSet):
             ).prefetch_related(
                 'detalles_servicios__servicio', 'mensajes_chat', 'solicitud__fotos_necesidad'
             )
-        # Cliente: ofertas de solicitudes propias o de vehículos que hoy son suyos (sin OR+distinct).
+        # Cliente: solo ofertas de solicitudes que él creó (no por vehículo comprado).
         elif hasattr(user, 'cliente'):
-            solicitud_vehiculo_mio = SolicitudServicioPublica.objects.filter(
-                pk=OuterRef('solicitud_id'),
-                vehiculo__cliente=user.cliente,
-            )
             queryset = OfertaProveedor.objects.filter(
-                Q(solicitud__cliente=user.cliente) | Exists(solicitud_vehiculo_mio)
+                solicitud__cliente=user.cliente
             ).select_related(
                 'solicitud', 'solicitud__cliente', 'proveedor'
             ).prefetch_related(

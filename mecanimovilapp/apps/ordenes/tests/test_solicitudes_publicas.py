@@ -8,7 +8,7 @@ from datetime import timedelta
 from rest_framework.test import APIClient
 from rest_framework import status
 
-from mecanimovilapp.apps.usuarios.models import Cliente, DireccionUsuario
+from mecanimovilapp.apps.usuarios.models import Cliente, DireccionUsuario, Taller
 from mecanimovilapp.apps.vehiculos.models import Vehiculo, Marca, Modelo
 from mecanimovilapp.apps.servicios.models import Servicio
 from mecanimovilapp.apps.ordenes.models import (
@@ -320,4 +320,122 @@ class ChatSolicitudTestCase(TestCase):
         self.assertEqual(response.data['mensaje'], 'Hola, ¿está disponible?')
         self.assertFalse(response.data['es_proveedor'])
         self.assertEqual(ChatSolicitud.objects.count(), 1)
+
+
+class MisSolicitudesAislamientoTestCase(TestCase):
+    """Regresión: Mis solicitudes no expone solicitudes de otros clientes."""
+
+    def setUp(self):
+        self.marca = Marca.objects.create(nombre='Nissan')
+        self.modelo = Modelo.objects.create(nombre='Sentra', marca=self.marca)
+
+        self.user_a = User.objects.create_user(
+            username='cliente_a', email='a@test.com', password='testpass123'
+        )
+        self.cliente_a = Cliente.objects.create(
+            usuario=self.user_a, nombre='A', email='a@test.com'
+        )
+        self.vehiculo_a = Vehiculo.objects.create(
+            cliente=self.cliente_a,
+            marca=self.marca,
+            modelo=self.modelo,
+            year=2019,
+            patente='AAA111',
+        )
+
+        self.user_b = User.objects.create_user(
+            username='cliente_b', email='b@test.com', password='testpass123'
+        )
+        self.cliente_b = Cliente.objects.create(
+            usuario=self.user_b, nombre='B', email='b@test.com'
+        )
+
+        self.solicitud_a = SolicitudServicioPublica.objects.create(
+            cliente=self.cliente_a,
+            vehiculo=self.vehiculo_a,
+            descripcion_problema='Solicitud de A',
+            fecha_preferida=timezone.now().date() + timedelta(days=2),
+            fecha_expiracion=timezone.now() + timedelta(days=7),
+            ubicacion_servicio='POINT(-70.6693 -33.4489)',
+            direccion_servicio_texto='Dir A',
+            estado='publicada',
+        )
+
+        self.proveedor_user = User.objects.create_user(
+            username='solo_proveedor', email='p@test.com', password='testpass123'
+        )
+        Taller.objects.create(
+            nombre='Taller P',
+            usuario=self.proveedor_user,
+            estado_verificacion='aprobado',
+            telefono='9',
+        )
+        self.vehiculo_global = Vehiculo.objects.create(
+            cliente=self.cliente_a,
+            marca=self.marca,
+            modelo=self.modelo,
+            year=2018,
+            patente='BBB222',
+        )
+        self.solicitud_global = SolicitudServicioPublica.objects.create(
+            cliente=self.cliente_a,
+            vehiculo=self.vehiculo_global,
+            descripcion_problema='Global marketplace',
+            fecha_preferida=timezone.now().date() + timedelta(days=2),
+            fecha_expiracion=timezone.now() + timedelta(days=7),
+            ubicacion_servicio='POINT(-70.6693 -33.4489)',
+            direccion_servicio_texto='Dir G',
+            estado='publicada',
+            tipo_solicitud='global',
+        )
+        self.taller = Taller.objects.get(usuario=self.proveedor_user)
+        self.taller.marcas_atendidas.add(self.marca)
+
+    def _ids_from_response(self, response):
+        data = response.data
+        if isinstance(data, list):
+            items = data
+        elif isinstance(data, dict) and 'results' in data:
+            items = data['results']
+        else:
+            items = data
+        ids = []
+        for item in items:
+            if isinstance(item, dict):
+                ids.append(str(item.get('id') or item.get('properties', {}).get('id')))
+        return ids
+
+    def test_cliente_b_no_ve_solicitudes_de_cliente_a_en_mis_solicitudes(self):
+        client = APIClient()
+        client.force_authenticate(user=self.user_b)
+        response = client.get('/api/ordenes/solicitudes-publicas/mis-solicitudes/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = self._ids_from_response(response)
+        self.assertNotIn(str(self.solicitud_a.id), ids)
+        self.assertNotIn(str(self.solicitud_global.id), ids)
+
+    def test_cliente_b_no_ve_solicitudes_ajenas_en_list(self):
+        client = APIClient()
+        client.force_authenticate(user=self.user_b)
+        response = client.get('/api/ordenes/solicitudes-publicas/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = self._ids_from_response(response)
+        self.assertNotIn(str(self.solicitud_a.id), ids)
+
+    def test_proveedor_sin_cliente_list_vacio(self):
+        client = APIClient()
+        client.force_authenticate(user=self.proveedor_user)
+        response = client.get('/api/ordenes/solicitudes-publicas/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = self._ids_from_response(response)
+        self.assertEqual(len(ids), 0)
+
+    def test_cliente_a_ve_solo_sus_solicitudes(self):
+        client = APIClient()
+        client.force_authenticate(user=self.user_a)
+        response = client.get('/api/ordenes/solicitudes-publicas/mis-solicitudes/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = self._ids_from_response(response)
+        self.assertIn(str(self.solicitud_a.id), ids)
+        self.assertIn(str(self.solicitud_global.id), ids)
 
