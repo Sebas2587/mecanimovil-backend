@@ -206,10 +206,12 @@ class VehiculoSerializer(serializers.ModelSerializer):
             from .kilometraje_validation import validar_kilometraje_usuario
 
             tiene_sii = kilometraje_api is not None and int(kilometraje_api or 0) > 0
+            year = data.get('year') or data.get('año')
             resultado = validar_kilometraje_usuario(
                 kilometraje,
                 mileage_sii=kilometraje_api,
                 tiene_mileage_sii=tiene_sii,
+                year=year,
             )
             if not resultado['valid']:
                 raise serializers.ValidationError({'kilometraje': resultado['mensaje']})

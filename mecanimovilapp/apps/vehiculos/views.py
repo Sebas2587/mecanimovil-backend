@@ -470,7 +470,7 @@ class VehiculoViewSet(viewsets.ModelViewSet):
     def validar_kilometraje(self, request):
         """
         Valida kilometraje ingresado vs mileage SII (GetAPI).
-        GET /api/vehiculos/validar-kilometraje/?kilometraje=150000&mileage_sii=120000&tiene_mileage_sii=true
+        GET /api/vehiculos/validar-kilometraje/?kilometraje=150000&mileage_sii=120000&tiene_mileage_sii=true&year=2012
         """
         kilometraje = request.query_params.get('kilometraje')
         if kilometraje is None or str(kilometraje).strip() == '':
@@ -484,10 +484,17 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         if tiene_param is not None:
             tiene_mileage_sii = str(tiene_param).lower() in ('1', 'true', 'yes', 'si', 'sí')
 
+        year = (
+            request.query_params.get('year')
+            or request.query_params.get('año')
+            or request.query_params.get('anio')
+        )
+
         resultado = validar_kilometraje_usuario(
             kilometraje,
             mileage_sii=request.query_params.get('mileage_sii') or request.query_params.get('kilometraje_api'),
             tiene_mileage_sii=tiene_mileage_sii,
+            year=year,
         )
         http_status = status.HTTP_200_OK if resultado['valid'] else status.HTTP_400_BAD_REQUEST
         return Response(resultado, status=http_status)
