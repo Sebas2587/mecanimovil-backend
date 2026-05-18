@@ -68,6 +68,7 @@ class ModeloViewSet(viewsets.ReadOnlyModelViewSet):
 
 from mecanimovilapp.apps.ordenes.models import SolicitudServicio, SolicitudServicioPublica
 from .getapi_client import fetch_appraisal_for_plate
+from .kilometraje_validation import merge_mileage_metadata, validar_kilometraje_usuario
 
 class VehiculoViewSet(viewsets.ModelViewSet):
     """
@@ -465,6 +466,32 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         serializer = ModeloSerializer(modelos, many=True)
         return Response(serializer.data)
 
+    @action(detail=False, methods=['get'], url_path='validar-kilometraje')
+    def validar_kilometraje(self, request):
+        """
+        Valida kilometraje ingresado vs mileage SII (GetAPI).
+        GET /api/vehiculos/validar-kilometraje/?kilometraje=150000&mileage_sii=120000&tiene_mileage_sii=true
+        """
+        kilometraje = request.query_params.get('kilometraje')
+        if kilometraje is None or str(kilometraje).strip() == '':
+            return Response(
+                {'error': 'Debe proporcionar el kilometraje a validar'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        tiene_param = request.query_params.get('tiene_mileage_sii')
+        tiene_mileage_sii = None
+        if tiene_param is not None:
+            tiene_mileage_sii = str(tiene_param).lower() in ('1', 'true', 'yes', 'si', 'sí')
+
+        resultado = validar_kilometraje_usuario(
+            kilometraje,
+            mileage_sii=request.query_params.get('mileage_sii') or request.query_params.get('kilometraje_api'),
+            tiene_mileage_sii=tiene_mileage_sii,
+        )
+        http_status = status.HTTP_200_OK if resultado['valid'] else status.HTTP_400_BAD_REQUEST
+        return Response(resultado, status=http_status)
+
     @action(detail=False, methods=['get'], url_path='verificar-patente')
     def verificar_patente(self, request):
         """
@@ -566,9 +593,11 @@ class VehiculoViewSet(viewsets.ModelViewSet):
                 except Exception as e:
                     print(f"Error mapping marca/modelo: {e}")
 
-                normalized_data.update(fetch_appraisal_for_plate(patente))
+                appraisal_extra = fetch_appraisal_for_plate(patente)
+                normalized_data.update(appraisal_extra)
                 if "tiene_tasacion_mercado" not in normalized_data:
                     normalized_data["tiene_tasacion_mercado"] = False
+                normalized_data.update(merge_mileage_metadata(data, appraisal_extra))
 
                 return Response(normalized_data)
             else:

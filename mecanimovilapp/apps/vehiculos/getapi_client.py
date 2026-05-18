@@ -5,6 +5,8 @@ import logging
 
 import requests
 
+from .kilometraje_validation import mileage_from_getapi_payload
+
 logger = logging.getLogger(__name__)
 
 GETAPI_KEY = "28054a51-09f6-4687-a4a7-ecf3ead55ef4"
@@ -40,6 +42,7 @@ def fetch_appraisal_for_plate(patente):
         tasacion_fiscal = int(info_fiscal.get("tasacion", 0) or 0)
 
         tiene_tasacion = any(v > 0 for v in (precio, banda_min, banda_max, tasacion_fiscal))
+        mileage_appraisal = mileage_from_getapi_payload(appraisal_data)
 
         return {
             "precio_mercado_promedio": precio,
@@ -50,7 +53,8 @@ def fetch_appraisal_for_plate(patente):
             "year_tasacion_fiscal": int(info_fiscal.get("ano_info_fiscal", 0) or 0) or None,
             "precio_retoma": int(appraisal_data.get("precioRetoma", 0) or 0),
             "tiene_tasacion_mercado": tiene_tasacion,
+            "mileage": mileage_appraisal,
         }
     except Exception as exc:
         logger.warning("GetAPI appraisal falló para patente %s: %s", patente_norm, exc)
-        return {"tiene_tasacion_mercado": False}
+        return {"tiene_tasacion_mercado": False, "mileage": None}

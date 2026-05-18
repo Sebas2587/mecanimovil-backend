@@ -192,13 +192,28 @@ class VehiculoSerializer(serializers.ModelSerializer):
     
     def validate(self, data):
         """
-        Validar que el modelo pertenezca a la marca
+        Validar que el modelo pertenezca a la marca y kilometraje vs SII.
         """
         if 'marca' in data and 'modelo' in data:
             if data['modelo'].marca != data['marca']:
                 raise serializers.ValidationError(
                     {"modelo": "El modelo seleccionado no pertenece a la marca indicada."}
                 )
+
+        kilometraje = data.get('kilometraje')
+        kilometraje_api = data.get('kilometraje_api')
+        if kilometraje is not None:
+            from .kilometraje_validation import validar_kilometraje_usuario
+
+            tiene_sii = kilometraje_api is not None and int(kilometraje_api or 0) > 0
+            resultado = validar_kilometraje_usuario(
+                kilometraje,
+                mileage_sii=kilometraje_api,
+                tiene_mileage_sii=tiene_sii,
+            )
+            if not resultado['valid']:
+                raise serializers.ValidationError({'kilometraje': resultado['mensaje']})
+
         return data
     
     def create(self, validated_data):
