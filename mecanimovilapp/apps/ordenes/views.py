@@ -3916,9 +3916,11 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
         """
         Listado exclusivo del cliente autenticado (app usuarios — Mis solicitudes).
         Nunca incluye feed de proveedor ni historial por vehículo comprado.
+        Usa la misma forma de respuesta paginada que list() para que el cliente
+        parsee results (FeatureCollection dentro de results).
         """
         if not hasattr(request.user, 'cliente'):
-            return Response([])
+            return Response({'count': 0, 'next': None, 'previous': None, 'results': []})
         queryset = SolicitudServicioPublica.objects.filter(
             cliente=request.user.cliente
         ).select_related(
@@ -3929,6 +3931,10 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
         estado = request.query_params.get('estado')
         if estado:
             queryset = queryset.filter(estado=estado)
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
 

@@ -4,4 +4,4 @@
 - [x] Implementar queryset y action `mis-solicitudes`
 - [x] Corregir OfertaProveedor queryset cliente
 - [x] Tests (CI)
-- [ ] Commit + push
+- [x] Commit + push

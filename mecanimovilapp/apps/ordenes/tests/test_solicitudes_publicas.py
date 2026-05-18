@@ -393,12 +393,14 @@ class MisSolicitudesAislamientoTestCase(TestCase):
 
     def _ids_from_response(self, response):
         data = response.data
-        if isinstance(data, list):
+        if isinstance(data, dict) and 'results' in data:
+            data = data['results']
+        if isinstance(data, dict) and data.get('type') == 'FeatureCollection':
+            items = data.get('features') or []
+        elif isinstance(data, list):
             items = data
-        elif isinstance(data, dict) and 'results' in data:
-            items = data['results']
         else:
-            items = data
+            items = data or []
         ids = []
         for item in items:
             if isinstance(item, dict):
