@@ -67,6 +67,7 @@ class ModeloViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 from mecanimovilapp.apps.ordenes.models import SolicitudServicio, SolicitudServicioPublica
+from .getapi_client import fetch_appraisal_for_plate
 
 class VehiculoViewSet(viewsets.ModelViewSet):
     """
@@ -518,7 +519,13 @@ class VehiculoViewSet(viewsets.ModelViewSet):
                 # Check for success flag if present in wrapper
                 # User example: { "success": true, "data": { ... } }
                 if json_response.get("success") is False:
-                     return Response({"error": "Vehículo no encontrado"}, status=status.HTTP_404_NOT_FOUND)
+                    return Response(
+                        {
+                            "error": "La patente ingresada no existe en el registro nacional de vehículos.",
+                            "code": "patente_no_encontrada",
+                        },
+                        status=status.HTTP_404_NOT_FOUND,
+                    )
 
                 data = json_response.get("data", json_response)
                 
@@ -559,9 +566,19 @@ class VehiculoViewSet(viewsets.ModelViewSet):
                 except Exception as e:
                     print(f"Error mapping marca/modelo: {e}")
 
+                normalized_data.update(fetch_appraisal_for_plate(patente))
+                if "tiene_tasacion_mercado" not in normalized_data:
+                    normalized_data["tiene_tasacion_mercado"] = False
+
                 return Response(normalized_data)
             else:
-                return Response({"error": "Vehículo no encontrado en registro nacional"}, status=status.HTTP_404_NOT_FOUND)
+                return Response(
+                    {
+                        "error": "La patente ingresada no existe en el registro nacional de vehículos.",
+                        "code": "patente_no_encontrada",
+                    },
+                    status=status.HTTP_404_NOT_FOUND,
+                )
                 
         except Exception as e:
             print(f"Error connecting to GetAPI: {e}")
