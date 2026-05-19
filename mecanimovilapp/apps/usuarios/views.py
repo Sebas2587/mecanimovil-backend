@@ -1196,7 +1196,7 @@ class TallerViewSet(viewsets.ModelViewSet):
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
         # Solo en detalle: evitar cómputo pesado en listados.
-        ctx['include_kpi_badge'] = self.action in ('retrieve', 'cerca')
+        ctx['include_kpi_badge'] = self.action in ('retrieve', 'cerca', 'proveedores_filtrados')
         return ctx
     
     @action(detail=True, methods=['get'])
@@ -1977,7 +1977,7 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
-        ctx['include_kpi_badge'] = self.action in ('retrieve', 'cerca')
+        ctx['include_kpi_badge'] = self.action in ('retrieve', 'cerca', 'proveedores_filtrados')
         return ctx
     
     @action(detail=True, methods=['get'])
