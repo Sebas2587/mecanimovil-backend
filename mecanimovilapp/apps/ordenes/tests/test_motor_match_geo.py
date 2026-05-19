@@ -5,7 +5,10 @@ import math
 from django.test import SimpleTestCase
 
 from mecanimovilapp.apps.ordenes.services.agendamiento_ia.motor_match import (
+    _build_desglose,
     _filtrar_comunas_validas,
+    _gestion_catalogo_sin_iva,
+    _oferta_catalogo_completa,
     _safe_float,
     _score_y_explicacion,
 )
@@ -27,6 +30,30 @@ class MotorMatchSafeFloatTests(SimpleTestCase):
         self.assertEqual(_safe_float(None), 0.0)
         self.assertEqual(_safe_float('bad'), 0.0)
         self.assertEqual(_safe_float(math.inf), 0.0)
+
+
+class MotorMatchCatalogoCompletoTests(SimpleTestCase):
+    def test_desglose_sin_atributo_gestion(self):
+        class OfertaFake:
+            costo_mano_de_obra_sin_iva = 10000
+            costo_repuestos_sin_iva = 5000
+            precio_publicado_cliente = 20000
+            precio_con_repuestos = 20000
+            precio_sin_repuestos = 15000
+
+        d = _build_desglose(OfertaFake(), requiere_repuestos=True)
+        self.assertEqual(d['gestion'], 0.0)
+        self.assertEqual(_gestion_catalogo_sin_iva(OfertaFake()), 0.0)
+
+    def test_oferta_incompleta_precio_cero(self):
+        class OfertaFake:
+            disponible = True
+            costo_mano_de_obra_sin_iva = 1000
+            precio_publicado_cliente = 0
+            precio_con_repuestos = 0
+            precio_sin_repuestos = 0
+
+        self.assertFalse(_oferta_catalogo_completa(OfertaFake(), requiere_repuestos=True))
 
 
 class MotorMatchGeoScoreTests(SimpleTestCase):

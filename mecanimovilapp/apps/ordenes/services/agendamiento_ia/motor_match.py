@@ -1,6 +1,6 @@
 """
 Matching de hasta 3 candidatos desde OfertaServicio (stateless).
-Incluye talleres y mecánicos a domicilio según distancia y comunas de cobertura.
+Incluye talleres y mecánicos a domicilio según distancia, marca, servicio y catálogo completo.
 """
 from __future__ import annotations
 
@@ -15,13 +15,14 @@ from django.db.models import Q
 
 from mecanimovilapp.apps.personalizacion.ml_engine import MotorRecomendaciones
 from mecanimovilapp.apps.servicios.models import OfertaServicio
-from mecanimovilapp.apps.usuarios.models import ChileanCommune, MechanicServiceArea, MecanicoDomicilio, Taller
+from mecanimovilapp.apps.usuarios.models import ChileanCommune, MechanicServiceArea
 from mecanimovilapp.apps.vehiculos.models import Vehiculo
 
 logger = logging.getLogger(__name__)
 
 MAX_CANDIDATOS = 3
 MAX_RADIO_KM = 80.0
+_DISTANCIA_SIN_UBICACION_KM = 999.0
 _RE_COMUNA_INVALIDA = re.compile(r'\d{3,}')
 
 
@@ -63,13 +64,42 @@ def _distancia_km_proveedor(oferta: OfertaServicio, punto: Point) -> float | Non
         return None
 
 
+def _oferta_catalogo_completa(oferta: OfertaServicio, *, requiere_repuestos: bool) -> bool:
+    """Catálogo listo para mostrar al cliente (precios y disponibilidad)."""
+    if not oferta.disponible:
+        return False
+    if _safe_float(oferta.costo_mano_de_obra_sin_iva) <= 0:
+        return False
+    precio_pub = _safe_float(oferta.precio_publicado_cliente)
+    precio_rep = _safe_float(oferta.precio_con_repuestos)
+    precio_sin = _safe_float(oferta.precio_sin_repuestos)
+    if requiere_repuestos:
+        return precio_pub > 0 or precio_rep > 0
+    return precio_pub > 0 or precio_sin > 0
+
+
+def _oferta_compatible_marca(oferta: OfertaServicio, marca) -> bool:
+    if not marca:
+        return True
+    marca_oferta_id = getattr(oferta, 'marca_vehiculo_seleccionada_id', None)
+    if marca_oferta_id and marca_oferta_id != marca.pk:
+        return False
+    return True
+
+
+def _proveedor_atiende_marca(proveedor, marca) -> bool:
+    if not marca or not proveedor:
+        return True
+    return proveedor.marcas_atendidas.filter(pk=marca.pk).exists()
+
+
 def _score_y_explicacion(
     *,
     dist_km: float | None,
     rating: float,
 ) -> tuple[float, str]:
     rating_norm = min(1.0, max(0.0, _safe_float(rating) / 5.0))
-    if dist_km is not None:
+    if dist_km is not None and dist_km < _DISTANCIA_SIN_UBICACION_KM:
         dist_km = _safe_float(dist_km, default=MAX_RADIO_KM)
         proximidad = max(0.0, 1.0 - min(dist_km, MAX_RADIO_KM) / MAX_RADIO_KM)
         score = min(0.99, 0.45 * proximidad + 0.35 * rating_norm + 0.2)
@@ -198,6 +228,53 @@ def _proveedor_aprobado(proveedor) -> bool:
     return bool(getattr(proveedor, 'verificado', False))
 
 
+def _oferta_apto_filtros(
+    oferta: OfertaServicio,
+    *,
+    marca,
+    requiere_repuestos: bool,
+    comunas: list[str],
+    punto: Point | None,
+) -> bool:
+    if not _oferta_catalogo_completa(oferta, requiere_repuestos=requiere_repuestos):
+        return False
+    if not _oferta_compatible_marca(oferta, marca):
+        return False
+
+    if oferta.tipo_proveedor == 'taller' and oferta.taller_id:
+        t = oferta.taller
+        if not _proveedor_aprobado(t):
+            return False
+        if not _proveedor_atiende_marca(t, marca):
+            return False
+        return True
+
+    if oferta.tipo_proveedor == 'mecanico' and oferta.mecanico_id:
+        m = oferta.mecanico
+        if not _proveedor_aprobado(m):
+            return False
+        if not _proveedor_atiende_marca(m, marca):
+            return False
+        return _mecanico_apto_en_zona(oferta, comunas=comunas, punto=punto)
+
+    return False
+
+
+def _ordenar_por_distancia_y_score(
+    candidatos_con_meta: list[tuple[OfertaServicio, float | None, float, str]],
+) -> list[tuple[float, OfertaServicio, str]]:
+    """Prioriza dentro del radio; si faltan, completa con los más cercanos fuera del radio."""
+
+    def sort_key(item: tuple[OfertaServicio, float | None, float, str]):
+        oferta, dist_km, score, _expl = item
+        en_radio = dist_km is not None and dist_km <= MAX_RADIO_KM
+        dist_sort = dist_km if dist_km is not None else _DISTANCIA_SIN_UBICACION_KM
+        return (0 if en_radio else 1, dist_sort, -score, oferta.id or 0)
+
+    candidatos_con_meta.sort(key=sort_key)
+    return [(score, oferta, expl) for oferta, _d, score, expl in candidatos_con_meta]
+
+
 def _armar_candidatos_finales(
     scored: list[tuple[float, OfertaServicio, str]],
     *,
@@ -239,10 +316,15 @@ def _armar_candidatos_finales(
     return elegidos
 
 
+def _gestion_catalogo_sin_iva(oferta: OfertaServicio) -> float:
+    """OfertaServicio no tiene gestión de compra; solo OfertaProveedor la usa al confirmar."""
+    return _safe_float(getattr(oferta, 'costo_gestion_compra_sin_iva', None))
+
+
 def _build_desglose(oferta: OfertaServicio, requiere_repuestos: bool) -> dict[str, Any]:
     mo = _safe_float(oferta.costo_mano_de_obra_sin_iva)
-    rep = _safe_float(oferta.costo_repuestos_sin_iva)
-    gest = _safe_float(oferta.costo_gestion_compra_sin_iva) if requiere_repuestos else 0.0
+    rep = _safe_float(oferta.costo_repuestos_sin_iva) if requiere_repuestos else 0.0
+    gest = _gestion_catalogo_sin_iva(oferta) if requiere_repuestos else 0.0
     total = _safe_float(oferta.precio_publicado_cliente)
     if total <= 0:
         total = _safe_float(
@@ -253,6 +335,7 @@ def _build_desglose(oferta: OfertaServicio, requiere_repuestos: bool) -> dict[st
         'repuestos': rep,
         'gestion': gest,
         'precio_publicado_cliente': total,
+        'catalogo_completo': True,
     }
 
 
@@ -261,6 +344,8 @@ def _serialize_candidato(
     score: float,
     explicacion: str,
     requiere_repuestos: bool,
+    *,
+    dist_km: float | None = None,
 ) -> dict[str, Any]:
     usuario_id, proveedor = _proveedor_usuario(oferta)
     nombre = ''
@@ -275,7 +360,7 @@ def _serialize_candidato(
     precio_sin = _safe_float(oferta.precio_sin_repuestos)
     servicio = getattr(oferta, 'servicio', None)
     nombre_servicio = getattr(servicio, 'nombre', '') if servicio else ''
-
+    desglose = _build_desglose(oferta, requiere_repuestos)
     score_safe = _safe_float(score)
 
     return {
@@ -294,7 +379,11 @@ def _serialize_candidato(
         'precio_sin_repuestos': precio_sin,
         'incluye_repuestos_sugerido': requiere_repuestos,
         'a_domicilio': a_domicilio,
-        'desglose': _build_desglose(oferta, requiere_repuestos),
+        'desglose': desglose,
+        'distancia_km': round(dist_km, 1) if dist_km is not None and dist_km < _DISTANCIA_SIN_UBICACION_KM else None,
+        'dentro_radio_km': (
+            dist_km is not None and dist_km <= MAX_RADIO_KM
+        ),
         'score_match': round(score_safe, 3),
         'explicacion': explicacion,
     }
@@ -341,9 +430,9 @@ def listar_candidatos_proveedor(
             'mecanico',
             'mecanico__usuario',
         )
+        .prefetch_related('taller__marcas_atendidas', 'mecanico__marcas_atendidas')
     )
 
-    filtered: list[OfertaServicio] = []
     comunas = _resolver_comunas(comunas_extraidas, direccion_texto)
     punto = None
     if lat is not None and lng is not None:
@@ -352,69 +441,84 @@ def listar_candidatos_proveedor(
         except (TypeError, ValueError):
             punto = None
 
+    pool_meta: list[tuple[OfertaServicio, float | None, float, str]] = []
     for oferta in qs:
-        if oferta.tipo_proveedor == 'taller' and oferta.taller_id:
-            t = oferta.taller
-            if not _proveedor_aprobado(t):
+        try:
+            if not _oferta_apto_filtros(
+                oferta,
+                marca=marca,
+                requiere_repuestos=requiere_repuestos,
+                comunas=comunas,
+                punto=punto,
+            ):
                 continue
-            if marca and not t.marcas_atendidas.filter(pk=marca.pk).exists():
+            proveedor_pool = oferta.taller or oferta.mecanico
+            if not proveedor_pool:
                 continue
-            if punto:
-                dist = _distancia_km_proveedor(oferta, punto)
-                if dist is not None and dist > MAX_RADIO_KM:
-                    continue
-            filtered.append(oferta)
-        elif oferta.tipo_proveedor == 'mecanico' and oferta.mecanico_id:
-            m = oferta.mecanico
-            if not _proveedor_aprobado(m):
-                continue
-            if marca and not m.marcas_atendidas.filter(pk=marca.pk).exists():
-                continue
-            if not _mecanico_apto_en_zona(oferta, comunas=comunas, punto=punto):
-                continue
-            filtered.append(oferta)
+            rating = _safe_float(getattr(proveedor_pool, 'calificacion_promedio', 0))
+            dist_km = _distancia_km_proveedor(oferta, punto) if punto else None
+            score, expl = _score_y_explicacion(dist_km=dist_km, rating=rating)
+            pool_meta.append((oferta, dist_km, _safe_float(score), expl))
+        except Exception:
+            logger.warning(
+                'Omitiendo oferta %s por error al evaluar candidato',
+                getattr(oferta, 'id', '?'),
+                exc_info=True,
+            )
 
-    if not filtered:
+    if not pool_meta:
         return {
             'candidatos': [],
             'ordenado_por_distancia': bool(punto),
             'comunas_resueltas': comunas,
             'requiere_repuestos': requiere_repuestos,
+            'radio_km': MAX_RADIO_KM,
         }
 
-    pool = filtered
     if not punto:
-        motor = MotorRecomendaciones()
+        ids = [o.id for o, _, _, _ in pool_meta]
         try:
+            motor = MotorRecomendaciones()
             ordered = motor.ordenar_por_relevancia(
-                OfertaServicio.objects.filter(
-                    id__in=[o.id for o in filtered]
-                ).select_related(
+                OfertaServicio.objects.filter(id__in=ids).select_related(
                     'servicio', 'taller', 'mecanico', 'taller__usuario', 'mecanico__usuario'
                 ),
                 vehiculo,
             )
-            pool = list(ordered) if isinstance(ordered, list) else list(ordered)
+            orden_ids = [o.id for o in (ordered if isinstance(ordered, list) else list(ordered))]
+            pool_meta.sort(
+                key=lambda item: (
+                    orden_ids.index(item[0].id) if item[0].id in orden_ids else 9999,
+                    -(item[2]),
+                )
+            )
         except Exception:
-            pool = filtered
+            pool_meta.sort(key=lambda item: -item[2])
 
-    scored: list[tuple[float, OfertaServicio, str]] = []
-    for oferta in pool:
-        proveedor_pool = oferta.taller or oferta.mecanico
-        if not proveedor_pool:
-            continue
-        rating = _safe_float(getattr(proveedor_pool, 'calificacion_promedio', 0))
-        dist_km = _distancia_km_proveedor(oferta, punto) if punto else None
-        score, expl = _score_y_explicacion(dist_km=dist_km, rating=rating)
-        scored.append((_safe_float(score), oferta, expl))
+    scored = _ordenar_por_distancia_y_score(pool_meta)
+    candidatos_raw = _armar_candidatos_finales(scored, requiere_repuestos=requiere_repuestos)
 
-    scored.sort(key=lambda item: item[0], reverse=True)
-
-    candidatos = _armar_candidatos_finales(scored, requiere_repuestos=requiere_repuestos)
+    dist_por_id = {o.id: d for o, d, _, _ in pool_meta}
+    candidatos = []
+    for cand in candidatos_raw:
+        oid = cand.get('oferta_servicio_id')
+        dist = dist_por_id.get(oid)
+        candidatos.append(
+            {
+                **cand,
+                'distancia_km': (
+                    round(dist, 1)
+                    if dist is not None and dist < _DISTANCIA_SIN_UBICACION_KM
+                    else cand.get('distancia_km')
+                ),
+                'dentro_radio_km': dist is not None and dist <= MAX_RADIO_KM,
+            }
+        )
 
     return {
         'candidatos': candidatos,
         'ordenado_por_distancia': bool(punto),
         'requiere_repuestos': requiere_repuestos,
         'comunas_resueltas': comunas,
+        'radio_km': MAX_RADIO_KM,
     }

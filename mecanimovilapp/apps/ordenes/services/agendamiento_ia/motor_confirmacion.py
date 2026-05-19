@@ -123,11 +123,11 @@ def _crear_detalle_y_oferta(
 ) -> OfertaProveedor:
     mo = Decimal(str(oferta_servicio.costo_mano_de_obra_sin_iva or 0))
     rep = Decimal(str(oferta_servicio.costo_repuestos_sin_iva or 0)) if requiere_repuestos else Decimal('0')
-    gest = (
-        Decimal(str(oferta_servicio.costo_gestion_compra_sin_iva or 0))
-        if requiere_repuestos
-        else Decimal('0')
-    )
+    gest = Decimal('0')
+    if requiere_repuestos:
+        gest = Decimal(
+            str(getattr(oferta_servicio, 'costo_gestion_compra_sin_iva', None) or 0)
+        )
     total = Decimal(str(oferta_servicio.precio_publicado_cliente or 0))
     if total <= 0:
         total = Decimal(
