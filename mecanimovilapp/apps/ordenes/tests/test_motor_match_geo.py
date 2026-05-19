@@ -48,12 +48,22 @@ class MotorMatchCatalogoCompletoTests(SimpleTestCase):
     def test_oferta_incompleta_precio_cero(self):
         class OfertaFake:
             disponible = True
-            costo_mano_de_obra_sin_iva = 1000
+            costo_mano_de_obra_sin_iva = 0
             precio_publicado_cliente = 0
             precio_con_repuestos = 0
             precio_sin_repuestos = 0
 
         self.assertFalse(_oferta_catalogo_completa(OfertaFake(), requiere_repuestos=True))
+
+    def test_oferta_legacy_solo_precio_agregado(self):
+        class OfertaFake:
+            disponible = True
+            costo_mano_de_obra_sin_iva = 0
+            precio_publicado_cliente = 45000
+            precio_con_repuestos = 45000
+            precio_sin_repuestos = 38000
+
+        self.assertTrue(_oferta_catalogo_completa(OfertaFake(), requiere_repuestos=True))
 
 
 class MotorMatchGeoScoreTests(SimpleTestCase):

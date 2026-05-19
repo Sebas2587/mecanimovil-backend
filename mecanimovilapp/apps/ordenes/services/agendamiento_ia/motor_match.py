@@ -15,7 +15,12 @@ from django.db.models import Q
 
 from mecanimovilapp.apps.personalizacion.ml_engine import MotorRecomendaciones
 from mecanimovilapp.apps.servicios.models import OfertaServicio
-from mecanimovilapp.apps.usuarios.models import ChileanCommune, MechanicServiceArea
+from mecanimovilapp.apps.usuarios.models import (
+    ChileanCommune,
+    MechanicServiceArea,
+    MecanicoDomicilio,
+    Taller,
+)
 from mecanimovilapp.apps.vehiculos.models import Vehiculo
 
 logger = logging.getLogger(__name__)
@@ -65,32 +70,53 @@ def _distancia_km_proveedor(oferta: OfertaServicio, punto: Point) -> float | Non
 
 
 def _oferta_catalogo_completa(oferta: OfertaServicio, *, requiere_repuestos: bool) -> bool:
-    """Catálogo listo para mostrar al cliente (precios y disponibilidad)."""
+    """Catálogo con precio publicado (misma lógica práctica que listados de servicios)."""
     if not oferta.disponible:
-        return False
-    if _safe_float(oferta.costo_mano_de_obra_sin_iva) <= 0:
         return False
     precio_pub = _safe_float(oferta.precio_publicado_cliente)
     precio_rep = _safe_float(oferta.precio_con_repuestos)
     precio_sin = _safe_float(oferta.precio_sin_repuestos)
     if requiere_repuestos:
-        return precio_pub > 0 or precio_rep > 0
-    return precio_pub > 0 or precio_sin > 0
+        return max(precio_pub, precio_rep, precio_sin) > 0
+    return max(precio_pub, precio_sin) > 0
 
 
-def _oferta_compatible_marca(oferta: OfertaServicio, marca) -> bool:
+def _queryset_ofertas_compatibles(
+    servicio_ids: list[int],
+    marca,
+) -> Any:
+    """
+    Mismo criterio de marca que GET /servicios/{id}/ofertas/?marca=
+    (oferta explícita para la marca o genérica de proveedor verificado).
+    """
+    qs = OfertaServicio.objects.filter(
+        servicio_id__in=servicio_ids,
+        disponible=True,
+    )
     if not marca:
-        return True
-    marca_oferta_id = getattr(oferta, 'marca_vehiculo_seleccionada_id', None)
-    if marca_oferta_id and marca_oferta_id != marca.pk:
-        return False
-    return True
+        return qs.filter(
+            Q(taller__verificado=True, taller__activo=True)
+            | Q(mecanico__verificado=True, mecanico__activo=True)
+        ).distinct()
 
+    talleres_ids = Taller.objects.filter(
+        marcas_atendidas=marca,
+        verificado=True,
+        activo=True,
+    ).values_list('id', flat=True)
+    mecanicos_ids = MecanicoDomicilio.objects.filter(
+        marcas_atendidas=marca,
+        verificado=True,
+        activo=True,
+    ).values_list('id', flat=True)
 
-def _proveedor_atiende_marca(proveedor, marca) -> bool:
-    if not marca or not proveedor:
-        return True
-    return proveedor.marcas_atendidas.filter(pk=marca.pk).exists()
+    return qs.filter(
+        Q(marca_vehiculo_seleccionada=marca)
+        | (
+            Q(marca_vehiculo_seleccionada__isnull=True)
+            & (Q(taller_id__in=talleres_ids) | Q(mecanico_id__in=mecanicos_ids))
+        )
+    ).distinct()
 
 
 def _score_y_explicacion(
@@ -207,12 +233,15 @@ def _mecanico_apto_en_zona(
     comunas: list[str],
     punto: Point | None,
 ) -> bool:
-    """Mecánico a domicilio: distancia al punto y/o comunas de su zona de servicio."""
+    """
+    Mecánico a domicilio: con ubicación se incluye y se ordena por km (sin cortar en 80 km).
+    Sin ubicación, exige comuna de cobertura.
+    """
     if not oferta.mecanico_id:
         return False
     if punto:
         dist = _distancia_km_proveedor(oferta, punto)
-        if dist is not None and dist <= MAX_RADIO_KM:
+        if dist is not None:
             return True
     if comunas and _mecanico_cubre_comunas(oferta.mecanico_id, comunas):
         return True
@@ -220,12 +249,14 @@ def _mecanico_apto_en_zona(
 
 
 def _proveedor_aprobado(proveedor) -> bool:
-    if not proveedor or not getattr(proveedor, 'activo', True):
+    """Alineado con listados de servicios: verificado + activo."""
+    if not proveedor:
         return False
-    estado = getattr(proveedor, 'estado_verificacion', None)
-    if estado:
-        return estado == 'aprobado'
-    return bool(getattr(proveedor, 'verificado', False))
+    if not getattr(proveedor, 'activo', True):
+        return False
+    if getattr(proveedor, 'verificado', False):
+        return True
+    return getattr(proveedor, 'estado_verificacion', None) == 'aprobado'
 
 
 def _oferta_apto_filtros(
@@ -238,22 +269,14 @@ def _oferta_apto_filtros(
 ) -> bool:
     if not _oferta_catalogo_completa(oferta, requiere_repuestos=requiere_repuestos):
         return False
-    if not _oferta_compatible_marca(oferta, marca):
-        return False
 
     if oferta.tipo_proveedor == 'taller' and oferta.taller_id:
-        t = oferta.taller
-        if not _proveedor_aprobado(t):
-            return False
-        if not _proveedor_atiende_marca(t, marca):
+        if not _proveedor_aprobado(oferta.taller):
             return False
         return True
 
     if oferta.tipo_proveedor == 'mecanico' and oferta.mecanico_id:
-        m = oferta.mecanico
-        if not _proveedor_aprobado(m):
-            return False
-        if not _proveedor_atiende_marca(m, marca):
+        if not _proveedor_aprobado(oferta.mecanico):
             return False
         return _mecanico_apto_en_zona(oferta, comunas=comunas, punto=punto)
 
@@ -413,16 +436,7 @@ def listar_candidatos_proveedor(
 
     marca = vehiculo.marca
     qs = (
-        OfertaServicio.objects.filter(
-            servicio_id__in=servicio_ids,
-            disponible=True,
-        )
-        .filter(
-            Q(marca_vehiculo_seleccionada__isnull=True)
-            | Q(marca_vehiculo_seleccionada=marca)
-            if marca
-            else Q()
-        )
+        _queryset_ofertas_compatibles(servicio_ids, marca)
         .select_related(
             'servicio',
             'taller',
@@ -467,6 +481,13 @@ def listar_candidatos_proveedor(
             )
 
     if not pool_meta:
+        logger.info(
+            'candidatos-proveedor vacío: vehiculo=%s servicios=%s ofertas_qs=%s comunas=%s',
+            vehiculo_id,
+            servicio_ids,
+            qs.count(),
+            comunas,
+        )
         return {
             'candidatos': [],
             'ordenado_por_distancia': bool(punto),

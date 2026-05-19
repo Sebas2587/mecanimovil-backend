@@ -14,9 +14,9 @@ GET `candidatos-proveedor` SHALL recibir `servicio_ids`, `requiere_repuestos` y 
 ### Requirement: Filtros de catálogo en candidatos
 GET `candidatos-proveedor` SHALL devolver solo `OfertaServicio` que cumplan simultáneamente:
 
-1. `disponible=true` y precios de catálogo configurados (mano de obra y precio publicado > 0).
+1. `disponible=true` y precio publicado o legacy (`precio_con_repuestos` / `precio_sin_repuestos`) > 0.
 2. `servicio_id` en la lista solicitada.
-3. Marca del vehículo: proveedor con la marca en `marcas_atendidas` y oferta con `marca_vehiculo_seleccionada` nula o igual a la marca del vehículo.
+3. Marca del vehículo: mismo criterio que `GET /servicios/{id}/ofertas/?marca=` (oferta explícita para la marca o genérica de proveedor verificado que atiende la marca).
 4. Geolocalización: priorizar ofertas dentro de `MAX_RADIO_KM`; si no alcanzan 3, completar con las más cercanas fuera del radio.
 5. Mecánico a domicilio: dentro del radio por distancia o con comuna de cobertura que coincida con la dirección.
 
