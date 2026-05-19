@@ -615,6 +615,9 @@ if not DEBUG:
 # Horas para que el proveedor elegido confirme adjudicación comprando créditos (solicitud pública)
 ADJUDICACION_CREDITOS_RESERVA_HORAS = int(config('ADJUDICACION_CREDITOS_RESERVA_HORAS', default=48))
 
+# Asistente IA en creación de solicitudes (catálogo + análisis de necesidad)
+AGENDAMIENTO_IA_ASISTIDO = config('AGENDAMIENTO_IA_ASISTIDO', default=False, cast=bool)
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,

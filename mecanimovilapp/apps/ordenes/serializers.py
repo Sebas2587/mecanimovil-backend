@@ -951,6 +951,7 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
             'antiguedad_proveedor', 'servicios_realizados_proveedor', 'proveedor_verificado',
             'proveedor_foto', 'oferta_original', 'es_oferta_secundaria', 'motivo_servicio_adicional',
             'ofertas_secundarias', 'oferta_original_info', 'solicitud_servicio_id', 'rechazada_por_expiracion',
+            'origen', 'oferta_servicio', 'metadata_ia',
             # Campos de desglose de costos
             'costo_repuestos', 'costo_mano_obra', 'costo_gestion_compra', 'foto_cotizacion_repuestos',
             'desglose_iva',

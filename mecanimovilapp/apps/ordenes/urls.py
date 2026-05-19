@@ -8,6 +8,7 @@ from .views import (
     validar_disponibilidad_taller, validar_disponibilidad_mecanico,
     obtener_configuracion_precio, calcular_precio_detallado
 )
+from .views_asistente_agendamiento import AsistenteAgendamientoViewSet
 
 app_name = 'ordenes'
 
@@ -21,6 +22,11 @@ router.register(r'proveedor-ordenes', ProveedorOrdenesViewSet, basename='proveed
 router.register(r'solicitudes-publicas', SolicitudPublicaViewSet, basename='solicitud-publica')
 router.register(r'ofertas', OfertaProveedorViewSet, basename='oferta')
 router.register(r'chat-solicitudes', ChatSolicitudViewSet, basename='chat-solicitud')
+router.register(
+    r'asistente-agendamiento',
+    AsistenteAgendamientoViewSet,
+    basename='asistente-agendamiento',
+)
 
 # RUTAS DE DISPONIBILIDAD ELIMINADAS - REEMPLAZADAS POR ENDPOINTS EN USUARIOS APP
 # Los horarios ahora se manejan desde:

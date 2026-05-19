@@ -865,6 +865,13 @@ class SolicitudServicioPublica(models.Model):
         help_text='Total de rechazos recibidos de proveedores',
         verbose_name='Total de Rechazos'
     )
+
+    metadata_ia_entrada = models.JSONField(
+        null=True,
+        blank=True,
+        help_text='Entrada del asistente al crear (temperatura, origen texto/salud)',
+        verbose_name='Metadata IA entrada',
+    )
     
     class Meta:
         verbose_name = 'Solicitud Pública de Servicio'
@@ -1292,6 +1299,33 @@ class OfertaProveedor(models.Model):
         default=False,
         help_text='Indica si esta es una oferta secundaria (servicio adicional)',
         verbose_name='Es Oferta Secundaria'
+    )
+
+    ORIGEN_OFERTA_CHOICES = [
+        ('manual', 'Creada manualmente por proveedor'),
+        ('catalogo', 'Generada desde catálogo OfertaServicio'),
+        ('secundaria', 'Oferta secundaria en ejecución'),
+    ]
+    origen = models.CharField(
+        max_length=20,
+        choices=ORIGEN_OFERTA_CHOICES,
+        default='manual',
+        db_index=True,
+        verbose_name='Origen de la oferta',
+    )
+    oferta_servicio = models.ForeignKey(
+        'servicios.OfertaServicio',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='ofertas_proveedor_generadas',
+        verbose_name='Oferta de catálogo origen',
+    )
+    metadata_ia = models.JSONField(
+        null=True,
+        blank=True,
+        help_text='Resumen IA, temperatura, ids sugeridos (sin texto crudo de consultas efímeras)',
+        verbose_name='Metadata IA',
     )
     
     motivo_servicio_adicional = models.TextField(
