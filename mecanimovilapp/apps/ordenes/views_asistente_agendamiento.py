@@ -169,8 +169,8 @@ class AsistenteAgendamientoViewSet(viewsets.ViewSet):
                     status=status.HTTP_404_NOT_FOUND,
                 )
             return Response(resultado)
-        except Exception:
-            logger.exception('Error en candidatos-proveedor')
+        except Exception as exc:
+            logger.exception('Error en candidatos-proveedor: %s', type(exc).__name__)
             return Response(
                 {'error': 'No se pudieron obtener candidatos'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,

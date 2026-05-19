@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+from functools import lru_cache
 from typing import Any
 
 from django.contrib.gis.geos import Point
@@ -24,16 +25,27 @@ MAX_RADIO_KM = 80.0
 _RE_COMUNA_INVALIDA = re.compile(r'\d{3,}')
 
 
+def _safe_float(value, default: float = 0.0) -> float:
+    """Evita NaN/Inf que rompen la serialización JSON de DRF."""
+    try:
+        n = float(value if value is not None else default)
+    except (TypeError, ValueError):
+        return default
+    if math.isnan(n) or math.isinf(n):
+        return default
+    return n
+
+
 def _punto_servicio(lat: float, lng: float) -> Point:
     return Point(float(lng), float(lat), srid=4326)
 
 
 def _distancia_km_proveedor(oferta: OfertaServicio, punto: Point) -> float | None:
     proveedor = oferta.taller if oferta.tipo_proveedor == 'taller' else oferta.mecanico
-    if not proveedor or not getattr(proveedor, 'ubicacion', None):
+    if not proveedor:
         return None
     try:
-        ubic = proveedor.ubicacion
+        ubic = getattr(proveedor, 'ubicacion', None)
         if ubic is None:
             return None
         p = punto
@@ -42,8 +54,8 @@ def _distancia_km_proveedor(oferta: OfertaServicio, punto: Point) -> float | Non
         metros = ubic.distance(p)
         if metros is None:
             return None
-        km = float(metros) / 1000.0
-        if math.isnan(km) or math.isinf(km):
+        km = _safe_float(metros, default=-1.0) / 1000.0
+        if km < 0:
             return None
         return km
     except Exception:
@@ -56,8 +68,9 @@ def _score_y_explicacion(
     dist_km: float | None,
     rating: float,
 ) -> tuple[float, str]:
-    rating_norm = min(1.0, max(0.0, rating / 5.0))
+    rating_norm = min(1.0, max(0.0, _safe_float(rating) / 5.0))
     if dist_km is not None:
+        dist_km = _safe_float(dist_km, default=MAX_RADIO_KM)
         proximidad = max(0.0, 1.0 - min(dist_km, MAX_RADIO_KM) / MAX_RADIO_KM)
         score = min(0.99, 0.45 * proximidad + 0.35 * rating_norm + 0.2)
         if dist_km < 5:
@@ -96,6 +109,24 @@ def _filtrar_comunas_validas(comunas: list[str] | None) -> list[str]:
     return validas
 
 
+@lru_cache(maxsize=1)
+def _nombres_comunas_chile() -> tuple[str, ...]:
+    """Nombres activos, más largos primero (evita falsos positivos por subcadenas)."""
+    try:
+        nombres = list(
+            ChileanCommune.objects.filter(is_active=True).values_list('name', flat=True)
+        )
+    except Exception:
+        logger.warning('No se pudo cargar ChileanCommune', exc_info=True)
+        return ()
+    limpios = sorted(
+        {(n or '').strip() for n in nombres if n and len((n or '').strip()) >= 3},
+        key=len,
+        reverse=True,
+    )
+    return tuple(limpios)
+
+
 def _inferir_comunas_desde_direccion(direccion_texto: str | None) -> list[str]:
     """Busca nombres de comunas chilenas dentro del texto de la dirección."""
     texto = (direccion_texto or '').strip()
@@ -103,12 +134,9 @@ def _inferir_comunas_desde_direccion(direccion_texto: str | None) -> list[str]:
         return []
     texto_low = texto.lower()
     encontradas: list[str] = []
-    for nombre in ChileanCommune.objects.filter(is_active=True).values_list('name', flat=True):
-        n = (nombre or '').strip()
-        if len(n) < 3:
-            continue
-        if n.lower() in texto_low:
-            encontradas.append(n)
+    for nombre in _nombres_comunas_chile():
+        if nombre.lower() in texto_low:
+            encontradas.append(nombre)
             if len(encontradas) >= 4:
                 break
     return encontradas
@@ -212,12 +240,12 @@ def _armar_candidatos_finales(
 
 
 def _build_desglose(oferta: OfertaServicio, requiere_repuestos: bool) -> dict[str, Any]:
-    mo = float(oferta.costo_mano_de_obra_sin_iva or 0)
-    rep = float(oferta.costo_repuestos_sin_iva or 0)
-    gest = float(oferta.costo_gestion_compra_sin_iva or 0) if requiere_repuestos else 0.0
-    total = float(oferta.precio_publicado_cliente or 0)
+    mo = _safe_float(oferta.costo_mano_de_obra_sin_iva)
+    rep = _safe_float(oferta.costo_repuestos_sin_iva)
+    gest = _safe_float(oferta.costo_gestion_compra_sin_iva) if requiere_repuestos else 0.0
+    total = _safe_float(oferta.precio_publicado_cliente)
     if total <= 0:
-        total = float(
+        total = _safe_float(
             oferta.precio_con_repuestos if requiere_repuestos else oferta.precio_sin_repuestos
         )
     return {
@@ -241,10 +269,14 @@ def _serialize_candidato(
 
     if proveedor:
         nombre = getattr(proveedor, 'nombre', None) or str(proveedor)
-        rating = float(getattr(proveedor, 'calificacion_promedio', 0) or 0)
+        rating = _safe_float(getattr(proveedor, 'calificacion_promedio', 0))
 
-    precio_rep = float(oferta.precio_con_repuestos or 0)
-    precio_sin = float(oferta.precio_sin_repuestos or 0)
+    precio_rep = _safe_float(oferta.precio_con_repuestos)
+    precio_sin = _safe_float(oferta.precio_sin_repuestos)
+    servicio = getattr(oferta, 'servicio', None)
+    nombre_servicio = getattr(servicio, 'nombre', '') if servicio else ''
+
+    score_safe = _safe_float(score)
 
     return {
         'oferta_servicio_id': oferta.id,
@@ -256,14 +288,14 @@ def _serialize_candidato(
         },
         'servicio': {
             'id': oferta.servicio_id,
-            'nombre': oferta.servicio.nombre if oferta.servicio_id else '',
+            'nombre': nombre_servicio,
         },
         'precio_con_repuestos': precio_rep,
         'precio_sin_repuestos': precio_sin,
         'incluye_repuestos_sugerido': requiere_repuestos,
         'a_domicilio': a_domicilio,
         'desglose': _build_desglose(oferta, requiere_repuestos),
-        'score_match': round(score, 3),
+        'score_match': round(score_safe, 3),
         'explicacion': explicacion,
     }
 
@@ -368,12 +400,13 @@ def listar_candidatos_proveedor(
 
     scored: list[tuple[float, OfertaServicio, str]] = []
     for oferta in pool:
-        rating = float(
-            getattr(oferta.taller or oferta.mecanico, 'calificacion_promedio', 0) or 0
-        )
+        proveedor_pool = oferta.taller or oferta.mecanico
+        if not proveedor_pool:
+            continue
+        rating = _safe_float(getattr(proveedor_pool, 'calificacion_promedio', 0))
         dist_km = _distancia_km_proveedor(oferta, punto) if punto else None
         score, expl = _score_y_explicacion(dist_km=dist_km, rating=rating)
-        scored.append((score, oferta, expl))
+        scored.append((_safe_float(score), oferta, expl))
 
     scored.sort(key=lambda item: item[0], reverse=True)
 
