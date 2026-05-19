@@ -11,6 +11,11 @@ from .settings import *
 # ============================================
 DEBUG = False
 
+# Asistente IA en creación de solicitudes (Render: AGENDAMIENTO_IA_ASISTIDO en render.yaml)
+AGENDAMIENTO_IA_ASISTIDO = os.environ.get(
+    'AGENDAMIENTO_IA_ASISTIDO', 'False'
+).lower() in ('true', '1', 'yes')
+
 # Configuración de hosts permitidos para producción
 # Se configura desde variable de entorno ALLOWED_HOSTS
 ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '').split(',')

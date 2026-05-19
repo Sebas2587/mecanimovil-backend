@@ -22,6 +22,14 @@ El backend corre en 3 servicios en Render coordinados mediante render.yaml.
 - THEN se conecta a Redis y procesa tareas en la cola default
 - AND las tareas de notificaciones push se ejecutan en menos de 10 segundos
 
+### Requirement: Variable AGENDAMIENTO_IA_ASISTIDO en API
+El Web Service `mecanimovil-api` expone el asistente de agendamiento cuando la variable está activa.
+
+#### Scenario: API en Render con asistente habilitado
+- GIVEN `AGENDAMIENTO_IA_ASISTIDO=True` en el servicio web (definido en render.yaml)
+- WHEN un cliente autenticado llama POST `/api/ordenes/asistente-agendamiento/analizar-necesidad/`
+- THEN la respuesta es 200 con servicios sugeridos (no 403)
+
 ### Requirement: Variables de entorno críticas
 El sistema no debe arrancar sin las variables mínimas requeridas.
 

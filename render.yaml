@@ -49,6 +49,9 @@ services:
           name: mecanimovil-redis
           type: keyvalue
           property: connectionString
+      # Asistente IA: analizar-necesidad + candidatos-proveedor (consultas stateless)
+      - key: AGENDAMIENTO_IA_ASISTIDO
+        value: "True"
       # Variables que debes configurar manualmente en Render Dashboard:
       # - MERCADOPAGO_ACCESS_TOKEN
       # - MERCADOPAGO_MODE (production o test)
