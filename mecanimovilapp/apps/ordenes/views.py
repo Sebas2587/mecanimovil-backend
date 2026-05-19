@@ -275,6 +275,54 @@ def procesar_solicitudes_expiradas():
         procesadas += ofertas_procesadas
         if ofertas_procesadas > 0:
             logger.info(f"✅ Procesadas {ofertas_procesadas} ofertas expiradas individualmente")
+
+        # =========================================================================
+        # PASO 1.5: Catálogo IA sin confirmación del proveedor (fecha_expiracion)
+        # =========================================================================
+        try:
+            catalogo_vencidas = SolicitudServicioPublica.objects.filter(
+                estado='pendiente_confirmacion',
+                fecha_expiracion__lt=ahora,
+            ).select_related('oferta_seleccionada', 'cliente', 'cliente__usuario')
+            for sol in catalogo_vencidas:
+                try:
+                    with transaction.atomic():
+                        sol_b = SolicitudServicioPublica.objects.select_for_update().get(pk=sol.pk)
+                        if sol_b.estado != 'pendiente_confirmacion':
+                            continue
+                        if sol_b.oferta_seleccionada_id:
+                            OfertaProveedor.objects.filter(pk=sol_b.oferta_seleccionada_id).update(
+                                estado='expirada',
+                            )
+                        sol_b.estado = 'expirada'
+                        sol_b.oferta_seleccionada = None
+                        sol_b.save(
+                            update_fields=[
+                                'estado',
+                                'oferta_seleccionada',
+                                'fecha_actualizacion',
+                            ]
+                        )
+                        procesadas += 1
+                        try:
+                            if channel_layer and sol_b.cliente and sol_b.cliente.usuario:
+                                async_to_sync(channel_layer.group_send)(
+                                    f"cliente_{sol_b.cliente.usuario.id}",
+                                    {
+                                        'type': 'solicitud_expirada',
+                                        'solicitud_id': str(sol_b.id),
+                                        'mensaje': (
+                                            'El proveedor no confirmó a tiempo. '
+                                            'Puedes crear una nueva solicitud.'
+                                        ),
+                                    },
+                                )
+                        except Exception as notify_e:
+                            logger.error(f"WS catálogo expirado: {notify_e}", exc_info=True)
+                except Exception as e:
+                    logger.error(f"Error expirando catálogo solicitud {sol.id}: {e}", exc_info=True)
+        except Exception as e:
+            logger.error(f"Error listando catálogo pendiente vencido: {e}", exc_info=True)
         
         # =========================================================================
         # PASO 2: Procesar solicitudes sin ofertas protegidas con fecha límite pasada
@@ -2762,7 +2810,7 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
         # 1. Solicitudes GLOBALES: filtradas por marca del vehículo y no vencidas
         if marcas_atendidas:
             query |= Q(
-                estado__in=['publicada', 'con_ofertas'],
+                estado__in=['publicada', 'con_ofertas', 'pendiente_confirmacion'],
                 fecha_expiracion__gt=timezone.now(),
                 tipo_solicitud='global',
                 vehiculo__marca__id__in=marcas_atendidas
@@ -2771,7 +2819,7 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
         # 2. Solicitudes DIRIGIDAS: SOLO para este proveedor específico y no vencidas
         query |= Q(
             proveedores_dirigidos=user,
-            estado__in=['publicada', 'con_ofertas'],
+            estado__in=['publicada', 'con_ofertas', 'pendiente_confirmacion'],
             fecha_expiracion__gt=timezone.now(),
             tipo_solicitud='dirigida'
         )
@@ -2782,8 +2830,8 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
         query |= Q(
             ofertas__proveedor=user,
             ofertas__estado__in=[
-                'enviada', 'vista', 'en_chat', 'pendiente_creditos',
-                'aceptada', 'pendiente_pago', 'pagada', 'en_ejecucion',
+                'enviada', 'vista', 'en_chat', 'pendiente_confirmacion',
+                'pendiente_creditos', 'aceptada', 'pendiente_pago', 'pagada', 'en_ejecucion',
             ]
         )
         
@@ -4131,7 +4179,11 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
             )
 
         estados_permite_cancelar_cliente = frozenset({
-            'creada', 'seleccionando_servicios', 'publicada', 'con_ofertas',
+            'creada',
+            'seleccionando_servicios',
+            'publicada',
+            'con_ofertas',
+            'pendiente_confirmacion',
         })
         if solicitud.estado not in estados_permite_cancelar_cliente:
             return Response(
@@ -4141,7 +4193,10 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if solicitud.oferta_seleccionada_id is not None:
+        if (
+            solicitud.oferta_seleccionada_id is not None
+            and solicitud.estado != 'pendiente_confirmacion'
+        ):
             return Response(
                 {
                     'error': 'No puedes cancelar: ya hay una oferta elegida. '
@@ -4152,9 +4207,10 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
         
         with transaction.atomic():
             # Snapshot de proveedores a notificar ANTES de marcar ofertas como rechazadas
+            estados_pendientes = ['enviada', 'vista', 'en_chat', 'pendiente_confirmacion']
             pending_offers_qs = OfertaProveedor.objects.filter(
                 solicitud=solicitud,
-                estado__in=['enviada', 'vista', 'en_chat'],
+                estado__in=estados_pendientes,
             )
             proveedor_ids_a_notificar = list(
                 pending_offers_qs.values_list('proveedor_id', flat=True).distinct()
@@ -4164,7 +4220,8 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
             )
 
             solicitud.estado = 'cancelada'
-            solicitud.save(update_fields=['estado'])
+            solicitud.oferta_seleccionada = None
+            solicitud.save(update_fields=['estado', 'oferta_seleccionada', 'fecha_actualizacion'])
 
             updated = pending_offers_qs.update(
                 estado='rechazada',
@@ -5068,6 +5125,34 @@ class OfertaProveedorViewSet(viewsets.ModelViewSet):
                 motivo=data.get('motivo', ''),
             )
             return Response(resultado)
+        except ConfirmacionCatalogoError as e:
+            return Response({'error': str(e), 'codigo': e.code}, status=e.status_code)
+
+    @action(detail=True, methods=['post'], url_path='aceptar-fecha-catalogo')
+    def aceptar_fecha_catalogo(self, request, pk=None):
+        from mecanimovilapp.apps.ordenes.services.agendamiento_ia.motor_confirmacion import (
+            ConfirmacionCatalogoError,
+            cliente_aceptar_fecha_catalogo,
+        )
+
+        if not hasattr(request.user, 'cliente'):
+            return Response(
+                {'error': 'Solo clientes pueden aceptar fechas'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        oferta = self.get_object()
+        try:
+            resultado = cliente_aceptar_fecha_catalogo(oferta, request.user.cliente)
+            oferta.refresh_from_db()
+            oferta.solicitud.refresh_from_db()
+            ctx = {'request': request}
+            return Response({
+                **resultado,
+                'oferta': self.get_serializer(oferta).data,
+                'solicitud': SolicitudServicioPublicaSerializer(
+                    oferta.solicitud, context=ctx
+                ).data,
+            })
         except ConfirmacionCatalogoError as e:
             return Response({'error': str(e), 'codigo': e.code}, status=e.status_code)
     

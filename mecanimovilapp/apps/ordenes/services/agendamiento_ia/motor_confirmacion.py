@@ -400,6 +400,56 @@ def proveedor_proponer_fecha_catalogo(
     }
 
 
+@transaction.atomic
+def cliente_aceptar_fecha_catalogo(oferta: OfertaProveedor, cliente) -> dict:
+    """Cliente acepta la fecha alternativa propuesta por el proveedor."""
+    if oferta.solicitud.cliente_id != cliente.id:
+        raise ConfirmacionCatalogoError('No autorizado', 'no_autorizado', 403)
+    if oferta.origen != 'catalogo':
+        raise ConfirmacionCatalogoError('No es una oferta de catálogo', 'no_es_catalogo')
+    if not oferta.es_fecha_alternativa:
+        raise ConfirmacionCatalogoError(
+            'No hay fecha alternativa pendiente de aceptar',
+            'sin_fecha_alternativa',
+        )
+    if oferta.solicitud.oferta_seleccionada_id != oferta.id:
+        raise ConfirmacionCatalogoError(
+            'La oferta no corresponde a la solicitud activa',
+            'oferta_no_seleccionada',
+        )
+
+    solicitud = oferta.solicitud
+    solicitud.fecha_preferida = oferta.fecha_disponible
+    solicitud.hora_preferida = oferta.hora_disponible
+    solicitud.save(update_fields=['fecha_preferida', 'hora_preferida', 'fecha_actualizacion'])
+
+    oferta.es_fecha_alternativa = False
+    oferta.estado = 'pendiente_confirmacion'
+    oferta.save(update_fields=['es_fecha_alternativa', 'estado'])
+
+    proveedor_id = oferta.proveedor_id
+    transaction.on_commit(
+        lambda: send_expo_push_notification.delay(
+            proveedor_id,
+            'Fecha aceptada',
+            'El cliente aceptó tu propuesta de fecha. Confirma la asignación cuando puedas.',
+            {
+                'type': 'catalog_date_accepted',
+                'solicitud_id': str(solicitud.id),
+                'oferta_id': str(oferta.id),
+            },
+        )
+    )
+    return {
+        'solicitud_id': str(solicitud.id),
+        'oferta_id': str(oferta.id),
+        'fecha_preferida': solicitud.fecha_preferida.isoformat(),
+        'hora_preferida': (
+            solicitud.hora_preferida.isoformat() if solicitud.hora_preferida else None
+        ),
+    }
+
+
 def adjudicar_oferta_catalogo_confirmada(oferta: OfertaProveedor) -> dict[str, Any]:
     """
     Ejecuta adjudicación tras confirmación del proveedor (créditos + carrito).

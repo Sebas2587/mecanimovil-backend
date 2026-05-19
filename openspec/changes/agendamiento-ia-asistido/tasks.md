@@ -17,3 +17,10 @@
 
 ## Fase 3 — Proveedores (repo prov)
 - [x] UI confirmación catálogo en solicitud-detalle
+
+## Fase 4 — Cierre ciclo catálogo
+- [x] Cliente: aceptar fecha alternativa (`aceptar-fecha-catalogo`)
+- [x] Cliente: detalle/listas estado `pendiente_confirmacion`
+- [x] Proveedor: modal proponer fecha
+- [x] Expiración catálogo sin confirmación + cancelación cliente
+- [x] Proveedor ve solicitudes `pendiente_confirmacion` en listado
