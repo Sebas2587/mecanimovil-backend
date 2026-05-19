@@ -1563,6 +1563,7 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
             'seleccionando_servicios': 'Seleccionando Servicios',
             'publicada': 'Publicada',
             'con_ofertas': 'Con Ofertas',
+            'pendiente_confirmacion': 'Pendiente confirmación del proveedor',
             'esperando_creditos_proveedor': 'Esperando confirmación del proveedor (créditos)',
             'adjudicada': 'Adjudicada',
             'pendiente_pago': 'Pendiente de Pago',

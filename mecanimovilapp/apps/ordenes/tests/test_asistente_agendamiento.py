@@ -102,3 +102,27 @@ class AsistenteFlagDeshabilitadoTests(TestCase):
         url = reverse('ordenes:asistente-agendamiento-analizar-necesidad')
         resp = api.post(url, {'texto': 'hola'}, format='json')
         self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
+
+@override_settings(AGENDAMIENTO_IA_ASISTIDO=True)
+class ConfirmarCandidatoValidacionTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='cliente_conf@test.com',
+            email='cliente_conf@test.com',
+            password='testpass123',
+        )
+        self.cliente = Cliente.objects.create(
+            usuario=self.user,
+            nombre='Conf',
+            apellido='Test',
+            email='cliente_conf@test.com',
+        )
+        self.api = APIClient()
+        self.api.force_authenticate(user=self.user)
+        self.url = reverse('ordenes:asistente-agendamiento-confirmar-candidato')
+
+    def test_confirmar_requiere_campos(self):
+        resp = self.api.post(self.url, {}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('codigo', resp.data)

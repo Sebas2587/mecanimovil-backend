@@ -8,8 +8,15 @@ from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
+from mecanimovilapp.apps.ordenes.models import OfertaProveedor, SolicitudServicioPublica
+from mecanimovilapp.apps.ordenes.serializers import (
+    OfertaProveedorSerializer,
+    SolicitudServicioPublicaSerializer,
+)
 from mecanimovilapp.apps.ordenes.services.agendamiento_ia import (
+    ConfirmacionCatalogoError,
     analizar_necesidad,
+    confirmar_candidato,
     listar_candidatos_proveedor,
 )
 
@@ -164,14 +171,37 @@ class AsistenteAgendamientoViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=['post'], url_path='confirmar-candidato')
     def confirmar_candidato_action(self, request):
-        """Fase 2: creación solicitud + oferta catálogo."""
         denied = self._check_flag()
         if denied:
             return denied
-        return Response(
-            {
-                'error': 'confirmar-candidato en implementación (fase 2)',
-                'codigo': 'no_implementado',
-            },
-            status=status.HTTP_501_NOT_IMPLEMENTED,
-        )
+
+        if not hasattr(request.user, 'cliente'):
+            return Response(
+                {'error': 'Solo clientes pueden confirmar candidatos'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            resultado = confirmar_candidato(request.user.cliente, request.data or {})
+            solicitud = SolicitudServicioPublica.objects.get(pk=resultado['solicitud_id'])
+            oferta = OfertaProveedor.objects.get(pk=resultado['oferta_id'])
+            ctx = {'request': request}
+            return Response(
+                {
+                    **resultado,
+                    'solicitud': SolicitudServicioPublicaSerializer(solicitud, context=ctx).data,
+                    'oferta': OfertaProveedorSerializer(oferta, context=ctx).data,
+                },
+                status=status.HTTP_201_CREATED,
+            )
+        except ConfirmacionCatalogoError as e:
+            return Response(
+                {'error': str(e), 'codigo': e.code},
+                status=e.status_code,
+            )
+        except Exception:
+            logger.exception('Error en confirmar-candidato')
+            return Response(
+                {'error': 'No se pudo confirmar el candidato'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )

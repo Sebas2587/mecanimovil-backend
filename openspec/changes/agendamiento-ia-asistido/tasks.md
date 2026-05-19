@@ -8,8 +8,8 @@
 - [x] Servicios `motor_necesidad`, `motor_match`
 - [x] ViewSet `AsistenteAgendamientoViewSet` + URLs
 - [x] Flag `AGENDAMIENTO_IA_ASISTIDO`
-- [ ] Tests `test_asistente_agendamiento.py`
-- [ ] `motor_confirmacion` + `confirmar-candidato`
+- [x] Tests `test_asistente_agendamiento.py` (validación confirmar-candidato)
+- [x] `motor_confirmacion` + `confirmar-candidato` + acciones proveedor catálogo
 
 ## Fase 2 — Usuarios
 - [ ] `agendamientoAsistidoService.js` + hooks + componentes

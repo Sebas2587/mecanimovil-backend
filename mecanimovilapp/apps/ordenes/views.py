@@ -4695,6 +4695,11 @@ class OfertaProveedorViewSet(viewsets.ModelViewSet):
                 serializer.validated_data['es_oferta_secundaria'] = True
                 logger.info(f"Creando oferta secundaria - Oferta original: {oferta_original_obj.id}, Estado: {oferta_original_obj.estado}")
             else:
+                if solicitud.estado == 'pendiente_confirmacion':
+                    raise serializers.ValidationError(
+                        "Esta solicitud tiene una propuesta de catálogo en revisión; "
+                        "no se pueden enviar ofertas manuales adicionales."
+                    )
                 # Para ofertas originales, validar que la solicitud puede recibir ofertas
                 if not solicitud.puede_recibir_ofertas:
                     raise serializers.ValidationError(
@@ -4943,6 +4948,128 @@ class OfertaProveedorViewSet(viewsets.ModelViewSet):
         except Exception as e:
             logger.error(f"Error en perform_create: {str(e)}", exc_info=True)
             raise
+
+    @action(detail=True, methods=['post'], url_path='confirmar-catalogo')
+    def confirmar_catalogo(self, request, pk=None):
+        """Proveedor confirma asignación desde catálogo IA (adjudica + créditos)."""
+        from mecanimovilapp.apps.ordenes.services.agendamiento_ia.motor_confirmacion import (
+            ConfirmacionCatalogoError,
+            adjudicar_oferta_catalogo_confirmada,
+        )
+
+        if hasattr(request.user, 'cliente'):
+            return Response(
+                {'error': 'Solo proveedores pueden confirmar'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        oferta = self.get_object()
+        try:
+            with transaction.atomic():
+                oferta_tx = OfertaProveedor.objects.select_for_update().get(pk=oferta.pk)
+                if oferta_tx.origen != 'catalogo' or oferta_tx.proveedor_id != request.user.id:
+                    return Response({'error': 'No autorizado'}, status=status.HTTP_403_FORBIDDEN)
+                if oferta_tx.estado != 'pendiente_confirmacion':
+                    return Response(
+                        {'error': f'Estado de oferta no válido: {oferta_tx.estado}'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                resultado = adjudicar_oferta_catalogo_confirmada(oferta_tx)
+
+            oferta.refresh_from_db()
+            solicitud = oferta.solicitud
+            solicitud.refresh_from_db()
+            ctx = {'request': request}
+
+            if resultado.get('estado_resultado') == 'esperando_creditos_proveedor':
+                return Response({
+                    **resultado,
+                    'message': 'Debes acreditar créditos para confirmar la asignación.',
+                    'solicitud': SolicitudServicioPublicaSerializer(solicitud, context=ctx).data,
+                    'oferta': self.get_serializer(oferta).data,
+                })
+
+            carrito_id = resultado.get('carrito_id')
+            payload = {
+                **resultado,
+                'message': 'Asignación confirmada',
+                'solicitud': SolicitudServicioPublicaSerializer(solicitud, context=ctx).data,
+                'oferta': self.get_serializer(oferta).data,
+            }
+            if carrito_id:
+                try:
+                    carrito = CarritoAgendamiento.objects.select_related(
+                        'cliente', 'vehiculo'
+                    ).prefetch_related(
+                        'items__oferta_servicio__servicio',
+                    ).get(id=carrito_id)
+                    payload['carrito'] = CarritoAgendamientoSerializer(
+                        carrito, context=ctx
+                    ).data
+                except CarritoAgendamiento.DoesNotExist:
+                    payload['sin_carrito'] = True
+            else:
+                payload['sin_carrito'] = True
+            return Response(payload)
+        except ConfirmacionCatalogoError as e:
+            return Response({'error': str(e), 'codigo': e.code}, status=e.status_code)
+        except adjudicacion_publica.AdjudicacionCarritoError as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception:
+            logger.exception('Error confirmar-catalogo oferta %s', pk)
+            return Response(
+                {'error': 'No se pudo confirmar la asignación'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+    @action(detail=True, methods=['post'], url_path='rechazar-catalogo')
+    def rechazar_catalogo(self, request, pk=None):
+        from mecanimovilapp.apps.ordenes.services.agendamiento_ia.motor_confirmacion import (
+            ConfirmacionCatalogoError,
+            proveedor_rechazar_catalogo,
+        )
+
+        if hasattr(request.user, 'cliente'):
+            return Response(
+                {'error': 'Solo proveedores pueden rechazar'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        oferta = self.get_object()
+        try:
+            resultado = proveedor_rechazar_catalogo(
+                oferta,
+                request.user,
+                motivo=(request.data or {}).get('motivo', ''),
+            )
+            return Response(resultado)
+        except ConfirmacionCatalogoError as e:
+            return Response({'error': str(e), 'codigo': e.code}, status=e.status_code)
+
+    @action(detail=True, methods=['post'], url_path='proponer-fecha-catalogo')
+    def proponer_fecha_catalogo(self, request, pk=None):
+        from mecanimovilapp.apps.ordenes.services.agendamiento_ia.motor_confirmacion import (
+            ConfirmacionCatalogoError,
+            proveedor_proponer_fecha_catalogo,
+        )
+
+        if hasattr(request.user, 'cliente'):
+            return Response(
+                {'error': 'Solo proveedores pueden proponer fecha'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        data = request.data or {}
+        oferta = self.get_object()
+        try:
+            resultado = proveedor_proponer_fecha_catalogo(
+                oferta,
+                request.user,
+                fecha_disponible=data.get('fecha_disponible'),
+                hora_disponible=data.get('hora_disponible'),
+                motivo=data.get('motivo', ''),
+            )
+            return Response(resultado)
+        except ConfirmacionCatalogoError as e:
+            return Response({'error': str(e), 'codigo': e.code}, status=e.status_code)
     
     @action(detail=False, methods=['get'])
     def mis_ofertas(self, request):
@@ -5860,6 +5987,16 @@ class ChatSolicitudViewSet(viewsets.ModelViewSet):
             raise permissions.PermissionDenied(
                 "No se puede chatear en una oferta rechazada, retirada o expirada"
             )
+
+        if oferta.solicitud.estado == 'pendiente_confirmacion':
+            if oferta.solicitud.oferta_seleccionada_id != oferta.id:
+                raise permissions.PermissionDenied(
+                    "Solo puedes chatear en la oferta de catálogo asignada a esta solicitud."
+                )
+            if oferta.estado not in ('pendiente_confirmacion', 'en_chat'):
+                raise permissions.PermissionDenied(
+                    "El chat no está disponible en el estado actual de la oferta."
+                )
         
         # ✅ Reserva por créditos: solo la oferta elegida puede seguir en chat
         if oferta.solicitud.estado == 'esperando_creditos_proveedor':
