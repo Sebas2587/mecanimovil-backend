@@ -4,4 +4,5 @@
 - [x] Wizard: servicio → repuestos → ubicación → fecha → comparador
 - [x] Validar lat/lng antes de candidatos
 - [x] Descripción opcional con fallback al confirmar
-- [x] OpenSpec + chat/APIs IA conversacional en backlog
+- [x] Sin chat ni UI conversacional en app usuarios (nueva solicitud)
+- [ ] Chat / APIs conversacionales IA (backlog global)
