@@ -118,7 +118,7 @@ REGLAS_SINTOMA: tuple[ReglaSintoma, ...] = (
         interpretacion='Podría ser aire acondicionado o filtro de habitáculo.',
         terminos_catalogo=('habitaculo', 'habitáculo', 'aire', 'filtro'),
         patrones=(
-            r'aire acondicionado', r'\ba\c\b', r'no enfr', r'mal olor',
+            r'aire acondicionado', r'\bac\b', r'no enfr', r'mal olor',
             r'filtro.{0,12}habitaculo', r'humedad.{0,12}cabina',
         ),
         slugs_salud=('cabin-filter',),

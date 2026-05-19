@@ -1,6 +1,9 @@
 """Tests aprendizaje semántico (sin BD cuando es posible)."""
+import re
+
 from django.test import SimpleTestCase
 
+from mecanimovilapp.apps.ordenes.services.agendamiento_ia.lexico_necesidad import REGLAS_SINTOMA
 from mecanimovilapp.apps.ordenes.services.agendamiento_ia.motor_aprendizaje import (
     _generar_fragmentos,
     build_metadata_ia_entrada,
@@ -9,6 +12,14 @@ from mecanimovilapp.apps.ordenes.services.agendamiento_ia.motor_salud_cruzada im
     cruzar_salud_con_texto,
     interpretar_metricas_salud,
 )
+
+
+class LexicoNecesidadPatronesTests(SimpleTestCase):
+    def test_todos_los_patrones_son_regex_validos(self):
+        for regla in REGLAS_SINTOMA:
+            for patron in regla.patrones:
+                with self.subTest(regla=regla.id, patron=patron):
+                    re.compile(patron)
 
 
 class MotorAprendizajeFragmentosTests(SimpleTestCase):
