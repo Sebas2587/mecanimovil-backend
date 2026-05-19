@@ -5,6 +5,7 @@ import logging
 
 from django.conf import settings
 from rest_framework import permissions, status, viewsets
+from rest_framework.permissions import IsAdminUser
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -18,6 +19,9 @@ from mecanimovilapp.apps.ordenes.services.agendamiento_ia import (
     analizar_necesidad,
     confirmar_candidato,
     listar_candidatos_proveedor,
+)
+from mecanimovilapp.apps.ordenes.services.agendamiento_ia.motor_operacion import (
+    obtener_resumen_operacion_agendamiento_ia,
 )
 
 logger = logging.getLogger(__name__)
@@ -166,6 +170,26 @@ class AsistenteAgendamientoViewSet(viewsets.ViewSet):
             logger.exception('Error en candidatos-proveedor')
             return Response(
                 {'error': 'No se pudieron obtener candidatos'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+    @action(
+        detail=False,
+        methods=['get'],
+        url_path='resumen-operacion',
+        permission_classes=[IsAdminUser],
+    )
+    def resumen_operacion_action(self, request):
+        """Métricas del asistente IA para staff (sin PII)."""
+        denied = self._check_flag()
+        if denied:
+            return denied
+        try:
+            return Response(obtener_resumen_operacion_agendamiento_ia())
+        except Exception:
+            logger.exception('Error en resumen-operacion agendamiento IA')
+            return Response(
+                {'error': 'No se pudo obtener el resumen operativo'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 

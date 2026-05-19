@@ -104,6 +104,38 @@ class AnalizarNecesidadSinPersistenciaTests(TestCase):
         self.assertIsNotNone(resp.data.get('servicios_recomendados'))
 
 
+@override_settings(AGENDAMIENTO_IA_ASISTIDO=True)
+class ResumenOperacionStaffTests(TestCase):
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='staff_ia@test.com',
+            email='staff_ia@test.com',
+            password='testpass123',
+            is_staff=True,
+        )
+        self.user = User.objects.create_user(
+            username='user_ia@test.com',
+            email='user_ia@test.com',
+            password='testpass123',
+        )
+
+    def test_staff_obtiene_resumen(self):
+        api = APIClient()
+        api.force_authenticate(user=self.staff)
+        url = reverse('ordenes:asistente-agendamiento-resumen-operacion')
+        resp = api.get(url)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertIn('flags', resp.data)
+        self.assertIn('patrones_aprendizaje_activos', resp.data)
+
+    def test_no_staff_403(self):
+        api = APIClient()
+        api.force_authenticate(user=self.user)
+        url = reverse('ordenes:asistente-agendamiento-resumen-operacion')
+        resp = api.get(url)
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
+
 @override_settings(AGENDAMIENTO_IA_ASISTIDO=False)
 class AsistenteFlagDeshabilitadoTests(TestCase):
     def test_403_si_flag_off(self):

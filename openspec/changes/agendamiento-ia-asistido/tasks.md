@@ -29,3 +29,11 @@
 - [x] Proveedor: modal proponer fecha
 - [x] Expiración catálogo sin confirmación + cancelación cliente
 - [x] Proveedor ve solicitudes `pendiente_confirmacion` en listado
+
+## Fase 6 — Integración aprendizaje
+- [x] metadata_ia_entrada en confirmar-candidato
+- [x] Comando `alimentar_patrones_necesidad`
+
+## Fase 7 — UX comparador + operación
+- [x] Comparador catálogo 1+ candidatos con contexto IA
+- [x] GET `resumen-operacion` (staff)
