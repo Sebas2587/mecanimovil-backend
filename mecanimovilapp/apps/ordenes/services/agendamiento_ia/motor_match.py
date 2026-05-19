@@ -15,12 +15,7 @@ from django.db.models import Q
 
 from mecanimovilapp.apps.personalizacion.ml_engine import MotorRecomendaciones
 from mecanimovilapp.apps.servicios.models import OfertaServicio
-from mecanimovilapp.apps.usuarios.models import (
-    ChileanCommune,
-    MechanicServiceArea,
-    MecanicoDomicilio,
-    Taller,
-)
+from mecanimovilapp.apps.usuarios.models import ChileanCommune, MechanicServiceArea
 from mecanimovilapp.apps.vehiculos.models import Vehiculo
 
 logger = logging.getLogger(__name__)
@@ -86,37 +81,41 @@ def _queryset_ofertas_compatibles(
     marca,
 ) -> Any:
     """
-    Mismo criterio de marca que GET /servicios/{id}/ofertas/?marca=
-    (oferta explícita para la marca o genérica de proveedor verificado).
+    Mismo criterio que proveedores_filtrados + ofertas por servicio:
+    proveedor verificado, atiende la marca, oferta disponible y marca en oferta
+  o genérica (null).
     """
-    qs = OfertaServicio.objects.filter(
+    base = OfertaServicio.objects.filter(
         servicio_id__in=servicio_ids,
         disponible=True,
     )
     if not marca:
-        return qs.filter(
+        return base.filter(
             Q(taller__verificado=True, taller__activo=True)
             | Q(mecanico__verificado=True, mecanico__activo=True)
         ).distinct()
 
-    talleres_ids = Taller.objects.filter(
-        marcas_atendidas=marca,
-        verificado=True,
-        activo=True,
-    ).values_list('id', flat=True)
-    mecanicos_ids = MecanicoDomicilio.objects.filter(
-        marcas_atendidas=marca,
-        verificado=True,
-        activo=True,
-    ).values_list('id', flat=True)
+    q_marca_oferta = Q(marca_vehiculo_seleccionada=marca) | Q(
+        marca_vehiculo_seleccionada__isnull=True
+    )
 
-    return qs.filter(
-        Q(marca_vehiculo_seleccionada=marca)
-        | (
-            Q(marca_vehiculo_seleccionada__isnull=True)
-            & (Q(taller_id__in=talleres_ids) | Q(mecanico_id__in=mecanicos_ids))
-        )
-    ).distinct()
+    ofertas_taller = base.filter(
+        tipo_proveedor='taller',
+        taller__isnull=False,
+        taller__marcas_atendidas=marca,
+        taller__verificado=True,
+        taller__activo=True,
+    ).filter(q_marca_oferta)
+
+    ofertas_mecanico = base.filter(
+        tipo_proveedor='mecanico',
+        mecanico__isnull=False,
+        mecanico__marcas_atendidas=marca,
+        mecanico__verificado=True,
+        mecanico__activo=True,
+    ).filter(q_marca_oferta)
+
+    return (ofertas_taller | ofertas_mecanico).distinct()
 
 
 def _score_y_explicacion(
@@ -227,60 +226,70 @@ def _mecanico_cubre_comunas(mecanico_id: int, comunas: list[str]) -> bool:
     return False
 
 
-def _mecanico_apto_en_zona(
+def _mecanico_prioridad_zona(
     oferta: OfertaServicio,
     *,
     comunas: list[str],
     punto: Point | None,
-) -> bool:
+) -> tuple[bool, float | None]:
     """
-    Mecánico a domicilio: con ubicación se incluye y se ordena por km (sin cortar en 80 km).
-    Sin ubicación, exige comuna de cobertura.
+    No excluye por zona (como proveedores_filtrados); devuelve si cubre comuna y distancia
+    para priorizar en el score.
     """
-    if not oferta.mecanico_id:
-        return False
-    if punto:
-        dist = _distancia_km_proveedor(oferta, punto)
-        if dist is not None:
-            return True
-    if comunas and _mecanico_cubre_comunas(oferta.mecanico_id, comunas):
-        return True
-    return False
+    dist_km = _distancia_km_proveedor(oferta, punto) if punto else None
+    cubre = bool(comunas and _mecanico_cubre_comunas(oferta.mecanico_id, comunas))
+    return cubre, dist_km
 
 
-def _proveedor_aprobado(proveedor) -> bool:
-    """Alineado con listados de servicios: verificado + activo."""
-    if not proveedor:
-        return False
-    if not getattr(proveedor, 'activo', True):
-        return False
-    if getattr(proveedor, 'verificado', False):
-        return True
-    return getattr(proveedor, 'estado_verificacion', None) == 'aprobado'
-
-
-def _oferta_apto_filtros(
-    oferta: OfertaServicio,
+def _construir_pool_meta(
+    qs,
     *,
-    marca,
+    punto: Point | None,
     requiere_repuestos: bool,
+    exigir_precio: bool,
     comunas: list[str],
-    punto: Point | None,
-) -> bool:
-    if not _oferta_catalogo_completa(oferta, requiere_repuestos=requiere_repuestos):
-        return False
+) -> tuple[list[tuple[OfertaServicio, float | None, float, str]], dict[str, int]]:
+    pool_meta: list[tuple[OfertaServicio, float | None, float, str]] = []
+    stats = {'evaluadas': 0, 'sin_precio': 0, 'sin_proveedor': 0, 'errores': 0}
 
-    if oferta.tipo_proveedor == 'taller' and oferta.taller_id:
-        if not _proveedor_aprobado(oferta.taller):
-            return False
-        return True
+    for oferta in qs:
+        stats['evaluadas'] += 1
+        try:
+            if exigir_precio and not _oferta_catalogo_completa(
+                oferta, requiere_repuestos=requiere_repuestos
+            ):
+                stats['sin_precio'] += 1
+                continue
 
-    if oferta.tipo_proveedor == 'mecanico' and oferta.mecanico_id:
-        if not _proveedor_aprobado(oferta.mecanico):
-            return False
-        return _mecanico_apto_en_zona(oferta, comunas=comunas, punto=punto)
+            proveedor_pool = oferta.taller or oferta.mecanico
+            if not proveedor_pool:
+                stats['sin_proveedor'] += 1
+                continue
 
-    return False
+            dist_km = _distancia_km_proveedor(oferta, punto) if punto else None
+            if oferta.tipo_proveedor == 'mecanico' and oferta.mecanico_id:
+                _cubre, dist_m = _mecanico_prioridad_zona(
+                    oferta, comunas=comunas, punto=punto
+                )
+                if dist_m is not None:
+                    dist_km = dist_m
+
+            rating = _safe_float(getattr(proveedor_pool, 'calificacion_promedio', 0))
+            score, expl = _score_y_explicacion(dist_km=dist_km, rating=rating)
+            if not exigir_precio and not _oferta_catalogo_completa(
+                oferta, requiere_repuestos=requiere_repuestos
+            ):
+                expl = 'Precio del catálogo pendiente de configurar'
+            pool_meta.append((oferta, dist_km, _safe_float(score), expl))
+        except Exception:
+            stats['errores'] += 1
+            logger.warning(
+                'Omitiendo oferta %s por error al evaluar candidato',
+                getattr(oferta, 'id', '?'),
+                exc_info=True,
+            )
+
+    return pool_meta, stats
 
 
 def _ordenar_por_distancia_y_score(
@@ -353,12 +362,13 @@ def _build_desglose(oferta: OfertaServicio, requiere_repuestos: bool) -> dict[st
         total = _safe_float(
             oferta.precio_con_repuestos if requiere_repuestos else oferta.precio_sin_repuestos
         )
+    completo = _oferta_catalogo_completa(oferta, requiere_repuestos=requiere_repuestos)
     return {
         'mano_obra': mo,
         'repuestos': rep,
         'gestion': gest,
         'precio_publicado_cliente': total,
-        'catalogo_completo': True,
+        'catalogo_completo': completo,
     }
 
 
@@ -455,37 +465,32 @@ def listar_candidatos_proveedor(
         except (TypeError, ValueError):
             punto = None
 
-    pool_meta: list[tuple[OfertaServicio, float | None, float, str]] = []
-    for oferta in qs:
-        try:
-            if not _oferta_apto_filtros(
-                oferta,
-                marca=marca,
-                requiere_repuestos=requiere_repuestos,
-                comunas=comunas,
-                punto=punto,
-            ):
-                continue
-            proveedor_pool = oferta.taller or oferta.mecanico
-            if not proveedor_pool:
-                continue
-            rating = _safe_float(getattr(proveedor_pool, 'calificacion_promedio', 0))
-            dist_km = _distancia_km_proveedor(oferta, punto) if punto else None
-            score, expl = _score_y_explicacion(dist_km=dist_km, rating=rating)
-            pool_meta.append((oferta, dist_km, _safe_float(score), expl))
-        except Exception:
-            logger.warning(
-                'Omitiendo oferta %s por error al evaluar candidato',
-                getattr(oferta, 'id', '?'),
-                exc_info=True,
-            )
+    count_qs = qs.count()
+    pool_meta, stats = _construir_pool_meta(
+        qs,
+        punto=punto,
+        requiere_repuestos=requiere_repuestos,
+        exigir_precio=True,
+        comunas=comunas,
+    )
+    uso_fallback_precio = False
+    if not pool_meta and count_qs > 0:
+        pool_meta, stats = _construir_pool_meta(
+            qs,
+            punto=punto,
+            requiere_repuestos=requiere_repuestos,
+            exigir_precio=False,
+            comunas=comunas,
+        )
+        uso_fallback_precio = bool(pool_meta)
 
     if not pool_meta:
         logger.info(
-            'candidatos-proveedor vacío: vehiculo=%s servicios=%s ofertas_qs=%s comunas=%s',
+            'candidatos-proveedor vacío: vehiculo=%s servicios=%s ofertas_qs=%s stats=%s comunas=%s',
             vehiculo_id,
             servicio_ids,
-            qs.count(),
+            count_qs,
+            stats,
             comunas,
         )
         return {
@@ -494,6 +499,11 @@ def listar_candidatos_proveedor(
             'comunas_resueltas': comunas,
             'requiere_repuestos': requiere_repuestos,
             'radio_km': MAX_RADIO_KM,
+            'diagnostico': {
+                'ofertas_en_queryset': count_qs,
+                'marca_id': marca.pk if marca else None,
+                **stats,
+            },
         }
 
     if not punto:
@@ -536,10 +546,13 @@ def listar_candidatos_proveedor(
             }
         )
 
-    return {
+    resultado: dict[str, Any] = {
         'candidatos': candidatos,
         'ordenado_por_distancia': bool(punto),
         'requiere_repuestos': requiere_repuestos,
         'comunas_resueltas': comunas,
         'radio_km': MAX_RADIO_KM,
     }
+    if uso_fallback_precio:
+        resultado['aviso'] = 'Algunos precios de catálogo están pendientes de configurar'
+    return resultado

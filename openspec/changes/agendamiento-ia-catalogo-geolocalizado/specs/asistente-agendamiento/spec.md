@@ -18,7 +18,8 @@ GET `candidatos-proveedor` SHALL devolver solo `OfertaServicio` que cumplan simu
 2. `servicio_id` en la lista solicitada.
 3. Marca del vehículo: mismo criterio que `GET /servicios/{id}/ofertas/?marca=` (oferta explícita para la marca o genérica de proveedor verificado que atiende la marca).
 4. Geolocalización: priorizar ofertas dentro de `MAX_RADIO_KM`; si no alcanzan 3, completar con las más cercanas fuera del radio.
-5. Mecánico a domicilio: dentro del radio por distancia o con comuna de cobertura que coincida con la dirección.
+5. Mecánico a domicilio: mismo universo que `proveedores_filtrados` (sin excluir por comuna); la distancia solo ordena resultados.
+6. Si ninguna oferta tiene precio configurado pero sí `disponible=true`, el sistema MAY reintentar sin filtro de precio y marcar `catalogo_completo: false` en el desglose.
 
 #### Scenario: Sin proveedores en radio
 - GIVEN hay ofertas válidas de catálogo solo a 50 km
