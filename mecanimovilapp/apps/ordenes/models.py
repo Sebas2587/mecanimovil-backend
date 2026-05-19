@@ -1236,7 +1236,7 @@ class OfertaProveedor(models.Model):
     
     # Estado de la oferta
     estado = models.CharField(
-        max_length=20,
+        max_length=30,
         choices=[
             ('enviada', 'Enviada'),
             ('vista', 'Vista por Cliente'),
