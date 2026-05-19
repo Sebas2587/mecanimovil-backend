@@ -205,3 +205,42 @@ def boost_servicios_desde_aprendizaje(
 
 def contar_patrones_activos() -> int:
     return PatronAprendizajeNecesidad.objects.count()
+
+
+def build_metadata_ia_entrada(
+    *,
+    analisis: dict[str, Any] | None = None,
+    componentes_salud: list[dict] | None = None,
+) -> dict[str, Any]:
+    """
+    Resumen persistido al confirmar solicitud (alimenta aprendizaje vía señal m2m).
+    No incluye el texto completo de consultas efímeras, solo metadatos del análisis.
+    """
+    meta: dict[str, Any] = {}
+    if analisis:
+        if analisis.get('motor_analisis'):
+            meta['motor_analisis'] = analisis['motor_analisis']
+        if analisis.get('interpretacion'):
+            meta['interpretacion'] = (analisis['interpretacion'] or '')[:600]
+        if analisis.get('resumen_salud'):
+            meta['resumen_salud'] = (analisis['resumen_salud'] or '')[:600]
+        if analisis.get('sintomas_detectados'):
+            meta['sintomas_detectados'] = list(analisis['sintomas_detectados'])[:12]
+        if analisis.get('coherencia_salud_texto') is not None:
+            meta['coherencia_salud_texto'] = analisis['coherencia_salud_texto']
+        recs = analisis.get('servicios_recomendados') or []
+        meta['servicios_recomendados_ids'] = [
+            r.get('servicio_id') for r in recs if isinstance(r, dict) and r.get('servicio_id')
+        ][:12]
+    if componentes_salud:
+        meta['componentes_salud'] = [
+            {
+                'slug': c.get('slug'),
+                'nombre': (c.get('nombre') or '')[:80],
+                'nivel_alerta': c.get('nivel_alerta') or c.get('status'),
+                'salud_porcentaje': c.get('salud_porcentaje') or c.get('salud'),
+            }
+            for c in componentes_salud[:12]
+            if isinstance(c, dict)
+        ]
+    return meta

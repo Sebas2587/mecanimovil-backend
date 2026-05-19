@@ -7,7 +7,8 @@ from django.utils.safestring import mark_safe
 from .models import (
     SolicitudServicio, LineaServicio, ConfiguracionPrecio, 
     CarritoAgendamiento, ItemCarritoAgendamiento, AuditAccesoCliente,
-    SolicitudServicioPublica, FotoSolicitudPublica, OfertaProveedor, DetalleServicioOferta, ChatSolicitud
+    SolicitudServicioPublica, FotoSolicitudPublica, OfertaProveedor, DetalleServicioOferta, ChatSolicitud,
+    PatronAprendizajeNecesidad,
 )
 
 # ADMIN PARA DISPONIBILIDAD ELIMINADO - REEMPLAZADO POR HorarioProveedor EN USUARIOS APP
@@ -699,4 +700,16 @@ class ChatSolicitudAdmin(admin.ModelAdmin):
         return format_html(
             '<span style="background-color: #ffc107; color: white; padding: 2px 6px; border-radius: 3px; font-size: 11px;">NO LEÍDO</span>'
         )
-    leido_badge.short_description = "Leído" 
+    leido_badge.short_description = "Leído"
+
+
+@admin.register(PatronAprendizajeNecesidad)
+class PatronAprendizajeNecesidadAdmin(admin.ModelAdmin):
+    list_display = (
+        'fragmento', 'servicio', 'componente_slug', 'modelo',
+        'confirmaciones', 'ultima_vez',
+    )
+    list_filter = ('componente_slug', 'ultima_vez')
+    search_fields = ('fragmento', 'servicio__nombre', 'componente_slug')
+    readonly_fields = ('ultima_vez',)
+    ordering = ('-confirmaciones', '-ultima_vez')
