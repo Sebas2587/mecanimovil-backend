@@ -1,9 +1,12 @@
 """
 Matching de hasta 3 candidatos desde OfertaServicio (stateless).
+Incluye talleres y mecánicos a domicilio según distancia y comunas de cobertura.
 """
 from __future__ import annotations
 
-from decimal import Decimal
+import logging
+import math
+import re
 from typing import Any
 
 from django.contrib.gis.geos import Point
@@ -11,11 +14,14 @@ from django.db.models import Q
 
 from mecanimovilapp.apps.personalizacion.ml_engine import MotorRecomendaciones
 from mecanimovilapp.apps.servicios.models import OfertaServicio
-from mecanimovilapp.apps.usuarios.models import MechanicServiceArea, MecanicoDomicilio, Taller
+from mecanimovilapp.apps.usuarios.models import ChileanCommune, MechanicServiceArea, MecanicoDomicilio, Taller
 from mecanimovilapp.apps.vehiculos.models import Vehiculo
+
+logger = logging.getLogger(__name__)
 
 MAX_CANDIDATOS = 3
 MAX_RADIO_KM = 80.0
+_RE_COMUNA_INVALIDA = re.compile(r'\d{3,}')
 
 
 def _punto_servicio(lat: float, lng: float) -> Point:
@@ -24,12 +30,24 @@ def _punto_servicio(lat: float, lng: float) -> Point:
 
 def _distancia_km_proveedor(oferta: OfertaServicio, punto: Point) -> float | None:
     proveedor = oferta.taller if oferta.tipo_proveedor == 'taller' else oferta.mecanico
-    if not proveedor or not proveedor.ubicacion:
+    if not proveedor or not getattr(proveedor, 'ubicacion', None):
         return None
     try:
-        metros = proveedor.ubicacion.distance(punto)
-        return float(metros) / 1000.0
+        ubic = proveedor.ubicacion
+        if ubic is None:
+            return None
+        p = punto
+        if getattr(ubic, 'srid', None) and getattr(p, 'srid', None) and ubic.srid != p.srid:
+            p = Point(p.x, p.y, srid=ubic.srid)
+        metros = ubic.distance(p)
+        if metros is None:
+            return None
+        km = float(metros) / 1000.0
+        if math.isnan(km) or math.isinf(km):
+            return None
+        return km
     except Exception:
+        logger.debug('No se pudo calcular distancia proveedor', exc_info=True)
         return None
 
 
@@ -61,12 +79,54 @@ def _proveedor_usuario(oferta: OfertaServicio):
     return None, None
 
 
+def _filtrar_comunas_validas(comunas: list[str] | None) -> list[str]:
+    """Descarta calles u otros textos que no son nombre de comuna."""
+    if not comunas:
+        return []
+    validas: list[str] = []
+    for raw in comunas:
+        c = (raw or '').strip()
+        if len(c) < 3 or len(c) > 50:
+            continue
+        if _RE_COMUNA_INVALIDA.search(c):
+            continue
+        if any(ch.isdigit() for ch in c):
+            continue
+        validas.append(c)
+    return validas
+
+
+def _inferir_comunas_desde_direccion(direccion_texto: str | None) -> list[str]:
+    """Busca nombres de comunas chilenas dentro del texto de la dirección."""
+    texto = (direccion_texto or '').strip()
+    if len(texto) < 4:
+        return []
+    texto_low = texto.lower()
+    encontradas: list[str] = []
+    for nombre in ChileanCommune.objects.filter(is_active=True).values_list('name', flat=True):
+        n = (nombre or '').strip()
+        if len(n) < 3:
+            continue
+        if n.lower() in texto_low:
+            encontradas.append(n)
+            if len(encontradas) >= 4:
+                break
+    return encontradas
+
+
+def _resolver_comunas(comunas_extraidas: list[str] | None, direccion_texto: str | None) -> list[str]:
+    comunas = _filtrar_comunas_validas(comunas_extraidas)
+    if comunas:
+        return comunas
+    return _inferir_comunas_desde_direccion(direccion_texto)
+
+
 def _mecanico_cubre_comunas(mecanico_id: int, comunas: list[str]) -> bool:
     if not comunas:
-        return True
-    comunas_norm = {c.strip().lower() for c in comunas if c and str(c).strip()}
+        return False
+    comunas_norm = [c.strip().lower() for c in comunas if c and str(c).strip()]
     if not comunas_norm:
-        return True
+        return False
     areas = MechanicServiceArea.objects.filter(
         mechanic_id=mecanico_id,
         is_active=True,
@@ -74,9 +134,81 @@ def _mecanico_cubre_comunas(mecanico_id: int, comunas: list[str]) -> bool:
     for area in areas:
         names = area.commune_names or []
         for name in names:
-            if str(name).strip().lower() in comunas_norm:
-                return True
+            n_low = str(name).strip().lower()
+            if not n_low:
+                continue
+            for comuna in comunas_norm:
+                if comuna == n_low or comuna in n_low or n_low in comuna:
+                    return True
     return False
+
+
+def _mecanico_apto_en_zona(
+    oferta: OfertaServicio,
+    *,
+    comunas: list[str],
+    punto: Point | None,
+) -> bool:
+    """Mecánico a domicilio: distancia al punto y/o comunas de su zona de servicio."""
+    if not oferta.mecanico_id:
+        return False
+    if punto:
+        dist = _distancia_km_proveedor(oferta, punto)
+        if dist is not None and dist <= MAX_RADIO_KM:
+            return True
+    if comunas and _mecanico_cubre_comunas(oferta.mecanico_id, comunas):
+        return True
+    return False
+
+
+def _proveedor_aprobado(proveedor) -> bool:
+    if not proveedor or not getattr(proveedor, 'activo', True):
+        return False
+    estado = getattr(proveedor, 'estado_verificacion', None)
+    if estado:
+        return estado == 'aprobado'
+    return bool(getattr(proveedor, 'verificado', False))
+
+
+def _armar_candidatos_finales(
+    scored: list[tuple[float, OfertaServicio, str]],
+    *,
+    requiere_repuestos: bool,
+) -> list[dict[str, Any]]:
+    """Hasta MAX_CANDIDATOS, priorizando al menos un taller y un mecánico si existen."""
+    por_tipo: dict[str, list[tuple[float, OfertaServicio, str, int]]] = {
+        'taller': [],
+        'mecanico': [],
+    }
+    for score, oferta, expl in scored:
+        uid, _ = _proveedor_usuario(oferta)
+        if not uid:
+            continue
+        tipo = oferta.tipo_proveedor or ''
+        if tipo in por_tipo:
+            por_tipo[tipo].append((score, oferta, expl, uid))
+
+    elegidos: list[dict[str, Any]] = []
+    vistos: set[int] = set()
+
+    for tipo in ('taller', 'mecanico'):
+        for score, oferta, expl, uid in por_tipo[tipo]:
+            if uid in vistos:
+                continue
+            elegidos.append(_serialize_candidato(oferta, score, expl, requiere_repuestos))
+            vistos.add(uid)
+            break
+
+    for score, oferta, expl in scored:
+        uid, _ = _proveedor_usuario(oferta)
+        if not uid or uid in vistos:
+            continue
+        elegidos.append(_serialize_candidato(oferta, score, expl, requiere_repuestos))
+        vistos.add(uid)
+        if len(elegidos) >= MAX_CANDIDATOS:
+            break
+
+    return elegidos
 
 
 def _build_desglose(oferta: OfertaServicio, requiere_repuestos: bool) -> dict[str, Any]:
@@ -142,6 +274,7 @@ def listar_candidatos_proveedor(
     servicio_ids: list[int],
     requiere_repuestos: bool = True,
     comunas_extraidas: list[str] | None = None,
+    direccion_texto: str | None = None,
     lat: float | None = None,
     lng: float | None = None,
 ) -> dict[str, Any]:
@@ -179,7 +312,7 @@ def listar_candidatos_proveedor(
     )
 
     filtered: list[OfertaServicio] = []
-    comunas = comunas_extraidas or []
+    comunas = _resolver_comunas(comunas_extraidas, direccion_texto)
     punto = None
     if lat is not None and lng is not None:
         try:
@@ -190,7 +323,7 @@ def listar_candidatos_proveedor(
     for oferta in qs:
         if oferta.tipo_proveedor == 'taller' and oferta.taller_id:
             t = oferta.taller
-            if not (t.verificado and t.activo):
+            if not _proveedor_aprobado(t):
                 continue
             if marca and not t.marcas_atendidas.filter(pk=marca.pk).exists():
                 continue
@@ -201,22 +334,21 @@ def listar_candidatos_proveedor(
             filtered.append(oferta)
         elif oferta.tipo_proveedor == 'mecanico' and oferta.mecanico_id:
             m = oferta.mecanico
-            if not (m.verificado and m.activo):
+            if not _proveedor_aprobado(m):
                 continue
             if marca and not m.marcas_atendidas.filter(pk=marca.pk).exists():
                 continue
-            dist = _distancia_km_proveedor(oferta, punto) if punto else None
-            if punto and dist is not None:
-                if dist > MAX_RADIO_KM:
-                    continue
-            elif not _mecanico_cubre_comunas(m.id, comunas):
-                continue
-            elif punto and dist is None and not _mecanico_cubre_comunas(m.id, comunas):
+            if not _mecanico_apto_en_zona(oferta, comunas=comunas, punto=punto):
                 continue
             filtered.append(oferta)
 
     if not filtered:
-        return {'candidatos': [], 'ordenado_por_distancia': bool(punto)}
+        return {
+            'candidatos': [],
+            'ordenado_por_distancia': bool(punto),
+            'comunas_resueltas': comunas,
+            'requiere_repuestos': requiere_repuestos,
+        }
 
     pool = filtered
     if not punto:
@@ -245,22 +377,11 @@ def listar_candidatos_proveedor(
 
     scored.sort(key=lambda item: item[0], reverse=True)
 
-    seen_proveedores: set = set()
-    candidatos: list[dict[str, Any]] = []
-
-    for score, oferta, expl in scored:
-        uid, _ = _proveedor_usuario(oferta)
-        if not uid or uid in seen_proveedores:
-            continue
-        seen_proveedores.add(uid)
-        candidatos.append(
-            _serialize_candidato(oferta, score, expl, requiere_repuestos)
-        )
-        if len(candidatos) >= MAX_CANDIDATOS:
-            break
+    candidatos = _armar_candidatos_finales(scored, requiere_repuestos=requiere_repuestos)
 
     return {
         'candidatos': candidatos,
         'ordenado_por_distancia': bool(punto),
         'requiere_repuestos': requiere_repuestos,
+        'comunas_resueltas': comunas,
     }

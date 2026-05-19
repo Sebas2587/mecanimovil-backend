@@ -152,11 +152,14 @@ class AsistenteAgendamientoViewSet(viewsets.ViewSet):
             lat, lng = None, None
 
         try:
+            direccion_texto = (qp.get('direccion_texto') or qp.get('direccion_servicio_texto') or '').strip()
+
             resultado = listar_candidatos_proveedor(
                 vehiculo_id=vehiculo_id,
                 servicio_ids=servicio_ids,
                 requiere_repuestos=requiere_repuestos,
                 comunas_extraidas=comunas,
+                direccion_texto=direccion_texto or None,
                 lat=lat,
                 lng=lng,
             )

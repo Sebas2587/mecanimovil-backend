@@ -2,8 +2,15 @@
 from django.test import SimpleTestCase
 
 from mecanimovilapp.apps.ordenes.services.agendamiento_ia.motor_match import (
+    _filtrar_comunas_validas,
     _score_y_explicacion,
 )
+
+
+class MotorMatchComunasTests(SimpleTestCase):
+    def test_descarta_calle_como_comuna(self):
+        self.assertEqual(_filtrar_comunas_validas(['manuel de Amat 2960']), [])
+        self.assertEqual(_filtrar_comunas_validas(['Providencia']), ['Providencia'])
 
 
 class MotorMatchGeoScoreTests(SimpleTestCase):
