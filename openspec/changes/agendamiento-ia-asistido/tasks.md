@@ -37,3 +37,9 @@
 ## Fase 7 — UX comparador + operación
 - [x] Comparador catálogo 1+ candidatos con contexto IA
 - [x] GET `resumen-operacion` (staff)
+
+## Catálogo geolocalizado (flujo principal)
+- [x] Matching candidatos por distancia (lat/lng)
+- [x] Wizard: servicio → repuestos → ubicación → fecha → comparador
+- [ ] Chat / APIs conversacionales IA (backlog)
+

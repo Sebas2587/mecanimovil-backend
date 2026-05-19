@@ -6,6 +6,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
+from django.contrib.gis.geos import Point
 from django.db.models import Q
 
 from mecanimovilapp.apps.personalizacion.ml_engine import MotorRecomendaciones
@@ -14,6 +15,42 @@ from mecanimovilapp.apps.usuarios.models import MechanicServiceArea, MecanicoDom
 from mecanimovilapp.apps.vehiculos.models import Vehiculo
 
 MAX_CANDIDATOS = 3
+MAX_RADIO_KM = 80.0
+
+
+def _punto_servicio(lat: float, lng: float) -> Point:
+    return Point(float(lng), float(lat), srid=4326)
+
+
+def _distancia_km_proveedor(oferta: OfertaServicio, punto: Point) -> float | None:
+    proveedor = oferta.taller if oferta.tipo_proveedor == 'taller' else oferta.mecanico
+    if not proveedor or not proveedor.ubicacion:
+        return None
+    try:
+        metros = proveedor.ubicacion.distance(punto)
+        return float(metros) / 1000.0
+    except Exception:
+        return None
+
+
+def _score_y_explicacion(
+    *,
+    dist_km: float | None,
+    rating: float,
+) -> tuple[float, str]:
+    rating_norm = min(1.0, max(0.0, rating / 5.0))
+    if dist_km is not None:
+        proximidad = max(0.0, 1.0 - min(dist_km, MAX_RADIO_KM) / MAX_RADIO_KM)
+        score = min(0.99, 0.45 * proximidad + 0.35 * rating_norm + 0.2)
+        if dist_km < 5:
+            expl = f'Muy cerca de ti ({dist_km:.1f} km)'
+        elif dist_km < 25:
+            expl = f'A {dist_km:.0f} km de tu ubicación'
+        else:
+            expl = f'Disponible a ~{dist_km:.0f} km'
+        return score, expl
+    score = min(0.99, 0.4 + 0.35 * rating_norm + 0.25)
+    return score, 'Ofrece el servicio para tu vehículo y zona'
 
 
 def _proveedor_usuario(oferta: OfertaServicio):
@@ -143,6 +180,12 @@ def listar_candidatos_proveedor(
 
     filtered: list[OfertaServicio] = []
     comunas = comunas_extraidas or []
+    punto = None
+    if lat is not None and lng is not None:
+        try:
+            punto = _punto_servicio(lat, lng)
+        except (TypeError, ValueError):
+            punto = None
 
     for oferta in qs:
         if oferta.tipo_proveedor == 'taller' and oferta.taller_id:
@@ -151,6 +194,10 @@ def listar_candidatos_proveedor(
                 continue
             if marca and not t.marcas_atendidas.filter(pk=marca.pk).exists():
                 continue
+            if punto:
+                dist = _distancia_km_proveedor(oferta, punto)
+                if dist is not None and dist > MAX_RADIO_KM:
+                    continue
             filtered.append(oferta)
         elif oferta.tipo_proveedor == 'mecanico' and oferta.mecanico_id:
             m = oferta.mecanico
@@ -158,52 +205,62 @@ def listar_candidatos_proveedor(
                 continue
             if marca and not m.marcas_atendidas.filter(pk=marca.pk).exists():
                 continue
-            if not _mecanico_cubre_comunas(m.id, comunas):
+            dist = _distancia_km_proveedor(oferta, punto) if punto else None
+            if punto and dist is not None:
+                if dist > MAX_RADIO_KM:
+                    continue
+            elif not _mecanico_cubre_comunas(m.id, comunas):
+                continue
+            elif punto and dist is None and not _mecanico_cubre_comunas(m.id, comunas):
                 continue
             filtered.append(oferta)
 
     if not filtered:
-        return {'candidatos': []}
+        return {'candidatos': [], 'ordenado_por_distancia': bool(punto)}
 
-    motor = MotorRecomendaciones()
-    try:
-        ordered = motor.ordenar_por_relevancia(
-            OfertaServicio.objects.filter(
-                id__in=[o.id for o in filtered]
-            ).select_related(
-                'servicio', 'taller', 'mecanico', 'taller__usuario', 'mecanico__usuario'
-            ),
-            vehiculo,
+    pool = filtered
+    if not punto:
+        motor = MotorRecomendaciones()
+        try:
+            ordered = motor.ordenar_por_relevancia(
+                OfertaServicio.objects.filter(
+                    id__in=[o.id for o in filtered]
+                ).select_related(
+                    'servicio', 'taller', 'mecanico', 'taller__usuario', 'mecanico__usuario'
+                ),
+                vehiculo,
+            )
+            pool = list(ordered) if isinstance(ordered, list) else list(ordered)
+        except Exception:
+            pool = filtered
+
+    scored: list[tuple[float, OfertaServicio, str]] = []
+    for oferta in pool:
+        rating = float(
+            getattr(oferta.taller or oferta.mecanico, 'calificacion_promedio', 0) or 0
         )
-        if isinstance(ordered, list):
-            pool = ordered
-        else:
-            pool = list(ordered)
-    except Exception:
-        pool = filtered
+        dist_km = _distancia_km_proveedor(oferta, punto) if punto else None
+        score, expl = _score_y_explicacion(dist_km=dist_km, rating=rating)
+        scored.append((score, oferta, expl))
 
-    # Un proveedor por candidato (mejor oferta por usuario proveedor)
+    scored.sort(key=lambda item: item[0], reverse=True)
+
     seen_proveedores: set = set()
     candidatos: list[dict[str, Any]] = []
 
-    for oferta in pool:
+    for score, oferta, expl in scored:
         uid, _ = _proveedor_usuario(oferta)
         if not uid or uid in seen_proveedores:
             continue
         seen_proveedores.add(uid)
-        rating = float(
-            getattr(oferta.taller or oferta.mecanico, 'calificacion_promedio', 0) or 0
-        )
-        score = 0.4 + 0.1 * (rating / 5.0)
         candidatos.append(
-            _serialize_candidato(
-                oferta,
-                score,
-                'Ofrece el servicio para tu vehículo y zona',
-                requiere_repuestos,
-            )
+            _serialize_candidato(oferta, score, expl, requiere_repuestos)
         )
         if len(candidatos) >= MAX_CANDIDATOS:
             break
 
-    return {'candidatos': candidatos}
+    return {
+        'candidatos': candidatos,
+        'ordenado_por_distancia': bool(punto),
+        'requiere_repuestos': requiere_repuestos,
+    }
