@@ -8,12 +8,12 @@
 - [x] Servicios `motor_necesidad`, `motor_match`
 - [x] ViewSet `AsistenteAgendamientoViewSet` + URLs
 - [x] Flag `AGENDAMIENTO_IA_ASISTIDO`
-- [x] Tests `test_asistente_agendamiento.py` (validación confirmar-candidato)
-- [x] `motor_confirmacion` + `confirmar-candidato` + acciones proveedor catálogo
+- [x] Tests `test_asistente_agendamiento.py`
+- [x] `motor_confirmacion` + `confirmar-candidato`
 
-## Fase 2 — Usuarios
-- [ ] `agendamientoAsistidoService.js` + hooks + componentes
-- [ ] Integración `FormularioSolicitud` con flag
+## Fase 2 — Usuarios (repo usuarios)
+- [x] Flujo comparador catálogo + confirmar-candidato
+- [x] STT on-device
 
-## Fase 3 — Proveedores
-- [ ] UI confirmación catálogo en `solicitud-detalle`
+## Fase 3 — Proveedores (repo prov)
+- [x] UI confirmación catálogo en solicitud-detalle
