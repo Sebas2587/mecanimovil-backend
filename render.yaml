@@ -52,6 +52,13 @@ services:
       # Asistente IA: analizar-necesidad + candidatos-proveedor (consultas stateless)
       - key: AGENDAMIENTO_IA_ASISTIDO
         value: "True"
+      # Fase 5 semántica (gratis por defecto, sin API de pago)
+      - key: AGENDAMIENTO_IA_SEMANTICO_ENABLED
+        value: "True"
+      - key: AGENDAMIENTO_IA_SEMANTICO_PROVEEDOR
+        value: "lexico"
+      # Opcional tier gratuito (elegir uno): GEMINI_API_KEY o HUGGINGFACE_API_TOKEN
+      # y AGENDAMIENTO_IA_SEMANTICO_PROVEEDOR=auto
       # Variables que debes configurar manualmente en Render Dashboard:
       # - MERCADOPAGO_ACCESS_TOKEN
       # - MERCADOPAGO_MODE (production o test)

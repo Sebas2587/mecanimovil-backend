@@ -69,7 +69,7 @@ INSTALLED_APPS = [
     'mecanimovilapp.apps.usuarios',
     'mecanimovilapp.apps.servicios',
     'mecanimovilapp.apps.vehiculos',
-    'mecanimovilapp.apps.ordenes',
+    'mecanimovilapp.apps.ordenes.apps.OrdenesConfig',
     'mecanimovilapp.apps.personalizacion',  # Nueva app de personalización
     'mecanimovilapp.apps.checklists',  # App de checklist correctamente ubicada
     'mecanimovilapp.apps.pagos',  # App de pagos con Mercado Pago
@@ -617,6 +617,20 @@ ADJUDICACION_CREDITOS_RESERVA_HORAS = int(config('ADJUDICACION_CREDITOS_RESERVA_
 
 # Asistente IA en creación de solicitudes (catálogo + análisis de necesidad)
 AGENDAMIENTO_IA_ASISTIDO = config('AGENDAMIENTO_IA_ASISTIDO', default=False, cast=bool)
+# Fase 5: comprensión semántica (sin costo por defecto: proveedor lexico local).
+# Proveedores: lexico | gemini | huggingface | ollama | auto
+AGENDAMIENTO_IA_SEMANTICO_ENABLED = config('AGENDAMIENTO_IA_SEMANTICO_ENABLED', default=True, cast=bool)
+AGENDAMIENTO_IA_SEMANTICO_PROVEEDOR = config('AGENDAMIENTO_IA_SEMANTICO_PROVEEDOR', default='lexico')
+AGENDAMIENTO_IA_SEMANTICO_TIMEOUT = config('AGENDAMIENTO_IA_SEMANTICO_TIMEOUT', default=15, cast=int)
+# Opcional gratuito: Google AI Studio → https://aistudio.google.com/apikey
+GEMINI_API_KEY = config('GEMINI_API_KEY', default='')
+GEMINI_MODEL = config('GEMINI_MODEL', default='gemini-2.0-flash')
+# Opcional gratuito: Hugging Face → https://huggingface.co/settings/tokens
+HUGGINGFACE_API_TOKEN = config('HUGGINGFACE_API_TOKEN', default='')
+HUGGINGFACE_MODEL = config('HUGGINGFACE_MODEL', default='Qwen/Qwen2.5-1.5B-Instruct')
+# Opcional: Ollama en tu propia máquina/servidor
+OLLAMA_BASE_URL = config('OLLAMA_BASE_URL', default='')
+OLLAMA_MODEL = config('OLLAMA_MODEL', default='llama3.2')
 
 LOGGING = {
     'version': 1,

@@ -1,4 +1,5 @@
 from .motor_necesidad import analizar_necesidad
+from .motor_semantico import llm_habilitado, semantico_habilitado
 from .motor_match import listar_candidatos_proveedor
 from .motor_confirmacion import (
     ConfirmacionCatalogoError,
@@ -11,6 +12,8 @@ from .motor_confirmacion import (
 
 __all__ = [
     'analizar_necesidad',
+    'llm_habilitado',
+    'semantico_habilitado',
     'listar_candidatos_proveedor',
     'ConfirmacionCatalogoError',
     'confirmar_candidato',

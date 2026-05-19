@@ -18,6 +18,11 @@
 ## Fase 3 — Proveedores (repo prov)
 - [x] UI confirmación catálogo en solicitud-detalle
 
+## Fase 5 — Comprensión semántica (gratuita)
+- [x] `motor_semantico.py` — proveedor `lexico` local + gemini/hf/ollama opcionales
+- [x] Sin OpenAI/Anthropic; Render con `SEMANTICO_PROVEEDOR=lexico`
+- [x] OpenSpec `openspec/changes/agendamiento-ia-fase5-semantica/`
+
 ## Fase 4 — Cierre ciclo catálogo
 - [x] Cliente: aceptar fecha alternativa (`aceptar-fecha-catalogo`)
 - [x] Cliente: detalle/listas estado `pendiente_confirmacion`

@@ -64,6 +64,27 @@ class AnalizarNecesidadSinPersistenciaTests(TestCase):
         self.assertEqual(antes, despues)
         self.assertIn('servicios_recomendados', result)
         self.assertIn('temperatura', result)
+        self.assertIn('frenos', result.get('sintomas_detectados') or [])
+        self.assertTrue(result.get('interpretacion'))
+        nombres = [s['nombre'].lower() for s in result['servicios_recomendados']]
+        self.assertTrue(
+            any('freno' in n for n in nombres),
+            msg=f'Esperaba servicio de frenos, obtuvo: {nombres}',
+        )
+
+    def test_lexico_no_arranca_sugiere_bateria(self):
+        Servicio.objects.create(
+            nombre='Cambio de batería',
+            descripcion='Batería y prueba de carga',
+            precio_base=40000,
+        ).modelos_compatibles.add(self.modelo)
+        result = analizar_necesidad(
+            texto='el auto no arranca y hace clic',
+            vehiculo_id=self.vehiculo.id,
+        )
+        self.assertIn('arranque_bateria', result.get('sintomas_detectados') or [])
+        nombres = ' '.join(s['nombre'].lower() for s in result['servicios_recomendados'])
+        self.assertIn('bater', nombres)
 
     def test_api_analizar_necesidad(self):
         api = APIClient()

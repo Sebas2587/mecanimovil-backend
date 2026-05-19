@@ -16,6 +16,20 @@ AGENDAMIENTO_IA_ASISTIDO = os.environ.get(
     'AGENDAMIENTO_IA_ASISTIDO', 'False'
 ).lower() in ('true', '1', 'yes')
 
+AGENDAMIENTO_IA_SEMANTICO_ENABLED = os.environ.get(
+    'AGENDAMIENTO_IA_SEMANTICO_ENABLED', 'True'
+).lower() in ('true', '1', 'yes')
+AGENDAMIENTO_IA_SEMANTICO_PROVEEDOR = os.environ.get(
+    'AGENDAMIENTO_IA_SEMANTICO_PROVEEDOR', 'lexico'
+)
+AGENDAMIENTO_IA_SEMANTICO_TIMEOUT = int(os.environ.get('AGENDAMIENTO_IA_SEMANTICO_TIMEOUT', '15'))
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
+GEMINI_MODEL = os.environ.get('GEMINI_MODEL', 'gemini-2.0-flash')
+HUGGINGFACE_API_TOKEN = os.environ.get('HUGGINGFACE_API_TOKEN', '')
+HUGGINGFACE_MODEL = os.environ.get('HUGGINGFACE_MODEL', 'Qwen/Qwen2.5-1.5B-Instruct')
+OLLAMA_BASE_URL = os.environ.get('OLLAMA_BASE_URL', '')
+OLLAMA_MODEL = os.environ.get('OLLAMA_MODEL', 'llama3.2')
+
 # Configuración de hosts permitidos para producción
 # Se configura desde variable de entorno ALLOWED_HOSTS
 ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '').split(',')

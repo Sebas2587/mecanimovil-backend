@@ -1808,3 +1808,49 @@ class AlertaDescartada(models.Model):
     
     def __str__(self):
         return f"Alerta {self.get_tipo_alerta_display()} descartada por {self.usuario.get_full_name()} - Solicitud {self.solicitud.id}"
+
+
+class PatronAprendizajeNecesidad(models.Model):
+    """
+    Patrones agregados aprendidos de solicitudes confirmadas (sin texto crudo completo).
+    Fragmentos normalizados (palabras clave) → servicio frecuente.
+    """
+
+    fragmento = models.CharField(
+        max_length=120,
+        db_index=True,
+        help_text='Palabras clave normalizadas (sin PII), ej: "ruido frenar pedal"',
+    )
+    servicio = models.ForeignKey(
+        Servicio,
+        on_delete=models.CASCADE,
+        related_name='patrones_aprendizaje',
+    )
+    componente_slug = models.CharField(max_length=64, blank=True, default='')
+    modelo = models.ForeignKey(
+        'vehiculos.Modelo',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='patrones_necesidad',
+        help_text='Opcional: patrón específico del modelo',
+    )
+    confirmaciones = models.PositiveIntegerField(default=1)
+    ultima_vez = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Patrón aprendizaje necesidad'
+        verbose_name_plural = 'Patrones aprendizaje necesidad'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['fragmento', 'servicio', 'componente_slug', 'modelo'],
+                name='uniq_patron_aprendizaje_necesidad',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['fragmento']),
+            models.Index(fields=['-confirmaciones', '-ultima_vez']),
+        ]
+
+    def __str__(self):
+        return f'{self.fragmento} → {self.servicio_id} (×{self.confirmaciones})'

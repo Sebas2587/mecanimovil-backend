@@ -1,19 +1,39 @@
 """
 Análisis de necesidad del usuario (stateless).
 
-No persiste texto consultado. Combina señales de salud, similitud textual con catálogo
-de Servicio y léxico de urgencia («temperatura»).
+No persiste texto consultado. Combina señales de salud, léxico de síntomas,
+similitud textual con catálogo de Servicio y urgencia («temperatura»).
+
+v1 léxico + TF-IDF; fase 5: motor_semantico.py (local gratuito u opcional gemini/hf/ollama).
 """
 from __future__ import annotations
 
-import math
 import re
 from typing import Any
 
-from django.db.models import Q
+from django.db.models import QuerySet
 
 from mecanimovilapp.apps.servicios.models import Servicio
 from mecanimovilapp.apps.vehiculos.models import Vehiculo
+
+from .lexico_necesidad import (
+    boost_lexico_servicio,
+    detectar_sintomas,
+    expandir_texto_busqueda,
+    normalizar_texto,
+    resumen_interpretacion,
+)
+from .motor_aprendizaje import boost_servicios_desde_aprendizaje, contar_patrones_activos
+from .motor_salud_cruzada import (
+    cruzar_salud_con_texto,
+    fusionar_componentes_salud,
+    interpretar_metricas_salud,
+)
+from .motor_semantico import (
+    analizar_semantico_llm,
+    integrar_llm_en_resultado,
+    semantico_habilitado,
+)
 
 # Palabras que elevan urgencia (temperatura)
 _URGENCY_TERMS = {
@@ -47,14 +67,15 @@ def _clamp01(value: float) -> float:
 
 def calcular_temperatura(texto: str, componentes_salud: list[dict] | None) -> tuple[float, str]:
     """Score 0-1 y etiqueta de urgencia."""
-    texto_l = (texto or '').lower().strip()
+    texto_l = normalizar_texto(texto)
     score = 0.12
 
     for term, boost in _URGENCY_TERMS.items():
         if term in texto_l:
             score += boost
 
-    if '!!!' in texto or texto.isupper() and len(texto) > 12:
+    raw = texto or ''
+    if '!!!' in raw or (raw.isupper() and len(raw) > 12):
         score += 0.08
 
     for comp in componentes_salud or []:
@@ -80,41 +101,65 @@ def calcular_temperatura(texto: str, componentes_salud: list[dict] | None) -> tu
     return score, label
 
 
-def _servicios_compatibles_queryset(vehiculo: Vehiculo | None):
+def _servicios_compatibles_queryset(vehiculo: Vehiculo | None) -> QuerySet[Servicio]:
     qs = Servicio.objects.all()
     if vehiculo and vehiculo.modelo_id:
         por_modelo = qs.filter(modelos_compatibles=vehiculo.modelo).distinct()
         if por_modelo.exists():
             return por_modelo
-    return qs[:80]
+    return qs[:120]
 
 
-def _score_texto_servicio(texto: str, servicio: Servicio) -> float:
-    texto_l = (texto or '').lower()
-    if not texto_l.strip():
-        return 0.0
-
-    corpus = f"{servicio.nombre} {servicio.descripcion or ''}".lower()
+def _overlap_palabras(texto: str, corpus: str) -> float:
+    texto_l = normalizar_texto(texto)
+    corpus_l = normalizar_texto(corpus)
     palabras = [p for p in re.split(r'\W+', texto_l) if len(p) > 2]
     if not palabras:
         return 0.0
+    hits = sum(1 for p in palabras if p in corpus_l)
+    return hits / max(len(palabras), 1)
 
-    hits = sum(1 for p in palabras if p in corpus)
-    base = hits / max(len(palabras), 1)
+
+def _scores_tfidf_batch(texto: str, servicios: list[Servicio]) -> dict[int, float]:
+    """Similitud coseno texto vs cada servicio (un solo fit del vectorizador)."""
+    if not texto.strip() or not servicios:
+        return {}
+
+    documentos = [texto]
+    ids: list[int] = []
+    for servicio in servicios:
+        documentos.append(f'{servicio.nombre} {servicio.descripcion or ""}')
+        ids.append(servicio.id)
 
     try:
         from sklearn.feature_extraction.text import TfidfVectorizer
         from sklearn.metrics.pairwise import cosine_similarity
 
-        vec = TfidfVectorizer(max_features=500, ngram_range=(1, 2))
-        mat = vec.fit_transform([texto_l, corpus])
-        sim = float(cosine_similarity(mat[0:1], mat[1:2])[0][0])
-        return _clamp01(0.45 * base + 0.55 * sim)
+        vec = TfidfVectorizer(max_features=800, ngram_range=(1, 2), min_df=1)
+        mat = vec.fit_transform(documentos)
+        sims = cosine_similarity(mat[0:1], mat[1:])[0]
+        out: dict[int, float] = {}
+        for idx, sid in enumerate(ids):
+            overlap = _overlap_palabras(
+                texto,
+                f'{servicios[idx].nombre} {servicios[idx].descripcion or ""}',
+            )
+            sim = float(sims[idx]) if idx < len(sims) else 0.0
+            out[sid] = _clamp01(0.35 * overlap + 0.65 * sim)
+        return out
     except Exception:
-        return _clamp01(base)
+        return {
+            s.id: _clamp01(
+                _overlap_palabras(texto, f'{s.nombre} {s.descripcion or ""}')
+            )
+            for s in servicios
+        }
 
 
-def _servicios_desde_salud(componentes_salud: list[dict] | None, vehiculo: Vehiculo | None) -> dict[int, tuple[float, str]]:
+def _servicios_desde_salud(
+    componentes_salud: list[dict] | None,
+    vehiculo: Vehiculo | None,
+) -> dict[int, tuple[float, str]]:
     """servicio_id -> (score, razon)."""
     out: dict[int, tuple[float, str]] = {}
     if not componentes_salud:
@@ -168,6 +213,19 @@ def analizar_necesidad(
             .first()
         )
 
+    componentes_salud = fusionar_componentes_salud(componentes_salud, vehiculo_id)
+    salud_info = interpretar_metricas_salud(componentes_salud)
+    cruce = cruzar_salud_con_texto(texto, componentes_salud, salud_info)
+
+    reglas = detectar_sintomas(texto)
+    texto_expandido = expandir_texto_busqueda(texto, reglas)
+    interpretacion = resumen_interpretacion(reglas)
+    if cruce.get('interpretacion_cruzada'):
+        interpretacion = cruce['interpretacion_cruzada']
+    elif not interpretacion and salud_info.get('resumen_salud'):
+        interpretacion = salud_info['resumen_salud']
+    sintomas_ids = [r.id for r in reglas]
+
     temperatura, urgencia_label = calcular_temperatura(texto, componentes_salud)
 
     scores: dict[int, dict[str, Any]] = {}
@@ -179,27 +237,59 @@ def analizar_necesidad(
             'fuente': 'salud',
         }
 
-    for servicio in _servicios_compatibles_queryset(vehiculo):
-        sc_text = _score_texto_servicio(texto, servicio)
-        if sc_text <= 0.05:
+    servicios_list = list(_servicios_compatibles_queryset(vehiculo))
+    tfidf_scores = _scores_tfidf_batch(texto_expandido or texto, servicios_list)
+    modelo_id = vehiculo.modelo_id if vehiculo else None
+    boosts_aprendizaje = boost_servicios_desde_aprendizaje(
+        texto,
+        servicios_list,
+        modelo_id=modelo_id,
+        componentes_salud=componentes_salud,
+    )
+
+    for servicio in servicios_list:
+        sc_text = tfidf_scores.get(servicio.id, 0.0)
+        sc_lex, razon_lex = boost_lexico_servicio(
+            servicio.nombre,
+            servicio.descripcion or '',
+            reglas,
+        )
+        sc_apr, razon_apr = boosts_aprendizaje.get(servicio.id, (0.0, ''))
+        sc_final = _clamp01(max(sc_text, sc_lex, sc_apr))
+        if sc_final <= 0.05 and sc_lex <= 0 and sc_apr <= 0:
             continue
+
+        razon = razon_apr or razon_lex or (
+            'Relacionado con lo que describes'
+            if sc_text >= 0.2
+            else 'Coincide con palabras de tu descripción'
+        )
+        if sc_apr >= sc_lex and sc_apr >= sc_text and sc_apr > 0:
+            fuente = 'aprendizaje'
+        elif sc_lex >= sc_text:
+            fuente = 'lexico'
+        else:
+            fuente = 'texto'
+        if sc_lex > 0 and sc_text > 0.15:
+            fuente = 'lexico+texto' if fuente == 'texto' else fuente
+
         prev = scores.get(servicio.id)
         if prev:
-            combined = _clamp01(prev['score'] * 0.5 + sc_text * 0.5)
+            combined = _clamp01(max(prev['score'], sc_final * 0.85 + prev['score'] * 0.15))
             scores[servicio.id] = {
                 'score': combined,
-                'razon': prev['razon'] + '; coincide con tu descripción',
-                'fuente': 'salud+texto' if prev['fuente'] == 'salud' else 'texto',
+                'razon': razon_lex or prev['razon'],
+                'fuente': prev['fuente'] if not razon_lex else f"{prev['fuente']}+{fuente}",
             }
         else:
             scores[servicio.id] = {
-                'score': sc_text,
-                'razon': 'Coincide con lo que describes',
-                'fuente': 'texto',
+                'score': sc_final,
+                'razon': razon,
+                'fuente': fuente,
             }
 
     if not scores and vehiculo:
-        for servicio in _servicios_compatibles_queryset(vehiculo)[:max_servicios]:
+        for servicio in servicios_list[:max_servicios]:
             scores[servicio.id] = {
                 'score': 0.35,
                 'razon': 'Servicio compatible con tu vehículo',
@@ -228,14 +318,42 @@ def analizar_necesidad(
             'fuente': meta['fuente'],
         })
 
-    preguntas = []
-    if servicios_recomendados and servicios_recomendados[0]['score'] < 0.55:
+    preguntas: list[str] = list(cruce.get('alertas_cruce') or [])
+    if not reglas and texto.strip() and len(preguntas) < 3:
+        preguntas.append(
+            '¿Puedes indicar qué parte del auto falla (frenos, motor, batería, etc.) o cuándo ocurre el problema?'
+        )
+    elif servicios_recomendados and servicios_recomendados[0]['score'] < 0.55 and len(preguntas) < 3:
         preguntas.append('¿Puedes describir con más detalle el síntoma o cuándo ocurre?')
 
-    return {
+    resultado = {
         'temperatura': round(temperatura, 3),
         'urgencia_label': urgencia_label,
         'origen': origen,
+        'interpretacion': interpretacion,
+        'resumen_salud': salud_info.get('resumen_salud'),
+        'alertas_cruce': cruce.get('alertas_cruce') or [],
+        'coherencia_salud_texto': cruce.get('coherencia_salud_texto'),
+        'sintomas_detectados': sintomas_ids,
         'servicios_recomendados': servicios_recomendados,
-        'preguntas_seguimiento': preguntas,
+        'preguntas_seguimiento': preguntas[:3],
+        'patrones_aprendizaje_en_sistema': contar_patrones_activos(),
+        'motor_analisis': 'lexico',
     }
+
+    if semantico_habilitado() and texto.strip():
+        llm_out = analizar_semantico_llm(
+            texto=texto,
+            vehiculo=vehiculo,
+            servicios=servicios_list,
+            componentes_salud=componentes_salud,
+            max_servicios=max_servicios,
+        )
+        resultado = integrar_llm_en_resultado(
+            resultado,
+            llm_out,
+            servicios_list,
+            max_servicios=max_servicios,
+        )
+
+    return resultado
