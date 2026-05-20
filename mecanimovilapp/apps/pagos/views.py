@@ -879,8 +879,10 @@ def webhook_notification(request):
                                                 if solicitud.estado not in ['en_ejecucion', 'completada']:
                                                     solicitud.estado = 'pagada'
                                             elif tipo_pago == 'servicio':
-                                                oferta.estado_pago_servicio = 'pagado'
-                                                oferta.estado = 'pagada'
+                                                from mecanimovilapp.apps.ordenes.services.pago_oferta_cliente import (
+                                                    aplicar_confirmacion_pago_servicio,
+                                                )
+                                                aplicar_confirmacion_pago_servicio(oferta, solicitud)
                                             else:  # total
                                                 oferta.estado_pago_repuestos = 'pagado' if oferta.costo_repuestos and float(oferta.costo_repuestos) > 0 else 'no_aplica'
                                                 oferta.estado_pago_servicio = 'pagado'
@@ -2410,15 +2412,16 @@ def confirmar_pago_oferta(request):
             puede_pagar_servicio = True
             
         elif tipo_pago == 'servicio':
-            # Solo pagó el servicio (mano de obra) - después de haber pagado repuestos
-            # Esto completa el pago parcial, ahora está completamente pagada
-            oferta.estado_pago_servicio = 'pagado'
-            oferta.estado = 'pagada'  # Cambiar de 'pagada_parcialmente' a 'pagada'
-            
+            from mecanimovilapp.apps.ordenes.services.pago_oferta_cliente import (
+                aplicar_confirmacion_pago_servicio,
+            )
+            aplicar_confirmacion_pago_servicio(oferta, solicitud)
             monto_pendiente = 0
             puede_pagar_servicio = False
-            
-            message = 'Pago del servicio confirmado. ¡Pago completo!'
+            if oferta.metodo_pago_cliente == 'cliente_compra_repuestos':
+                message = 'Pago de mano de obra confirmado. El cliente comprará los repuestos por su cuenta.'
+            else:
+                message = 'Pago del servicio confirmado. ¡Pago completo!'
             
         else:  # total
             # Pagó todo de una vez
@@ -2670,10 +2673,14 @@ def verificar_pago_mercadopago(request):
                             message = 'Pago de repuestos verificado y confirmado'
                             
                         elif tipo_pago == 'servicio':
-                            oferta.estado_pago_servicio = 'pagado'
-                            oferta.estado = 'pagada'
-                            
-                            message = 'Pago del servicio verificado y confirmado'
+                            from mecanimovilapp.apps.ordenes.services.pago_oferta_cliente import (
+                                aplicar_confirmacion_pago_servicio,
+                            )
+                            aplicar_confirmacion_pago_servicio(oferta, solicitud)
+                            if oferta.metodo_pago_cliente == 'cliente_compra_repuestos':
+                                message = 'Pago de mano de obra verificado (repuestos por el cliente)'
+                            else:
+                                message = 'Pago del servicio verificado y confirmado'
                             
                         else:  # total
                             oferta.estado_pago_repuestos = 'pagado' if oferta.costo_repuestos and float(oferta.costo_repuestos) > 0 else 'no_aplica'

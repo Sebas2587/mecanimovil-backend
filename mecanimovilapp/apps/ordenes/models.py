@@ -1376,6 +1376,7 @@ class OfertaProveedor(models.Model):
     METODO_PAGO_CLIENTE_CHOICES = [
         ('repuestos_adelantado', 'Repuestos Adelantado + Servicio al Final'),
         ('todo_adelantado', 'Todo Adelantado'),
+        ('cliente_compra_repuestos', 'Cliente Compra sus Propios Repuestos'),
         ('pendiente', 'Pendiente de Selección'),
     ]
     metodo_pago_cliente = models.CharField(

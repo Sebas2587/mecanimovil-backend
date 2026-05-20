@@ -5171,7 +5171,12 @@ class OfertaProveedorViewSet(viewsets.ModelViewSet):
             )
         
         estado_filter = request.query_params.get('estado')
-        queryset = OfertaProveedor.objects.filter(proveedor=request.user)
+        queryset = OfertaProveedor.objects.filter(proveedor=request.user).select_related(
+            'solicitud', 'solicitud__cliente', 'solicitud__vehiculo', 'solicitud__vehiculo__marca',
+            'solicitud__vehiculo__modelo',
+        ).prefetch_related(
+            'detalles_servicios__servicio', 'solicitud__servicios_solicitados',
+        ).order_by('-fecha_envio')
         
         if estado_filter:
             queryset = queryset.filter(estado=estado_filter)
