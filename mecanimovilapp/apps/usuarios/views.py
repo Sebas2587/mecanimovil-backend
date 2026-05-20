@@ -58,6 +58,10 @@ from .panel_servicios_utils import (
     request_wants_panel_servicios,
     resolve_marca_id_from_request,
 )
+from .services.disponibilidad_proveedor import (
+    disponibilidad_con_duracion as calc_disponibilidad_con_duracion,
+    dias_con_slots as calc_dias_con_slots,
+)
 
 # Configurar logger
 logger = logging.getLogger(__name__)
@@ -1191,7 +1195,12 @@ class TallerViewSet(viewsets.ModelViewSet):
         Permitir GET y CREATE sin autenticación, pero requerir 
         autenticación y admin para otras operaciones
         """
-        if self.action in ['list', 'retrieve', 'horarios_disponibles', 'horarios_semanales', 'create', 'actualizar_propio', 'cerca', 'actualizar_ubicacion_domicilio', 'proveedores_filtrados', 'reviews']:
+        if self.action in [
+            'list', 'retrieve', 'horarios_disponibles', 'horarios_semanales',
+            'disponibilidad_con_duracion', 'dias_disponibles_agenda',
+            'create', 'actualizar_propio', 'cerca', 'actualizar_ubicacion_domicilio',
+            'proveedores_filtrados', 'reviews',
+        ]:
             if self.action in ['actualizar_propio', 'actualizar_ubicacion_domicilio']:
                 # Solo requiere autenticación para actualizar propio perfil o ubicación
                 return [permissions.IsAuthenticated()]
@@ -1285,6 +1294,58 @@ class TallerViewSet(viewsets.ModelViewSet):
             "total_slots": len(slots_base),
             "slots_disponibles_count": len([s for s in slots_base if s['disponible']]),
             "tipo_servicio": "taller"
+        })
+
+    @action(detail=True, methods=['get'], url_path='disponibilidad_con_duracion')
+    def disponibilidad_con_duracion(self, request, pk=None):
+        """
+        Ventanas libres y slots según duración del servicio (oferta_servicio_id) y citas del día.
+        Query: fecha=YYYY-MM-DD (requerido), oferta_servicio_id (opcional).
+        """
+        from datetime import datetime
+
+        taller = self.get_object()
+        fecha_str = request.query_params.get('fecha')
+        if not fecha_str:
+            return Response(
+                {'error': "Se requiere el parámetro 'fecha' en formato YYYY-MM-DD"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            fecha = datetime.strptime(fecha_str, '%Y-%m-%d').date()
+        except ValueError:
+            return Response(
+                {'error': 'Formato de fecha inválido. Use YYYY-MM-DD'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        oferta_id = request.query_params.get('oferta_servicio_id')
+        oferta_servicio_id = int(oferta_id) if oferta_id and str(oferta_id).isdigit() else None
+
+        payload = calc_disponibilidad_con_duracion(
+            taller=taller,
+            fecha=fecha,
+            oferta_servicio_id=oferta_servicio_id,
+        )
+        payload['tipo_proveedor'] = 'taller'
+        payload['proveedor_id'] = taller.id
+        return Response(payload)
+
+    @action(detail=True, methods=['get'], url_path='dias_disponibles_agenda')
+    def dias_disponibles_agenda(self, request, pk=None):
+        """Fechas con al menos un slot (próximos 14 días por defecto)."""
+        taller = self.get_object()
+        oferta_id = request.query_params.get('oferta_servicio_id')
+        oferta_servicio_id = int(oferta_id) if oferta_id and str(oferta_id).isdigit() else None
+        dias = int(request.query_params.get('dias', 14))
+        fechas = calc_dias_con_slots(
+            taller=taller,
+            oferta_servicio_id=oferta_servicio_id,
+            dias_adelante=min(max(dias, 1), 30),
+        )
+        return Response({
+            'fechas_disponibles': fechas,
+            'tipo_proveedor': 'taller',
+            'proveedor_id': taller.id,
         })
 
     @action(detail=True, methods=['get'])
@@ -1988,7 +2049,12 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
         Permitir GET y CREATE sin autenticación, pero requerir 
         autenticación y admin para otras operaciones
         """
-        if self.action in ['list', 'retrieve', 'horarios_disponibles', 'horarios_semanales', 'create', 'actualizar_propio', 'cerca', 'actualizar_ubicacion_domicilio', 'proveedores_filtrados', 'reviews']:
+        if self.action in [
+            'list', 'retrieve', 'horarios_disponibles', 'horarios_semanales',
+            'disponibilidad_con_duracion', 'dias_disponibles_agenda',
+            'create', 'actualizar_propio', 'cerca', 'actualizar_ubicacion_domicilio',
+            'proveedores_filtrados', 'reviews',
+        ]:
             if self.action in ['actualizar_propio', 'actualizar_ubicacion_domicilio']:
                 # Solo requiere autenticación para actualizar propio perfil o ubicación
                 return [permissions.IsAuthenticated()]
@@ -2081,6 +2147,53 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
             "total_slots": len(slots_base),
             "slots_disponibles_count": len([s for s in slots_base if s['disponible']]),
             "tipo_servicio": "domicilio"
+        })
+
+    @action(detail=True, methods=['get'], url_path='disponibilidad_con_duracion')
+    def disponibilidad_con_duracion(self, request, pk=None):
+        from datetime import datetime
+
+        mecanico = self.get_object()
+        fecha_str = request.query_params.get('fecha')
+        if not fecha_str:
+            return Response(
+                {'error': "Se requiere el parámetro 'fecha' en formato YYYY-MM-DD"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            fecha = datetime.strptime(fecha_str, '%Y-%m-%d').date()
+        except ValueError:
+            return Response(
+                {'error': 'Formato de fecha inválido. Use YYYY-MM-DD'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        oferta_id = request.query_params.get('oferta_servicio_id')
+        oferta_servicio_id = int(oferta_id) if oferta_id and str(oferta_id).isdigit() else None
+
+        payload = calc_disponibilidad_con_duracion(
+            mecanico=mecanico,
+            fecha=fecha,
+            oferta_servicio_id=oferta_servicio_id,
+        )
+        payload['tipo_proveedor'] = 'mecanico'
+        payload['proveedor_id'] = mecanico.id
+        return Response(payload)
+
+    @action(detail=True, methods=['get'], url_path='dias_disponibles_agenda')
+    def dias_disponibles_agenda(self, request, pk=None):
+        mecanico = self.get_object()
+        oferta_id = request.query_params.get('oferta_servicio_id')
+        oferta_servicio_id = int(oferta_id) if oferta_id and str(oferta_id).isdigit() else None
+        dias = int(request.query_params.get('dias', 14))
+        fechas = calc_dias_con_slots(
+            mecanico=mecanico,
+            oferta_servicio_id=oferta_servicio_id,
+            dias_adelante=min(max(dias, 1), 30),
+        )
+        return Response({
+            'fechas_disponibles': fechas,
+            'tipo_proveedor': 'mecanico',
+            'proveedor_id': mecanico.id,
         })
 
     @action(detail=True, methods=['get'])

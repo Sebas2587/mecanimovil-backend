@@ -182,7 +182,21 @@ class OfertaServicio(models.Model):
     
     # Control de disponibilidad
     disponible = models.BooleanField(default=True)
-    duracion_estimada = models.TimeField(blank=True, null=True)
+    duracion_estimada = models.TimeField(
+        blank=True,
+        null=True,
+        help_text=_('Legacy: hora estimada (HH:MM). Preferir duracion_minima/maxima_minutos.'),
+    )
+    duracion_minima_minutos = models.PositiveIntegerField(
+        blank=True,
+        null=True,
+        help_text=_('Tiempo mínimo estimado para realizar el servicio (minutos)'),
+    )
+    duracion_maxima_minutos = models.PositiveIntegerField(
+        blank=True,
+        null=True,
+        help_text=_('Tiempo máximo estimado para bloquear agenda y calcular ventanas libres'),
+    )
     
     # Precios con validadores mejorados
     precio_con_repuestos = models.DecimalField(

@@ -400,6 +400,7 @@ def _serialize_candidato(
         'oferta_servicio_id': oferta.id,
         'proveedor': {
             'usuario_id': str(usuario_id) if usuario_id else None,
+            'proveedor_id': oferta.taller_id or oferta.mecanico_id,
             'nombre': nombre,
             'tipo': oferta.tipo_proveedor,
             'rating': rating,

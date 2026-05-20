@@ -113,7 +113,7 @@ class OfertaServicioSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'tipo_proveedor', 'taller', 'taller_info', 'mecanico', 'mecanico_info',
             'servicio', 'servicio_info', 'marca_vehiculo_seleccionada', 'marca_vehiculo_info',
-            'disponible', 'duracion_estimada',
+            'disponible', 'duracion_estimada', 'duracion_minima_minutos', 'duracion_maxima_minutos',
             'precio_con_repuestos', 'precio_sin_repuestos', 'incluye_garantia',
             'duracion_garantia', 'detalles_adicionales', 'nombre_proveedor',
             'fecha_creacion', 'ultima_actualizacion',
@@ -200,7 +200,8 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
         model = OfertaServicio
         fields = (
             'id', 'servicio', 'servicio_info', 'marca_vehiculo_seleccionada', 'marca_vehiculo_info',
-            'disponible', 'duracion_estimada', 'incluye_garantia', 'duracion_garantia', 'detalles_adicionales',
+            'disponible', 'duracion_estimada', 'duracion_minima_minutos', 'duracion_maxima_minutos',
+            'incluye_garantia', 'duracion_garantia', 'detalles_adicionales',
             # Campos específicos para proveedores
             'tipo_servicio', 'repuestos_seleccionados', 'repuestos_info', 'repuestos_info_detallado',
             'costo_mano_de_obra_sin_iva', 'costo_repuestos_sin_iva', 'fotos_urls',
@@ -337,6 +338,17 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
         if data.get('costo_mano_de_obra_sin_iva', 0) <= 0:
             raise serializers.ValidationError({
                 'costo_mano_de_obra_sin_iva': 'El costo de mano de obra debe ser mayor a 0'
+            })
+
+        min_d = data.get('duracion_minima_minutos')
+        max_d = data.get('duracion_maxima_minutos')
+        if min_d is not None and max_d is not None and min_d > max_d:
+            raise serializers.ValidationError({
+                'duracion_maxima_minutos': 'La duración máxima debe ser mayor o igual a la mínima',
+            })
+        if max_d is not None and max_d < 15:
+            raise serializers.ValidationError({
+                'duracion_maxima_minutos': 'La duración mínima del servicio es 15 minutos',
             })
         
         return data
