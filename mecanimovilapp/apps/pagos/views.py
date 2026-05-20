@@ -2326,18 +2326,13 @@ def confirmar_pago_oferta(request):
             status=status.HTTP_400_BAD_REQUEST
         )
     
+    from mecanimovilapp.apps.ordenes.services.resolver_oferta_pago import (
+        resolver_oferta_pago_por_id,
+    )
+
     try:
-        # Obtener la oferta
-        oferta = OfertaProveedor.objects.select_related(
-            'solicitud', 'proveedor'
-        ).get(id=oferta_id)
-        
-        # Verificar que el usuario sea el cliente de la solicitud
-        if oferta.solicitud.cliente.usuario != request.user:
-            return Response(
-                {'error': 'No tienes permiso para confirmar el pago de esta oferta'},
-                status=status.HTTP_403_FORBIDDEN
-            )
+        oferta = resolver_oferta_pago_por_id(oferta_id, request.user)
+        oferta_id = str(oferta.id)
         
         # Verificar el estado del pago con Mercado Pago si se proporciona payment_id
         pago_verificado = False
@@ -2498,17 +2493,12 @@ def obtener_estado_pago_oferta(request, oferta_id):
         "precio_total": 103571
     }
     """
-    from mecanimovilapp.apps.ordenes.models import OfertaProveedor
-    
+    from mecanimovilapp.apps.ordenes.services.resolver_oferta_pago import (
+        resolver_oferta_pago_por_id,
+    )
+
     try:
-        oferta = OfertaProveedor.objects.select_related('solicitud').get(id=oferta_id)
-        
-        # Verificar que el usuario sea el cliente de la solicitud
-        if oferta.solicitud.cliente.usuario != request.user:
-            return Response(
-                {'error': 'No tienes permiso para ver esta oferta'},
-                status=status.HTTP_403_FORBIDDEN
-            )
+        oferta = resolver_oferta_pago_por_id(oferta_id, request.user)
         
         # Calcular monto pendiente del servicio
         costo_mano_obra = float(oferta.costo_mano_obra or 0)
@@ -2573,31 +2563,24 @@ def verificar_pago_mercadopago(request):
         "message": "Pago verificado y confirmado"
     }
     """
-    from mecanimovilapp.apps.ordenes.models import OfertaProveedor
+    from mecanimovilapp.apps.ordenes.services.resolver_oferta_pago import (
+        resolver_oferta_pago_por_id,
+    )
     import mercadopago
-    
+
     oferta_id = request.data.get('oferta_id')
     tipo_pago = request.data.get('tipo_pago', 'total')
     preference_id = request.data.get('preference_id')
-    
+
     if not oferta_id:
         return Response(
             {'error': 'Se requiere oferta_id'},
             status=status.HTTP_400_BAD_REQUEST
         )
-    
+
     try:
-        # Obtener la oferta
-        oferta = OfertaProveedor.objects.select_related(
-            'solicitud', 'proveedor'
-        ).get(id=oferta_id)
-        
-        # Verificar que el usuario sea el cliente de la solicitud
-        if oferta.solicitud.cliente.usuario != request.user:
-            return Response(
-                {'error': 'No tienes permiso para verificar el pago de esta oferta'},
-                status=status.HTTP_403_FORBIDDEN
-            )
+        oferta = resolver_oferta_pago_por_id(oferta_id, request.user)
+        oferta_id = str(oferta.id)
         
         # Obtener la cuenta de Mercado Pago del proveedor
         cuenta_proveedor = CuentaMercadoPagoProveedor.objects.filter(
