@@ -293,8 +293,8 @@ class OfertaServicio(models.Model):
         verbose_name = _('oferta de servicio')
         verbose_name_plural = _('ofertas de servicios')
         unique_together = [
-            ['taller', 'servicio'],
-            ['mecanico', 'servicio']
+            ['taller', 'servicio', 'marca_vehiculo_seleccionada'],
+            ['mecanico', 'servicio', 'marca_vehiculo_seleccionada'],
         ]
         constraints = [
             models.CheckConstraint(

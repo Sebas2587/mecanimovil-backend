@@ -4126,7 +4126,7 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
         # Solicitudes DIRIGIDAS: SOLO para este proveedor específico
         solicitudes_dirigidas = SolicitudServicioPublica.objects.filter(
             proveedores_dirigidos=user,
-            estado__in=['publicada', 'con_ofertas'],
+            estado__in=['publicada', 'con_ofertas', 'pendiente_confirmacion'],
             fecha_expiracion__gt=timezone.now(),
             tipo_solicitud='dirigida'
         )
@@ -4136,11 +4136,12 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
         
         # Excluir solicitudes donde el proveedor ya tiene una oferta activa
         # (permitir si la oferta está rechazada o retirada, para que pueda volver a ofertar)
+        # No ocultar solicitudes con oferta de catálogo pendiente de confirmar del mismo proveedor
         ofertas_proveedor = OfertaProveedor.objects.filter(
             proveedor=user,
-            estado__in=['enviada', 'vista', 'en_chat', 'aceptada', 'expirada']
+            estado__in=['enviada', 'vista', 'en_chat', 'aceptada', 'expirada'],
         ).values_list('solicitud_id', flat=True)
-        
+
         if ofertas_proveedor:
             queryset = queryset.exclude(id__in=ofertas_proveedor)
         

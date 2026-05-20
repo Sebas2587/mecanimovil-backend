@@ -104,6 +104,7 @@ class OfertaServicioSerializer(serializers.ModelSerializer):
     taller_info = TallerSerializer(source='taller', read_only=True)
     mecanico_info = MecanicoDomicilioSerializer(source='mecanico', read_only=True)
     servicio_info = serializers.SerializerMethodField()
+    marca_vehiculo_info = serializers.SerializerMethodField()
     nombre_proveedor = serializers.CharField(read_only=True)
     fotos_servicio = FotoServicioSerializer(many=True, read_only=True)
     
@@ -111,7 +112,8 @@ class OfertaServicioSerializer(serializers.ModelSerializer):
         model = OfertaServicio
         fields = (
             'id', 'tipo_proveedor', 'taller', 'taller_info', 'mecanico', 'mecanico_info',
-            'servicio', 'servicio_info', 'disponible', 'duracion_estimada',
+            'servicio', 'servicio_info', 'marca_vehiculo_seleccionada', 'marca_vehiculo_info',
+            'disponible', 'duracion_estimada',
             'precio_con_repuestos', 'precio_sin_repuestos', 'incluye_garantia',
             'duracion_garantia', 'detalles_adicionales', 'nombre_proveedor',
             'fecha_creacion', 'ultima_actualizacion',
@@ -137,16 +139,17 @@ class OfertaServicioSerializer(serializers.ModelSerializer):
         ]
 
         # modelos_compatibles: prefetch_related en las vistas
-        modelos_info = [
-            {
+        modelos_info = []
+        for m in servicio.modelos_compatibles.all():
+            marca_obj = getattr(m, 'marca', None)
+            modelos_info.append({
                 'id': m.id,
                 'nombre': getattr(m, 'nombre', '') or getattr(m, 'modelo_nombre', ''),
+                'marca_id': getattr(marca_obj, 'id', None) if marca_obj else getattr(m, 'marca_id', None),
                 'marca_nombre': getattr(m, 'marca_nombre', '') or (
-                    getattr(m.marca, 'nombre', '') if getattr(m, 'marca', None) else ''
+                    getattr(marca_obj, 'nombre', '') if marca_obj else ''
                 ),
-            }
-            for m in servicio.modelos_compatibles.all()
-        ]
+            })
 
         return {
             'id': servicio.id,
@@ -158,6 +161,29 @@ class OfertaServicioSerializer(serializers.ModelSerializer):
             'categorias_info': categorias_info,
             'modelos_info': modelos_info,
         }
+
+    def get_marca_vehiculo_info(self, obj):
+        """Marca configurada por el proveedor para esta oferta de catálogo."""
+        request = self.context.get('request')
+        marca = getattr(obj, 'marca_vehiculo_seleccionada', None)
+        if marca:
+            return {
+                'id': marca.id,
+                'nombre': marca.nombre,
+                'logo': get_image_url(marca.logo, request),
+            }
+        pk = getattr(obj, 'marca_vehiculo_seleccionada_id', None)
+        if pk:
+            from mecanimovilapp.apps.vehiculos.models import MarcaVehiculo
+
+            m = MarcaVehiculo.objects.filter(pk=pk).only('id', 'nombre', 'logo').first()
+            if m:
+                return {
+                    'id': m.id,
+                    'nombre': m.nombre,
+                    'logo': get_image_url(m.logo, request),
+                }
+        return None
 
 
 class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
@@ -315,10 +341,27 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
         
         return data
     
+    def _oferta_duplicada(self, proveedor, tipo_proveedor, servicio, marca, exclude_id=None):
+        if not servicio:
+            return False
+        filtros = {
+            'servicio': servicio,
+            'marca_vehiculo_seleccionada': marca,
+        }
+        if tipo_proveedor == 'mecanico':
+            filtros['mecanico'] = proveedor
+        else:
+            filtros['taller'] = proveedor
+        qs = OfertaServicio.objects.filter(**filtros)
+        if exclude_id:
+            qs = qs.exclude(id=exclude_id)
+        return qs.exists()
+
     def create(self, validated_data):
         """Crear nueva oferta asignándola al proveedor autenticado"""
         user = self.context['request'].user
         servicio = validated_data.get('servicio')
+        marca = validated_data.get('marca_vehiculo_seleccionada')
         
         # Determinar si es taller o mecánico
         from mecanimovilapp.apps.usuarios.models import MecanicoDomicilio, Taller
@@ -327,22 +370,22 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
             mecanico = MecanicoDomicilio.objects.get(usuario=user)
             validated_data['mecanico'] = mecanico
             validated_data['tipo_proveedor'] = 'mecanico'
-            
-            # Verificar que no exista ya una oferta para este servicio
-            if servicio and OfertaServicio.objects.filter(mecanico=mecanico, servicio=servicio).exists():
+            if servicio and self._oferta_duplicada(mecanico, 'mecanico', servicio, marca):
                 raise serializers.ValidationError({
-                    'servicio': 'Ya tienes una oferta configurada para este servicio. No puedes crear ofertas duplicadas para el mismo servicio.'
+                    'servicio': (
+                        'Ya tienes una oferta para este servicio y marca de vehículo.'
+                    )
                 })
         except MecanicoDomicilio.DoesNotExist:
             try:
                 taller = Taller.objects.get(usuario=user)
                 validated_data['taller'] = taller
                 validated_data['tipo_proveedor'] = 'taller'
-                
-                # Verificar que no exista ya una oferta para este servicio
-                if servicio and OfertaServicio.objects.filter(taller=taller, servicio=servicio).exists():
+                if servicio and self._oferta_duplicada(taller, 'taller', servicio, marca):
                     raise serializers.ValidationError({
-                        'servicio': 'Ya tienes una oferta configurada para este servicio. No puedes crear ofertas duplicadas para el mismo servicio.'
+                        'servicio': (
+                            'Ya tienes una oferta para este servicio y marca de vehículo.'
+                        )
                     })
             except Taller.DoesNotExist:
                 raise serializers.ValidationError('Usuario no tiene perfil de proveedor')
@@ -354,18 +397,19 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
         # Si se está intentando cambiar el servicio, verificar que no exista duplicado
         nuevo_servicio = validated_data.get('servicio')
         if nuevo_servicio and nuevo_servicio != instance.servicio:
-            # Verificar si ya existe una oferta para este servicio
-            filtro = {'servicio': nuevo_servicio}
-            if instance.mecanico:
-                filtro['mecanico'] = instance.mecanico
-            elif instance.taller:
-                filtro['taller'] = instance.taller
-            
-            # Excluir la instancia actual de la búsqueda
-            existe = OfertaServicio.objects.filter(**filtro).exclude(id=instance.id).exists()
-            if existe:
+            marca = validated_data.get(
+                'marca_vehiculo_seleccionada',
+                instance.marca_vehiculo_seleccionada,
+            )
+            tipo = 'mecanico' if instance.mecanico else 'taller'
+            proveedor = instance.mecanico or instance.taller
+            if self._oferta_duplicada(
+                proveedor, tipo, nuevo_servicio, marca, exclude_id=instance.id
+            ):
                 raise serializers.ValidationError({
-                    'servicio': 'Ya tienes una oferta configurada para este servicio. No puedes tener ofertas duplicadas para el mismo servicio.'
+                    'servicio': (
+                        'Ya tienes una oferta para este servicio y marca de vehículo.'
+                    )
                 })
         
         return super().update(instance, validated_data)

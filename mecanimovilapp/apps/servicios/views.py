@@ -41,6 +41,28 @@ def servicios_catalogo_por_marca_queryset(marca_id):
     )
 
 
+def servicios_comunes_por_marcas_queryset(marca_ids):
+    """
+    Intersección de servicios de catálogo compatibles con todas las marcas indicadas.
+    marca_ids no debe incluir 0 (genérico); para genéricos usar servicios_catalogo_por_marca_queryset(0).
+    """
+    ids = [int(m) for m in marca_ids if str(m) not in ('', '0')]
+    if not ids:
+        return Servicio.objects.none()
+    if len(ids) == 1:
+        return servicios_catalogo_por_marca_queryset(ids[0])
+
+    conjuntos = []
+    for marca_id in ids:
+        conjuntos.append(
+            set(servicios_catalogo_por_marca_queryset(marca_id).values_list('id', flat=True))
+        )
+    comunes = set.intersection(*conjuntos) if conjuntos else set()
+    if not comunes:
+        return Servicio.objects.none()
+    return Servicio.objects.filter(id__in=comunes).order_by('nombre')
+
+
 class CategoriaServicioViewSet(viewsets.ModelViewSet):
     """
     ViewSet para el modelo CategoriaServicio
@@ -516,7 +538,12 @@ class OfertaServicioViewSet(viewsets.ModelViewSet):
         ofertas = (
             OfertaServicio.objects
             .filter(taller_id=taller_id, disponible=True)
-            .select_related('servicio', 'taller', 'taller__usuario')
+            .select_related(
+                'servicio',
+                'taller',
+                'taller__usuario',
+                'marca_vehiculo_seleccionada',
+            )
             .prefetch_related(
                 'servicio__categorias',
                 'servicio__modelos_compatibles',
@@ -543,7 +570,12 @@ class OfertaServicioViewSet(viewsets.ModelViewSet):
         ofertas = (
             OfertaServicio.objects
             .filter(mecanico_id=mecanico_id, disponible=True)
-            .select_related('servicio', 'mecanico', 'mecanico__usuario')
+            .select_related(
+                'servicio',
+                'mecanico',
+                'mecanico__usuario',
+                'marca_vehiculo_seleccionada',
+            )
             .prefetch_related(
                 'servicio__categorias',
                 'servicio__modelos_compatibles',
@@ -947,6 +979,83 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
             return Response(
                 {'error': f'Error obteniendo servicios: {str(e)}'},
                 status=500
+            )
+
+    @action(detail=False, methods=['get'], url_path='servicios_comunes_por_marcas')
+    def servicios_comunes_por_marcas(self, request):
+        """
+        Servicios del catálogo presentes en todas las marcas indicadas (intersección).
+        Query: marca_ids=1,2,3
+        """
+        try:
+            raw = request.query_params.get('marca_ids', '')
+            if not raw or not str(raw).strip():
+                return Response(
+                    {'error': 'Debe especificar marca_ids (ej: 1,2,3)'},
+                    status=400,
+                )
+            marca_ids = []
+            for part in str(raw).split(','):
+                part = part.strip()
+                if not part:
+                    continue
+                try:
+                    mid = int(part)
+                except ValueError:
+                    return Response(
+                        {'error': f'marca_id inválido: {part}'},
+                        status=400,
+                    )
+                if mid == 0:
+                    return Response(
+                        {
+                            'error': (
+                                'Para servicios genéricos use servicios_por_marca con marca_id=0'
+                            )
+                        },
+                        status=400,
+                    )
+                marca_ids.append(mid)
+            if len(marca_ids) < 2:
+                return Response(
+                    {
+                        'error': (
+                            'Indique al menos 2 marcas o use servicios_por_marca para una sola'
+                        )
+                    },
+                    status=400,
+                )
+
+            proveedor_data = self._get_proveedor_data(request.user)
+            if not proveedor_data['proveedor']:
+                return Response(
+                    {'error': 'No se encontró información del proveedor'},
+                    status=404,
+                )
+            proveedor = proveedor_data['proveedor']
+            atendidas = set(
+                proveedor.marcas_atendidas.values_list('id', flat=True)
+            )
+            invalidas = [m for m in marca_ids if m not in atendidas]
+            if invalidas:
+                return Response(
+                    {
+                        'error': (
+                            'Algunas marcas no están en tu configuración de especialidades'
+                        ),
+                        'marcas_invalidas': invalidas,
+                    },
+                    status=400,
+                )
+
+            qs = servicios_comunes_por_marcas_queryset(marca_ids)
+            return Response(
+                list(qs.values('id', 'nombre', 'descripcion', 'requiere_repuestos'))
+            )
+        except Exception as e:
+            return Response(
+                {'error': f'Error obteniendo servicios comunes: {str(e)}'},
+                status=500,
             )
 
     @action(detail=False, methods=['get'])
