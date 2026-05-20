@@ -42,6 +42,7 @@ from django.core.exceptions import ValidationError
 
 from mecanimovilapp.apps.ordenes import adjudicacion_helpers
 from mecanimovilapp.apps.ordenes.services import adjudicacion_publica
+from mecanimovilapp.storage.utils import get_cpanel_file_url
 
 logger = logging.getLogger(__name__)
 
@@ -6198,7 +6199,11 @@ class ChatSolicitudViewSet(viewsets.ModelViewSet):
                 'es_proveedor': mensaje.es_proveedor,
                 'sender_id': mensaje.enviado_por.id,
                 'timestamp': mensaje.fecha_envio.isoformat() if hasattr(mensaje.fecha_envio, 'isoformat') else str(mensaje.fecha_envio),
-                'archivo_adjunto': None
+                'archivo_adjunto': (
+                    get_cpanel_file_url(mensaje.archivo_adjunto, request)
+                    if mensaje.archivo_adjunto
+                    else None
+                ),
             }
             
             print(f"🔵 [CHAT BACKEND OLD API] Payload prepared: {payload}")

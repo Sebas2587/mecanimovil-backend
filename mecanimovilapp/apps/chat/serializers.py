@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from .models import Conversation, Message
 from django.contrib.auth import get_user_model
+from mecanimovilapp.storage.utils import get_cpanel_file_url
 
 User = get_user_model()
 
@@ -40,6 +41,17 @@ class MessageSerializer(serializers.ModelSerializer):
 
     def get_sender_name(self, obj):
         return f"{obj.sender.first_name} {obj.sender.last_name}"
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get('request')
+        if instance.attachment:
+            url = get_cpanel_file_url(instance.attachment, request)
+            data['attachment'] = url
+            data['archivo_adjunto'] = url
+        else:
+            data['archivo_adjunto'] = None
+        return data
 
 class ConversationSerializer(serializers.ModelSerializer):
     last_message = serializers.SerializerMethodField()

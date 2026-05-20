@@ -23,7 +23,7 @@ from django.contrib.gis.geos import Point
 import logging
 
 # Helper para URLs de archivos en cPanel
-from mecanimovilapp.storage.utils import get_image_url
+from mecanimovilapp.storage.utils import get_cpanel_file_url, get_image_url
 
 logger = logging.getLogger(__name__)
 
@@ -2246,6 +2246,13 @@ class ChatSolicitudSerializer(serializers.ModelSerializer):
             'archivo_adjunto', 'solicitud_detail', 'proveedor_info', 'cliente_info'
         ]
         read_only_fields = ['id', 'enviado_por', 'enviado_por_nombre', 'fecha_envio', 'es_proveedor', 'leido', 'fecha_lectura', 'solicitud_detail', 'proveedor_info', 'cliente_info']
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get('request')
+        if instance.archivo_adjunto:
+            data['archivo_adjunto'] = get_cpanel_file_url(instance.archivo_adjunto, request)
+        return data
     
     def get_solicitud_detail(self, obj):
         """Retorna informaci?n b?sica de la solicitud original asociada a la oferta"""

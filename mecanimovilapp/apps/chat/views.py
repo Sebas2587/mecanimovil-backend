@@ -5,6 +5,7 @@ from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from .models import Conversation, Message
 from .serializers import ConversationSerializer, MessageSerializer
+from mecanimovilapp.storage.utils import get_cpanel_file_url
 
 logger = logging.getLogger(__name__)
 
@@ -249,7 +250,12 @@ class ConversationViewSet(viewsets.ReadOnlyModelViewSet):
             'es_proveedor': es_proveedor,
             'sender_id': message.sender.id,
             'timestamp': message.timestamp.isoformat(),
-            'archivo_adjunto': message.attachment.url if message.attachment else None
+            'archivo_adjunto': (
+                get_cpanel_file_url(message.attachment, request) if message.attachment else None
+            ),
+            'attachment': (
+                get_cpanel_file_url(message.attachment, request) if message.attachment else None
+            ),
         }
         
         print(f"🔵 [CHAT BACKEND] Payload prepared: {payload}")
