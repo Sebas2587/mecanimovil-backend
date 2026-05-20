@@ -53,6 +53,11 @@ from google.auth.transport import requests as google_requests
 
 # Helper para URLs de archivos en cPanel
 from mecanimovilapp.storage.utils import get_image_url
+from .panel_servicios_utils import (
+    attach_panel_servicios_to_proveedores,
+    request_wants_panel_servicios,
+    resolve_marca_id_from_request,
+)
 
 # Configurar logger
 logger = logging.getLogger(__name__)
@@ -1197,6 +1202,10 @@ class TallerViewSet(viewsets.ModelViewSet):
         ctx = super().get_serializer_context()
         # Solo en detalle: evitar cómputo pesado en listados.
         ctx['include_kpi_badge'] = self.action in ('retrieve', 'cerca', 'proveedores_filtrados')
+        ctx['include_panel_servicios'] = self.action in (
+            'cerca',
+            'proveedores_filtrados',
+        ) and request_wants_panel_servicios(self.request)
         return ctx
     
     @action(detail=True, methods=['get'])
@@ -1419,11 +1428,20 @@ class TallerViewSet(viewsets.ModelViewSet):
         queryset = queryset.order_by('distance')
         
         page = self.paginate_queryset(queryset)
+        marca_id = resolve_marca_id_from_request(request)
+        want_panel = request_wants_panel_servicios(request)
+
+        def _serialize_batch(objs):
+            batch = list(objs)
+            if want_panel and batch:
+                attach_panel_servicios_to_proveedores(batch, 'taller', marca_id=marca_id)
+            return self.get_serializer(batch, many=True)
+
         if page is not None:
-            serializer = self.get_serializer(page, many=True)
+            serializer = _serialize_batch(page)
             return self.get_paginated_response(serializer.data)
-        
-        serializer = self.get_serializer(queryset, many=True)
+
+        serializer = _serialize_batch(queryset)
         return Response(serializer.data)
 
     def create(self, request, *args, **kwargs):
@@ -1924,7 +1942,9 @@ class TallerViewSet(viewsets.ModelViewSet):
         # Serializar resultados
         logger.info(f"✅ Talleres encontrados: {queryset.count()}")
         ordered = _order_proveedores_by_kpi_relevancia(list(queryset), window_days=30)
-        serializer = TallerSerializer(ordered, many=True)
+        if request_wants_panel_servicios(request):
+            attach_panel_servicios_to_proveedores(ordered, 'taller', marca_id=marca_vehiculo.id)
+        serializer = self.get_serializer(ordered, many=True)
         return Response({
             "talleres": serializer.data,
             "total": queryset.count(),
@@ -1978,6 +1998,10 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
         ctx['include_kpi_badge'] = self.action in ('retrieve', 'cerca', 'proveedores_filtrados')
+        ctx['include_panel_servicios'] = self.action in (
+            'cerca',
+            'proveedores_filtrados',
+        ) and request_wants_panel_servicios(self.request)
         return ctx
     
     @action(detail=True, methods=['get'])
@@ -2324,11 +2348,20 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
         queryset = queryset.order_by('distance')
         
         page = self.paginate_queryset(queryset)
+        marca_id = resolve_marca_id_from_request(request)
+        want_panel = request_wants_panel_servicios(request)
+
+        def _serialize_batch(objs):
+            batch = list(objs)
+            if want_panel and batch:
+                attach_panel_servicios_to_proveedores(batch, 'mecanico', marca_id=marca_id)
+            return self.get_serializer(batch, many=True)
+
         if page is not None:
-            serializer = self.get_serializer(page, many=True)
+            serializer = _serialize_batch(page)
             return self.get_paginated_response(serializer.data)
-        
-        serializer = self.get_serializer(queryset, many=True)
+
+        serializer = _serialize_batch(queryset)
         return Response(serializer.data)
 
     @action(detail=False, methods=['patch'], permission_classes=[permissions.IsAuthenticated])
@@ -2644,7 +2677,9 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
         # Serializar resultados
         logger.info(f"✅ Mecánicos encontrados: {queryset.count()}")
         ordered = _order_proveedores_by_kpi_relevancia(list(queryset), window_days=30)
-        serializer = MecanicoDomicilioSerializer(ordered, many=True)
+        if request_wants_panel_servicios(request):
+            attach_panel_servicios_to_proveedores(ordered, 'mecanico', marca_id=marca_vehiculo.id)
+        serializer = self.get_serializer(ordered, many=True)
         return Response({
             "mecanicos": serializer.data,
             "total": queryset.count(),

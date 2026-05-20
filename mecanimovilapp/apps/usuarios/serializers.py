@@ -459,7 +459,19 @@ class ConfigurarHorarioRapidoSerializer(serializers.Serializer):
         return presets[preset]
 
 
-class TallerSerializer(serializers.ModelSerializer):
+class PanelServiciosSerializerMixin:
+    """Ofertas resumidas para cards del home (`include_panel_servicios` en query)."""
+
+    panel_servicios = serializers.SerializerMethodField()
+
+    def get_panel_servicios(self, obj):
+        if not self.context.get('include_panel_servicios'):
+            return []
+        cached = getattr(obj, '_panel_servicios_cache', None)
+        return cached if cached is not None else []
+
+
+class TallerSerializer(PanelServiciosSerializerMixin, serializers.ModelSerializer):
     """
     Serializador para el modelo Taller
     """
@@ -517,10 +529,10 @@ class TallerSerializer(serializers.ModelSerializer):
                   'fecha_registro', 'ultima_actualizacion', 'distance',
                   'ultima_conexion', 'esta_conectado', 'status', 'total_resenas',
                   'servicios_completados', 'comunas_atendidas', 'experiencia_anos',
-                  'latitud', 'longitud', 'direccion_fisica')
+                  'latitud', 'longitud', 'direccion_fisica', 'panel_servicios')
         read_only_fields = ('fecha_registro', 'ultima_actualizacion', 'fecha_verificacion', 
                             'verificado', 'estado_verificacion', 'onboarding_completado', 'onboarding_iniciado',
-                            'distance')
+                            'distance', 'panel_servicios')
         extra_kwargs = {
             # Evita que ModelSerializer serialice el PointField antes de nuestro GeoJSON:
             # geometrías corruptas o errores GEOS rompían toda la respuesta (500 HTML).
@@ -750,7 +762,7 @@ class TallerSerializer(serializers.ModelSerializer):
         return instance_actualizada
 
 
-class MecanicoDomicilioSerializer(serializers.ModelSerializer):
+class MecanicoDomicilioSerializer(PanelServiciosSerializerMixin, serializers.ModelSerializer):
     """
     Serializador para el modelo MecanicoDomicilio
     """
@@ -806,9 +818,10 @@ class MecanicoDomicilioSerializer(serializers.ModelSerializer):
                   'fecha_registro', 'ultima_actualizacion', 'zonas_servicio',
                   'ultima_conexion', 'esta_conectado', 'status', 'total_resenas',
                   'servicios_completados',
-                  'latitud', 'longitud', 'direccion')
+                  'latitud', 'longitud', 'direccion', 'panel_servicios')
         read_only_fields = ('fecha_registro', 'ultima_actualizacion', 'fecha_verificacion', 
-                            'verificado', 'estado_verificacion', 'onboarding_completado', 'onboarding_iniciado')
+                            'verificado', 'estado_verificacion', 'onboarding_completado', 'onboarding_iniciado',
+                            'panel_servicios')
         extra_kwargs = {
             'ubicacion': {'required': False, 'write_only': True}
         }
