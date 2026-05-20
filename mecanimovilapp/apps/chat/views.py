@@ -2,14 +2,16 @@ import logging
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.mixins import DestroyModelMixin
 from django.shortcuts import get_object_or_404
 from .models import Conversation, Message
 from .serializers import ConversationSerializer, MessageSerializer
+from .purge import purge_conversation
 from mecanimovilapp.storage.utils import get_cpanel_file_url
 
 logger = logging.getLogger(__name__)
 
-class ConversationViewSet(viewsets.ReadOnlyModelViewSet):
+class ConversationViewSet(DestroyModelMixin, viewsets.ReadOnlyModelViewSet):
     """
     ViewSet to list and retrieve conversations for the current user.
     """
@@ -19,6 +21,11 @@ class ConversationViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         # Return conversations where the user is a participant
         return Conversation.objects.filter(participants=self.request.user).distinct().order_by('-updated_at')
+
+    def destroy(self, request, *args, **kwargs):
+        conversation = self.get_object()
+        result = purge_conversation(conversation.id, request.user)
+        return Response(result, status=status.HTTP_200_OK)
 
     def filter_queryset(self, queryset):
         # Allow filtering by type (SERVICE vs MARKETPLACE)

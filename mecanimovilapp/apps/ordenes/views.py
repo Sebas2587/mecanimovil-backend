@@ -43,6 +43,7 @@ from django.core.exceptions import ValidationError
 from mecanimovilapp.apps.ordenes import adjudicacion_helpers
 from mecanimovilapp.apps.ordenes.services import adjudicacion_publica
 from mecanimovilapp.storage.utils import get_cpanel_file_url
+from mecanimovilapp.apps.chat.purge import purge_chat_for_oferta
 
 logger = logging.getLogger(__name__)
 
@@ -6365,6 +6366,15 @@ class ChatSolicitudViewSet(viewsets.ModelViewSet):
         
         return Response(serializer.data)
     
+    @action(detail=False, methods=['delete'], url_path='eliminar-por-oferta/(?P<oferta_id>[^/.]+)')
+    def eliminar_por_oferta(self, request, oferta_id=None):
+        """
+        Elimina por completo el chat de una oferta: mensajes ChatSolicitud, adjuntos en storage
+        y la Conversation asociada a la solicitud si ya no quedan más hilos legacy.
+        """
+        result = purge_chat_for_oferta(oferta_id, request.user)
+        return Response(result, status=status.HTTP_200_OK)
+
     @action(detail=False, methods=['get'], url_path='lista-chats')
     def lista_chats(self, request):
         """
