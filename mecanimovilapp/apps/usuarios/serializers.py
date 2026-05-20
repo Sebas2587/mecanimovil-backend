@@ -462,8 +462,6 @@ class ConfigurarHorarioRapidoSerializer(serializers.Serializer):
 class PanelServiciosSerializerMixin:
     """Ofertas resumidas para cards del home (`include_panel_servicios` en query)."""
 
-    panel_servicios = serializers.SerializerMethodField()
-
     def get_panel_servicios(self, obj):
         if not self.context.get('include_panel_servicios'):
             return []
@@ -512,6 +510,7 @@ class TallerSerializer(PanelServiciosSerializerMixin, serializers.ModelSerialize
     # Verificado para clientes: estado aprobado + documentos obligatorios validados en BD
     verificado = serializers.SerializerMethodField()
     kpi_badge = serializers.SerializerMethodField()
+    panel_servicios = serializers.SerializerMethodField()
     # Misma media que `/usuarios/providers/<id>/reviews/` (modelo Review), no solo Resena en BD
     rating_average = serializers.SerializerMethodField()
     rating_reviews_count = serializers.SerializerMethodField()
@@ -532,7 +531,7 @@ class TallerSerializer(PanelServiciosSerializerMixin, serializers.ModelSerialize
                   'latitud', 'longitud', 'direccion_fisica', 'panel_servicios')
         read_only_fields = ('fecha_registro', 'ultima_actualizacion', 'fecha_verificacion', 
                             'verificado', 'estado_verificacion', 'onboarding_completado', 'onboarding_iniciado',
-                            'distance', 'panel_servicios')
+                            'distance')
         extra_kwargs = {
             # Evita que ModelSerializer serialice el PointField antes de nuestro GeoJSON:
             # geometrías corruptas o errores GEOS rompían toda la respuesta (500 HTML).
@@ -802,6 +801,7 @@ class MecanicoDomicilioSerializer(PanelServiciosSerializerMixin, serializers.Mod
 
     verificado = serializers.SerializerMethodField()
     kpi_badge = serializers.SerializerMethodField()
+    panel_servicios = serializers.SerializerMethodField()
     rating_average = serializers.SerializerMethodField()
     rating_reviews_count = serializers.SerializerMethodField()
     
@@ -820,8 +820,7 @@ class MecanicoDomicilioSerializer(PanelServiciosSerializerMixin, serializers.Mod
                   'servicios_completados',
                   'latitud', 'longitud', 'direccion', 'panel_servicios')
         read_only_fields = ('fecha_registro', 'ultima_actualizacion', 'fecha_verificacion', 
-                            'verificado', 'estado_verificacion', 'onboarding_completado', 'onboarding_iniciado',
-                            'panel_servicios')
+                            'verificado', 'estado_verificacion', 'onboarding_completado', 'onboarding_iniciado')
         extra_kwargs = {
             'ubicacion': {'required': False, 'write_only': True}
         }
