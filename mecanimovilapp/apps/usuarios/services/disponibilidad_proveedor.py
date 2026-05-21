@@ -4,10 +4,13 @@ y citas ya agendadas del proveedor.
 """
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, time, timedelta
 from typing import Any
 
 from django.utils import timezone
+
+logger = logging.getLogger(__name__)
 
 from mecanimovilapp.apps.ordenes.models import SolicitudServicio
 from mecanimovilapp.apps.servicios.models import OfertaServicio
@@ -210,7 +213,9 @@ def estado_actual_proveedor(
             nombre_servicio = 'Servicio'
             linea = sol.lineas.select_related('oferta_servicio__servicio').first()
             if linea and linea.oferta_servicio:
-                nombre_servicio = linea.oferta_servicio.servicio.nombre
+                servicio = getattr(linea.oferta_servicio, 'servicio', None)
+                if servicio is not None:
+                    nombre_servicio = servicio.nombre
             return {
                 'ocupado': True,
                 'servicio_en_curso': nombre_servicio,
@@ -240,9 +245,8 @@ def disponibilidad_con_duracion(
     else:
         horario_qs = horario_qs.filter(mecanico=mecanico)
 
-    try:
-        horario_config = horario_qs.get()
-    except HorarioProveedor.DoesNotExist:
+    horario_config = horario_qs.order_by('id').first()
+    if horario_config is None:
         return {
             'fecha': fecha.isoformat(),
             'proveedor_disponible': False,
@@ -252,6 +256,13 @@ def disponibilidad_con_duracion(
                 taller=taller, mecanico=mecanico,
             ),
         }
+    if horario_qs.count() > 1:
+        logger.warning(
+            'HorarioProveedor duplicado activo: taller=%s mecanico=%s dia=%s',
+            getattr(taller, 'id', None),
+            getattr(mecanico, 'id', None),
+            dia_semana,
+        )
 
     oferta = None
     if oferta_servicio_id:
@@ -308,12 +319,22 @@ def dias_con_slots(
     fechas_ok: list[str] = []
     for offset in range(dias_adelante):
         f = hoy + timedelta(days=offset)
-        data = disponibilidad_con_duracion(
-            taller=taller,
-            mecanico=mecanico,
-            fecha=f,
-            oferta_servicio_id=oferta_servicio_id,
-        )
+        try:
+            data = disponibilidad_con_duracion(
+                taller=taller,
+                mecanico=mecanico,
+                fecha=f,
+                oferta_servicio_id=oferta_servicio_id,
+            )
+        except Exception:
+            logger.exception(
+                'dias_con_slots falló para fecha=%s taller=%s mecanico=%s oferta=%s',
+                f,
+                getattr(taller, 'id', None),
+                getattr(mecanico, 'id', None),
+                oferta_servicio_id,
+            )
+            continue
         if data.get('proveedor_disponible') and data.get('slots_disponibles'):
             fechas_ok.append(f.isoformat())
     return fechas_ok

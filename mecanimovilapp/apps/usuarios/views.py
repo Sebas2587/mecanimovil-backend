@@ -1333,15 +1333,37 @@ class TallerViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['get'], url_path='dias_disponibles_agenda')
     def dias_disponibles_agenda(self, request, pk=None):
         """Fechas con al menos un slot (próximos 14 días por defecto)."""
+        import logging
+
+        logger = logging.getLogger(__name__)
         taller = self.get_object()
         oferta_id = request.query_params.get('oferta_servicio_id')
         oferta_servicio_id = int(oferta_id) if oferta_id and str(oferta_id).isdigit() else None
-        dias = int(request.query_params.get('dias', 14))
-        fechas = calc_dias_con_slots(
-            taller=taller,
-            oferta_servicio_id=oferta_servicio_id,
-            dias_adelante=min(max(dias, 1), 30),
-        )
+        try:
+            dias = int(request.query_params.get('dias', 14))
+        except (TypeError, ValueError):
+            dias = 14
+        try:
+            fechas = calc_dias_con_slots(
+                taller=taller,
+                oferta_servicio_id=oferta_servicio_id,
+                dias_adelante=min(max(dias, 1), 30),
+            )
+        except Exception:
+            logger.exception(
+                'dias_disponibles_agenda taller=%s oferta=%s',
+                taller.id,
+                oferta_servicio_id,
+            )
+            return Response(
+                {
+                    'fechas_disponibles': [],
+                    'tipo_proveedor': 'taller',
+                    'proveedor_id': taller.id,
+                    'error': 'No se pudo calcular la disponibilidad',
+                },
+                status=status.HTTP_200_OK,
+            )
         return Response({
             'fechas_disponibles': fechas,
             'tipo_proveedor': 'taller',
@@ -2181,15 +2203,37 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'], url_path='dias_disponibles_agenda')
     def dias_disponibles_agenda(self, request, pk=None):
+        import logging
+
+        logger = logging.getLogger(__name__)
         mecanico = self.get_object()
         oferta_id = request.query_params.get('oferta_servicio_id')
         oferta_servicio_id = int(oferta_id) if oferta_id and str(oferta_id).isdigit() else None
-        dias = int(request.query_params.get('dias', 14))
-        fechas = calc_dias_con_slots(
-            mecanico=mecanico,
-            oferta_servicio_id=oferta_servicio_id,
-            dias_adelante=min(max(dias, 1), 30),
-        )
+        try:
+            dias = int(request.query_params.get('dias', 14))
+        except (TypeError, ValueError):
+            dias = 14
+        try:
+            fechas = calc_dias_con_slots(
+                mecanico=mecanico,
+                oferta_servicio_id=oferta_servicio_id,
+                dias_adelante=min(max(dias, 1), 30),
+            )
+        except Exception:
+            logger.exception(
+                'dias_disponibles_agenda mecanico=%s oferta=%s',
+                mecanico.id,
+                oferta_servicio_id,
+            )
+            return Response(
+                {
+                    'fechas_disponibles': [],
+                    'tipo_proveedor': 'mecanico',
+                    'proveedor_id': mecanico.id,
+                    'error': 'No se pudo calcular la disponibilidad',
+                },
+                status=status.HTTP_200_OK,
+            )
         return Response({
             'fechas_disponibles': fechas,
             'tipo_proveedor': 'mecanico',
