@@ -98,16 +98,42 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 def _ubicacion_proveedor(proveedor) -> Any:
-    """Point del taller/mecánico o, si falta, del usuario vinculado."""
+    """Solo ubicación del taller/mecánico (no usuario: suele coincidir con el cliente y da 0 km)."""
     if not proveedor:
         return None
-    ubic = getattr(proveedor, 'ubicacion', None)
-    if ubic is not None:
-        return ubic
-    usuario = getattr(proveedor, 'usuario', None)
-    if usuario:
-        return getattr(usuario, 'ubicacion', None)
+    return getattr(proveedor, 'ubicacion', None)
+
+
+def _distancia_geodesica_km(punto: Point, ubic: Any) -> float | None:
+    """Distancia en km (PostGIS/geography en metros; fallback haversine)."""
+    try:
+        dist = punto.distance(ubic)
+        if dist is not None:
+            if hasattr(dist, 'km'):
+                km = float(dist.km)
+            elif hasattr(dist, 'm'):
+                km = float(dist.m) / 1000.0
+            else:
+                km = float(dist) / 1000.0
+            if km >= 0 and not math.isnan(km) and not math.isinf(km):
+                return km
+    except Exception:
+        pass
+    try:
+        km = _haversine_km(float(punto.y), float(punto.x), float(ubic.y), float(ubic.x))
+        if km >= 0 and not math.isnan(km) and not math.isinf(km):
+            return km
+    except Exception:
+        pass
     return None
+
+
+def _format_distancia_km_api(dist_km: float | None) -> float | None:
+    if dist_km is None or dist_km >= _DISTANCIA_SIN_UBICACION_KM:
+        return None
+    if dist_km < 0.05:
+        return round(dist_km, 2)
+    return round(dist_km, 1)
 
 
 def _distancia_km_proveedor(oferta: OfertaServicio, punto: Point) -> float | None:
@@ -118,11 +144,7 @@ def _distancia_km_proveedor(oferta: OfertaServicio, punto: Point) -> float | Non
         ubic = _ubicacion_proveedor(proveedor)
         if ubic is None:
             return None
-        # Point: x=lng, y=lat (convención GeoDjango / GeoJSON)
-        km = _haversine_km(float(punto.y), float(punto.x), float(ubic.y), float(ubic.x))
-        if km < 0 or math.isnan(km) or math.isinf(km):
-            return None
-        return round(km, 2)
+        return _distancia_geodesica_km(punto, ubic)
     except Exception:
         logger.debug('No se pudo calcular distancia proveedor', exc_info=True)
         return None
@@ -623,11 +645,21 @@ def _serialize_candidato(
     rating = 0.0
     a_domicilio = oferta.tipo_proveedor == 'mecanico'
     foto_url = None
+    lat_proveedor = None
+    lng_proveedor = None
 
     if proveedor:
         nombre = getattr(proveedor, 'nombre', None) or str(proveedor)
         rating = _safe_float(getattr(proveedor, 'calificacion_promedio', 0))
         foto_url = _foto_url_proveedor(proveedor, request)
+        ubic = _ubicacion_proveedor(proveedor)
+        if ubic is not None:
+            try:
+                lat_proveedor = float(ubic.y)
+                lng_proveedor = float(ubic.x)
+            except (TypeError, ValueError):
+                lat_proveedor = None
+                lng_proveedor = None
 
     precio_rep = _safe_float(oferta.precio_con_repuestos)
     precio_sin = _safe_float(oferta.precio_sin_repuestos)
@@ -646,6 +678,8 @@ def _serialize_candidato(
             'rating': rating,
             'foto_perfil': foto_url,
             'foto_perfil_url': foto_url,
+            'lat': lat_proveedor,
+            'lng': lng_proveedor,
         },
         'servicio': {
             'id': oferta.servicio_id,
@@ -656,7 +690,7 @@ def _serialize_candidato(
         'incluye_repuestos_sugerido': requiere_repuestos,
         'a_domicilio': a_domicilio,
         'desglose': desglose,
-        'distancia_km': round(dist_km, 1) if dist_km is not None and dist_km < _DISTANCIA_SIN_UBICACION_KM else None,
+        'distancia_km': _format_distancia_km_api(dist_km),
         'dentro_radio_km': (
             dist_km is not None and dist_km <= MAX_RADIO_KM
         ),
