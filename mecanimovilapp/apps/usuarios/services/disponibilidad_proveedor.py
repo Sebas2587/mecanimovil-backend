@@ -30,6 +30,13 @@ DURACION_DEFAULT_MINUTOS = 60
 def _time_to_minutes(t: time | None) -> int | None:
     if t is None:
         return None
+    if isinstance(t, timedelta):
+        total = int(t.total_seconds())
+        if total <= 0:
+            return None
+        return total // 60
+    if not isinstance(t, time):
+        return None
     return t.hour * 60 + t.minute
 
 
@@ -185,6 +192,18 @@ def slots_en_ventanas(
     return slots
 
 
+def _slots_json_safe(slots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Quita objetos time no serializables; la API solo expone hora en string."""
+    safe: list[dict[str, Any]] = []
+    for slot in slots:
+        safe.append({
+            'hora': slot.get('hora'),
+            'hora_fin_estimada': slot.get('hora_fin_estimada'),
+            'disponible': slot.get('disponible', True),
+        })
+    return safe
+
+
 def estado_actual_proveedor(
     *,
     taller: Taller | None = None,
@@ -316,6 +335,8 @@ def disponibilidad_con_duracion(
         ahora_t = timezone.localtime().time()
         slots = [s for s in slots if s['hora_inicio_24h'] > ahora_t]
 
+    slots_safe = _slots_json_safe(slots)
+
     return {
         'fecha': fecha.isoformat(),
         'proveedor_disponible': True,
@@ -329,8 +350,8 @@ def disponibilidad_con_duracion(
             mecanico=mecanico,
             duracion_fallback=max_dur,
         ),
-        'slots_disponibles': slots,
-        'total_slots': len(slots),
+        'slots_disponibles': slots_safe,
+        'total_slots': len(slots_safe),
     }
 
 

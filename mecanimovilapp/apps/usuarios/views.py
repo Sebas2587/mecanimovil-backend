@@ -1321,11 +1321,33 @@ class TallerViewSet(viewsets.ModelViewSet):
         oferta_id = request.query_params.get('oferta_servicio_id')
         oferta_servicio_id = int(oferta_id) if oferta_id and str(oferta_id).isdigit() else None
 
-        payload = calc_disponibilidad_con_duracion(
-            taller=taller,
-            fecha=fecha,
-            oferta_servicio_id=oferta_servicio_id,
-        )
+        import logging
+        logger = logging.getLogger(__name__)
+        try:
+            payload = calc_disponibilidad_con_duracion(
+                taller=taller,
+                fecha=fecha,
+                oferta_servicio_id=oferta_servicio_id,
+            )
+        except Exception:
+            logger.exception(
+                'disponibilidad_con_duracion taller=%s fecha=%s oferta=%s',
+                taller.id,
+                fecha_str,
+                oferta_servicio_id,
+            )
+            return Response(
+                {
+                    'fecha': fecha.isoformat(),
+                    'proveedor_disponible': False,
+                    'mensaje': 'No se pudo calcular la disponibilidad',
+                    'slots_disponibles': [],
+                    'total_slots': 0,
+                    'tipo_proveedor': 'taller',
+                    'proveedor_id': taller.id,
+                },
+                status=status.HTTP_200_OK,
+            )
         payload['tipo_proveedor'] = 'taller'
         payload['proveedor_id'] = taller.id
         return Response(payload)
@@ -2165,11 +2187,33 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
         oferta_id = request.query_params.get('oferta_servicio_id')
         oferta_servicio_id = int(oferta_id) if oferta_id and str(oferta_id).isdigit() else None
 
-        payload = calc_disponibilidad_con_duracion(
-            mecanico=mecanico,
-            fecha=fecha,
-            oferta_servicio_id=oferta_servicio_id,
-        )
+        import logging
+        logger = logging.getLogger(__name__)
+        try:
+            payload = calc_disponibilidad_con_duracion(
+                mecanico=mecanico,
+                fecha=fecha,
+                oferta_servicio_id=oferta_servicio_id,
+            )
+        except Exception:
+            logger.exception(
+                'disponibilidad_con_duracion mecanico=%s fecha=%s oferta=%s',
+                mecanico.id,
+                fecha_str,
+                oferta_servicio_id,
+            )
+            return Response(
+                {
+                    'fecha': fecha.isoformat(),
+                    'proveedor_disponible': False,
+                    'mensaje': 'No se pudo calcular la disponibilidad',
+                    'slots_disponibles': [],
+                    'total_slots': 0,
+                    'tipo_proveedor': 'mecanico',
+                    'proveedor_id': mecanico.id,
+                },
+                status=status.HTTP_200_OK,
+            )
         payload['tipo_proveedor'] = 'mecanico'
         payload['proveedor_id'] = mecanico.id
         return Response(payload)
