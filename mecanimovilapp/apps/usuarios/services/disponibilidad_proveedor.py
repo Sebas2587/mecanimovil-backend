@@ -33,6 +33,14 @@ def _time_to_minutes(t: time | None) -> int | None:
     return t.hour * 60 + t.minute
 
 
+def _minutos_ventana_jornada(hora_inicio: time, hora_fin: time) -> int:
+    ini = _time_to_minutes(hora_inicio)
+    fin = _time_to_minutes(hora_fin)
+    if ini is None or fin is None or fin <= ini:
+        return 0
+    return fin - ini
+
+
 def duracion_rango_oferta(oferta: OfertaServicio | None) -> tuple[int, int]:
     """Retorna (minutos_min, minutos_max) para bloqueo de agenda y etiqueta UI."""
     if oferta is None:
@@ -266,7 +274,19 @@ def disponibilidad_con_duracion(
 
     oferta = None
     if oferta_servicio_id:
-        oferta = OfertaServicio.objects.filter(pk=oferta_servicio_id).select_related('servicio').first()
+        oferta_qs = OfertaServicio.objects.filter(pk=oferta_servicio_id).select_related('servicio')
+        if taller:
+            oferta_qs = oferta_qs.filter(taller=taller)
+        elif mecanico:
+            oferta_qs = oferta_qs.filter(mecanico=mecanico)
+        oferta = oferta_qs.first()
+        if oferta is None:
+            logger.warning(
+                'oferta_servicio_id=%s no pertenece al proveedor taller=%s mecanico=%s',
+                oferta_servicio_id,
+                getattr(taller, 'id', None),
+                getattr(mecanico, 'id', None),
+            )
 
     min_dur, max_dur = duracion_rango_oferta(oferta)
     ocupados = intervalos_ocupados_dia(
@@ -282,7 +302,14 @@ def disponibilidad_con_duracion(
         fecha,
         ocupados,
     )
-    slots = slots_en_ventanas(libres, max_dur)
+    ventana_jornada = _minutos_ventana_jornada(
+        horario_config.hora_inicio,
+        horario_config.hora_fin,
+    )
+    duracion_slot = int(max_dur)
+    if ventana_jornada > 0:
+        duracion_slot = min(duracion_slot, ventana_jornada)
+    slots = slots_en_ventanas(libres, duracion_slot)
 
     # Filtrar slots en el pasado si es hoy
     if fecha == timezone.localdate():
