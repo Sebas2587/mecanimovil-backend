@@ -507,71 +507,195 @@ def _explicacion_coincidencia_parcial(score: float, dist_km: float | None) -> st
     return f'Mismo servicio · coincidencia parcial ({pct}%)'
 
 
+def _agrupar_ofertas_validas_por_proveedor(
+    pool_meta: list[tuple[OfertaServicio, float | None, float, str]],
+    *,
+    requiere_repuestos: bool,
+    punto: Point | None,
+) -> dict[int, list[tuple[OfertaServicio, float | None, float, str]]]:
+    """Todas las ofertas de catálogo válidas por usuario proveedor (no solo la mejor)."""
+    por_uid: dict[int, list[tuple[OfertaServicio, float | None, float, str]]] = {}
+    for oferta, dist_km, score, expl in pool_meta:
+        if not _oferta_catalogo_completa(oferta, requiere_repuestos=requiere_repuestos):
+            continue
+        if not _elegible_en_zona(punto, dist_km):
+            continue
+        uid, _ = _proveedor_usuario(oferta)
+        if not uid:
+            continue
+        por_uid.setdefault(uid, []).append((oferta, dist_km, score, expl))
+    return por_uid
+
+
+def _mejor_oferta_por_servicio_en_grupo(
+    items: list[tuple[OfertaServicio, float | None, float, str]],
+    servicio_ids_pedidos: list[int],
+) -> list[tuple[OfertaServicio, float | None, float, str]]:
+    pedidos = {int(s) for s in servicio_ids_pedidos if s is not None}
+    por_servicio: dict[int, tuple[OfertaServicio, float | None, float, str]] = {}
+    for oferta, dist_km, score, expl in items:
+        sid = oferta.servicio_id
+        if sid is None or sid not in pedidos:
+            continue
+        prev = por_servicio.get(sid)
+        if prev is None or score > prev[2]:
+            por_servicio[sid] = (oferta, dist_km, score, expl)
+    return list(por_servicio.values())
+
+
+def _serialize_candidato_proveedor(
+    items: list[tuple[OfertaServicio, float | None, float, str]],
+    servicio_ids_pedidos: list[int],
+    requiere_repuestos: bool,
+    *,
+    es_coincidencia_exacta: bool,
+    request=None,
+    explicacion_override: str | None = None,
+) -> dict[str, Any] | None:
+    """Un candidato por proveedor con N servicios del pedido y precio total sumado."""
+    seleccionados = _mejor_oferta_por_servicio_en_grupo(items, servicio_ids_pedidos)
+    if not seleccionados:
+        return None
+
+    pedidos_count = len({int(s) for s in servicio_ids_pedidos if s is not None}) or 1
+    servicios_ofrecidos: list[dict[str, Any]] = []
+    mo_total = rep_total = gest_total = 0.0
+    precio_total = 0.0
+    oferta_ids: list[int] = []
+
+    for oferta, _dist, _score, _expl in sorted(
+        seleccionados, key=lambda x: (x[0].servicio_id or 0, -x[2])
+    ):
+        d = _build_desglose(oferta, requiere_repuestos)
+        precio_item = _safe_float(d['precio_publicado_cliente'])
+        servicio = getattr(oferta, 'servicio', None)
+        servicios_ofrecidos.append({
+            'id': oferta.servicio_id,
+            'nombre': getattr(servicio, 'nombre', '') if servicio else '',
+            'precio': precio_item,
+            'oferta_servicio_id': oferta.id,
+            'desglose': d,
+        })
+        mo_total += _safe_float(d['mano_obra'])
+        rep_total += _safe_float(d['repuestos'])
+        gest_total += _safe_float(d['gestion'])
+        precio_total += precio_item
+        oferta_ids.append(int(oferta.id))
+
+    coberturas = len(servicios_ofrecidos)
+    cobertura_pct = coberturas / pedidos_count if pedidos_count else 0.0
+
+    oferta_rep, dist_km_rep, score_base, expl_rep = max(seleccionados, key=lambda x: x[2])
+    score_ajustado = min(0.99, _safe_float(score_base) * (0.6 + 0.4 * cobertura_pct))
+
+    explicacion = explicacion_override or expl_rep
+    if explicacion_override is None and coberturas < pedidos_count:
+        explicacion = (
+            f'{expl_rep} · Cubre {coberturas}/{pedidos_count} servicios solicitados'
+        )
+
+    base = _serialize_candidato(
+        oferta_rep,
+        score_ajustado,
+        explicacion,
+        requiere_repuestos,
+        dist_km=dist_km_rep,
+        es_coincidencia_exacta=es_coincidencia_exacta,
+        request=request,
+    )
+    base['servicios_ofrecidos'] = servicios_ofrecidos
+    base['servicios_cubiertos'] = coberturas
+    base['servicios_pedidos'] = pedidos_count
+    base['cobertura_pct'] = round(cobertura_pct, 3)
+    base['precio_total'] = round(precio_total)
+    base['oferta_servicio_ids'] = oferta_ids
+    base['desglose'] = {
+        'mano_obra': mo_total,
+        'repuestos': rep_total,
+        'gestion': gest_total,
+        'precio_publicado_cliente': precio_total,
+        'catalogo_completo': True,
+    }
+    if requiere_repuestos:
+        base['precio_con_repuestos'] = round(precio_total)
+    else:
+        base['precio_sin_repuestos'] = round(precio_total)
+    if len(servicios_ofrecidos) > 1:
+        nombres = [s['nombre'] for s in servicios_ofrecidos if s.get('nombre')]
+        base['servicio'] = {
+            'id': servicios_ofrecidos[0]['id'],
+            'nombre': ' · '.join(nombres) if nombres else base['servicio']['nombre'],
+        }
+    return base
+
+
 def _clasificar_recomendados_y_otros(
     pool_meta: list[tuple[OfertaServicio, float | None, float, str]],
     *,
+    servicio_ids_pedidos: list[int],
     requiere_repuestos: bool,
     punto: Point | None,
     request=None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """
-    Coincidencia exacta: hasta MAX_CANDIDATOS mejores por score (y distancia).
-    Otros: mismo servicio en zona con menor ranking o score por debajo del umbral.
+    Coincidencia exacta: hasta MAX_CANDIDATOS proveedores (agrupando ofertas por servicio pedido).
+    Otros: proveedores adicionales en zona con menor ranking.
     """
-    entries: list[tuple[OfertaServicio, float | None, float, str]] = []
-    for oferta, dist_km, score, expl in _mejor_oferta_por_proveedor(pool_meta):
-        if not _oferta_catalogo_completa(oferta, requiere_repuestos=requiere_repuestos):
-            continue
-        if not _elegible_en_zona(punto, dist_km):
-            continue
-        entries.append((oferta, dist_km, score, expl))
+    por_uid = _agrupar_ofertas_validas_por_proveedor(
+        pool_meta, requiere_repuestos=requiere_repuestos, punto=punto
+    )
 
-    def sort_key(item: tuple[OfertaServicio, float | None, float, str]):
-        _o, dist_km, score, _expl = item
-        dist_sort = dist_km if dist_km is not None else _DISTANCIA_SIN_UBICACION_KM
+    grupos_ranked: list[tuple[int, list, dict[str, Any]]] = []
+    for uid, items in por_uid.items():
+        cand = _serialize_candidato_proveedor(
+            items,
+            servicio_ids_pedidos,
+            requiere_repuestos,
+            es_coincidencia_exacta=True,
+            request=request,
+        )
+        if cand:
+            grupos_ranked.append((uid, items, cand))
+
+    def sort_grupo(g):
+        _uid, _items, cand = g
+        score = _safe_float(cand.get('score_match'))
+        dist = cand.get('distancia_km')
+        dist_sort = dist if dist is not None else _DISTANCIA_SIN_UBICACION_KM
         if punto:
-            return (-score, dist_sort, _o.id or 0)
-        return (-score, _o.id or 0)
+            return (-score, dist_sort)
+        return (-score,)
 
-    entries.sort(key=sort_key)
+    grupos_ranked.sort(key=sort_grupo)
 
     recomendados: list[dict[str, Any]] = []
     otros: list[dict[str, Any]] = []
 
-    for oferta, dist_km, score, expl in entries:
+    for uid, items, cand in grupos_ranked:
         if len(recomendados) >= MAX_CANDIDATOS:
             break
-        if score < _SCORE_UMBRAL_COINCIDENCIA_PARCIAL and len(recomendados) > 0:
+        best_score = _safe_float(cand.get('score_match'))
+        if best_score < _SCORE_UMBRAL_COINCIDENCIA_PARCIAL and len(recomendados) > 0:
             break
-        recomendados.append(
-            _serialize_candidato(
-                oferta,
-                score,
-                expl,
-                requiere_repuestos,
-                dist_km=dist_km,
-                es_coincidencia_exacta=True,
-                request=request,
-            )
-        )
+        recomendados.append(cand)
 
     uids_exacta = _usuario_ids_en_candidatos(recomendados)
 
-    for oferta, dist_km, score, expl in entries:
-        uid, _ = _proveedor_usuario(oferta)
-        if not uid or uid in uids_exacta:
+    for uid, items, cand in grupos_ranked:
+        if uid in uids_exacta:
             continue
-        otros.append(
-            _serialize_candidato(
-                oferta,
-                score,
-                _explicacion_coincidencia_parcial(score, dist_km),
-                requiere_repuestos,
-                dist_km=dist_km,
-                es_coincidencia_exacta=False,
-                request=request,
-            )
+        best_score = _safe_float(cand.get('score_match'))
+        dist_km = cand.get('distancia_km')
+        otro = _serialize_candidato_proveedor(
+            items,
+            servicio_ids_pedidos,
+            requiere_repuestos,
+            es_coincidencia_exacta=False,
+            request=request,
+            explicacion_override=_explicacion_coincidencia_parcial(best_score, dist_km),
         )
+        if otro:
+            otros.append(otro)
         if len(otros) >= MAX_OTROS_CANDIDATOS:
             break
 
@@ -809,6 +933,7 @@ def listar_candidatos_proveedor(
 
     candidatos_recomendados, otros_candidatos = _clasificar_recomendados_y_otros(
         pool_meta,
+        servicio_ids_pedidos=servicio_ids,
         requiere_repuestos=requiere_repuestos,
         punto=punto,
         request=request,

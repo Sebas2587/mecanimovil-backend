@@ -49,3 +49,11 @@ La confirmación de catálogo SHALL crear solicitud `pendiente_confirmacion` sin
 #### Scenario: Confirmación exitosa
 - WHEN el cliente confirma un candidato con fecha preferida y ubicación
 - THEN la solicitud queda dirigida al proveedor en estado pendiente de confirmación
+
+### Requirement: Candidatos con varios servicios pedidos
+GET `candidatos-proveedor` con múltiples `servicio_ids` SHALL devolver por proveedor la lista
+`servicios_ofrecidos`, `precio_total` (suma) y `oferta_servicio_ids`. Ver spec canónica en
+`mecanimovil-usuarios/openspec/specs/comparador-multi-servicio/spec.md`.
+
+POST `confirmar-candidato` SHALL aceptar `oferta_servicio_ids` del mismo proveedor y crear
+una línea de detalle por cada oferta.

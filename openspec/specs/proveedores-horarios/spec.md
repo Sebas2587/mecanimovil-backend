@@ -19,5 +19,9 @@ El backend **SHALL** exponer un endpoint público que devuelva la configuración
 #### Scenario: Proveedor sin configuración
 - GIVEN un proveedor sin registros `HorarioProveedor`
 - WHEN se consulta su configuración semanal
-- THEN el backend retorna una configuración por defecto coherente (ej. lunes-viernes 08:00-18:00, sábado 08:00-13:00, domingo inactivo)
+- THEN el backend retorna lista vacía `[]` (sin horarios sintéticos)
+- AND la app de usuarios muestra que el proveedor debe configurar su semana en la app proveedor
+
+> **Nota (2026-05-21):** Se eliminó el fallback de 7 días genéricos. El calendario de agendamiento
+> depende de filas reales en BD. Ver `openspec/specs/agendamiento-disponibilidad/spec.md`.
 

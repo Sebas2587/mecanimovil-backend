@@ -14,3 +14,8 @@ Los proveedores necesitan definir cuánto dura cada servicio y que los usuarios 
 - REQ-DURACION-OFERTA: el proveedor SHALL configurar min/max minutos por oferta
 - REQ-VENTANAS-LIBRES: slots SHALL respetar citas activas con duración máxima de cada servicio agendado
 - REQ-CALENDARIO-USUARIO: tras elegir proveedor compatible, el usuario SHALL elegir fecha/hora desde agenda real
+
+## Documentación actualizada (2026-05-21)
+- Spec canónica: `openspec/specs/agendamiento-disponibilidad/spec.md`
+- Fix 500 + JSON slots: `openspec/changes/agendamiento-calendario-api-resilience/`
+- Cliente (agendaContext): `mecanimovil-usuarios/openspec/changes/agendamiento-calendario-contexto-unificado/`

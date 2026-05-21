@@ -110,24 +110,7 @@ def _notificar_cliente_catalogo(usuario_id: int, titulo: str, cuerpo: str, extra
         logger.warning('No se pudo encolar push al cliente %s', usuario_id)
 
 
-def _crear_detalle_y_oferta(
-    *,
-    oferta_servicio: OfertaServicio,
-    solicitud: SolicitudServicioPublica,
-    proveedor: Usuario,
-    tipo_proveedor: str,
-    requiere_repuestos: bool,
-    metadata_ia: dict | None,
-    fecha_disponible: date,
-    hora_disponible: time | None,
-) -> OfertaProveedor:
-    mo = Decimal(str(oferta_servicio.costo_mano_de_obra_sin_iva or 0))
-    rep = Decimal(str(oferta_servicio.costo_repuestos_sin_iva or 0)) if requiere_repuestos else Decimal('0')
-    gest = Decimal('0')
-    if requiere_repuestos:
-        gest = Decimal(
-            str(getattr(oferta_servicio, 'costo_gestion_compra_sin_iva', None) or 0)
-        )
+def _precio_linea_oferta_servicio(oferta_servicio: OfertaServicio, requiere_repuestos: bool) -> Decimal:
     total = Decimal(str(oferta_servicio.precio_publicado_cliente or 0))
     if total <= 0:
         total = Decimal(
@@ -137,21 +120,63 @@ def _crear_detalle_y_oferta(
                 else oferta_servicio.precio_sin_repuestos
             )
         )
+    return total
+
+
+def _crear_oferta_catalogo_con_lineas(
+    *,
+    ofertas_servicio: list[OfertaServicio],
+    solicitud: SolicitudServicioPublica,
+    proveedor: Usuario,
+    tipo_proveedor: str,
+    requiere_repuestos: bool,
+    metadata_ia: dict | None,
+    fecha_disponible: date,
+    hora_disponible: time | None,
+) -> OfertaProveedor:
+    """Una OfertaProveedor con un DetalleServicioOferta por cada OfertaServicio del proveedor."""
+    if not ofertas_servicio:
+        raise ConfirmacionCatalogoError('Sin ofertas de catálogo', 'sin_ofertas')
+
+    principal = ofertas_servicio[0]
+    mo_total = Decimal('0')
+    rep_total = Decimal('0')
+    gest_total = Decimal('0')
+    precio_total = Decimal('0')
+    tiempo_total = timedelta(0)
+    nombres: list[str] = []
+
+    for oferta_servicio in ofertas_servicio:
+        mo_total += Decimal(str(oferta_servicio.costo_mano_de_obra_sin_iva or 0))
+        if requiere_repuestos:
+            rep_total += Decimal(str(oferta_servicio.costo_repuestos_sin_iva or 0))
+            gest_total += Decimal(
+                str(getattr(oferta_servicio, 'costo_gestion_compra_sin_iva', None) or 0)
+            )
+        precio_total += _precio_linea_oferta_servicio(oferta_servicio, requiere_repuestos)
+        tiempo_total += _tiempo_estimado_desde_servicio(oferta_servicio.servicio)
+        nombres.append(oferta_servicio.servicio.nombre)
+
+    descripcion = (
+        f"Propuesta desde catálogo: {', '.join(nombres)}"
+        if len(nombres) > 1
+        else f"Propuesta desde catálogo: {nombres[0]}"
+    )
 
     oferta = OfertaProveedor.objects.create(
         solicitud=solicitud,
         proveedor=proveedor,
         tipo_proveedor=tipo_proveedor,
         origen='catalogo',
-        oferta_servicio=oferta_servicio,
+        oferta_servicio=principal,
         metadata_ia=metadata_ia,
-        precio_total_ofrecido=total,
+        precio_total_ofrecido=precio_total,
         incluye_repuestos=requiere_repuestos,
-        costo_mano_obra=mo,
-        costo_repuestos=rep,
-        costo_gestion_compra=gest,
-        tiempo_estimado_total=_tiempo_estimado_desde_servicio(oferta_servicio.servicio),
-        descripcion_oferta=f"Propuesta desde catálogo: {oferta_servicio.servicio.nombre}",
+        costo_mano_obra=mo_total,
+        costo_repuestos=rep_total,
+        costo_gestion_compra=gest_total,
+        tiempo_estimado_total=tiempo_total,
+        descripcion_oferta=descripcion,
         garantia_ofrecida='',
         fecha_disponible=fecha_disponible,
         hora_disponible=hora_disponible,
@@ -160,18 +185,46 @@ def _crear_detalle_y_oferta(
         es_oferta_secundaria=False,
     )
 
-    servicio = oferta_servicio.servicio
-    precio_detalle = total
-    DetalleServicioOferta.objects.create(
-        oferta=oferta,
-        servicio=servicio,
-        precio_servicio=precio_detalle,
-        tiempo_estimado=_tiempo_estimado_desde_servicio(servicio),
-        notas='',
-        repuestos_seleccionados=[],
-    )
-    oferta.servicios_ofertados.set([servicio.id])
+    servicio_ids: list[int] = []
+    for oferta_servicio in ofertas_servicio:
+        servicio = oferta_servicio.servicio
+        precio_detalle = _precio_linea_oferta_servicio(oferta_servicio, requiere_repuestos)
+        DetalleServicioOferta.objects.create(
+            oferta=oferta,
+            servicio=servicio,
+            precio_servicio=precio_detalle,
+            tiempo_estimado=_tiempo_estimado_desde_servicio(servicio),
+            notas='',
+            repuestos_seleccionados=[],
+        )
+        servicio_ids.append(servicio.id)
+
+    oferta.servicios_ofertados.set(servicio_ids)
     return oferta
+
+
+def _parse_oferta_servicio_ids(payload: dict[str, Any]) -> list[int]:
+    raw_list = payload.get('oferta_servicio_ids')
+    ids: list[int] = []
+    if isinstance(raw_list, (list, tuple)):
+        for x in raw_list:
+            try:
+                ids.append(int(x))
+            except (TypeError, ValueError):
+                continue
+    if not ids and payload.get('oferta_servicio_id') is not None:
+        try:
+            ids.append(int(payload['oferta_servicio_id']))
+        except (TypeError, ValueError):
+            pass
+    # dedupe preserving order
+    seen: set[int] = set()
+    out: list[int] = []
+    for i in ids:
+        if i not in seen:
+            seen.add(i)
+            out.append(i)
+    return out
 
 
 @transaction.atomic
@@ -179,14 +232,13 @@ def confirmar_candidato(cliente: Cliente, payload: dict[str, Any]) -> dict[str, 
     """
     Cliente confirma un candidato del catálogo: crea solicitud dirigida + oferta prellenada.
     """
-    oferta_servicio_id = payload.get('oferta_servicio_id')
-    if not oferta_servicio_id:
-        raise ConfirmacionCatalogoError('oferta_servicio_id es obligatorio', 'oferta_servicio_requerida')
-
-    try:
-        oferta_servicio_id = int(oferta_servicio_id)
-    except (TypeError, ValueError):
-        raise ConfirmacionCatalogoError('oferta_servicio_id inválido', 'oferta_servicio_invalida')
+    oferta_servicio_ids = _parse_oferta_servicio_ids(payload)
+    if not oferta_servicio_ids:
+        raise ConfirmacionCatalogoError(
+            'oferta_servicio_id u oferta_servicio_ids es obligatorio',
+            'oferta_servicio_requerida',
+        )
+    oferta_servicio_id = oferta_servicio_ids[0]
 
     vehiculo_id = payload.get('vehiculo_id')
     if not vehiculo_id:
@@ -200,23 +252,38 @@ def confirmar_candidato(cliente: Cliente, payload: dict[str, Any]) -> dict[str, 
     if not vehiculo:
         raise ConfirmacionCatalogoError('Vehículo no encontrado', 'vehiculo_no_encontrado', 404)
 
-    oferta_servicio = (
+    ofertas_servicio = list(
         OfertaServicio.objects.select_related(
             'servicio', 'taller', 'taller__usuario', 'mecanico', 'mecanico__usuario'
         )
-        .filter(pk=oferta_servicio_id, disponible=True)
-        .first()
+        .filter(pk__in=oferta_servicio_ids, disponible=True)
+        .order_by('servicio_id', 'id')
     )
-    if not oferta_servicio:
-        raise ConfirmacionCatalogoError('Oferta de catálogo no disponible', 'catalogo_no_disponible', 404)
+    if len(ofertas_servicio) != len(oferta_servicio_ids):
+        raise ConfirmacionCatalogoError(
+            'Una o más ofertas de catálogo no están disponibles',
+            'catalogo_no_disponible',
+            404,
+        )
 
-    proveedor, tipo_proveedor = _proveedor_de_oferta_servicio(oferta_servicio)
+    proveedor, tipo_proveedor = _proveedor_de_oferta_servicio(ofertas_servicio[0])
     if not proveedor or not tipo_proveedor:
         raise ConfirmacionCatalogoError('Proveedor de catálogo inválido', 'proveedor_invalido')
 
-    servicio_ids = payload.get('servicio_ids') or [oferta_servicio.servicio_id]
-    if oferta_servicio.servicio_id not in [int(s) for s in servicio_ids if s is not None]:
-        servicio_ids = list(servicio_ids) + [oferta_servicio.servicio_id]
+    for os in ofertas_servicio[1:]:
+        prov_o, tipo_o = _proveedor_de_oferta_servicio(os)
+        if prov_o != proveedor or tipo_o != tipo_proveedor:
+            raise ConfirmacionCatalogoError(
+                'Todas las ofertas deben ser del mismo proveedor',
+                'proveedor_mixto',
+            )
+
+    servicio_ids = payload.get('servicio_ids') or [
+        os.servicio_id for os in ofertas_servicio
+    ]
+    for os in ofertas_servicio:
+        if os.servicio_id not in [int(s) for s in servicio_ids if s is not None]:
+            servicio_ids = list(servicio_ids) + [os.servicio_id]
 
     descripcion = (payload.get('descripcion_problema') or '').strip()
     if not descripcion:
@@ -257,6 +324,7 @@ def confirmar_candidato(cliente: Cliente, payload: dict[str, Any]) -> dict[str, 
 
     metadata_ia_oferta = {
         'oferta_servicio_id': oferta_servicio_id,
+        'oferta_servicio_ids': oferta_servicio_ids,
         'score_match': payload.get('score_match'),
     }
 
@@ -284,8 +352,8 @@ def confirmar_candidato(cliente: Cliente, payload: dict[str, Any]) -> dict[str, 
     )
     solicitud.proveedores_dirigidos.set([proveedor])
 
-    oferta = _crear_detalle_y_oferta(
-        oferta_servicio=oferta_servicio,
+    oferta = _crear_oferta_catalogo_con_lineas(
+        ofertas_servicio=ofertas_servicio,
         solicitud=solicitud,
         proveedor=proveedor,
         tipo_proveedor=tipo_proveedor,
