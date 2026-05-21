@@ -38,8 +38,60 @@ def _safe_float(value, default: float = 0.0) -> float:
     return n
 
 
+def _looks_like_lat_chile(value: float) -> bool:
+    return 17.0 <= abs(value) <= 56.0
+
+
+def _looks_like_lng_chile(value: float) -> bool:
+    return 64.0 <= abs(value) <= 76.0
+
+
+def _en_rango_chile(lat: float, lng: float) -> bool:
+    return -56.0 <= lat <= -17.0 and -80.0 <= lng <= -66.0
+
+
+def _normalizar_lat_lng_chile(lat: float, lng: float) -> tuple[float, float] | None:
+    """Valida lat/lng en Chile; solo intercambia si el par semántico está invertido."""
+    try:
+        la = float(lat)
+        lo = float(lng)
+    except (TypeError, ValueError):
+        return None
+    if abs(la) > 90 or abs(lo) > 180:
+        return None
+
+    if _looks_like_lat_chile(lo) and _looks_like_lng_chile(la) and not _en_rango_chile(la, lo):
+        la, lo = lo, la
+
+    if la > 0 and lo < 0:
+        la = -abs(la)
+    if lo > 0 and la < 0:
+        lo = -abs(lo)
+
+    if not _en_rango_chile(la, lo):
+        return None
+    return la, lo
+
+
 def _punto_servicio(lat: float, lng: float) -> Point:
-    return Point(float(lng), float(lat), srid=4326)
+    normalizado = _normalizar_lat_lng_chile(lat, lng)
+    if not normalizado:
+        raise ValueError('coordenadas fuera de rango')
+    lat_n, lng_n = normalizado
+    return Point(float(lng_n), float(lat_n), srid=4326)
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Distancia geodésica en km (misma base que endpoints `cerca` con spheroid)."""
+    lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+    )
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return 6371.0 * c
 
 
 def _distancia_km_proveedor(oferta: OfertaServicio, punto: Point) -> float | None:
@@ -50,16 +102,11 @@ def _distancia_km_proveedor(oferta: OfertaServicio, punto: Point) -> float | Non
         ubic = getattr(proveedor, 'ubicacion', None)
         if ubic is None:
             return None
-        p = punto
-        if getattr(ubic, 'srid', None) and getattr(p, 'srid', None) and ubic.srid != p.srid:
-            p = Point(p.x, p.y, srid=ubic.srid)
-        metros = ubic.distance(p)
-        if metros is None:
+        # Point: x=lng, y=lat (convención GeoDjango / GeoJSON)
+        km = _haversine_km(float(punto.y), float(punto.x), float(ubic.y), float(ubic.x))
+        if km < 0 or math.isnan(km) or math.isinf(km):
             return None
-        km = _safe_float(metros, default=-1.0) / 1000.0
-        if km < 0:
-            return None
-        return km
+        return round(km, 2)
     except Exception:
         logger.debug('No se pudo calcular distancia proveedor', exc_info=True)
         return None
@@ -123,18 +170,22 @@ def _score_y_explicacion(
     *,
     dist_km: float | None,
     rating: float,
+    con_ubicacion_cliente: bool = False,
 ) -> tuple[float, str]:
     rating_norm = min(1.0, max(0.0, _safe_float(rating) / 5.0))
     if dist_km is not None and dist_km < _DISTANCIA_SIN_UBICACION_KM:
         dist_km = _safe_float(dist_km, default=MAX_RADIO_KM)
         proximidad = max(0.0, 1.0 - min(dist_km, MAX_RADIO_KM) / MAX_RADIO_KM)
-        score = min(0.99, 0.45 * proximidad + 0.35 * rating_norm + 0.2)
+        if con_ubicacion_cliente:
+            score = min(0.99, 0.7 * proximidad + 0.22 * rating_norm + 0.08)
+        else:
+            score = min(0.99, 0.45 * proximidad + 0.35 * rating_norm + 0.2)
         if dist_km < 5:
             expl = f'Muy cerca de ti ({dist_km:.1f} km)'
         elif dist_km < 25:
-            expl = f'A {dist_km:.0f} km de tu ubicación'
+            expl = f'A {dist_km:.1f} km de tu ubicación'
         else:
-            expl = f'Disponible a ~{dist_km:.0f} km'
+            expl = f'A ~{dist_km:.0f} km de tu ubicación'
         return score, expl
     score = min(0.99, 0.4 + 0.35 * rating_norm + 0.25)
     return score, 'Ofrece el servicio para tu vehículo y zona'
@@ -276,7 +327,11 @@ def _construir_pool_meta(
                     dist_km = dist_m
 
             rating = _safe_float(getattr(proveedor_pool, 'calificacion_promedio', 0))
-            score, expl = _score_y_explicacion(dist_km=dist_km, rating=rating)
+            score, expl = _score_y_explicacion(
+                dist_km=dist_km,
+                rating=rating,
+                con_ubicacion_cliente=bool(punto),
+            )
             if not exigir_precio and not _oferta_catalogo_completa(
                 oferta, requiere_repuestos=requiere_repuestos
             ):
@@ -308,12 +363,39 @@ def _ordenar_por_distancia_y_score(
     return [(score, oferta, expl) for oferta, _d, score, expl in candidatos_con_meta]
 
 
+def _sort_key_candidato(cand: dict[str, Any]) -> tuple:
+    dist = cand.get('distancia_km')
+    return (
+        dist is None,
+        dist if dist is not None else _DISTANCIA_SIN_UBICACION_KM,
+        -(cand.get('score_match') or 0),
+    )
+
+
+def _ordenar_candidatos_por_distancia(candidatos: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(candidatos, key=_sort_key_candidato)
+
+
 def _armar_candidatos_finales(
     scored: list[tuple[float, OfertaServicio, str]],
     *,
     requiere_repuestos: bool,
+    priorizar_distancia: bool = False,
 ) -> list[dict[str, Any]]:
-    """Hasta MAX_CANDIDATOS, priorizando al menos un taller y un mecánico si existen."""
+    """Hasta MAX_CANDIDATOS. Con ubicación: los más cercanos; sin ubicación: mix taller/mecánico."""
+    if priorizar_distancia:
+        elegidos: list[dict[str, Any]] = []
+        vistos: set[int] = set()
+        for score, oferta, expl in scored:
+            uid, _ = _proveedor_usuario(oferta)
+            if not uid or uid in vistos:
+                continue
+            elegidos.append(_serialize_candidato(oferta, score, expl, requiere_repuestos))
+            vistos.add(uid)
+            if len(elegidos) >= MAX_CANDIDATOS:
+                break
+        return elegidos
+
     por_tipo: dict[str, list[tuple[float, OfertaServicio, str, int]]] = {
         'taller': [],
         'mecanico': [],
@@ -591,7 +673,11 @@ def listar_candidatos_proveedor(
             pool_meta.sort(key=lambda item: -item[2])
 
     scored = _ordenar_por_distancia_y_score(pool_meta)
-    candidatos_raw = _armar_candidatos_finales(scored, requiere_repuestos=requiere_repuestos)
+    candidatos_raw = _armar_candidatos_finales(
+        scored,
+        requiere_repuestos=requiere_repuestos,
+        priorizar_distancia=bool(punto),
+    )
 
     dist_por_id = {o.id: d for o, d, _, _ in pool_meta}
     candidatos_recomendados = []
@@ -610,6 +696,7 @@ def listar_candidatos_proveedor(
                 'dentro_radio_km': dist is not None and dist <= MAX_RADIO_KM,
             }
         )
+    candidatos_recomendados = _ordenar_candidatos_por_distancia(candidatos_recomendados)
 
     otros_candidatos = _armar_otros_candidatos(
         pool_meta,
@@ -617,6 +704,7 @@ def listar_candidatos_proveedor(
         requiere_repuestos=requiere_repuestos,
         punto=punto,
     )
+    otros_candidatos = _ordenar_candidatos_por_distancia(otros_candidatos)
 
     resultado: dict[str, Any] = {
         'candidatos': candidatos_recomendados,

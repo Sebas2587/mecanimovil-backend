@@ -8,7 +8,10 @@ from mecanimovilapp.apps.ordenes.services.agendamiento_ia.motor_match import (
     _build_desglose,
     _filtrar_comunas_validas,
     _gestion_catalogo_sin_iva,
+    _haversine_km,
+    _normalizar_lat_lng_chile,
     _oferta_catalogo_completa,
+    _ordenar_candidatos_por_distancia,
     _safe_float,
     _score_y_explicacion,
 )
@@ -72,6 +75,50 @@ class MotorMatchGeoScoreTests(SimpleTestCase):
         lejos, _ = _score_y_explicacion(dist_km=60.0, rating=4.5)
         self.assertGreater(cerca, lejos)
 
+    def test_con_ubicacion_prioriza_proximidad(self):
+        cerca, _ = _score_y_explicacion(
+            dist_km=8.0, rating=3.0, con_ubicacion_cliente=True
+        )
+        lejos_mejor_rating, _ = _score_y_explicacion(
+            dist_km=40.0, rating=5.0, con_ubicacion_cliente=True
+        )
+        self.assertGreater(cerca, lejos_mejor_rating)
+
     def test_explicacion_menciona_km(self):
         _, expl = _score_y_explicacion(dist_km=12.0, rating=5.0)
         self.assertIn('km', expl.lower())
+
+
+class MotorMatchHaversineTests(SimpleTestCase):
+    def test_santiago_cercania_aprox_5km(self):
+        # Providencia ~ -33.43, -70.61 vs Las Condes ~ -33.41, -70.57
+        km = _haversine_km(-33.43, -70.61, -33.41, -70.57)
+        self.assertGreater(km, 2.0)
+        self.assertLess(km, 12.0)
+
+    def test_mantiene_geojson_valido(self):
+        par = _normalizar_lat_lng_chile(-33.43, -70.61)
+        self.assertIsNotNone(par)
+        lat, lng = par
+        self.assertAlmostEqual(lat, -33.43, places=1)
+        self.assertAlmostEqual(lng, -70.61, places=1)
+
+    def test_normaliza_lat_lng_invertidos(self):
+        par = _normalizar_lat_lng_chile(-70.61, -33.43)
+        self.assertIsNotNone(par)
+        lat, lng = par
+        self.assertAlmostEqual(lat, -33.43, places=1)
+        self.assertAlmostEqual(lng, -70.61, places=1)
+
+
+class MotorMatchOrdenCandidatosTests(SimpleTestCase):
+    def test_orden_por_distancia(self):
+        lista = [
+            {'distancia_km': 25, 'score_match': 0.9},
+            {'distancia_km': 5, 'score_match': 0.7},
+            {'distancia_km': None, 'score_match': 0.95},
+        ]
+        ordenada = _ordenar_candidatos_por_distancia(lista)
+        self.assertEqual(ordenada[0]['distancia_km'], 5)
+        self.assertEqual(ordenada[1]['distancia_km'], 25)
+        self.assertIsNone(ordenada[2]['distancia_km'])
