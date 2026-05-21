@@ -17,6 +17,7 @@ from mecanimovilapp.apps.personalizacion.ml_engine import MotorRecomendaciones
 from mecanimovilapp.apps.servicios.models import OfertaServicio
 from mecanimovilapp.apps.usuarios.models import ChileanCommune, MechanicServiceArea
 from mecanimovilapp.apps.vehiculos.models import Vehiculo
+from mecanimovilapp.storage.utils import get_image_url
 
 logger = logging.getLogger(__name__)
 
@@ -96,12 +97,25 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 6371.0 * c
 
 
+def _ubicacion_proveedor(proveedor) -> Any:
+    """Point del taller/mecánico o, si falta, del usuario vinculado."""
+    if not proveedor:
+        return None
+    ubic = getattr(proveedor, 'ubicacion', None)
+    if ubic is not None:
+        return ubic
+    usuario = getattr(proveedor, 'usuario', None)
+    if usuario:
+        return getattr(usuario, 'ubicacion', None)
+    return None
+
+
 def _distancia_km_proveedor(oferta: OfertaServicio, punto: Point) -> float | None:
     proveedor = oferta.taller if oferta.tipo_proveedor == 'taller' else oferta.mecanico
     if not proveedor:
         return None
     try:
-        ubic = getattr(proveedor, 'ubicacion', None)
+        ubic = _ubicacion_proveedor(proveedor)
         if ubic is None:
             return None
         # Point: x=lng, y=lat (convención GeoDjango / GeoJSON)
@@ -476,6 +490,7 @@ def _clasificar_recomendados_y_otros(
     *,
     requiere_repuestos: bool,
     punto: Point | None,
+    request=None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """
     Coincidencia exacta: hasta MAX_CANDIDATOS mejores por score (y distancia).
@@ -514,6 +529,7 @@ def _clasificar_recomendados_y_otros(
                 requiere_repuestos,
                 dist_km=dist_km,
                 es_coincidencia_exacta=True,
+                request=request,
             )
         )
 
@@ -531,6 +547,7 @@ def _clasificar_recomendados_y_otros(
                 requiere_repuestos,
                 dist_km=dist_km,
                 es_coincidencia_exacta=False,
+                request=request,
             )
         )
         if len(otros) >= MAX_OTROS_CANDIDATOS:
@@ -579,16 +596,16 @@ def _build_desglose(oferta: OfertaServicio, requiere_repuestos: bool) -> dict[st
     }
 
 
-def _foto_url_proveedor(proveedor) -> str | None:
+def _foto_url_proveedor(proveedor, request=None) -> str | None:
     if not proveedor:
         return None
-    raw = getattr(proveedor, 'foto_perfil', None)
-    if not raw:
-        return None
-    try:
-        return raw.url
-    except Exception:
-        return str(raw) if raw else None
+    url = get_image_url(getattr(proveedor, 'foto_perfil', None), request)
+    if url:
+        return url
+    usuario = getattr(proveedor, 'usuario', None)
+    if usuario:
+        return get_image_url(getattr(usuario, 'foto_perfil', None), request)
+    return None
 
 
 def _serialize_candidato(
@@ -599,6 +616,7 @@ def _serialize_candidato(
     *,
     dist_km: float | None = None,
     es_coincidencia_exacta: bool = True,
+    request=None,
 ) -> dict[str, Any]:
     usuario_id, proveedor = _proveedor_usuario(oferta)
     nombre = ''
@@ -609,7 +627,7 @@ def _serialize_candidato(
     if proveedor:
         nombre = getattr(proveedor, 'nombre', None) or str(proveedor)
         rating = _safe_float(getattr(proveedor, 'calificacion_promedio', 0))
-        foto_url = _foto_url_proveedor(proveedor)
+        foto_url = _foto_url_proveedor(proveedor, request)
 
     precio_rep = _safe_float(oferta.precio_con_repuestos)
     precio_sin = _safe_float(oferta.precio_sin_repuestos)
@@ -659,6 +677,7 @@ def listar_candidatos_proveedor(
     direccion_texto: str | None = None,
     lat: float | None = None,
     lng: float | None = None,
+    request=None,
 ) -> dict[str, Any]:
     """Stateless: no persiste consulta."""
     vehiculo = (
@@ -758,6 +777,7 @@ def listar_candidatos_proveedor(
         pool_meta,
         requiere_repuestos=requiere_repuestos,
         punto=punto,
+        request=request,
     )
 
     resultado: dict[str, Any] = {

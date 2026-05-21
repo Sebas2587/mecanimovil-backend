@@ -162,6 +162,7 @@ class AsistenteAgendamientoViewSet(viewsets.ViewSet):
                 direccion_texto=direccion_texto or None,
                 lat=lat,
                 lng=lng,
+                request=request,
             )
             if resultado.get('error') == 'vehiculo_no_encontrado':
                 return Response(
