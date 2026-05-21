@@ -81,7 +81,13 @@ def _merge_score_activity_aware(
     if has_offers:
         parts.append(int(score_respuesta) if score_respuesta is not None else 0)
 
-    # Checklist y ejecución: dependen de órdenes/checklists (actividad marketplace).
+    # Sin servicios terminados en el periodo: no inflar con ofertas/checklists parciales.
+    if has_offers and not has_orders:
+        if not parts:
+            return 0
+        return max(0, min(54, int(round(sum(parts) / len(parts)))))
+
+    # Checklist y ejecución: solo órdenes terminadas (inicio + fin).
     if has_orders:
         parts.append(int(score_checklist) if score_checklist is not None else 0)
         parts.append(int(score_ejecucion) if score_ejecucion is not None else 0)
@@ -267,6 +273,20 @@ def _ordenes_en_ventana_actividad(base_qs, since):
     ).distinct()
 
 
+def _ordenes_servicio_terminado(qs):
+    """
+    Servicio realmente ejecutado: orden completada y checklist cerrado (inicio + fin).
+    No cuenta solicitudes solo recibidas, aceptadas o con checklist abierto.
+    """
+    return qs.filter(
+        estado='completado',
+        checklist_instance__isnull=False,
+        checklist_instance__estado='COMPLETADO',
+        checklist_instance__fecha_inicio__isnull=False,
+        checklist_instance__fecha_finalizacion__isnull=False,
+    ).distinct()
+
+
 def _minutos_respuesta_oferta(oferta) -> float | None:
     """Minutos desde publicación de la solicitud hasta envío de la oferta."""
     if oferta.tiempo_respuesta_proveedor:
@@ -372,9 +392,9 @@ def compute_proveedor_kpis_resumen(user, dias: int = 30) -> dict[str, Any]:
     # --- Órdenes marketplace (con oferta) en ventana de actividad ---
     orden_base = _orden_mercado_base(taller, mecanico)
     ordenes_periodo = _ordenes_en_ventana_actividad(orden_base, since)
-    ordenes_completadas_periodo = ordenes_periodo.filter(estado='completado')
+    ordenes_terminadas_periodo = _ordenes_servicio_terminado(ordenes_periodo)
 
-    orden_ids_period = list(ordenes_periodo.values_list('id', flat=True))
+    orden_ids_period = list(ordenes_terminadas_periodo.values_list('id', flat=True))
     rating_map_period = _merged_rating_by_solicitud(taller, mecanico, orden_ids_period)
     rated_in_period = [rating_map_period[oid] for oid in orden_ids_period if oid in rating_map_period]
 
@@ -418,18 +438,11 @@ def compute_proveedor_kpis_resumen(user, dias: int = 30) -> dict[str, Any]:
 
     n_srv_total = len(srv_samples_all)
 
-    estados_checklist = [
-        'aceptada_por_proveedor',
-        'checklist_en_progreso',
-        'checklist_completado',
-        'en_proceso',
-        'completado',
-    ]
-    ordenes_check_scope = ordenes_periodo.filter(estado__in=estados_checklist)
+    ordenes_check_scope = ordenes_terminadas_periodo
 
-    con_instancia = ordenes_check_scope.filter(checklist_instance__isnull=False).distinct()
+    con_instancia = ordenes_check_scope
     n_con_checklist = con_instancia.count()
-    n_checklist_completado = con_instancia.filter(checklist_instance__estado='COMPLETADO').count()
+    n_checklist_completado = n_con_checklist
 
     pct_checklist = None
     if n_con_checklist > 0:
@@ -485,8 +498,9 @@ def compute_proveedor_kpis_resumen(user, dias: int = 30) -> dict[str, Any]:
     score_calificacion = _score_calificacion(calificacion_para_score)
     score_checklist = _score_checklist_cumplimiento(pct_checklist)
     has_offers = bool(base_ofertas.exists())
-    has_orders = bool(ordenes_periodo.exists())
+    has_orders = bool(ordenes_terminadas_periodo.exists())
     has_ratings_in_period = n_resenas_muestra_eff > 0
+    n_terminadas = ordenes_terminadas_periodo.count()
 
     score_rendimiento = _merge_score_activity_aware(
         score_respuesta=score_respuesta,
@@ -508,7 +522,8 @@ def compute_proveedor_kpis_resumen(user, dias: int = 30) -> dict[str, Any]:
         'tiempo_respuesta_dirigida_media_minutos': avg_dir_min,
         'tiempo_respuesta_global_media_minutos': avg_glob_min,
         'ordenes_mercado_en_periodo': ordenes_periodo.count(),
-        'ordenes_mercado_completadas': ordenes_completadas_periodo.count(),
+        'ordenes_mercado_completadas': n_terminadas,
+        'servicios_terminados_en_periodo': n_terminadas,
         'ordenes_con_checklist': n_con_checklist,
         'checklist_completados': n_checklist_completado,
         'checklist_cumplimiento_pct': round(pct_checklist, 2) if pct_checklist is not None else None,

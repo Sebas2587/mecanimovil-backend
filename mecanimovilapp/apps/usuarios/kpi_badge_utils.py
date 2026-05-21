@@ -54,16 +54,58 @@ def _clamp_int(v: Any, lo: int, hi: int) -> int:
 
 def _sample_points_from_kpis(kpis: dict[str, Any]) -> int:
     """
-    Muestra mínima: puntos por señales recientes.
-    - Ofertas: proxy de "respuesta" y participación.
-    - Órdenes con actividad: proxy de ejecución real.
-    - Reseñas en ventana: proxy de satisfacción reciente.
+    Muestra mínima: prioriza servicios terminados (checklist inicio+fin) y reseñas.
+    Las ofertas solas aportan poco (no implican servicio ejecutado).
     """
-    ofertas = _clamp_int(kpis.get("ofertas_total_en_periodo", 0), 0, 10_000)
-    ordenes = _clamp_int(kpis.get("ordenes_mercado_en_periodo", 0), 0, 10_000)
+    terminados = _clamp_int(
+        kpis.get("servicios_terminados_en_periodo", kpis.get("ordenes_mercado_completadas", 0)),
+        0,
+        10_000,
+    )
     resenas = _clamp_int(kpis.get("resenas_muestra", 0), 0, 10_000)
-    # Suma simple (fácil de explicar al proveedor).
-    return ofertas + ordenes + resenas
+    ofertas = min(_clamp_int(kpis.get("ofertas_total_en_periodo", 0), 0, 10_000), 3)
+    return terminados * 2 + resenas + ofertas
+
+
+def _servicios_terminados_en_periodo(kpis: dict[str, Any]) -> int:
+    return _clamp_int(
+        kpis.get("servicios_terminados_en_periodo", kpis.get("ordenes_mercado_completadas", 0)),
+        0,
+        10_000,
+    )
+
+
+def _badge_sin_actividad(*, score: int, window_days: int, sample_points: int, reason: str) -> KpiBadge:
+    return KpiBadge(
+        code="SIN_ACTIVIDAD",
+        label="Sin actividad reciente",
+        short_label="Sin actividad",
+        bg_color="#334155",
+        text_color="#F8FAFC",
+        border_color="#475569",
+        score=score,
+        window_days=window_days,
+        sample_points=sample_points,
+        is_active=False,
+        reason=reason,
+    )
+
+
+def _badge_en_progreso(*, score: int, window_days: int, sample_points: int, reason: str) -> KpiBadge:
+    capped = min(score, 54)
+    return KpiBadge(
+        code="EN_PROGRESO",
+        label="KPI En progreso",
+        short_label="En progreso",
+        bg_color="#0F172A",
+        text_color="#E2E8F0",
+        border_color="#1F2937",
+        score=capped,
+        window_days=window_days,
+        sample_points=sample_points,
+        is_active=sample_points > 0,
+        reason=reason,
+    )
 
 
 def _tier_from_score(score: int) -> KpiBadge:
@@ -154,32 +196,66 @@ def compute_kpi_badge_for_proveedor(
 
     score = _clamp_int(kpis.get("score_rendimiento", 0), 0, 100)
     sample_points = _sample_points_from_kpis(kpis)
+    terminados = _servicios_terminados_en_periodo(kpis)
 
     min_sample_points = 5 if window_days <= 30 else 8
     has_min_sample = sample_points >= min_sample_points
     has_any_activity = sample_points > 0
-    is_active = bool(has_any_activity and has_min_sample)
-
-    tier = _tier_from_score(score)
+    # Insignia alta solo con servicios realmente terminados en la ventana.
+    has_completed_in_period = terminados > 0
+    is_active = bool(has_completed_in_period and has_min_sample)
 
     if not has_any_activity:
         reason = (
-            f"Nivel por score de rendimiento ({score}/100). "
-            f"Sin ofertas, órdenes de mercado ni reseñas en los últimos {window_days} días."
+            f"Sin ofertas, servicios terminados ni reseñas en los últimos {window_days} días."
         )
-    elif not has_min_sample:
+        badge = _badge_sin_actividad(
+            score=0,
+            window_days=window_days,
+            sample_points=sample_points,
+            reason=reason,
+        )
+        return badge.to_dict()
+
+    if not has_completed_in_period:
         reason = (
-            f"Nivel por score de rendimiento ({score}/100). "
+            f"Hay actividad ({sample_points} pts de muestra) pero ningún servicio terminado "
+            f"(checklist inicio y fin) en los últimos {window_days} días. "
+            f"El nivel visible no puede ser Pro, Máster ni Elite hasta completar servicios."
+        )
+        badge = _badge_en_progreso(
+            score=score,
+            window_days=window_days,
+            sample_points=sample_points,
+            reason=reason,
+        )
+        return badge.to_dict()
+
+    tier = _tier_from_score(score)
+
+    if not has_min_sample:
+        reason = (
+            f"Score de rendimiento {score}/100 con {terminados} servicio(s) terminado(s). "
             f"Muestra insuficiente ({sample_points} pts; se recomiendan ≥ {min_sample_points} en {window_days} días)."
         )
-    elif tier.code == "ELITE":
-        reason = f"Score ≥ 90 con muestra suficiente en {window_days} días."
+        badge = _badge_en_progreso(
+            score=score,
+            window_days=window_days,
+            sample_points=sample_points,
+            reason=reason,
+        )
+        return badge.to_dict()
+
+    if tier.code == "ELITE":
+        reason = f"Score ≥ 90 con {terminados} servicio(s) terminado(s) en {window_days} días."
     elif tier.code == "MASTER":
-        reason = f"Score ≥ 75 con muestra suficiente en {window_days} días."
+        reason = f"Score ≥ 75 con {terminados} servicio(s) terminado(s) en {window_days} días."
     elif tier.code == "PRO":
-        reason = f"Score ≥ 55 con muestra suficiente en {window_days} días."
+        reason = f"Score ≥ 55 con {terminados} servicio(s) terminado(s) en {window_days} días."
     else:
-        reason = f"Score < 55 con muestra suficiente en {window_days} días."
+        reason = (
+            f"Score < 55 con {terminados} servicio(s) terminado(s) en {window_days} días."
+        )
 
     badge = KpiBadge(
         code=tier.code,
@@ -194,4 +270,6 @@ def compute_kpi_badge_for_proveedor(
         is_active=is_active,
         reason=reason,
     )
-    return badge.to_dict()
+    out = badge.to_dict()
+    out['servicios_terminados_en_periodo'] = terminados
+    return out
