@@ -10,6 +10,16 @@ GET `candidatos-proveedor` SHALL recibir `servicio_ids`, `requiere_repuestos` y 
 - AND lat/lng de la dirección de servicio
 - WHEN solicita candidatos
 - THEN recibe hasta 3 ofertas con precio según repuestos y explicación que mencione proximidad si hay distancia calculada
+- AND recibe `otros_candidatos` con proveedores del mismo servicio dentro del radio, excluyendo los recomendados
+
+### Requirement: Secciones recomendados y otros proveedores
+La respuesta SHALL incluir `candidatos_recomendados` (alias `candidatos`, hasta 3) y `otros_candidatos` (hasta 10). Los recomendados son el ranking por requisitos del servicio; `otros_candidatos` solo incluye proveedores con el mismo servicio dentro de `MAX_RADIO_KM` respecto a la dirección del usuario, sin repetir usuario de proveedor ya listado en recomendados.
+
+#### Scenario: Otros en zona
+- GIVEN hay más de 3 ofertas válidas dentro del radio
+- WHEN solicita candidatos con ubicación
+- THEN `candidatos` tiene hasta 3 recomendados
+- AND `otros_candidatos` lista ofertas adicionales ordenadas por distancia, todas con `distancia_km` ≤ `radio_km`
 
 ### Requirement: Filtros de catálogo en candidatos
 GET `candidatos-proveedor` SHALL devolver solo `OfertaServicio` que cumplan simultáneamente:

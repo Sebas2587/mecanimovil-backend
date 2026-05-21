@@ -21,6 +21,7 @@ from mecanimovilapp.apps.vehiculos.models import Vehiculo
 logger = logging.getLogger(__name__)
 
 MAX_CANDIDATOS = 3
+MAX_OTROS_CANDIDATOS = 10
 MAX_RADIO_KM = 80.0
 _DISTANCIA_SIN_UBICACION_KM = 999.0
 _RE_COMUNA_INVALIDA = re.compile(r'\d{3,}')
@@ -348,6 +349,68 @@ def _armar_candidatos_finales(
     return elegidos
 
 
+def _usuario_ids_en_candidatos(candidatos: list[dict[str, Any]]) -> set[int]:
+    ids: set[int] = set()
+    for cand in candidatos:
+        uid = (cand.get('proveedor') or {}).get('usuario_id')
+        if uid is None:
+            continue
+        try:
+            ids.add(int(uid))
+        except (TypeError, ValueError):
+            continue
+    return ids
+
+
+def _armar_otros_candidatos(
+    pool_meta: list[tuple[OfertaServicio, float | None, float, str]],
+    *,
+    usuario_ids_excluir: set[int],
+    requiere_repuestos: bool,
+    punto: Point | None,
+) -> list[dict[str, Any]]:
+    """
+    Mismo servicio, otros proveedores dentro del radio (excluye recomendados).
+    Solo aplica cuando hay coordenadas del servicio.
+    """
+    if not punto:
+        return []
+
+    ordenados = sorted(
+        pool_meta,
+        key=lambda item: (
+            item[1] if item[1] is not None else _DISTANCIA_SIN_UBICACION_KM,
+            -item[2],
+            item[0].id or 0,
+        ),
+    )
+    otros: list[dict[str, Any]] = []
+    vistos: set[int] = set()
+
+    for oferta, dist_km, score, expl in ordenados:
+        if dist_km is None or dist_km > MAX_RADIO_KM:
+            continue
+        uid, _ = _proveedor_usuario(oferta)
+        if not uid or uid in usuario_ids_excluir or uid in vistos:
+            continue
+        if not _oferta_catalogo_completa(oferta, requiere_repuestos=requiere_repuestos):
+            continue
+        otros.append(
+            _serialize_candidato(
+                oferta,
+                score,
+                expl,
+                requiere_repuestos,
+                dist_km=dist_km,
+            )
+        )
+        vistos.add(uid)
+        if len(otros) >= MAX_OTROS_CANDIDATOS:
+            break
+
+    return otros
+
+
 def _gestion_catalogo_sin_iva(oferta: OfertaServicio) -> float:
     """OfertaServicio no tiene gestión de compra; solo OfertaProveedor la usa al confirmar."""
     return _safe_float(getattr(oferta, 'costo_gestion_compra_sin_iva', None))
@@ -531,13 +594,14 @@ def listar_candidatos_proveedor(
     candidatos_raw = _armar_candidatos_finales(scored, requiere_repuestos=requiere_repuestos)
 
     dist_por_id = {o.id: d for o, d, _, _ in pool_meta}
-    candidatos = []
+    candidatos_recomendados = []
     for cand in candidatos_raw:
         oid = cand.get('oferta_servicio_id')
         dist = dist_por_id.get(oid)
-        candidatos.append(
+        candidatos_recomendados.append(
             {
                 **cand,
+                'es_recomendado': True,
                 'distancia_km': (
                     round(dist, 1)
                     if dist is not None and dist < _DISTANCIA_SIN_UBICACION_KM
@@ -547,8 +611,17 @@ def listar_candidatos_proveedor(
             }
         )
 
+    otros_candidatos = _armar_otros_candidatos(
+        pool_meta,
+        usuario_ids_excluir=_usuario_ids_en_candidatos(candidatos_recomendados),
+        requiere_repuestos=requiere_repuestos,
+        punto=punto,
+    )
+
     resultado: dict[str, Any] = {
-        'candidatos': candidatos,
+        'candidatos': candidatos_recomendados,
+        'candidatos_recomendados': candidatos_recomendados,
+        'otros_candidatos': otros_candidatos,
         'ordenado_por_distancia': bool(punto),
         'requiere_repuestos': requiere_repuestos,
         'comunas_resueltas': comunas,
