@@ -169,6 +169,59 @@ class SolicitudPublicaTestCase(TestCase):
         self.assertEqual(response.data['estado'], 'publicada')
         self.assertIsNotNone(response.data['fecha_publicacion'])
 
+    def test_verificar_servicio_activo_bloqueado(self):
+        """Mismo vehículo + servicio en solicitud activa bloquea nueva verificación."""
+        solicitud = SolicitudServicioPublica.objects.create(
+            cliente=self.cliente,
+            vehiculo=self.vehiculo,
+            descripcion_problema='Aceite en curso',
+            fecha_preferida=timezone.now().date() + timedelta(days=3),
+            fecha_expiracion=timezone.now() + timedelta(days=7),
+            ubicacion_servicio='POINT(-70.6693 -33.4489)',
+            direccion_servicio_texto='Test',
+            estado='publicada',
+        )
+        solicitud.servicios_solicitados.add(self.servicio)
+
+        response = self.client.get(
+            '/api/ordenes/solicitudes-publicas/verificar-servicio-activo/',
+            {'vehiculo_id': self.vehiculo.id, 'servicio_ids': str(self.servicio.id)},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data['bloqueado'])
+        self.assertEqual(str(solicitud.id), response.data['solicitud_id'])
+
+    def test_crear_solicitud_duplicada_rechazada(self):
+        """POST con mismo vehículo y servicio activo devuelve 400."""
+        solicitud = SolicitudServicioPublica.objects.create(
+            cliente=self.cliente,
+            vehiculo=self.vehiculo,
+            descripcion_problema='Ya pedí aceite',
+            fecha_preferida=timezone.now().date() + timedelta(days=3),
+            fecha_expiracion=timezone.now() + timedelta(days=7),
+            ubicacion_servicio='POINT(-70.6693 -33.4489)',
+            direccion_servicio_texto='Test',
+            estado='con_ofertas',
+        )
+        solicitud.servicios_solicitados.add(self.servicio)
+
+        fecha_expiracion = timezone.now() + timedelta(days=7)
+        data = {
+            'vehiculo': self.vehiculo.id,
+            'descripcion_problema': 'Otro pedido de aceite',
+            'urgencia': 'normal',
+            'tipo_solicitud': 'global',
+            'servicios_solicitados': [self.servicio.id],
+            'direccion_usuario': self.direccion.id,
+            'direccion_servicio_texto': 'Av. Test 123',
+            'fecha_preferida': (timezone.now() + timedelta(days=4)).date().isoformat(),
+            'fecha_expiracion': fecha_expiracion.isoformat(),
+            'ubicacion_servicio': 'POINT(-70.6693 -33.4489)',
+        }
+        response = self.client.post('/api/ordenes/solicitudes-publicas/', data)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('servicios_solicitados', response.data)
+
 
 class OfertaProveedorTestCase(TestCase):
     """Tests para OfertaProveedor"""

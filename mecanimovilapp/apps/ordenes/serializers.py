@@ -22,6 +22,12 @@ from datetime import timedelta, datetime, date
 from django.contrib.gis.geos import Point
 import logging
 
+from .services.solicitud_activa import (
+    MENSAJE_DUPLICADO_DEFAULT,
+    normalizar_servicio_ids,
+    verificar_servicio_activo_duplicado,
+)
+
 # Helper para URLs de archivos en cPanel
 from mecanimovilapp.storage.utils import get_cpanel_file_url, get_image_url
 
@@ -2117,10 +2123,6 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
                     })
 
         # Misma solicitud activa: mismo vehículo + al menos un servicio ya pedido en otra solicitud abierta
-        estados_bloquean_duplicado = [
-            'creada', 'seleccionando_servicios', 'publicada', 'con_ofertas',
-            'adjudicada', 'pendiente_pago', 'pagada', 'en_ejecucion',
-        ]
         vehiculo_dup = attrs.get('vehiculo')
         servicios_dup = attrs.get('servicios_solicitados') or []
         if (
@@ -2130,26 +2132,18 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
             and request
             and hasattr(request.user, 'cliente')
         ):
-            servicio_ids = []
-            for s in servicios_dup:
-                pk = getattr(s, 'pk', None)
-                if pk is None and s is not None:
-                    pk = getattr(s, 'id', None)
-                if pk is not None:
-                    servicio_ids.append(pk)
-            if servicio_ids:
-                existe = SolicitudServicioPublica.objects.filter(
-                    cliente=request.user.cliente,
-                    vehiculo=vehiculo_dup,
-                    estado__in=estados_bloquean_duplicado,
-                    servicios_solicitados__id__in=servicio_ids,
-                ).distinct().exists()
-                if existe:
+            vehiculo_id = getattr(vehiculo_dup, 'pk', None) or getattr(vehiculo_dup, 'id', None)
+            servicio_ids = normalizar_servicio_ids(servicios_dup)
+            if vehiculo_id and servicio_ids:
+                dup = verificar_servicio_activo_duplicado(
+                    request.user.cliente,
+                    int(vehiculo_id),
+                    servicio_ids,
+                    exclude_pk=getattr(self.instance, 'pk', None),
+                )
+                if dup.get('bloqueado'):
                     raise serializers.ValidationError({
-                        'servicios_solicitados': (
-                            'Ya tienes una solicitud activa con uno o más de estos servicios para este '
-                            'vehículo. Revisa Mis solicitudes o espera a que finalice.'
-                        )
+                        'servicios_solicitados': dup.get('mensaje') or MENSAJE_DUPLICADO_DEFAULT,
                     })
 
         # Inspección pre-compra (marketplace): mismo comprador no puede duplicar para el mismo
@@ -2165,7 +2159,11 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
                 )
                 if self.instance:
                     base = base.exclude(pk=self.instance.pk)
-                activas_pipeline = base.filter(estado__in=estados_bloquean_duplicado).exists()
+                from .services.solicitud_activa import ESTADOS_SOLICITUD_ACTIVA_DUPLICADO
+
+                activas_pipeline = base.filter(
+                    estado__in=ESTADOS_SOLICITUD_ACTIVA_DUPLICADO
+                ).exists()
                 activas_completada_con_secundarias = base.filter(
                     estado='completada',
                     ofertas__es_oferta_secundaria=True,

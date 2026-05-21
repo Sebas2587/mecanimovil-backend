@@ -2737,7 +2737,8 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
 
     # App usuarios: listados que NUNCA deben usar el feed de proveedor.
     ACCIONES_SOLO_PROPIAS_CLIENTE = frozenset({
-        'list', 'activas', 'puede_crear_solicitud', 'mis_solicitudes',
+        'list', 'activas', 'puede_crear_solicitud', 'verificar_servicio_activo',
+        'mis_solicitudes',
     })
 
     def _queryset_solicitudes_del_cliente(self, cliente):
@@ -4089,6 +4090,59 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
                 {'error': f'Error al verificar condición: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+    @action(detail=False, methods=['get'], url_path='verificar-servicio-activo')
+    def verificar_servicio_activo(self, request):
+        """
+        Comprueba si el cliente ya tiene una solicitud activa con el mismo
+        vehículo y alguno de los servicios indicados.
+        Query: vehiculo_id (int), servicio_ids (coma-separados, ej. 1,2,3)
+        """
+        if not hasattr(request.user, 'cliente'):
+            return Response(
+                {'error': 'Solo los clientes pueden verificar esta condición'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        vehiculo_raw = request.query_params.get('vehiculo_id')
+        servicios_raw = request.query_params.get('servicio_ids', '')
+
+        try:
+            vehiculo_id = int(vehiculo_raw) if vehiculo_raw else None
+        except (TypeError, ValueError):
+            return Response(
+                {'error': 'vehiculo_id inválido'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        servicio_ids = []
+        for part in str(servicios_raw).split(','):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                servicio_ids.append(int(part))
+            except ValueError:
+                continue
+
+        if not vehiculo_id or not servicio_ids:
+            return Response({
+                'bloqueado': False,
+                'solicitud_id': None,
+                'servicios_en_conflicto': [],
+                'mensaje': None,
+            })
+
+        from mecanimovilapp.apps.ordenes.services.solicitud_activa import (
+            verificar_servicio_activo_duplicado,
+        )
+
+        data = verificar_servicio_activo_duplicado(
+            request.user.cliente,
+            vehiculo_id,
+            servicio_ids,
+        )
+        return Response(data)
     
     @action(detail=False, methods=['get'])
     def disponibles(self, request):
