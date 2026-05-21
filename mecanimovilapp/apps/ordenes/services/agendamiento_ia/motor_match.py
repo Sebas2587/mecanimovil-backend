@@ -579,6 +579,18 @@ def _build_desglose(oferta: OfertaServicio, requiere_repuestos: bool) -> dict[st
     }
 
 
+def _foto_url_proveedor(proveedor) -> str | None:
+    if not proveedor:
+        return None
+    raw = getattr(proveedor, 'foto_perfil', None)
+    if not raw:
+        return None
+    try:
+        return raw.url
+    except Exception:
+        return str(raw) if raw else None
+
+
 def _serialize_candidato(
     oferta: OfertaServicio,
     score: float,
@@ -592,10 +604,12 @@ def _serialize_candidato(
     nombre = ''
     rating = 0.0
     a_domicilio = oferta.tipo_proveedor == 'mecanico'
+    foto_url = None
 
     if proveedor:
         nombre = getattr(proveedor, 'nombre', None) or str(proveedor)
         rating = _safe_float(getattr(proveedor, 'calificacion_promedio', 0))
+        foto_url = _foto_url_proveedor(proveedor)
 
     precio_rep = _safe_float(oferta.precio_con_repuestos)
     precio_sin = _safe_float(oferta.precio_sin_repuestos)
@@ -612,6 +626,8 @@ def _serialize_candidato(
             'nombre': nombre,
             'tipo': oferta.tipo_proveedor,
             'rating': rating,
+            'foto_perfil': foto_url,
+            'foto_perfil_url': foto_url,
         },
         'servicio': {
             'id': oferta.servicio_id,
