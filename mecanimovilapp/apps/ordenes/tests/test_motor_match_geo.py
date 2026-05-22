@@ -5,6 +5,7 @@ import math
 from django.test import SimpleTestCase
 
 from mecanimovilapp.apps.ordenes.services.agendamiento_ia.motor_match import (
+    MAX_RADIO_KM,
     _build_desglose,
     _clasificar_recomendados_y_otros,
     _filtrar_comunas_validas,
@@ -155,11 +156,32 @@ class MotorMatchClasificacionTests(SimpleTestCase):
             (self._oferta(4, 40), 15.0, 0.45, 'd'),
         ]
         rec, otros = _clasificar_recomendados_y_otros(
-            pool, requiere_repuestos=True, punto=None
+            pool, servicio_ids_pedidos=[1], requiere_repuestos=True, punto=None
         )
         self.assertEqual(len(rec), 3)
         self.assertEqual(len(otros), 1)
         self.assertFalse(otros[0]['es_coincidencia_exacta'])
+
+    def test_radar_5km_exacta_vs_fuera(self):
+        self.assertEqual(MAX_RADIO_KM, 5.0)
+        pool = [
+            (self._oferta(1, 10), 3.0, 0.9, 'cerca'),
+            (self._oferta(2, 20), 12.0, 0.88, 'lejos'),
+        ]
+        punto = object()  # cualquier punto activa el radar de 5 km
+        rec, otros = _clasificar_recomendados_y_otros(
+            pool,
+            servicio_ids_pedidos=[1],
+            requiere_repuestos=True,
+            punto=punto,
+        )
+        self.assertEqual(len(rec), 1)
+        self.assertEqual(rec[0]['proveedor']['usuario_id'], '10')
+        self.assertFalse(rec[0]['dentro_radio_km'] is False)
+        self.assertEqual(len(otros), 1)
+        self.assertEqual(otros[0]['proveedor']['usuario_id'], '20')
+        self.assertFalse(otros[0]['es_coincidencia_exacta'])
+        self.assertIn('fuera', otros[0]['explicacion'].lower())
 
 
 class MotorMatchOrdenCandidatosTests(SimpleTestCase):

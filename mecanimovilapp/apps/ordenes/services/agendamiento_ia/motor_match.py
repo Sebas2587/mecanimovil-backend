@@ -23,7 +23,8 @@ logger = logging.getLogger(__name__)
 
 MAX_CANDIDATOS = 3
 MAX_OTROS_CANDIDATOS = 10
-MAX_RADIO_KM = 80.0
+# Mismo radar que explore/home (100 m – 5 km desde la dirección del servicio).
+MAX_RADIO_KM = 5.0
 # Por debajo de este score_match el proveedor va a «otros» (coincidencia parcial).
 _SCORE_UMBRAL_COINCIDENCIA_PARCIAL = 0.52
 _DISTANCIA_SIN_UBICACION_KM = 999.0
@@ -492,11 +493,23 @@ def _mejor_oferta_por_proveedor(
     return list(por_uid.values())
 
 
-def _elegible_en_zona(punto: Point | None, dist_km: float | None) -> bool:
+def _distancia_grupo_proveedor(
+    items: list[tuple[OfertaServicio, float | None, float, str]],
+) -> float | None:
+    """Menor distancia del grupo (misma lógica que al serializar candidato)."""
+    dists = [
+        d for _, d, _, _ in items
+        if d is not None and d < _DISTANCIA_SIN_UBICACION_KM
+    ]
+    return min(dists) if dists else None
+
+
+def _dentro_radar_direccion(punto: Point | None, dist_km: float | None) -> bool:
+    """En zona de la dirección: distancia conocida y ≤ MAX_RADIO_KM (5 km)."""
     if not punto:
         return True
     if dist_km is None:
-        return True
+        return False
     return dist_km <= MAX_RADIO_KM
 
 
@@ -505,6 +518,15 @@ def _explicacion_coincidencia_parcial(score: float, dist_km: float | None) -> st
     if dist_km is not None and dist_km < _DISTANCIA_SIN_UBICACION_KM:
         return f'Mismo servicio · coincidencia parcial ({pct}%) · {dist_km:.1f} km'
     return f'Mismo servicio · coincidencia parcial ({pct}%)'
+
+
+def _explicacion_fuera_radar(score: float, dist_km: float | None) -> str:
+    pct = max(0, min(100, int(round(_safe_float(score) * 100))))
+    if dist_km is not None and dist_km < _DISTANCIA_SIN_UBICACION_KM:
+        return (
+            f'Mismo servicio · fuera de tu zona ({pct}%) · {dist_km:.1f} km'
+        )
+    return f'Mismo servicio · fuera de tu zona ({pct}%)'
 
 
 def _agrupar_ofertas_validas_por_proveedor(
@@ -517,8 +539,6 @@ def _agrupar_ofertas_validas_por_proveedor(
     por_uid: dict[int, list[tuple[OfertaServicio, float | None, float, str]]] = {}
     for oferta, dist_km, score, expl in pool_meta:
         if not _oferta_catalogo_completa(oferta, requiere_repuestos=requiere_repuestos):
-            continue
-        if not _elegible_en_zona(punto, dist_km):
             continue
         uid, _ = _proveedor_usuario(oferta)
         if not uid:
@@ -638,8 +658,8 @@ def _clasificar_recomendados_y_otros(
     request=None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """
-    Coincidencia exacta: hasta MAX_CANDIDATOS proveedores (agrupando ofertas por servicio pedido).
-    Otros: proveedores adicionales en zona con menor ranking.
+    Coincidencia exacta: mejores proveedores dentro del radar (≤ MAX_RADIO_KM) desde la dirección.
+    Otros: coincidencia parcial en zona o compatibles fuera del radar de la dirección.
     """
     por_uid = _agrupar_ofertas_validas_por_proveedor(
         pool_meta, requiere_repuestos=requiere_repuestos, punto=punto
@@ -677,6 +697,9 @@ def _clasificar_recomendados_y_otros(
         best_score = _safe_float(cand.get('score_match'))
         if best_score < _SCORE_UMBRAL_COINCIDENCIA_PARCIAL and len(recomendados) > 0:
             break
+        dist_grupo = _distancia_grupo_proveedor(items)
+        if not _dentro_radar_direccion(punto, dist_grupo):
+            continue
         recomendados.append(cand)
 
     uids_exacta = _usuario_ids_en_candidatos(recomendados)
@@ -685,14 +708,20 @@ def _clasificar_recomendados_y_otros(
         if uid in uids_exacta:
             continue
         best_score = _safe_float(cand.get('score_match'))
-        dist_km = cand.get('distancia_km')
+        dist_grupo = _distancia_grupo_proveedor(items)
+        fuera_radar = bool(punto) and not _dentro_radar_direccion(punto, dist_grupo)
+        expl_override = (
+            _explicacion_fuera_radar(best_score, dist_grupo)
+            if fuera_radar
+            else _explicacion_coincidencia_parcial(best_score, dist_grupo)
+        )
         otro = _serialize_candidato_proveedor(
             items,
             servicio_ids_pedidos,
             requiere_repuestos,
             es_coincidencia_exacta=False,
             request=request,
-            explicacion_override=_explicacion_coincidencia_parcial(best_score, dist_km),
+            explicacion_override=expl_override,
         )
         if otro:
             otros.append(otro)
