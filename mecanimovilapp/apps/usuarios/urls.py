@@ -22,6 +22,7 @@ urlpatterns = [
     # URLs personalizadas primero (tienen prioridad)
     path('login/', views.custom_login, name='custom_login'),
     path('google-login/', views.google_login, name='google_login'),
+    path('google-login-proveedor/', views.google_login_proveedor, name='google_login_proveedor'),
     path('login-proveedor/', views.login_proveedor, name='login_proveedor'),
     path('logout/', views.logout_user, name='logout'),
     path('change-password/', views.change_password, name='change-password'),

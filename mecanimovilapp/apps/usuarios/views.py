@@ -518,6 +518,131 @@ def login_proveedor(request):
         )
 
 
+def _resolve_tipo_proveedor(user):
+    """Retorna (es_proveedor, tipo_proveedor) según perfiles MecanicoDomicilio / Taller."""
+    try:
+        MecanicoDomicilio.objects.get(usuario=user)
+        return True, 'mecanico'
+    except MecanicoDomicilio.DoesNotExist:
+        pass
+    try:
+        Taller.objects.get(usuario=user)
+        return True, 'taller'
+    except Taller.DoesNotExist:
+        pass
+    return False, None
+
+
+def _build_proveedor_login_user_data(user, tipo_proveedor=None):
+    """Mismo shape que login_proveedor: token response user payload."""
+    return {
+        'id': user.id,
+        'username': user.username,
+        'email': user.email,
+        'first_name': user.first_name,
+        'last_name': user.last_name,
+        'telefono': user.telefono,
+        'direccion': user.direccion,
+        'foto_perfil': user.foto_perfil.url if user.foto_perfil else None,
+        'es_mecanico': user.es_mecanico,
+        'tipo_proveedor': tipo_proveedor,
+    }
+
+
+@csrf_exempt
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def google_login_proveedor(request):
+    """
+    Login/Registro con Google para la app de proveedores.
+    Recibe `id_token` (o `idToken`) y `flow` (login|register), valida con Google y emite Token DRF.
+    """
+    raw = request.data or {}
+    id_token_raw = raw.get('id_token') or raw.get('idToken')
+    flow = (raw.get('flow') or raw.get('intent') or 'login').strip().lower()
+    if flow not in ('login', 'register'):
+        flow = 'login'
+    if not id_token_raw:
+        return Response({'error': 'Se requiere id_token'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not getattr(settings, 'GOOGLE_OAUTH_CLIENT_IDS', None):
+        logger.error('GOOGLE_OAUTH_CLIENT_IDS no configurado en settings/env')
+        return Response({'error': 'Google login no configurado'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    try:
+        claims = google_id_token.verify_oauth2_token(id_token_raw, google_requests.Request())
+        aud = claims.get('aud')
+        if aud not in settings.GOOGLE_OAUTH_CLIENT_IDS:
+            logger.warning(f'Google id_token aud no permitido (proveedor): {aud}')
+            return Response({'error': 'Token de Google inválido'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        email = (claims.get('email') or '').strip().lower()
+        if not email:
+            return Response({'error': 'Token de Google sin email'}, status=status.HTTP_400_BAD_REQUEST)
+        if claims.get('email_verified') is False:
+            return Response({'error': 'Email de Google no verificado'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        given_name = (claims.get('given_name') or '').strip()
+        family_name = (claims.get('family_name') or '').strip()
+
+        try:
+            user = Usuario.objects.get(email=email)
+        except Usuario.DoesNotExist:
+            user = Usuario.objects.create(
+                email=email,
+                username=email,
+                first_name=given_name,
+                last_name=family_name,
+                es_mecanico=True,
+            )
+            user.set_unusable_password()
+            user.save()
+            logger.info(f'google_login_proveedor: nuevo usuario creado ({email})')
+
+        es_proveedor, tipo_proveedor = _resolve_tipo_proveedor(user)
+
+        if not es_proveedor and not user.es_mecanico:
+            logger.warning(f'google_login_proveedor: cuenta cliente rechazada ({email})')
+            return Response(
+                {
+                    'non_field_errors': [
+                        'Esta cuenta no es de proveedor. Utiliza la aplicación de usuarios.'
+                    ],
+                    'code': 'CLIENT_ACCOUNT',
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        dirty = False
+        if user.username != email:
+            user.username = email
+            dirty = True
+        if not user.first_name and given_name:
+            user.first_name = given_name
+            dirty = True
+        if not user.last_name and family_name:
+            user.last_name = family_name
+            dirty = True
+        if not user.es_mecanico:
+            user.es_mecanico = True
+            dirty = True
+        if dirty:
+            user.save()
+
+        Token.objects.filter(user=user).delete()
+        token = Token.objects.create(user=user)
+        user_data = _build_proveedor_login_user_data(user, tipo_proveedor)
+        return Response({'token': token.key, 'user': user_data}, status=status.HTTP_200_OK)
+
+    except ValueError as e:
+        logger.warning(f'google_login_proveedor token inválido: {str(e)}')
+        return Response({'error': 'Token de Google inválido'}, status=status.HTTP_401_UNAUTHORIZED)
+    except Exception as e:
+        logger.error(f'Error en google_login_proveedor: {str(e)}', exc_info=True)
+        return Response({'error': 'Error de servidor'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 class UsuarioViewSet(viewsets.ModelViewSet):
     """
     ViewSet para el modelo Usuario
