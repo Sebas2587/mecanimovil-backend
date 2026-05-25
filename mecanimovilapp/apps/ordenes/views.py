@@ -3173,6 +3173,23 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
                         'fecha_expiracion': solicitud.fecha_expiracion.isoformat()
                     }
                 )
+                descripcion_corta = (solicitud.descripcion_problema or '')[:80]
+                cuerpo_push = (
+                    f"{vehiculo_label}: {descripcion_corta}"
+                    if descripcion_corta
+                    else f"Nueva oportunidad para {vehiculo_label}"
+                )
+                send_expo_push_notification.delay(
+                    proveedor.id,
+                    'Nueva solicitud disponible',
+                    cuerpo_push,
+                    {
+                        'type': 'nueva_solicitud',
+                        'solicitud_id': str(solicitud.id),
+                        'vehiculo': vehiculo_label,
+                        'urgencia': solicitud.urgencia or '',
+                    },
+                )
             
             logger.info(f"Notificaciones enviadas a {proveedores.count()} proveedores para solicitud {solicitud.id}")
         except Exception as e:

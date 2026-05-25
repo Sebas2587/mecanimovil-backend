@@ -109,6 +109,8 @@ def send_expo_push_notification(self, user_id, title, body, data=None):
             'solicitud_adjudicada',
             'new_offer',
             'solicitud_cancelada_cliente',
+            'nueva_solicitud',
+            'catalog_assignment',
         ):
             channel_id = 'servicios'
         elif notif_type in ('suscripcion_por_vencer', 'suscripcion_vencida', 'suscripcion_pago_fallido', 'creditos_agotados'):
@@ -123,7 +125,7 @@ def send_expo_push_notification(self, user_id, title, body, data=None):
             channel_id=channel_id,
             priority='high' if notif_type in (
                 'health_alert', 'global_health_alert', 'salud_actualizada', 'cambio_estado',
-                'chat_message', 'new_offer', 'nueva_oferta',
+                'chat_message', 'new_offer', 'nueva_oferta', 'nueva_solicitud', 'catalog_assignment',
             ) else 'default',
         )
 
