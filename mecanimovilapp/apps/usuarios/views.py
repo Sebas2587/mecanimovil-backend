@@ -1615,7 +1615,11 @@ class TallerViewSet(viewsets.ModelViewSet):
             'usuario',
             'usuario__suscripcion_proveedor',
             'direccion_fisica',
-        ).prefetch_related('especialidades', 'marcas_atendidas').annotate(
+        ).prefetch_related('especialidades', 'marcas_atendidas').filter(
+            verificado=True,
+            activo=True,
+            ubicacion__isnull=False,
+        ).annotate(
             distance=Distance('ubicacion', user_location, spheroid=True)
         ).filter(
             ubicacion__distance_lte=(user_location, D(km=max_distance))
