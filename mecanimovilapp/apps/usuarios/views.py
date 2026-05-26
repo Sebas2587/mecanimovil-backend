@@ -1578,7 +1578,7 @@ class TallerViewSet(viewsets.ModelViewSet):
         
         return HorarioTemporal(dia_semana)
 
-    @action(detail=False, methods=['get'])
+    @action(detail=False, methods=['get'], pagination_class=None)
     def cerca(self, request):
         """
         Filtrar talleres por proximidad a una ubicación dada
@@ -2560,7 +2560,7 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
                 'error': 'Error interno del servidor al actualizar mecánico'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    @action(detail=False, methods=['get'])
+    @action(detail=False, methods=['get'], pagination_class=None)
     def cerca(self, request):
         """
         Filtrar mecánicos a domicilio por proximidad a una ubicación dada
