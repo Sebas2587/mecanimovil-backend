@@ -5139,18 +5139,30 @@ def completar_onboarding_con_documentos_pendientes(request):
     Esto resuelve el problema de proveedores que quedaron bloqueados en estado de revisión.
     """
     usuario = request.user
-    
+    usuario.refresh_from_db()
+
     # Buscar el proveedor (taller o mecánico)
     proveedor = None
     tipo_proveedor = None
-    
+
     if hasattr(usuario, 'taller'):
         proveedor = usuario.taller
         tipo_proveedor = 'taller'
     elif hasattr(usuario, 'mecanico_domicilio'):
         proveedor = usuario.mecanico_domicilio
         tipo_proveedor = 'mecanico'
-    
+
+    if not proveedor:
+        taller = Taller.objects.filter(usuario=usuario).first()
+        if taller:
+            proveedor = taller
+            tipo_proveedor = 'taller'
+        else:
+            mecanico = MecanicoDomicilio.objects.filter(usuario=usuario).first()
+            if mecanico:
+                proveedor = mecanico
+                tipo_proveedor = 'mecanico'
+
     if not proveedor:
         return Response({
             'error': 'No se encontró perfil de proveedor'
