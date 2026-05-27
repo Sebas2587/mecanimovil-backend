@@ -3673,44 +3673,69 @@ class DocumentoOnboardingViewSet(viewsets.ModelViewSet):
                         'tiene_mecanico': hasattr(user, 'mecanico_domicilio'),
                     }
                 }, status=status.HTTP_400_BAD_REQUEST)
-            
-            # Validar que el archivo esté presente
-            if 'archivo' not in request.data:
+
+            # Multipart: el binario suele llegar en FILES (igual que foto de perfil)
+            archivo = request.FILES.get('archivo') or request.data.get('archivo')
+            if not archivo:
                 return Response({
-                    'error': 'Debe proporcionar un archivo'
+                    'error': 'Debe proporcionar un archivo',
+                    'details': {
+                        'hint': 'Envía el campo multipart "archivo" con la imagen o PDF.',
+                        'files_keys': list(request.FILES.keys()),
+                        'data_keys': list(request.data.keys()),
+                    }
                 }, status=status.HTTP_400_BAD_REQUEST)
-            
-            # Extraer nombre original del archivo
-            archivo = request.data['archivo']
-            nombre_original = getattr(archivo, 'name', 'archivo_sin_nombre')
-            
-            # Crear el serializer con los datos
-            serializer_data = request.data.copy()
-            serializer_data['nombre_original'] = nombre_original
-            
-            # Incluir el proveedor en los datos para que pase la validación del serializer
+
+            tipo_documento = request.data.get('tipo_documento')
+            if not tipo_documento:
+                return Response({
+                    'error': 'Debe especificar el tipo de documento (tipo_documento)',
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            nombre_original = getattr(archivo, 'name', None) or 'documento'
+            if nombre_original and '.' not in nombre_original:
+                content_type = (getattr(archivo, 'content_type', '') or '').lower()
+                if 'pdf' in content_type:
+                    nombre_original = f'{nombre_original}.pdf'
+                elif 'png' in content_type:
+                    nombre_original = f'{nombre_original}.png'
+                else:
+                    nombre_original = f'{nombre_original}.jpg'
+
+            serializer_data = {
+                'tipo_documento': tipo_documento,
+                'archivo': archivo,
+                'nombre_original': nombre_original,
+            }
             if tipo_proveedor == 'taller':
                 serializer_data['taller'] = proveedor.id
-                serializer_data['mecanico'] = None
             else:
                 serializer_data['mecanico'] = proveedor.id
-                serializer_data['taller'] = None
-            
+
             serializer = self.get_serializer(data=serializer_data)
             serializer.is_valid(raise_exception=True)
-            
-            # Guardar con el proveedor correspondiente (ya están en los datos)
-            serializer.save()
-            
+
+            try:
+                serializer.save()
+            except Exception as save_err:
+                from django.core.exceptions import ValidationError as DjangoValidationError
+                if isinstance(save_err, DjangoValidationError):
+                    messages = getattr(save_err, 'messages', None) or [str(save_err)]
+                    return Response({
+                        'error': 'El archivo no cumple los requisitos',
+                        'details': messages,
+                    }, status=status.HTTP_400_BAD_REQUEST)
+                raise
+
             return Response(serializer.data, status=status.HTTP_201_CREATED)
-            
+
         except ValidationError as e:
             return Response({
                 'error': 'Datos de documento inválidos',
                 'details': e.detail
             }, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
-            logger.error(f"Error subiendo documento: {str(e)}")
+            logger.error(f"Error subiendo documento: {str(e)}", exc_info=True)
             return Response({
                 'error': 'Error interno del servidor al subir documento',
                 'details': str(e) if settings.DEBUG else None
