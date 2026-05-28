@@ -215,14 +215,26 @@ class ConversationViewSet(DestroyModelMixin, viewsets.ReadOnlyModelViewSet):
                 elif 'Solicitud' in context_model:
                     # SolicitudServicioPublica or similar
                     solicitud_id = conversation.context_object.id
-                    
-                    # Try to find the related Oferta
-                    # Query for OfertaProveedor where solicitud = this solicitud
+
                     from mecanimovilapp.apps.ordenes.models import OfertaProveedor
                     try:
-                        oferta = OfertaProveedor.objects.filter(
-                            solicitud=conversation.context_object
-                        ).first()
+                        # Prefer oferta del proveedor participante (varias ofertas por solicitud)
+                        provider_user = None
+                        for participant in conversation.participants.all():
+                            if participant.id == request.user.id:
+                                continue
+                            if hasattr(participant, 'mecanicodomicilio') or hasattr(participant, 'taller'):
+                                provider_user = participant
+                                break
+                        if provider_user:
+                            oferta = OfertaProveedor.objects.filter(
+                                solicitud=conversation.context_object,
+                                proveedor=provider_user,
+                            ).first()
+                        else:
+                            oferta = OfertaProveedor.objects.filter(
+                                solicitud=conversation.context_object,
+                            ).first()
                         if oferta:
                             oferta_id = oferta.id
                             print(f"🔵 [CHAT BACKEND] Found related Oferta: {oferta_id}")
@@ -247,7 +259,9 @@ class ConversationViewSet(DestroyModelMixin, viewsets.ReadOnlyModelViewSet):
         payload = {
             'type': 'nuevo_mensaje_chat',
             'conversation_id': str(conversation.id),
+            'id': str(message.id),
             'mensaje_id': str(message.id),
+            'message': message.content,
             'oferta_id': str(oferta_id) if oferta_id else None,
             'solicitud_id': str(solicitud_id) if solicitud_id else None,
             'enviado_por': f"{message.sender.first_name} {message.sender.last_name}",

@@ -55,15 +55,28 @@ class ChatConsumer(AsyncWebsocketConsumer):
             }
         )
 
-    # Receive message from room group
+    # Receive message from room group (HTTP broadcast or receive())
     async def chat_message(self, event):
-        # Send message to WebSocket
+        text = (
+            event.get('message')
+            or event.get('mensaje')
+            or event.get('content')
+            or ''
+        )
+        msg_id = event.get('id') or event.get('mensaje_id')
         await self.send(text_data=json.dumps({
-            'message': event['message'],
-            'sender_id': event['sender_id'],
-            'sender_name': event['sender_name'],
-            'timestamp': event['timestamp'],
-            'id': event['id']
+            'type': 'chat_message',
+            'id': msg_id,
+            'mensaje_id': msg_id,
+            'message': text,
+            'content': text,
+            'mensaje': text,
+            'sender_id': event.get('sender_id'),
+            'sender_name': event.get('sender_name') or event.get('enviado_por'),
+            'timestamp': event.get('timestamp'),
+            'es_proveedor': event.get('es_proveedor', False),
+            'archivo_adjunto': event.get('archivo_adjunto') or event.get('attachment'),
+            'attachment': event.get('attachment') or event.get('archivo_adjunto'),
         }))
 
     @database_sync_to_async
