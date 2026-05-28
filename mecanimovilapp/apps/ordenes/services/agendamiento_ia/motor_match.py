@@ -819,9 +819,11 @@ def _serialize_candidato(
     lat_proveedor = None
     lng_proveedor = None
 
+    tipo_cobertura_marca = None
     if proveedor:
         nombre = getattr(proveedor, 'nombre', None) or str(proveedor)
         rating = _safe_float(getattr(proveedor, 'calificacion_promedio', 0))
+        tipo_cobertura_marca = getattr(proveedor, 'tipo_cobertura_marca', None)
         foto_url = _foto_url_proveedor(proveedor, request)
         ubic = _ubicacion_proveedor(proveedor)
         if ubic is not None:
@@ -847,11 +849,13 @@ def _serialize_candidato(
             'nombre': nombre,
             'tipo': oferta.tipo_proveedor,
             'rating': rating,
+            'tipo_cobertura_marca': tipo_cobertura_marca,
             'foto_perfil': foto_url,
             'foto_perfil_url': foto_url,
             'lat': lat_proveedor,
             'lng': lng_proveedor,
         },
+        'tipo_cobertura_marca': tipo_cobertura_marca,
         'servicio': {
             'id': oferta.servicio_id,
             'nombre': nombre_servicio,
