@@ -152,12 +152,21 @@ def _distancia_km_proveedor(oferta: OfertaServicio, punto: Point) -> float | Non
 
 
 def _oferta_ofrece_repuestos(oferta: OfertaServicio) -> bool:
-    """El proveedor publicó precio con repuestos (no confundir con la preferencia del cliente)."""
+    """
+    Catálogo con repuestos configurados (no basta precio_con == precio_sin legacy).
+    """
     if not oferta or not oferta.disponible:
         return False
-    if _safe_float(oferta.precio_con_repuestos) > 0:
-        return True
+    if getattr(oferta, 'tipo_servicio', None) == 'sin_repuestos':
+        return False
     if _safe_float(oferta.costo_repuestos_sin_iva) > 0:
+        return True
+    precio_rep = _safe_float(oferta.precio_con_repuestos)
+    precio_sin = _safe_float(oferta.precio_sin_repuestos)
+    if precio_rep > 0 and precio_sin > 0 and precio_rep > precio_sin * 1.005:
+        return True
+    repuestos_json = getattr(oferta, 'repuestos_seleccionados', None)
+    if isinstance(repuestos_json, list) and len(repuestos_json) > 0:
         return True
     return False
 
@@ -168,23 +177,30 @@ def _oferta_ofrece_solo_mano_obra(oferta: OfertaServicio) -> bool:
     if _safe_float(oferta.precio_sin_repuestos) > 0:
         return True
     precio_pub = _safe_float(oferta.precio_publicado_cliente)
-    return precio_pub > 0 and not _oferta_ofrece_repuestos(oferta)
+    return precio_pub > 0
 
 
 def _oferta_catalogo_completa(oferta: OfertaServicio, *, requiere_repuestos: bool) -> bool:
     """Catálogo con precio publicado (misma lógica práctica que listados de servicios)."""
     if not oferta.disponible:
         return False
-    precio_pub = _safe_float(oferta.precio_publicado_cliente)
-    precio_rep = _safe_float(oferta.precio_con_repuestos)
-    precio_sin = _safe_float(oferta.precio_sin_repuestos)
     if requiere_repuestos:
-        return (
-            _oferta_ofrece_repuestos(oferta)
-            or _oferta_ofrece_solo_mano_obra(oferta)
-            or max(precio_pub, precio_rep, precio_sin) > 0
-        )
-    return max(precio_pub, precio_sin) > 0 or _oferta_ofrece_solo_mano_obra(oferta)
+        return _oferta_ofrece_repuestos(oferta) or _oferta_ofrece_solo_mano_obra(oferta)
+    return _oferta_ofrece_solo_mano_obra(oferta)
+
+
+def _ajustar_score_match_repuestos(
+    score: float,
+    oferta: OfertaServicio,
+    *,
+    requiere_repuestos_solicitud: bool,
+) -> tuple[float, str | None]:
+    """Prioriza match con repuestos en catálogo cuando el cliente los solicitó."""
+    if not requiere_repuestos_solicitud:
+        return score, None
+    if _oferta_ofrece_repuestos(oferta):
+        return min(0.99, _safe_float(score) * 1.12 + 0.04), None
+    return max(0.08, _safe_float(score) * 0.78), ' · Solo mano de obra en catálogo'
 
 
 def _modo_desglose_oferta(oferta: OfertaServicio, requiere_repuestos_solicitud: bool) -> bool:
@@ -420,6 +436,13 @@ def _construir_pool_meta(
                 rating=rating,
                 con_ubicacion_cliente=bool(punto),
             )
+            score, sufijo_rep = _ajustar_score_match_repuestos(
+                score,
+                oferta,
+                requiere_repuestos_solicitud=requiere_repuestos,
+            )
+            if sufijo_rep and sufijo_rep not in expl:
+                expl = f'{expl}{sufijo_rep}'
             if not exigir_precio and not _oferta_catalogo_completa(
                 oferta, requiere_repuestos=requiere_repuestos
             ):
@@ -694,20 +717,27 @@ def _serialize_candidato_proveedor(
         _oferta_ofrece_solo_mano_obra(o) for o, _, _, _ in seleccionados
     )
     base['solicitud_requiere_repuestos'] = requiere_repuestos
-    rep_sum = sum(_safe_float(o.precio_con_repuestos) for o, _, _, _ in seleccionados)
+    rep_sum = sum(
+        _safe_float(o.precio_con_repuestos)
+        for o, _, _, _ in seleccionados
+        if _oferta_ofrece_repuestos(o)
+    )
     sin_sum = sum(_safe_float(o.precio_sin_repuestos) for o, _, _, _ in seleccionados)
-    if rep_sum > 0:
+    base['precio_total'] = round(precio_total)
+    if ofrece_rep_grupo and rep_sum > 0:
+        base['precio_con_repuestos'] = round(rep_sum if rep_sum > 0 else precio_total)
+    elif rep_sum > 0:
         base['precio_con_repuestos'] = round(rep_sum)
     if sin_sum > 0:
         base['precio_sin_repuestos'] = round(sin_sum)
-    if requiere_repuestos and ofrece_rep_grupo:
-        base['precio_total'] = round(precio_total)
-        base['precio_con_repuestos'] = round(precio_total)
-    elif requiere_repuestos:
-        base['precio_total'] = round(precio_total)
+    elif not ofrece_rep_grupo:
         base['precio_sin_repuestos'] = round(precio_total)
-    elif sin_sum > 0:
-        base['precio_sin_repuestos'] = round(precio_total)
+    base['tipo_servicio_catalogo'] = (
+        'con_repuestos' if ofrece_rep_grupo else 'sin_repuestos'
+    )
+    base['coincidencia_repuestos'] = (
+        'con_repuestos' if ofrece_rep_grupo else 'solo_mano_obra_alternativa'
+    )
     if len(servicios_ofrecidos) > 1:
         nombres = [s['nombre'] for s in servicios_ofrecidos if s.get('nombre')]
         base['servicio'] = {
@@ -750,9 +780,12 @@ def _clasificar_recomendados_y_otros(
         score = _safe_float(cand.get('score_match'))
         dist = cand.get('distancia_km')
         dist_sort = dist if dist is not None else _DISTANCIA_SIN_UBICACION_KM
+        rep_prio = 0
+        if requiere_repuestos:
+            rep_prio = 0 if cand.get('ofrece_repuestos') else 1
         if punto:
-            return (-score, dist_sort)
-        return (-score,)
+            return (rep_prio, -score, dist_sort)
+        return (rep_prio, -score)
 
     grupos_ranked.sort(key=sort_grupo)
 
@@ -797,8 +830,22 @@ def _clasificar_recomendados_y_otros(
             break
 
     return (
-        _ordenar_candidatos_por_distancia(recomendados),
-        _ordenar_candidatos_por_distancia(otros),
+        _ordenar_candidatos_priorizando_repuestos(recomendados, requiere_repuestos),
+        _ordenar_candidatos_priorizando_repuestos(otros, requiere_repuestos),
+    )
+
+
+def _ordenar_candidatos_priorizando_repuestos(
+    candidatos: list[dict[str, Any]],
+    requiere_repuestos_solicitud: bool,
+) -> list[dict[str, Any]]:
+    if not requiere_repuestos_solicitud:
+        return _ordenar_candidatos_por_distancia(candidatos)
+    con_rep = [c for c in candidatos if c.get('ofrece_repuestos')]
+    solo_mo = [c for c in candidatos if not c.get('ofrece_repuestos')]
+    return (
+        _ordenar_candidatos_por_distancia(con_rep)
+        + _ordenar_candidatos_por_distancia(solo_mo)
     )
 
 
@@ -922,6 +969,10 @@ def _serialize_candidato(
         'solicitud_requiere_repuestos': requiere_repuestos,
         'ofrece_repuestos': _oferta_ofrece_repuestos(oferta),
         'ofrece_solo_mano_obra': _oferta_ofrece_solo_mano_obra(oferta),
+        'tipo_servicio_catalogo': getattr(oferta, 'tipo_servicio', None),
+        'coincidencia_repuestos': (
+            'con_repuestos' if _oferta_ofrece_repuestos(oferta) else 'solo_mano_obra_alternativa'
+        ),
         'a_domicilio': a_domicilio,
         'desglose': desglose,
         'distancia_km': _format_distancia_km_api(dist_km),
@@ -1051,13 +1102,34 @@ def listar_candidatos_proveedor(
 
     def _cuenta_rep(cands: list[dict[str, Any]]) -> dict[str, int]:
         con = sum(1 for c in cands if c.get('ofrece_repuestos'))
+        solo = max(0, len(cands) - con)
         return {
             'con_repuestos': con,
-            'solo_mano_obra': max(0, len(cands) - con),
+            'solo_mano_obra': solo,
         }
+
+    def _mensaje_repuestos(rec: dict[str, int], otros: dict[str, int]) -> str | None:
+        if not requiere_repuestos:
+            return None
+        total_con = rec['con_repuestos'] + otros['con_repuestos']
+        total_solo = rec['solo_mano_obra'] + otros['solo_mano_obra']
+        if total_con == 0 and total_solo == 0:
+            return None
+        if total_con == 0:
+            return (
+                'No hay proveedores con repuestos en catálogo para este servicio. '
+                f'Se muestran {total_solo} alternativa(s) solo mano de obra.'
+            )
+        if total_solo == 0:
+            return f'{total_con} proveedor(es) con repuestos en catálogo.'
+        return (
+            f'{total_con} con repuestos en catálogo · '
+            f'{total_solo} alternativa(s) solo mano de obra.'
+        )
 
     rep_rec = _cuenta_rep(candidatos_recomendados)
     rep_otros = _cuenta_rep(otros_candidatos)
+    mensaje_repuestos = _mensaje_repuestos(rep_rec, rep_otros)
 
     resultado: dict[str, Any] = {
         'candidatos': candidatos_recomendados,
@@ -1070,7 +1142,9 @@ def listar_candidatos_proveedor(
             'solicitud_requiere_repuestos': requiere_repuestos,
             'recomendados': rep_rec,
             'otros': rep_otros,
+            'mensaje': mensaje_repuestos,
         },
+        'mensaje_repuestos': mensaje_repuestos,
         'comunas_resueltas': comunas,
         'radio_km': MAX_RADIO_KM,
         'diagnostico': {
