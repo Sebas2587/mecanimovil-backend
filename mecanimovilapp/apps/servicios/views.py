@@ -1272,6 +1272,20 @@ class RepuestoViewSet(viewsets.ReadOnlyModelViewSet):
         return Response(serializer.data)
 
 
+def _sync_oferta_fotos_urls(oferta, request):
+    """Mantiene fotos_urls alineado con FotoServicio (listados y edición)."""
+    from mecanimovilapp.storage.utils import get_image_url
+
+    urls = []
+    for foto in oferta.fotos_servicio.order_by('orden', 'id'):
+        url = get_image_url(foto.imagen, request)
+        if url:
+            urls.append(url)
+    if oferta.fotos_urls != urls:
+        oferta.fotos_urls = urls
+        oferta.save(update_fields=['fotos_urls'])
+
+
 class FotoServicioViewSet(viewsets.ModelViewSet):
     """
     ViewSet para gestionar fotos de servicios
@@ -1340,6 +1354,7 @@ class FotoServicioViewSet(viewsets.ModelViewSet):
                 raise serializers.ValidationError({'oferta_servicio': 'Oferta no encontrada o no autorizada'})
         
         serializer.save(oferta_servicio=oferta)
+        _sync_oferta_fotos_urls(oferta, self.request)
     
     @action(detail=False, methods=['post'])
     def subir_multiple(self, request):
@@ -1377,9 +1392,12 @@ class FotoServicioViewSet(viewsets.ModelViewSet):
             )
             fotos_creadas.append(FotoServicioSerializer(foto_servicio, context={'request': request}).data)
         
+        _sync_oferta_fotos_urls(oferta, request)
+
         return Response({
             'mensaje': f'{len(fotos_creadas)} fotos subidas exitosamente',
-            'fotos': fotos_creadas
+            'fotos': fotos_creadas,
+            'fotos_urls': oferta.fotos_urls,
         })
 
 
