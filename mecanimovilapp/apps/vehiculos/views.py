@@ -258,11 +258,18 @@ class VehiculoViewSet(viewsets.ModelViewSet):
                   marca_id = None
              
         if not marca_obj and data.get('marca_nombre'):
+            from .catalogo_resolver import resolve_or_create_marca
+
             marca_nombre = data.get('marca_nombre')
             print(f"DEBUG: Resolving Brand by name: {marca_nombre}")
-            marca_obj, _ = Marca.objects.get_or_create(nombre=marca_nombre.upper())
+            marca_obj, created_marca = resolve_or_create_marca(marca_nombre)
+            if not marca_obj:
+                return Response(
+                    {"marca_nombre": ["Nombre de marca inválido."]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             data['marca'] = marca_obj.id
-            print(f"DEBUG: Resolved Brand ID: {marca_obj.id}")
+            print(f"DEBUG: Resolved Brand ID: {marca_obj.id} (Created: {created_marca})")
         
         # 2. Resolver Modelo
         modelo_id = data.get('modelo')
@@ -278,16 +285,17 @@ class VehiculoViewSet(viewsets.ModelViewSet):
                   modelo_id = None
         
         if not modelo_id and marca_obj and data.get('modelo_nombre'):
+                from .catalogo_resolver import resolve_or_create_modelo
+
                 modelo_nombre = data.get('modelo_nombre')
                 print(f"DEBUG: Resolving Model by name: {modelo_nombre}")
-                # Buscamos o creamos el modelo bajo esa marca
                 try:
-                    modelo_obj, created = Modelo.objects.get_or_create(
-                        marca=marca_obj, 
-                        nombre=modelo_nombre.upper()
-                    )
-                    data['modelo'] = modelo_obj.id
-                    print(f"DEBUG: Resolved Model ID: {modelo_obj.id} (Created: {created})")
+                    modelo_obj, created = resolve_or_create_modelo(marca_obj, modelo_nombre)
+                    if modelo_obj:
+                        data['modelo'] = modelo_obj.id
+                        print(f"DEBUG: Resolved Model ID: {modelo_obj.id} (Created: {created})")
+                    else:
+                        print("DEBUG: Could not resolve model name")
                 except Exception as e:
                     print(f"DEBUG: Error creating model: {e}")
 
@@ -582,19 +590,14 @@ class VehiculoViewSet(viewsets.ModelViewSet):
                     "raw_data": data
                 }
                 
-                # Try to map Marca/Modelo to internal IDs
+                # Try to map Marca/Modelo to internal IDs (misma lógica que al registrar)
                 try:
-                    marca_obj = Marca.objects.filter(nombre__iexact=normalized_data["marca_nombre"]).first()
+                    from .catalogo_resolver import resolve_marca, resolve_modelo
+
+                    marca_obj = resolve_marca(normalized_data["marca_nombre"])
                     if marca_obj:
                         normalized_data["marca_id"] = marca_obj.id
-                        
-                        # Fuzzy or exact match for model might be tricky due to versions
-                        # e.g. API: "BRAVO SPORT TJET", Internal: "Bravo"
-                        # We try contains or exact
-                        modelo_obj = Modelo.objects.filter(marca=marca_obj, nombre__iexact=normalized_data["modelo_nombre"]).first()
-                        if not modelo_obj:
-                             modelo_obj = Modelo.objects.filter(marca=marca_obj, nombre__icontains=normalized_data["modelo_nombre"].split()[0]).first()
-                             
+                        modelo_obj = resolve_modelo(marca_obj, normalized_data["modelo_nombre"])
                         if modelo_obj:
                             normalized_data["modelo_id"] = modelo_obj.id
                 except Exception as e:
