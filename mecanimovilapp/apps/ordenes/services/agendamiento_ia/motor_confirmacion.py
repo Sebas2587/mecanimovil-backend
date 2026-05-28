@@ -21,6 +21,9 @@ from mecanimovilapp.apps.ordenes.models import (
     SolicitudServicioPublica,
 )
 from mecanimovilapp.apps.ordenes.services import adjudicacion_publica
+from mecanimovilapp.apps.ordenes.services.agendamiento_ia.motor_match import (
+    _oferta_ofrece_repuestos,
+)
 from mecanimovilapp.apps.servicios.models import OfertaServicio, Servicio
 from mecanimovilapp.apps.usuarios.models import Cliente, Usuario
 from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
@@ -70,6 +73,46 @@ def _tiempo_estimado_desde_servicio(servicio: Servicio) -> timedelta:
     return timedelta(hours=2)
 
 
+def _tiempo_estimado_desde_oferta_servicio(oferta_servicio: OfertaServicio) -> timedelta:
+    """Usa duración min/max del catálogo del proveedor; fallback al servicio base."""
+    min_m = getattr(oferta_servicio, 'duracion_minima_minutos', None)
+    max_m = getattr(oferta_servicio, 'duracion_maxima_minutos', None)
+    if min_m is not None and max_m is not None:
+        promedio = max(15, (int(min_m) + int(max_m)) // 2)
+        return timedelta(minutes=promedio)
+    if min_m is not None:
+        return timedelta(minutes=max(15, int(min_m)))
+    if max_m is not None:
+        return timedelta(minutes=max(15, int(max_m)))
+    legado = getattr(oferta_servicio, 'duracion_estimada', None)
+    if legado:
+        return timedelta(
+            hours=legado.hour,
+            minutes=legado.minute,
+            seconds=legado.second,
+        )
+    return _tiempo_estimado_desde_servicio(oferta_servicio.servicio)
+
+
+def _incluye_repuestos_catalogo(
+    ofertas_servicio: list[OfertaServicio],
+    requiere_repuestos_solicitud: bool,
+) -> bool:
+    """True solo si el cliente pidió repuestos y al menos una línea los publica."""
+    if not requiere_repuestos_solicitud:
+        return False
+    return any(_oferta_ofrece_repuestos(os) for os in ofertas_servicio)
+
+
+def _linea_usa_repuestos(
+    oferta_servicio: OfertaServicio,
+    requiere_repuestos_solicitud: bool,
+) -> bool:
+    return bool(
+        requiere_repuestos_solicitud and _oferta_ofrece_repuestos(oferta_servicio)
+    )
+
+
 def _notificar_proveedor_asignacion_catalogo(solicitud: SolicitudServicioPublica, proveedor: Usuario):
     try:
         channel_layer = get_channel_layer()
@@ -110,13 +153,17 @@ def _notificar_cliente_catalogo(usuario_id: int, titulo: str, cuerpo: str, extra
         logger.warning('No se pudo encolar push al cliente %s', usuario_id)
 
 
-def _precio_linea_oferta_servicio(oferta_servicio: OfertaServicio, requiere_repuestos: bool) -> Decimal:
+def _precio_linea_oferta_servicio(
+    oferta_servicio: OfertaServicio,
+    requiere_repuestos_solicitud: bool,
+) -> Decimal:
+    usa_repuestos = _linea_usa_repuestos(oferta_servicio, requiere_repuestos_solicitud)
     total = Decimal(str(oferta_servicio.precio_publicado_cliente or 0))
     if total <= 0:
         total = Decimal(
             str(
                 oferta_servicio.precio_con_repuestos
-                if requiere_repuestos
+                if usa_repuestos
                 else oferta_servicio.precio_sin_repuestos
             )
         )
@@ -139,6 +186,9 @@ def _crear_oferta_catalogo_con_lineas(
         raise ConfirmacionCatalogoError('Sin ofertas de catálogo', 'sin_ofertas')
 
     principal = ofertas_servicio[0]
+    incluye_repuestos = _incluye_repuestos_catalogo(
+        ofertas_servicio, requiere_repuestos
+    )
     mo_total = Decimal('0')
     rep_total = Decimal('0')
     gest_total = Decimal('0')
@@ -148,13 +198,13 @@ def _crear_oferta_catalogo_con_lineas(
 
     for oferta_servicio in ofertas_servicio:
         mo_total += Decimal(str(oferta_servicio.costo_mano_de_obra_sin_iva or 0))
-        if requiere_repuestos:
+        if _linea_usa_repuestos(oferta_servicio, requiere_repuestos):
             rep_total += Decimal(str(oferta_servicio.costo_repuestos_sin_iva or 0))
             gest_total += Decimal(
                 str(getattr(oferta_servicio, 'costo_gestion_compra_sin_iva', None) or 0)
             )
         precio_total += _precio_linea_oferta_servicio(oferta_servicio, requiere_repuestos)
-        tiempo_total += _tiempo_estimado_desde_servicio(oferta_servicio.servicio)
+        tiempo_total += _tiempo_estimado_desde_oferta_servicio(oferta_servicio)
         nombres.append(oferta_servicio.servicio.nombre)
 
     descripcion = (
@@ -171,7 +221,7 @@ def _crear_oferta_catalogo_con_lineas(
         oferta_servicio=principal,
         metadata_ia=metadata_ia,
         precio_total_ofrecido=precio_total,
-        incluye_repuestos=requiere_repuestos,
+        incluye_repuestos=incluye_repuestos,
         costo_mano_obra=mo_total,
         costo_repuestos=rep_total,
         costo_gestion_compra=gest_total,
@@ -193,7 +243,7 @@ def _crear_oferta_catalogo_con_lineas(
             oferta=oferta,
             servicio=servicio,
             precio_servicio=precio_detalle,
-            tiempo_estimado=_tiempo_estimado_desde_servicio(servicio),
+            tiempo_estimado=_tiempo_estimado_desde_oferta_servicio(oferta_servicio),
             notas='',
             repuestos_seleccionados=[],
         )

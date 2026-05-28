@@ -855,13 +855,51 @@ class DetalleServicioOfertaSerializer(serializers.ModelSerializer):
     """Serializer para detalles de servicios en ofertas"""
     servicio_nombre = serializers.CharField(source='servicio.nombre', read_only=True)
     repuestos_info = serializers.SerializerMethodField(read_only=True)
+    duracion_minima_minutos = serializers.SerializerMethodField(read_only=True)
+    duracion_maxima_minutos = serializers.SerializerMethodField(read_only=True)
     
     class Meta:
         model = DetalleServicioOferta
         fields = [
             'id', 'servicio', 'servicio_nombre', 'precio_servicio',
-            'tiempo_estimado', 'notas', 'repuestos_seleccionados', 'repuestos_info'
+            'tiempo_estimado', 'notas', 'repuestos_seleccionados', 'repuestos_info',
+            'duracion_minima_minutos', 'duracion_maxima_minutos',
         ]
+
+    def _oferta_servicio_catalogo_para_detalle(self, obj):
+        """OfertaServicio del catálogo asociada a esta línea (multi-servicio)."""
+        oferta = getattr(obj, 'oferta', None)
+        if not oferta:
+            return None
+        principal = getattr(oferta, 'oferta_servicio', None)
+        if principal is not None and principal.servicio_id == obj.servicio_id:
+            return principal
+        meta = getattr(oferta, 'metadata_ia', None) or {}
+        ids = list(meta.get('oferta_servicio_ids') or [])
+        if not ids and meta.get('oferta_servicio_id'):
+            ids = [meta['oferta_servicio_id']]
+        if not ids:
+            return None
+        from mecanimovilapp.apps.servicios.models import OfertaServicio
+        return (
+            OfertaServicio.objects.filter(pk__in=ids, servicio_id=obj.servicio_id)
+            .only(
+                'id',
+                'servicio_id',
+                'duracion_minima_minutos',
+                'duracion_maxima_minutos',
+                'duracion_estimada',
+            )
+            .first()
+        )
+
+    def get_duracion_minima_minutos(self, obj):
+        os = self._oferta_servicio_catalogo_para_detalle(obj)
+        return getattr(os, 'duracion_minima_minutos', None) if os else None
+
+    def get_duracion_maxima_minutos(self, obj):
+        os = self._oferta_servicio_catalogo_para_detalle(obj)
+        return getattr(os, 'duracion_maxima_minutos', None) if os else None
     
     def get_repuestos_info(self, obj):
         """Retorna informaci?n detallada de los repuestos seleccionados"""
