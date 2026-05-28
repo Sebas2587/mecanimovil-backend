@@ -789,6 +789,7 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
         creados = 0
         omitidos = 0
         errores = []
+        servicios_ok = []
 
         for item in servicios_raw:
             servicio_id = item.get('servicio_id')
@@ -803,6 +804,7 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
             except Servicio.DoesNotExist:
                 errores.append({'item': item, 'error': f'Servicio {servicio_id} no encontrado'})
                 continue
+            servicios_ok.append(servicio)
 
             marca = None
             if marca_id:
@@ -842,6 +844,26 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
                 creados += 1
             except Exception as e:
                 errores.append({'item': item, 'error': str(e)})
+
+        # Derivar especialidades desde los servicios elegidos (categorías asociadas).
+        # Esto permite que, al terminar onboarding, el proveedor vea especialidades coherentes
+        # incluso si no las eligió manualmente.
+        try:
+            if servicios_ok:
+                categorias_ids = set()
+                for s in servicios_ok:
+                    try:
+                        categorias_ids.update(list(s.categorias.values_list('id', flat=True)))
+                    except Exception:
+                        continue
+                if categorias_ids:
+                    from mecanimovilapp.apps.servicios.models import CategoriaServicio
+                    categorias = list(CategoriaServicio.objects.filter(id__in=list(categorias_ids)))
+                    if hasattr(proveedor, 'especialidades'):
+                        proveedor.especialidades.add(*categorias)
+        except Exception as e:
+            # No bloquear creación de catálogo por fallo de especialidades.
+            errores.append({'item': 'especialidades', 'error': str(e)})
 
         return Response({
             'creados': creados,
