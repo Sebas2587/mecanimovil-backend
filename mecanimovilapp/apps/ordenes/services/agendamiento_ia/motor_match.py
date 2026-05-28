@@ -186,6 +186,8 @@ def _queryset_ofertas_compatibles(
         marca_vehiculo_seleccionada__isnull=True
     )
 
+    from mecanimovilapp.apps.usuarios.proveedor_cobertura import TIPO_COBERTURA_MULTIMARCA
+
     ofertas_taller = base.filter(
         tipo_proveedor='taller',
         taller__isnull=False,
@@ -202,7 +204,23 @@ def _queryset_ofertas_compatibles(
         mecanico__activo=True,
     ).filter(q_marca_oferta)
 
-    return (ofertas_taller | ofertas_mecanico).distinct()
+    ofertas_taller_mm = base.filter(
+        tipo_proveedor='taller',
+        taller__isnull=False,
+        taller__tipo_cobertura_marca=TIPO_COBERTURA_MULTIMARCA,
+        taller__verificado=True,
+        taller__activo=True,
+    ).filter(q_marca_oferta)
+
+    ofertas_mecanico_mm = base.filter(
+        tipo_proveedor='mecanico',
+        mecanico__isnull=False,
+        mecanico__tipo_cobertura_marca=TIPO_COBERTURA_MULTIMARCA,
+        mecanico__verificado=True,
+        mecanico__activo=True,
+    ).filter(q_marca_oferta)
+
+    return (ofertas_taller | ofertas_mecanico | ofertas_taller_mm | ofertas_mecanico_mm).distinct()
 
 
 def _score_y_explicacion(

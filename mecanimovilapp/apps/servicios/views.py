@@ -240,59 +240,11 @@ class ServicioViewSet(viewsets.ModelViewSet):
             )
         
         try:
+            from .catalogo_vehiculo import queryset_servicios_disponibles_para_modelo_marca
+
             modelo = Modelo.objects.select_related('marca').get(id=modelo_id)
             marca = modelo.marca
-            
-            # Opción 1: Servicios que tienen el modelo específico en modelos_compatibles
-            servicios_por_modelo = self.queryset.filter(modelos_compatibles=modelo).distinct()
-            
-            # Opción 2: Servicios que tienen ofertas disponibles para la marca del vehículo
-            # (incluso si el modelo específico no está en modelos_compatibles)
-            from .models import OfertaServicio
-            servicios_con_ofertas = Servicio.objects.filter(
-                ofertas__marca_vehiculo_seleccionada=marca,
-                ofertas__disponible=True
-            ).distinct()
-            
-            # También incluir servicios con ofertas sin marca específica (NULL) si hay proveedores que atienden la marca
-            from mecanimovilapp.apps.usuarios.models import Taller, MecanicoDomicilio
-            from django.db.models import Q
-            
-            talleres_ids = Taller.objects.filter(
-                marcas_atendidas=marca,
-                verificado=True,
-                activo=True
-            ).values_list('id', flat=True)
-
-            mecanicos_ids = MecanicoDomicilio.objects.filter(
-                marcas_atendidas=marca,
-                verificado=True,
-                activo=True
-            ).values_list('id', flat=True)
-            
-            servicios_con_ofertas_genericas = Servicio.objects.filter(
-                Q(ofertas__marca_vehiculo_seleccionada__isnull=True) &
-                Q(ofertas__disponible=True) &
-                (
-                    Q(ofertas__taller_id__in=talleres_ids) |
-                    Q(ofertas__mecanico_id__in=mecanicos_ids)
-                )
-            ).distinct()
-            
-            # Combinar todas las opciones (OR): servicios por modelo O servicios con ofertas para la marca
-            servicios = (servicios_por_modelo | servicios_con_ofertas | servicios_con_ofertas_genericas).distinct()
-            
-            # PREFETCH MANUAL PARA EVITAR N+1
-            # Como los querysets combinados (OR) a veces pierden el prefetch o son difíciles de prefetcher antes,
-            # lo hacemos sobre los IDs resultantes para garantizar eficiencia.
-            servicios_ids = list(servicios.values_list('id', flat=True))
-            servicios_finales = Servicio.objects.filter(id__in=servicios_ids).prefetch_related(
-                'ofertas',
-                'ofertas__taller',
-                'ofertas__mecanico__usuario',
-                'categorias'
-            )
-            
+            servicios_finales = queryset_servicios_disponibles_para_modelo_marca(modelo, marca)
             serializer = ServicioListSerializer(servicios_finales, many=True)
             return Response(serializer.data)
         except Modelo.DoesNotExist:
@@ -665,54 +617,9 @@ def servicios_por_vehiculo(request):
             status=400
         )
     
-    # Opción 1: Servicios que tienen el modelo específico en modelos_compatibles
-    servicios_por_modelo = Servicio.objects.filter(modelos_compatibles=modelo).distinct()
-    
-    # Opción 2: Servicios que tienen ofertas disponibles para la marca del vehículo
-    # (incluso si el modelo específico no está en modelos_compatibles)
-    from .models import OfertaServicio
-    servicios_con_ofertas = Servicio.objects.filter(
-        ofertas__marca_vehiculo_seleccionada=marca,
-        ofertas__disponible=True
-    ).distinct()
-    
-    # Opción 3: Servicios con ofertas sin marca específica (NULL) si hay proveedores que atienden la marca
-    from mecanimovilapp.apps.usuarios.models import Taller, MecanicoDomicilio
-    from django.db.models import Q
-    
-    talleres_ids = Taller.objects.filter(
-        marcas_atendidas=marca,
-        verificado=True,
-        activo=True
-    ).values('id')
+    from .catalogo_vehiculo import queryset_servicios_disponibles_para_modelo_marca
 
-    mecanicos_ids = MecanicoDomicilio.objects.filter(
-        marcas_atendidas=marca,
-        verificado=True,
-        activo=True
-    ).values('id')
-    
-    servicios_con_ofertas_genericas = Servicio.objects.filter(
-        Q(ofertas__marca_vehiculo_seleccionada__isnull=True) &
-        Q(ofertas__disponible=True) &
-        (
-            Q(ofertas__taller_id__in=talleres_ids) |
-            Q(ofertas__mecanico_id__in=mecanicos_ids)
-        )
-    ).distinct()
-    
-    # Combinar todas las opciones (OR): servicios por modelo O servicios con ofertas para la marca
-    servicios = (servicios_por_modelo | servicios_con_ofertas | servicios_con_ofertas_genericas).distinct()
-    
-    # PREFETCH MANUAL PARA EVITAR N+1
-    servicios_ids = list(servicios.values_list('id', flat=True))
-    servicios_finales = Servicio.objects.filter(id__in=servicios_ids).prefetch_related(
-        'ofertas',
-        'ofertas__taller',
-        'ofertas__mecanico__usuario',
-        'categorias'
-    )
-    
+    servicios_finales = queryset_servicios_disponibles_para_modelo_marca(modelo, marca)
     serializer = ServicioListSerializer(servicios_finales, many=True)
     return Response(serializer.data)
 

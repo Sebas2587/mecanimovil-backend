@@ -645,11 +645,21 @@ class ServicioListSerializer(serializers.ModelSerializer):
                 total = len(ofertas_disponibles)
                 talleres = len([o for o in ofertas_disponibles if o.tipo_proveedor == 'taller'])
                 mecanicos = len([o for o in ofertas_disponibles if o.tipo_proveedor == 'mecanico'])
-                
+                multimarca = 0
+                especialistas = 0
+                for o in ofertas_disponibles:
+                    prov = o.taller if o.tipo_proveedor == 'taller' else o.mecanico
+                    if prov and getattr(prov, 'tipo_cobertura_marca', None) == 'multimarca':
+                        multimarca += 1
+                    else:
+                        especialistas += 1
+
                 return {
                     'total': total,
                     'talleres': talleres,
-                    'mecanicos': mecanicos
+                    'mecanicos': mecanicos,
+                    'multimarca': multimarca,
+                    'especialistas': especialistas,
                 }
 
             ofertas = obj.ofertas.filter(disponible=True)
