@@ -1531,9 +1531,7 @@ class TallerViewSet(viewsets.ModelViewSet):
         from mecanimovilapp.apps.usuarios.models import HorarioProveedor
 
         taller = self.get_object()
-        qs = HorarioProveedor.objects.filter(taller=taller).order_by('dia_semana')
-        if not qs.exists():
-            return Response([])
+        qs = HorarioProveedor.objects.filter(taller=taller, activo=True).order_by('dia_semana')
         return Response(HorarioProveedorSerializer(qs, many=True).data)
     
     def _generar_horario_defecto_taller(self, dia_semana):
@@ -2435,9 +2433,7 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
         from mecanimovilapp.apps.usuarios.models import HorarioProveedor
 
         mecanico = self.get_object()
-        qs = HorarioProveedor.objects.filter(mecanico=mecanico).order_by('dia_semana')
-        if not qs.exists():
-            return Response([])
+        qs = HorarioProveedor.objects.filter(mecanico=mecanico, activo=True).order_by('dia_semana')
         return Response(HorarioProveedorSerializer(qs, many=True).data)
     
     def _generar_horario_defecto_mecanico(self, dia_semana):
