@@ -13,6 +13,11 @@ from django_filters.rest_framework import DjangoFilterBackend
 from .models import Usuario, Cliente, Taller, MecanicoDomicilio, ZonaCobertura, Resena, DireccionUsuario, DocumentoOnboarding, HorarioProveedor, MechanicServiceArea, ChileanCommune, ConnectionStatus, ProviderProfile, Review, TallerDireccion, PushToken, Notificacion
 from .connection_throttle import try_begin_conectar_http_window, clear_conectar_http_window
 from .verification_utils import proveedor_visible_como_verificado
+from .proveedor_cobertura import (
+    TIPO_COBERTURA_ESPECIALISTA,
+    TIPO_COBERTURA_MULTIMARCA,
+    filtrar_queryset_por_marca_o_multimarca,
+)
 from .chile_rut_phone import (
     normalizar_rut_chile,
     rut_modulo11_valido,
@@ -1629,9 +1634,12 @@ class TallerViewSet(viewsets.ModelViewSet):
         if marca_vehiculo:
             try:
                 marca_id = int(marca_vehiculo)
-                queryset = queryset.filter(marcas_atendidas__id=marca_id).distinct()
+                queryset = filtrar_queryset_por_marca_o_multimarca(queryset, marca_id)
             except ValueError:
-                queryset = queryset.filter(marcas_atendidas__nombre__icontains=marca_vehiculo).distinct()
+                queryset = queryset.filter(
+                    Q(marcas_atendidas__nombre__icontains=marca_vehiculo)
+                    | Q(tipo_cobertura_marca=TIPO_COBERTURA_MULTIMARCA)
+                ).distinct()
         queryset = queryset.order_by('distance')
         
         page = self.paginate_queryset(queryset)
@@ -1997,6 +2005,34 @@ class TallerViewSet(viewsets.ModelViewSet):
         
         logger.info(f"🔍 Vehículo ID: {vehiculo_id}, Servicio IDs: {servicio_ids}")
 
+        tipo_cobertura_param = request.query_params.get('tipo_cobertura_marca')
+        if tipo_cobertura_param == TIPO_COBERTURA_MULTIMARCA and not vehiculo_id:
+            queryset_mm = Taller.objects.filter(
+                tipo_cobertura_marca=TIPO_COBERTURA_MULTIMARCA,
+                verificado=True,
+                activo=True,
+            ).select_related(
+                'usuario',
+                'direccion_fisica',
+                'connection_status',
+            ).prefetch_related(
+                'especialidades',
+                'marcas_atendidas',
+            ).annotate(
+                servicios_completados_count=Count(
+                    'solicitudes', filter=Q(solicitudes__estado='completado')
+                )
+            )
+            ordered_mm = _order_proveedores_by_kpi_relevancia(list(queryset_mm), window_days=30)
+            if request_wants_panel_servicios(request):
+                attach_panel_servicios_to_proveedores(ordered_mm, 'taller', marca_id=None)
+            serializer_mm = self.get_serializer(ordered_mm, many=True)
+            return Response({
+                'talleres': serializer_mm.data,
+                'total': len(ordered_mm),
+                'filtros_aplicados': {'tipo_cobertura_marca': TIPO_COBERTURA_MULTIMARCA},
+            })
+
         # Sin vehículo pero con servicios (ej. precompra): listar talleres que ofrecen esos servicios
         if not vehiculo_id and servicio_ids:
             try:
@@ -2040,7 +2076,7 @@ class TallerViewSet(viewsets.ModelViewSet):
         
         if not vehiculo_id:
             return Response(
-                {"error": "Se requiere el parámetro 'vehiculo_id' o servicio_ids sin vehículo"},
+                {"error": "Se requiere el parámetro 'vehiculo_id', servicio_ids sin vehículo o tipo_cobertura_marca=multimarca"},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
@@ -2060,12 +2096,12 @@ class TallerViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Filtrar talleres por marca atendida
+        # Especialistas en la marca + proveedores multimarca
         queryset = Taller.objects.filter(
-            marcas_atendidas=marca_vehiculo,
             verificado=True,
-            activo=True
-        ).select_related(
+            activo=True,
+        )
+        queryset = filtrar_queryset_por_marca_o_multimarca(queryset, marca_vehiculo).select_related(
             'usuario',
             'direccion_fisica',   # OneToOne relationship
             'connection_status'   # OneToOne relationship
@@ -2100,9 +2136,11 @@ class TallerViewSet(viewsets.ModelViewSet):
                     servicio__in=servicios,
                     tipo_proveedor='taller',
                     disponible=True,
-                    taller__marcas_atendidas=marca_vehiculo,
                     taller__verificado=True,
-                    taller__activo=True
+                    taller__activo=True,
+                ).filter(
+                    Q(taller__marcas_atendidas=marca_vehiculo)
+                    | Q(taller__tipo_cobertura_marca=TIPO_COBERTURA_MULTIMARCA)
                 ).filter(
                     # Oferta con marca específica que coincide O sin marca específica (NULL)
                     Q(marca_vehiculo_seleccionada=marca_vehiculo) | Q(marca_vehiculo_seleccionada__isnull=True)
@@ -2118,11 +2156,13 @@ class TallerViewSet(viewsets.ModelViewSet):
                 
                 logger.info(f"🔍 Categorías de servicios: {categorias_servicios}")
                 
-                talleres_con_especialidades = Taller.objects.filter(
-                    marcas_atendidas=marca_vehiculo,
-                    verificado=True,
-                    activo=True,
-                    especialidades__id__in=categorias_servicios
+                talleres_con_especialidades = filtrar_queryset_por_marca_o_multimarca(
+                    Taller.objects.filter(
+                        verificado=True,
+                        activo=True,
+                        especialidades__id__in=categorias_servicios,
+                    ),
+                    marca_vehiculo,
                 ).values_list('id', flat=True).distinct()
                 
                 logger.info(f"🔍 Talleres con especialidades: {len(talleres_con_especialidades)}")
@@ -2612,14 +2652,16 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
             ubicacion__distance_lte=(user_location, D(km=max_distance))
         )
         
-        # Filtrar por marca de vehículo si se especifica
+        # Filtrar por marca de vehículo si se especifica (incluye multimarca)
         if marca_vehiculo:
             try:
                 marca_id = int(marca_vehiculo)
-                queryset = queryset.filter(marcas_atendidas__id=marca_id)
+                queryset = filtrar_queryset_por_marca_o_multimarca(queryset, marca_id)
             except ValueError:
-                # Si no es un ID numérico, buscar por nombre de marca
-                queryset = queryset.filter(marcas_atendidas__nombre__icontains=marca_vehiculo)
+                queryset = queryset.filter(
+                    Q(marcas_atendidas__nombre__icontains=marca_vehiculo)
+                    | Q(tipo_cobertura_marca=TIPO_COBERTURA_MULTIMARCA)
+                ).distinct()
         
         # Ordenar por distancia
         queryset = queryset.order_by('distance')
@@ -2799,6 +2841,35 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
         
         logger.info(f"🔍 Vehículo ID: {vehiculo_id}, Servicio IDs: {servicio_ids}")
 
+        tipo_cobertura_param = request.query_params.get('tipo_cobertura_marca')
+        if tipo_cobertura_param == TIPO_COBERTURA_MULTIMARCA and not vehiculo_id:
+            queryset_mm = MecanicoDomicilio.objects.filter(
+                tipo_cobertura_marca=TIPO_COBERTURA_MULTIMARCA,
+                verificado=True,
+                activo=True,
+            ).select_related(
+                'usuario',
+                'connection_status',
+            ).prefetch_related(
+                'especialidades',
+                'marcas_atendidas',
+                'service_areas',
+                'resenas',
+            ).annotate(
+                servicios_completados_count=Count(
+                    'solicitudes', filter=Q(solicitudes__estado='completado')
+                )
+            )
+            ordered_mm = _order_proveedores_by_kpi_relevancia(list(queryset_mm), window_days=30)
+            if request_wants_panel_servicios(request):
+                attach_panel_servicios_to_proveedores(ordered_mm, 'mecanico', marca_id=None)
+            serializer_mm = self.get_serializer(ordered_mm, many=True)
+            return Response({
+                'mecanicos': serializer_mm.data,
+                'total': len(ordered_mm),
+                'filtros_aplicados': {'tipo_cobertura_marca': TIPO_COBERTURA_MULTIMARCA},
+            })
+
         # Sin vehículo pero con servicios (ej. precompra): listar mecánicos que ofrecen esos servicios
         if not vehiculo_id and servicio_ids:
             try:
@@ -2844,7 +2915,7 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
         
         if not vehiculo_id:
             return Response(
-                {"error": "Se requiere el parámetro 'vehiculo_id' o servicio_ids sin vehículo"},
+                {"error": "Se requiere el parámetro 'vehiculo_id', servicio_ids sin vehículo o tipo_cobertura_marca=multimarca"},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
@@ -2864,12 +2935,12 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Filtrar mecánicos por marca atendida
+        # Especialistas en la marca + mecánicos multimarca
         queryset = MecanicoDomicilio.objects.filter(
-            marcas_atendidas=marca_vehiculo,
             verificado=True,
-            activo=True
-        ).select_related(
+            activo=True,
+        )
+        queryset = filtrar_queryset_por_marca_o_multimarca(queryset, marca_vehiculo).select_related(
             'usuario',
             'connection_status'   # OneToOne relationship - use select_related
         ).prefetch_related(
@@ -2905,9 +2976,11 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
                     servicio__in=servicios,
                     tipo_proveedor='mecanico',
                     disponible=True,
-                    mecanico__marcas_atendidas=marca_vehiculo,
                     mecanico__verificado=True,
-                    mecanico__activo=True
+                    mecanico__activo=True,
+                ).filter(
+                    Q(mecanico__marcas_atendidas=marca_vehiculo)
+                    | Q(mecanico__tipo_cobertura_marca=TIPO_COBERTURA_MULTIMARCA)
                 ).filter(
                     # Oferta con marca específica que coincide O sin marca específica (NULL)
                     Q(marca_vehiculo_seleccionada=marca_vehiculo) | Q(marca_vehiculo_seleccionada__isnull=True)
@@ -2923,11 +2996,13 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
                 
                 logger.info(f"🔍 Categorías de servicios: {categorias_servicios}")
                 
-                mecanicos_con_especialidades = MecanicoDomicilio.objects.filter(
-                    marcas_atendidas=marca_vehiculo,
-                    verificado=True,
-                    activo=True,
-                    especialidades__id__in=categorias_servicios
+                mecanicos_con_especialidades = filtrar_queryset_por_marca_o_multimarca(
+                    MecanicoDomicilio.objects.filter(
+                        verificado=True,
+                        activo=True,
+                        especialidades__id__in=categorias_servicios,
+                    ),
+                    marca_vehiculo,
                 ).values_list('id', flat=True).distinct()
                 
                 logger.info(f"🔍 Mecánicos con especialidades: {len(mecanicos_con_especialidades)}")
@@ -3274,6 +3349,9 @@ class EstadoProveedorView(APIView):
             'telefono': proveedor.telefono,
             'calificacion_promedio': proveedor.calificacion_promedio,
             'numero_de_calificaciones': proveedor.numero_de_calificaciones,
+            'tipo_cobertura_marca': getattr(
+                proveedor, 'tipo_cobertura_marca', TIPO_COBERTURA_ESPECIALISTA
+            ),
         }
         
         # Si es un taller, agregar información de dirección física
@@ -3316,6 +3394,7 @@ class EstadoProveedorView(APIView):
         return Response({
             'tiene_perfil': True,
             'tipo_proveedor': 'mecanico' if mecanico else 'taller',
+            'tipo_cobertura_marca': getattr(proveedor, 'tipo_cobertura_marca', TIPO_COBERTURA_ESPECIALISTA),
             'nombre': proveedor.nombre,
             'estado_verificacion': proveedor.estado_verificacion,
             'verificado': proveedor_visible_como_verificado(proveedor),
@@ -3936,6 +4015,7 @@ def actualizar_marcas_taller(request):
     """
     usuario = request.user
     marcas_ids = request.data.get('marcas', [])
+    tipo_cobertura = request.data.get('tipo_cobertura_marca', TIPO_COBERTURA_ESPECIALISTA)
     
     # Verificar que el usuario tiene un perfil de taller
     if not hasattr(usuario, 'taller'):
@@ -3948,6 +4028,21 @@ def actualizar_marcas_taller(request):
     try:
         # Importar el modelo dinámicamente para evitar circular import
         from mecanimovilapp.apps.vehiculos.models import MarcaVehiculo
+
+        if tipo_cobertura == TIPO_COBERTURA_MULTIMARCA:
+            taller.tipo_cobertura_marca = TIPO_COBERTURA_MULTIMARCA
+            taller.marcas_atendidas.clear()
+            taller.save(update_fields=['tipo_cobertura_marca'])
+            return Response({
+                'mensaje': 'Cobertura multimarca activada para el taller',
+                'marcas': [],
+                'tipo_cobertura_marca': TIPO_COBERTURA_MULTIMARCA,
+            })
+
+        if not marcas_ids:
+            return Response({
+                'error': 'Debes seleccionar al menos una marca o activar cobertura multimarca'
+            }, status=status.HTTP_400_BAD_REQUEST)
         
         # Validar que las marcas existen
         marcas = MarcaVehiculo.objects.filter(id__in=marcas_ids)
@@ -3957,8 +4052,9 @@ def actualizar_marcas_taller(request):
                 'error': 'Algunas marcas no existen'
             }, status=status.HTTP_400_BAD_REQUEST)
         
-        # Actualizar las marcas atendidas
+        taller.tipo_cobertura_marca = TIPO_COBERTURA_ESPECIALISTA
         taller.marcas_atendidas.set(marcas)
+        taller.save(update_fields=['tipo_cobertura_marca'])
         
         # Serializar las marcas actualizadas
         marcas_data = [
@@ -3968,7 +4064,8 @@ def actualizar_marcas_taller(request):
         
         return Response({
             'mensaje': 'Marcas del taller actualizadas exitosamente',
-            'marcas': marcas_data
+            'marcas': marcas_data,
+            'tipo_cobertura_marca': TIPO_COBERTURA_ESPECIALISTA,
         })
         
     except Exception as e:
@@ -3985,6 +4082,7 @@ def actualizar_marcas_mecanico(request):
     """
     usuario = request.user
     marcas_ids = request.data.get('marcas', [])
+    tipo_cobertura = request.data.get('tipo_cobertura_marca', TIPO_COBERTURA_ESPECIALISTA)
     
     # Verificar que el usuario tiene un perfil de mecánico
     if not hasattr(usuario, 'mecanico_domicilio'):
@@ -3997,6 +4095,21 @@ def actualizar_marcas_mecanico(request):
     try:
         # Importar el modelo dinámicamente para evitar circular import
         from mecanimovilapp.apps.vehiculos.models import MarcaVehiculo
+
+        if tipo_cobertura == TIPO_COBERTURA_MULTIMARCA:
+            mecanico.tipo_cobertura_marca = TIPO_COBERTURA_MULTIMARCA
+            mecanico.marcas_atendidas.clear()
+            mecanico.save(update_fields=['tipo_cobertura_marca'])
+            return Response({
+                'mensaje': 'Cobertura multimarca activada para el mecánico',
+                'marcas': [],
+                'tipo_cobertura_marca': TIPO_COBERTURA_MULTIMARCA,
+            })
+
+        if not marcas_ids:
+            return Response({
+                'error': 'Debes seleccionar al menos una marca o activar cobertura multimarca'
+            }, status=status.HTTP_400_BAD_REQUEST)
         
         # Validar que las marcas existen
         marcas = MarcaVehiculo.objects.filter(id__in=marcas_ids)
@@ -4006,8 +4119,9 @@ def actualizar_marcas_mecanico(request):
                 'error': 'Algunas marcas no existen'
             }, status=status.HTTP_400_BAD_REQUEST)
         
-        # Actualizar las marcas atendidas
+        mecanico.tipo_cobertura_marca = TIPO_COBERTURA_ESPECIALISTA
         mecanico.marcas_atendidas.set(marcas)
+        mecanico.save(update_fields=['tipo_cobertura_marca'])
         
         # Serializar las marcas actualizadas
         marcas_data = [
@@ -4017,7 +4131,8 @@ def actualizar_marcas_mecanico(request):
         
         return Response({
             'mensaje': 'Marcas del mecánico actualizadas exitosamente',
-            'marcas': marcas_data
+            'marcas': marcas_data,
+            'tipo_cobertura_marca': TIPO_COBERTURA_ESPECIALISTA,
         })
         
     except Exception as e:

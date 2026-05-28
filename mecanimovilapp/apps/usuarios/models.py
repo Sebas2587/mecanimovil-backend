@@ -181,6 +181,15 @@ class ProveedorServicio(models.Model):
         default=False,
         help_text='Indica si el proveedor está actualmente conectado en la app'
     )
+    tipo_cobertura_marca = models.CharField(
+        max_length=20,
+        choices=[
+            ('especialista', 'Especialista en marcas'),
+            ('multimarca', 'Multimarca'),
+        ],
+        default='especialista',
+        help_text='Especialista: marcas concretas. Multimarca: atiende cualquier marca.',
+    )
 
     class Meta:
         abstract = True
