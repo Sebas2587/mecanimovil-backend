@@ -17,6 +17,7 @@ from .proveedor_cobertura import (
     TIPO_COBERTURA_ESPECIALISTA,
     TIPO_COBERTURA_MULTIMARCA,
     filtrar_queryset_por_marca_o_multimarca,
+    filtrar_queryset_solo_especialistas_marca,
 )
 from .chile_rut_phone import (
     normalizar_rut_chile,
@@ -2094,12 +2095,18 @@ class TallerViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Especialistas en la marca + proveedores multimarca
+        solo_especialistas = request.query_params.get('solo_especialistas', '').lower() in (
+            '1', 'true', 'yes',
+        )
         queryset = Taller.objects.filter(
             verificado=True,
             activo=True,
         )
-        queryset = filtrar_queryset_por_marca_o_multimarca(queryset, marca_vehiculo).select_related(
+        if solo_especialistas:
+            queryset = filtrar_queryset_solo_especialistas_marca(queryset, marca_vehiculo)
+        else:
+            queryset = filtrar_queryset_por_marca_o_multimarca(queryset, marca_vehiculo)
+        queryset = queryset.select_related(
             'usuario',
             'direccion_fisica',   # OneToOne relationship
             'connection_status'   # OneToOne relationship
@@ -2113,7 +2120,10 @@ class TallerViewSet(viewsets.ModelViewSet):
             )
         )
         
-        logger.info(f"🔍 Talleres con marca {marca_vehiculo.nombre}: {queryset.count()}")
+        logger.info(
+            f"🔍 Talleres con marca {marca_vehiculo.nombre} "
+            f"(solo_especialistas={solo_especialistas}): {queryset.count()}"
+        )
         
         # Si hay servicios seleccionados, filtrar también por proveedores que ofrecen esos servicios
         if servicio_ids:
@@ -2931,12 +2941,18 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Especialistas en la marca + mecánicos multimarca
+        solo_especialistas = request.query_params.get('solo_especialistas', '').lower() in (
+            '1', 'true', 'yes',
+        )
         queryset = MecanicoDomicilio.objects.filter(
             verificado=True,
             activo=True,
         )
-        queryset = filtrar_queryset_por_marca_o_multimarca(queryset, marca_vehiculo).select_related(
+        if solo_especialistas:
+            queryset = filtrar_queryset_solo_especialistas_marca(queryset, marca_vehiculo)
+        else:
+            queryset = filtrar_queryset_por_marca_o_multimarca(queryset, marca_vehiculo)
+        queryset = queryset.select_related(
             'usuario',
             'connection_status'   # OneToOne relationship - use select_related
         ).prefetch_related(
@@ -2951,7 +2967,10 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
             )
         )
         
-        logger.info(f"🔍 Mecánicos con marca {marca_vehiculo.nombre}: {queryset.count()}")
+        logger.info(
+            f"🔍 Mecánicos con marca {marca_vehiculo.nombre} "
+            f"(solo_especialistas={solo_especialistas}): {queryset.count()}"
+        )
         
         # Si hay servicios seleccionados, filtrar también por proveedores que ofrecen esos servicios
         if servicio_ids:
