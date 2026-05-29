@@ -138,7 +138,7 @@ class OfertaServicioSerializer(serializers.ModelSerializer):
             for c in servicio.categorias.all()
         ]
 
-        # modelos_compatibles: prefetch_related en las vistas
+        # modelos_compatibles / marcas_compatibles: prefetch_related en las vistas
         modelos_info = []
         for m in servicio.modelos_compatibles.all():
             marca_obj = getattr(m, 'marca', None)
@@ -151,6 +151,11 @@ class OfertaServicioSerializer(serializers.ModelSerializer):
                 ),
             })
 
+        marcas_info = [
+            {'id': mc.id, 'nombre': mc.nombre}
+            for mc in servicio.marcas_compatibles.all()
+        ]
+
         return {
             'id': servicio.id,
             'nombre': servicio.nombre,
@@ -160,6 +165,7 @@ class OfertaServicioSerializer(serializers.ModelSerializer):
             'precio_referencia': str(servicio.precio_referencia) if getattr(servicio, 'precio_referencia', None) else None,
             'categorias_info': categorias_info,
             'modelos_info': modelos_info,
+            'marcas_info': marcas_info,
         }
 
     def get_marca_vehiculo_info(self, obj):
@@ -725,6 +731,7 @@ class ServicioSerializer(serializers.ModelSerializer):
     """
     detalles = DetalleServicioSerializer(many=True, read_only=True)
     categorias_info = CategoriaServicioSerializer(source='categorias', many=True, read_only=True)
+    marcas_info = MarcaSerializer(source='marcas_compatibles', many=True, read_only=True)
     modelos_info = ModeloSerializer(source='modelos_compatibles', many=True, read_only=True)
     servicios_relacionados_info = ServicioListSerializer(source='servicios_relacionados', many=True, read_only=True)
     ofertas_disponibles = serializers.SerializerMethodField()
@@ -737,7 +744,7 @@ class ServicioSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'nombre', 'descripcion', 'duracion_estimada_base', 
             'calificacion_promedio', 'foto', 'detalles', 
-            'categorias_info', 'modelos_info', 'servicios_relacionados_info', 
+            'categorias_info', 'marcas_info', 'modelos_info', 'servicios_relacionados_info', 
             'requiere_repuestos', 'precio_referencia', 'precio_minimo',
             'ofertas_disponibles', 'repuestos_necesarios', 'es_diagnostico'
         )

@@ -223,10 +223,12 @@ class MotorRecomendaciones:
         """
         perfil = PerfilVehiculo.objects.get(vehiculo=vehiculo)
         
-        # Obtener servicios compatibles con el modelo
-        servicios_compatibles = Servicio.objects.filter(
-            modelos_compatibles=vehiculo.modelo
+        # Obtener servicios compatibles con el vehículo (marca/modelo)
+        from mecanimovilapp.apps.servicios.compatibilidad_vehiculo import (
+            queryset_servicios_compatibles_vehiculo,
         )
+
+        servicios_compatibles = queryset_servicios_compatibles_vehiculo(vehiculo)
         
         # Análisis de servicios recomendados por kilometraje
         servicios_km = self._servicios_por_kilometraje(vehiculo.kilometraje)
@@ -275,10 +277,18 @@ class MotorRecomendaciones:
         """
         perfil = PerfilVehiculo.objects.get(vehiculo=vehiculo)
         
-        # Obtener ofertas de servicios para el modelo del vehículo
+        # Obtener ofertas de servicios para el vehículo (marca/modelo + ofertas por marca)
+        from django.db.models import Q
+
+        from mecanimovilapp.apps.servicios.compatibilidad_vehiculo import (
+            queryset_servicios_compatibles_vehiculo,
+        )
+
+        servicios_ids = queryset_servicios_compatibles_vehiculo(vehiculo).values_list('id', flat=True)
         ofertas = OfertaServicio.objects.filter(
-            servicio__modelos_compatibles=vehiculo.modelo,
-            disponible=True
+            Q(servicio_id__in=servicios_ids)
+            | Q(marca_vehiculo_seleccionada_id=vehiculo.marca_id),
+            disponible=True,
         ).select_related('servicio', 'taller', 'mecanico')
         
         if not ofertas.exists():

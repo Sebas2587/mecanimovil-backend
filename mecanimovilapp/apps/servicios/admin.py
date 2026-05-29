@@ -44,7 +44,7 @@ class ServicioAdmin(admin.ModelAdmin):
     list_display = ('id', 'nombre', 'duracion_estimada_base', 'calificacion_promedio', 'precio_referencia', 'cantidad_repuestos')
     list_filter = ('categorias', 'requiere_repuestos')
     search_fields = ('nombre', 'descripcion')
-    filter_horizontal = ('categorias', 'modelos_compatibles', 'servicios_relacionados')
+    filter_horizontal = ('categorias', 'marcas_compatibles', 'modelos_compatibles', 'servicios_relacionados')
     inlines = [
         DetalleServicioInline,
         OfertaServicioInline,
@@ -58,7 +58,11 @@ class ServicioAdmin(admin.ModelAdmin):
             'fields': ('requiere_repuestos', 'precio_referencia', 'calificacion_promedio')
         }),
         ('Relaciones', {
-            'fields': ('categorias', 'modelos_compatibles', 'servicios_relacionados')
+            'fields': ('categorias', 'marcas_compatibles', 'modelos_compatibles', 'servicios_relacionados'),
+            'description': (
+                'Asocie marcas compatibles. Use modelos solo para restringir a variantes concretas '
+                'dentro de una marca (opcional).'
+            ),
         }),
     )
     

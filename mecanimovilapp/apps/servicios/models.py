@@ -68,12 +68,28 @@ class Servicio(models.Model):
         related_name='servicios'
     )
     
-    # Relaciones con modelos de vehículos
+    # Compatibilidad por marca (regla principal; configurar en Django Admin)
+    marcas_compatibles = models.ManyToManyField(
+        'vehiculos.MarcaVehiculo',
+        related_name='servicios_compatibles',
+        blank=True,
+        verbose_name=_('marcas compatibles'),
+        help_text=_(
+            'Marcas de vehículos con las que este servicio es compatible. '
+            'Si no se restringen modelos, aplica a todos los modelos de la marca.'
+        ),
+    )
+
+    # Restricción opcional por modelo (dentro de las marcas asociadas)
     modelos_compatibles = models.ManyToManyField(
         'vehiculos.Modelo',
         related_name='servicios_compatibles',
+        blank=True,
         verbose_name=_('modelos compatibles'),
-        help_text=_('Modelos de vehículos con los que este servicio es compatible')
+        help_text=_(
+            'Opcional: limita el servicio a modelos concretos de las marcas asociadas. '
+            'Si está vacío, aplica a todos los modelos de las marcas compatibles.'
+        ),
     )
     
     # Relaciones entre servicios

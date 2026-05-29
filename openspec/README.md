@@ -6,6 +6,7 @@
 |------|------|
 | [agendamiento-disponibilidad](specs/agendamiento-disponibilidad/spec.md) | **API slots, duración oferta, HorarioProveedor** |
 | [proveedores-horarios](specs/proveedores-horarios/spec.md) | `horarios_semanales` público |
+| [servicio-compatibilidad](changes/servicio-marcas-compatibles/specs/servicio-compatibilidad/spec.md) | Marcas compatibles en catálogo maestro |
 
 ## Changes de referencia
 

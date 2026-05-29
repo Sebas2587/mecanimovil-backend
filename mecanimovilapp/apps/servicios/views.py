@@ -15,52 +15,23 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.shortcuts import get_object_or_404
 from mecanimovilapp.apps.vehiculos.models import Marca, Vehiculo, Modelo
 from django.db import models
-from django.db.models import Count
 from django.utils.decorators import method_decorator
 from django.views.decorators.cache import cache_page
+
+from .compatibilidad_vehiculo import (
+    queryset_servicios_catalogo_por_marca,
+    servicios_comunes_por_marcas_queryset,
+)
 
 
 def servicios_catalogo_por_marca_queryset(marca_id):
     """
-    Servicios del catálogo filtrados solo por compatibilidad de marca/modelo,
+    Servicios del catálogo filtrados por compatibilidad de marca/modelo,
     sin usar las categorías/especialidades del proveedor.
-    - marca_id 0: servicios sin modelos asignados (genéricos).
-    - otro id: servicios con al menos un modelo de esa marca.
+    - marca_id 0: servicios sin marcas ni modelos asignados (genéricos).
+    - otro id: servicios con marca directa o legacy vía modelos de esa marca.
     """
-    marca_key = str(marca_id)
-    if marca_key == '0':
-        return (
-            Servicio.objects.annotate(_mc=Count('modelos_compatibles'))
-            .filter(_mc=0)
-            .order_by('nombre')
-        )
-    return (
-        Servicio.objects.filter(modelos_compatibles__marca_id=marca_id)
-        .distinct()
-        .order_by('nombre')
-    )
-
-
-def servicios_comunes_por_marcas_queryset(marca_ids):
-    """
-    Intersección de servicios de catálogo compatibles con todas las marcas indicadas.
-    marca_ids no debe incluir 0 (genérico); para genéricos usar servicios_catalogo_por_marca_queryset(0).
-    """
-    ids = [int(m) for m in marca_ids if str(m) not in ('', '0')]
-    if not ids:
-        return Servicio.objects.none()
-    if len(ids) == 1:
-        return servicios_catalogo_por_marca_queryset(ids[0])
-
-    conjuntos = []
-    for marca_id in ids:
-        conjuntos.append(
-            set(servicios_catalogo_por_marca_queryset(marca_id).values_list('id', flat=True))
-        )
-    comunes = set.intersection(*conjuntos) if conjuntos else set()
-    if not comunes:
-        return Servicio.objects.none()
-    return Servicio.objects.filter(id__in=comunes).order_by('nombre')
+    return queryset_servicios_catalogo_por_marca(marca_id)
 
 
 class CategoriaServicioViewSet(viewsets.ModelViewSet):
@@ -498,6 +469,7 @@ class OfertaServicioViewSet(viewsets.ModelViewSet):
             )
             .prefetch_related(
                 'servicio__categorias',
+                'servicio__marcas_compatibles',
                 'servicio__modelos_compatibles',
                 'servicio__modelos_compatibles__marca',
                 'fotos_servicio',
@@ -530,6 +502,7 @@ class OfertaServicioViewSet(viewsets.ModelViewSet):
             )
             .prefetch_related(
                 'servicio__categorias',
+                'servicio__marcas_compatibles',
                 'servicio__modelos_compatibles',
                 'servicio__modelos_compatibles__marca',
                 'fotos_servicio',

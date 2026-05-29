@@ -102,11 +102,15 @@ def calcular_temperatura(texto: str, componentes_salud: list[dict] | None) -> tu
 
 
 def _servicios_compatibles_queryset(vehiculo: Vehiculo | None) -> QuerySet[Servicio]:
+    from mecanimovilapp.apps.servicios.compatibilidad_vehiculo import (
+        queryset_servicios_compatibles_vehiculo,
+    )
+
     qs = Servicio.objects.all()
-    if vehiculo and vehiculo.modelo_id:
-        por_modelo = qs.filter(modelos_compatibles=vehiculo.modelo).distinct()
-        if por_modelo.exists():
-            return por_modelo
+    if vehiculo and vehiculo.marca_id:
+        por_vehiculo = queryset_servicios_compatibles_vehiculo(vehiculo)
+        if por_vehiculo.exists():
+            return por_vehiculo
     return qs[:120]
 
 

@@ -1,41 +1,29 @@
 """
-Servicios disponibles para agendar según modelo/marca del vehículo.
-Incluye ofertas de especialistas en la marca y de proveedores multimarca.
+Catálogo maestro Servicio ↔ vehículo (marca/modelo).
+Re-exporta compatibilidad_vehiculo para compatibilidad con imports existentes.
 """
-from django.db.models import Q
-
-from mecanimovilapp.apps.usuarios.models import MecanicoDomicilio, Taller
-from mecanimovilapp.apps.usuarios.proveedor_cobertura import TIPO_COBERTURA_MULTIMARCA
-
-from .models import Servicio
-
-
-def _ids_proveedores_multimarca_activos():
-    talleres_mm = Taller.objects.filter(
-        tipo_cobertura_marca=TIPO_COBERTURA_MULTIMARCA,
-        verificado=True,
-        activo=True,
-    ).values_list('id', flat=True)
-    mecanicos_mm = MecanicoDomicilio.objects.filter(
-        tipo_cobertura_marca=TIPO_COBERTURA_MULTIMARCA,
-        verificado=True,
-        activo=True,
-    ).values_list('id', flat=True)
-    return talleres_mm, mecanicos_mm
+from .compatibilidad_vehiculo import queryset_servicios_catalogo_por_marca_modelo
 
 
 def queryset_servicios_disponibles_para_modelo_marca(modelo, marca):
     """
     Unión de:
-    - servicios compatibles con el modelo;
+    - servicios compatibles con marca/modelo (catálogo maestro);
     - servicios con oferta explícita para la marca;
     - servicios con oferta genérica de especialistas en la marca;
     - servicios con oferta de proveedores multimarca verificados.
     """
+    from django.db.models import Q
+
+    from mecanimovilapp.apps.usuarios.models import MecanicoDomicilio, Taller
+    from mecanimovilapp.apps.usuarios.proveedor_cobertura import TIPO_COBERTURA_MULTIMARCA
+
+    from .models import Servicio
+
     if not modelo or not marca:
         return Servicio.objects.none()
 
-    servicios_por_modelo = Servicio.objects.filter(modelos_compatibles=modelo).distinct()
+    servicios_por_catalogo = queryset_servicios_catalogo_por_marca_modelo(modelo, marca)
 
     servicios_con_ofertas = Servicio.objects.filter(
         ofertas__marca_vehiculo_seleccionada=marca,
@@ -72,7 +60,7 @@ def queryset_servicios_disponibles_para_modelo_marca(modelo, marca):
     ).distinct()
 
     servicios = (
-        servicios_por_modelo
+        servicios_por_catalogo
         | servicios_con_ofertas
         | servicios_con_ofertas_genericas
         | servicios_multimarca
@@ -85,4 +73,24 @@ def queryset_servicios_disponibles_para_modelo_marca(modelo, marca):
         'ofertas__mecanico',
         'ofertas__mecanico__usuario',
         'categorias',
+        'marcas_compatibles',
+        'modelos_compatibles',
+        'modelos_compatibles__marca',
     )
+
+
+def _ids_proveedores_multimarca_activos():
+    from mecanimovilapp.apps.usuarios.models import MecanicoDomicilio, Taller
+    from mecanimovilapp.apps.usuarios.proveedor_cobertura import TIPO_COBERTURA_MULTIMARCA
+
+    talleres_mm = Taller.objects.filter(
+        tipo_cobertura_marca=TIPO_COBERTURA_MULTIMARCA,
+        verificado=True,
+        activo=True,
+    ).values_list('id', flat=True)
+    mecanicos_mm = MecanicoDomicilio.objects.filter(
+        tipo_cobertura_marca=TIPO_COBERTURA_MULTIMARCA,
+        verificado=True,
+        activo=True,
+    ).values_list('id', flat=True)
+    return talleres_mm, mecanicos_mm

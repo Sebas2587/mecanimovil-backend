@@ -221,10 +221,12 @@ class BusquedaPersonalizadaViewSet(viewsets.ViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Filtrar servicios compatibles con el modelo del vehículo
-        servicios = Servicio.objects.filter(
-            modelos_compatibles=vehiculo.modelo
+        # Filtrar servicios compatibles con el vehículo (marca/modelo)
+        from mecanimovilapp.apps.servicios.compatibilidad_vehiculo import (
+            queryset_servicios_compatibles_vehiculo,
         )
+
+        servicios = queryset_servicios_compatibles_vehiculo(vehiculo)
         
         # Aplicar filtro de búsqueda por texto
         if query:

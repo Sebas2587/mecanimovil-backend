@@ -2921,11 +2921,12 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST
                 )
             
-            # Buscar servicios compatibles con el modelo del vehículo
-            # El modelo Servicio tiene modelos_compatibles, no marcas_compatibles
-            servicios_compatibles = Servicio.objects.filter(
-                modelos_compatibles=modelo
-            ).distinct()
+            # Servicios compatibles con marca/modelo del vehículo (catálogo maestro)
+            from mecanimovilapp.apps.servicios.compatibilidad_vehiculo import (
+                queryset_servicios_compatibles_vehiculo,
+            )
+
+            servicios_compatibles = queryset_servicios_compatibles_vehiculo(vehiculo)
             
             # Si no hay servicios compatibles por modelo, obtener todos los servicios disponibles
             if not servicios_compatibles.exists():
