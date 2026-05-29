@@ -470,12 +470,27 @@ class Repuesto(models.Model):
         default='otros'
     )
     
-    # Compatibilidad con vehículos
+    # Compatibilidad con marcas de vehículo (configurar en Django Admin)
+    marcas_compatibles = models.ManyToManyField(
+        'vehiculos.MarcaVehiculo',
+        related_name='repuestos_compatibles_marca',
+        blank=True,
+        verbose_name=_('marcas de vehículo compatibles'),
+        help_text=_(
+            'Marcas de vehículo con las que este repuesto es compatible. '
+            'Si no se restringen modelos, aplica a todos los modelos de la marca.'
+        ),
+    )
+
+    # Restricción opcional por modelo de vehículo
     modelos_compatibles = models.ManyToManyField(
         'vehiculos.Modelo',
         related_name='repuestos_compatibles',
         blank=True,
-        help_text=_('Modelos de vehículos compatibles con este repuesto')
+        verbose_name=_('modelos compatibles'),
+        help_text=_(
+            'Opcional: limita el repuesto a modelos concretos de las marcas asociadas.'
+        ),
     )
     
     activo = models.BooleanField(default=True)

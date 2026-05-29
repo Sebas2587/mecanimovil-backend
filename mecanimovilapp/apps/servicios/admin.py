@@ -214,7 +214,7 @@ class RepuestoAdmin(admin.ModelAdmin):
     list_display = ('id', 'nombre', 'marca', 'categoria_repuesto', 'precio_referencia', 'activo', 'servicios_que_lo_usan_count')
     list_filter = ('categoria_repuesto', 'marca', 'activo')
     search_fields = ('nombre', 'descripcion', 'codigo_fabricante', 'marca')
-    filter_horizontal = ('modelos_compatibles',)
+    filter_horizontal = ('marcas_compatibles', 'modelos_compatibles')
     fieldsets = (
         ('Información Básica', {
             'fields': ('nombre', 'descripcion', 'codigo_fabricante', 'marca', 'foto')
@@ -222,8 +222,12 @@ class RepuestoAdmin(admin.ModelAdmin):
         ('Clasificación', {
             'fields': ('categoria_repuesto', 'precio_referencia', 'activo')
         }),
-        ('Compatibilidad', {
-            'fields': ('modelos_compatibles',)
+        ('Compatibilidad vehículo', {
+            'fields': ('marcas_compatibles', 'modelos_compatibles'),
+            'description': (
+                'Marcas de vehículo (catálogo). Use modelos solo para restricción fina. '
+                'El campo «marca» arriba es el fabricante del repuesto (Bosch, etc.).'
+            ),
         }),
     )
     

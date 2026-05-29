@@ -686,14 +686,15 @@ class RepuestoSerializer(serializers.ModelSerializer):
     """
     Serializador para el modelo Repuesto
     """
+    marcas_info = MarcaSerializer(source='marcas_compatibles', many=True, read_only=True)
     modelos_info = ModeloSerializer(source='modelos_compatibles', many=True, read_only=True)
-    
+
     class Meta:
         model = Repuesto
         fields = (
             'id', 'nombre', 'descripcion', 'codigo_fabricante', 'marca',
             'precio_referencia', 'foto', 'categoria_repuesto', 'activo',
-            'modelos_info', 'fecha_creacion'
+            'marcas_info', 'modelos_info', 'fecha_creacion'
         )
 
 

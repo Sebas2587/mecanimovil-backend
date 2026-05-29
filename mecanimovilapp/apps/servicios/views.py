@@ -1111,26 +1111,69 @@ class RepuestoViewSet(viewsets.ReadOnlyModelViewSet):
     """
     ViewSet para consultar repuestos disponibles
     """
-    queryset = Repuesto.objects.filter(activo=True)
+    queryset = Repuesto.objects.filter(activo=True).prefetch_related(
+        'marcas_compatibles',
+        'modelos_compatibles',
+        'modelos_compatibles__marca',
+    )
     serializer_class = RepuestoSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [filters.SearchFilter]
     search_fields = ['nombre', 'descripcion', 'marca', 'categoria_repuesto']
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        vehiculo_id = self.request.query_params.get('vehiculo')
+        if vehiculo_id:
+            from mecanimovilapp.apps.vehiculos.models import Vehiculo
+            from .compatibilidad_repuesto import queryset_repuestos_compatibles_vehiculo
+
+            try:
+                vehiculo = Vehiculo.objects.select_related('marca', 'modelo').get(
+                    id=vehiculo_id,
+                    cliente__usuario=self.request.user,
+                )
+                compatibles = queryset_repuestos_compatibles_vehiculo(vehiculo)
+                return qs.filter(id__in=compatibles.values_list('id', flat=True))
+            except Vehiculo.DoesNotExist:
+                return qs.none()
+        return qs
     
     @action(detail=False, methods=['get'])
     def por_servicio(self, request):
-        """Obtiene repuestos asociados a un servicio específico"""
+        """Obtiene repuestos asociados a un servicio específico (opcional: ?vehiculo=id)."""
         servicio_id = request.query_params.get('servicio')
         if not servicio_id:
             return Response({'error': 'Se requiere el parámetro servicio'}, status=400)
-        
+
         try:
             servicio = Servicio.objects.get(id=servicio_id)
-            relaciones = ServicioRepuesto.objects.filter(servicio=servicio)
+            relaciones = ServicioRepuesto.objects.filter(servicio=servicio).select_related(
+                'repuesto'
+            ).prefetch_related(
+                'repuesto__marcas_compatibles',
+                'repuesto__modelos_compatibles',
+                'repuesto__modelos_compatibles__marca',
+            )
+            vehiculo_id = request.query_params.get('vehiculo')
+            vehiculo = None
+            if vehiculo_id:
+                from mecanimovilapp.apps.vehiculos.models import Vehiculo
+                from .compatibilidad_repuesto import repuesto_compatible_con_marca_modelo
+
+                vehiculo = Vehiculo.objects.select_related('marca', 'modelo').filter(
+                    id=vehiculo_id,
+                    cliente__usuario=request.user,
+                ).first()
+
             repuestos_data = []
-            
             for relacion in relaciones:
-                repuesto_data = RepuestoSerializer(relacion.repuesto).data
+                repuesto = relacion.repuesto
+                if vehiculo and not repuesto_compatible_con_marca_modelo(
+                    repuesto, vehiculo.marca, vehiculo.modelo
+                ):
+                    continue
+                repuesto_data = RepuestoSerializer(repuesto).data
                 repuesto_data['cantidad_estimada'] = relacion.cantidad_estimada
                 repuesto_data['es_opcional'] = relacion.es_opcional
                 repuestos_data.append(repuesto_data)

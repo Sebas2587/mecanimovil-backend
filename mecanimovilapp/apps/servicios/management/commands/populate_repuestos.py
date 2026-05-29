@@ -1,10 +1,10 @@
 from django.core.management.base import BaseCommand
 from mecanimovilapp.apps.servicios.models import Servicio, Repuesto, ServicioRepuesto
-from mecanimovilapp.apps.vehiculos.models import Marca, Modelo
+from mecanimovilapp.apps.vehiculos.models import Marca
 from decimal import Decimal
 
 class Command(BaseCommand):
-    help = 'Pobla la base de datos con repuestos genéricos para todos los modelos y servicios'
+    help = 'Pobla la base de datos con repuestos genéricos por marcas de vehículo y servicios'
 
     def handle(self, *args, **options):
         self.stdout.write('🔧 Iniciando población de repuestos...\n')
@@ -165,12 +165,11 @@ class Command(BaseCommand):
             self.stdout.write(f'  {status}: {repuesto.nombre}')
         
         #========================================================================================
-        # 2. ASOCIAR REPUESTOS CON MODELOS COMPATIBLES
+        # 2. ASOCIAR REPUESTOS CON MARCAS DE VEHÍCULO COMPATIBLES
         #========================================================================================
-        
-        self.stdout.write('\n🚗 Asociando repuestos con modelos de vehículos...')
-        
-        # Obtener todas las marcas
+
+        self.stdout.write('\n🚗 Asociando repuestos con marcas de vehículos...')
+
         marcas = {
             'Toyota': Marca.objects.filter(nombre='Toyota').first(),
             'Hyundai': Marca.objects.filter(nombre='Hyundai').first(),
@@ -183,20 +182,17 @@ class Command(BaseCommand):
             'Changan': Marca.objects.filter(nombre='Changan').first(),
             'GWM': Marca.objects.filter(nombre='GWM').first(),
         }
-        
-        # Asociar todos los repuestos con todos los modelos de todas las marcas
+
         total_asociaciones = 0
         for nombre_rep, repuesto in repuestos_obj.items():
-            modelos_count = 0
+            marcas_count = 0
             for nombre_marca, marca in marcas.items():
                 if marca:
-                    modelos = Modelo.objects.filter(marca=marca)
-                    for modelo in modelos:
-                        repuesto.modelos_compatibles.add(modelo)
-                        total_asociaciones += 1
-                        modelos_count += 1
-            
-            self.stdout.write(f'  ✅ {repuesto.nombre}: compatible con {modelos_count} modelos')
+                    repuesto.marcas_compatibles.add(marca)
+                    total_asociaciones += 1
+                    marcas_count += 1
+
+            self.stdout.write(f'  ✅ {repuesto.nombre}: compatible con {marcas_count} marcas')
         
         self.stdout.write(f'\n  📊 Total asociaciones creadas: {total_asociaciones}')
         
