@@ -6,6 +6,12 @@ from mecanimovilapp.apps.usuarios.serializers import TallerSerializer, MecanicoD
 from mecanimovilapp.apps.vehiculos.serializers import MarcaSerializer, ModeloSerializer
 from mecanimovilapp.apps.servicios.repuestos_info import build_repuestos_info
 from mecanimovilapp.apps.servicios.tipos_motor_utils import normalizar_lista_tipos_motor
+from mecanimovilapp.apps.servicios.oferta_compatibilidad import (
+    motores_catalogo_servicio,
+    motores_opciones_para_proveedor,
+    normalizar_tipo_motor_oferta,
+    validar_tipo_motor_oferta,
+)
 from django.db import models
 
 # Helper para URLs de archivos en cPanel
@@ -116,6 +122,7 @@ class OfertaServicioSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'tipo_proveedor', 'taller', 'taller_info', 'mecanico', 'mecanico_info',
             'servicio', 'servicio_info', 'marca_vehiculo_seleccionada', 'marca_vehiculo_info',
+            'tipo_motor',
             'disponible', 'duracion_estimada', 'duracion_minima_minutos', 'duracion_maxima_minutos',
             'precio_con_repuestos', 'precio_sin_repuestos', 'incluye_garantia',
             'duracion_garantia', 'detalles_adicionales', 'nombre_proveedor',
@@ -214,11 +221,13 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
     repuestos_info_detallado = serializers.SerializerMethodField(read_only=True)
     desglose_precios = serializers.SerializerMethodField(read_only=True)
     marca_vehiculo_info = serializers.SerializerMethodField(read_only=True)
+    motores_catalogo_info = serializers.SerializerMethodField(read_only=True)
     
     class Meta:
         model = OfertaServicio
         fields = (
             'id', 'servicio', 'servicio_info', 'marca_vehiculo_seleccionada', 'marca_vehiculo_info',
+            'tipo_motor', 'motores_catalogo_info',
             'disponible', 'duracion_estimada', 'duracion_minima_minutos', 'duracion_maxima_minutos',
             'incluye_garantia', 'duracion_garantia', 'detalles_adicionales',
             # Campos específicos para proveedores
@@ -235,17 +244,36 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
         )
     
     def get_servicio_info(self, obj):
-        """Retorna información del servicio con repuestos asociados"""
+        """Retorna información del servicio con repuestos y motores del catálogo."""
         request = self.context.get('request')
         if obj.servicio:
+            motores = motores_catalogo_servicio(obj.servicio)
             return {
                 'id': obj.servicio.id,
                 'nombre': obj.servicio.nombre,
                 'descripcion': obj.servicio.descripcion,
                 'requiere_repuestos': obj.servicio.requiere_repuestos,
-                'foto': get_image_url(obj.servicio.foto, request)
+                'foto': get_image_url(obj.servicio.foto, request),
+                'motores_info': motores,
+                'tipos_motor_compatibles': motores,
+                'motores_opciones_proveedor': motores_opciones_para_proveedor(obj.servicio),
             }
         return None
+
+    def get_motores_catalogo_info(self, obj):
+        """Motores del catálogo maestro para UI del proveedor."""
+        if not obj.servicio:
+            return {
+                'catalogo': [],
+                'opciones_proveedor': [],
+                'es_universal': True,
+            }
+        catalogo = motores_catalogo_servicio(obj.servicio)
+        return {
+            'catalogo': catalogo,
+            'opciones_proveedor': motores_opciones_para_proveedor(obj.servicio),
+            'es_universal': not catalogo,
+        }
     
     def get_marca_vehiculo_info(self, obj):
         """Retorna información de la marca de vehículo seleccionada por el proveedor"""
@@ -369,15 +397,28 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({
                 'duracion_maxima_minutos': 'La duración mínima del servicio es 15 minutos',
             })
+
+        servicio = data.get('servicio') or getattr(self.instance, 'servicio', None)
+        raw_motor = data.get('tipo_motor')
+        if raw_motor is None and self.instance is not None:
+            raw_motor = getattr(self.instance, 'tipo_motor', '')
+        try:
+            data['tipo_motor'] = validar_tipo_motor_oferta(servicio, raw_motor)
+        except Exception as exc:
+            from django.core.exceptions import ValidationError as DjangoValidationError
+            if isinstance(exc, DjangoValidationError):
+                raise serializers.ValidationError({'tipo_motor': exc.messages})
+            raise
         
         return data
     
-    def _oferta_duplicada(self, proveedor, tipo_proveedor, servicio, marca, exclude_id=None):
+    def _oferta_duplicada(self, proveedor, tipo_proveedor, servicio, marca, tipo_motor='', exclude_id=None):
         if not servicio:
             return False
         filtros = {
             'servicio': servicio,
             'marca_vehiculo_seleccionada': marca,
+            'tipo_motor': normalizar_tipo_motor_oferta(tipo_motor),
         }
         if tipo_proveedor == 'mecanico':
             filtros['mecanico'] = proveedor
@@ -393,6 +434,7 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
         user = self.context['request'].user
         servicio = validated_data.get('servicio')
         marca = validated_data.get('marca_vehiculo_seleccionada')
+        tipo_motor = validated_data.get('tipo_motor', '')
         
         # Determinar si es taller o mecánico
         from mecanimovilapp.apps.usuarios.models import MecanicoDomicilio, Taller
@@ -401,10 +443,10 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
             mecanico = MecanicoDomicilio.objects.get(usuario=user)
             validated_data['mecanico'] = mecanico
             validated_data['tipo_proveedor'] = 'mecanico'
-            if servicio and self._oferta_duplicada(mecanico, 'mecanico', servicio, marca):
+            if servicio and self._oferta_duplicada(mecanico, 'mecanico', servicio, marca, tipo_motor):
                 raise serializers.ValidationError({
                     'servicio': (
-                        'Ya tienes una oferta para este servicio y marca de vehículo.'
+                        'Ya tienes una oferta para este servicio, marca y tipo de motor.'
                     )
                 })
         except MecanicoDomicilio.DoesNotExist:
@@ -412,10 +454,10 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
                 taller = Taller.objects.get(usuario=user)
                 validated_data['taller'] = taller
                 validated_data['tipo_proveedor'] = 'taller'
-                if servicio and self._oferta_duplicada(taller, 'taller', servicio, marca):
+                if servicio and self._oferta_duplicada(taller, 'taller', servicio, marca, tipo_motor):
                     raise serializers.ValidationError({
                         'servicio': (
-                            'Ya tienes una oferta para este servicio y marca de vehículo.'
+                            'Ya tienes una oferta para este servicio, marca y tipo de motor.'
                         )
                     })
             except Taller.DoesNotExist:
@@ -432,14 +474,15 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
                 'marca_vehiculo_seleccionada',
                 instance.marca_vehiculo_seleccionada,
             )
+            tipo_motor = validated_data.get('tipo_motor', instance.tipo_motor)
             tipo = 'mecanico' if instance.mecanico else 'taller'
             proveedor = instance.mecanico or instance.taller
             if self._oferta_duplicada(
-                proveedor, tipo, nuevo_servicio, marca, exclude_id=instance.id
+                proveedor, tipo, nuevo_servicio, marca, tipo_motor, exclude_id=instance.id
             ):
                 raise serializers.ValidationError({
                     'servicio': (
-                        'Ya tienes una oferta para este servicio y marca de vehículo.'
+                        'Ya tienes una oferta para este servicio, marca y tipo de motor.'
                     )
                 })
         

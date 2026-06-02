@@ -55,7 +55,10 @@ class DetalleServicioInline(admin.TabularInline):
 class OfertaServicioInline(admin.TabularInline):
     model = OfertaServicio
     extra = 1
-    fields = ('tipo_proveedor', 'taller', 'mecanico', 'disponible', 'precio_con_repuestos', 'precio_sin_repuestos')
+    fields = (
+        'tipo_proveedor', 'taller', 'mecanico', 'tipo_motor',
+        'disponible', 'precio_con_repuestos', 'precio_sin_repuestos',
+    )
 
 class ServicioRepuestoInline(admin.TabularInline):
     model = ServicioRepuesto

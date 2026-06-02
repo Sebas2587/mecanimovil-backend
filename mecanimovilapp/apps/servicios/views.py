@@ -206,6 +206,7 @@ class ServicioViewSet(viewsets.ModelViewSet):
         También incluye servicios que tienen ofertas disponibles para la marca del vehículo
         """
         modelo_id = request.query_params.get('modelo')
+        tipo_motor = request.query_params.get('tipo_motor')
         if not modelo_id:
             return Response(
                 {"error": "Se requiere el parámetro 'modelo'"},
@@ -217,7 +218,9 @@ class ServicioViewSet(viewsets.ModelViewSet):
 
             modelo = Modelo.objects.select_related('marca').get(id=modelo_id)
             marca = modelo.marca
-            servicios_finales = queryset_servicios_disponibles_para_modelo_marca(modelo, marca)
+            servicios_finales = queryset_servicios_disponibles_para_modelo_marca(
+                modelo, marca, tipo_motor=tipo_motor
+            )
             serializer = ServicioListSerializer(servicios_finales, many=True)
             return Response(serializer.data)
         except Modelo.DoesNotExist:
@@ -697,7 +700,7 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
                     continue
 
             # Verificar duplicado
-            filtros = {'servicio': servicio, 'marca_vehiculo_seleccionada': marca}
+            filtros = {'servicio': servicio, 'marca_vehiculo_seleccionada': marca, 'tipo_motor': ''}
             if tipo == 'taller':
                 filtros['taller'] = proveedor
             else:

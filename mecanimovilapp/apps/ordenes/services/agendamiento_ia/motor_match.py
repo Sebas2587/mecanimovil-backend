@@ -242,19 +242,29 @@ def _modo_desglose_oferta(oferta: OfertaServicio, requiere_repuestos_solicitud: 
 def _queryset_ofertas_compatibles(
     servicio_ids: list[int],
     marca,
+    tipo_motor=None,
 ) -> Any:
     """
     Alineado con proveedores_filtrados y catalogo_vehiculo:
     - Especialista: marca en oferta = vehículo o genérica (null).
     - Multimarca: todas las ofertas del servicio; resolver_ofertas_preferidas_por_marca
       elige la fila correcta para la marca del vehículo.
+    - tipo_motor: filtra ofertas y servicios del catálogo por motor del vehículo.
     """
     from mecanimovilapp.apps.usuarios.proveedor_cobertura import TIPO_COBERTURA_MULTIMARCA
+    from mecanimovilapp.apps.vehiculos.catalogo_resolver import normalizar_tipo_motor_vehiculo
 
     base = OfertaServicio.objects.filter(
         servicio_id__in=servicio_ids,
         disponible=True,
     )
+
+    if tipo_motor:
+        motor = normalizar_tipo_motor_vehiculo(tipo_motor)
+        base = base.filter(Q(tipo_motor='') | Q(tipo_motor=motor)).filter(
+            Q(servicio__tipos_motor_compatibles=[])
+            | Q(servicio__tipos_motor_compatibles__contains=[motor])
+        )
 
     proveedor_activo = (
         Q(
@@ -1112,7 +1122,7 @@ def listar_candidatos_proveedor(
 
     marca = vehiculo.marca
     qs = (
-        _queryset_ofertas_compatibles(servicio_ids, marca)
+        _queryset_ofertas_compatibles(servicio_ids, marca, getattr(vehiculo, 'tipo_motor', None))
         .select_related(
             'servicio',
             'taller',
