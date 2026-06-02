@@ -267,7 +267,30 @@ def _queryset_ofertas_compatibles(
         mecanico__activo=True,
     ).filter(q_marca_oferta)
 
-    return (ofertas_taller | ofertas_mecanico | ofertas_taller_mm | ofertas_mecanico_mm).distinct()
+    qs = (ofertas_taller | ofertas_mecanico | ofertas_taller_mm | ofertas_mecanico_mm).distinct()
+    if marca:
+        from mecanimovilapp.apps.servicios.oferta_resolucion import (
+            resolver_ofertas_preferidas_por_marca,
+        )
+
+        ofertas_list = list(
+            qs.select_related(
+                'servicio',
+                'taller',
+                'mecanico',
+                'marca_vehiculo_seleccionada',
+            )
+        )
+        ids = [o.id for o in resolver_ofertas_preferidas_por_marca(ofertas_list, marca)]
+        if not ids:
+            return OfertaServicio.objects.none()
+        return OfertaServicio.objects.filter(id__in=ids).select_related(
+            'servicio',
+            'taller',
+            'mecanico',
+            'marca_vehiculo_seleccionada',
+        )
+    return qs
 
 
 def _score_y_explicacion(

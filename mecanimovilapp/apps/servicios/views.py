@@ -827,7 +827,9 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'])
     def mis_marcas(self, request):
         """
-        Devuelve las marcas de vehículos que atiende el proveedor
+        Devuelve marcas para configurar ofertas.
+        - Especialista: solo marcas_atendidas.
+        - Multimarca: catálogo completo (precio por marca + precio base opcional).
         """
         try:
             proveedor_data = self._get_proveedor_data(request.user)
@@ -836,15 +838,27 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
                     {'error': 'No se encontró información del proveedor'},
                     status=404
                 )
-            
-            proveedor = proveedor_data['proveedor']
-            marcas_ids = proveedor.marcas_atendidas.values_list('id', flat=True)
-            
-            # Importar el modelo de marcas
+
+            from mecanimovilapp.apps.usuarios.proveedor_cobertura import TIPO_COBERTURA_MULTIMARCA
             from mecanimovilapp.apps.vehiculos.models import MarcaVehiculo
-            marcas = MarcaVehiculo.objects.filter(id__in=marcas_ids).values('id', 'nombre')
-            
-            return Response(list(marcas))
+
+            proveedor = proveedor_data['proveedor']
+            es_multimarca = (
+                getattr(proveedor, 'tipo_cobertura_marca', None) == TIPO_COBERTURA_MULTIMARCA
+            )
+
+            if es_multimarca:
+                marcas_qs = MarcaVehiculo.objects.all().order_by('nombre')
+            else:
+                marcas_ids = proveedor.marcas_atendidas.values_list('id', flat=True)
+                marcas_qs = MarcaVehiculo.objects.filter(id__in=marcas_ids).order_by('nombre')
+
+            marcas = list(marcas_qs.values('id', 'nombre', 'logo'))
+
+            return Response({
+                'es_multimarca': es_multimarca,
+                'marcas': marcas,
+            })
             
         except Exception as e:
             return Response(

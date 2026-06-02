@@ -7,6 +7,7 @@ from collections import defaultdict
 from django.db.models import Q
 
 from mecanimovilapp.apps.servicios.models import OfertaServicio
+from mecanimovilapp.apps.servicios.oferta_resolucion import resolver_ofertas_preferidas_por_marca
 
 PANEL_SERVICIOS_DEFAULT_LIMIT = 3
 
@@ -58,12 +59,21 @@ def fetch_panel_servicios_map(tipo_proveedor, provider_ids, marca_id=None, limit
             Q(marca_vehiculo_seleccionada_id=marca_id) | Q(marca_vehiculo_seleccionada__isnull=True)
         )
 
-    qs = qs.order_by('precio_publicado_cliente', 'precio_sin_repuestos', 'id')
+    ofertas_raw = list(qs)
+    if marca_id:
+        ofertas_raw = resolver_ofertas_preferidas_por_marca(ofertas_raw, marca_id)
+
+    ofertas_raw.sort(
+        key=lambda o: (
+            float(o.precio_publicado_cliente or 0) or float(o.precio_sin_repuestos or 0),
+            o.id or 0,
+        )
+    )
 
     grouped = defaultdict(list)
     seen_servicio = defaultdict(set)
 
-    for oferta in qs.iterator(chunk_size=200):
+    for oferta in ofertas_raw:
         pid = oferta.taller_id if tipo_proveedor == 'taller' else oferta.mecanico_id
         if pid is None:
             continue
