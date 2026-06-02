@@ -1,4 +1,5 @@
 from django.contrib import admin
+from django import forms
 from django.shortcuts import render, redirect
 from django.contrib import messages
 from django.urls import path, reverse
@@ -6,8 +7,49 @@ from django.utils.html import format_html
 from django.http import HttpResponseRedirect
 from .models import (
     CategoriaServicio, Servicio, DetalleServicio, OfertaServicio,
-    Repuesto, ServicioRepuesto, SolicitudRepuesto
+    Repuesto, ServicioRepuesto, SolicitudRepuesto,
+    TIPOS_MOTOR_COMPATIBLES_VALIDOS,
 )
+
+TIPOS_MOTOR_CHOICES = [(t, t.title()) for t in TIPOS_MOTOR_COMPATIBLES_VALIDOS]
+
+
+class TiposMotorCompatiblesFormMixin:
+    """Mapea checkboxes de admin ↔ JSON tipos_motor_compatibles."""
+
+    tipos_motor = forms.MultipleChoiceField(
+        choices=TIPOS_MOTOR_CHOICES,
+        required=False,
+        widget=forms.CheckboxSelectMultiple,
+        label='Tipos de motor compatibles',
+        help_text='Vacío = aplica a todos los tipos de motor (Gasolina, Diésel, etc.).',
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        instance = getattr(self, 'instance', None)
+        if instance and instance.pk:
+            self.fields['tipos_motor'].initial = instance.tipos_motor_compatibles or []
+
+    def save(self, commit=True):
+        instance = super().save(commit=False)
+        instance.tipos_motor_compatibles = self.cleaned_data.get('tipos_motor') or []
+        if commit:
+            instance.save()
+            self.save_m2m()
+        return instance
+
+
+class ServicioAdminForm(TiposMotorCompatiblesFormMixin, forms.ModelForm):
+    class Meta:
+        model = Servicio
+        exclude = ('tipos_motor_compatibles',)
+
+
+class RepuestoAdminForm(TiposMotorCompatiblesFormMixin, forms.ModelForm):
+    class Meta:
+        model = Repuesto
+        exclude = ('tipos_motor_compatibles',)
 
 # Inline para modelos relacionados
 class DetalleServicioInline(admin.TabularInline):
@@ -41,7 +83,8 @@ class CategoriaServicioAdmin(admin.ModelAdmin):
 
 @admin.register(Servicio)
 class ServicioAdmin(admin.ModelAdmin):
-    list_display = ('id', 'nombre', 'duracion_estimada_base', 'calificacion_promedio', 'precio_referencia', 'cantidad_repuestos')
+    form = ServicioAdminForm
+    list_display = ('id', 'nombre', 'duracion_estimada_base', 'calificacion_promedio', 'precio_referencia', 'cantidad_repuestos', 'tipos_motor_resumen')
     list_filter = ('categorias', 'requiere_repuestos')
     search_fields = ('nombre', 'descripcion')
     filter_horizontal = ('categorias', 'marcas_compatibles', 'modelos_compatibles', 'servicios_relacionados')
@@ -58,13 +101,18 @@ class ServicioAdmin(admin.ModelAdmin):
             'fields': ('requiere_repuestos', 'precio_referencia', 'calificacion_promedio')
         }),
         ('Relaciones', {
-            'fields': ('categorias', 'marcas_compatibles', 'modelos_compatibles', 'servicios_relacionados'),
+            'fields': ('categorias', 'marcas_compatibles', 'modelos_compatibles', 'tipos_motor', 'servicios_relacionados'),
             'description': (
                 'Asocie marcas compatibles. Use modelos solo para restringir a variantes concretas '
-                'dentro de una marca (opcional).'
+                'dentro de una marca (opcional). Tipos de motor vacíos = universal.'
             ),
         }),
     )
+    
+    def tipos_motor_resumen(self, obj):
+        tipos = obj.tipos_motor_compatibles or []
+        return 'Todos' if not tipos else ', '.join(tipos)
+    tipos_motor_resumen.short_description = 'Motores'
     
     actions = ['agregar_repuestos_bulk']
     
@@ -211,7 +259,8 @@ class OfertaServicioAdmin(admin.ModelAdmin):
 
 @admin.register(Repuesto)
 class RepuestoAdmin(admin.ModelAdmin):
-    list_display = ('id', 'nombre', 'marca', 'categoria_repuesto', 'precio_referencia', 'activo', 'servicios_que_lo_usan_count')
+    form = RepuestoAdminForm
+    list_display = ('id', 'nombre', 'marca', 'categoria_repuesto', 'precio_referencia', 'activo', 'servicios_que_lo_usan_count', 'tipos_motor_resumen')
     list_filter = ('categoria_repuesto', 'marca', 'activo')
     search_fields = ('nombre', 'descripcion', 'codigo_fabricante', 'marca')
     filter_horizontal = ('marcas_compatibles', 'modelos_compatibles')
@@ -223,13 +272,19 @@ class RepuestoAdmin(admin.ModelAdmin):
             'fields': ('categoria_repuesto', 'precio_referencia', 'activo')
         }),
         ('Compatibilidad vehículo', {
-            'fields': ('marcas_compatibles', 'modelos_compatibles'),
+            'fields': ('marcas_compatibles', 'modelos_compatibles', 'tipos_motor'),
             'description': (
                 'Marcas de vehículo (catálogo). Use modelos solo para restricción fina. '
-                'El campo «marca» arriba es el fabricante del repuesto (Bosch, etc.).'
+                'El campo «marca» arriba es el fabricante del repuesto (Bosch, etc.). '
+                'Tipos de motor vacíos = universal.'
             ),
         }),
     )
+
+    def tipos_motor_resumen(self, obj):
+        tipos = obj.tipos_motor_compatibles or []
+        return 'Todos' if not tipos else ', '.join(tipos)
+    tipos_motor_resumen.short_description = 'Motores'
     
     def servicios_que_lo_usan_count(self, obj):
         """Muestra la cantidad de servicios que usan este repuesto"""

@@ -125,7 +125,9 @@ class VehiculoSerializer(serializers.ModelSerializer):
     def get_health_report(self, obj):
         # Construir reporte basado en componentes persistidos (misma info que necesita el modal).
         from .models_health import ComponenteSaludVehiculo
+        from mecanimovilapp.apps.servicios.tipos_motor_utils import servicio_compatible_con_tipo_motor
 
+        tipo_motor_vehiculo = getattr(obj, 'tipo_motor', None)
         comps = (
             ComponenteSaludVehiculo.objects.filter(vehiculo=obj)
             .select_related('componente')
@@ -136,11 +138,14 @@ class VehiculoSerializer(serializers.ModelSerializer):
             servicios_asociados = []
             try:
                 for s in c.componente.servicios_asociados.all():
+                    if not servicio_compatible_con_tipo_motor(s, tipo_motor_vehiculo):
+                        continue
                     servicios_asociados.append({
                         'id': s.id,
                         'nombre': s.nombre,
                         'descripcion': (s.descripcion or '')[:300],
                         'precio_referencia': float(s.precio_referencia) if s.precio_referencia is not None else None,
+                        'tipos_motor_compatibles': s.tipos_motor_compatibles or [],
                     })
             except Exception:
                 pass

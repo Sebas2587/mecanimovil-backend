@@ -24,14 +24,15 @@ from .compatibilidad_vehiculo import (
 )
 
 
-def servicios_catalogo_por_marca_queryset(marca_id):
+def servicios_catalogo_por_marca_queryset(marca_id, tipo_motor=None):
     """
     Servicios del catálogo filtrados por compatibilidad de marca/modelo,
     sin usar las categorías/especialidades del proveedor.
     - marca_id 0: servicios sin marcas ni modelos asignados (genéricos).
     - otro id: servicios con marca directa o legacy vía modelos de esa marca.
+    - tipo_motor opcional: filtra por tipos_motor_compatibles.
     """
-    return queryset_servicios_catalogo_por_marca(marca_id)
+    return queryset_servicios_catalogo_por_marca(marca_id, tipo_motor=tipo_motor)
 
 
 class CategoriaServicioViewSet(viewsets.ModelViewSet):
@@ -149,10 +150,11 @@ class ServicioViewSet(viewsets.ModelViewSet):
                 {'error': 'Debe especificar marca_id'},
                 status=400
             )
+        tipo_motor = request.query_params.get('tipo_motor')
         try:
-            qs = servicios_catalogo_por_marca_queryset(marca_id)
+            qs = servicios_catalogo_por_marca_queryset(marca_id, tipo_motor=tipo_motor)
             return Response(
-                list(qs.values('id', 'nombre', 'descripcion', 'requiere_repuestos'))
+                list(qs.values('id', 'nombre', 'descripcion', 'requiere_repuestos', 'tipos_motor_compatibles'))
             )
         except Exception as e:
             return Response(
@@ -878,6 +880,7 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
                     {'error': 'Debe especificar marca_id'},
                     status=400
                 )
+            tipo_motor = request.query_params.get('tipo_motor')
             
             proveedor_data = self._get_proveedor_data(request.user)
             if not proveedor_data['proveedor']:
@@ -887,8 +890,8 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
                 )
 
             # Catálogo por compatibilidad de marca/modelo únicamente (sin filtrar por categorías del proveedor).
-            qs = servicios_catalogo_por_marca_queryset(marca_id)
-            servicios = qs.values('id', 'nombre', 'descripcion', 'requiere_repuestos')
+            qs = servicios_catalogo_por_marca_queryset(marca_id, tipo_motor=tipo_motor)
+            servicios = qs.values('id', 'nombre', 'descripcion', 'requiere_repuestos', 'tipos_motor_compatibles')
             return Response(list(servicios))
             
         except Exception as e:

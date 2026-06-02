@@ -4,6 +4,8 @@ from django.core.validators import MinValueValidator, MaxValueValidator
 from mecanimovilapp.apps.usuarios.models import Taller, MecanicoDomicilio
 from mecanimovilapp.apps.vehiculos.models import Marca, Modelo
 
+TIPOS_MOTOR_COMPATIBLES_VALIDOS = ('GASOLINA', 'DIESEL', 'ELECTRICO', 'HIBRIDO')
+
 
 class CategoriaServicio(models.Model):
     """
@@ -89,6 +91,16 @@ class Servicio(models.Model):
         help_text=_(
             'Opcional: limita el servicio a modelos concretos de las marcas asociadas. '
             'Si está vacío, aplica a todos los modelos de las marcas compatibles.'
+        ),
+    )
+
+    tipos_motor_compatibles = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name=_('tipos de motor compatibles'),
+        help_text=_(
+            'Vacío = todos los motores. Ej: ["GASOLINA"] solo bencinero; '
+            '["GASOLINA","DIESEL"] ambos combustión.'
         ),
     )
     
@@ -491,6 +503,13 @@ class Repuesto(models.Model):
         help_text=_(
             'Opcional: limita el repuesto a modelos concretos de las marcas asociadas.'
         ),
+    )
+
+    tipos_motor_compatibles = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name=_('tipos de motor compatibles'),
+        help_text=_('Vacío = todos los motores. Misma semántica que en Servicio.'),
     )
     
     activo = models.BooleanField(default=True)

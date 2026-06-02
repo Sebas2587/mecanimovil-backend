@@ -1,5 +1,5 @@
 """
-Compatibilidad catálogo Repuesto ↔ vehículo (marca/modelo).
+Compatibilidad catálogo Repuesto ↔ vehículo (marca/modelo/tipo_motor).
 
 Mismas reglas que servicios/compatibilidad_vehiculo.py.
 """
@@ -10,6 +10,10 @@ from django.db.models import Count, Q, QuerySet
 from mecanimovilapp.apps.vehiculos.models import MarcaVehiculo, Modelo, Vehiculo
 
 from .models import Repuesto
+from .tipos_motor_utils import (
+    queryset_filtrar_por_tipo_motor,
+    servicio_compatible_con_tipo_motor,
+)
 
 
 def _annotate_conteos(qs: QuerySet[Repuesto]) -> QuerySet[Repuesto]:
@@ -26,20 +30,21 @@ def queryset_repuestos_genericos() -> QuerySet[Repuesto]:
     )
 
 
-def queryset_repuestos_por_marca(marca_id) -> QuerySet[Repuesto]:
+def queryset_repuestos_por_marca(marca_id, tipo_motor: str | None = None) -> QuerySet[Repuesto]:
     marca_key = str(marca_id)
     if marca_key == '0':
-        return queryset_repuestos_genericos().order_by('categoria_repuesto', 'nombre')
-
-    return (
-        Repuesto.objects.filter(activo=True)
-        .filter(
-            Q(marcas_compatibles__id=marca_id)
-            | Q(modelos_compatibles__marca_id=marca_id)
+        qs = queryset_repuestos_genericos().order_by('categoria_repuesto', 'nombre')
+    else:
+        qs = (
+            Repuesto.objects.filter(activo=True)
+            .filter(
+                Q(marcas_compatibles__id=marca_id)
+                | Q(modelos_compatibles__marca_id=marca_id)
+            )
+            .distinct()
+            .order_by('categoria_repuesto', 'nombre')
         )
-        .distinct()
-        .order_by('categoria_repuesto', 'nombre')
-    )
+    return queryset_filtrar_por_tipo_motor(qs, tipo_motor)
 
 
 def _restriccion_modelo_q(marca_id: int, modelo_id: int | None) -> Q:
@@ -54,11 +59,12 @@ def _restriccion_modelo_q(marca_id: int, modelo_id: int | None) -> Q:
 def queryset_repuestos_por_marca_modelo(
     modelo: Modelo | None,
     marca: MarcaVehiculo | None,
+    tipo_motor: str | None = None,
 ) -> QuerySet[Repuesto]:
     if not marca:
         return Repuesto.objects.none()
 
-    base = queryset_repuestos_por_marca(marca.id)
+    base = queryset_repuestos_por_marca(marca.id, tipo_motor=tipo_motor)
     modelo_id = modelo.id if modelo else None
     return base.filter(_restriccion_modelo_q(marca.id, modelo_id)).distinct()
 
@@ -69,7 +75,8 @@ def queryset_repuestos_compatibles_vehiculo(vehiculo: Vehiculo | None) -> QueryS
 
     marca = vehiculo.marca
     modelo = vehiculo.modelo if vehiculo.modelo_id else None
-    return queryset_repuestos_por_marca_modelo(modelo, marca)
+    tipo_motor = getattr(vehiculo, 'tipo_motor', None)
+    return queryset_repuestos_por_marca_modelo(modelo, marca, tipo_motor=tipo_motor)
 
 
 def repuesto_es_generico(repuesto: Repuesto) -> bool:
@@ -85,7 +92,11 @@ def repuesto_compatible_con_marca_modelo(
     repuesto: Repuesto,
     marca: MarcaVehiculo | None,
     modelo: Modelo | None = None,
+    tipo_motor: str | None = None,
 ) -> bool:
+    if not servicio_compatible_con_tipo_motor(repuesto, tipo_motor):
+        return False
+
     if repuesto_es_generico(repuesto):
         return True
     if not marca:
@@ -105,3 +116,15 @@ def repuesto_compatible_con_marca_modelo(
     if modelo is None:
         return True
     return modelos_marca.filter(pk=modelo.pk).exists()
+
+
+def repuesto_compatible_con_vehiculo(repuesto: Repuesto, vehiculo: Vehiculo | None) -> bool:
+    if not vehiculo or not vehiculo.marca_id:
+        return False
+    modelo = vehiculo.modelo if vehiculo.modelo_id else None
+    return repuesto_compatible_con_marca_modelo(
+        repuesto,
+        vehiculo.marca,
+        modelo,
+        tipo_motor=getattr(vehiculo, 'tipo_motor', None),
+    )

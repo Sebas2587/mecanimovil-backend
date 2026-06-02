@@ -5,6 +5,7 @@ from .models import (
 from mecanimovilapp.apps.usuarios.serializers import TallerSerializer, MecanicoDomicilioSerializer
 from mecanimovilapp.apps.vehiculos.serializers import MarcaSerializer, ModeloSerializer
 from mecanimovilapp.apps.servicios.repuestos_info import build_repuestos_info
+from mecanimovilapp.apps.servicios.tipos_motor_utils import normalizar_lista_tipos_motor
 from django.db import models
 
 # Helper para URLs de archivos en cPanel
@@ -162,6 +163,9 @@ class OfertaServicioSerializer(serializers.ModelSerializer):
             {'id': mc.id, 'nombre': mc.nombre}
             for mc in servicio.marcas_compatibles.all()
         ]
+        motores_info = normalizar_lista_tipos_motor(
+            getattr(servicio, 'tipos_motor_compatibles', None) or []
+        )
 
         return {
             'id': servicio.id,
@@ -173,6 +177,8 @@ class OfertaServicioSerializer(serializers.ModelSerializer):
             'categorias_info': categorias_info,
             'modelos_info': modelos_info,
             'marcas_info': marcas_info,
+            'motores_info': motores_info,
+            'tipos_motor_compatibles': motores_info,
         }
 
     def get_marca_vehiculo_info(self, obj):
@@ -695,14 +701,18 @@ class RepuestoSerializer(serializers.ModelSerializer):
     """
     marcas_info = MarcaSerializer(source='marcas_compatibles', many=True, read_only=True)
     modelos_info = ModeloSerializer(source='modelos_compatibles', many=True, read_only=True)
+    motores_info = serializers.SerializerMethodField()
 
     class Meta:
         model = Repuesto
         fields = (
             'id', 'nombre', 'descripcion', 'codigo_fabricante', 'marca',
             'precio_referencia', 'foto', 'categoria_repuesto', 'activo',
-            'marcas_info', 'modelos_info', 'fecha_creacion'
+            'marcas_info', 'modelos_info', 'motores_info', 'tipos_motor_compatibles', 'fecha_creacion'
         )
+
+    def get_motores_info(self, obj):
+        return normalizar_lista_tipos_motor(getattr(obj, 'tipos_motor_compatibles', None) or [])
 
 
 class ServicioRepuestoSerializer(serializers.ModelSerializer):
@@ -741,6 +751,7 @@ class ServicioSerializer(serializers.ModelSerializer):
     categorias_info = CategoriaServicioSerializer(source='categorias', many=True, read_only=True)
     marcas_info = MarcaSerializer(source='marcas_compatibles', many=True, read_only=True)
     modelos_info = ModeloSerializer(source='modelos_compatibles', many=True, read_only=True)
+    motores_info = serializers.SerializerMethodField()
     servicios_relacionados_info = ServicioListSerializer(source='servicios_relacionados', many=True, read_only=True)
     ofertas_disponibles = serializers.SerializerMethodField()
     precio_minimo = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
@@ -752,10 +763,14 @@ class ServicioSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'nombre', 'descripcion', 'duracion_estimada_base', 
             'calificacion_promedio', 'foto', 'detalles', 
-            'categorias_info', 'marcas_info', 'modelos_info', 'servicios_relacionados_info', 
+            'categorias_info', 'marcas_info', 'modelos_info', 'motores_info',
+            'tipos_motor_compatibles', 'servicios_relacionados_info', 
             'requiere_repuestos', 'precio_referencia', 'precio_minimo',
             'ofertas_disponibles', 'repuestos_necesarios', 'es_diagnostico'
         )
+
+    def get_motores_info(self, obj):
+        return normalizar_lista_tipos_motor(getattr(obj, 'tipos_motor_compatibles', None) or [])
     
     def get_ofertas_disponibles(self, obj):
         """Obtiene las ofertas disponibles para este servicio"""
