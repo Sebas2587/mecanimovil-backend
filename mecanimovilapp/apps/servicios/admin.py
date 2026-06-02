@@ -15,41 +15,37 @@ TIPOS_MOTOR_CHOICES = [(t, t.title()) for t in TIPOS_MOTOR_COMPATIBLES_VALIDOS]
 
 
 class TiposMotorCompatiblesFormMixin:
-    """Mapea checkboxes de admin ↔ JSON tipos_motor_compatibles."""
-
-    tipos_motor = forms.MultipleChoiceField(
-        choices=TIPOS_MOTOR_CHOICES,
-        required=False,
-        widget=forms.CheckboxSelectMultiple,
-        label='Tipos de motor compatibles',
-        help_text='Vacío = aplica a todos los tipos de motor (Gasolina, Diésel, etc.).',
-    )
+    """Reemplaza el JSON tipos_motor_compatibles por checkboxes en admin."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        instance = getattr(self, 'instance', None)
-        if instance and instance.pk:
-            self.fields['tipos_motor'].initial = instance.tipos_motor_compatibles or []
+        initial = []
+        if getattr(self, 'instance', None) and self.instance.pk:
+            initial = self.instance.tipos_motor_compatibles or []
+        self.fields['tipos_motor_compatibles'] = forms.MultipleChoiceField(
+            choices=TIPOS_MOTOR_CHOICES,
+            required=False,
+            widget=forms.CheckboxSelectMultiple,
+            label='Tipos de motor compatibles',
+            help_text='Vacío = aplica a todos los tipos de motor (Gasolina, Diésel, etc.).',
+            initial=initial,
+        )
 
-    def save(self, commit=True):
-        instance = super().save(commit=False)
-        instance.tipos_motor_compatibles = self.cleaned_data.get('tipos_motor') or []
-        if commit:
-            instance.save()
-            self.save_m2m()
-        return instance
+    def clean_tipos_motor_compatibles(self):
+        raw = self.cleaned_data.get('tipos_motor_compatibles')
+        return list(raw) if raw else []
 
 
 class ServicioAdminForm(TiposMotorCompatiblesFormMixin, forms.ModelForm):
     class Meta:
         model = Servicio
-        exclude = ('tipos_motor_compatibles',)
+        fields = '__all__'
 
 
 class RepuestoAdminForm(TiposMotorCompatiblesFormMixin, forms.ModelForm):
     class Meta:
         model = Repuesto
-        exclude = ('tipos_motor_compatibles',)
+        fields = '__all__'
 
 # Inline para modelos relacionados
 class DetalleServicioInline(admin.TabularInline):
@@ -101,7 +97,7 @@ class ServicioAdmin(admin.ModelAdmin):
             'fields': ('requiere_repuestos', 'precio_referencia', 'calificacion_promedio')
         }),
         ('Relaciones', {
-            'fields': ('categorias', 'marcas_compatibles', 'modelos_compatibles', 'tipos_motor', 'servicios_relacionados'),
+            'fields': ('categorias', 'marcas_compatibles', 'modelos_compatibles', 'tipos_motor_compatibles', 'servicios_relacionados'),
             'description': (
                 'Asocie marcas compatibles. Use modelos solo para restringir a variantes concretas '
                 'dentro de una marca (opcional). Tipos de motor vacíos = universal.'
@@ -272,7 +268,7 @@ class RepuestoAdmin(admin.ModelAdmin):
             'fields': ('categoria_repuesto', 'precio_referencia', 'activo')
         }),
         ('Compatibilidad vehículo', {
-            'fields': ('marcas_compatibles', 'modelos_compatibles', 'tipos_motor'),
+            'fields': ('marcas_compatibles', 'modelos_compatibles', 'tipos_motor_compatibles'),
             'description': (
                 'Marcas de vehículo (catálogo). Use modelos solo para restricción fina. '
                 'El campo «marca» arriba es el fabricante del repuesto (Bosch, etc.). '
