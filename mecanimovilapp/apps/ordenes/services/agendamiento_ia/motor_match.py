@@ -15,6 +15,7 @@ from django.db.models import Q
 
 from mecanimovilapp.apps.personalizacion.ml_engine import MotorRecomendaciones
 from mecanimovilapp.apps.servicios.models import OfertaServicio
+from mecanimovilapp.apps.servicios.repuestos_info import build_repuestos_info
 from mecanimovilapp.apps.usuarios.models import ChileanCommune, MechanicServiceArea
 from mecanimovilapp.apps.vehiculos.models import Vehiculo
 from mecanimovilapp.storage.utils import get_image_url
@@ -169,6 +170,34 @@ def _oferta_ofrece_repuestos(oferta: OfertaServicio) -> bool:
     if isinstance(repuestos_json, list) and len(repuestos_json) > 0:
         return True
     return False
+
+
+def _repuestos_info_oferta_servicio(
+    oferta: OfertaServicio,
+    *,
+    requiere_repuestos: bool,
+    request=None,
+) -> list[dict[str, Any]]:
+    if not requiere_repuestos or not _oferta_ofrece_repuestos(oferta):
+        return []
+    raw = getattr(oferta, 'repuestos_seleccionados', None)
+    return build_repuestos_info(raw, request=request)
+
+
+def _detalle_servicio_candidato(
+    oferta: OfertaServicio,
+    *,
+    nombre_servicio: str,
+    precio_servicio: float,
+    repuestos_info: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        'id': oferta.id,
+        'servicio': oferta.servicio_id,
+        'servicio_nombre': nombre_servicio,
+        'precio_servicio': precio_servicio,
+        'repuestos_info': repuestos_info,
+    }
 
 
 def _oferta_ofrece_solo_mano_obra(oferta: OfertaServicio) -> bool:
@@ -685,12 +714,17 @@ def _serialize_candidato_proveedor(
         d = _build_desglose(oferta, modo_desglose)
         precio_item = _safe_float(d['precio_publicado_cliente'])
         servicio = getattr(oferta, 'servicio', None)
+        nombre_svc = getattr(servicio, 'nombre', '') if servicio else ''
+        repuestos_info = _repuestos_info_oferta_servicio(
+            oferta, requiere_repuestos=requiere_repuestos, request=request
+        )
         servicios_ofrecidos.append({
             'id': oferta.servicio_id,
-            'nombre': getattr(servicio, 'nombre', '') if servicio else '',
+            'nombre': nombre_svc,
             'precio': precio_item,
             'oferta_servicio_id': oferta.id,
             'desglose': d,
+            'repuestos_info': repuestos_info,
         })
         mo_total += _safe_float(d['mano_obra'])
         rep_total += _safe_float(d['repuestos'])
@@ -720,6 +754,20 @@ def _serialize_candidato_proveedor(
         request=request,
     )
     base['servicios_ofrecidos'] = servicios_ofrecidos
+    base['detalles_servicios'] = [
+        {
+            'id': svc.get('oferta_servicio_id'),
+            'servicio': svc.get('id'),
+            'servicio_nombre': svc.get('nombre'),
+            'precio_servicio': _safe_float(svc.get('precio')),
+            'repuestos_info': svc.get('repuestos_info') or [],
+        }
+        for svc in servicios_ofrecidos
+    ]
+    repuestos_agregados: list[dict[str, Any]] = []
+    for svc in servicios_ofrecidos:
+        repuestos_agregados.extend(svc.get('repuestos_info') or [])
+    base['repuestos_info'] = repuestos_agregados
     base['servicios_cubiertos'] = coberturas
     base['servicios_pedidos'] = pedidos_count
     base['cobertura_pct'] = round(cobertura_pct, 3)
@@ -966,6 +1014,10 @@ def _serialize_candidato(
     modo_desglose = _modo_desglose_oferta(oferta, requiere_repuestos)
     desglose = _build_desglose(oferta, modo_desglose)
     score_safe = _safe_float(score)
+    repuestos_info = _repuestos_info_oferta_servicio(
+        oferta, requiere_repuestos=requiere_repuestos, request=request
+    )
+    precio_detalle = _safe_float(desglose.get('precio_publicado_cliente'))
 
     return {
         'oferta_servicio_id': oferta.id,
@@ -998,6 +1050,15 @@ def _serialize_candidato(
         ),
         'a_domicilio': a_domicilio,
         'desglose': desglose,
+        'repuestos_info': repuestos_info,
+        'detalles_servicios': [
+            _detalle_servicio_candidato(
+                oferta,
+                nombre_servicio=nombre_servicio,
+                precio_servicio=precio_detalle,
+                repuestos_info=repuestos_info,
+            ),
+        ],
         'distancia_km': _format_distancia_km_api(dist_km),
         'dentro_radio_km': (
             dist_km is not None and dist_km <= MAX_RADIO_KM

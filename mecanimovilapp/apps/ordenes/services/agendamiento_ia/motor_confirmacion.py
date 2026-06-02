@@ -239,13 +239,18 @@ def _crear_oferta_catalogo_con_lineas(
     for oferta_servicio in ofertas_servicio:
         servicio = oferta_servicio.servicio
         precio_detalle = _precio_linea_oferta_servicio(oferta_servicio, requiere_repuestos)
+        repuestos_linea: list = []
+        if _linea_usa_repuestos(oferta_servicio, requiere_repuestos):
+            raw_rep = getattr(oferta_servicio, 'repuestos_seleccionados', None)
+            if isinstance(raw_rep, list):
+                repuestos_linea = list(raw_rep)
         DetalleServicioOferta.objects.create(
             oferta=oferta,
             servicio=servicio,
             precio_servicio=precio_detalle,
             tiempo_estimado=_tiempo_estimado_desde_oferta_servicio(oferta_servicio),
             notas='',
-            repuestos_seleccionados=[],
+            repuestos_seleccionados=repuestos_linea,
         )
         servicio_ids.append(servicio.id)
 

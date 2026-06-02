@@ -905,18 +905,29 @@ class DetalleServicioOfertaSerializer(serializers.ModelSerializer):
         """Retorna informaci?n detallada de los repuestos seleccionados"""
         import logging
         logger = logging.getLogger(__name__)
-        
-        if not obj.repuestos_seleccionados:
+
+        repuestos_raw = obj.repuestos_seleccionados
+        if not repuestos_raw:
+            oferta = getattr(obj, 'oferta', None)
+            if (
+                oferta
+                and getattr(oferta, 'origen', None) == 'catalogo'
+                and getattr(oferta, 'incluye_repuestos', False)
+            ):
+                os_cat = self._oferta_servicio_catalogo_para_detalle(obj)
+                if os_cat is not None:
+                    repuestos_raw = getattr(os_cat, 'repuestos_seleccionados', None) or []
+        if not repuestos_raw:
             logger.debug(f"DetalleServicioOferta {obj.id}: No tiene repuestos_seleccionados")
             return []
         
         from mecanimovilapp.apps.servicios.models import Repuesto
         from mecanimovilapp.apps.servicios.serializers import RepuestoSerializer
         
-        logger.debug(f"DetalleServicioOferta {obj.id}: Procesando {len(obj.repuestos_seleccionados)} repuestos")
+        logger.debug(f"DetalleServicioOferta {obj.id}: Procesando {len(repuestos_raw)} repuestos")
         
         repuestos_info = []
-        for repuesto_data in obj.repuestos_seleccionados:
+        for repuesto_data in repuestos_raw:
             repuesto_id = repuesto_data.get('id')
             cantidad = repuesto_data.get('cantidad', 1)
             # CORRECCI?N: Incluir precio personalizado del proveedor si existe
