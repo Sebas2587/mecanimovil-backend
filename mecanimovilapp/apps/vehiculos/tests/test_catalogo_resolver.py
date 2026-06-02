@@ -8,6 +8,7 @@ from mecanimovilapp.apps.vehiculos.catalogo_resolver import (
     resolve_modelo,
     resolve_or_create_marca,
     resolve_or_create_modelo,
+    resolver_marca_modelo_registro,
 )
 from mecanimovilapp.apps.vehiculos.models import MarcaVehiculo, Modelo
 
@@ -47,3 +48,21 @@ class CatalogoResolverTestCase(TestCase):
         self.assertFalse(created)
         self.assertEqual(modelo.id, self.corolla.id)
         self.assertEqual(Modelo.objects.filter(marca=self.toyota).count(), 1)
+
+    def test_resolver_marca_modelo_prioriza_nombre_sobre_id_duplicado(self):
+        dup = MarcaVehiculo.objects.create(nombre='TOYOTA')
+        marca, modelo, err = resolver_marca_modelo_registro(
+            marca_id=dup.id,
+            marca_nombre='Toyota',
+            modelo_nombre='COROLLA XLI',
+        )
+        self.assertIsNone(err)
+        self.assertEqual(marca.id, self.toyota.id)
+        self.assertEqual(modelo.id, self.corolla.id)
+
+    def test_normalizar_tipo_motor_hibrido_electrico(self):
+        from mecanimovilapp.apps.vehiculos.catalogo_resolver import normalizar_tipo_motor_vehiculo
+
+        self.assertEqual(normalizar_tipo_motor_vehiculo('HIBRIDO'), 'HIBRIDO')
+        self.assertEqual(normalizar_tipo_motor_vehiculo('ELECTRICO'), 'ELECTRICO')
+        self.assertEqual(normalizar_tipo_motor_vehiculo('BENCINA'), 'GASOLINA')

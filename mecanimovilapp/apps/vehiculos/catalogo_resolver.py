@@ -123,3 +123,67 @@ def resolve_or_create_modelo(
         if existing:
             return existing, False
         raise
+
+
+def resolver_marca_modelo_registro(
+    *,
+    marca_id=None,
+    marca_nombre=None,
+    modelo_id=None,
+    modelo_nombre=None,
+) -> tuple[MarcaVehiculo | None, Modelo | None, str | None]:
+    """
+    Marca/modelo canónicos para alta de vehículo.
+
+    Prioriza marca_nombre (evita IDs obsoletos por marcas duplicadas en catálogo).
+    Devuelve (marca, modelo, clave_error) — clave_error en {'marca', 'modelo'} si falta.
+    """
+    marca_obj: MarcaVehiculo | None = None
+
+    if marca_nombre:
+        marca_obj, _ = resolve_or_create_marca(marca_nombre)
+
+    if not marca_obj and marca_id is not None:
+        sid = str(marca_id).strip()
+        if sid.isdigit():
+            marca_obj = MarcaVehiculo.objects.filter(id=int(sid)).first()
+
+    if not marca_obj:
+        return None, None, 'marca'
+
+    modelo_obj: Modelo | None = None
+
+    if modelo_nombre:
+        modelo_obj, _ = resolve_or_create_modelo(marca_obj, modelo_nombre)
+
+    if not modelo_obj and modelo_id is not None:
+        sid = str(modelo_id).strip()
+        if sid.isdigit():
+            cand = Modelo.objects.filter(id=int(sid)).select_related('marca').first()
+            if cand and cand.marca_id == marca_obj.id:
+                modelo_obj = cand
+
+    if not modelo_obj:
+        return marca_obj, None, 'modelo'
+
+    return marca_obj, modelo_obj, None
+
+
+def normalizar_tipo_motor_vehiculo(valor: str | None) -> str:
+    """Mapea valores de API/app a choices válidos del modelo Vehiculo."""
+    if not valor:
+        return 'GASOLINA'
+    u = str(valor).upper().strip()
+    if 'DIESEL' in u or 'DIÉSEL' in u:
+        return 'DIESEL'
+    if 'ELECTR' in u or 'ELÉCTR' in u:
+        return 'ELECTRICO'
+    if 'HIBR' in u or 'HYBR' in u or 'HÍBR' in u:
+        return 'HIBRIDO'
+    if 'BENCINA' in u or 'GASOL' in u:
+        return 'GASOLINA'
+    if u in ('GASOLINA', 'DIESEL', 'ELECTRICO', 'HIBRIDO', 'BENCINA'):
+        return u
+    if u == 'ELECTRIC':
+        return 'ELECTRICO'
+    return 'GASOLINA'

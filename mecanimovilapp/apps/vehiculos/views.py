@@ -240,66 +240,38 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         
         if not hasattr(user, 'cliente'):
              return Response({"error": "Usuario sin perfil de cliente"}, status=status.HTTP_403_FORBIDDEN)
+
+        # 1. Resolver marca/modelo canónicos (prioriza nombres sobre IDs)
+        from .catalogo_resolver import (
+            normalizar_tipo_motor_vehiculo,
+            resolver_marca_modelo_registro,
+        )
+
+        marca_obj, modelo_obj, err_key = resolver_marca_modelo_registro(
+            marca_id=data.get('marca'),
+            marca_nombre=data.get('marca_nombre'),
+            modelo_id=data.get('modelo'),
+            modelo_nombre=data.get('modelo_nombre'),
+        )
+        if err_key == 'marca':
+            return Response(
+                {'marca_nombre': ['Indica la marca del vehículo.']},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if err_key == 'modelo':
+            return Response(
+                {'modelo_nombre': ['No se pudo identificar el modelo para esta marca.']},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        data['marca'] = marca_obj.id
+        data['modelo'] = modelo_obj.id
+        print(f"DEBUG: Resolved Brand ID: {marca_obj.id}, Model ID: {modelo_obj.id}")
+
+        if data.get('tipo_motor'):
+            data['tipo_motor'] = normalizar_tipo_motor_vehiculo(data.get('tipo_motor'))
              
-        if not hasattr(user, 'cliente'):
-             return Response({"error": "Usuario sin perfil de cliente"}, status=status.HTTP_403_FORBIDDEN)
-             
-        # 1. Resolver Marca
-        marca_id = data.get('marca')
-        marca_obj = None
-        
-        if marca_id:
-             # Validar si es un ID numérico o un string numérico
-             if isinstance(marca_id, int) or (isinstance(marca_id, str) and marca_id.isdigit()):
-                  marca_obj = Marca.objects.filter(id=marca_id).first()
-             else:
-                  # Si viene un nombre en el campo 'marca', lo ignoramos aquí para que lo resuelva por nombre abajo
-                  print(f"DEBUG: 'marca' field is not an ID ({marca_id}), trying resolution by name...")
-                  marca_id = None
-             
-        if not marca_obj and data.get('marca_nombre'):
-            from .catalogo_resolver import resolve_or_create_marca
-
-            marca_nombre = data.get('marca_nombre')
-            print(f"DEBUG: Resolving Brand by name: {marca_nombre}")
-            marca_obj, created_marca = resolve_or_create_marca(marca_nombre)
-            if not marca_obj:
-                return Response(
-                    {"marca_nombre": ["Nombre de marca inválido."]},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            data['marca'] = marca_obj.id
-            print(f"DEBUG: Resolved Brand ID: {marca_obj.id} (Created: {created_marca})")
-        
-        # 2. Resolver Modelo
-        modelo_id = data.get('modelo')
-
-        if modelo_id:
-             # Validar si es un ID numérico válido y si EXISTE en nuestra BD
-             if isinstance(modelo_id, int) or (isinstance(modelo_id, str) and modelo_id.isdigit()):
-                  if not Modelo.objects.filter(id=modelo_id).exists():
-                       print(f"DEBUG: 'modelo' ID {modelo_id} does not exist in local DB. Trying resolution by name...")
-                       modelo_id = None
-             else:
-                  print(f"DEBUG: 'modelo' field is not an ID ({modelo_id}), trying resolution by name...")
-                  modelo_id = None
-        
-        if not modelo_id and marca_obj and data.get('modelo_nombre'):
-                from .catalogo_resolver import resolve_or_create_modelo
-
-                modelo_nombre = data.get('modelo_nombre')
-                print(f"DEBUG: Resolving Model by name: {modelo_nombre}")
-                try:
-                    modelo_obj, created = resolve_or_create_modelo(marca_obj, modelo_nombre)
-                    if modelo_obj:
-                        data['modelo'] = modelo_obj.id
-                        print(f"DEBUG: Resolved Model ID: {modelo_obj.id} (Created: {created})")
-                    else:
-                        print("DEBUG: Could not resolve model name")
-                except Exception as e:
-                    print(f"DEBUG: Error creating model: {e}")
-
-        # 3. Verificar existencia por Patente para este Cliente
+        # 2. Verificar existencia por Patente para este Cliente
         patente = data.get('patente', '').upper().strip()
         data['patente'] = patente # Asegurar que esté saneada en los datos
 

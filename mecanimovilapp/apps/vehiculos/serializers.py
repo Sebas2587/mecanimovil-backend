@@ -194,6 +194,11 @@ class VehiculoSerializer(serializers.ModelSerializer):
         """
         Validar que el modelo pertenezca a la marca y kilometraje vs SII.
         """
+        from .catalogo_resolver import normalizar_tipo_motor_vehiculo
+
+        if 'tipo_motor' in data and data['tipo_motor']:
+            data['tipo_motor'] = normalizar_tipo_motor_vehiculo(data['tipo_motor'])
+
         if 'marca' in data and 'modelo' in data:
             if data['modelo'].marca != data['marca']:
                 raise serializers.ValidationError(

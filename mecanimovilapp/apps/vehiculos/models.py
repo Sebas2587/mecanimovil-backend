@@ -60,6 +60,8 @@ class Vehiculo(models.Model):
         ('Diésel', 'Diésel'),
         ('DIESEL', 'DIESEL'),
         ('Electric', 'Electric'),
+        ('ELECTRICO', 'Eléctrico'),
+        ('HIBRIDO', 'Híbrido'),
     ]
     
     marca = models.ForeignKey(
