@@ -949,15 +949,31 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
                     status=404,
                 )
             proveedor = proveedor_data['proveedor']
-            atendidas = set(
-                proveedor.marcas_atendidas.values_list('id', flat=True)
+            from mecanimovilapp.apps.usuarios.proveedor_cobertura import TIPO_COBERTURA_MULTIMARCA
+            from mecanimovilapp.apps.vehiculos.models import MarcaVehiculo
+
+            es_multimarca = (
+                getattr(proveedor, 'tipo_cobertura_marca', None) == TIPO_COBERTURA_MULTIMARCA
             )
-            invalidas = [m for m in marca_ids if m not in atendidas]
+
+            if es_multimarca:
+                existentes = set(
+                    MarcaVehiculo.objects.filter(id__in=marca_ids).values_list('id', flat=True)
+                )
+                invalidas = [m for m in marca_ids if m not in existentes]
+            else:
+                atendidas = set(
+                    proveedor.marcas_atendidas.values_list('id', flat=True)
+                )
+                invalidas = [m for m in marca_ids if m not in atendidas]
+
             if invalidas:
                 return Response(
                     {
                         'error': (
-                            'Algunas marcas no están en tu configuración de especialidades'
+                            'Algunas marcas no son válidas para tu perfil'
+                            if es_multimarca
+                            else 'Algunas marcas no están en tu configuración de especialidades'
                         ),
                         'marcas_invalidas': invalidas,
                     },
