@@ -51,8 +51,12 @@ def queryset_servicios_disponibles_para_modelo_marca(modelo, marca):
     ).distinct()
 
     talleres_mm, mecanicos_mm = _ids_proveedores_multimarca_activos()
+    q_marca_oferta_mm = Q(ofertas__marca_vehiculo_seleccionada=marca) | Q(
+        ofertas__marca_vehiculo_seleccionada__isnull=True
+    )
     servicios_multimarca = Servicio.objects.filter(
         Q(ofertas__disponible=True)
+        & q_marca_oferta_mm
         & (
             Q(ofertas__taller_id__in=talleres_mm)
             | Q(ofertas__mecanico_id__in=mecanicos_mm)

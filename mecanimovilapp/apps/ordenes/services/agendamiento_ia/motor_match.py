@@ -244,82 +244,98 @@ def _queryset_ofertas_compatibles(
     marca,
 ) -> Any:
     """
-    Mismo criterio que proveedores_filtrados + ofertas por servicio:
-    proveedor verificado, atiende la marca, oferta disponible y marca en oferta
-  o genérica (null).
+    Alineado con proveedores_filtrados y catalogo_vehiculo:
+    - Especialista: marca en oferta = vehículo o genérica (null).
+    - Multimarca: todas las ofertas del servicio; resolver_ofertas_preferidas_por_marca
+      elige la fila correcta para la marca del vehículo.
     """
+    from mecanimovilapp.apps.usuarios.proveedor_cobertura import TIPO_COBERTURA_MULTIMARCA
+
     base = OfertaServicio.objects.filter(
         servicio_id__in=servicio_ids,
         disponible=True,
     )
+
+    proveedor_activo = (
+        Q(
+            tipo_proveedor='taller',
+            taller__isnull=False,
+            taller__verificado=True,
+            taller__activo=True,
+        )
+        | Q(
+            tipo_proveedor='mecanico',
+            mecanico__isnull=False,
+            mecanico__verificado=True,
+            mecanico__activo=True,
+        )
+    )
+
     if not marca:
-        return base.filter(
-            Q(taller__verificado=True, taller__activo=True)
-            | Q(mecanico__verificado=True, mecanico__activo=True)
-        ).distinct()
+        return base.filter(proveedor_activo).distinct()
 
     q_marca_oferta = Q(marca_vehiculo_seleccionada=marca) | Q(
         marca_vehiculo_seleccionada__isnull=True
     )
-
-    from mecanimovilapp.apps.usuarios.proveedor_cobertura import TIPO_COBERTURA_MULTIMARCA
-
-    ofertas_taller = base.filter(
+    q_proveedor_mm = Q(
         tipo_proveedor='taller',
-        taller__isnull=False,
-        taller__marcas_atendidas=marca,
-        taller__verificado=True,
-        taller__activo=True,
-    ).filter(q_marca_oferta)
-
-    ofertas_mecanico = base.filter(
-        tipo_proveedor='mecanico',
-        mecanico__isnull=False,
-        mecanico__marcas_atendidas=marca,
-        mecanico__verificado=True,
-        mecanico__activo=True,
-    ).filter(q_marca_oferta)
-
-    ofertas_taller_mm = base.filter(
-        tipo_proveedor='taller',
-        taller__isnull=False,
         taller__tipo_cobertura_marca=TIPO_COBERTURA_MULTIMARCA,
-        taller__verificado=True,
-        taller__activo=True,
-    ).filter(q_marca_oferta)
-
-    ofertas_mecanico_mm = base.filter(
+    ) | Q(
         tipo_proveedor='mecanico',
-        mecanico__isnull=False,
         mecanico__tipo_cobertura_marca=TIPO_COBERTURA_MULTIMARCA,
-        mecanico__verificado=True,
-        mecanico__activo=True,
-    ).filter(q_marca_oferta)
-
-    qs = (ofertas_taller | ofertas_mecanico | ofertas_taller_mm | ofertas_mecanico_mm).distinct()
-    if marca:
-        from mecanimovilapp.apps.servicios.oferta_resolucion import (
-            resolver_ofertas_preferidas_por_marca,
+    )
+    q_cobertura_proveedor = (
+        Q(
+            tipo_proveedor='taller',
+            taller__marcas_atendidas=marca,
         )
-
-        ofertas_list = list(
-            qs.select_related(
-                'servicio',
-                'taller',
-                'mecanico',
-                'marca_vehiculo_seleccionada',
-            )
+        | Q(
+            tipo_proveedor='mecanico',
+            mecanico__marcas_atendidas=marca,
         )
-        ids = [o.id for o in resolver_ofertas_preferidas_por_marca(ofertas_list, marca)]
-        if not ids:
-            return OfertaServicio.objects.none()
-        return OfertaServicio.objects.filter(id__in=ids).select_related(
+        | q_proveedor_mm
+    )
+    # Especialista: marca en oferta acotada; multimarca: sin filtro de marca en SQL.
+    q_oferta_marca = q_marca_oferta | q_proveedor_mm
+
+    qs = (
+        base.filter(proveedor_activo)
+        .filter(q_cobertura_proveedor)
+        .filter(q_oferta_marca)
+        .distinct()
+    )
+
+    from mecanimovilapp.apps.servicios.oferta_resolucion import (
+        resolver_ofertas_preferidas_por_marca,
+    )
+
+    ofertas_list = list(
+        qs.select_related(
             'servicio',
             'taller',
             'mecanico',
             'marca_vehiculo_seleccionada',
         )
-    return qs
+    )
+    count_antes_resolver = len(ofertas_list)
+    resueltas = resolver_ofertas_preferidas_por_marca(ofertas_list, marca)
+    ids = [o.id for o in resueltas if o.id]
+    if not ids and count_antes_resolver > 0:
+        logger.warning(
+            'motor_match: %s ofertas pre-resolver sin fila para marca_id=%s servicios=%s',
+            count_antes_resolver,
+            getattr(marca, 'id', marca),
+            servicio_ids,
+        )
+        return OfertaServicio.objects.none()
+    if not ids:
+        return OfertaServicio.objects.none()
+    return OfertaServicio.objects.filter(id__in=ids).select_related(
+        'servicio',
+        'taller',
+        'mecanico',
+        'marca_vehiculo_seleccionada',
+    )
 
 
 def _score_y_explicacion(
@@ -1116,6 +1132,19 @@ def listar_candidatos_proveedor(
             punto = None
 
     count_qs = qs.count()
+    if count_qs == 0 and marca:
+        count_sin_resolver = OfertaServicio.objects.filter(
+            servicio_id__in=servicio_ids,
+            disponible=True,
+        ).count()
+        logger.info(
+            'motor_match sin ofertas: vehiculo=%s marca_id=%s servicios=%s '
+            'ofertas_disponibles_servicio=%s',
+            vehiculo_id,
+            marca.pk,
+            servicio_ids,
+            count_sin_resolver,
+        )
     pool_meta, stats = _construir_pool_meta(
         qs,
         punto=punto,
