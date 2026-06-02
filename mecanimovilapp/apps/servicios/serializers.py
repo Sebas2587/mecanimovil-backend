@@ -4,6 +4,7 @@ from .models import (
 )
 from mecanimovilapp.apps.usuarios.serializers import TallerSerializer, MecanicoDomicilioSerializer
 from mecanimovilapp.apps.vehiculos.serializers import MarcaSerializer, ModeloSerializer
+from mecanimovilapp.apps.servicios.repuestos_info import build_repuestos_info
 from django.db import models
 
 # Helper para URLs de archivos en cPanel
@@ -107,6 +108,7 @@ class OfertaServicioSerializer(serializers.ModelSerializer):
     marca_vehiculo_info = serializers.SerializerMethodField()
     nombre_proveedor = serializers.CharField(read_only=True)
     fotos_servicio = FotoServicioSerializer(many=True, read_only=True)
+    repuestos_info = serializers.SerializerMethodField(read_only=True)
     
     class Meta:
         model = OfertaServicio
@@ -118,10 +120,15 @@ class OfertaServicioSerializer(serializers.ModelSerializer):
             'duracion_garantia', 'detalles_adicionales', 'nombre_proveedor',
             'fecha_creacion', 'ultima_actualizacion',
             # Nuevos campos para gestión avanzada
-            'tipo_servicio', 'repuestos_seleccionados', 'costo_mano_de_obra_sin_iva',
+            'tipo_servicio', 'repuestos_seleccionados', 'repuestos_info', 'costo_mano_de_obra_sin_iva',
             'costo_repuestos_sin_iva', 'fotos_urls', 'fotos_servicio', 'precio_publicado_cliente',
             'comision_mecanmovil', 'iva_sobre_comision', 'ganancia_neta_proveedor'
         )
+
+    def get_repuestos_info(self, obj):
+        """Ítems de repuesto (nombre, cantidad, precio) para ficha y nueva solicitud."""
+        request = self.context.get('request')
+        return build_repuestos_info(obj.repuestos_seleccionados, request=request)
     
     def get_servicio_info(self, obj):
         """
