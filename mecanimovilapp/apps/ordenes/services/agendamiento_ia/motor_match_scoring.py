@@ -40,17 +40,20 @@ FEATURE_KEYS = (
 )
 
 PESOS_COINCIDENCIA: dict[str, float] = {
-    'proximidad': 0.20,
+    'proximidad': 0.12,
     'rating': 0.08,
-    'marca_oferta': 0.11,
-    'cobertura_proveedor': 0.13,
-    'motor': 0.13,
+    'marca_oferta': 0.10,
+    'cobertura_proveedor': 0.18,
+    'motor': 0.18,
     'repuestos': 0.12,
-    'historial': 0.10,
+    'historial': 0.08,
     'zona_mecanico': 0.05,
     'catalogo_completo': 0.04,
-    'dentro_radio': 0.04,
+    'dentro_radio': 0.05,
 }
+
+# Bonus cuando especialista + motor exacto (no lo compensa solo estar más cerca).
+_BONUS_COMPAT_EXACTA = 0.06
 
 
 def _safe_float(value, default: float = 0.0) -> float:
@@ -288,6 +291,11 @@ def calcular_score_coincidencia(
         w = w / w_sum
 
     raw = float(vec @ w)
+    if (
+        features.get('motor', 0) >= 0.99
+        and features.get('cobertura_proveedor', 0) >= 0.99
+    ):
+        raw += _BONUS_COMPAT_EXACTA
     score = max(0.05, min(0.99, raw))
 
     contribuciones = {k: round(features[k] * pesos.get(k, 0.0), 4) for k in features}

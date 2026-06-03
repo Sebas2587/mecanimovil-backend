@@ -62,6 +62,58 @@ class MotorMatchScoringUnitTests(SimpleTestCase):
         score_mm = calcular_score_coincidencia(oferta_mm, ctx).score
         self.assertGreater(score_esp, score_mm)
 
+    def test_especialista_diesel_supera_multimarca_universal_a_distancia(self):
+        """Caso prod: esp. motor DIESEL vs multimarca todos los motores."""
+        marca_id = 11
+        oferta_esp = SimpleNamespace(
+            tipo_proveedor='mecanico',
+            taller=None,
+            mecanico=SimpleNamespace(
+                calificacion_promedio=0,
+                tipo_cobertura_marca=TIPO_COBERTURA_ESPECIALISTA,
+            ),
+            marca_vehiculo_seleccionada_id=marca_id,
+            tipo_motor='DIESEL',
+            servicio=SimpleNamespace(categorias=MagicMock(first=lambda: None)),
+        )
+        oferta_mm = SimpleNamespace(
+            tipo_proveedor='taller',
+            taller=SimpleNamespace(
+                calificacion_promedio=0,
+                tipo_cobertura_marca=TIPO_COBERTURA_MULTIMARCA,
+            ),
+            mecanico=None,
+            marca_vehiculo_seleccionada_id=marca_id,
+            tipo_motor='',
+            servicio=SimpleNamespace(categorias=MagicMock(first=lambda: None)),
+        )
+        vehiculo = SimpleNamespace(tipo_motor='DIESEL')
+        ctx_esp = CoincidenciaCatalogoContext(
+            vehiculo=vehiculo,
+            marca_id=marca_id,
+            requiere_repuestos=True,
+            dist_km=4.5,
+            con_ubicacion_cliente=True,
+            catalogo_completo=True,
+            oferta_ofrece_repuestos=True,
+        )
+        ctx_mm = CoincidenciaCatalogoContext(
+            vehiculo=vehiculo,
+            marca_id=marca_id,
+            requiere_repuestos=True,
+            dist_km=0.8,
+            con_ubicacion_cliente=True,
+            catalogo_completo=True,
+            oferta_ofrece_repuestos=True,
+        )
+        score_esp = calcular_score_coincidencia(oferta_esp, ctx_esp).score
+        score_mm = calcular_score_coincidencia(oferta_mm, ctx_mm).score
+        self.assertGreater(
+            score_esp,
+            score_mm,
+            'Especialista con motor exacto debe superar multimarca universal aunque esté más lejos',
+        )
+
     def test_prioridad_orden_cobertura_especialista_primero(self):
         self.assertLess(
             prioridad_orden_cobertura_proveedor({'tipo_cobertura_marca': 'especialista'}),
