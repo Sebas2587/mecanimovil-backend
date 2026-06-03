@@ -894,8 +894,17 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
 
             # Catálogo por compatibilidad de marca/modelo únicamente (sin filtrar por categorías del proveedor).
             qs = servicios_catalogo_por_marca_queryset(marca_id, tipo_motor=tipo_motor)
-            servicios = qs.values('id', 'nombre', 'descripcion', 'requiere_repuestos', 'tipos_motor_compatibles')
-            return Response(list(servicios))
+            from mecanimovilapp.apps.servicios.tipos_motor_utils import normalizar_lista_tipos_motor
+
+            servicios = []
+            for row in qs.values(
+                'id', 'nombre', 'descripcion', 'requiere_repuestos', 'tipos_motor_compatibles'
+            ):
+                motores = normalizar_lista_tipos_motor(row.get('tipos_motor_compatibles'))
+                row['tipos_motor_compatibles'] = motores
+                row['motores_info'] = motores
+                servicios.append(row)
+            return Response(servicios)
             
         except Exception as e:
             return Response(
@@ -988,7 +997,15 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
 
             qs = servicios_comunes_por_marcas_queryset(marca_ids)
             return Response(
-                list(qs.values('id', 'nombre', 'descripcion', 'requiere_repuestos'))
+                list(
+                    qs.values(
+                        'id',
+                        'nombre',
+                        'descripcion',
+                        'requiere_repuestos',
+                        'tipos_motor_compatibles',
+                    )
+                )
             )
         except Exception as e:
             return Response(
