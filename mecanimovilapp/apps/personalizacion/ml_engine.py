@@ -530,50 +530,45 @@ class MotorRecomendaciones:
     
     def ordenar_por_relevancia(self, ofertas, vehiculo: Vehiculo):
         """
-        Ordena ofertas por relevancia usando el motor de ML
+        Ordena ofertas por relevancia usando el scorer unificado de motor_match.
         """
-        if not ofertas.exists():
+        from mecanimovilapp.apps.ordenes.services.agendamiento_ia.motor_match_scoring import (
+            CoincidenciaCatalogoContext,
+            calcular_score_coincidencia,
+        )
+
+        if hasattr(ofertas, 'exists') and not ofertas.exists():
             return ofertas
-        
-        perfil = PerfilVehiculo.objects.get_or_create(vehiculo=vehiculo)[0]
-        
-        # Convertir a lista para poder ordenar
+
         ofertas_list = list(ofertas)
+        if not ofertas_list:
+            return ofertas_list
+
+        perfil = PerfilVehiculo.objects.filter(vehiculo=vehiculo).first()
+        marca_id = getattr(getattr(vehiculo, 'marca', None), 'id', None)
+
+        def _ofrece_repuestos(oferta) -> bool:
+            if getattr(oferta, 'tipo_servicio', None) == 'sin_repuestos':
+                return False
+            if float(oferta.costo_repuestos_sin_iva or 0) > 0:
+                return True
+            rep = float(oferta.precio_con_repuestos or 0)
+            sin = float(oferta.precio_sin_repuestos or 0)
+            return rep > 0 and sin > 0 and rep > sin * 1.005
+
         ofertas_scores = []
-        
         for oferta in ofertas_list:
-            score = 0.0
-            
-            # Score por calificación del proveedor
-            proveedor = oferta.taller or oferta.mecanico
-            score += (proveedor.calificacion_promedio / 5.0) * 0.3
-            
-            # Score por historial del usuario
-            if oferta.tipo_proveedor == 'taller' and proveedor.id in perfil.talleres_frecuentes:
-                score += 0.4
-            elif oferta.tipo_proveedor == 'mecanico' and proveedor.id in perfil.mecanicos_frecuentes:
-                score += 0.4
-            
-            # Score por categoría frecuente
-            categoria_id = oferta.servicio.categorias.first()
-            if categoria_id and str(categoria_id.id) in perfil.categorias_frecuentes:
-                score += 0.3
+            ctx = CoincidenciaCatalogoContext(
+                vehiculo=vehiculo,
+                marca_id=marca_id,
+                requiere_repuestos=True,
+                dist_km=None,
+                con_ubicacion_cliente=False,
+                catalogo_completo=True,
+                oferta_ofrece_repuestos=_ofrece_repuestos(oferta),
+            )
+            resultado = calcular_score_coincidencia(oferta, ctx, perfil=perfil)
+            ofertas_scores.append((oferta, resultado.score))
 
-            # Score por coincidencia de tipo de motor
-            from mecanimovilapp.apps.servicios.oferta_resolucion import prioridad_oferta_para_motor
-
-            prio_motor = prioridad_oferta_para_motor(oferta, getattr(vehiculo, 'tipo_motor', None))
-            if prio_motor == 2:
-                score += 0.35
-            elif prio_motor == 0:
-                score += 0.08
-            elif prio_motor < 0:
-                score -= 0.5
-            
-            ofertas_scores.append((oferta, score))
-        
-        # Ordenar por score descendente
         ofertas_scores.sort(key=lambda x: x[1], reverse=True)
-        
-        # Retornar solo las ofertas ordenadas
-        return [oferta for oferta, score in ofertas_scores] 
+        return [oferta for oferta, _score in ofertas_scores] 

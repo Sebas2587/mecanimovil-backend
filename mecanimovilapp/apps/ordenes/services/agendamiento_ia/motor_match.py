@@ -13,14 +13,28 @@ from typing import Any
 from django.contrib.gis.geos import Point
 from django.db.models import Q
 
-from mecanimovilapp.apps.personalizacion.ml_engine import MotorRecomendaciones
+from mecanimovilapp.apps.personalizacion.models import PerfilVehiculo
 from mecanimovilapp.apps.servicios.models import OfertaServicio
 from mecanimovilapp.apps.servicios.repuestos_info import build_repuestos_info
 from mecanimovilapp.apps.usuarios.models import ChileanCommune, MechanicServiceArea
 from mecanimovilapp.apps.vehiculos.models import Vehiculo
 from mecanimovilapp.storage.utils import get_image_url
 
+from .motor_match_scoring import (
+    CoincidenciaCatalogoContext,
+    calcular_score_coincidencia,
+    prioridad_orden_cobertura_proveedor,
+)
+
 logger = logging.getLogger(__name__)
+
+PoolMetaItem = tuple[
+    OfertaServicio,
+    float | None,
+    float,
+    str,
+    dict[str, float] | None,
+]
 
 MAX_CANDIDATOS = 3
 MAX_OTROS_CANDIDATOS = 10
@@ -516,21 +530,27 @@ def _mecanico_prioridad_zona(
 def _construir_pool_meta(
     qs,
     *,
+    vehiculo: Vehiculo | None,
     punto: Point | None,
     requiere_repuestos: bool,
     exigir_precio: bool,
     comunas: list[str],
-    tipo_motor_vehiculo: str | None = None,
-) -> tuple[list[tuple[OfertaServicio, float | None, float, str]], dict[str, int]]:
-    pool_meta: list[tuple[OfertaServicio, float | None, float, str]] = []
+) -> tuple[list[PoolMetaItem], dict[str, int]]:
+    pool_meta: list[PoolMetaItem] = []
     stats = {'evaluadas': 0, 'sin_precio': 0, 'sin_proveedor': 0, 'errores': 0}
+
+    marca_id = getattr(getattr(vehiculo, 'marca', None), 'id', None) if vehiculo else None
+    perfil = None
+    if vehiculo:
+        perfil = PerfilVehiculo.objects.filter(vehiculo=vehiculo).first()
 
     for oferta in qs:
         stats['evaluadas'] += 1
         try:
-            if exigir_precio and not _oferta_catalogo_completa(
+            catalogo_ok = _oferta_catalogo_completa(
                 oferta, requiere_repuestos=requiere_repuestos
-            ):
+            )
+            if exigir_precio and not catalogo_ok:
                 stats['sin_precio'] += 1
                 continue
 
@@ -540,38 +560,36 @@ def _construir_pool_meta(
                 continue
 
             dist_km = _distancia_km_proveedor(oferta, punto) if punto else None
+            cubre_comuna = False
             if oferta.tipo_proveedor == 'mecanico' and oferta.mecanico_id:
-                _cubre, dist_m = _mecanico_prioridad_zona(
+                cubre_comuna, dist_m = _mecanico_prioridad_zona(
                     oferta, comunas=comunas, punto=punto
                 )
                 if dist_m is not None:
                     dist_km = dist_m
 
-            rating = _safe_float(getattr(proveedor_pool, 'calificacion_promedio', 0))
-            score, expl = _score_y_explicacion(
+            ctx = CoincidenciaCatalogoContext(
+                vehiculo=vehiculo,
+                marca_id=marca_id,
+                requiere_repuestos=requiere_repuestos,
                 dist_km=dist_km,
-                rating=rating,
+                comunas=comunas,
+                mecanico_cubre_comuna=cubre_comuna,
                 con_ubicacion_cliente=bool(punto),
+                catalogo_completo=catalogo_ok,
+                oferta_ofrece_repuestos=_oferta_ofrece_repuestos(oferta),
             )
-            score, sufijo_rep = _ajustar_score_match_repuestos(
-                score,
-                oferta,
-                requiere_repuestos_solicitud=requiere_repuestos,
-            )
-            if sufijo_rep and sufijo_rep not in expl:
-                expl = f'{expl}{sufijo_rep}'
-            score, sufijo_motor = _ajustar_score_match_motor(
-                score,
-                oferta,
-                tipo_motor_vehiculo=tipo_motor_vehiculo,
-            )
-            if sufijo_motor and sufijo_motor not in expl:
-                expl = f'{expl}{sufijo_motor}'
-            if not exigir_precio and not _oferta_catalogo_completa(
-                oferta, requiere_repuestos=requiere_repuestos
-            ):
+            resultado = calcular_score_coincidencia(oferta, ctx, perfil=perfil)
+            expl = resultado.explicacion
+            if not exigir_precio and not catalogo_ok:
                 expl = 'Precio del catálogo pendiente de configurar'
-            pool_meta.append((oferta, dist_km, _safe_float(score), expl))
+            pool_meta.append((
+                oferta,
+                dist_km,
+                _safe_float(resultado.score),
+                expl,
+                resultado.factores,
+            ))
         except Exception:
             stats['errores'] += 1
             logger.warning(
@@ -584,18 +602,18 @@ def _construir_pool_meta(
 
 
 def _ordenar_por_distancia_y_score(
-    candidatos_con_meta: list[tuple[OfertaServicio, float | None, float, str]],
+    candidatos_con_meta: list[PoolMetaItem],
 ) -> list[tuple[float, OfertaServicio, str]]:
     """Prioriza dentro del radio; si faltan, completa con los más cercanos fuera del radio."""
 
-    def sort_key(item: tuple[OfertaServicio, float | None, float, str]):
-        oferta, dist_km, score, _expl = item
+    def sort_key(item: PoolMetaItem):
+        oferta, dist_km, score, _expl, _fact = item
         en_radio = dist_km is not None and dist_km <= MAX_RADIO_KM
         dist_sort = dist_km if dist_km is not None else _DISTANCIA_SIN_UBICACION_KM
         return (0 if en_radio else 1, dist_sort, -score, oferta.id or 0)
 
     candidatos_con_meta.sort(key=sort_key)
-    return [(score, oferta, expl) for oferta, _d, score, expl in candidatos_con_meta]
+    return [(score, oferta, expl) for _o, _d, score, expl, _f in candidatos_con_meta]
 
 
 def _sort_key_candidato(cand: dict[str, Any]) -> tuple:
@@ -667,34 +685,32 @@ def _armar_candidatos_finales(
 
 
 def _mejor_oferta_por_proveedor(
-    pool_meta: list[tuple[OfertaServicio, float | None, float, str]],
-) -> list[tuple[OfertaServicio, float | None, float, str]]:
+    pool_meta: list[PoolMetaItem],
+) -> list[PoolMetaItem]:
     """Una oferta por usuario proveedor (la de mayor score_match)."""
-    por_uid: dict[int, tuple[OfertaServicio, float | None, float, str]] = {}
+    por_uid: dict[int, PoolMetaItem] = {}
 
-    for oferta, dist_km, score, expl in pool_meta:
+    for oferta, dist_km, score, expl, factores in pool_meta:
         uid, _ = _proveedor_usuario(oferta)
         if not uid:
             continue
         prev = por_uid.get(uid)
         if prev is None:
-            por_uid[uid] = (oferta, dist_km, score, expl)
+            por_uid[uid] = (oferta, dist_km, score, expl, factores)
             continue
-        _po, pd, ps, _ = prev
+        _po, pd, ps, _pe, _pf = prev
         dist_sort = dist_km if dist_km is not None else _DISTANCIA_SIN_UBICACION_KM
         prev_dist = pd if pd is not None else _DISTANCIA_SIN_UBICACION_KM
         if score > ps or (score == ps and dist_sort < prev_dist):
-            por_uid[uid] = (oferta, dist_km, score, expl)
+            por_uid[uid] = (oferta, dist_km, score, expl, factores)
 
     return list(por_uid.values())
 
 
-def _distancia_grupo_proveedor(
-    items: list[tuple[OfertaServicio, float | None, float, str]],
-) -> float | None:
+def _distancia_grupo_proveedor(items: list[PoolMetaItem]) -> float | None:
     """Menor distancia del grupo (misma lógica que al serializar candidato)."""
     dists = [
-        d for _, d, _, _ in items
+        d for _, d, _, _, _ in items
         if d is not None and d < _DISTANCIA_SIN_UBICACION_KM
     ]
     return min(dists) if dists else None
@@ -726,51 +742,51 @@ def _explicacion_fuera_radar(score: float, dist_km: float | None) -> str:
 
 
 def _agrupar_ofertas_validas_por_proveedor(
-    pool_meta: list[tuple[OfertaServicio, float | None, float, str]],
+    pool_meta: list[PoolMetaItem],
     *,
     requiere_repuestos: bool,
     punto: Point | None,
-) -> dict[int, list[tuple[OfertaServicio, float | None, float, str]]]:
+) -> dict[int, list[PoolMetaItem]]:
     """Todas las ofertas de catálogo válidas por usuario proveedor (no solo la mejor)."""
-    por_uid: dict[int, list[tuple[OfertaServicio, float | None, float, str]]] = {}
-    for oferta, dist_km, score, expl in pool_meta:
+    por_uid: dict[int, list[PoolMetaItem]] = {}
+    for oferta, dist_km, score, expl, factores in pool_meta:
         if not _oferta_catalogo_completa(oferta, requiere_repuestos=requiere_repuestos):
             continue
         uid, _ = _proveedor_usuario(oferta)
         if not uid:
             continue
-        por_uid.setdefault(uid, []).append((oferta, dist_km, score, expl))
+        por_uid.setdefault(uid, []).append((oferta, dist_km, score, expl, factores))
     return por_uid
 
 
 def _mejor_oferta_por_servicio_en_grupo(
-    items: list[tuple[OfertaServicio, float | None, float, str]],
+    items: list[PoolMetaItem],
     servicio_ids_pedidos: list[int],
     *,
     tipo_motor_vehiculo: str | None = None,
-) -> list[tuple[OfertaServicio, float | None, float, str]]:
+) -> list[PoolMetaItem]:
     from mecanimovilapp.apps.servicios.oferta_resolucion import prioridad_oferta_para_motor
 
     pedidos = {int(s) for s in servicio_ids_pedidos if s is not None}
-    por_servicio: dict[int, tuple[OfertaServicio, float | None, float, str]] = {}
-    for oferta, dist_km, score, expl in items:
+    por_servicio: dict[int, PoolMetaItem] = {}
+    for oferta, dist_km, score, expl, factores in items:
         sid = oferta.servicio_id
         if sid is None or sid not in pedidos:
             continue
         prio_motor = prioridad_oferta_para_motor(oferta, tipo_motor_vehiculo)
         prev = por_servicio.get(sid)
         if prev is None:
-            por_servicio[sid] = (oferta, dist_km, score, expl)
+            por_servicio[sid] = (oferta, dist_km, score, expl, factores)
             continue
-        prev_oferta, _pd, prev_score, _pe = prev
+        prev_oferta, _pd, prev_score, _pe, _pf = prev
         prev_prio = prioridad_oferta_para_motor(prev_oferta, tipo_motor_vehiculo)
         if prio_motor > prev_prio or (prio_motor == prev_prio and score > prev_score):
-            por_servicio[sid] = (oferta, dist_km, score, expl)
+            por_servicio[sid] = (oferta, dist_km, score, expl, factores)
     return list(por_servicio.values())
 
 
 def _serialize_candidato_proveedor(
-    items: list[tuple[OfertaServicio, float | None, float, str]],
+    items: list[PoolMetaItem],
     servicio_ids_pedidos: list[int],
     requiere_repuestos: bool,
     *,
@@ -794,7 +810,7 @@ def _serialize_candidato_proveedor(
     precio_total = 0.0
     oferta_ids: list[int] = []
 
-    for oferta, _dist, _score, _expl in sorted(
+    for oferta, _dist, _score, _expl, _fact in sorted(
         seleccionados, key=lambda x: (x[0].servicio_id or 0, -x[2])
     ):
         modo_desglose = _modo_desglose_oferta(oferta, requiere_repuestos)
@@ -824,7 +840,9 @@ def _serialize_candidato_proveedor(
     coberturas = len(servicios_ofrecidos)
     cobertura_pct = coberturas / pedidos_count if pedidos_count else 0.0
 
-    oferta_rep, dist_km_rep, score_base, expl_rep = max(seleccionados, key=lambda x: x[2])
+    oferta_rep, dist_km_rep, score_base, expl_rep, factores_rep = max(
+        seleccionados, key=lambda x: x[2],
+    )
     score_ajustado = min(0.99, _safe_float(score_base) * (0.6 + 0.4 * cobertura_pct))
 
     explicacion = explicacion_override or expl_rep
@@ -842,6 +860,7 @@ def _serialize_candidato_proveedor(
         es_coincidencia_exacta=es_coincidencia_exacta,
         request=request,
         tipo_motor_vehiculo=tipo_motor_vehiculo,
+        match_factores=factores_rep,
     )
     base['servicios_ofrecidos'] = servicios_ofrecidos
     base['detalles_servicios'] = [
@@ -871,19 +890,21 @@ def _serialize_candidato_proveedor(
         'catalogo_completo': True,
     }
     ofrece_rep_grupo = bool(seleccionados) and all(
-        _oferta_ofrece_repuestos(o) for o, _, _, _ in seleccionados
+        _oferta_ofrece_repuestos(o) for o, _, _, _, _ in seleccionados
     )
     base['ofrece_repuestos'] = ofrece_rep_grupo
     base['ofrece_solo_mano_obra'] = any(
-        _oferta_ofrece_solo_mano_obra(o) for o, _, _, _ in seleccionados
+        _oferta_ofrece_solo_mano_obra(o) for o, _, _, _, _ in seleccionados
     )
     base['solicitud_requiere_repuestos'] = requiere_repuestos
     rep_sum = sum(
         _safe_float(o.precio_con_repuestos)
-        for o, _, _, _ in seleccionados
+        for o, _, _, _, _ in seleccionados
         if _oferta_ofrece_repuestos(o)
     )
-    sin_sum = sum(_safe_float(o.precio_sin_repuestos) for o, _, _, _ in seleccionados)
+    sin_sum = sum(
+        _safe_float(o.precio_sin_repuestos) for o, _, _, _, _ in seleccionados
+    )
     base['precio_total'] = round(precio_total)
     if ofrece_rep_grupo and rep_sum > 0:
         base['precio_con_repuestos'] = round(rep_sum if rep_sum > 0 else precio_total)
@@ -909,7 +930,7 @@ def _serialize_candidato_proveedor(
 
 
 def _clasificar_recomendados_y_otros(
-    pool_meta: list[tuple[OfertaServicio, float | None, float, str]],
+    pool_meta: list[PoolMetaItem],
     *,
     servicio_ids_pedidos: list[int],
     requiere_repuestos: bool,
@@ -946,9 +967,10 @@ def _clasificar_recomendados_y_otros(
         rep_prio = 0
         if requiere_repuestos:
             rep_prio = 0 if cand.get('ofrece_repuestos') else 1
+        cobertura_prio = prioridad_orden_cobertura_proveedor(cand)
         if punto:
-            return (rep_prio, -score, dist_sort)
-        return (rep_prio, -score)
+            return (rep_prio, cobertura_prio, -score, dist_sort)
+        return (rep_prio, cobertura_prio, -score)
 
     grupos_ranked.sort(key=sort_grupo)
 
@@ -1077,6 +1099,7 @@ def _serialize_candidato(
     es_coincidencia_exacta: bool = True,
     request=None,
     tipo_motor_vehiculo: str | None = None,
+    match_factores: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     usuario_id, proveedor = _proveedor_usuario(oferta)
     nombre = ''
@@ -1159,6 +1182,7 @@ def _serialize_candidato(
         ),
         'tipo_motor': getattr(oferta, 'tipo_motor', '') or '',
         'motor_coincidencia': _motor_coincidencia_oferta(oferta, tipo_motor_vehiculo),
+        'match_factores': match_factores or {},
         'score_match': round(score_safe, 3),
         'explicacion': explicacion,
         'es_recomendado': es_coincidencia_exacta,
@@ -1228,21 +1252,21 @@ def listar_candidatos_proveedor(
     tipo_motor_vehiculo = getattr(vehiculo, 'tipo_motor', None)
     pool_meta, stats = _construir_pool_meta(
         qs,
+        vehiculo=vehiculo,
         punto=punto,
         requiere_repuestos=requiere_repuestos,
         exigir_precio=True,
         comunas=comunas,
-        tipo_motor_vehiculo=tipo_motor_vehiculo,
     )
     uso_fallback_precio = False
     if not pool_meta and count_qs > 0:
         pool_meta, stats = _construir_pool_meta(
             qs,
+            vehiculo=vehiculo,
             punto=punto,
             requiere_repuestos=requiere_repuestos,
             exigir_precio=False,
             comunas=comunas,
-            tipo_motor_vehiculo=tipo_motor_vehiculo,
         )
         uso_fallback_precio = bool(pool_meta)
 
@@ -1268,25 +1292,7 @@ def listar_candidatos_proveedor(
             },
         }
 
-    if not punto:
-        ids = [o.id for o, _, _, _ in pool_meta]
-        try:
-            motor = MotorRecomendaciones()
-            ordered = motor.ordenar_por_relevancia(
-                OfertaServicio.objects.filter(id__in=ids).select_related(
-                    'servicio', 'taller', 'mecanico', 'taller__usuario', 'mecanico__usuario'
-                ),
-                vehiculo,
-            )
-            orden_ids = [o.id for o in (ordered if isinstance(ordered, list) else list(ordered))]
-            pool_meta.sort(
-                key=lambda item: (
-                    orden_ids.index(item[0].id) if item[0].id in orden_ids else 9999,
-                    -(item[2]),
-                )
-            )
-        except Exception:
-            pool_meta.sort(key=lambda item: -item[2])
+    pool_meta.sort(key=lambda item: -item[2])
 
     candidatos_recomendados, otros_candidatos = _clasificar_recomendados_y_otros(
         pool_meta,
