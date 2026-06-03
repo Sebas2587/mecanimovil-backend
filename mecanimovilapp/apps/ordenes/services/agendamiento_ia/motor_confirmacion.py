@@ -24,6 +24,10 @@ from mecanimovilapp.apps.ordenes.services import adjudicacion_publica
 from mecanimovilapp.apps.ordenes.services.agendamiento_ia.motor_match import (
     _oferta_ofrece_repuestos,
 )
+from mecanimovilapp.apps.ordenes.ubicacion_servicio_proveedor import (
+    punto_ubicacion_taller,
+    texto_direccion_taller,
+)
 from mecanimovilapp.apps.servicios.models import OfertaServicio, Servicio
 from mecanimovilapp.apps.usuarios.models import Cliente, Usuario
 from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
@@ -309,7 +313,12 @@ def confirmar_candidato(cliente: Cliente, payload: dict[str, Any]) -> dict[str, 
 
     ofertas_servicio = list(
         OfertaServicio.objects.select_related(
-            'servicio', 'taller', 'taller__usuario', 'mecanico', 'mecanico__usuario'
+            'servicio',
+            'taller',
+            'taller__usuario',
+            'taller__direccion_fisica',
+            'mecanico',
+            'mecanico__usuario',
         )
         .filter(pk__in=oferta_servicio_ids, disponible=True)
         .order_by('servicio_id', 'id')
@@ -360,12 +369,34 @@ def confirmar_candidato(cliente: Cliente, payload: dict[str, Any]) -> dict[str, 
         coords = ubicacion.get('coordinates') if isinstance(ubicacion, dict) else None
         if coords and len(coords) >= 2:
             lng, lat = float(coords[0]), float(coords[1])
-    if lat is None or lng is None:
-        raise ConfirmacionCatalogoError('Ubicación (lat/lng) es obligatoria', 'ubicacion_requerida')
 
     direccion_texto = (payload.get('direccion_servicio_texto') or '').strip()
-    if not direccion_texto:
-        raise ConfirmacionCatalogoError('direccion_servicio_texto es obligatoria', 'direccion_requerida')
+
+    if tipo_proveedor == 'taller':
+        taller = ofertas_servicio[0].taller
+        if not taller:
+            raise ConfirmacionCatalogoError('Taller de catálogo inválido', 'proveedor_invalido')
+        punto_taller = punto_ubicacion_taller(taller)
+        if punto_taller is None:
+            raise ConfirmacionCatalogoError(
+                'El taller no tiene ubicación configurada',
+                'taller_sin_ubicacion',
+            )
+        lng, lat = float(punto_taller.x), float(punto_taller.y)
+        direccion_texto = texto_direccion_taller(taller) or direccion_texto
+        if not direccion_texto:
+            raise ConfirmacionCatalogoError(
+                'El taller no tiene dirección configurada',
+                'taller_sin_direccion',
+            )
+    else:
+        if lat is None or lng is None:
+            raise ConfirmacionCatalogoError('Ubicación (lat/lng) es obligatoria', 'ubicacion_requerida')
+        if not direccion_texto:
+            raise ConfirmacionCatalogoError(
+                'direccion_servicio_texto es obligatoria',
+                'direccion_requerida',
+            )
 
     ahora = timezone.now()
     fecha_expiracion = SolicitudServicioPublica.compute_default_fecha_expiracion(

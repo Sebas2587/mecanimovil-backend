@@ -17,6 +17,7 @@ from mecanimovilapp.apps.personalizacion.models import PerfilVehiculo
 from mecanimovilapp.apps.servicios.models import OfertaServicio
 from mecanimovilapp.apps.servicios.repuestos_info import build_repuestos_info
 from mecanimovilapp.apps.usuarios.models import ChileanCommune, MechanicServiceArea
+from mecanimovilapp.apps.ordenes.ubicacion_servicio_proveedor import texto_direccion_taller
 from mecanimovilapp.apps.vehiculos.models import Vehiculo
 from mecanimovilapp.storage.utils import get_image_url
 
@@ -373,6 +374,7 @@ def _queryset_ofertas_compatibles(
         qs.select_related(
             'servicio',
             'taller',
+            'taller__direccion_fisica',
             'mecanico',
             'marca_vehiculo_seleccionada',
         )
@@ -395,6 +397,7 @@ def _queryset_ofertas_compatibles(
     return OfertaServicio.objects.filter(id__in=ids).select_related(
         'servicio',
         'taller',
+        'taller__direccion_fisica',
         'mecanico',
         'marca_vehiculo_seleccionada',
     )
@@ -1135,9 +1138,14 @@ def _serialize_candidato(
         oferta, requiere_repuestos=requiere_repuestos, request=request
     )
     precio_detalle = _safe_float(desglose.get('precio_publicado_cliente'))
+    direccion_proveedor = None
+    if oferta.tipo_proveedor == 'taller' and proveedor:
+        direccion_proveedor = texto_direccion_taller(proveedor)
 
     return {
         'oferta_servicio_id': oferta.id,
+        'tipo_proveedor': oferta.tipo_proveedor,
+        'direccion_proveedor': direccion_proveedor,
         'proveedor': {
             'usuario_id': str(usuario_id) if usuario_id else None,
             'proveedor_id': oferta.taller_id or oferta.mecanico_id,

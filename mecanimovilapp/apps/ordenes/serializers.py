@@ -27,6 +27,10 @@ from .services.solicitud_activa import (
     normalizar_servicio_ids,
     verificar_servicio_activo_duplicado,
 )
+from mecanimovilapp.apps.ordenes.ubicacion_servicio_proveedor import (
+    direccion_servicio_texto_para_solicitud,
+    modalidad_servicio_dict,
+)
 
 # Helper para URLs de archivos en cPanel
 from mecanimovilapp.storage.utils import get_cpanel_file_url, get_image_url
@@ -1574,6 +1578,8 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
     estado_display_efectivo = serializers.SerializerMethodField()
     rechazos = serializers.SerializerMethodField()
     oferta_seleccionada_detail = serializers.SerializerMethodField()
+    modalidad_servicio = serializers.SerializerMethodField()
+    tipo_proveedor_servicio = serializers.SerializerMethodField()
     puede_reenviar = serializers.SerializerMethodField()
     fotos_necesidad = serializers.SerializerMethodField()
     fotos_necesidad_data = serializers.ListField(
@@ -1596,6 +1602,7 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
             'servicios_solicitados', 'servicios_solicitados_detail',
             'direccion_usuario', 'direccion_usuario_info',
             'ubicacion_servicio', 'direccion_servicio_texto', 'detalles_ubicacion',
+            'modalidad_servicio', 'tipo_proveedor_servicio',
             'fecha_preferida', 'hora_preferida', 'estado', 'estado_display', 'fecha_creacion',
             'fecha_publicacion', 'fecha_expiracion', 'fecha_limite_pago', 'tiempo_restante',
             'puede_recibir_ofertas', 'puede_ver_datos_cliente', 'total_ofertas', 'total_visualizaciones',
@@ -1843,6 +1850,23 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
         if obj.oferta_seleccionada:
             return OfertaProveedorSerializer(obj.oferta_seleccionada, context=self.context).data
         return None
+
+    def _taller_oferta_seleccionada(self, obj):
+        oferta = getattr(obj, 'oferta_seleccionada', None)
+        if not oferta or oferta.tipo_proveedor != 'taller':
+            return None
+        proveedor = getattr(oferta, 'proveedor', None)
+        if proveedor and hasattr(proveedor, 'taller'):
+            return proveedor.taller
+        return None
+
+    def get_tipo_proveedor_servicio(self, obj):
+        if obj.oferta_seleccionada_id and obj.oferta_seleccionada:
+            return obj.oferta_seleccionada.tipo_proveedor
+        return None
+
+    def get_modalidad_servicio(self, obj):
+        return modalidad_servicio_dict(self.get_tipo_proveedor_servicio(obj))
     
     def get_rechazos(self, obj):
         """Retorna los rechazos de la solicitud"""
@@ -1950,6 +1974,16 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
                 data['cliente'] = None
                 # Tambi?n ocultar direccion_usuario (ID) pero mantener direccion_usuario_info con datos limitados
                 data['direccion_usuario'] = None
+
+        tipo_prov = data.get('tipo_proveedor_servicio')
+        if tipo_prov == 'taller':
+            taller = self._taller_oferta_seleccionada(instance)
+            if taller:
+                data['direccion_servicio_texto'] = direccion_servicio_texto_para_solicitud(
+                    direccion_guardada=instance.direccion_servicio_texto or '',
+                    tipo_proveedor='taller',
+                    taller=taller,
+                )
         
         return data
     

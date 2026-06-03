@@ -2746,7 +2746,12 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
         return SolicitudServicioPublica.objects.filter(
             cliente=cliente
         ).select_related(
-            'cliente', 'cliente__usuario', 'vehiculo', 'direccion_usuario'
+            'cliente',
+            'cliente__usuario',
+            'vehiculo',
+            'direccion_usuario',
+            'oferta_seleccionada',
+            'oferta_seleccionada__proveedor__taller__direccion_fisica',
         ).prefetch_related(
             'servicios_solicitados', 'proveedores_dirigidos', 'ofertas', 'fotos_necesidad'
         )
@@ -2765,7 +2770,12 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
         
         if user.is_staff or user.is_superuser:
             return SolicitudServicioPublica.objects.select_related(
-                'cliente', 'cliente__usuario', 'vehiculo', 'direccion_usuario'
+                'cliente',
+                'cliente__usuario',
+                'vehiculo',
+                'direccion_usuario',
+                'oferta_seleccionada',
+                'oferta_seleccionada__proveedor__taller__direccion_fisica',
             ).prefetch_related('servicios_solicitados', 'proveedores_dirigidos', 'ofertas', 'fotos_necesidad')
         
         cliente = Cliente.objects.filter(usuario=user).first()
@@ -2842,7 +2852,13 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
         queryset = SolicitudServicioPublica.objects.filter(query).exclude(pk=None).distinct()
         
         return queryset.select_related(
-            'cliente', 'cliente__usuario', 'vehiculo', 'vehiculo__marca', 'direccion_usuario', 'oferta_seleccionada'
+            'cliente',
+            'cliente__usuario',
+            'vehiculo',
+            'vehiculo__marca',
+            'direccion_usuario',
+            'oferta_seleccionada',
+            'oferta_seleccionada__proveedor__taller__direccion_fisica',
         ).prefetch_related('servicios_solicitados', 'proveedores_dirigidos', 'ofertas', 'rechazos', 'fotos_necesidad')
     
     def list(self, request, *args, **kwargs):
