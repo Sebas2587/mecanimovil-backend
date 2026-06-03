@@ -8,6 +8,7 @@ from django.db.models import Q
 
 from mecanimovilapp.apps.servicios.models import OfertaServicio
 from mecanimovilapp.apps.servicios.oferta_resolucion import resolver_ofertas_preferidas_por_marca
+from mecanimovilapp.apps.vehiculos.catalogo_resolver import normalizar_tipo_motor_vehiculo
 
 PANEL_SERVICIOS_DEFAULT_LIMIT = 3
 
@@ -33,10 +34,17 @@ def _serialize_panel_item(oferta) -> dict:
         'precio': precio,
         'precio_publicado_cliente': precio_pub,
         'tipo_servicio': oferta.tipo_servicio or 'sin_repuestos',
+        'tipo_motor': getattr(oferta, 'tipo_motor', '') or '',
     }
 
 
-def fetch_panel_servicios_map(tipo_proveedor, provider_ids, marca_id=None, limit=None):
+def fetch_panel_servicios_map(
+    tipo_proveedor,
+    provider_ids,
+    marca_id=None,
+    tipo_motor=None,
+    limit=None,
+):
     """
     Devuelve {proveedor_id: [{servicio_id, nombre, precio, ...}, ...]} ordenado por precio asc.
     """
@@ -59,9 +67,18 @@ def fetch_panel_servicios_map(tipo_proveedor, provider_ids, marca_id=None, limit
             Q(marca_vehiculo_seleccionada_id=marca_id) | Q(marca_vehiculo_seleccionada__isnull=True)
         )
 
+    if tipo_motor:
+        motor = normalizar_tipo_motor_vehiculo(tipo_motor)
+        qs = qs.filter(Q(tipo_motor='') | Q(tipo_motor=motor)).filter(
+            Q(servicio__tipos_motor_compatibles=[])
+            | Q(servicio__tipos_motor_compatibles__contains=[motor])
+        )
+
     ofertas_raw = list(qs)
-    if marca_id:
-        ofertas_raw = resolver_ofertas_preferidas_por_marca(ofertas_raw, marca_id)
+    if marca_id or tipo_motor:
+        ofertas_raw = resolver_ofertas_preferidas_por_marca(
+            ofertas_raw, marca_id, tipo_motor=tipo_motor
+        )
 
     ofertas_raw.sort(
         key=lambda o: (
@@ -105,11 +122,23 @@ def resolve_marca_id_from_request(request):
         )
 
 
-def attach_panel_servicios_to_proveedores(proveedores, tipo_proveedor, marca_id=None, limit=None):
+def attach_panel_servicios_to_proveedores(
+    proveedores,
+    tipo_proveedor,
+    marca_id=None,
+    tipo_motor=None,
+    limit=None,
+):
     """Adjunta `_panel_servicios_cache` en cada instancia para el serializer."""
     if not proveedores:
         return
     ids = [p.id for p in proveedores]
-    by_id = fetch_panel_servicios_map(tipo_proveedor, ids, marca_id=marca_id, limit=limit)
+    by_id = fetch_panel_servicios_map(
+        tipo_proveedor,
+        ids,
+        marca_id=marca_id,
+        tipo_motor=tipo_motor,
+        limit=limit,
+    )
     for prov in proveedores:
         prov._panel_servicios_cache = by_id.get(prov.id, [])

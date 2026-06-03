@@ -1,7 +1,8 @@
 """
-Resolución de OfertaServicio por marca del vehículo.
+Resolución de OfertaServicio por marca y tipo de motor del vehículo.
 
-Regla: oferta con marca explícita > oferta genérica (marca null) > sin oferta.
+Regla marca: oferta con marca explícita > oferta genérica (marca null) > sin oferta.
+Regla motor: oferta con motor exacto > oferta universal (tipo_motor '') > motor distinto.
 Aplica a multimarca y especialistas por igual.
 """
 from __future__ import annotations
@@ -51,14 +52,53 @@ def prioridad_oferta_para_marca(oferta: Any, marca_id: int | None) -> int:
     return -2
 
 
+def prioridad_oferta_para_motor(oferta: Any, tipo_motor_vehiculo: str | None) -> int:
+    """
+    Mayor valor = más preferida para el motor del vehículo.
+    -2: motor distinto al del vehículo
+     0: oferta universal cuando el vehículo tiene motor conocido
+     1: sin contexto de motor del vehículo
+     2: motor exacto
+    """
+    from mecanimovilapp.apps.servicios.oferta_compatibilidad import normalizar_tipo_motor_oferta
+    from mecanimovilapp.apps.vehiculos.catalogo_resolver import normalizar_tipo_motor_vehiculo
+
+    tipo_oferta = normalizar_tipo_motor_oferta(getattr(oferta, 'tipo_motor', None))
+    if not tipo_motor_vehiculo or not str(tipo_motor_vehiculo).strip():
+        return 1
+
+    motor_v = normalizar_tipo_motor_vehiculo(tipo_motor_vehiculo)
+    if not tipo_oferta:
+        return 0
+    if tipo_oferta == motor_v:
+        return 2
+    return -2
+
+
+def prioridad_oferta_combinada(
+    oferta: Any,
+    marca_id: int | None,
+    tipo_motor_vehiculo: str | None = None,
+) -> int:
+    """Combina prioridad de marca y motor (marca pesa más)."""
+    pm = prioridad_oferta_para_marca(oferta, marca_id)
+    if pm < 0:
+        return pm
+    pt = prioridad_oferta_para_motor(oferta, tipo_motor_vehiculo)
+    if pt < 0:
+        return pt
+    return pm * 10 + pt
+
+
 def resolver_ofertas_preferidas_por_marca(
     ofertas: Iterable[Any],
     marca: Any,
     *,
     servicio_id_attr: str = 'servicio_id',
+    tipo_motor: str | None = None,
 ) -> list[Any]:
     """
-    Por (proveedor, servicio_id) conserva la oferta más específica para la marca.
+    Por (proveedor, servicio_id) conserva la oferta más específica para marca y motor.
     """
     marca_id = _marca_id(marca)
     mejores: dict[tuple[tuple[str, int], int], Any] = {}
@@ -70,7 +110,7 @@ def resolver_ofertas_preferidas_por_marca(
         if pk is None or sid is None:
             continue
         key = (pk, int(sid))
-        prio = prioridad_oferta_para_marca(oferta, marca_id)
+        prio = prioridad_oferta_combinada(oferta, marca_id, tipo_motor)
         if prio < 0:
             continue
         prev_prio = prioridades.get(key)
@@ -81,13 +121,18 @@ def resolver_ofertas_preferidas_por_marca(
     return list(mejores.values())
 
 
-def elegir_mejor_oferta_entre(candidatas: Iterable[Any], marca: Any) -> Any | None:
+def elegir_mejor_oferta_entre(
+    candidatas: Iterable[Any],
+    marca: Any,
+    *,
+    tipo_motor: str | None = None,
+) -> Any | None:
     """Elige una oferta entre candidatas del mismo proveedor/servicio."""
     marca_id = _marca_id(marca)
     mejor = None
     mejor_prio = -3
     for oferta in candidatas:
-        prio = prioridad_oferta_para_marca(oferta, marca_id)
+        prio = prioridad_oferta_combinada(oferta, marca_id, tipo_motor)
         if prio > mejor_prio:
             mejor = oferta
             mejor_prio = prio

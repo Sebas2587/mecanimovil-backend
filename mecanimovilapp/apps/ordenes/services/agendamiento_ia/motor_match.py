@@ -232,6 +232,42 @@ def _ajustar_score_match_repuestos(
     return max(0.08, _safe_float(score) * 0.78), ' · Solo mano de obra en catálogo'
 
 
+def _ajustar_score_match_motor(
+    score: float,
+    oferta: OfertaServicio,
+    *,
+    tipo_motor_vehiculo: str | None,
+) -> tuple[float, str | None]:
+    """Refina score_match según coincidencia de tipo de motor."""
+    if not tipo_motor_vehiculo or not str(tipo_motor_vehiculo).strip():
+        return score, None
+
+    from mecanimovilapp.apps.servicios.oferta_resolucion import prioridad_oferta_para_motor
+
+    prio = prioridad_oferta_para_motor(oferta, tipo_motor_vehiculo)
+    if prio == 2:
+        return min(0.99, _safe_float(score) * 1.1 + 0.06), ' · Precio para tu tipo de motor'
+    if prio == 0:
+        return max(0.08, _safe_float(score) * 0.93), None
+    return score, None
+
+
+def _motor_coincidencia_oferta(
+    oferta: OfertaServicio,
+    tipo_motor_vehiculo: str | None,
+) -> str:
+    from mecanimovilapp.apps.servicios.oferta_resolucion import prioridad_oferta_para_motor
+
+    if not tipo_motor_vehiculo or not str(tipo_motor_vehiculo).strip():
+        return ''
+    prio = prioridad_oferta_para_motor(oferta, tipo_motor_vehiculo)
+    if prio == 2:
+        return 'exacta'
+    if prio == 0:
+        return 'universal'
+    return 'incompatible'
+
+
 def _modo_desglose_oferta(oferta: OfertaServicio, requiere_repuestos_solicitud: bool) -> bool:
     """True = desglose/precio con repuestos; False = solo mano de obra para mostrar."""
     if not requiere_repuestos_solicitud:
@@ -328,7 +364,9 @@ def _queryset_ofertas_compatibles(
         )
     )
     count_antes_resolver = len(ofertas_list)
-    resueltas = resolver_ofertas_preferidas_por_marca(ofertas_list, marca)
+    resueltas = resolver_ofertas_preferidas_por_marca(
+        ofertas_list, marca, tipo_motor=tipo_motor
+    )
     ids = [o.id for o in resueltas if o.id]
     if not ids and count_antes_resolver > 0:
         logger.warning(
@@ -482,6 +520,7 @@ def _construir_pool_meta(
     requiere_repuestos: bool,
     exigir_precio: bool,
     comunas: list[str],
+    tipo_motor_vehiculo: str | None = None,
 ) -> tuple[list[tuple[OfertaServicio, float | None, float, str]], dict[str, int]]:
     pool_meta: list[tuple[OfertaServicio, float | None, float, str]] = []
     stats = {'evaluadas': 0, 'sin_precio': 0, 'sin_proveedor': 0, 'errores': 0}
@@ -521,6 +560,13 @@ def _construir_pool_meta(
             )
             if sufijo_rep and sufijo_rep not in expl:
                 expl = f'{expl}{sufijo_rep}'
+            score, sufijo_motor = _ajustar_score_match_motor(
+                score,
+                oferta,
+                tipo_motor_vehiculo=tipo_motor_vehiculo,
+            )
+            if sufijo_motor and sufijo_motor not in expl:
+                expl = f'{expl}{sufijo_motor}'
             if not exigir_precio and not _oferta_catalogo_completa(
                 oferta, requiere_repuestos=requiere_repuestos
             ):
@@ -700,15 +746,25 @@ def _agrupar_ofertas_validas_por_proveedor(
 def _mejor_oferta_por_servicio_en_grupo(
     items: list[tuple[OfertaServicio, float | None, float, str]],
     servicio_ids_pedidos: list[int],
+    *,
+    tipo_motor_vehiculo: str | None = None,
 ) -> list[tuple[OfertaServicio, float | None, float, str]]:
+    from mecanimovilapp.apps.servicios.oferta_resolucion import prioridad_oferta_para_motor
+
     pedidos = {int(s) for s in servicio_ids_pedidos if s is not None}
     por_servicio: dict[int, tuple[OfertaServicio, float | None, float, str]] = {}
     for oferta, dist_km, score, expl in items:
         sid = oferta.servicio_id
         if sid is None or sid not in pedidos:
             continue
+        prio_motor = prioridad_oferta_para_motor(oferta, tipo_motor_vehiculo)
         prev = por_servicio.get(sid)
-        if prev is None or score > prev[2]:
+        if prev is None:
+            por_servicio[sid] = (oferta, dist_km, score, expl)
+            continue
+        prev_oferta, _pd, prev_score, _pe = prev
+        prev_prio = prioridad_oferta_para_motor(prev_oferta, tipo_motor_vehiculo)
+        if prio_motor > prev_prio or (prio_motor == prev_prio and score > prev_score):
             por_servicio[sid] = (oferta, dist_km, score, expl)
     return list(por_servicio.values())
 
@@ -721,9 +777,14 @@ def _serialize_candidato_proveedor(
     es_coincidencia_exacta: bool,
     request=None,
     explicacion_override: str | None = None,
+    tipo_motor_vehiculo: str | None = None,
 ) -> dict[str, Any] | None:
     """Un candidato por proveedor con N servicios del pedido y precio total sumado."""
-    seleccionados = _mejor_oferta_por_servicio_en_grupo(items, servicio_ids_pedidos)
+    seleccionados = _mejor_oferta_por_servicio_en_grupo(
+        items,
+        servicio_ids_pedidos,
+        tipo_motor_vehiculo=tipo_motor_vehiculo,
+    )
     if not seleccionados:
         return None
 
@@ -749,6 +810,8 @@ def _serialize_candidato_proveedor(
             'nombre': nombre_svc,
             'precio': precio_item,
             'oferta_servicio_id': oferta.id,
+            'tipo_motor': getattr(oferta, 'tipo_motor', '') or '',
+            'motor_coincidencia': _motor_coincidencia_oferta(oferta, tipo_motor_vehiculo),
             'desglose': d,
             'repuestos_info': repuestos_info,
         })
@@ -778,6 +841,7 @@ def _serialize_candidato_proveedor(
         dist_km=dist_km_rep,
         es_coincidencia_exacta=es_coincidencia_exacta,
         request=request,
+        tipo_motor_vehiculo=tipo_motor_vehiculo,
     )
     base['servicios_ofrecidos'] = servicios_ofrecidos
     base['detalles_servicios'] = [
@@ -851,6 +915,7 @@ def _clasificar_recomendados_y_otros(
     requiere_repuestos: bool,
     punto: Point | None,
     request=None,
+    tipo_motor_vehiculo: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """
     Coincidencia exacta: mejores proveedores dentro del radar (≤ MAX_RADIO_KM) desde la dirección.
@@ -868,6 +933,7 @@ def _clasificar_recomendados_y_otros(
             requiere_repuestos,
             es_coincidencia_exacta=True,
             request=request,
+            tipo_motor_vehiculo=tipo_motor_vehiculo,
         )
         if cand:
             grupos_ranked.append((uid, items, cand))
@@ -920,6 +986,7 @@ def _clasificar_recomendados_y_otros(
             es_coincidencia_exacta=False,
             request=request,
             explicacion_override=expl_override,
+            tipo_motor_vehiculo=tipo_motor_vehiculo,
         )
         if otro:
             otros.append(otro)
@@ -1009,6 +1076,7 @@ def _serialize_candidato(
     dist_km: float | None = None,
     es_coincidencia_exacta: bool = True,
     request=None,
+    tipo_motor_vehiculo: str | None = None,
 ) -> dict[str, Any]:
     usuario_id, proveedor = _proveedor_usuario(oferta)
     nombre = ''
@@ -1089,6 +1157,8 @@ def _serialize_candidato(
         'dentro_radio_km': (
             dist_km is not None and dist_km <= MAX_RADIO_KM
         ),
+        'tipo_motor': getattr(oferta, 'tipo_motor', '') or '',
+        'motor_coincidencia': _motor_coincidencia_oferta(oferta, tipo_motor_vehiculo),
         'score_match': round(score_safe, 3),
         'explicacion': explicacion,
         'es_recomendado': es_coincidencia_exacta,
@@ -1155,12 +1225,14 @@ def listar_candidatos_proveedor(
             servicio_ids,
             count_sin_resolver,
         )
+    tipo_motor_vehiculo = getattr(vehiculo, 'tipo_motor', None)
     pool_meta, stats = _construir_pool_meta(
         qs,
         punto=punto,
         requiere_repuestos=requiere_repuestos,
         exigir_precio=True,
         comunas=comunas,
+        tipo_motor_vehiculo=tipo_motor_vehiculo,
     )
     uso_fallback_precio = False
     if not pool_meta and count_qs > 0:
@@ -1170,6 +1242,7 @@ def listar_candidatos_proveedor(
             requiere_repuestos=requiere_repuestos,
             exigir_precio=False,
             comunas=comunas,
+            tipo_motor_vehiculo=tipo_motor_vehiculo,
         )
         uso_fallback_precio = bool(pool_meta)
 
@@ -1221,6 +1294,7 @@ def listar_candidatos_proveedor(
         requiere_repuestos=requiere_repuestos,
         punto=punto,
         request=request,
+        tipo_motor_vehiculo=tipo_motor_vehiculo,
     )
 
     def _cuenta_rep(cands: list[dict[str, Any]]) -> dict[str, int]:

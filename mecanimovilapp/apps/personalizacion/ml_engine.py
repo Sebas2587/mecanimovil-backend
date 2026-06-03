@@ -558,6 +558,17 @@ class MotorRecomendaciones:
             categoria_id = oferta.servicio.categorias.first()
             if categoria_id and str(categoria_id.id) in perfil.categorias_frecuentes:
                 score += 0.3
+
+            # Score por coincidencia de tipo de motor
+            from mecanimovilapp.apps.servicios.oferta_resolucion import prioridad_oferta_para_motor
+
+            prio_motor = prioridad_oferta_para_motor(oferta, getattr(vehiculo, 'tipo_motor', None))
+            if prio_motor == 2:
+                score += 0.35
+            elif prio_motor == 0:
+                score += 0.08
+            elif prio_motor < 0:
+                score -= 0.5
             
             ofertas_scores.append((oferta, score))
         

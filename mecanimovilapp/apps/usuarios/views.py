@@ -2198,7 +2198,12 @@ class TallerViewSet(viewsets.ModelViewSet):
         logger.info(f"✅ Talleres encontrados: {queryset.count()}")
         ordered = _order_proveedores_by_kpi_relevancia(list(queryset), window_days=30)
         if request_wants_panel_servicios(request):
-            attach_panel_servicios_to_proveedores(ordered, 'taller', marca_id=marca_vehiculo.id)
+            attach_panel_servicios_to_proveedores(
+                ordered,
+                'taller',
+                marca_id=marca_vehiculo.id,
+                tipo_motor=getattr(vehiculo, 'tipo_motor', None),
+            )
         serializer = self.get_serializer(ordered, many=True)
         return Response({
             "talleres": serializer.data,
@@ -3045,7 +3050,12 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
         logger.info(f"✅ Mecánicos encontrados: {queryset.count()}")
         ordered = _order_proveedores_by_kpi_relevancia(list(queryset), window_days=30)
         if request_wants_panel_servicios(request):
-            attach_panel_servicios_to_proveedores(ordered, 'mecanico', marca_id=marca_vehiculo.id)
+            attach_panel_servicios_to_proveedores(
+                ordered,
+                'mecanico',
+                marca_id=marca_vehiculo.id,
+                tipo_motor=getattr(vehiculo, 'tipo_motor', None),
+            )
         serializer = self.get_serializer(ordered, many=True)
         return Response({
             "mecanicos": serializer.data,
