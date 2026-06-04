@@ -6,8 +6,23 @@ from django.test import SimpleTestCase
 
 from mecanimovilapp.apps.ordenes.services.agendamiento_ia.motor_match import (
     _mejor_oferta_por_servicio_en_grupo,
+    _oferta_catalogo_completa,
     _serialize_candidato_proveedor,
 )
+
+
+class OfertaCatalogoCompletaTests(SimpleTestCase):
+    def test_solo_mo_solicitud_incluye_oferta_solo_repuestos(self):
+        oferta = SimpleNamespace(
+            disponible=True,
+            precio_con_repuestos=50000,
+            precio_sin_repuestos=0,
+            precio_publicado_cliente=50000,
+            costo_repuestos_sin_iva=10000,
+            tipo_servicio='con_repuestos',
+            repuestos_seleccionados=[{'nombre': 'Batería'}],
+        )
+        self.assertTrue(_oferta_catalogo_completa(oferta, requiere_repuestos=False))
 
 
 class MotorMatchMultiServicioTests(SimpleTestCase):
@@ -150,7 +165,10 @@ class MotorMatchMultiServicioTests(SimpleTestCase):
         self.assertIsNotNone(cand)
         self.assertTrue(cand['requiere_repuestos_obligatorio'])
         self.assertEqual(cand['servicios_ofrecidos'][0]['precio'], 14000)
+        self.assertFalse(cand['servicios_ofrecidos'][0]['incluye_repuestos_efectivo'])
         self.assertEqual(cand['servicios_ofrecidos'][1]['precio'], 39270)
+        self.assertTrue(cand['servicios_ofrecidos'][1]['incluye_repuestos_efectivo'])
+        self.assertTrue(cand['servicios_ofrecidos'][1]['ofrece_repuestos_catalogo'])
         self.assertEqual(cand['precio_total'], 53270)
 
     def test_mejor_oferta_por_servicio_elige_mayor_score(self):

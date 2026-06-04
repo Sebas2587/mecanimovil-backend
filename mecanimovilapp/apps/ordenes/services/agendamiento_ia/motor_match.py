@@ -241,13 +241,28 @@ def _oferta_ofrece_solo_mano_obra(oferta: OfertaServicio) -> bool:
     return precio_pub > 0
 
 
+def _oferta_tiene_precio_publicado(oferta: OfertaServicio) -> bool:
+    return (
+        _safe_float(oferta.precio_con_repuestos) > 0
+        or _safe_float(oferta.precio_sin_repuestos) > 0
+        or _safe_float(oferta.precio_publicado_cliente) > 0
+    )
+
+
 def _oferta_catalogo_completa(oferta: OfertaServicio, *, requiere_repuestos: bool) -> bool:
     """Catálogo con precio publicado (misma lógica práctica que listados de servicios)."""
     if not oferta.disponible:
         return False
+    if not _oferta_tiene_precio_publicado(oferta):
+        return False
     if requiere_repuestos:
         return _oferta_ofrece_repuestos(oferta) or _oferta_ofrece_solo_mano_obra(oferta)
-    return _oferta_ofrece_solo_mano_obra(oferta)
+    # Solo MO solicitado: incluir proveedores con catálogo MO, con repuestos o ambos.
+    return (
+        _oferta_ofrece_repuestos(oferta)
+        or _oferta_permite_solo_mano_obra(oferta)
+        or _oferta_ofrece_solo_mano_obra(oferta)
+    )
 
 
 def _ajustar_score_match_repuestos(
@@ -256,8 +271,14 @@ def _ajustar_score_match_repuestos(
     *,
     requiere_repuestos_solicitud: bool,
 ) -> tuple[float, str | None]:
-    """Prioriza match con repuestos en catálogo cuando el cliente los solicitó."""
+    """Prioriza alineación repuestos según preferencia del cliente."""
     if not requiere_repuestos_solicitud:
+        if _oferta_ofrece_repuestos(oferta) and not _oferta_permite_solo_mano_obra(oferta):
+            return score, ' · Catálogo incluye repuestos'
+        if _oferta_permite_solo_mano_obra(oferta) and not _oferta_ofrece_repuestos(oferta):
+            return min(0.99, _safe_float(score) * 1.05 + 0.02), None
+        if _oferta_permite_solo_mano_obra(oferta):
+            return min(0.99, _safe_float(score) * 1.03), None
         return score, None
     if _oferta_ofrece_repuestos(oferta):
         return min(0.99, _safe_float(score) * 1.12 + 0.04), None
@@ -600,6 +621,7 @@ def _construir_pool_meta(
                 con_ubicacion_cliente=bool(punto),
                 catalogo_completo=catalogo_ok,
                 oferta_ofrece_repuestos=_oferta_ofrece_repuestos(oferta),
+                oferta_permite_solo_mano_obra=_oferta_permite_solo_mano_obra(oferta),
             )
             resultado = calcular_score_coincidencia(oferta, ctx, perfil=perfil)
             expl = resultado.explicacion
@@ -854,6 +876,7 @@ def _serialize_candidato_proveedor(
             'repuestos_info': repuestos_info,
             'incluye_repuestos_efectivo': modo_desglose,
             'permite_solo_mano_obra': _oferta_permite_solo_mano_obra(oferta),
+            'ofrece_repuestos_catalogo': _oferta_ofrece_repuestos(oferta),
         })
         mo_total += _safe_float(d['mano_obra'])
         rep_total += _safe_float(d['repuestos'])
@@ -925,6 +948,9 @@ def _serialize_candidato_proveedor(
         for o, _, _, _, _ in seleccionados
     )
     base['incluye_repuestos_efectivo'] = rep_total > 0 or gest_total > 0
+    base['permite_solo_mano_obra'] = any(
+        _oferta_permite_solo_mano_obra(o) for o, _, _, _, _ in seleccionados
+    )
     base['solicitud_requiere_repuestos'] = requiere_repuestos
     rep_sum = sum(
         _safe_float(o.precio_con_repuestos)
@@ -998,6 +1024,12 @@ def _clasificar_recomendados_y_otros(
         rep_prio = 0
         if requiere_repuestos:
             rep_prio = 0 if cand.get('ofrece_repuestos') else 1
+        elif cand.get('requiere_repuestos_obligatorio'):
+            rep_prio = 1
+        elif cand.get('permite_solo_mano_obra') and not cand.get('incluye_repuestos_efectivo'):
+            rep_prio = 0
+        elif cand.get('incluye_repuestos_efectivo'):
+            rep_prio = 1
         cobertura_prio = prioridad_orden_cobertura_proveedor(cand)
         if punto:
             return (rep_prio, cobertura_prio, -score, dist_sort)
@@ -1198,6 +1230,11 @@ def _serialize_candidato(
         'solicitud_requiere_repuestos': requiere_repuestos,
         'ofrece_repuestos': _oferta_ofrece_repuestos(oferta),
         'ofrece_solo_mano_obra': _oferta_ofrece_solo_mano_obra(oferta),
+        'permite_solo_mano_obra': _oferta_permite_solo_mano_obra(oferta),
+        'requiere_repuestos_obligatorio': (
+            _oferta_ofrece_repuestos(oferta) and not _oferta_permite_solo_mano_obra(oferta)
+        ),
+        'incluye_repuestos_efectivo': modo_desglose,
         'tipo_servicio_catalogo': getattr(oferta, 'tipo_servicio', None),
         'coincidencia_repuestos': (
             'con_repuestos' if _oferta_ofrece_repuestos(oferta) else 'solo_mano_obra_alternativa'
@@ -1350,7 +1387,22 @@ def listar_candidatos_proveedor(
 
     def _mensaje_repuestos(rec: dict[str, int], otros: dict[str, int]) -> str | None:
         if not requiere_repuestos:
-            return None
+            total = (
+                rec['con_repuestos'] + rec['solo_mano_obra']
+                + otros['con_repuestos'] + otros['solo_mano_obra']
+            )
+            oblig = sum(
+                1 for c in candidatos_recomendados + otros_candidatos
+                if c.get('requiere_repuestos_obligatorio')
+            )
+            if total == 0:
+                return None
+            if oblig > 0:
+                return (
+                    f'{total} proveedor(es) en catálogo · '
+                    f'{oblig} con repuestos según su configuración'
+                )
+            return f'{total} proveedor(es) con tarifa solo mano de obra en catálogo.'
         total_con = rec['con_repuestos'] + otros['con_repuestos']
         total_solo = rec['solo_mano_obra'] + otros['solo_mano_obra']
         if total_con == 0 and total_solo == 0:

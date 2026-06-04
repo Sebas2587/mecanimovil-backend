@@ -87,6 +87,7 @@ class CoincidenciaCatalogoContext:
     con_ubicacion_cliente: bool = False
     catalogo_completo: bool = True
     oferta_ofrece_repuestos: bool = False
+    oferta_permite_solo_mano_obra: bool = True
 
 
 @dataclass
@@ -157,8 +158,19 @@ def _score_historial(oferta: OfertaServicio, perfil) -> float:
     return base
 
 
-def _score_repuestos(*, requiere: bool, ofrece_repuestos: bool) -> float:
+def _score_repuestos(
+    *,
+    requiere: bool,
+    ofrece_repuestos: bool,
+    permite_solo_mano_obra: bool = True,
+) -> float:
     if not requiere:
+        if ofrece_repuestos and not permite_solo_mano_obra:
+            return 0.80
+        if not ofrece_repuestos:
+            return 0.94
+        if permite_solo_mano_obra:
+            return 0.90
         return 0.82
     return 1.0 if ofrece_repuestos else 0.32
 
@@ -213,6 +225,7 @@ def extraer_features_coincidencia(
         'repuestos': _score_repuestos(
             requiere=ctx.requiere_repuestos,
             ofrece_repuestos=ctx.oferta_ofrece_repuestos,
+            permite_solo_mano_obra=ctx.oferta_permite_solo_mano_obra,
         ),
         'historial': _score_historial(oferta, perfil),
         'zona_mecanico': _score_zona_mecanico(
