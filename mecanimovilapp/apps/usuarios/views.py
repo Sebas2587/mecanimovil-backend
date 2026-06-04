@@ -539,6 +539,46 @@ def _resolve_tipo_proveedor(user):
     return False, None
 
 
+def _get_taller_mecanico_usuario(usuario):
+    taller = None
+    mecanico = None
+    try:
+        taller = Taller.objects.get(usuario=usuario)
+    except Taller.DoesNotExist:
+        pass
+    try:
+        mecanico = MecanicoDomicilio.objects.get(usuario=usuario)
+    except MecanicoDomicilio.DoesNotExist:
+        pass
+    return taller, mecanico
+
+
+def _resolve_proveedor_onboarding(usuario, tipo_solicitado=None):
+    """
+    Perfil activo para completar/cancelar onboarding.
+    Prioridad: tipo explícito > mecánico en curso > taller en curso > mecánico (alineado con estado-proveedor).
+    """
+    taller, mecanico = _get_taller_mecanico_usuario(usuario)
+
+    if tipo_solicitado == 'mecanico' and mecanico:
+        return mecanico, 'mecanico'
+    if tipo_solicitado == 'taller' and taller:
+        return taller, 'taller'
+
+    if mecanico and taller:
+        if mecanico.onboarding_iniciado and not mecanico.onboarding_completado:
+            return mecanico, 'mecanico'
+        if taller.onboarding_iniciado and not taller.onboarding_completado:
+            return taller, 'taller'
+        return mecanico, 'mecanico'
+
+    if mecanico:
+        return mecanico, 'mecanico'
+    if taller:
+        return taller, 'taller'
+    return None, None
+
+
 def _build_proveedor_login_user_data(user, tipo_proveedor=None):
     """Mismo shape que login_proveedor: token response user payload."""
     return {
@@ -3562,17 +3602,11 @@ def cancelar_onboarding(request):
     Vista para cancelar el onboarding (no borra el perfil, solo marca como no iniciado)
     """
     usuario = request.user
-    
-    # Buscar taller o mecánico
-    proveedor = None
-    tipo_proveedor = None
-    
-    if hasattr(usuario, 'taller'):
-        proveedor = usuario.taller
-        tipo_proveedor = 'taller'
-    elif hasattr(usuario, 'mecanico_domicilio'):
-        proveedor = usuario.mecanico_domicilio
-        tipo_proveedor = 'mecanico'
+    tipo_solicitado = request.data.get('tipo_proveedor')
+    if tipo_solicitado not in ('taller', 'mecanico'):
+        tipo_solicitado = None
+
+    proveedor, tipo_proveedor = _resolve_proveedor_onboarding(usuario, tipo_solicitado)
     
     if not proveedor:
         return Response({
@@ -4174,17 +4208,11 @@ def completar_onboarding(request):
     Los proveedores quedarán en estado 'pendiente' para revisión manual por administradores.
     """
     usuario = request.user
-    
-    # Buscar el proveedor (taller o mecánico)
-    proveedor = None
-    tipo_proveedor = None
-    
-    if hasattr(usuario, 'taller'):
-        proveedor = usuario.taller
-        tipo_proveedor = 'taller'
-    elif hasattr(usuario, 'mecanico_domicilio'):
-        proveedor = usuario.mecanico_domicilio
-        tipo_proveedor = 'mecanico'
+    tipo_solicitado = request.data.get('tipo_proveedor')
+    if tipo_solicitado not in ('taller', 'mecanico'):
+        tipo_solicitado = None
+
+    proveedor, tipo_proveedor = _resolve_proveedor_onboarding(usuario, tipo_solicitado)
     
     if not proveedor:
         return Response({
