@@ -1,43 +1,24 @@
-# asistente-agendamiento — delta repuestos y catálogo real
+# asistente-agendamiento — delta catálogo fiel (sin adaptar precio al cliente)
 
 ## ADDED Requirements
 
-### Requirement: Pool de candidatos con solo mano de obra solicitada
-Cuando `requiere_repuestos=false`, GET `candidatos-proveedor` SHALL incluir en el pool y en el ranking
-a proveedores cuyo catálogo publica **solo mano de obra**, **solo con repuestos** o **ambas modalidades**,
-siempre que la oferta tenga precio publicado y `disponible=true`.
+### Requirement: Precio mostrado = catálogo del proveedor
+GET `candidatos-proveedor` SHALL serializar `precio`, `desglose` y `repuestos_info` según cómo
+el proveedor configuró la oferta en catálogo (`_oferta_ofrece_repuestos`), **sin** sustituir por
+`precio_sin_repuestos` cuando el cliente eligió solo mano de obra.
 
-El motor NO SHALL excluir ofertas que solo venden con repuestos porque el cliente pidió solo MO.
+La preferencia `requiere_repuestos` SHALL usarse solo para:
+- Inclusión en el pool (compatibles con y sin repuestos en catálogo).
+- Ranking / `score_match` (priorizar alineación con la preferencia).
+- Badges y mensajes de desajuste.
 
-#### Scenario: Cliente solo MO y proveedor solo con repuestos
-- GIVEN el cliente eligió solo mano de obra en el paso 2
-- AND existe un proveedor con oferta válida que solo publica precio con repuestos
-- WHEN solicita candidatos
-- THEN ese proveedor aparece en recomendados u otros con `requiere_repuestos_obligatorio=true`
-- AND `precio_total` y `servicios_ofrecidos[].precio` reflejan el precio con repuestos publicado
-- AND el desglose incluye líneas de repuestos cuando corresponde
+#### Scenario: Cliente solo MO, proveedor con batería solo repuestos
+- GIVEN `requiere_repuestos=false`
+- AND oferta con `precio_con_repuestos` y sin tarifa solo MO
+- WHEN se serializa el candidato
+- THEN `precio_total` y líneas usan precio con repuestos del catálogo
+- AND `repuestos_info` está presente si el catálogo lo define
 
-#### Scenario: Cliente solo MO y proveedor con ambas tarifas
-- GIVEN el proveedor publica `precio_sin_repuestos` y `precio_con_repuestos` distintos
-- WHEN el cliente pidió solo MO
-- THEN la card muestra precio sin repuestos para ese servicio
-- AND el match considera al proveedor en el mismo universo que los demás candidatos
-
-### Requirement: Serialización fiel al catálogo del proveedor
-Cada ítem en `servicios_ofrecidos` SHALL exponer:
-
-| Campo | Significado |
-|-------|-------------|
-| `precio` | Precio efectivo según preferencia del cliente y catálogo |
-| `desglose` | MO / repuestos / gestión según modo efectivo |
-| `incluye_repuestos_efectivo` | Precio mostrado incluye repuestos |
-| `permite_solo_mano_obra` | Existe tarifa solo MO en catálogo |
-| `ofrece_repuestos_catalogo` | El proveedor configuró repuestos en catálogo |
-
-La UI del comparador SHALL usar estos campos para badges y líneas de precio, sin recalcular totales
-que ignoren servicios con repuestos obligatorios.
-
-### Requirement: Scoring sin penalizar catálogo con repuestos cuando el cliente pidió solo MO
-El feature `repuestos` del scorer SHALL tratar como buena coincidencia tanto ofertas solo MO
-como ofertas solo con repuestos cuando `requiere_repuestos=false`, priorizando levemente la
-alineación con solo MO sin excluir proveedores con repuestos obligatorios.
+### Requirement: Ranking con preferencia del cliente
+Con `requiere_repuestos=false`, el orden de candidatos MAY priorizar proveedores con tarifa
+solo MO en catálogo, sin excluir proveedores que solo publican con repuestos.

@@ -208,8 +208,6 @@ def _repuestos_info_oferta_servicio(
     requiere_repuestos: bool,
     request=None,
 ) -> list[dict[str, Any]]:
-    if not _modo_desglose_oferta(oferta, requiere_repuestos):
-        return []
     if not _oferta_ofrece_repuestos(oferta):
         return []
     raw = getattr(oferta, 'repuestos_seleccionados', None)
@@ -322,11 +320,11 @@ def _motor_coincidencia_oferta(
 
 
 def _modo_desglose_oferta(oferta: OfertaServicio, requiere_repuestos_solicitud: bool) -> bool:
-    """True = desglose/precio con repuestos; False = solo mano de obra para mostrar."""
-    if requiere_repuestos_solicitud:
-        return _oferta_ofrece_repuestos(oferta)
-    if _oferta_permite_solo_mano_obra(oferta):
-        return False
+    """
+    True = precio/desglose con repuestos tal como publica el proveedor.
+    La preferencia del cliente (requiere_repuestos_solicitud) solo afecta ranking, no el precio mostrado.
+    """
+    del requiere_repuestos_solicitud
     return _oferta_ofrece_repuestos(oferta)
 
 
@@ -963,14 +961,14 @@ def _serialize_candidato_proveedor(
         if _oferta_permite_solo_mano_obra(o)
     )
     base['precio_total'] = round(precio_total)
-    if requiere_repuestos:
+    if rep_sum > 0:
+        base['precio_con_repuestos'] = round(rep_sum)
+    elif ofrece_rep_grupo:
         base['precio_con_repuestos'] = round(precio_total)
-        if sin_sum > 0:
-            base['precio_sin_repuestos'] = round(sin_sum)
-    else:
+    if sin_sum > 0:
+        base['precio_sin_repuestos'] = round(sin_sum)
+    elif not ofrece_rep_grupo:
         base['precio_sin_repuestos'] = round(precio_total)
-        if rep_sum > 0:
-            base['precio_con_repuestos'] = round(rep_sum)
     base['tipo_servicio_catalogo'] = (
         'con_repuestos' if ofrece_rep_grupo else 'sin_repuestos'
     )
@@ -1024,11 +1022,11 @@ def _clasificar_recomendados_y_otros(
         rep_prio = 0
         if requiere_repuestos:
             rep_prio = 0 if cand.get('ofrece_repuestos') else 1
+        elif cand.get('permite_solo_mano_obra') and not cand.get('requiere_repuestos_obligatorio'):
+            rep_prio = 0
         elif cand.get('requiere_repuestos_obligatorio'):
             rep_prio = 1
-        elif cand.get('permite_solo_mano_obra') and not cand.get('incluye_repuestos_efectivo'):
-            rep_prio = 0
-        elif cand.get('incluye_repuestos_efectivo'):
+        elif cand.get('ofrece_repuestos'):
             rep_prio = 1
         cobertura_prio = prioridad_orden_cobertura_proveedor(cand)
         if punto:
@@ -1089,7 +1087,15 @@ def _ordenar_candidatos_priorizando_repuestos(
     requiere_repuestos_solicitud: bool,
 ) -> list[dict[str, Any]]:
     if not requiere_repuestos_solicitud:
-        return _ordenar_candidatos_por_distancia(candidatos)
+        alineados = [
+            c for c in candidatos
+            if c.get('permite_solo_mano_obra') and not c.get('requiere_repuestos_obligatorio')
+        ]
+        otros = [c for c in candidatos if c not in alineados]
+        return (
+            _ordenar_candidatos_por_distancia(alineados)
+            + _ordenar_candidatos_por_distancia(otros)
+        )
     con_rep = [c for c in candidatos if c.get('ofrece_repuestos')]
     solo_mo = [c for c in candidatos if not c.get('ofrece_repuestos')]
     return (

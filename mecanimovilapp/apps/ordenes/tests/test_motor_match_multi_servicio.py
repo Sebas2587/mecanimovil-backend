@@ -97,7 +97,8 @@ class MotorMatchMultiServicioTests(SimpleTestCase):
         'mecanimovilapp.apps.ordenes.services.agendamiento_ia.motor_match._foto_url_proveedor',
         return_value=None,
     )
-    def test_serialize_proveedor_solo_mo_suma_sin_repuestos(self, *_mocks):
+    def test_serialize_proveedor_solo_mo_muestra_precio_catalogo_con_repuestos(self, *_mocks):
+        """Cliente pidió solo MO pero precios = catálogo (con repuestos si así está publicado)."""
         items = [
             self._oferta(1, 10, 'Cambio aceite', 15000),
             self._oferta(2, 20, 'Frenos', 25000),
@@ -109,11 +110,12 @@ class MotorMatchMultiServicioTests(SimpleTestCase):
             es_coincidencia_exacta=True,
         )
         self.assertIsNotNone(cand)
-        self.assertEqual(cand['precio_total'], 38000)
+        self.assertEqual(cand['precio_total'], 40000)
         self.assertEqual(
             sum(s['precio'] for s in cand['servicios_ofrecidos']),
-            38000,
+            40000,
         )
+        self.assertTrue(cand['servicios_ofrecidos'][0]['incluye_repuestos_efectivo'])
 
     @patch(
         'mecanimovilapp.apps.ordenes.services.agendamiento_ia.motor_match._oferta_catalogo_completa',
@@ -164,12 +166,12 @@ class MotorMatchMultiServicioTests(SimpleTestCase):
         )
         self.assertIsNotNone(cand)
         self.assertTrue(cand['requiere_repuestos_obligatorio'])
-        self.assertEqual(cand['servicios_ofrecidos'][0]['precio'], 14000)
-        self.assertFalse(cand['servicios_ofrecidos'][0]['incluye_repuestos_efectivo'])
+        self.assertEqual(cand['servicios_ofrecidos'][0]['precio'], 15000)
+        self.assertTrue(cand['servicios_ofrecidos'][0]['incluye_repuestos_efectivo'])
         self.assertEqual(cand['servicios_ofrecidos'][1]['precio'], 39270)
         self.assertTrue(cand['servicios_ofrecidos'][1]['incluye_repuestos_efectivo'])
         self.assertTrue(cand['servicios_ofrecidos'][1]['ofrece_repuestos_catalogo'])
-        self.assertEqual(cand['precio_total'], 53270)
+        self.assertEqual(cand['precio_total'], 54270)
 
     def test_mejor_oferta_por_servicio_elige_mayor_score(self):
         items = [
