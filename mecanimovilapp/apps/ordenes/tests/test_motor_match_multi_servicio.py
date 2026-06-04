@@ -70,6 +70,89 @@ class MotorMatchMultiServicioTests(SimpleTestCase):
         self.assertEqual(cand['servicios_pedidos'], 3)
         self.assertEqual(len(cand['oferta_servicio_ids']), 2)
 
+    @patch(
+        'mecanimovilapp.apps.ordenes.services.agendamiento_ia.motor_match._oferta_catalogo_completa',
+        return_value=True,
+    )
+    @patch(
+        'mecanimovilapp.apps.ordenes.services.agendamiento_ia.motor_match._proveedor_usuario',
+        return_value=(99, SimpleNamespace(nombre='Mecánico Test')),
+    )
+    @patch(
+        'mecanimovilapp.apps.ordenes.services.agendamiento_ia.motor_match._foto_url_proveedor',
+        return_value=None,
+    )
+    def test_serialize_proveedor_solo_mo_suma_sin_repuestos(self, *_mocks):
+        items = [
+            self._oferta(1, 10, 'Cambio aceite', 15000),
+            self._oferta(2, 20, 'Frenos', 25000),
+        ]
+        cand = _serialize_candidato_proveedor(
+            items,
+            [10, 20],
+            False,
+            es_coincidencia_exacta=True,
+        )
+        self.assertIsNotNone(cand)
+        self.assertEqual(cand['precio_total'], 38000)
+        self.assertEqual(
+            sum(s['precio'] for s in cand['servicios_ofrecidos']),
+            38000,
+        )
+
+    @patch(
+        'mecanimovilapp.apps.ordenes.services.agendamiento_ia.motor_match._oferta_catalogo_completa',
+        return_value=True,
+    )
+    @patch(
+        'mecanimovilapp.apps.ordenes.services.agendamiento_ia.motor_match._proveedor_usuario',
+        return_value=(99, SimpleNamespace(nombre='Mecánico Test')),
+    )
+    @patch(
+        'mecanimovilapp.apps.ordenes.services.agendamiento_ia.motor_match._foto_url_proveedor',
+        return_value=None,
+    )
+    def test_serialize_proveedor_solo_mo_respeta_oferta_con_repuestos_obligatorio(self, *_mocks):
+        solo_rep = SimpleNamespace(
+            id=3,
+            servicio_id=30,
+            servicio=SimpleNamespace(nombre='Batería'),
+            precio_publicado_cliente=39270,
+            precio_con_repuestos=39270,
+            precio_sin_repuestos=0,
+            costo_mano_de_obra_sin_iva=20000,
+            costo_repuestos_sin_iva=13000,
+            costo_gestion_compra_sin_iva=0,
+            repuestos_seleccionados=[{'nombre': 'Batería'}],
+            tipo_servicio='con_repuestos',
+            disponible=True,
+            tipo_proveedor='mecanico',
+            taller_id=None,
+            mecanico_id=4,
+            mecanico=SimpleNamespace(
+                usuario=SimpleNamespace(id=99),
+                nombre='Mecánico Test',
+                calificacion_promedio=4.5,
+                foto_perfil=None,
+            ),
+            taller=None,
+        )
+        items = [
+            self._oferta(1, 10, 'Cambio aceite', 15000),
+            (solo_rep, 5.0, 0.8, 'Cerca'),
+        ]
+        cand = _serialize_candidato_proveedor(
+            items,
+            [10, 30],
+            False,
+            es_coincidencia_exacta=True,
+        )
+        self.assertIsNotNone(cand)
+        self.assertTrue(cand['requiere_repuestos_obligatorio'])
+        self.assertEqual(cand['servicios_ofrecidos'][0]['precio'], 14000)
+        self.assertEqual(cand['servicios_ofrecidos'][1]['precio'], 39270)
+        self.assertEqual(cand['precio_total'], 53270)
+
     def test_mejor_oferta_por_servicio_elige_mayor_score(self):
         items = [
             self._oferta(1, 10, 'A', 10000),

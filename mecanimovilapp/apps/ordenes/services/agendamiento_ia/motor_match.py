@@ -187,13 +187,30 @@ def _oferta_ofrece_repuestos(oferta: OfertaServicio) -> bool:
     return False
 
 
+def _oferta_permite_solo_mano_obra(oferta: OfertaServicio) -> bool:
+    """True si el cliente puede contratar solo mano de obra (precio sin repuestos publicado)."""
+    if not oferta or not oferta.disponible:
+        return False
+    if getattr(oferta, 'tipo_servicio', None) == 'sin_repuestos':
+        return True
+    if not _oferta_ofrece_repuestos(oferta):
+        return True
+    precio_sin = _safe_float(oferta.precio_sin_repuestos)
+    precio_rep = _safe_float(oferta.precio_con_repuestos)
+    if precio_sin > 0 and (precio_rep <= 0 or precio_sin < precio_rep * 0.995):
+        return True
+    return False
+
+
 def _repuestos_info_oferta_servicio(
     oferta: OfertaServicio,
     *,
     requiere_repuestos: bool,
     request=None,
 ) -> list[dict[str, Any]]:
-    if not requiere_repuestos or not _oferta_ofrece_repuestos(oferta):
+    if not _modo_desglose_oferta(oferta, requiere_repuestos):
+        return []
+    if not _oferta_ofrece_repuestos(oferta):
         return []
     raw = getattr(oferta, 'repuestos_seleccionados', None)
     return build_repuestos_info(raw, request=request)
@@ -285,7 +302,9 @@ def _motor_coincidencia_oferta(
 
 def _modo_desglose_oferta(oferta: OfertaServicio, requiere_repuestos_solicitud: bool) -> bool:
     """True = desglose/precio con repuestos; False = solo mano de obra para mostrar."""
-    if not requiere_repuestos_solicitud:
+    if requiere_repuestos_solicitud:
+        return _oferta_ofrece_repuestos(oferta)
+    if _oferta_permite_solo_mano_obra(oferta):
         return False
     return _oferta_ofrece_repuestos(oferta)
 
@@ -833,6 +852,8 @@ def _serialize_candidato_proveedor(
             'motor_coincidencia': _motor_coincidencia_oferta(oferta, tipo_motor_vehiculo),
             'desglose': d,
             'repuestos_info': repuestos_info,
+            'incluye_repuestos_efectivo': modo_desglose,
+            'permite_solo_mano_obra': _oferta_permite_solo_mano_obra(oferta),
         })
         mo_total += _safe_float(d['mano_obra'])
         rep_total += _safe_float(d['repuestos'])
@@ -892,13 +913,18 @@ def _serialize_candidato_proveedor(
         'precio_publicado_cliente': precio_total,
         'catalogo_completo': True,
     }
-    ofrece_rep_grupo = bool(seleccionados) and all(
+    ofrece_rep_grupo = bool(seleccionados) and any(
         _oferta_ofrece_repuestos(o) for o, _, _, _, _ in seleccionados
     )
     base['ofrece_repuestos'] = ofrece_rep_grupo
     base['ofrece_solo_mano_obra'] = any(
         _oferta_ofrece_solo_mano_obra(o) for o, _, _, _, _ in seleccionados
     )
+    base['requiere_repuestos_obligatorio'] = any(
+        _oferta_ofrece_repuestos(o) and not _oferta_permite_solo_mano_obra(o)
+        for o, _, _, _, _ in seleccionados
+    )
+    base['incluye_repuestos_efectivo'] = rep_total > 0 or gest_total > 0
     base['solicitud_requiere_repuestos'] = requiere_repuestos
     rep_sum = sum(
         _safe_float(o.precio_con_repuestos)
@@ -906,17 +932,19 @@ def _serialize_candidato_proveedor(
         if _oferta_ofrece_repuestos(o)
     )
     sin_sum = sum(
-        _safe_float(o.precio_sin_repuestos) for o, _, _, _, _ in seleccionados
+        _safe_float(o.precio_sin_repuestos)
+        for o, _, _, _, _ in seleccionados
+        if _oferta_permite_solo_mano_obra(o)
     )
     base['precio_total'] = round(precio_total)
-    if ofrece_rep_grupo and rep_sum > 0:
-        base['precio_con_repuestos'] = round(rep_sum if rep_sum > 0 else precio_total)
-    elif rep_sum > 0:
-        base['precio_con_repuestos'] = round(rep_sum)
-    if sin_sum > 0:
-        base['precio_sin_repuestos'] = round(sin_sum)
-    elif not ofrece_rep_grupo:
+    if requiere_repuestos:
+        base['precio_con_repuestos'] = round(precio_total)
+        if sin_sum > 0:
+            base['precio_sin_repuestos'] = round(sin_sum)
+    else:
         base['precio_sin_repuestos'] = round(precio_total)
+        if rep_sum > 0:
+            base['precio_con_repuestos'] = round(rep_sum)
     base['tipo_servicio_catalogo'] = (
         'con_repuestos' if ofrece_rep_grupo else 'sin_repuestos'
     )
@@ -1060,13 +1088,14 @@ def _build_desglose(oferta: OfertaServicio, con_repuestos_en_desglose: bool) -> 
     mo = _safe_float(oferta.costo_mano_de_obra_sin_iva)
     rep = _safe_float(oferta.costo_repuestos_sin_iva) if con_repuestos_en_desglose else 0.0
     gest = _gestion_catalogo_sin_iva(oferta) if con_repuestos_en_desglose else 0.0
-    total = _safe_float(oferta.precio_publicado_cliente)
-    if total <= 0:
-        total = _safe_float(
-            oferta.precio_con_repuestos
-            if con_repuestos_en_desglose
-            else oferta.precio_sin_repuestos
-        )
+    if con_repuestos_en_desglose:
+        total = _safe_float(oferta.precio_con_repuestos)
+        if total <= 0:
+            total = _safe_float(oferta.precio_publicado_cliente)
+    else:
+        total = _safe_float(oferta.precio_sin_repuestos)
+        if total <= 0:
+            total = _safe_float(oferta.precio_publicado_cliente)
     completo = _oferta_catalogo_completa(
         oferta,
         requiere_repuestos=con_repuestos_en_desglose,
