@@ -199,6 +199,26 @@ class MotorMatchMultiServicioTests(SimpleTestCase):
         self.assertEqual(picked[0][0].id, 9)
 
 
+class MotorConfirmacionCatalogoRepuestosTests(SimpleTestCase):
+    def test_catalogo_con_repuestos_ignora_preferencia_solo_mo_cliente(self):
+        from mecanimovilapp.apps.ordenes.services.agendamiento_ia.motor_confirmacion import (
+            _incluye_repuestos_catalogo,
+            _linea_usa_repuestos_catalogo,
+        )
+        from unittest.mock import MagicMock
+
+        os_cat = MagicMock()
+        os_cat.tipo_servicio = 'con_repuestos'
+        os_cat.costo_repuestos_sin_iva = '13000'
+        os_cat.precio_con_repuestos = '39270'
+        os_cat.precio_sin_repuestos = '20000'
+        os_cat.precio_publicado_cliente = '39270'
+        os_cat.repuestos_seleccionados = [{'id': 1, 'cantidad': 1, 'precio': 13000}]
+
+        self.assertTrue(_incluye_repuestos_catalogo([os_cat]))
+        self.assertTrue(_linea_usa_repuestos_catalogo(os_cat))
+
+
 class MotorConfirmacionParseTests(SimpleTestCase):
     def test_parse_ids_list_and_single(self):
         from mecanimovilapp.apps.ordenes.services.agendamiento_ia.motor_confirmacion import (

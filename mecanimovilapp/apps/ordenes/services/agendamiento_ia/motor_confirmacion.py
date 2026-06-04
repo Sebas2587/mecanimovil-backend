@@ -98,23 +98,40 @@ def _tiempo_estimado_desde_oferta_servicio(oferta_servicio: OfertaServicio) -> t
     return _tiempo_estimado_desde_servicio(oferta_servicio.servicio)
 
 
-def _incluye_repuestos_catalogo(
-    ofertas_servicio: list[OfertaServicio],
-    requiere_repuestos_solicitud: bool,
-) -> bool:
-    """True solo si el cliente pidió repuestos y al menos una línea los publica."""
-    if not requiere_repuestos_solicitud:
-        return False
+def _incluye_repuestos_catalogo(ofertas_servicio: list[OfertaServicio]) -> bool:
+    """True si alguna línea del catálogo publica repuestos (independiente de preferencia del cliente)."""
     return any(_oferta_ofrece_repuestos(os) for os in ofertas_servicio)
+
+
+def _linea_usa_repuestos_catalogo(oferta_servicio: OfertaServicio) -> bool:
+    """Precio y detalle de la línea según configuración publicada del proveedor."""
+    return _oferta_ofrece_repuestos(oferta_servicio)
 
 
 def _linea_usa_repuestos(
     oferta_servicio: OfertaServicio,
     requiere_repuestos_solicitud: bool,
 ) -> bool:
-    return bool(
-        requiere_repuestos_solicitud and _oferta_ofrece_repuestos(oferta_servicio)
-    )
+    """@deprecated Preferir _linea_usa_repuestos_catalogo en confirmación catálogo."""
+    return _linea_usa_repuestos_catalogo(oferta_servicio)
+
+
+def _precio_linea_oferta_servicio_catalogo(oferta_servicio: OfertaServicio) -> Decimal:
+    """Precio publicado en catálogo (con repuestos si así está configurado)."""
+    total = Decimal(str(oferta_servicio.precio_publicado_cliente or 0))
+    if total <= 0:
+        if _oferta_ofrece_repuestos(oferta_servicio):
+            total = Decimal(str(oferta_servicio.precio_con_repuestos or 0))
+        else:
+            total = Decimal(str(oferta_servicio.precio_sin_repuestos or 0))
+    return total
+
+
+def _precio_linea_oferta_servicio(
+    oferta_servicio: OfertaServicio,
+    requiere_repuestos_solicitud: bool,
+) -> Decimal:
+    return _precio_linea_oferta_servicio_catalogo(oferta_servicio)
 
 
 def _notificar_proveedor_asignacion_catalogo(solicitud: SolicitudServicioPublica, proveedor: Usuario):
@@ -157,23 +174,6 @@ def _notificar_cliente_catalogo(usuario_id: int, titulo: str, cuerpo: str, extra
         logger.warning('No se pudo encolar push al cliente %s', usuario_id)
 
 
-def _precio_linea_oferta_servicio(
-    oferta_servicio: OfertaServicio,
-    requiere_repuestos_solicitud: bool,
-) -> Decimal:
-    usa_repuestos = _linea_usa_repuestos(oferta_servicio, requiere_repuestos_solicitud)
-    total = Decimal(str(oferta_servicio.precio_publicado_cliente or 0))
-    if total <= 0:
-        total = Decimal(
-            str(
-                oferta_servicio.precio_con_repuestos
-                if usa_repuestos
-                else oferta_servicio.precio_sin_repuestos
-            )
-        )
-    return total
-
-
 def _crear_oferta_catalogo_con_lineas(
     *,
     ofertas_servicio: list[OfertaServicio],
@@ -190,9 +190,7 @@ def _crear_oferta_catalogo_con_lineas(
         raise ConfirmacionCatalogoError('Sin ofertas de catálogo', 'sin_ofertas')
 
     principal = ofertas_servicio[0]
-    incluye_repuestos = _incluye_repuestos_catalogo(
-        ofertas_servicio, requiere_repuestos
-    )
+    incluye_repuestos = _incluye_repuestos_catalogo(ofertas_servicio)
     mo_total = Decimal('0')
     rep_total = Decimal('0')
     gest_total = Decimal('0')
@@ -202,12 +200,12 @@ def _crear_oferta_catalogo_con_lineas(
 
     for oferta_servicio in ofertas_servicio:
         mo_total += Decimal(str(oferta_servicio.costo_mano_de_obra_sin_iva or 0))
-        if _linea_usa_repuestos(oferta_servicio, requiere_repuestos):
+        if _linea_usa_repuestos_catalogo(oferta_servicio):
             rep_total += Decimal(str(oferta_servicio.costo_repuestos_sin_iva or 0))
             gest_total += Decimal(
                 str(getattr(oferta_servicio, 'costo_gestion_compra_sin_iva', None) or 0)
             )
-        precio_total += _precio_linea_oferta_servicio(oferta_servicio, requiere_repuestos)
+        precio_total += _precio_linea_oferta_servicio_catalogo(oferta_servicio)
         tiempo_total += _tiempo_estimado_desde_oferta_servicio(oferta_servicio)
         nombres.append(oferta_servicio.servicio.nombre)
 
@@ -242,9 +240,9 @@ def _crear_oferta_catalogo_con_lineas(
     servicio_ids: list[int] = []
     for oferta_servicio in ofertas_servicio:
         servicio = oferta_servicio.servicio
-        precio_detalle = _precio_linea_oferta_servicio(oferta_servicio, requiere_repuestos)
+        precio_detalle = _precio_linea_oferta_servicio_catalogo(oferta_servicio)
         repuestos_linea: list = []
-        if _linea_usa_repuestos(oferta_servicio, requiere_repuestos):
+        if _linea_usa_repuestos_catalogo(oferta_servicio):
             raw_rep = getattr(oferta_servicio, 'repuestos_seleccionados', None)
             if isinstance(raw_rep, list):
                 repuestos_linea = list(raw_rep)
