@@ -257,6 +257,10 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
                 'motores_info': motores,
                 'tipos_motor_compatibles': motores,
                 'motores_opciones_proveedor': motores_opciones_para_proveedor(obj.servicio),
+                'categorias_info': [
+                    {'id': c.id, 'nombre': c.nombre}
+                    for c in obj.servicio.categorias.all()
+                ],
             }
         return None
 

@@ -643,7 +643,7 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
         base = OfertaServicio.objects.select_related(
             'marca_vehiculo_seleccionada',
             'servicio',
-        )
+        ).prefetch_related('servicio__categorias')
         if proveedor_data['tipo'] == 'mecanico':
             return base.filter(mecanico=proveedor_data['proveedor'])
         if proveedor_data['tipo'] == 'taller':
