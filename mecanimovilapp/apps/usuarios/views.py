@@ -4266,11 +4266,23 @@ def completar_onboarding(request):
         # Los proveedores deben ser revisados manualmente por administradores
         print(f"📋 {tipo_proveedor} {proveedor.nombre} completó onboarding - quedará pendiente de revisión manual")
         
-        # 🎯 NUEVO: Crear ofertas automáticas basadas en especialidades
+        # Ofertas automáticas solo para flujo legacy (sin catálogo explícito en onboarding).
+        # El onboarding actual ya persiste servicios vía crear_catalogo_inicial; volver a
+        # crear por especialidad duplicaba y agregaba servicios no elegidos.
         ofertas_creadas = 0
         try:
-            if proveedor.especialidades.count() > 0:
-                print(f"🔧 Creando ofertas automáticas para {proveedor.nombre}...")
+            from mecanimovilapp.apps.servicios.models import OfertaServicio
+
+            filtro_proveedor = {tipo_proveedor: proveedor}
+            ofertas_previas = OfertaServicio.objects.filter(**filtro_proveedor).count()
+
+            if ofertas_previas > 0:
+                print(
+                    f"ℹ️ {proveedor.nombre} ya tiene {ofertas_previas} ofertas de catálogo "
+                    f"— omitiendo ofertas automáticas"
+                )
+            elif proveedor.especialidades.count() > 0:
+                print(f"🔧 Creando ofertas automáticas (legacy) para {proveedor.nombre}...")
                 ofertas_creadas = crear_ofertas_automaticas(proveedor, tipo_proveedor)
                 print(f"✅ {ofertas_creadas} ofertas automáticas creadas para {proveedor.nombre}")
             else:
