@@ -4255,11 +4255,10 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
         """
         Cancela una solicitud pública (cliente).
 
-        Solo permitido si aún no hay oferta elegida por el cliente (sin adjudicación)
-        y el estado es previo al flujo de pago: creada, seleccionando servicios,
-        publicada o con ofertas pendientes de aceptar.
+        Permitido en estados previos al pago, incluyendo espera al proveedor
+        (pendiente_confirmacion, esperando_creditos_proveedor).
 
-        Notifica por WebSocket y push a los proveedores que tenían ofertas enviadas/vistas/en chat.
+        Notifica por WebSocket y push a los proveedores con ofertas pendientes.
         """
         solicitud = self.get_object()
         
@@ -4275,6 +4274,11 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
             'publicada',
             'con_ofertas',
             'pendiente_confirmacion',
+            'esperando_creditos_proveedor',
+        })
+        estados_cancelar_con_oferta_pendiente = frozenset({
+            'pendiente_confirmacion',
+            'esperando_creditos_proveedor',
         })
         if solicitud.estado not in estados_permite_cancelar_cliente:
             return Response(
@@ -4286,7 +4290,7 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
             )
         if (
             solicitud.oferta_seleccionada_id is not None
-            and solicitud.estado != 'pendiente_confirmacion'
+            and solicitud.estado not in estados_cancelar_con_oferta_pendiente
         ):
             return Response(
                 {
@@ -4298,7 +4302,13 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
         
         with transaction.atomic():
             # Snapshot de proveedores a notificar ANTES de marcar ofertas como rechazadas
-            estados_pendientes = ['enviada', 'vista', 'en_chat', 'pendiente_confirmacion']
+            estados_pendientes = [
+                'enviada',
+                'vista',
+                'en_chat',
+                'pendiente_confirmacion',
+                'pendiente_creditos',
+            ]
             pending_offers_qs = OfertaProveedor.objects.filter(
                 solicitud=solicitud,
                 estado__in=estados_pendientes,
@@ -4312,7 +4322,15 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
 
             solicitud.estado = 'cancelada'
             solicitud.oferta_seleccionada = None
-            solicitud.save(update_fields=['estado', 'oferta_seleccionada', 'fecha_actualizacion'])
+            solicitud.fecha_limite_confirmacion_creditos = None
+            solicitud.save(
+                update_fields=[
+                    'estado',
+                    'oferta_seleccionada',
+                    'fecha_limite_confirmacion_creditos',
+                    'fecha_actualizacion',
+                ]
+            )
 
             updated = pending_offers_qs.update(
                 estado='rechazada',

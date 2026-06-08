@@ -497,3 +497,107 @@ class SeleccionarOfertaReservaAPITest(TestCase):
         self.assertGreater(resp.data.get('creditos_necesarios', 0), 0)
         self.solicitud.refresh_from_db()
         self.assertEqual(self.solicitud.estado, 'esperando_creditos_proveedor')
+
+
+class CancelarEsperandoCreditosProveedorTest(TestCase):
+    """Cliente puede cancelar manualmente mientras espera confirmación de créditos del proveedor."""
+
+    def setUp(self):
+        suf = uuid.uuid4().hex[:10]
+        self.cliente_user = User.objects.create_user(
+            username=f'cc_{suf}',
+            email=f'cc_{suf}@t.com',
+            password='x',
+            first_name='C',
+            last_name='L',
+        )
+        self.proveedor_user = User.objects.create_user(
+            username=f'pc_{suf}',
+            email=f'pc_{suf}@t.com',
+            password='x',
+            first_name='P',
+            last_name='R',
+        )
+        self.cliente = Cliente.objects.create(
+            usuario=self.cliente_user,
+            nombre='C',
+            apellido='L',
+            email=self.cliente_user.email,
+        )
+        Taller.objects.create(
+            nombre='TC',
+            usuario=self.proveedor_user,
+            estado_verificacion='aprobado',
+            telefono='1',
+        )
+        self.marca = Marca.objects.create(nombre=f'MC{suf}')
+        self.modelo = Modelo.objects.create(nombre='MC', marca=self.marca)
+        self.vehiculo = Vehiculo.objects.create(
+            cliente=self.cliente,
+            marca=self.marca,
+            modelo=self.modelo,
+            year=2020,
+            patente='IJ90',
+        )
+        self.servicio = Servicio.objects.create(
+            nombre=f'SC{suf}',
+            descripcion='d',
+            precio_referencia=Decimal('6000'),
+        )
+        self.direccion = DireccionUsuario.objects.create(
+            usuario=self.cliente_user,
+            direccion='D',
+            comuna='Santiago',
+            region='RM',
+            es_principal=True,
+        )
+        fd = (timezone.now() + timedelta(days=3)).date()
+        limite = timezone.now() + timedelta(hours=48)
+        self.solicitud = SolicitudServicioPublica.objects.create(
+            cliente=self.cliente,
+            vehiculo=self.vehiculo,
+            descripcion_problema='x',
+            fecha_preferida=timezone.now().date() + timedelta(days=1),
+            fecha_expiracion=timezone.now() + timedelta(days=7),
+            ubicacion_servicio='POINT(-70.6693 -33.4489)',
+            direccion_servicio_texto='D',
+            direccion_usuario=self.direccion,
+            estado='esperando_creditos_proveedor',
+            fecha_publicacion=timezone.now(),
+            fecha_limite_confirmacion_creditos=limite,
+        )
+        self.solicitud.servicios_solicitados.add(self.servicio)
+        self.oferta = OfertaProveedor.objects.create(
+            solicitud=self.solicitud,
+            proveedor=self.proveedor_user,
+            tipo_proveedor='taller',
+            precio_total_ofrecido=Decimal('25000'),
+            incluye_repuestos=False,
+            tiempo_estimado_total=timedelta(hours=1),
+            descripcion_oferta='d',
+            fecha_disponible=fd,
+            hora_disponible=dt_time(11, 0),
+            estado='pendiente_creditos',
+        )
+        self.solicitud.oferta_seleccionada = self.oferta
+        self.solicitud.save(update_fields=['oferta_seleccionada'])
+        DetalleServicioOferta.objects.create(
+            oferta=self.oferta,
+            servicio=self.servicio,
+            precio_servicio=Decimal('25000'),
+            tiempo_estimado=timedelta(hours=1),
+        )
+        self.api = APIClient()
+        self.api.force_authenticate(user=self.cliente_user)
+
+    @patch('mecanimovilapp.apps.usuarios.tasks.send_expo_push_notification.delay')
+    def test_cliente_cancela_esperando_creditos_proveedor(self, _push):
+        url = f'/api/ordenes/solicitudes-publicas/{self.solicitud.id}/'
+        resp = self.api.delete(url)
+        self.assertEqual(resp.status_code, status.HTTP_204_NO_CONTENT)
+        self.solicitud.refresh_from_db()
+        self.oferta.refresh_from_db()
+        self.assertEqual(self.solicitud.estado, 'cancelada')
+        self.assertIsNone(self.solicitud.oferta_seleccionada_id)
+        self.assertIsNone(self.solicitud.fecha_limite_confirmacion_creditos)
+        self.assertEqual(self.oferta.estado, 'rechazada')
