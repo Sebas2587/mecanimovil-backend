@@ -151,28 +151,32 @@ def _construir_evento_ml(
 
 def calcular_estado_salud_interno(vehicle_id):
     """
-    Función helper para calcular el estado de salud de un vehículo
-    Esta función puede ser llamada desde tareas Celery o sincrónicamente
-    
-    Args:
-        vehicle_id: ID del vehículo
-    
-    Returns:
-        EstadoSaludVehiculo: Objeto con el estado calculado
+    Calcula el estado de salud del vehículo y envía pushes SOLO cuando hay
+    cambios reales en las métricas, usando los campos de tracking
+    (ultimo_pct_notificado / ultimo_pct_global_notificado).
+
+    Reglas de disparo:
+    - Componente individual: notifica si nivel_alerta subió a URGENTE/CRITICO
+      y no se notificó ese nivel, O si salud bajó >=15% respecto al ultimo notificado.
+    - Global: notifica salud_actualizada solo si el % cambió >=5%.
+    - Componentes críticos: resumen push si hay CRITICO(s) nuevos.
+    - Sugerencias ML: encola send_smart_maintenance_push (throttle semanal).
     """
-    # Capturar estado previo para alertas de caida abrupta
-    # TODO: Optimizar: esto hace query, HealthEngine hace query.
-    prev_components = {
-        c.componente.id: c.salud_porcentaje 
+    # Snapshot de tracking previo (para detectar cambios vs. última notificación)
+    prev_tracking = {
+        c.componente_id: {
+            'pct': c.ultimo_pct_notificado,
+            'nivel': c.ultimo_nivel_notificado,
+            'salud': c.salud_porcentaje,
+        }
         for c in ComponenteSaludVehiculo.objects.filter(vehiculo_id=vehicle_id)
     }
 
     # =========================================================
-    # DELEGACIÓN AL HEALTH ENGINE (Arquitectura Cascada)
+    # DELEGACIÓN AL HEALTH ENGINE
     # =========================================================
-    reporte = HealthEngine.calcular_salud_vehiculo(vehicle_id)
-    
-    # Recuperar el estado global calculado por el engine
+    HealthEngine.calcular_salud_vehiculo(vehicle_id)
+
     try:
         estado_global = EstadoSaludVehiculo.objects.filter(vehiculo_id=vehicle_id).latest('fecha_calculo')
     except EstadoSaludVehiculo.DoesNotExist:
@@ -180,33 +184,101 @@ def calcular_estado_salud_interno(vehicle_id):
         return None
 
     # =========================================================
-    # LÓGICA DE NOTIFICACIONES (PUSH)
+    # LÓGICA DE NOTIFICACIONES BASADA EN CAMBIOS REALES
     # =========================================================
     vehiculo = estado_global.vehiculo
-    
-    # Check for abrupt drops or zero health in individual components
-    # Re-fetch updated components to access alert flags set by Engine
-    updated_components = ComponenteSaludVehiculo.objects.filter(vehiculo_id=vehicle_id).select_related('componente')
-    
+    updated_components = ComponenteSaludVehiculo.objects.filter(
+        vehiculo_id=vehicle_id
+    ).select_related('componente')
+
+    NIVEL_GRAVEDAD = {'OPTIMO': 0, 'ATENCION': 1, 'URGENTE': 2, 'CRITICO': 3}
+    UMBRAL_CAMBIO_PCT = 15.0   # Notificar si la salud baja >= 15 puntos
+    UMBRAL_CAMBIO_GLOBAL = 5.0 # Notificar salud_actualizada si cambia >= 5 puntos
+
+    componentes_nuevos_criticos = []
+    comps_a_actualizar = []
+
     for comp in updated_components:
-        prev_salud = prev_components.get(comp.componente.id, 100.0)
-        current_salud = comp.salud_porcentaje
-        caida = prev_salud - current_salud
-        
-        # Enviar push si corresponde
-        if current_salud == 0 and prev_salud > 0:
-            enviar_alerta_salud_push(vehiculo, comp, "ha llegado al 0%")
-        elif caida >= 50.0:
-            enviar_alerta_salud_push(vehiculo, comp, f"ha bajado un {caida:.0f}% abruptamente")
+        prev = prev_tracking.get(comp.componente_id, {})
+        pct_ant = prev.get('pct')           # None = nunca notificado
+        nivel_ant = prev.get('nivel')       # None = nunca notificado
+        pct_act = comp.salud_porcentaje
+        nivel_act = comp.nivel_alerta
 
-    # Alertas Globales
+        gravedad_ant = NIVEL_GRAVEDAD.get(nivel_ant, 0) if nivel_ant else 0
+        gravedad_act = NIVEL_GRAVEDAD.get(nivel_act, 0)
+
+        debe_notificar = False
+        motivo = ""
+
+        # 1. Primer recálculo (nunca se notificó) y hay problema
+        if pct_ant is None and gravedad_act >= 2:
+            debe_notificar = True
+            motivo = f"está en {nivel_act.lower()} ({pct_act:.0f}%)"
+
+        # 2. Salud llegó a 0
+        elif pct_ant is not None and pct_act == 0 and pct_ant > 0:
+            debe_notificar = True
+            motivo = "ha llegado al 0% — requiere reemplazo inmediato"
+
+        # 3. Caída abrupta (>= UMBRAL_CAMBIO_PCT desde última notificación)
+        elif pct_ant is not None and (pct_ant - pct_act) >= UMBRAL_CAMBIO_PCT:
+            debe_notificar = True
+            caida = pct_ant - pct_act
+            motivo = f"bajó {caida:.0f}% desde la última revisión ({pct_act:.0f}% actual)"
+
+        # 4. Nivel empeoró (pasó a URGENTE o CRITICO y antes no estaba ahí)
+        elif gravedad_act >= 2 and gravedad_act > gravedad_ant:
+            debe_notificar = True
+            motivo = f"pasó a nivel {nivel_act.lower()} ({pct_act:.0f}%)"
+
+        if debe_notificar:
+            enviar_alerta_salud_push(vehiculo, comp, motivo)
+            comp.ultimo_pct_notificado = pct_act
+            comp.ultimo_nivel_notificado = nivel_act
+            comps_a_actualizar.append(comp)
+
+            if nivel_act == 'CRITICO':
+                componentes_nuevos_criticos.append(comp)
+
+    # Guardar tracking en bulk
+    if comps_a_actualizar:
+        ComponenteSaludVehiculo.objects.bulk_update(
+            comps_a_actualizar,
+            ['ultimo_pct_notificado', 'ultimo_nivel_notificado'],
+        )
+
+    # ── Alerta de componentes críticos (resumen) ──────────────────────────
+    if componentes_nuevos_criticos and estado_global.componentes_criticos > 0:
+        enviar_alerta_criticos_push(vehiculo, estado_global, componentes_nuevos_criticos)
+
+    # ── Alerta global ─────────────────────────────────────────────────────
     salud_global = estado_global.salud_general_porcentaje
-    if salud_global == 0:
-         enviar_alerta_salud_global_push(vehiculo, "es de 0%", es_critico=True)
-    elif salud_global < 50.0 and salud_global > 0:
-         enviar_alerta_salud_global_push(vehiculo, f"es baja ({salud_global:.0f}%)", es_critico=False)
+    pct_global_ant = estado_global.ultimo_pct_global_notificado
 
-    enviar_salud_actualizada_push(vehiculo, salud_global)
+    cambio_global = abs(salud_global - (pct_global_ant or 100.0))
+
+    if pct_global_ant is None or cambio_global >= UMBRAL_CAMBIO_GLOBAL:
+        if salud_global == 0:
+            enviar_alerta_salud_global_push(vehiculo, "es de 0% — el auto necesita revisión urgente", es_critico=True)
+        elif salud_global < 30.0:
+            enviar_alerta_salud_global_push(vehiculo, f"es muy baja ({salud_global:.0f}%)", es_critico=True)
+        elif salud_global < 50.0:
+            enviar_alerta_salud_global_push(vehiculo, f"es baja ({salud_global:.0f}%)", es_critico=False)
+        else:
+            # Cambio informativo sin urgencia
+            enviar_salud_actualizada_push(vehiculo, salud_global)
+
+        # Actualizar tracking global
+        EstadoSaludVehiculo.objects.filter(pk=estado_global.pk).update(
+            ultimo_pct_global_notificado=salud_global
+        )
+
+    # ── Sugerencias inteligentes semanales ───────────────────────────────
+    # Encolar solo si hay componentes con problemas (throttle semanal en la task)
+    if estado_global.componentes_criticos + estado_global.componentes_urgentes > 0:
+        from mecanimovilapp.apps.usuarios.tasks import send_smart_maintenance_push
+        send_smart_maintenance_push.delay(vehicle_id)
 
     return estado_global
 
@@ -1147,32 +1219,43 @@ def procesar_checklists_historicos_vehiculo(vehicle_id):
     return _procesar_checklists_historicos_vehiculo_interno(vehicle_id)
 
 
-def enviar_alerta_salud_push(vehiculo, componente, motivo_texto):
+def enviar_alerta_criticos_push(vehiculo, estado_global, componentes_criticos):
     """
-    Función de apoyo para enviar notificaciones push de salud por componente.
+    Push de resumen cuando hay componentes críticos nuevos en el vehículo.
+    Incluye listado claro de qué componentes necesitan atención urgente.
     """
     try:
         if not (vehiculo.cliente and vehiculo.cliente.usuario):
             return
 
         user_id = vehiculo.cliente.usuario.id
-        nombre_vehiculo = f"{vehiculo.marca} {vehiculo.modelo}" if vehiculo.marca else f"Vehículo {vehiculo.patente or ''}"
-        nombre_componente = componente.componente.nombre
+        nombre_vehiculo = (
+            f"{vehiculo.marca} {vehiculo.modelo}"
+            if vehiculo.marca
+            else f"Vehículo {vehiculo.patente or ''}"
+        )
 
-        title = f"⚠️ Alerta de Salud: {nombre_componente}"
-        body = f"La salud de {nombre_componente} en tu {nombre_vehiculo} {motivo_texto}. Te recomendamos agendar una revisión."
+        # Armar listado compacto de componentes críticos
+        nombres = [c.componente.nombre for c in componentes_criticos[:3]]
+        nombres_str = ", ".join(nombres)
+        if len(componentes_criticos) > 3:
+            nombres_str += f" (+{len(componentes_criticos)-3} más)"
+
+        title = f"🚨 {nombre_vehiculo} necesita revisión urgente"
+        body = (
+            f"Componentes en estado crítico: {nombres_str}. "
+            f"Salud general: {estado_global.salud_general_porcentaje:.0f}%. "
+            "Programa una revisión lo antes posible."
+        )
 
         from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
-
         send_expo_push_notification.delay(
-            user_id,
-            title,
-            body,
+            user_id, title, body,
             {
-                "type": "health_alert",
+                "type": "componentes_criticos",
                 "vehicle_id": str(vehiculo.id),
-                "componente": nombre_componente,
-                "salud": str(componente.salud_porcentaje),
+                "total_criticos": str(estado_global.componentes_criticos),
+                "salud_global": str(estado_global.salud_general_porcentaje),
             },
         )
 
@@ -1184,9 +1267,81 @@ def enviar_alerta_salud_push(vehiculo, componente, motivo_texto):
             mensaje=body,
             data={
                 "vehicle_id": str(vehiculo.id),
+                "tipo": "criticos",
+                "total_criticos": str(estado_global.componentes_criticos),
+            },
+            ventana_horas=12,
+            dedup_key={"vehicle_id": str(vehiculo.id), "tipo": "criticos"},
+        )
+        logger.info(
+            f"🚨 Alerta de componentes críticos enviada a usuario {user_id} "
+            f"para {nombre_vehiculo}: {nombres_str}"
+        )
+    except Exception as e:
+        logger.error(f"Error en enviar_alerta_criticos_push: {e}")
+
+
+def enviar_alerta_salud_push(vehiculo, componente, motivo_texto):
+    """
+    Push de alerta individual para un componente con cambio real detectado.
+    Usa throttle tipo 'health_alert_critico' para CRITICO, 'health_alert' para el resto.
+    """
+    try:
+        if not (vehiculo.cliente and vehiculo.cliente.usuario):
+            return
+
+        user_id = vehiculo.cliente.usuario.id
+        nombre_vehiculo = (
+            f"{vehiculo.marca} {vehiculo.modelo}"
+            if vehiculo.marca
+            else f"Vehículo {vehiculo.patente or ''}"
+        )
+        nombre_componente = componente.componente.nombre
+        nivel = componente.nivel_alerta
+        salud_pct = componente.salud_porcentaje
+
+        # Emoji + mensaje contextual según nivel
+        if nivel == 'CRITICO' or salud_pct <= 0:
+            emoji = "🔴"
+            title = f"{emoji} {nombre_componente} — Revisión urgente"
+            accion = "Programa un servicio cuanto antes para evitar daños mayores."
+            tipo_throttle = "health_alert_critico"
+        elif nivel == 'URGENTE':
+            emoji = "🟡"
+            title = f"{emoji} {nombre_componente} de tu {nombre_vehiculo}"
+            accion = "Te recomendamos agendar una revisión pronto."
+            tipo_throttle = "health_alert"
+        else:
+            emoji = "⚠️"
+            title = f"{emoji} Alerta de salud: {nombre_componente}"
+            accion = "Monitorea este componente en tu próxima revisión."
+            tipo_throttle = "health_alert"
+
+        body = f"{nombre_componente} {motivo_texto}. {accion}"
+
+        from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
+
+        notif_data = {
+            "type": tipo_throttle,
+            "vehicle_id": str(vehiculo.id),
+            "componente": nombre_componente,
+            "salud": str(salud_pct),
+            "nivel": nivel,
+        }
+
+        send_expo_push_notification.delay(user_id, title, body, notif_data)
+
+        from mecanimovilapp.apps.usuarios.models import Notificacion
+        Notificacion.crear_unica(
+            usuario=vehiculo.cliente.usuario,
+            tipo='health_alert',
+            titulo=title,
+            mensaje=body,
+            data={
+                "vehicle_id": str(vehiculo.id),
                 "componente": nombre_componente,
             },
-            ventana_horas=24,
+            ventana_horas=24 if nivel != 'CRITICO' else 8,
             dedup_key={"vehicle_id": str(vehiculo.id), "componente": nombre_componente},
         )
 

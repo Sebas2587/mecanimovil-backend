@@ -40,6 +40,7 @@ app.conf.task_routes = {
     'mecanimovilapp.apps.vehiculos.tasks.actualizar_salud_desde_checklist': {'queue': 'default'},
     # Push notifications — deben ir a 'default' para que el worker las consuma
     'mecanimovilapp.apps.usuarios.tasks.send_expo_push_notification': {'queue': 'default'},
+    'mecanimovilapp.apps.usuarios.tasks.send_smart_maintenance_push': {'queue': 'default'},
     # Órdenes — notificaciones de estado y pagos
     'mecanimovilapp.apps.ordenes.tasks.enviar_notificacion_cambio_estado': {'queue': 'default'},
     'mecanimovilapp.apps.ordenes.tasks.enviar_push_notificacion_pago_pendiente': {'queue': 'default'},

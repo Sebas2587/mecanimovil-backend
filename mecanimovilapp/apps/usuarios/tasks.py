@@ -66,17 +66,23 @@ def _send_web_push_to_user(user, title, body, data=None):
             logger.error(f'❌ [web-push] Error inesperado en suscripcion {sub.id}: {exc}')
 
 THROTTLE_WINDOWS = {
-    'health_alert':              3600,
-    'global_health_alert':       3600 * 6,
+    # Salud — throttles por tipo de cambio detectado
+    'health_alert':              3600,       # 1 h por componente + evento
+    'health_alert_critico':      3600 * 8,   # 8 h alerta critica de componente
+    'global_health_alert':       3600 * 6,   # 6 h alerta global
+    'componentes_criticos':      3600 * 12,  # 12 h resumen de componentes criticos
+    'salud_actualizada':         3600 * 2,   # 2 h aviso informativo de recálculo
+    'sugerencia_mantenimiento':  3600 * 168, # 1 semana sugerencia ML
+    # Viajes y ordenes
     'viaje_registrado':          300,
-    'salud_actualizada':         1800,
     'recordatorio_pago':         3600 * 4,
     'cambio_estado':             60,
     'nueva_oferta':              120,
     'new_offer':                 120,
     'chat_message':              90,
     'solicitud_adjudicada':      60,
-    'suscripcion_por_vencer':    3600 * 12,  # Max 1 push cada 12 h
+    # Suscripciones
+    'suscripcion_por_vencer':    3600 * 12,
     'suscripcion_vencida':       3600 * 12,
     'suscripcion_pago_fallido':  3600 * 12,
     'creditos_agotados':         3600 * 12,
@@ -224,3 +230,120 @@ def send_expo_push_notification(self, user_id, title, body, data=None):
     except Exception as e:
         logger.error(f"❌ Error crítico en push: {str(e)}", exc_info=True)
         raise self.retry(exc=e)
+
+
+@shared_task(bind=True, max_retries=1, default_retry_delay=60)
+def send_smart_maintenance_push(self, vehicle_id):
+    """
+    Genera y envía una sugerencia de mantenimiento inteligente usando los datos
+    del Health Engine y del predictor ML (cuando esté disponible).
+
+    - Throttle: 1 semana (168 h) por vehículo.
+    - Solo se envía si hay componentes en URGENTE o CRITICO.
+    - El texto es amigable, claro y orientado a la acción.
+    """
+    try:
+        from mecanimovilapp.apps.vehiculos.models_health import (
+            ComponenteSaludVehiculo,
+            EstadoSaludVehiculo,
+        )
+        from mecanimovilapp.apps.vehiculos.models import Vehiculo
+
+        vehiculo = Vehiculo.objects.select_related(
+            'cliente__usuario', 'marca', 'modelo'
+        ).get(pk=vehicle_id)
+
+        if not (vehiculo.cliente and vehiculo.cliente.usuario):
+            return
+
+        user = vehiculo.cliente.usuario
+        nombre_vehiculo = (
+            f"{vehiculo.marca} {vehiculo.modelo}"
+            if vehiculo.marca
+            else f"Vehículo {vehiculo.patente or ''}"
+        )
+
+        # Componentes que necesitan atención
+        urgentes = ComponenteSaludVehiculo.objects.filter(
+            vehiculo=vehiculo,
+            nivel_alerta__in=('URGENTE', 'CRITICO'),
+        ).select_related('componente').order_by('salud_porcentaje')
+
+        if not urgentes.exists():
+            return
+
+        # Intentar enriquecer con predictor ML
+        recomendaciones = []
+        for comp in urgentes[:4]:  # max 4 para no sobrecargar el texto
+            salud = comp.salud_porcentaje
+            nivel = comp.nivel_alerta
+            nombre = comp.componente.nombre
+            km_rest = comp.km_estimados_restantes
+
+            if salud <= 0:
+                urgencia = "⛔ Requiere reemplazo inmediato"
+            elif nivel == 'CRITICO':
+                urgencia = f"🔴 Crítico — {salud:.0f}% vida útil restante"
+            else:
+                urgencia = f"🟡 Urgente — {salud:.0f}% vida útil restante"
+
+            extra = ""
+            if km_rest > 0:
+                extra = f" (≈{km_rest:,} km antes de falla)"
+            recomendaciones.append(f"• {nombre}: {urgencia}{extra}")
+
+        total_criticos = urgentes.filter(nivel_alerta='CRITICO').count()
+        total_urgentes = urgentes.filter(nivel_alerta='URGENTE').count()
+
+        # Título contextual
+        if total_criticos > 0:
+            title = f"🔴 {nombre_vehiculo} necesita revisión urgente"
+        else:
+            title = f"🔧 Mantenimiento recomendado para tu {nombre_vehiculo}"
+
+        # Cuerpo con componentes
+        cuerpo_comp = "\n".join(recomendaciones)
+        body = f"{cuerpo_comp}\n\nPrograma una revisión para evitar daños mayores."
+
+        # Acortar para push (máx ~200 chars)
+        if len(body) > 220:
+            first = recomendaciones[0] if recomendaciones else ""
+            n_mas = len(recomendaciones) - 1
+            body = f"{first}"
+            if n_mas > 0:
+                body += f" y {n_mas} componente(s) más.\nPrograma una revisión pronto."
+
+        data = {
+            "type": "sugerencia_mantenimiento",
+            "vehicle_id": str(vehicle_id),
+            "total_criticos": str(total_criticos),
+            "total_urgentes": str(total_urgentes),
+        }
+
+        if _should_throttle(user.id, data):
+            return
+
+        send_expo_push_notification(
+            user.id, title, body, data
+        )
+
+        # In-app también
+        from .models import Notificacion
+        Notificacion.crear_unica(
+            usuario=user,
+            tipo='health_alert',
+            titulo=title,
+            mensaje=body,
+            data={"vehicle_id": str(vehicle_id)},
+            ventana_horas=168,
+            dedup_key={"vehicle_id": str(vehicle_id), "tipo": "sugerencia"},
+        )
+
+        logger.info(
+            f"💡 Sugerencia de mantenimiento enviada a usuario {user.id} "
+            f"para vehículo {vehicle_id} "
+            f"({total_criticos} críticos, {total_urgentes} urgentes)"
+        )
+
+    except Exception as exc:
+        logger.error(f"❌ Error en sugerencia mantenimiento vehículo {vehicle_id}: {exc}", exc_info=True)

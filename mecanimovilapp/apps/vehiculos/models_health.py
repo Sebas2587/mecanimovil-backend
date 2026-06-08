@@ -141,6 +141,13 @@ class EstadoSaludVehiculo(models.Model):
     tiene_alertas_activas = models.BooleanField(default=False)
     costo_estimado_mantenimiento = models.DecimalField(max_digits=10, decimal_places=2, default=0)
 
+    # Tracking de push: último % global con el que se emitió salud_actualizada/alerta_global.
+    ultimo_pct_global_notificado = models.FloatField(
+        null=True, blank=True,
+        help_text='Último salud_general_porcentaje notificado. '
+                  'Evita pushes repetitivas cuando el % no cambia.',
+    )
+
     class Meta:
         verbose_name = 'Estado de Salud de Vehículo'
         verbose_name_plural = 'Estados de Salud de Vehículos'
@@ -221,7 +228,19 @@ class ComponenteSaludVehiculo(models.Model):
     km_estimados_restantes = models.PositiveIntegerField(default=0)
     requiere_servicio_inmediato = models.BooleanField(default=False)
     mensaje_alerta = models.TextField(blank=True)
-    
+
+    # Tracking de notificaciones — se actualiza cada vez que se envía una push
+    # para este componente. Permite detectar cambios reales entre recálculos.
+    ultimo_pct_notificado = models.FloatField(
+        null=True, blank=True,
+        help_text='Último salud_porcentaje con el que se emitió push. '
+                  'Null = nunca notificado.',
+    )
+    ultimo_nivel_notificado = models.CharField(
+        max_length=20, null=True, blank=True,
+        help_text='Último nivel_alerta (OPTIMO/ATENCION/URGENTE/CRITICO) notificado.',
+    )
+
     ultima_actualizacion = models.DateTimeField(auto_now=True)
 
     class Meta:

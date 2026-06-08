@@ -206,124 +206,139 @@ def enviar_alertas_pago_proximo_task():
 @shared_task
 def enviar_notificacion_cambio_estado(solicitud_id, user_id, estado_anterior, estado_nuevo):
     """
-    Enviar push notification cuando cambia el estado de una solicitud
-    
-    Args:
-        solicitud_id: ID de la solicitud
-        user_id: ID del usuario (cliente)
-        estado_anterior: Estado anterior de la solicitud
-        estado_nuevo: Nuevo estado de la solicitud
+    Push + notificación in-app cuando cambia el estado de una SolicitudServicioPublica.
+
+    Usa send_expo_push_notification (cola 'default', throttle, receipt checking).
+    Los mensajes incluyen contexto del proveedor, vehículo y tipo de servicio.
     """
     try:
-        # Mensajes según el cambio de estado
-        mensajes_estado = {
-            'adjudicada': {
-                'titulo': '✅ Oferta Aceptada',
-                'mensaje': 'Tu solicitud ha sido adjudicada. Procede con el pago para confirmar el servicio.'
-            },
-            'pendiente_pago': {
-                'titulo': '💳 Pago Pendiente',
-                'mensaje': 'Tienes un pago pendiente para tu solicitud. Completa el proceso para agendar.'
-            },
-            'pagada': {
-                'titulo': '💳 Pago Confirmado',
-                'mensaje': 'Tu pago ha sido confirmado. El proveedor será notificado para iniciar el servicio.'
-            },
-            'en_ejecucion': {
-                'titulo': '🔧 Servicio Iniciado',
-                'mensaje': 'El proveedor ha iniciado el servicio. Puedes seguir el progreso en la app.'
-            },
-            'completada': {
-                'titulo': '✅ Servicio Completado',
-                'mensaje': 'Tu servicio ha sido completado. Puedes dejar una reseña y ver el checklist.'
-            },
-            'cancelada': {
-                'titulo': '❌ Solicitud Cancelada',
-                'mensaje': 'Tu solicitud ha sido cancelada.'
-            },
-            'expirada': {
-                'titulo': '⏰ Solicitud Expirada',
-                'mensaje': 'Tu solicitud ha expirado sin ofertas aceptadas.'
-            }
-        }
-        
-        if estado_nuevo not in mensajes_estado:
-            logger.debug(f"Estado {estado_nuevo} no requiere notificación push")
-            return {'enviados': 0, 'razon': 'Estado no requiere notificación'}
-        
-        info_mensaje = mensajes_estado[estado_nuevo]
-        
-        # Obtener tokens activos del usuario
-        tokens = PushToken.objects.filter(
-            usuario_id=user_id,
-            activo=True
-        ).values_list('token', flat=True)
-        
-        if not tokens:
-            logger.warning(f"⚠️ No hay tokens push activos para usuario {user_id}")
-            # Aún si no hay tokens push, debemos crear la notificación in-app
-        
-        # Crear notificación in-app (deduplicada: solo 1 por solicitud + estado_nuevo en 12h)
         from mecanimovilapp.apps.usuarios.models import Notificacion, Usuario
+        from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
+
+        ESTADOS_CON_PUSH = {
+            'adjudicada', 'pendiente_pago', 'pagada',
+            'en_ejecucion', 'completada', 'cancelada', 'expirada',
+        }
+        if estado_nuevo not in ESTADOS_CON_PUSH:
+            logger.debug(f"[cambio_estado] Estado {estado_nuevo} no requiere push")
+            return {'enviados': 0, 'razon': 'estado_no_notificable'}
+
+        # Obtener contexto rico de la solicitud
+        try:
+            from mecanimovilapp.apps.ordenes.models import SolicitudServicioPublica
+            solicitud = SolicitudServicioPublica.objects.select_related(
+                'vehiculo__marca', 'vehiculo__modelo',
+                'oferta_seleccionada__proveedor',
+            ).get(pk=solicitud_id)
+
+            nombre_vehiculo = ""
+            if solicitud.vehiculo:
+                v = solicitud.vehiculo
+                marca = getattr(v.marca, 'nombre', '') if v.marca else ''
+                modelo = getattr(v.modelo, 'nombre', '') if v.modelo else ''
+                nombre_vehiculo = f"{marca} {modelo}".strip() or f"Vehículo {v.patente or ''}"
+
+            nombre_proveedor = ""
+            try:
+                oferta = solicitud.oferta_seleccionada
+                if oferta and oferta.proveedor:
+                    prov_user = oferta.proveedor
+                    # Intentar nombre del taller si existe
+                    taller = getattr(prov_user, 'taller', None)
+                    if taller and getattr(taller, 'nombre_taller', ''):
+                        nombre_proveedor = taller.nombre_taller
+                    else:
+                        nombre_proveedor = f"{prov_user.first_name} {prov_user.last_name}".strip()
+            except Exception:
+                pass
+
+        except Exception:
+            nombre_vehiculo = ""
+            nombre_proveedor = ""
+
+        # Plantillas enriquecidas con contexto
+        def _t(titulo, cuerpo):
+            return titulo, cuerpo
+
+        ctx_vehiculo = f" para tu {nombre_vehiculo}" if nombre_vehiculo else ""
+        ctx_proveedor = f" por {nombre_proveedor}" if nombre_proveedor else ""
+
+        MENSAJES = {
+            'adjudicada': _t(
+                "✅ ¡Tu solicitud fue aceptada!",
+                f"El proveedor{ctx_proveedor} aceptó tu solicitud{ctx_vehiculo}. "
+                "Completa el pago para confirmar el servicio.",
+            ),
+            'pendiente_pago': _t(
+                "💳 Pago pendiente",
+                f"Tienes un pago pendiente{ctx_vehiculo}. "
+                "Completa el pago para agendar el servicio.",
+            ),
+            'pagada': _t(
+                "💳 Pago confirmado",
+                f"Tu pago{ctx_vehiculo} fue confirmado. "
+                f"El proveedor{ctx_proveedor} recibirá la notificación y coordinará el servicio.",
+            ),
+            'en_ejecucion': _t(
+                "🔧 Servicio en progreso",
+                f"El proveedor{ctx_proveedor} comenzó el servicio{ctx_vehiculo}. "
+                "Puedes seguir el progreso en la app.",
+            ),
+            'completada': _t(
+                "🎉 ¡Servicio completado!",
+                f"El servicio{ctx_vehiculo} fue completado{ctx_proveedor}. "
+                "¿Cómo fue tu experiencia? Deja tu reseña en la app.",
+            ),
+            'cancelada': _t(
+                "❌ Solicitud cancelada",
+                f"Tu solicitud{ctx_vehiculo} fue cancelada. "
+                "Puedes crear una nueva solicitud cuando lo necesites.",
+            ),
+            'expirada': _t(
+                "⏰ Solicitud expirada",
+                f"Tu solicitud{ctx_vehiculo} expiró sin recibir ofertas. "
+                "Intenta publicarla nuevamente con más detalles.",
+            ),
+        }
+
+        titulo, cuerpo = MENSAJES[estado_nuevo]
+
+        # In-app notification
         try:
             usuario_obj = Usuario.objects.get(pk=user_id)
             Notificacion.crear_unica(
                 usuario=usuario_obj,
                 tipo='order_update',
-                titulo=info_mensaje['titulo'],
-                mensaje=info_mensaje['mensaje'],
+                titulo=titulo,
+                mensaje=cuerpo,
                 data={
                     'solicitud_id': str(solicitud_id),
                     'estado_anterior': estado_anterior,
                     'estado_nuevo': estado_nuevo,
                 },
                 ventana_horas=12,
+                dedup_key={'solicitud_id': str(solicitud_id), 'estado': estado_nuevo},
             )
         except Exception as e:
-            logger.error(f"Error creando notificación in-app: {e}")
-        
-        if not tokens:
-             return {'enviados': 0, 'error': 'No hay tokens activos, pero notificación in-app creada'}
-        
-        # Preparar mensajes para Expo
-        mensajes = [
+            logger.error(f"[cambio_estado] Error in-app notif: {e}")
+
+        # Push Expo via cola 'default' (con throttle y receipt checking)
+        send_expo_push_notification.delay(
+            user_id, titulo, cuerpo,
             {
-                'to': token,
-                'sound': 'default',
-                'title': info_mensaje['titulo'],
-                'body': info_mensaje['mensaje'],
-                'data': {
-                    'type': 'cambio_estado',
-                    'solicitud_id': str(solicitud_id),
-                    'estado_anterior': estado_anterior,
-                    'estado_nuevo': estado_nuevo
-                },
-                'priority': 'high'
-            }
-            for token in tokens
-        ]
-        
-        # Enviar a Expo Push Notification Service
-        response = requests.post(
-            'https://exp.host/--/api/v2/push/send',
-            json=mensajes,
-            headers={
-                'Accept': 'application/json',
-                'Accept-Encoding': 'gzip, deflate',
-                'Content-Type': 'application/json',
+                'type': 'cambio_estado',
+                'solicitud_id': str(solicitud_id),
+                'estado_anterior': estado_anterior,
+                'estado_nuevo': estado_nuevo,
             },
-            timeout=10
         )
-        
-        if response.status_code == 200:
-            resultado = response.json()
-            exitosos = [r for r in resultado.get('data', []) if r.get('status') == 'ok']
-            logger.info(f"✅ Notificaciones de cambio de estado enviadas para solicitud {solicitud_id}: {len(exitosos)} exitosas")
-            return {'enviados': len(exitosos)}
-        else:
-            logger.error(f"❌ Error enviando notificaciones de cambio de estado: {response.status_code}")
-            return {'enviados': 0, 'error': f'HTTP {response.status_code}'}
-            
+
+        logger.info(
+            f"✅ [cambio_estado] Push encolada para solicitud {solicitud_id} "
+            f"(usuario {user_id}): {estado_anterior} → {estado_nuevo}"
+        )
+        return {'enviados': 1}
+
     except Exception as e:
         logger.error(f"❌ Error en enviar_notificacion_cambio_estado: {e}", exc_info=True)
         return {'enviados': 0, 'error': str(e)}
