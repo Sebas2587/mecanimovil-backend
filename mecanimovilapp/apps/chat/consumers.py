@@ -89,8 +89,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def save_message(self, conversation_id, content, user):
+        import logging as _logging
+        _log = _logging.getLogger(__name__)
+
         conversation = Conversation.objects.get(pk=conversation_id)
         conversation.save()  # Triggers auto_now for updated_at
+
+        # Ensure sender is always a participant (covers provider messages via WS)
+        if not conversation.participants.filter(pk=user.pk).exists():
+            conversation.participants.add(user)
+            _log.info(f"[ChatConsumer] WS sender {user.id} añadido a conversación {conversation_id}")
 
         return Message.objects.create(
             conversation=conversation,

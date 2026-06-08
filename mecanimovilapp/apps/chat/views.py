@@ -281,6 +281,39 @@ class ConversationViewSet(DestroyModelMixin, viewsets.ReadOnlyModelViewSet):
         
         print(f"🔵 [CHAT BACKEND] Payload prepared: {payload}")
 
+        # Garantizar que el remitente sea siempre participante
+        if not conversation.participants.filter(id=request.user.id).exists():
+            conversation.participants.add(request.user)
+            logger.info(f"[chat] Remitente {request.user.id} añadido a conversación {conversation.id}")
+
+        # Si la conversación tiene contexto (solicitud/oferta), sincronizar el proveedor
+        # para cubrir casos donde fue creada sin ambos participantes
+        try:
+            if conversation.content_type and conversation.object_id:
+                from mecanimovilapp.apps.ordenes.models import SolicitudServicioPublica
+                ctx_model = conversation.content_type.model_class()
+                if ctx_model == SolicitudServicioPublica:
+                    sol = SolicitudServicioPublica.objects.select_related(
+                        'oferta_seleccionada__proveedor', 'cliente__usuario'
+                    ).get(pk=conversation.object_id)
+                    # Añadir cliente si falta
+                    if sol.cliente and sol.cliente.usuario:
+                        if not conversation.participants.filter(
+                            id=sol.cliente.usuario.id
+                        ).exists():
+                            conversation.participants.add(sol.cliente.usuario)
+                    # Añadir proveedor si falta
+                    if sol.oferta_seleccionada and sol.oferta_seleccionada.proveedor:
+                        prov_user = sol.oferta_seleccionada.proveedor
+                        if not conversation.participants.filter(id=prov_user.id).exists():
+                            conversation.participants.add(prov_user)
+                            logger.info(
+                                f"[chat] Proveedor {prov_user.id} sincronizado "
+                                f"a conversación {conversation.id}"
+                            )
+        except Exception as _sync_exc:
+            logger.debug(f"[chat] sync participantes: {_sync_exc}")
+
         # Broadcast to all participants' user groups
         participants = list(conversation.participants.all())
         print(f"🔵 [CHAT BACKEND] Broadcasting to {len(participants)} participants")
@@ -327,12 +360,14 @@ class ConversationViewSet(DestroyModelMixin, viewsets.ReadOnlyModelViewSet):
         except Exception as exc:
             logger.error('Error enviando push chat (ConversationViewSet): %s', exc, exc_info=True)
 
-        # Also broadcast to legacy chat group if needed
+        # Legacy broadcast to chat_{conversation.id} — ChatConsumer handles 'chat_message'.
+        # IMPORTANT: spread payload first, then override 'type' so it is not
+        # overwritten by payload's own 'type': 'nuevo_mensaje_chat'.
         async_to_sync(channel_layer.group_send)(
             f'chat_{conversation.id}',
             {
-                'type': 'chat_message', # Keep legacy type for specific chat consumers
-                **payload
+                **payload,
+                'type': 'chat_message',  # Must come AFTER **payload to override
             }
         )
         

@@ -156,8 +156,24 @@ def send_expo_push_notification(self, user_id, title, body, data=None):
         user = Usuario.objects.get(pk=user_id)
         token = user.expo_push_token
 
+        # Fallback: si el usuario no tiene expo_push_token en el campo principal
+        # (común en proveedores que registran via PushToken), buscar en PushToken.
         if not token:
-            logger.debug(f"ℹ️ [push] Usuario {user_id} sin expo_push_token")
+            from .models import PushToken as PushTokenModel
+            pt = PushTokenModel.objects.filter(
+                usuario_id=user_id, activo=True
+            ).order_by('-fecha_registro').first()
+            if pt:
+                token = pt.token
+                logger.debug(
+                    f"ℹ️ [push] Usuario {user_id} usando token PushToken fallback"
+                )
+
+        if not token:
+            logger.warning(
+                f"⚠️ [push] Usuario {user_id} sin token push registrado "
+                f"(ni expo_push_token ni PushToken activo)"
+            )
             return
 
         data = _normalize_expo_push_data(data)
