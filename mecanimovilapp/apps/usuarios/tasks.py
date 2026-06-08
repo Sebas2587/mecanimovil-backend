@@ -191,15 +191,27 @@ def send_expo_push_notification(self, user_id, title, body, data=None):
         )
 
         try:
-            PushClient().publish(message)
-            logger.info(f"✅ Push [{notif_type}] enviada a usuario {user_id}")
+            response = PushClient().publish(message)
+            # Verificar si el ticket reporta error (DeviceNotRegistered, etc.)
+            try:
+                response.validate_response()
+                logger.info(f"✅ Push [{notif_type}] enviada a usuario {user_id} | token={token[:30]}…")
+            except PushTicketError as ticket_err:
+                err_msg = str(ticket_err).lower()
+                logger.error(f"❌ Ticket error push usuario {user_id}: {ticket_err}")
+                if 'devicenotregistered' in err_msg or 'invalid' in err_msg:
+                    logger.warning(f"🗑️ Token inválido, limpiando para usuario {user_id}")
+                    user.expo_push_token = None
+                    user.save(update_fields=['expo_push_token'])
         except PushServerError as exc:
             logger.error(f"❌ Expo server error para usuario {user_id}: {exc}")
             raise self.retry(exc=exc)
-        except (PushTicketError, ValueError) as exc:
-            logger.error(f"❌ Token inválido para usuario {user_id}: {exc}")
-            user.expo_push_token = None
-            user.save(update_fields=['expo_push_token'])
+        except (ValueError, Exception) as exc:
+            exc_str = str(exc).lower()
+            logger.error(f"❌ Error enviando push a usuario {user_id}: {exc}")
+            if 'devicenotregistered' in exc_str or 'invalid' in exc_str:
+                user.expo_push_token = None
+                user.save(update_fields=['expo_push_token'])
 
         # Enviar tambien a suscripciones Web Push activas del usuario (canal web)
         try:

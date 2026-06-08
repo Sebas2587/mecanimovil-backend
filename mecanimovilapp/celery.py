@@ -23,6 +23,11 @@ app.config_from_object('django.conf:settings', namespace='CELERY')
 # CONFIGURACIÓN DE COLAS SEPARADAS
 # ============================================
 # Separar tareas pesadas de tareas ligeras para mejor gestión de recursos
+# CRÍTICO: sin esta línea, toda tarea sin routing explícito va a la cola 'celery'
+# (nombre por defecto de Celery) que el worker NO escucha, por lo que las tareas
+# se acumulan en Redis sin ser consumidas jamás.
+app.conf.task_default_queue = 'default'
+
 app.conf.task_routes = {
     # Tareas pesadas van a la cola 'heavy'
     'mecanimovilapp.apps.vehiculos.tasks.procesar_checklists_historicos_batch': {'queue': 'heavy'},
@@ -30,9 +35,14 @@ app.conf.task_routes = {
     'mecanimovilapp.apps.vehiculos.tasks.recalcular_salud_vehiculos_batch': {'queue': 'heavy'},
     'mecanimovilapp.apps.vehiculos.tasks.recalcular_salud_vehiculos_diario': {'queue': 'heavy'},
     'mecanimovilapp.apps.vehiculos.tasks.entrenar_modelos_salud_async': {'queue': 'heavy'},
-    # Tareas ligeras van a la cola 'default' (o se puede omitir)
+    # Tareas ligeras van a la cola 'default'
     'mecanimovilapp.apps.vehiculos.tasks.calcular_salud_vehiculo_async': {'queue': 'default'},
     'mecanimovilapp.apps.vehiculos.tasks.actualizar_salud_desde_checklist': {'queue': 'default'},
+    # Push notifications — deben ir a 'default' para que el worker las consuma
+    'mecanimovilapp.apps.usuarios.tasks.send_expo_push_notification': {'queue': 'default'},
+    # Órdenes — notificaciones de estado y pagos
+    'mecanimovilapp.apps.ordenes.tasks.enviar_notificacion_cambio_estado': {'queue': 'default'},
+    'mecanimovilapp.apps.ordenes.tasks.enviar_push_notificacion_pago_pendiente': {'queue': 'default'},
 }
 
 # ============================================

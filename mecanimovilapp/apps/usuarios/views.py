@@ -6081,9 +6081,8 @@ def test_push(request):
     Endpoint de testing para enviar push de prueba (solo staff/admin).
     POST /api/usuarios/test-push/
     Body: { "user_id": int, "title": str, "body": str, "data": {...} }
-    Bypasa el throttle para facilitar pruebas.
+    Bypasa el throttle (usa Expo directamente, no Celery) para ver resultado inmediato.
     """
-    from .tasks import send_expo_push_notification
     from .models import Usuario
 
     user_id = request.data.get('user_id')
@@ -6121,8 +6120,19 @@ def test_push(request):
             channel_id='default',
             priority='high',
         )
-        PushClient().publish(message)
-        logger.info(f"✅ [test-push] Push Expo enviada a usuario {user_id} (token: {token[:20]}...)")
+        ticket = PushClient().publish(message)
+        ticket_status = 'ok'
+        ticket_detail = None
+        try:
+            ticket.validate_response()
+            logger.info(f"✅ [test-push] Push Expo aceptada por usuario {user_id} (token: {token[:20]}…)")
+        except PushTicketError as t_err:
+            ticket_status = 'error'
+            ticket_detail = str(t_err)
+            logger.error(f"❌ [test-push] Ticket error usuario {user_id}: {t_err}")
+            if 'devicenotregistered' in str(t_err).lower():
+                user.expo_push_token = None
+                user.save(update_fields=['expo_push_token'])
 
         # Tambien enviar web push si hay suscripciones activas
         from .tasks import _send_web_push_to_user
@@ -6134,8 +6144,10 @@ def test_push(request):
             logger.warning(f"[test-push] Web push error (no critico): {web_exc}")
 
         return Response({
-            'ok': True,
-            'mensaje': f'Push enviada exitosamente a usuario {user_id}',
+            'ok': ticket_status == 'ok',
+            'ticket_status': ticket_status,
+            'ticket_detail': ticket_detail,
+            'mensaje': f'Push enviada a usuario {user_id}',
             'token_preview': token[:22] + '...' + token[-6:],
             'push_tokens_activos': push_tokens_activos,
             'web_subs_activas': web_subs,
@@ -6143,12 +6155,6 @@ def test_push(request):
     except PushServerError as exc:
         logger.error(f"❌ [test-push] Expo server error: {exc}")
         return Response({'error': f'Expo server error: {str(exc)}'}, status=status.HTTP_502_BAD_GATEWAY)
-    except (PushTicketError, ValueError) as exc:
-        logger.error(f"❌ [test-push] Token invalido: {exc}")
-        # Limpiar el token invalido
-        user.expo_push_token = None
-        user.save(update_fields=['expo_push_token'])
-        return Response({'error': f'Token invalido (limpiado del DB): {str(exc)}'}, status=status.HTTP_400_BAD_REQUEST)
     except Exception as exc:
         logger.error(f"❌ [test-push] Error inesperado: {exc}", exc_info=True)
         return Response({'error': str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
