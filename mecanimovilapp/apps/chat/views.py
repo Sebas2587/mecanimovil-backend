@@ -345,16 +345,22 @@ class ConversationViewSet(DestroyModelMixin, viewsets.ReadOnlyModelViewSet):
             for participant in participants:
                 if participant.id == request.user.id:
                     continue
-                preview = (message.content or '')[:140] or 'Nuevo mensaje'
+                sender_name = (
+                    f"{message.sender.first_name} {message.sender.last_name}".strip()
+                    or message.sender.email
+                    or 'Chat'
+                )
+                preview = (message.content or '')[:120] or 'Nuevo mensaje'
                 send_expo_push_notification.delay(
                     participant.id,
-                    f"Mensaje de {(message.sender.first_name or '').strip() or 'Chat'}",
+                    f"💬 {sender_name}",
                     preview,
                     {
                         'type': 'chat_message',
                         'conversation_id': str(conversation.id),
                         'solicitud_id': str(solicitud_id) if solicitud_id else '',
                         'oferta_id': str(oferta_id) if oferta_id else '',
+                        'sender_id': str(message.sender.id),
                     },
                 )
         except Exception as exc:

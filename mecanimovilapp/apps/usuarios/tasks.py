@@ -79,7 +79,7 @@ THROTTLE_WINDOWS = {
     'cambio_estado':             60,
     'nueva_oferta':              120,
     'new_offer':                 120,
-    'chat_message':              90,
+    'chat_message':              4,    # 4s solo para evitar dobles envíos por race condition
     'solicitud_adjudicada':      60,
     # Suscripciones
     'suscripcion_por_vencer':    3600 * 12,
@@ -112,6 +112,9 @@ def _should_throttle(user_id, data):
     """
     Returns True if this push should be skipped (duplicate within window).
     Uses Redis/cache with a per-user per-event key.
+
+    Para 'chat_message' se incluye el sender_id en el key para que mensajes
+    de distintos remitentes en la misma conversación no se bloqueen entre sí.
     """
     notif_type = (data or {}).get('type', 'generic')
     vehicle_id = (data or {}).get('vehicle_id', '')
@@ -123,6 +126,13 @@ def _should_throttle(user_id, data):
     oferta_id = (data or {}).get('oferta_id', '')
     if oferta_id:
         unique_suffix = f"{unique_suffix}:{oferta_id}"
+
+    # Para chat: incluir sender_id para que mensajes de distintos remitentes
+    # en la misma conversación no compartan el mismo throttle bucket.
+    if notif_type == 'chat_message':
+        sender_id = (data or {}).get('sender_id', '')
+        if sender_id:
+            unique_suffix = f"{unique_suffix}:{sender_id}"
 
     cache_key = f"push_throttle:{user_id}:{notif_type}:{unique_suffix}"
     window = THROTTLE_WINDOWS.get(notif_type, DEFAULT_THROTTLE_SECONDS)

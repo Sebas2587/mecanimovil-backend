@@ -140,7 +140,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
                         'type': 'chat_message',
                         'conversation_id': str(conversation_id),
                         'sender_id': str(sender.id),
-                        'sender_name': sender_name,
                     },
                 )
         except Exception as exc:
