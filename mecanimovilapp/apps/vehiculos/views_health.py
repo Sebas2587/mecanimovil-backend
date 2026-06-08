@@ -194,8 +194,9 @@ class VehicleHealthViewSet(viewsets.ReadOnlyModelViewSet):
             # PASO 4: Cargar componentes y alertas con prefetch (solo 2 queries más)
             componentes = (
                 ComponenteSaludVehiculo.objects.filter(vehiculo_id=vehicle_id)
-                .select_related('componente')
-                .prefetch_related('componente__servicios_asociados')[:20]
+                .select_related('componente', 'vehiculo')
+                .prefetch_related('componente__servicios_asociados')
+                .order_by('salud_porcentaje', 'nivel_alerta')[:50]
             )
             
             alertas = AlertaMantenimiento.objects.filter(
@@ -334,8 +335,9 @@ class VehicleHealthViewSet(viewsets.ReadOnlyModelViewSet):
         offset = (page - 1) * page_size
         componentes = (
             ComponenteSaludVehiculo.objects.filter(vehiculo_id=vehicle_id)
-            .select_related('componente')
-            .prefetch_related('componente__servicios_asociados')[
+            .select_related('componente', 'vehiculo')
+            .prefetch_related('componente__servicios_asociados')
+            .order_by('salud_porcentaje', 'nivel_alerta')[
                 offset : offset + page_size
             ]
         )

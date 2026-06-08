@@ -71,11 +71,17 @@ class ComponenteSaludVehiculoSerializer(serializers.ModelSerializer):
         if not obj.componente_id:
             return []
         try:
+            from mecanimovilapp.apps.servicios.tipos_motor_utils import servicio_compatible_con_tipo_motor
+
+            vehiculo = getattr(obj, 'vehiculo', None)
+            tipo_motor_vehiculo = getattr(vehiculo, 'tipo_motor', None)
             qs = obj.componente.servicios_asociados.all()
         except Exception:
             return []
         out = []
         for s in qs:
+            if not servicio_compatible_con_tipo_motor(s, tipo_motor_vehiculo):
+                continue
             out.append({
                 'id': s.id,
                 'nombre': s.nombre,
