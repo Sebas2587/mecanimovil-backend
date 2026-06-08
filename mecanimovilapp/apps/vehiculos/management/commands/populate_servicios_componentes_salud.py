@@ -1,46 +1,64 @@
 """
-Asocia servicios de catálogo a ComponenteSalud sin M2M servicios_asociados.
-Útil para que Mantenimiento sugerido muestre cards con servicio concreto
-(neumáticos, AdBlue, DPF, correa, etc.).
+Limpia vínculos genéricos incorrectos en ComponenteSalud.servicios_asociados.
+No asigna «Mantenimiento por kilometraje» ni «Diagnóstico mecánico» a componentes
+específicos (neumáticos, correa, DPF, etc.) — eso generaba cards duplicadas/erróneas.
 """
 from django.core.management.base import BaseCommand
 
 from mecanimovilapp.apps.servicios.models import Servicio
 from mecanimovilapp.apps.vehiculos.models_health import ComponenteSalud
 
-# slug → nombres de servicio a vincular (primer match en BD)
-SLUG_SERVICIOS = {
-    'tires': ['Mantenimiento por kilometraje', 'Diagnóstico mecánico'],
-    'adblue': ['Diagnóstico mecánico', 'Mantenimiento por kilometraje'],
-    'exhaust': ['Diagnóstico mecánico'],
-    'timing-belt': ['Mantenimiento por kilometraje', 'Diagnóstico mecánico'],
+# Servicios demasiado genéricos para asignar como única sugerencia M2M
+GENERIC_SERVICE_NAMES = (
+    'Mantenimiento por kilometraje',
+    'Diagnóstico mecánico',
+    'Diagnóstico electromecánico',
+)
+
+# slug → nombres de servicio específicos a vincular si el componente queda sin M2M
+SLUG_SPECIFIC_SERVICES = {
+    'tires': [],  # sin servicio de neumáticos en catálogo → card genérica ML
+    'adblue': [],
+    'exhaust': [],
+    'timing-belt': [],
 }
 
 
 class Command(BaseCommand):
-    help = 'Vincula servicios de catálogo a componentes de salud sin servicios_asociados'
+    help = 'Limpia y corrige servicios_asociados de componentes de salud'
 
     def handle(self, *args, **options):
-        linked = 0
-        for slug, nombres in SLUG_SERVICIOS.items():
-            comp = ComponenteSalud.objects.filter(slug=slug).first()
-            if not comp:
-                self.stdout.write(self.style.WARNING(f'  Sin ComponenteSalud slug={slug}'))
-                continue
-            if comp.servicios_asociados.exists():
-                self.stdout.write(f'  {slug}: ya tiene servicios, omitido')
-                continue
-            servicio = None
-            for nombre in nombres:
-                servicio = Servicio.objects.filter(nombre=nombre).first()
-                if servicio:
-                    break
-            if not servicio:
-                self.stdout.write(self.style.WARNING(f'  {slug}: sin servicio candidato'))
-                continue
-            comp.servicios_asociados.add(servicio)
-            linked += 1
-            self.stdout.write(self.style.SUCCESS(
-                f'  {slug} ← {servicio.nombre} (id={servicio.id})'
-            ))
-        self.stdout.write(self.style.SUCCESS(f'Listo: {linked} componente(s) actualizados'))
+        generic_ids = set(
+            Servicio.objects.filter(nombre__in=GENERIC_SERVICE_NAMES).values_list('id', flat=True)
+        )
+        removed = 0
+        added = 0
+
+        for comp in ComponenteSalud.objects.all():
+            linked = list(comp.servicios_asociados.values_list('id', 'nombre'))
+            to_remove = [sid for sid, _ in linked if sid in generic_ids]
+            if to_remove:
+                comp.servicios_asociados.remove(*to_remove)
+                removed += len(to_remove)
+                self.stdout.write(
+                    self.style.WARNING(
+                        f'  {comp.slug}: removidos {len(to_remove)} servicio(s) genérico(s)'
+                    )
+                )
+
+            if not comp.servicios_asociados.exists():
+                for nombre in SLUG_SPECIFIC_SERVICES.get(comp.slug, []):
+                    servicio = Servicio.objects.filter(nombre=nombre).first()
+                    if servicio:
+                        comp.servicios_asociados.add(servicio)
+                        added += 1
+                        self.stdout.write(
+                            self.style.SUCCESS(f'  {comp.slug} ← {servicio.nombre}')
+                        )
+                        break
+
+        self.stdout.write(
+            self.style.SUCCESS(
+                f'Listo: {removed} vínculo(s) genérico(s) removidos, {added} específico(s) añadidos'
+            )
+        )

@@ -67,28 +67,19 @@ class ComponenteSaludVehiculoSerializer(serializers.ModelSerializer):
         )
 
     def get_servicios_asociados(self, obj):
-        """Lista ligera para cards en modal (id, nombre, descripcion, precio_referencia)."""
+        """Lista ligera ordenada por relevancia al componente (no genéricos primero)."""
         if not obj.componente_id:
             return []
         try:
-            from mecanimovilapp.apps.servicios.tipos_motor_utils import servicio_compatible_con_tipo_motor
+            from .services.componente_servicio_sugerido import ordenar_servicios_asociados
 
             vehiculo = getattr(obj, 'vehiculo', None)
             tipo_motor_vehiculo = getattr(vehiculo, 'tipo_motor', None)
+            slug = getattr(obj.componente, 'slug', None)
             qs = obj.componente.servicios_asociados.all()
+            return ordenar_servicios_asociados(slug, qs, tipo_motor_vehiculo)
         except Exception:
             return []
-        out = []
-        for s in qs:
-            if not servicio_compatible_con_tipo_motor(s, tipo_motor_vehiculo):
-                continue
-            out.append({
-                'id': s.id,
-                'nombre': s.nombre,
-                'descripcion': (s.descripcion or '')[:300],
-                'precio_referencia': float(s.precio_referencia) if s.precio_referencia is not None else None,
-            })
-        return out
     
     def get_confianza_historial(self, obj):
         """

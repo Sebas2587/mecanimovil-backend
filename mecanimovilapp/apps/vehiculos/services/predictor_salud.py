@@ -563,6 +563,17 @@ def predecir_vehiculo(vehiculo, force_refresh=False):
             modelo_usado = ml['modelo']
             confianza = ml['confianza']
 
+        servicio_sugerido = None
+        try:
+            from .componente_servicio_sugerido import resolver_servicio_sugerido
+            servicio_sugerido = resolver_servicio_sugerido(
+                cs.componente.slug,
+                cs.componente.servicios_asociados.all(),
+                getattr(vehiculo, 'tipo_motor', None),
+            )
+        except Exception:
+            pass
+
         predicciones.append({
             'componente_id':   cs.componente.id,
             'componente':      cs.componente.nombre,
@@ -579,6 +590,7 @@ def predecir_vehiculo(vehiculo, force_refresh=False):
             'km_por_dia_usuario':    bootstrap['km_por_dia_usuario'],
             'factor_clima':          bootstrap['factor_clima'],
             'recomendacion':         bootstrap['recomendacion'],
+            'servicio_sugerido':     servicio_sugerido,
             'basado_en':             ml['basado_en'] if ml else bootstrap['basado_en'],
             'confianza':             confianza,
             'modelo_usado':          modelo_usado,
