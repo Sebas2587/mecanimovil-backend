@@ -39,6 +39,10 @@ class ComponenteSaludVehiculoSerializer(serializers.ModelSerializer):
         source='componente.nombre',
         read_only=True
     )
+    slug = serializers.CharField(
+        source='componente.slug',
+        read_only=True
+    )
     icono = serializers.CharField(
         source='componente.icono',
         read_only=True
@@ -60,7 +64,7 @@ class ComponenteSaludVehiculoSerializer(serializers.ModelSerializer):
             'id', 'vehiculo', 'componente', 'componente_detail',
             'salud_porcentaje', 'nivel_alerta', 'nivel_alerta_display', 'color',
             'km_ultimo_servicio', 'fecha_ultimo_servicio', 'km_estimados_restantes',
-            'requiere_servicio_inmediato', 'mensaje_alerta', 'nombre', 'icono',
+            'requiere_servicio_inmediato', 'mensaje_alerta', 'nombre', 'slug', 'icono',
             'historial_conocido', 'historial_fuente', 'historial_fuente_display',
             'confianza_historial', 'ultima_actualizacion', 'servicios_asociados',
             'salud_anclada_pct',
