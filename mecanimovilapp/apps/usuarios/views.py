@@ -1,6 +1,7 @@
 from rest_framework import viewsets, permissions, status, generics, filters
 from rest_framework import serializers
 from rest_framework.decorators import api_view, permission_classes, action, authentication_classes
+from rest_framework.authentication import SessionAuthentication, TokenAuthentication as DRFTokenAuthentication
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -6049,11 +6050,13 @@ def desactivar_web_push(request):
 
 
 @api_view(['GET'])
+@authentication_classes([SessionAuthentication, DRFTokenAuthentication])
 @permission_classes([permissions.IsAuthenticated])
 def push_status(request):
     """
     Diagnostico: estado del push token del usuario autenticado.
     GET /api/usuarios/push-status/
+    Acepta tanto Token (apps) como Session (Django Admin / browsable API).
     Util para verificar que el token se registro correctamente despues del login.
     """
     user = request.user
@@ -6075,6 +6078,7 @@ def push_status(request):
 
 
 @api_view(['POST'])
+@authentication_classes([SessionAuthentication, DRFTokenAuthentication])
 @permission_classes([permissions.IsAdminUser])
 def test_push(request):
     """

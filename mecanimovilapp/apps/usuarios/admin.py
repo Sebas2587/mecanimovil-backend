@@ -63,25 +63,53 @@ class UsuarioAdmin(UserAdmin):
     tiene_push_token.short_description = 'Push Token'
 
     def enviar_push_prueba(self, request, queryset):
-        from .tasks import send_expo_push_notification
+        """Envía push de prueba directamente (sin Celery ni throttle) para diagnóstico inmediato."""
+        try:
+            from exponent_server_sdk import PushClient, PushMessage, PushServerError, PushTicketError
+        except ImportError:
+            self.message_user(request, '❌ exponent_server_sdk no instalado.', level=messages.ERROR)
+            return
+
         enviadas = 0
         sin_token = 0
+        errores = []
         for user in queryset:
-            if user.expo_push_token:
-                send_expo_push_notification.delay(
-                    user.id,
-                    'Notificación de prueba',
-                    f'Hola {user.username}, las notificaciones push están funcionando.',
-                    {'type': 'test'},
-                )
-                enviadas += 1
-            else:
+            token = user.expo_push_token
+            if not token:
                 sin_token += 1
-        msg = f'{enviadas} push(es) encolada(s).'
+                continue
+            try:
+                ticket = PushClient().publish(PushMessage(
+                    to=token,
+                    title='🔔 Notificación de prueba',
+                    body=f'Hola {user.username}, las notificaciones push están funcionando correctamente.',
+                    data={'type': 'test', 'user_id': str(user.id)},
+                    sound='default',
+                    channel_id='default',
+                    priority='high',
+                ))
+                try:
+                    ticket.validate_response()
+                    enviadas += 1
+                except PushTicketError as t_err:
+                    errores.append(f'{user.username}: ticket error — {t_err}')
+                    if 'devicenotregistered' in str(t_err).lower():
+                        user.expo_push_token = None
+                        user.save(update_fields=['expo_push_token'])
+            except PushServerError as exc:
+                errores.append(f'{user.username}: server error — {exc}')
+            except Exception as exc:
+                errores.append(f'{user.username}: {exc}')
+
+        parts = []
+        if enviadas:
+            parts.append(f'✅ {enviadas} push enviada(s) correctamente.')
         if sin_token:
-            msg += f' {sin_token} usuario(s) sin token.'
-        self.message_user(request, msg)
-    enviar_push_prueba.short_description = '📲 Enviar push de prueba'
+            parts.append(f'⚠️ {sin_token} usuario(s) sin token registrado.')
+        if errores:
+            parts.append('❌ Errores: ' + ' | '.join(errores))
+        self.message_user(request, ' '.join(parts) or 'Sin cambios.', level=messages.WARNING if errores else messages.SUCCESS)
+    enviar_push_prueba.short_description = '📲 Enviar push de prueba (directo)'
 
     def limpiar_push_token(self, request, queryset):
         updated = queryset.update(expo_push_token=None)
