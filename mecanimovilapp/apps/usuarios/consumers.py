@@ -262,6 +262,7 @@ class ConnectionConsumer(AsyncWebsocketConsumer):
         """
         Notifica al proveedor sobre un nuevo mensaje en el chat
         """
+        archivo_adjunto = event.get('archivo_adjunto') or event.get('attachment') or None
         await self.send(text_data=json.dumps({
             'type': 'nuevo_mensaje_chat',
             'conversation_id': event.get('conversation_id'),
@@ -275,8 +276,10 @@ class ConnectionConsumer(AsyncWebsocketConsumer):
             'es_proveedor': event['es_proveedor'],
             'sender_id': event.get('sender_id'),
             'timestamp': event.get('timestamp') or timezone.now().isoformat(),
+            'archivo_adjunto': archivo_adjunto,
+            'attachment': archivo_adjunto,
         }))
-    
+
     async def servicio_iniciado(self, event):
         """
         Notifica al cliente que el proveedor ha iniciado el servicio
@@ -301,7 +304,7 @@ class ConnectionConsumer(AsyncWebsocketConsumer):
             'solicitud_servicio_id': event.get('solicitud_servicio_id'),
             'timestamp': event.get('timestamp', timezone.now().isoformat()),
         }))
-    
+
     async def programar_verificacion_heartbeat(self):
         """
         Programa la verificación de heartbeat para detectar desconexiones
@@ -876,6 +879,7 @@ class MechanicStatusConsumer(AsyncWebsocketConsumer):
         """
         Notifica al proveedor sobre un nuevo mensaje en el chat
         """
+        archivo_adjunto = event.get('archivo_adjunto') or event.get('attachment') or None
         await self.send(text_data=json.dumps({
             'type': 'nuevo_mensaje_chat',
             'conversation_id': event.get('conversation_id'),
@@ -889,8 +893,10 @@ class MechanicStatusConsumer(AsyncWebsocketConsumer):
             'es_proveedor': event['es_proveedor'],
             'sender_id': event.get('sender_id'),
             'timestamp': event.get('timestamp') or timezone.now().isoformat(),
+            'archivo_adjunto': archivo_adjunto,
+            'attachment': archivo_adjunto,
         }))
-    
+
     async def servicio_iniciado(self, event):
         """
         Notifica al cliente que el proveedor ha iniciado el servicio
@@ -915,7 +921,7 @@ class MechanicStatusConsumer(AsyncWebsocketConsumer):
             'solicitud_servicio_id': event.get('solicitud_servicio_id'),
             'timestamp': event.get('timestamp', timezone.now().isoformat()),
         }))
-    
+
     @database_sync_to_async
     def get_proveedor_usuario_id(self):
         """
@@ -1283,6 +1289,7 @@ class ClientStatusConsumer(AsyncWebsocketConsumer):
         """
         Notifica al cliente sobre un nuevo mensaje en el chat
         """
+        archivo_adjunto = event.get('archivo_adjunto') or event.get('attachment') or None
         await self.send(text_data=json.dumps({
             'type': 'nuevo_mensaje_chat',
             'conversation_id': event.get('conversation_id'),
@@ -1296,6 +1303,8 @@ class ClientStatusConsumer(AsyncWebsocketConsumer):
             'es_proveedor': event['es_proveedor'],
             'sender_id': event.get('sender_id'),
             'timestamp': event.get('timestamp') or timezone.now().isoformat(),
+            'archivo_adjunto': archivo_adjunto,
+            'attachment': archivo_adjunto,
         }))
 
     async def servicio_completado(self, event):
