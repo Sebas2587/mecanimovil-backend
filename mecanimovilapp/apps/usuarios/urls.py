@@ -55,6 +55,13 @@ urlpatterns = [
     path('register-expo-push-token/', views.RegisterPushTokenView.as_view(), name='register-expo-push-token'),
     path('registrar-push-token/', views.registrar_push_token, name='registrar-push-token'),
     path('desactivar-push-token/', views.desactivar_push_token, name='desactivar-push-token'),
+    # Push diagnostico / testing
+    path('push-status/', views.push_status, name='push-status'),
+    path('test-push/', views.test_push, name='test-push'),
+    # Web Push (VAPID)
+    path('vapid-public-key/', views.vapid_public_key, name='vapid-public-key'),
+    path('registrar-web-push/', views.registrar_web_push, name='registrar-web-push'),
+    path('desactivar-web-push/', views.desactivar_web_push, name='desactivar-web-push'),
     # Router al final
     path('', include(router.urls)),
 ] 

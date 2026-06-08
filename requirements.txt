@@ -93,6 +93,9 @@ mercadopago==2.2.0
 # ============================================
 requests==2.31.0
 exponent-server-sdk==2.2.0
+# Web Push Protocol (VAPID) para notificaciones push en navegador web
+pywebpush==2.3.0
+py-vapid==1.9.4
 
 # ============================================
 # Google Sign-In (verify id_token)

@@ -295,3 +295,12 @@ CELERY_TASK_IGNORE_RESULT = False
 CELERY_TASK_STORE_EAGER_RESULT = True
 CELERY_TASK_ALWAYS_EAGER = False  # No ejecutar sincrónicamente
 CELERY_TASK_EAGER_PROPAGATES = True
+
+# ============================================
+# WEB PUSH (VAPID / RFC 8030)
+# ============================================
+# Generar con: python -c "from py_vapid import Vapid; ..."
+# Ver README o documentacion interna para instrucciones de generacion.
+VAPID_PUBLIC_KEY = os.environ.get('VAPID_PUBLIC_KEY', '')
+VAPID_PRIVATE_KEY = os.environ.get('VAPID_PRIVATE_KEY', '')
+VAPID_EMAIL = os.environ.get('VAPID_EMAIL', 'mailto:admin@mecanimovil.com')

@@ -389,6 +389,12 @@ def logout_user(request):
         PushToken.objects.filter(usuario=request.user, activo=True).update(activo=False)
         logger.info(f"🔕 Push tokens desactivados para usuario {request.user.id}")
 
+        # Limpiar expo_push_token del modelo Usuario para evitar envíos post-logout
+        if request.user.expo_push_token:
+            request.user.expo_push_token = None
+            request.user.save(update_fields=['expo_push_token'])
+            logger.info(f"🔕 expo_push_token limpiado para usuario {request.user.id}")
+
         if request.auth:
             request.auth.delete()
             logger.info(f"🔒 Token eliminado para usuario {request.user.id}")
@@ -5931,12 +5937,18 @@ def desactivar_push_token(request):
             token=token,
             usuario=request.user
         ).update(activo=False)
+
+        # Limpiar expo_push_token del modelo Usuario si coincide con el token desactivado
+        if token == request.user.expo_push_token:
+            request.user.expo_push_token = None
+            request.user.save(update_fields=['expo_push_token'])
+            logger.info(f"🔕 expo_push_token limpiado para usuario {request.user.id}")
         
         if tokens_desactivados > 0:
             logger.info(f"✅ Push token desactivado para usuario {request.user.id}")
             return Response({'mensaje': 'Token desactivado correctamente'}, status=status.HTTP_200_OK)
         else:
-            return Response({'mensaje': 'Token no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+            return Response({'mensaje': 'Token no encontrado o ya desactivado'}, status=status.HTTP_200_OK)
             
     except Exception as e:
         logger.error(f"❌ Error desactivando push token: {e}", exc_info=True)
@@ -5945,6 +5957,201 @@ def desactivar_push_token(request):
             'detalle': str(e)
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+
+
+@api_view(['GET'])
+@permission_classes([permissions.AllowAny])
+def vapid_public_key(request):
+    """
+    Devuelve la VAPID public key para que el frontend pueda suscribirse a Web Push.
+    GET /api/usuarios/vapid-public-key/
+    No requiere autenticacion (debe ser accesible antes del login para suscribirse).
+    """
+    from django.conf import settings
+    key = getattr(settings, 'VAPID_PUBLIC_KEY', None)
+    if not key:
+        return Response(
+            {'error': 'VAPID_PUBLIC_KEY no configurada en settings'},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    return Response({'vapid_public_key': key}, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def registrar_web_push(request):
+    """
+    Registrar o actualizar una suscripcion Web Push (VAPID) del usuario.
+    POST /api/usuarios/registrar-web-push/
+    Body: { "endpoint": str, "p256dh": str, "auth": str }
+    """
+    from .models import WebPushSubscription
+    endpoint = request.data.get('endpoint')
+    p256dh = request.data.get('p256dh')
+    auth_key = request.data.get('auth')
+
+    if not all([endpoint, p256dh, auth_key]):
+        return Response(
+            {'error': 'endpoint, p256dh y auth son requeridos'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    user_agent = request.META.get('HTTP_USER_AGENT', '')[:512]
+
+    try:
+        sub, created = WebPushSubscription.objects.update_or_create(
+            endpoint=endpoint,
+            defaults={
+                'usuario': request.user,
+                'p256dh': p256dh,
+                'auth': auth_key,
+                'user_agent': user_agent,
+                'activo': True,
+            },
+        )
+        action = 'registrada' if created else 'actualizada'
+        logger.info(f"✅ Web Push subscription {action} para usuario {request.user.id}")
+        return Response(
+            {'mensaje': f'Suscripcion web push {action} correctamente', 'id': sub.id},
+            status=status.HTTP_200_OK,
+        )
+    except Exception as e:
+        logger.error(f"❌ Error registrando web push subscription: {e}", exc_info=True)
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def desactivar_web_push(request):
+    """
+    Desactivar la suscripcion Web Push del usuario (al hacer logout en web).
+    POST /api/usuarios/desactivar-web-push/
+    Body: { "endpoint": str }
+    """
+    from .models import WebPushSubscription
+    endpoint = request.data.get('endpoint')
+    if not endpoint:
+        return Response({'error': 'endpoint es requerido'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        updated = WebPushSubscription.objects.filter(
+            endpoint=endpoint,
+            usuario=request.user,
+        ).update(activo=False)
+        logger.info(f"🔕 Web Push subscription desactivada para usuario {request.user.id}")
+        return Response(
+            {'mensaje': 'Suscripcion desactivada', 'actualizadas': updated},
+            status=status.HTTP_200_OK,
+        )
+    except Exception as e:
+        logger.error(f"❌ Error desactivando web push: {e}", exc_info=True)
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def push_status(request):
+    """
+    Diagnostico: estado del push token del usuario autenticado.
+    GET /api/usuarios/push-status/
+    Util para verificar que el token se registro correctamente despues del login.
+    """
+    user = request.user
+    token = user.expo_push_token
+    push_tokens_activos = PushToken.objects.filter(usuario=user, activo=True).count()
+
+    token_preview = None
+    if token:
+        # Mostrar solo los primeros/ultimos caracteres por seguridad
+        token_preview = token[:22] + '...' + token[-6:] if len(token) > 30 else token
+
+    return Response({
+        'has_token': bool(token),
+        'token_preview': token_preview,
+        'push_tokens_activos': push_tokens_activos,
+        'user_id': user.id,
+        'username': user.username,
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAdminUser])
+def test_push(request):
+    """
+    Endpoint de testing para enviar push de prueba (solo staff/admin).
+    POST /api/usuarios/test-push/
+    Body: { "user_id": int, "title": str, "body": str, "data": {...} }
+    Bypasa el throttle para facilitar pruebas.
+    """
+    from .tasks import send_expo_push_notification
+    from .models import Usuario
+
+    user_id = request.data.get('user_id')
+    title = request.data.get('title', 'Notificacion de prueba')
+    body = request.data.get('body', 'Esta es una notificacion de prueba desde el backend.')
+    data = request.data.get('data', {'type': 'test'})
+
+    if not user_id:
+        return Response({'error': 'user_id es requerido'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        user = Usuario.objects.get(pk=user_id)
+    except Usuario.DoesNotExist:
+        return Response({'error': f'Usuario {user_id} no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+
+    token = user.expo_push_token
+    push_tokens_activos = PushToken.objects.filter(usuario=user, activo=True).count()
+
+    if not token:
+        return Response({
+            'error': 'El usuario no tiene expo_push_token registrado',
+            'push_tokens_activos': push_tokens_activos,
+            'sugerencia': 'Inicia sesion en Expo Go o en la app y el token se registrara automaticamente.',
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    # Enviar directamente (sin pasar por Celery delay) para ver el resultado inmediato
+    try:
+        from exponent_server_sdk import PushClient, PushMessage, PushServerError, PushTicketError
+        message = PushMessage(
+            to=token,
+            title=title,
+            body=body,
+            data={k: str(v) for k, v in (data or {}).items()},
+            sound='default',
+            channel_id='default',
+            priority='high',
+        )
+        PushClient().publish(message)
+        logger.info(f"✅ [test-push] Push Expo enviada a usuario {user_id} (token: {token[:20]}...)")
+
+        # Tambien enviar web push si hay suscripciones activas
+        from .tasks import _send_web_push_to_user
+        from .models import WebPushSubscription
+        web_subs = WebPushSubscription.objects.filter(usuario=user, activo=True).count()
+        try:
+            _send_web_push_to_user(user, title, body, data)
+        except Exception as web_exc:
+            logger.warning(f"[test-push] Web push error (no critico): {web_exc}")
+
+        return Response({
+            'ok': True,
+            'mensaje': f'Push enviada exitosamente a usuario {user_id}',
+            'token_preview': token[:22] + '...' + token[-6:],
+            'push_tokens_activos': push_tokens_activos,
+            'web_subs_activas': web_subs,
+        }, status=status.HTTP_200_OK)
+    except PushServerError as exc:
+        logger.error(f"❌ [test-push] Expo server error: {exc}")
+        return Response({'error': f'Expo server error: {str(exc)}'}, status=status.HTTP_502_BAD_GATEWAY)
+    except (PushTicketError, ValueError) as exc:
+        logger.error(f"❌ [test-push] Token invalido: {exc}")
+        # Limpiar el token invalido
+        user.expo_push_token = None
+        user.save(update_fields=['expo_push_token'])
+        return Response({'error': f'Token invalido (limpiado del DB): {str(exc)}'}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as exc:
+        logger.error(f"❌ [test-push] Error inesperado: {exc}", exc_info=True)
+        return Response({'error': str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class NotificacionViewSet(viewsets.ModelViewSet):

@@ -675,3 +675,10 @@ LOGGING = {
         },
     },
 }
+
+# ============================================
+# WEB PUSH (VAPID / RFC 8030)
+# ============================================
+VAPID_PUBLIC_KEY = os.environ.get('VAPID_PUBLIC_KEY', '')
+VAPID_PRIVATE_KEY = os.environ.get('VAPID_PRIVATE_KEY', '')
+VAPID_EMAIL = os.environ.get('VAPID_EMAIL', 'mailto:admin@mecanimovil.com')

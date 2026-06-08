@@ -12,7 +12,8 @@ from django.http import HttpResponseRedirect
 from .models import (
     Usuario, Cliente, Taller, MecanicoDomicilio, ZonaCobertura, 
     Resena, DireccionUsuario, HorarioProveedor, DocumentoOnboarding,
-    ConfiguracionSemanalProveedor, MechanicServiceArea, ChileanCommune
+    ConfiguracionSemanalProveedor, MechanicServiceArea, ChileanCommune,
+    PushToken, WebPushSubscription,
 )
 
 
@@ -45,15 +46,78 @@ class ConfiguracionSemanalProveedorForm(forms.ModelForm):
 
 # Personalizar el admin para el modelo Usuario
 class UsuarioAdmin(UserAdmin):
-    list_display = ('username', 'email', 'first_name', 'last_name', 'es_mecanico', 'is_staff')
+    list_display = ('username', 'email', 'first_name', 'last_name', 'es_mecanico', 'is_staff', 'tiene_push_token')
     fieldsets = UserAdmin.fieldsets + (
         ('Información Adicional', {'fields': ('es_mecanico', 'telefono', 'direccion', 'foto_perfil')}),
+        ('Push Notifications', {'fields': ('expo_push_token',), 'classes': ('collapse',)}),
     )
+    readonly_fields = ('expo_push_token',)
     search_fields = ('username', 'email', 'first_name', 'last_name', 'telefono')
     list_filter = UserAdmin.list_filter + ('es_mecanico',)
+    actions = ['enviar_push_prueba', 'limpiar_push_token']
+
+    def tiene_push_token(self, obj):
+        if obj.expo_push_token:
+            return format_html('<span style="color:green;">&#10003; {}</span>', obj.expo_push_token[:20] + '…')
+        return format_html('<span style="color:red;">&#10007; Sin token</span>')
+    tiene_push_token.short_description = 'Push Token'
+
+    def enviar_push_prueba(self, request, queryset):
+        from .tasks import send_expo_push_notification
+        enviadas = 0
+        sin_token = 0
+        for user in queryset:
+            if user.expo_push_token:
+                send_expo_push_notification.delay(
+                    user.id,
+                    'Notificación de prueba',
+                    f'Hola {user.username}, las notificaciones push están funcionando.',
+                    {'type': 'test'},
+                )
+                enviadas += 1
+            else:
+                sin_token += 1
+        msg = f'{enviadas} push(es) encolada(s).'
+        if sin_token:
+            msg += f' {sin_token} usuario(s) sin token.'
+        self.message_user(request, msg)
+    enviar_push_prueba.short_description = '📲 Enviar push de prueba'
+
+    def limpiar_push_token(self, request, queryset):
+        updated = queryset.update(expo_push_token=None)
+        self.message_user(request, f'expo_push_token limpiado en {updated} usuario(s).')
+    limpiar_push_token.short_description = '🗑️ Limpiar expo_push_token'
+
 
 # Registrar el modelo Usuario con la configuración personalizada
 admin.site.register(Usuario, UsuarioAdmin)
+
+
+@admin.register(PushToken)
+class PushTokenAdmin(admin.ModelAdmin):
+    list_display = ('usuario', 'token_preview', 'plataforma', 'dispositivo', 'activo', 'fecha_creacion')
+    list_filter = ('activo', 'plataforma', 'fecha_creacion')
+    search_fields = ('usuario__username', 'usuario__email', 'token', 'dispositivo')
+    readonly_fields = ('token', 'fecha_creacion', 'fecha_actualizacion')
+    list_per_page = 30
+    actions = ['activar_tokens', 'desactivar_tokens']
+
+    def token_preview(self, obj):
+        t = obj.token or ''
+        preview = t[:22] + '…' + t[-6:] if len(t) > 30 else t
+        color = 'green' if obj.activo else 'gray'
+        return format_html('<span style="color:{};">{}</span>', color, preview)
+    token_preview.short_description = 'Token'
+
+    def activar_tokens(self, request, queryset):
+        updated = queryset.update(activo=True)
+        self.message_user(request, f'{updated} token(s) activado(s).')
+    activar_tokens.short_description = 'Activar tokens seleccionados'
+
+    def desactivar_tokens(self, request, queryset):
+        updated = queryset.update(activo=False)
+        self.message_user(request, f'{updated} token(s) desactivado(s).')
+    desactivar_tokens.short_description = 'Desactivar tokens seleccionados'
 
 # Personalizar el admin para el modelo Cliente
 class ClienteAdmin(admin.ModelAdmin):
@@ -761,4 +825,31 @@ class DocumentoOnboardingAdmin(admin.ModelAdmin):
         return "No especificado"
     get_proveedor.short_description = 'Proveedor'
 
-admin.site.register(DocumentoOnboarding, DocumentoOnboardingAdmin) 
+admin.site.register(DocumentoOnboarding, DocumentoOnboardingAdmin)
+
+
+@admin.register(WebPushSubscription)
+class WebPushSubscriptionAdmin(admin.ModelAdmin):
+    list_display = ('usuario', 'endpoint_preview', 'user_agent_preview', 'activo', 'fecha_creacion')
+    list_filter = ('activo', 'fecha_creacion')
+    search_fields = ('usuario__username', 'usuario__email', 'endpoint')
+    readonly_fields = ('endpoint', 'p256dh', 'auth', 'fecha_creacion', 'fecha_actualizacion')
+    list_per_page = 30
+    actions = ['desactivar_suscripciones']
+
+    def endpoint_preview(self, obj):
+        ep = obj.endpoint or ''
+        preview = ep[:60] + '…' if len(ep) > 60 else ep
+        color = 'green' if obj.activo else 'gray'
+        return format_html('<span style="color:{};">{}</span>', color, preview)
+    endpoint_preview.short_description = 'Endpoint'
+
+    def user_agent_preview(self, obj):
+        ua = obj.user_agent or ''
+        return ua[:60] + '…' if len(ua) > 60 else ua
+    user_agent_preview.short_description = 'Navegador'
+
+    def desactivar_suscripciones(self, request, queryset):
+        updated = queryset.update(activo=False)
+        self.message_user(request, f'{updated} suscripcion(es) desactivada(s).')
+    desactivar_suscripciones.short_description = 'Desactivar suscripciones seleccionadas'

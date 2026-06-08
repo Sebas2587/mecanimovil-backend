@@ -1477,7 +1477,56 @@ class PushToken(models.Model):
         ordering = ['-fecha_registro']
     
     def __str__(self):
-        return f"{self.usuario.username} - {self.plataforma} ({'Activo' if self.activo else 'Inactivo'})" 
+        return f"{self.usuario.username} - {self.plataforma} ({'Activo' if self.activo else 'Inactivo'})"
+
+
+class WebPushSubscription(models.Model):
+    """
+    Suscripcion Web Push (VAPID / RFC 8030) para notificaciones push en navegador.
+    Cada navegador/dispositivo web genera un endpoint unico al suscribirse via PushManager.
+    """
+    usuario = models.ForeignKey(
+        Usuario,
+        on_delete=models.CASCADE,
+        related_name='web_push_subscriptions',
+        help_text='Usuario propietario de la suscripcion',
+    )
+    endpoint = models.TextField(
+        unique=True,
+        help_text='URL de entrega del proveedor (Chrome/Firefox/etc.)',
+    )
+    p256dh = models.TextField(
+        help_text='Clave publica del cliente (base64url)',
+    )
+    auth = models.TextField(
+        help_text='Secreto de autenticacion del cliente (base64url)',
+    )
+    user_agent = models.CharField(
+        max_length=512,
+        blank=True,
+        default='',
+        help_text='User-Agent del navegador al suscribirse',
+    )
+    activo = models.BooleanField(
+        default=True,
+        help_text='Suscripcion activa. Se desactiva cuando el endpoint devuelve 410 Gone.',
+    )
+    fecha_creacion = models.DateTimeField(auto_now_add=True)
+    fecha_actualizacion = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'usuarios_web_push_subscriptions'
+        verbose_name = 'Web Push Subscription'
+        verbose_name_plural = 'Web Push Subscriptions'
+        indexes = [
+            models.Index(fields=['usuario', 'activo']),
+        ]
+        ordering = ['-fecha_creacion']
+
+    def __str__(self):
+        domain = self.endpoint[:50] if self.endpoint else ''
+        return f"{self.usuario.username} - web ({domain}…)"
+
 
 class Notificacion(models.Model):
     """

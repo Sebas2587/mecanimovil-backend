@@ -1,8 +1,69 @@
 from celery import shared_task
 from django.core.cache import cache
+from django.conf import settings
+import json
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _send_web_push_to_user(user, title, body, data=None):
+    """
+    Enviar Web Push (VAPID/RFC 8030) a todas las suscripciones web activas del usuario.
+    Desactiva automaticamente los endpoints que devuelvan 410 Gone (suscripcion expirada).
+    """
+    from .models import WebPushSubscription
+
+    vapid_private = getattr(settings, 'VAPID_PRIVATE_KEY', None)
+    vapid_public = getattr(settings, 'VAPID_PUBLIC_KEY', None)
+    vapid_email = getattr(settings, 'VAPID_EMAIL', 'mailto:admin@mecanimovil.com')
+
+    if not vapid_private or not vapid_public:
+        logger.debug('[web-push] VAPID keys no configuradas, omitiendo envio web.')
+        return
+
+    subs = WebPushSubscription.objects.filter(usuario=user, activo=True)
+    if not subs.exists():
+        return
+
+    try:
+        from pywebpush import webpush, WebPushException
+    except ImportError:
+        logger.warning('[web-push] pywebpush no instalado, omitiendo envio web.')
+        return
+
+    payload = json.dumps({
+        'title': title,
+        'body': body,
+        'data': data or {},
+    })
+
+    vapid_claims = {'sub': vapid_email}
+
+    for sub in subs:
+        try:
+            webpush(
+                subscription_info={
+                    'endpoint': sub.endpoint,
+                    'keys': {'p256dh': sub.p256dh, 'auth': sub.auth},
+                },
+                data=payload,
+                vapid_private_key=vapid_private,
+                vapid_claims=vapid_claims,
+                content_encoding='aes128gcm',
+            )
+            logger.info(f'✅ [web-push] Enviada a suscripcion {sub.id} del usuario {user.id}')
+        except WebPushException as exc:
+            status_code = exc.response.status_code if exc.response else None
+            if status_code == 410:
+                # Suscripcion expirada — el navegador la revoco
+                sub.activo = False
+                sub.save(update_fields=['activo'])
+                logger.info(f'🗑️ [web-push] Suscripcion {sub.id} expirada (410), desactivada.')
+            else:
+                logger.error(f'❌ [web-push] Error en suscripcion {sub.id}: {exc}')
+        except Exception as exc:
+            logger.error(f'❌ [web-push] Error inesperado en suscripcion {sub.id}: {exc}')
 
 THROTTLE_WINDOWS = {
     'health_alert':              3600,
@@ -139,6 +200,12 @@ def send_expo_push_notification(self, user_id, title, body, data=None):
             logger.error(f"❌ Token inválido para usuario {user_id}: {exc}")
             user.expo_push_token = None
             user.save(update_fields=['expo_push_token'])
+
+        # Enviar tambien a suscripciones Web Push activas del usuario (canal web)
+        try:
+            _send_web_push_to_user(user, title, body, data)
+        except Exception as web_exc:
+            logger.error(f"❌ Error en web push para usuario {user_id}: {web_exc}")
 
     except Usuario.DoesNotExist:
         logger.error(f"❌ [push] Usuario {user_id} no encontrado")
