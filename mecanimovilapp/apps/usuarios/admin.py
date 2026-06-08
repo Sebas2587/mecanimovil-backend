@@ -95,10 +95,10 @@ admin.site.register(Usuario, UsuarioAdmin)
 
 @admin.register(PushToken)
 class PushTokenAdmin(admin.ModelAdmin):
-    list_display = ('usuario', 'token_preview', 'plataforma', 'dispositivo', 'activo', 'fecha_creacion')
-    list_filter = ('activo', 'plataforma', 'fecha_creacion')
+    list_display = ('usuario', 'token_preview', 'plataforma', 'dispositivo', 'activo', 'fecha_registro')
+    list_filter = ('activo', 'plataforma', 'fecha_registro')
     search_fields = ('usuario__username', 'usuario__email', 'token', 'dispositivo')
-    readonly_fields = ('token', 'fecha_creacion', 'fecha_actualizacion')
+    readonly_fields = ('token', 'fecha_registro', 'fecha_actualizacion')
     list_per_page = 30
     actions = ['activar_tokens', 'desactivar_tokens']
 
