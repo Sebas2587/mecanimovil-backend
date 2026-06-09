@@ -39,16 +39,54 @@ logger = logging.getLogger(__name__)
 # Permite reusar ítems SELECT existentes (ej. "Estado Pastillas: Excelente/Bueno/...")
 # como entrada para INSPECCIONA sin migrar todos los catálogos a COMPONENT_HEALTH.
 SALUD_DESDE_SELECT = {
-    'Excelente':            95.0,
-    'Bueno':                80.0,
-    'Regular':              60.0,
-    'Malo':                 35.0,
-    'Crítico':              15.0,
-    'Critico':              15.0,
-    'Requiere atención':    25.0,
-    'Requiere atencion':    25.0,
-    'Requiere Atención':    25.0,
+    # Escala estándar de calidad
+    'Excelente':                    95.0,
+    'Bueno':                        80.0,
+    'Regular':                      60.0,
+    'Malo':                         35.0,
+    'Crítico':                      15.0,
+    'Critico':                      15.0,
+    # Variantes de "óptimo" encontradas en populate_checklists_por_servicio
+    'Óptimo':                       95.0,
+    'Optimo':                       95.0,
+    'Nivel óptimo':                 100.0,
+    'Nivel optimo':                 100.0,
+    'Sin desgaste visible':         90.0,
+    # Variantes de desgaste
+    'Desgaste leve':                70.0,
+    'Desgaste moderado':            50.0,
+    'Desgaste severo':              20.0,
+    'Desgastadas':                  30.0,
+    # Variantes de nivel bajo
+    'Nivel bajo':                   40.0,
+    'Muy bajo':                     15.0,
+    # Variantes de "requiere acción"
+    'Requiere atención':            25.0,
+    'Requiere atencion':            25.0,
+    'Requiere Atención':            25.0,
+    'Requiere cambio':              25.0,
+    'Requiere cambio urgente':      10.0,
+    'Requiere Cambio':              25.0,
+    'Requiere Cambio Urgente':      10.0,
 }
+
+# ── Tablas de prioridad para resolver conflictos multi-item por componente ──
+# Cuando dos ítems del mismo checklist mapean al mismo ComponenteSalud,
+# el ganador se selecciona por la menor tupla (prio_actualizacion, prio_pregunta, orden_visual).
+_PRIO_TIPO_ACTUALIZACION = {
+    'REEMPLAZA':    0,
+    'INSPECCIONA':  1,
+    'INFORMATIVO':  99,
+}
+_PRIO_TIPO_PREGUNTA = {
+    'COMPONENT_HEALTH': 0,
+    'SELECT':           1,
+    'RATING':           2,
+    'NUMBER':           3,
+    'BOOLEAN':          4,
+    # Otros tipos no productores de salud obtienen prioridad baja
+}
+_PRIO_TIPO_PREGUNTA_DEFAULT = 10
 
 
 def _nivel_alerta_desde_pct(salud_pct):
@@ -106,6 +144,57 @@ def _porcentaje_inspeccion_desde_respuesta(respuesta):
         return max(0.0, min(100.0, valor))
 
     return None
+
+
+def _candidatos_por_componente(respuestas):
+    """
+    Recorre las respuestas de un ChecklistInstance y retorna, por cada
+    ComponenteSalud, la respuesta candidata con mayor prioridad según:
+
+      PRIORIDAD_TIPO_ACTUALIZACION: REEMPLAZA < INSPECCIONA < INFORMATIVO
+      PRIORIDAD_TIPO_PREGUNTA:      COMPONENT_HEALTH < SELECT < RATING < NUMBER < BOOLEAN
+
+    Empate se resuelve por orden_visual ascendente (primera declaración gana).
+
+    Las respuestas INFORMATIVO o sin componente asociado son ignoradas.
+    Las respuestas REEMPLAZA con respuesta_booleana==False se tratan como INFORMATIVO.
+
+    Retorna: dict {componente_id: respuesta} con el mejor candidato por componente.
+    """
+    candidatos = {}
+
+    for respuesta in respuestas:
+        item_template = respuesta.item_template
+        componente = getattr(item_template, 'componente_salud_asociado', None)
+        if componente is None:
+            continue
+
+        tipo_act = item_template.tipo_actualizacion_efectivo
+        if tipo_act == 'INFORMATIVO':
+            continue
+
+        # Fix: BOOLEAN REEMPLAZA con respuesta False → ignorar
+        if tipo_act == 'REEMPLAZA':
+            catalog_item = getattr(item_template, 'catalog_item', None)
+            tipo_pregunta = getattr(catalog_item, 'tipo_pregunta', None) if catalog_item else None
+            if tipo_pregunta == 'BOOLEAN' and respuesta.respuesta_booleana is False:
+                continue
+
+        catalog_item = getattr(item_template, 'catalog_item', None)
+        tipo_pregunta = getattr(catalog_item, 'tipo_pregunta', '') if catalog_item else ''
+        orden_visual = getattr(item_template, 'orden_visual', 9999)
+
+        score = (
+            _PRIO_TIPO_ACTUALIZACION.get(tipo_act, 99),
+            _PRIO_TIPO_PREGUNTA.get(tipo_pregunta, _PRIO_TIPO_PREGUNTA_DEFAULT),
+            orden_visual,
+        )
+
+        comp_id = componente.id
+        if comp_id not in candidatos or score < candidatos[comp_id][0]:
+            candidatos[comp_id] = (score, respuesta)
+
+    return {comp_id: data[1] for comp_id, data in candidatos.items()}
 
 
 def _construir_evento_ml(
@@ -460,6 +549,38 @@ def procesar_post_viaje(self, vehicle_id, viaje_id, km_recorridos, km_anterior, 
 
 
 @shared_task
+def generar_recomendaciones_checklist(checklist_id):
+    """
+    Genera las recomendaciones ML post-checklist y las cachea en Redis.
+
+    Se ejecuta de forma independiente a actualizar_salud_desde_checklist
+    (ambas se encolan desde el signal). El fallo de esta tarea no afecta
+    al flujo principal de actualización de salud.
+
+    Args:
+        checklist_id (int): ID del ChecklistInstance COMPLETADO.
+    """
+    try:
+        from .services.checklist_recommender import generar_recomendaciones
+        resultado = generar_recomendaciones(checklist_id)
+        if resultado:
+            logger.info(
+                'generar_recomendaciones_checklist: %d recomendaciones generadas para checklist %s',
+                len(resultado.get('recomendaciones', [])), checklist_id,
+            )
+        else:
+            logger.warning(
+                'generar_recomendaciones_checklist: no se pudo generar resultado para checklist %s',
+                checklist_id,
+            )
+    except Exception as e:
+        logger.error(
+            'generar_recomendaciones_checklist: error para checklist %s: %s',
+            checklist_id, e, exc_info=True,
+        )
+
+
+@shared_task
 def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
     """
     Actualiza salud cuando se completa un checklist
@@ -569,35 +690,32 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
                             logger.warning(f"Error creando alerta de kilometraje: {str(e)}")
         
         # ──────────────────────────────────────────────────────────────────
-        # Refactor 2026: las respuestas se asocian a componentes de salud vía
-        # FK explícita (`item_template.componente_salud_asociado`). El antiguo
-        # `mapeo_componentes` por substring queda eliminado: si un ítem debe
-        # afectar la salud, lo declara `populate_checklists_por_servicio`.
-        #
-        # Cada ítem también declara `tipo_actualizacion`:
-        #   REEMPLAZA   → resetea salud a 100 (servicio realizado)
-        #   INSPECCIONA → ancla la curva en el porcentaje declarado por el técnico
-        #   INFORMATIVO → no toca métricas
+        # Refactor 2026 v2: usa _candidatos_por_componente() para resolver
+        # conflictos cuando varios ítems mapean al mismo ComponenteSalud.
+        # Política: REEMPLAZA > COMPONENT_HEALTH > SELECT > RATING.
+        # BOOLEAN REEMPLAZA con respuesta False se ignora.
         # ──────────────────────────────────────────────────────────────────
+        todas_las_respuestas = list(
+            checklist.respuestas.select_related(
+                'item_template__catalog_item',
+                'item_template__componente_salud_asociado',
+                'item_template__checklist_template',
+            ).all()
+        )
+        respuestas_count = len(todas_las_respuestas)
+        candidatos = _candidatos_por_componente(todas_las_respuestas)
+        respuestas_con_componente = len(candidatos)
+
         componentes_para_actualizar = {}
-        respuestas_count = 0
-        respuestas_con_componente = 0
         eventos_ml_a_crear = []
         inspecciones_descartadas = []
-        # Detalle por tipo de actualización para alimentar el push al usuario.
-        componentes_inspeccionados = []  # list of (nombre, pct_declarado)
-        componentes_reemplazados = []    # list of nombre
+        componentes_inspeccionados = []
+        componentes_reemplazados = []
 
-        for respuesta in checklist.respuestas.all():
-            respuestas_count += 1
+        for componente_maestro_id, respuesta in candidatos.items():
             item_template = respuesta.item_template
-            componente_maestro = getattr(item_template, 'componente_salud_asociado', None)
-            if componente_maestro is None:
-                continue
+            componente_maestro = item_template.componente_salud_asociado
             tipo_actualizacion = item_template.tipo_actualizacion_efectivo
-            if tipo_actualizacion == 'INFORMATIVO':
-                continue
-            respuestas_con_componente += 1
 
             try:
                 km_para_servicio = (

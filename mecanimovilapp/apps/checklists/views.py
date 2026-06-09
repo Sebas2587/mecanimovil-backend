@@ -133,9 +133,114 @@ class ChecklistTemplateViewSet(viewsets.ReadOnlyModelViewSet):
             return Response(serializer.data)
         except ChecklistTemplate.DoesNotExist:
             return Response(
-                {'error': 'No existe template de checklist para este servicio'}, 
+                {'error': 'No existe template de checklist para este servicio'},
                 status=status.HTTP_404_NOT_FOUND
             )
+
+    @action(detail=True, methods=['post'], url_path='bulk-add-items', permission_classes=[permissions.IsAdminUser])
+    def bulk_add_items(self, request, pk=None):
+        """
+        Agrega ChecklistItemTemplate en bulk a este template a partir de
+        categoria + componente_ids + tipo_evaluacion.
+
+        Solo accesible por usuarios admin (IsAdminUser).
+
+        tipo_evaluacion:
+          - rapida    → 1 item SELECT INSPECCIONA por componente
+          - completa  → 1 SELECT + 1 COMPONENT_HEALTH INSPECCIONA por componente
+          - reemplazo → 1 BOOLEAN REEMPLAZA por componente
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        template = self.get_object()
+        serializer_class = self._get_bulk_add_items_serializer()
+        ser = serializer_class(data=request.data)
+        if not ser.is_valid():
+            return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        categoria = ser.validated_data['categoria']
+        componente_ids = ser.validated_data['componente_ids']
+        tipo_evaluacion = ser.validated_data['tipo_evaluacion']
+
+        from mecanimovilapp.apps.vehiculos.models_health import ComponenteSalud
+        from .models import ChecklistItemTemplate, ChecklistItemCatalog
+        from .admin import _build_bulk_items_for_componente
+
+        componentes = ComponenteSalud.objects.filter(id__in=componente_ids)
+        if not componentes.exists():
+            return Response(
+                {'error': 'No se encontraron componentes con los IDs proporcionados'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        items_creados = 0
+        items_existentes = 0
+        items_resultado = []
+        orden_base = template.items.count()
+
+        for componente in componentes:
+            pares = _build_bulk_items_for_componente(
+                template, componente, categoria, tipo_evaluacion, orden_base
+            )
+            for catalog_item, tipo_act, orden in pares:
+                item_template, created = ChecklistItemTemplate.objects.get_or_create(
+                    checklist_template=template,
+                    catalog_item=catalog_item,
+                    defaults={
+                        'orden_visual': orden,
+                        'tipo_actualizacion': tipo_act,
+                        'componente_salud_asociado': componente,
+                    },
+                )
+                if created:
+                    items_creados += 1
+                    orden_base += 1
+                else:
+                    items_existentes += 1
+                items_resultado.append({
+                    'id': item_template.id,
+                    'orden_visual': item_template.orden_visual,
+                    'catalog_item_nombre': catalog_item.nombre,
+                    'tipo_actualizacion': tipo_act,
+                    'componente_nombre': componente.nombre,
+                    'created': created,
+                })
+
+        logger.info(
+            'bulk_add_items: template=%s categoria=%s tipo=%s → creados=%d existentes=%d',
+            template.id, categoria, tipo_evaluacion, items_creados, items_existentes,
+        )
+
+        return Response(
+            {
+                'items_creados': items_creados,
+                'items_existentes': items_existentes,
+                'items': items_resultado,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+    @staticmethod
+    def _get_bulk_add_items_serializer():
+        from rest_framework import serializers as drf_serializers
+
+        class _BulkAddItemsSerializer(drf_serializers.Serializer):
+            TIPO_EVALUACION_CHOICES = ['rapida', 'completa', 'reemplazo']
+
+            categoria = drf_serializers.ChoiceField(
+                choices=[c[0] for c in __import__(
+                    'mecanimovilapp.apps.checklists.models',
+                    fromlist=['ChecklistItemCatalog']
+                ).ChecklistItemCatalog.CATEGORIA_CHOICES],
+            )
+            componente_ids = drf_serializers.ListField(
+                child=drf_serializers.IntegerField(min_value=1),
+                min_length=1,
+            )
+            tipo_evaluacion = drf_serializers.ChoiceField(choices=TIPO_EVALUACION_CHOICES)
+
+        return _BulkAddItemsSerializer
 
 
 class ChecklistInstanceViewSet(viewsets.ModelViewSet):
@@ -1021,12 +1126,14 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
     def preview_impacto(self, request, pk=None):
         """
         Calcula sin persistir el diff entre la salud actual y la proyectada
-        por las respuestas guardadas hasta el momento. Se usa antes de
-        finalizar el checklist para mostrarle al técnico el impacto.
+        por las respuestas guardadas hasta el momento. Usa la misma política
+        de prioridad que actualizar_salud_desde_checklist para resultados
+        coherentes.
         """
         from mecanimovilapp.apps.vehiculos.tasks import (
             _porcentaje_inspeccion_desde_respuesta,
             _nivel_alerta_desde_pct,
+            _candidatos_por_componente,
         )
         from mecanimovilapp.apps.vehiculos.models_health import (
             ComponenteSaludVehiculo,
@@ -1041,17 +1148,14 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        respuestas = instance.respuestas.select_related(
+        respuestas = list(instance.respuestas.select_related(
             'item_template__componente_salud_asociado',
             'item_template__catalog_item',
             'item_template__checklist_template',
-        ).all()
+        ).all())
 
-        componente_ids = set()
-        for r in respuestas:
-            comp = getattr(r.item_template, 'componente_salud_asociado', None)
-            if comp is not None:
-                componente_ids.add(comp.id)
+        candidatos = _candidatos_por_componente(respuestas)
+        componente_ids = set(candidatos.keys())
 
         estados_map = {
             c.componente_id: c
@@ -1059,7 +1163,6 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
                 vehiculo=vehiculo, componente_id__in=componente_ids,
             )
         }
-        # Snapshot global existente para "antes"
         estado_general = EstadoSaludVehiculo.objects.filter(vehiculo=vehiculo).first()
         salud_general_actual = (
             round(estado_general.salud_general_porcentaje, 1)
@@ -1067,23 +1170,13 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
         )
 
         diff = []
-        ya_visto = set()
-        for r in respuestas:
+        for comp_id, r in candidatos.items():
             item_template = r.item_template
-            componente = getattr(item_template, 'componente_salud_asociado', None)
-            if componente is None:
-                continue
+            componente = item_template.componente_salud_asociado
             tipo_act = item_template.tipo_actualizacion_efectivo
-            if tipo_act == 'INFORMATIVO':
-                continue
-            if componente.id in ya_visto:
-                continue
-            ya_visto.add(componente.id)
 
-            estado = estados_map.get(componente.id)
-            salud_actual = (
-                round(estado.salud_porcentaje, 1) if estado else None
-            )
+            estado = estados_map.get(comp_id)
+            salud_actual = round(estado.salud_porcentaje, 1) if estado else None
 
             if tipo_act == 'REEMPLAZA':
                 salud_nueva = 100.0
@@ -1130,6 +1223,78 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
             'salud_general_estimada': salud_general_estimada,
             'diff': diff,
         })
+
+    @action(detail=True, methods=['get'], url_path='recomendaciones')
+    def recomendaciones(self, request, pk=None):
+        """
+        Retorna las recomendaciones ML generadas post-checklist.
+
+        Accesible para:
+          - El proveedor (taller o mecánico) de la orden.
+          - El cliente dueño de la orden.
+
+        Solo disponible cuando la instancia está en estado COMPLETADO.
+        Los resultados se cachean en Redis 24h y se generan via Celery al completarse.
+        Si el cache no está listo aún, los genera en el momento (respuesta más lenta).
+        """
+        import logging
+        rec_logger = logging.getLogger(__name__)
+
+        instance = self.get_object()
+
+        # Verificar que es COMPLETADO
+        if instance.estado != 'COMPLETADO':
+            return Response(
+                {
+                    'error': (
+                        f'Las recomendaciones solo están disponibles cuando el checklist '
+                        f'está completado (estado actual: {instance.estado}).'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Verificar permisos: proveedor de la orden OR cliente dueño
+        user = request.user
+        orden = instance.orden
+        es_proveedor = (
+            (hasattr(user, 'taller') and getattr(orden, 'taller', None) == user.taller)
+            or (hasattr(user, 'mecanico_domicilio') and getattr(orden, 'mecanico', None) == user.mecanico_domicilio)
+        )
+        usuario_cliente = getattr(getattr(orden, 'cliente', None), 'usuario', None)
+        es_cliente = usuario_cliente is not None and usuario_cliente.id == user.id
+
+        if not es_proveedor and not es_cliente:
+            # Intento de acceso anónimo o de usuario no relacionado a la orden
+            rec_logger.warning(
+                'recomendaciones: usuario %s no tiene permiso para checklist %s',
+                user.id, instance.id,
+            )
+            return Response(
+                {'error': 'No tienes permiso para ver las recomendaciones de este checklist.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            from mecanimovilapp.apps.vehiculos.services.checklist_recommender import (
+                generar_recomendaciones,
+            )
+            resultado = generar_recomendaciones(instance.id)
+            if resultado is None:
+                return Response(
+                    {'recomendaciones': [], 'componentes_actualizados': [], 'checklist_id': instance.id},
+                    status=status.HTTP_200_OK,
+                )
+            return Response(resultado, status=status.HTTP_200_OK)
+        except Exception as e:
+            rec_logger.error(
+                'recomendaciones: error generando para checklist %s: %s',
+                instance.id, e, exc_info=True,
+            )
+            return Response(
+                {'error': 'No se pudieron generar las recomendaciones.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
 
 class ChecklistResponseViewSet(viewsets.ModelViewSet):
