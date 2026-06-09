@@ -1,0 +1,30 @@
+# Dispara deploy en Render (api + celery) en cada push a main.
+# Requiere secret RENDER_API_KEY en GitHub → Settings → Secrets → Actions.
+name: Trigger Render deploy
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy Render services
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+        run: |
+          if [ -z "$RENDER_API_KEY" ]; then
+            echo "RENDER_API_KEY no definida; conecta Git en Render o añade el secret."
+            exit 0
+          fi
+          for svc in \
+            srv-d5ig4ga4d50c739mhr30 \
+            srv-d5ikvblactks73a6mt8g \
+            srv-d5ikvblactks73a6mt90; do
+            echo "Deploying $svc..."
+            curl -fsS -X POST "https://api.render.com/v1/services/$svc/deploys" \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              -H "Content-Type: application/json" \
+              -d '{"clearCache":"do_not_clear"}'
+            echo
+          done
