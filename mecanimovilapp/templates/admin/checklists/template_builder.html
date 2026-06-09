@@ -4,9 +4,9 @@
 {% block extrahead %}
 {{ block.super }}
 {# Data bags — available to JS below #}
-{{ sections_json|json_script:"b-sections" }}
-{{ componentes_json|json_script:"b-componentes" }}
-{{ categorias_json|json_script:"b-categorias" }}
+{{ sections_data|json_script:"b-sections" }}
+{{ componentes_data|json_script:"b-componentes" }}
+{{ categorias_data|json_script:"b-categorias" }}
 {% endblock %}
 
 {% block extrastyle %}

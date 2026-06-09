@@ -588,9 +588,9 @@ class ChecklistTemplateAdmin(admin.ModelAdmin):
             'template_obj': template,
             'title': f'Builder — {template.nombre}',
             'opts': self.model._meta,
-            'sections_json': _json.dumps(sections_data, ensure_ascii=False),
-            'componentes_json': _json.dumps(componentes, ensure_ascii=False),
-            'categorias_json': _json.dumps(ChecklistItemCatalog.CATEGORIA_CHOICES, ensure_ascii=False),
+            'sections_data': sections_data,
+            'componentes_data': componentes,
+            'categorias_data': list(ChecklistItemCatalog.CATEGORIA_CHOICES),
         }
         return render(request, 'admin/checklists/template_builder.html', context)
 
