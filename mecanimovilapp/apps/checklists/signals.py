@@ -56,40 +56,61 @@ def invalidar_cache_salud_vehiculo(sender, instance, created, **kwargs):
         checklist_id = instance.id
 
         def run_actualizacion():
-            from mecanimovilapp.apps.vehiculos.tasks import actualizar_salud_desde_checklist
+            from mecanimovilapp.apps.vehiculos.tasks import (
+                actualizar_salud_desde_checklist,
+                generar_recomendaciones_checklist,
+            )
 
-            # Intentar encolar en Celery primero (no bloquea el proceso web)
+            # ── Tarea 1: Actualizar salud (crítica) ────────────────────────
             try:
                 actualizar_salud_desde_checklist.apply_async(
                     args=[checklist_id, vehicle_id],
                     countdown=0,
                 )
                 logger.info(
-                    "✅ Post-checklist: tarea encolada en Celery para vehículo %s (checklist %s)",
-                    vehicle_id,
-                    checklist_id,
+                    "✅ Post-checklist: tarea salud encolada en Celery para vehículo %s (checklist %s)",
+                    vehicle_id, checklist_id,
                 )
             except Exception as celery_err:
-                # Celery no disponible (Redis caído, etc.) → fallback síncrono
                 logger.warning(
                     "⚠️ Celery no disponible para checklist %s vehículo %s (%s) — ejecutando síncronamente",
-                    checklist_id,
-                    vehicle_id,
-                    celery_err,
+                    checklist_id, vehicle_id, celery_err,
                 )
                 try:
                     actualizar_salud_desde_checklist(checklist_id, vehicle_id)
                     logger.info(
                         "✅ Post-checklist: km/salud procesados síncronamente para vehículo %s (checklist %s)",
-                        vehicle_id,
-                        checklist_id,
+                        vehicle_id, checklist_id,
                     )
                 except Exception as sync_error:
                     logger.error(
                         "❌ Error actualizando km/salud tras checklist %s: %s",
-                        checklist_id,
-                        sync_error,
-                        exc_info=True,
+                        checklist_id, sync_error, exc_info=True,
+                    )
+
+            # ── Tarea 2: Generar recomendaciones ML (no crítica) ───────────
+            # Se encola después de actualizar_salud para que las métricas
+            # ya estén actualizadas al momento de evaluar anomalías.
+            try:
+                generar_recomendaciones_checklist.apply_async(
+                    args=[checklist_id],
+                    countdown=5,  # pequeño delay para que salud se procese primero
+                )
+                logger.info(
+                    "✅ Post-checklist: tarea recomendaciones ML encolada para checklist %s",
+                    checklist_id,
+                )
+            except Exception as rec_err:
+                logger.warning(
+                    "⚠️ No se pudo encolar recomendaciones ML para checklist %s: %s — ejecutando síncronamente",
+                    checklist_id, rec_err,
+                )
+                try:
+                    generar_recomendaciones_checklist(checklist_id)
+                except Exception as sync_rec_err:
+                    logger.error(
+                        "❌ Error generando recomendaciones síncronas para checklist %s: %s",
+                        checklist_id, sync_rec_err, exc_info=True,
                     )
 
         transaction.on_commit(run_actualizacion)

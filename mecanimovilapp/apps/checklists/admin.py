@@ -17,6 +17,46 @@ import json
 
 
 # ===================================
+# FORMULARIO PARA BULK ADD ITEMS
+# ===================================
+
+class BulkAddItemsForm(forms.Form):
+    """Formulario para agregar items en bulk al template desde catálogo por categoría."""
+
+    TIPO_EVALUACION_CHOICES = [
+        ('rapida', 'Rápida — 1 item SELECT por componente (inspección cualitativa)'),
+        ('completa', 'Completa — SELECT + COMPONENT_HEALTH por componente (inspección cuantitativa)'),
+        ('reemplazo', 'Reemplazo — 1 item BOOLEAN por componente (confirmar que se reemplazó)'),
+    ]
+
+    categoria = forms.ChoiceField(
+        choices=[('', '— Seleccionar categoría —')] + ChecklistItemCatalog.CATEGORIA_CHOICES,
+        label='Categoría del catálogo',
+        help_text='Los items del catálogo de esta categoría se usarán como base.',
+    )
+    componentes = forms.ModelMultipleChoiceField(
+        queryset=None,
+        label='Componentes de salud a evaluar',
+        help_text='Selecciona los ComponenteSalud que quieres cubrir con estos items.',
+        widget=forms.CheckboxSelectMultiple,
+    )
+    tipo_evaluacion = forms.ChoiceField(
+        choices=TIPO_EVALUACION_CHOICES,
+        label='Tipo de evaluación',
+        initial='completa',
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        try:
+            from mecanimovilapp.apps.vehiculos.models_health import ComponenteSalud
+            self.fields['componentes'].queryset = ComponenteSalud.objects.all().order_by('nombre')
+        except Exception:
+            from django.db.models import QuerySet
+            self.fields['componentes'].queryset = ChecklistItemCatalog.objects.none()
+
+
+# ===================================
 # 1. WIDGET PERSONALIZADO PARA OPCIONES
 # ===================================
 
@@ -58,6 +98,63 @@ class OptionsTextWidget(widgets.Textarea):
         # Dividir por líneas y limpiar
         options = [line.strip() for line in value.split('\n') if line.strip()]
         return options if options else None
+
+
+def _build_bulk_items_for_componente(template, componente, categoria, tipo_evaluacion, orden_base):
+    """
+    Retorna lista de (catalog_item, tipo_actualizacion, orden_visual) para el componente dado.
+    Crea los ChecklistItemCatalog base si no existen.
+    """
+    items = []
+    nombre_componente = componente.nombre
+
+    if tipo_evaluacion in ('rapida', 'completa'):
+        nombre_select = f'Estado {nombre_componente}'
+        catalog_select, _ = ChecklistItemCatalog.objects.get_or_create(
+            nombre=nombre_select,
+            categoria=categoria,
+            defaults={
+                'tipo_pregunta': 'SELECT',
+                'pregunta_texto': f'¿Cuál es el estado de {nombre_componente}?',
+                'opciones_seleccion': ['Excelente', 'Bueno', 'Regular', 'Malo', 'Crítico'],
+                'es_obligatorio_por_defecto': True,
+                'uso_frecuente': True,
+            },
+        )
+        items.append((catalog_select, 'INSPECCIONA', orden_base + len(items) + 1))
+
+    if tipo_evaluacion == 'completa':
+        nombre_health = f'Vida útil — {nombre_componente}'
+        catalog_health, _ = ChecklistItemCatalog.objects.get_or_create(
+            nombre=nombre_health,
+            categoria=categoria,
+            defaults={
+                'tipo_pregunta': 'COMPONENT_HEALTH',
+                'pregunta_texto': f'Indica el porcentaje de vida útil restante de {nombre_componente} (0–100%)',
+                'descripcion_ayuda': '0% = componente al final de su vida útil. 100% = componente nuevo.',
+                'valor_minimo': 0,
+                'valor_maximo': 100,
+                'es_obligatorio_por_defecto': False,
+                'uso_frecuente': True,
+            },
+        )
+        items.append((catalog_health, 'INSPECCIONA', orden_base + len(items) + 1))
+
+    if tipo_evaluacion == 'reemplazo':
+        nombre_bool = f'{nombre_componente} reemplazado'
+        catalog_bool, _ = ChecklistItemCatalog.objects.get_or_create(
+            nombre=nombre_bool,
+            categoria=categoria,
+            defaults={
+                'tipo_pregunta': 'BOOLEAN',
+                'pregunta_texto': f'¿Se realizó el reemplazo de {nombre_componente}?',
+                'es_obligatorio_por_defecto': True,
+                'uso_frecuente': True,
+            },
+        )
+        items.append((catalog_bool, 'REEMPLAZA', orden_base + len(items) + 1))
+
+    return items
 
 
 class ChecklistItemCatalogForm(forms.ModelForm):
@@ -168,33 +265,34 @@ class ChecklistItemCatalogAdmin(admin.ModelAdmin):
 class ChecklistItemTemplateInline(admin.TabularInline):
     """
     Inline para gestionar los items dentro de un template.
-    Aquí se seleccionan los items del catálogo y se organizan por orden.
-    La obligatoriedad se define en el catálogo, no se sobrescribe aquí.
+    Incluye los campos de semántica de salud (tipo_actualizacion, componente_salud_asociado)
+    para que los administradores puedan configurar el impacto en métricas de salud.
     """
     model = ChecklistItemTemplate
     extra = 1
     fields = [
-        'orden_visual', 'catalog_item'
+        'orden_visual', 'catalog_item', 'tipo_actualizacion', 'componente_salud_asociado',
     ]
     ordering = ['orden_visual']
-    
+
     def formfield_for_foreignkey(self, db_field, request, **kwargs):
-        """Personalizar el campo de selección del catalog_item"""
         if db_field.name == "catalog_item":
-            # Solo mostrar items activos del catálogo, ordenados por uso frecuente
             try:
                 kwargs["queryset"] = ChecklistItemCatalog.objects.filter(
                     activo=True
                 ).order_by('-uso_frecuente', 'categoria', 'nombre')
-                
-                # Personalizar el widget para mostrar más información
-                kwargs["widget"] = admin.widgets.Select(attrs={
-                    'style': 'width: 400px;'
-                })
-            except:
+                kwargs["widget"] = admin.widgets.Select(attrs={'style': 'width: 350px;'})
+            except Exception:
+                pass
+        if db_field.name == "componente_salud_asociado":
+            try:
+                from mecanimovilapp.apps.vehiculos.models_health import ComponenteSalud
+                kwargs["queryset"] = ComponenteSalud.objects.all().order_by('nombre')
+                kwargs["widget"] = admin.widgets.Select(attrs={'style': 'width: 200px;'})
+            except Exception:
                 pass
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
-
+    
 
 # ===================================
 # 4. ADMIN DE TEMPLATES DE CHECKLIST
@@ -204,10 +302,10 @@ class ChecklistItemTemplateInline(admin.TabularInline):
 class ChecklistTemplateAdmin(admin.ModelAdmin):
     """
     Admin principal para gestionar templates de checklist.
-    Aquí se crean los templates y se asignan a servicios de forma simple e intuitiva.
+    Incluye acción para agregar items en bulk por categoría y componente de salud.
     """
     list_display = [
-        'nombre', 'servicio_info', 'version', 'activo', 
+        'nombre', 'servicio_info', 'version', 'activo',
         'total_items', 'items_frecuentes', 'created_info', 'acciones'
     ]
     list_filter = ['activo', 'fecha_creacion', 'servicio__categorias']
@@ -277,45 +375,100 @@ class ChecklistTemplateAdmin(admin.ModelAdmin):
     def acciones(self, obj):
         """Botones de acciones rápidas"""
         buttons = []
-        
-        # Botón editar
         edit_url = reverse('admin:checklists_checklisttemplate_change', args=[obj.id])
         buttons.append(f'<a href="{edit_url}" style="margin-right: 5px; text-decoration: none;">📝 Editar</a>')
-        
+        bulk_url = reverse('admin:checklist_template_bulk_add_items', args=[obj.id])
+        buttons.append(f'<a href="{bulk_url}" style="margin-right: 5px; text-decoration: none; color: #007bff;">➕ Bulk Items</a>')
         return format_html(''.join(buttons))
     acciones.short_description = 'Acciones'
     acciones.allow_tags = True
-    
+
+    def get_urls(self):
+        urls = super().get_urls()
+        custom_urls = [
+            path(
+                '<int:template_id>/bulk-add-items/',
+                self.admin_site.admin_view(self.bulk_add_items_view),
+                name='checklist_template_bulk_add_items',
+            ),
+        ]
+        return custom_urls + urls
+
+    def bulk_add_items_view(self, request, template_id):
+        """Vista admin para agregar items en bulk por categoría y componente de salud."""
+        template = ChecklistTemplate.objects.get(pk=template_id)
+
+        if request.method == 'POST':
+            form = BulkAddItemsForm(request.POST)
+            if form.is_valid():
+                categoria = form.cleaned_data['categoria']
+                componentes = form.cleaned_data['componentes']
+                tipo_evaluacion = form.cleaned_data['tipo_evaluacion']
+
+                items_creados = 0
+                items_existentes = 0
+                orden_base = template.items.count()
+
+                for componente in componentes:
+                    items_para_tipo = _build_bulk_items_for_componente(
+                        template, componente, categoria, tipo_evaluacion, orden_base
+                    )
+                    for catalog_item, tipo_act, orden in items_para_tipo:
+                        _, created = ChecklistItemTemplate.objects.get_or_create(
+                            checklist_template=template,
+                            catalog_item=catalog_item,
+                            defaults={
+                                'orden_visual': orden,
+                                'tipo_actualizacion': tipo_act,
+                                'componente_salud_asociado': componente,
+                            },
+                        )
+                        if created:
+                            items_creados += 1
+                            orden_base += 1
+                        else:
+                            items_existentes += 1
+
+                messages.success(
+                    request,
+                    f'Bulk completado: {items_creados} items creados, {items_existentes} ya existentes '
+                    f'en template "{template.nombre}".',
+                )
+                return redirect(
+                    reverse('admin:checklists_checklisttemplate_change', args=[template_id])
+                )
+        else:
+            form = BulkAddItemsForm()
+
+        context = {
+            **self.admin_site.each_context(request),
+            'form': form,
+            'template': template,
+            'title': f'Agregar items en bulk — {template.nombre}',
+            'opts': self.model._meta,
+        }
+        return render(request, 'admin/checklists/bulk_add_items.html', context)
+
     def get_queryset(self, request):
-        """Optimizar consultas"""
         return super().get_queryset(request).select_related('servicio').prefetch_related('items', 'servicio__categorias')
-    
+
     def formfield_for_foreignkey(self, db_field, request, **kwargs):
-        """Personalizar el campo de selección de servicio"""
         if db_field.name == "servicio":
-            # Todos los servicios disponibles ordenados por nombre
             kwargs["queryset"] = Servicio.objects.all().order_by('nombre')
-            # Mejorar la visualización
             kwargs["empty_label"] = "Seleccionar servicio..."
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
-    
+
     def response_add(self, request, obj, post_url_continue=None):
-        """Personalizar respuesta después de crear"""
         if "_addanother" not in request.POST and "_continue" not in request.POST:
-            # Si no se presionó "Agregar otro" o "Continuar editando"
             messages.success(
-                request, 
+                request,
                 f'Template "{obj.nombre}" creado exitosamente y asignado al servicio "{obj.servicio}".'
             )
         return super().response_add(request, obj, post_url_continue)
-    
+
     def response_change(self, request, obj):
-        """Personalizar respuesta después de editar"""
         if "_addanother" not in request.POST and "_continue" not in request.POST:
-            messages.success(
-                request, 
-                f'Template "{obj.nombre}" actualizado exitosamente.'
-            )
+            messages.success(request, f'Template "{obj.nombre}" actualizado exitosamente.')
         return super().response_change(request, obj)
 
 
