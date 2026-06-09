@@ -1,0 +1,709 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{# ── Extra <head> ──────────────────────────────────────────────────────────── #}
+{% block extrahead %}
+{{ block.super }}
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.3/Sortable.min.js"></script>
+{{ sections_json|json_script:"b-sections" }}
+{{ componentes_json|json_script:"b-componentes" }}
+{{ categorias_json|json_script:"b-categorias" }}
+{% endblock %}
+
+{# ── CSS ───────────────────────────────────────────────────────────────────── #}
+{% block extrastyle %}
+{{ block.super }}
+<style>
+:root {
+  --p:       #5c6bc0;
+  --p-light: #e8eaf6;
+  --p-dark:  #3949ab;
+  --ok:      #43a047;
+  --err:     #e53935;
+  --txt:     #212121;
+  --txt2:    #757575;
+  --bdr:     #e0e0e0;
+  --sh:      0 1px 4px rgba(0,0,0,.12);
+}
+
+/* ── Root layout ──────────────────────────────────────────────────── */
+#bldr {
+  max-width: 860px;
+  margin: 0 auto;
+  padding-bottom: 90px;
+}
+
+/* ── Top bar ──────────────────────────────────────────────────────── */
+.bldr-header {
+  background: var(--p);
+  color: #fff;
+  border-radius: 8px;
+  padding: 14px 20px;
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.bldr-header h2 { margin: 0; font-size: 17px; font-weight: 600; }
+.bldr-header small { opacity: .8; font-size: 12px; }
+.btn-back {
+  background: rgba(255,255,255,.18);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,.4);
+  border-radius: 4px;
+  padding: 6px 14px;
+  font-size: 13px;
+  text-decoration: none;
+  transition: background .15s;
+}
+.btn-back:hover { background: rgba(255,255,255,.3); color: #fff; }
+
+/* ── Section card ─────────────────────────────────────────────────── */
+.sec-card {
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: var(--sh);
+  margin-bottom: 16px;
+  border-top: 4px solid var(--p);
+  overflow: visible;
+}
+.sec-card.sortable-ghost { opacity: .35; }
+
+.sec-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--p-light);
+  border-bottom: 1px solid var(--bdr);
+  flex-wrap: wrap;
+}
+
+.sec-name {
+  flex: 1;
+  min-width: 140px;
+  border: none;
+  background: transparent;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--txt);
+  outline: none;
+  padding: 2px 4px;
+  border-bottom: 2px solid transparent;
+  transition: border-color .15s;
+}
+.sec-name:focus { border-bottom-color: var(--p); }
+
+.sec-cat {
+  font-size: 11px;
+  color: var(--txt2);
+  border: 1px solid var(--bdr);
+  border-radius: 4px;
+  padding: 3px 6px;
+  background: #fff;
+  max-width: 220px;
+}
+
+/* ── Drag handles ─────────────────────────────────────────────────── */
+.handle {
+  cursor: grab;
+  color: #ccc;
+  font-size: 18px;
+  padding: 2px 4px;
+  user-select: none;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.handle:hover { color: var(--p); }
+.handle:active { cursor: grabbing; }
+
+/* ── Items list ───────────────────────────────────────────────────── */
+.items-list {
+  padding: 8px 14px;
+  min-height: 6px;
+}
+
+/* ── Item card ────────────────────────────────────────────────────── */
+.item-card {
+  background: #fafafa;
+  border: 1px solid var(--bdr);
+  border-radius: 6px;
+  margin-bottom: 8px;
+  padding: 10px 12px;
+  transition: box-shadow .15s;
+}
+.item-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,.1); }
+.item-card.sortable-ghost { opacity: .35; }
+
+.item-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.item-label {
+  flex: 1;
+  min-width: 160px;
+  border: none;
+  border-bottom: 1px solid var(--bdr);
+  background: transparent;
+  font-size: 14px;
+  padding: 3px 2px;
+  outline: none;
+  color: var(--txt);
+  transition: border-color .15s;
+}
+.item-label:focus { border-bottom-color: var(--p); }
+.item-label::placeholder { color: #ccc; font-style: italic; }
+
+.item-type {
+  border: 1px solid var(--bdr);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  background: #fff;
+  color: var(--txt);
+  max-width: 230px;
+}
+
+.item-req-lbl {
+  font-size: 11px;
+  color: var(--txt2);
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* ── Options row ──────────────────────────────────────────────────── */
+.opts-row { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--bdr); }
+.opts-row.hidden { display: none; }
+
+.quick-opts { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 5px; }
+.qbtn {
+  background: var(--p-light);
+  color: var(--p);
+  border: 1px solid #c5cae9;
+  border-radius: 12px;
+  padding: 3px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.qbtn:hover { background: var(--p); color: #fff; }
+
+.item-opts {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--bdr);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-family: monospace;
+  resize: vertical;
+  min-height: 72px;
+  transition: border-color .15s;
+}
+.item-opts:focus { outline: none; border-color: var(--p); }
+
+/* ── Health panel ─────────────────────────────────────────────────── */
+.health-panel { margin-top: 6px; }
+.health-panel > summary {
+  font-size: 11px;
+  color: var(--txt2);
+  cursor: pointer;
+  padding: 3px 0;
+  user-select: none;
+  list-style: none;
+}
+.health-panel > summary::before { content: '▶ '; font-size: 9px; }
+.health-panel[open] > summary::before { content: '▼ '; }
+.health-inner {
+  display: flex;
+  gap: 10px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+  padding: 8px;
+  background: var(--p-light);
+  border-radius: 4px;
+}
+.health-inner label { font-size: 11px; color: var(--txt2); display: block; margin-bottom: 2px; }
+.health-inner select {
+  border: 1px solid var(--bdr);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  background: #fff;
+  min-width: 160px;
+}
+
+/* ── Icon buttons ─────────────────────────────────────────────────── */
+.btn-ic {
+  background: transparent;
+  border: none;
+  color: #ccc;
+  cursor: pointer;
+  font-size: 18px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  line-height: 1;
+  transition: color .15s;
+  flex-shrink: 0;
+}
+.btn-ic:hover { color: var(--err); }
+
+/* ── Add-item button (section footer) ────────────────────────────── */
+.btn-add-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: var(--p);
+  font-size: 13px;
+  padding: 9px 14px;
+  cursor: pointer;
+  border-top: 1px solid var(--bdr);
+  transition: background .15s;
+}
+.btn-add-item:hover { background: var(--p-light); }
+
+/* ── Add-section button ───────────────────────────────────────────── */
+.btn-add-sec {
+  display: block;
+  width: 100%;
+  background: #fff;
+  border: 2px dashed var(--bdr);
+  border-radius: 8px;
+  color: var(--p);
+  font-size: 14px;
+  padding: 14px;
+  cursor: pointer;
+  text-align: center;
+  transition: all .15s;
+  margin-top: 4px;
+}
+.btn-add-sec:hover { border-color: var(--p); background: var(--p-light); }
+
+/* ── Sticky save bar ──────────────────────────────────────────────── */
+.save-bar {
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  background: #fff;
+  border-top: 1px solid var(--bdr);
+  padding: 10px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-shadow: 0 -2px 8px rgba(0,0,0,.08);
+  z-index: 200;
+}
+.save-status { font-size: 13px; color: var(--txt2); }
+.save-status.ok  { color: var(--ok); font-weight: 600; }
+.save-status.err { color: var(--err); font-weight: 600; }
+
+.btn-save {
+  background: var(--p);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 10px 28px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s;
+}
+.btn-save:hover:not(:disabled) { background: var(--p-dark); }
+.btn-save:disabled { background: #9fa8da; cursor: not-allowed; }
+
+/* ── Empty state ──────────────────────────────────────────────────── */
+.empty-hint {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--txt2);
+  font-size: 14px;
+}
+</style>
+{% endblock %}
+
+{# ── Page content ──────────────────────────────────────────────────────────── #}
+{% block content %}
+{{ block.super }}
+
+<div id="bldr">
+
+  <!-- Header info bar -->
+  <div class="bldr-header">
+    <div>
+      <h2>{{ template_obj.nombre }}</h2>
+      <small>Servicio: {{ template_obj.servicio }} &nbsp;·&nbsp; v{{ template_obj.version }}</small>
+    </div>
+    <a href="{% url 'admin:checklists_checklisttemplate_change' template_obj.id %}" class="btn-back">
+      ← Volver al template
+    </a>
+  </div>
+
+  <!-- Sections injected by JS -->
+  <div id="secs"></div>
+
+  <!-- Add section -->
+  <button class="btn-add-sec" onclick="addSection()">+ Añadir sección</button>
+
+</div>
+
+<!-- Sticky save bar -->
+<div class="save-bar">
+  <span id="status" class="save-status"><span id="count"></span></span>
+  <button class="btn-save" id="btn-save" onclick="saveTemplate()">Guardar template</button>
+</div>
+
+<script>
+(function () {
+'use strict';
+
+/* ── Data from Django ─────────────────────────────────────────────── */
+const SECS0  = JSON.parse(document.getElementById('b-sections').textContent);
+const COMPS  = JSON.parse(document.getElementById('b-componentes').textContent);
+const CATS   = JSON.parse(document.getElementById('b-categorias').textContent);
+const CSRF   = '{{ csrf_token }}';
+const SAVE_URL = window.location.pathname;
+
+/* ── Type definitions ─────────────────────────────────────────────── */
+const TIPOS = [
+  {v:'SELECT',           l:'☑  Selección única (Bien/Malo…)',     opts:true,  def:'Bien\nRegular\nMalo\nN/A'},
+  {v:'BOOLEAN',          l:'◉  Sí / No',                          opts:false, def:''},
+  {v:'TEXT',             l:'✏  Texto libre',                       opts:false, def:''},
+  {v:'NUMBER',           l:'#  Número',                            opts:false, def:''},
+  {v:'FLUID_LEVEL',      l:'💧  Nivel de fluido',                  opts:true,  def:'A nivel\nBajo nivel\nFuera de nivel\nN/A'},
+  {v:'COMPONENT_HEALTH', l:'❤  % Vida útil (slider 0–100%)',      opts:false, def:''},
+  {v:'PHOTO',            l:'📷  Fotografía',                       opts:false, def:''},
+  {v:'MULTISELECT',      l:'☑☑  Selección múltiple',              opts:true,  def:''},
+  {v:'RATING',           l:'⭐  Calificación (1–5)',               opts:false, def:''},
+  {v:'KILOMETER_INPUT',  l:'🛣  Kilometraje',                      opts:false, def:''},
+  {v:'DATETIME',         l:'📅  Fecha y hora',                     opts:false, def:''},
+  {v:'SIGNATURE',        l:'✍  Firma digital',                    opts:false, def:''},
+];
+
+const QUICK = [
+  {l:'Bien / Regular / Malo / N/A',        v:'Bien\nRegular\nMalo\nN/A'},
+  {l:'Excelente → Crítico',                v:'Excelente\nBueno\nRegular\nMalo\nCrítico'},
+  {l:'Bueno / Con detalles / Malo / N/A',  v:'Bueno\nCon detalles\nMalo\nN/A'},
+  {l:'A nivel / Bajo / Fuera de nivel',    v:'A nivel\nBajo nivel\nFuera de nivel\nN/A'},
+  {l:'Sí / No / N/A',                      v:'Sí\nNo\nN/A'},
+  {l:'Funciona / Falla / N/A',             v:'Funciona\nFalla\nN/A'},
+];
+
+/* ── Counters ─────────────────────────────────────────────────────── */
+let sIdx = 0, iIdx = 0;
+const sortableMap = new Map();
+
+/* ── Escape HTML ──────────────────────────────────────────────────── */
+function esc(s) {
+  return String(s ?? '')
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+/* encode newlines for data-* attributes */
+function escAttr(s) { return esc(s).replace(/\n/g,'&#10;'); }
+
+/* ── Option builders ──────────────────────────────────────────────── */
+function tiposOpts(sel) {
+  return TIPOS.map(t =>
+    `<option value="${t.v}"${sel===t.v?' selected':''}>${esc(t.l)}</option>`
+  ).join('');
+}
+function catOpts(sel) {
+  return CATS.map(([v,l]) =>
+    `<option value="${v}"${sel===v?' selected':''}>${esc(l)}</option>`
+  ).join('');
+}
+function compOpts(sel) {
+  const none = `<option value="">— Sin componente de salud —</option>`;
+  return none + COMPS.map(c =>
+    `<option value="${c.id}"${String(sel)===String(c.id)?' selected':''}>${esc(c.nombre)}</option>`
+  ).join('');
+}
+function quickBtns() {
+  return QUICK.map(q =>
+    `<button type="button" class="qbtn" data-opts="${escAttr(q.v)}" onclick="setOpts(this)">${esc(q.l)}</button>`
+  ).join('');
+}
+
+/* ── Guess category from section name ────────────────────────────── */
+function guessCat(n) {
+  n = n.toLowerCase();
+  if (/motor|compartimiento/.test(n))                    return 'MOTOR_COMPARTIMIENTO';
+  if (/fren[oo]/.test(n))                                return 'SISTEMA_FRENOS';
+  if (/suspensi|tren motriz|direcci/.test(n))            return 'SUSPENSION_DIRECCION';
+  if (/fluido|nivel/.test(n))                            return 'FLUIDOS_NIVELES';
+  if (/el[eé]ctric/.test(n))                             return 'SISTEMA_ELECTRICO';
+  if (/carrocer|exterior/.test(n))                       return 'CARROCERIA_EXTERIOR';
+  if (/neum[aá]t|llanta|rueda/.test(n))                  return 'NEUMATICOS_LLANTAS';
+  if (/interior|cabina/.test(n))                         return 'INTERIOR_CABINA';
+  if (/transmis|embrague/.test(n))                       return 'TRANSMISION_EMBRAGUE';
+  if (/cristal|espejo|vidrio/.test(n))                   return 'CRISTALES_ESPEJOS';
+  if (/luz|luces|se[ñn]ali/.test(n))                     return 'LUCES_SENALIZACION';
+  if (/foto|evidencia|imagen/.test(n))                   return 'FOTOS_FINALES';
+  if (/observa|nota/.test(n))                            return 'OBSERVACIONES_TECNICO';
+  if (/firma|conformidad/.test(n))                       return 'FIRMAS_CONFORMIDAD';
+  return null;
+}
+
+/* ── Add section ──────────────────────────────────────────────────── */
+function addSection(data) {
+  data = data || {};
+  const sid  = 'sec' + sIdx++;
+  const cat  = data.categoria || guessCat(data.nombre || '') || (CATS[0] && CATS[0][0]) || 'INFORMACION_GENERAL';
+
+  const div = document.createElement('div');
+  div.className = 'sec-card';
+  div.dataset.sid = sid;
+  div.innerHTML = `
+    <div class="sec-head">
+      <span class="handle sec-handle" title="Arrastrar sección">⠿</span>
+      <input  type="text" class="sec-name"
+              value="${esc(data.nombre || 'Nueva sección')}"
+              placeholder="Nombre de la sección"
+              oninput="autoSetCat(this)">
+      <select class="sec-cat" title="Categoría interna del catálogo">${catOpts(cat)}</select>
+      <button class="btn-ic" title="Eliminar sección" onclick="removeSection(this)">×</button>
+    </div>
+    <div class="items-list" id="items-${sid}"></div>
+    <button class="btn-add-item" onclick="addItem('${sid}')">+ Añadir pregunta</button>
+  `;
+
+  document.getElementById('secs').appendChild(div);
+
+  /* SortableJS for items within this section */
+  sortableMap.set(sid, new Sortable(div.querySelector('.items-list'), {
+    group: 'items',
+    animation: 150,
+    handle: '.item-handle',
+    ghostClass: 'sortable-ghost',
+    onEnd: updateCount,
+  }));
+
+  /* Render initial items */
+  (data.items || []).forEach(it => addItem(sid, it));
+  updateCount();
+}
+
+/* ── Auto-set category when section name is typed ─────────────────── */
+function autoSetCat(inp) {
+  const guessed = guessCat(inp.value);
+  if (guessed) inp.closest('.sec-card').querySelector('.sec-cat').value = guessed;
+}
+
+/* ── Add item ─────────────────────────────────────────────────────── */
+function addItem(sid, data) {
+  data = data || {};
+  const listEl = document.getElementById('items-' + sid);
+  if (!listEl) { console.warn('items list not found for', sid); return; }
+
+  const iid   = 'itm' + iIdx++;
+  const tipo  = data.tipo || 'SELECT';
+  const tInfo = TIPOS.find(t => t.v === tipo);
+  const hasOpts = tInfo ? tInfo.opts : false;
+  const optsText = Array.isArray(data.opciones) && data.opciones.length
+    ? data.opciones.join('\n')
+    : (hasOpts && tInfo ? tInfo.def : '');
+
+  const compSel = String(data.componente_id || '');
+  const hasComp = compSel !== '';
+  const tipoAct = data.tipo_actualizacion || 'INSPECCIONA';
+
+  const div = document.createElement('div');
+  div.className = 'item-card';
+  div.dataset.iid = iid;
+  div.innerHTML = `
+    <div class="item-main">
+      <span class="handle item-handle" title="Arrastrar">⠿</span>
+      <input  type="text" class="item-label"
+              value="${esc(data.label || '')}"
+              placeholder="Pregunta (ej. Suspensión delantera)">
+      <select class="item-type" onchange="onTypeChange(this)">${tiposOpts(tipo)}</select>
+      <label  class="item-req-lbl">
+        <input type="checkbox" class="item-req"${data.requerido !== false ? ' checked' : ''}> Requerido
+      </label>
+      <button class="btn-ic" title="Eliminar pregunta" onclick="removeItem(this)">×</button>
+    </div>
+
+    <div class="opts-row${hasOpts ? '' : ' hidden'}">
+      <div class="quick-opts">${quickBtns()}</div>
+      <textarea class="item-opts"
+                rows="4"
+                placeholder="Escribe cada opción en una línea:\nBien\nRegular\nMalo\nN/A">${esc(optsText)}</textarea>
+    </div>
+
+    <details class="health-panel"${hasComp ? ' open' : ''}>
+      <summary>Componente de salud (opcional)</summary>
+      <div class="health-inner">
+        <div>
+          <label>Componente</label>
+          <select class="item-comp">${compOpts(compSel)}</select>
+        </div>
+        <div>
+          <label>Tipo de actualización</label>
+          <select class="item-tipo-act">
+            <option value="INSPECCIONA"${tipoAct==='INSPECCIONA'?' selected':''}>Inspecciona (declara estado)</option>
+            <option value="REEMPLAZA"  ${tipoAct==='REEMPLAZA'  ?' selected':''}>Reemplaza → salud 100 %</option>
+            <option value="INFORMATIVO"${tipoAct==='INFORMATIVO'?' selected':''}>Informativo (no afecta salud)</option>
+          </select>
+        </div>
+      </div>
+    </details>
+  `;
+
+  listEl.appendChild(div);
+  updateCount();
+}
+
+/* ── Remove ───────────────────────────────────────────────────────── */
+function removeSection(btn) {
+  if (!confirm('¿Eliminar esta sección y todas sus preguntas?')) return;
+  const card = btn.closest('.sec-card');
+  const sid  = card.dataset.sid;
+  if (sortableMap.has(sid)) { sortableMap.get(sid).destroy(); sortableMap.delete(sid); }
+  card.remove();
+  updateCount();
+}
+
+function removeItem(btn) {
+  btn.closest('.item-card').remove();
+  updateCount();
+}
+
+/* ── Type change ──────────────────────────────────────────────────── */
+function onTypeChange(sel) {
+  const card   = sel.closest('.item-card');
+  const tInfo  = TIPOS.find(t => t.v === sel.value);
+  const row    = card.querySelector('.opts-row');
+  const ta     = card.querySelector('.item-opts');
+
+  if (tInfo && tInfo.opts) {
+    row.classList.remove('hidden');
+    if (!ta.value.trim() && tInfo.def) ta.value = tInfo.def;
+  } else {
+    row.classList.add('hidden');
+  }
+}
+
+/* ── Quick options ────────────────────────────────────────────────── */
+function setOpts(btn) {
+  const ta = btn.closest('.opts-row').querySelector('.item-opts');
+  ta.value = btn.dataset.opts;   /* browser decodes &#10; → \n */
+}
+
+/* ── Count display ────────────────────────────────────────────────── */
+function updateCount() {
+  const s = document.querySelectorAll('#secs .sec-card').length;
+  const i = document.querySelectorAll('#secs .item-card').length;
+  const el = document.getElementById('count');
+  if (el) el.textContent = `${s} sección${s!==1?'es':''} · ${i} pregunta${i!==1?'s':''}`;
+}
+
+/* ── Collect data ─────────────────────────────────────────────────── */
+function collectData() {
+  const sections = [];
+  document.querySelectorAll('#secs .sec-card').forEach(sec => {
+    const nombre    = sec.querySelector('.sec-name').value.trim();
+    const categoria = sec.querySelector('.sec-cat').value;
+    const items = [];
+
+    sec.querySelectorAll('.items-list .item-card').forEach(ic => {
+      const label = ic.querySelector('.item-label').value.trim();
+      if (!label) return;
+
+      const tipo       = ic.querySelector('.item-type').value;
+      const requerido  = ic.querySelector('.item-req').checked;
+      const optsRaw    = ic.querySelector('.item-opts').value;
+      const opciones   = optsRaw.trim()
+        ? optsRaw.split('\n').map(s => s.trim()).filter(Boolean)
+        : [];
+      const comp_id    = ic.querySelector('.item-comp').value || null;
+      const tipo_act   = ic.querySelector('.item-tipo-act').value || null;
+
+      items.push({ label, tipo, requerido, opciones, componente_id: comp_id, tipo_actualizacion: tipo_act });
+    });
+
+    sections.push({ nombre, categoria, items });
+  });
+  return { sections };
+}
+
+/* ── Save ─────────────────────────────────────────────────────────── */
+async function saveTemplate() {
+  const btn = document.getElementById('btn-save');
+  const st  = document.getElementById('status');
+  btn.disabled = true;
+  btn.textContent = 'Guardando…';
+  st.className = 'save-status';
+  st.textContent = '';
+
+  try {
+    const resp = await fetch(SAVE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+      body: JSON.stringify(collectData()),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      st.className = 'save-status ok';
+      st.textContent = `✓ Guardado — ${data.items_creados} preguntas`;
+    } else {
+      throw new Error(data.error || 'Error desconocido');
+    }
+  } catch (err) {
+    st.className = 'save-status err';
+    st.textContent = '✗ ' + err.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Guardar template';
+  }
+}
+
+/* ── Section sortable (outer) ────────────────────────────────────── */
+new Sortable(document.getElementById('secs'), {
+  animation: 150,
+  handle: '.sec-handle',
+  ghostClass: 'sortable-ghost',
+  onEnd: updateCount,
+});
+
+/* ── Keyboard shortcut: Ctrl+S / Cmd+S ───────────────────────────── */
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+    e.preventDefault();
+    saveTemplate();
+  }
+});
+
+/* ── Init ─────────────────────────────────────────────────────────── */
+if (SECS0.length) {
+  SECS0.forEach(s => addSection(s));
+} else {
+  /* Default starter section + one item so the page isn't empty */
+  addSection({
+    nombre: 'Nueva sección',
+    categoria: 'INFORMACION_GENERAL',
+    items: [{ label: '', tipo: 'SELECT', opciones: ['Bien','Regular','Malo','N/A'], requerido: true }],
+  });
+}
+
+/* Expose to onclick handlers */
+window.addSection   = addSection;
+window.addItem      = addItem;
+window.removeSection = removeSection;
+window.removeItem   = removeItem;
+window.onTypeChange = onTypeChange;
+window.setOpts      = setOpts;
+window.saveTemplate = saveTemplate;
+window.autoSetCat   = autoSetCat;
+
+})();
+</script>
+{% endblock %}

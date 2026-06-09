@@ -1,11 +1,11 @@
 from django.contrib import admin
 from django.utils.html import format_html
 from django.urls import path, reverse
-from django.shortcuts import render, redirect
+from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
 from django.http import JsonResponse
 from django.core.management import call_command
-from django.db import models
+from django.db import models, transaction
 from django.forms import widgets
 from django import forms
 from mecanimovilapp.apps.servicios.models import Servicio
@@ -155,6 +155,85 @@ def _build_bulk_items_for_componente(template, componente, categoria, tipo_evalu
         items.append((catalog_bool, 'REEMPLAZA', orden_base + len(items) + 1))
 
     return items
+
+
+def _save_builder(template, sections_data):
+    """
+    Rebuild all ChecklistItemTemplate rows for *template* from the JSON
+    payload produced by the template builder UI.
+
+    Each section → category; each item → ChecklistItemCatalog (get_or_create)
+    + ChecklistItemTemplate.  The whole operation runs in a single transaction
+    so a partial failure leaves the template unchanged.
+    """
+    import json as _json
+    with transaction.atomic():
+        # Wipe existing items; catalog entries are preserved (shared resource).
+        ChecklistItemTemplate.objects.filter(checklist_template=template).delete()
+
+        orden = 1
+        items_creados = 0
+
+        for section in sections_data:
+            categoria = section.get('categoria') or 'INFORMACION_GENERAL'
+            for item_data in section.get('items', []):
+                label = (item_data.get('label') or '').strip()
+                if not label:
+                    continue
+
+                tipo              = item_data.get('tipo') or 'TEXT'
+                opciones_raw      = item_data.get('opciones') or []
+                opciones          = [o for o in opciones_raw if o] or None
+                requerido         = bool(item_data.get('requerido', True))
+                componente_id     = item_data.get('componente_id') or None
+                tipo_actualizacion = item_data.get('tipo_actualizacion') or None
+
+                # Reuse or create the catalog entry for (nombre, categoria, tipo).
+                catalog_item, created = ChecklistItemCatalog.objects.get_or_create(
+                    nombre=label,
+                    categoria=categoria,
+                    tipo_pregunta=tipo,
+                    defaults={
+                        'pregunta_texto': label,
+                        'opciones_seleccion': opciones,
+                        'es_obligatorio_por_defecto': requerido,
+                        'activo': True,
+                        'uso_frecuente': True,
+                    },
+                )
+
+                if not created:
+                    needs_save = False
+                    if catalog_item.opciones_seleccion != opciones:
+                        catalog_item.opciones_seleccion = opciones
+                        needs_save = True
+                    if catalog_item.es_obligatorio_por_defecto != requerido:
+                        catalog_item.es_obligatorio_por_defecto = requerido
+                        needs_save = True
+                    if needs_save:
+                        catalog_item.save(update_fields=['opciones_seleccion', 'es_obligatorio_por_defecto'])
+
+                # Resolve health component FK if provided.
+                componente_obj = None
+                if componente_id:
+                    try:
+                        from mecanimovilapp.apps.vehiculos.models_health import ComponenteSalud
+                        componente_obj = ComponenteSalud.objects.get(pk=componente_id)
+                    except Exception:
+                        pass
+
+                ChecklistItemTemplate.objects.create(
+                    checklist_template=template,
+                    catalog_item=catalog_item,
+                    orden_visual=orden,
+                    tipo_actualizacion=tipo_actualizacion,
+                    componente_salud_asociado=componente_obj,
+                )
+
+                orden += 1
+                items_creados += 1
+
+        return items_creados
 
 
 class ChecklistItemCatalogForm(forms.ModelForm):
@@ -377,6 +456,8 @@ class ChecklistTemplateAdmin(admin.ModelAdmin):
         buttons = []
         edit_url = reverse('admin:checklists_checklisttemplate_change', args=[obj.id])
         buttons.append(f'<a href="{edit_url}" style="margin-right: 5px; text-decoration: none;">📝 Editar</a>')
+        builder_url = reverse('admin:checklist_template_builder', args=[obj.id])
+        buttons.append(f'<a href="{builder_url}" style="margin-right: 5px; text-decoration: none; color: #28a745; font-weight: bold;">🏗 Builder</a>')
         bulk_url = reverse('admin:checklist_template_bulk_add_items', args=[obj.id])
         buttons.append(f'<a href="{bulk_url}" style="margin-right: 5px; text-decoration: none; color: #007bff;">➕ Bulk Items</a>')
         return format_html(''.join(buttons))
@@ -390,6 +471,11 @@ class ChecklistTemplateAdmin(admin.ModelAdmin):
                 '<int:template_id>/bulk-add-items/',
                 self.admin_site.admin_view(self.bulk_add_items_view),
                 name='checklist_template_bulk_add_items',
+            ),
+            path(
+                '<int:template_id>/builder/',
+                self.admin_site.admin_view(self.template_builder_view),
+                name='checklist_template_builder',
             ),
         ]
         return custom_urls + urls
@@ -448,6 +534,67 @@ class ChecklistTemplateAdmin(admin.ModelAdmin):
             'opts': self.model._meta,
         }
         return render(request, 'admin/checklists/bulk_add_items.html', context)
+
+    def template_builder_view(self, request, template_id):
+        """Template Builder — interfaz tipo Google Forms para crear/editar un template."""
+        import json as _json
+        template = get_object_or_404(ChecklistTemplate, pk=template_id)
+
+        if request.method == 'POST':
+            try:
+                data = _json.loads(request.body)
+                count = _save_builder(template, data.get('sections', []))
+                return JsonResponse({'ok': True, 'items_creados': count})
+            except Exception as exc:
+                import traceback
+                return JsonResponse({'ok': False, 'error': str(exc)}, status=400)
+
+        # GET — reconstruct sections from existing items.
+        items_qs = template.items.select_related(
+            'catalog_item', 'componente_salud_asociado'
+        ).order_by('orden_visual')
+
+        sections_map = {}
+        sections_order = []
+        cat_display = dict(ChecklistItemCatalog.CATEGORIA_CHOICES)
+
+        for item in items_qs:
+            cat = item.catalog_item.categoria if item.catalog_item else 'INFORMACION_GENERAL'
+            if cat not in sections_map:
+                sections_map[cat] = {
+                    'nombre': cat_display.get(cat, cat),
+                    'categoria': cat,
+                    'items': [],
+                }
+                sections_order.append(cat)
+            sections_map[cat]['items'].append({
+                'label': item.catalog_item.nombre if item.catalog_item else '',
+                'tipo': item.catalog_item.tipo_pregunta if item.catalog_item else 'TEXT',
+                'opciones': item.catalog_item.opciones_seleccion or [],
+                'requerido': item.catalog_item.es_obligatorio_por_defecto if item.catalog_item else True,
+                'componente_id': item.componente_salud_asociado_id or '',
+                'componente_nombre': item.componente_salud_asociado.nombre if item.componente_salud_asociado else '',
+                'tipo_actualizacion': item.tipo_actualizacion or 'INSPECCIONA',
+            })
+
+        sections_data = [sections_map[c] for c in sections_order]
+
+        try:
+            from mecanimovilapp.apps.vehiculos.models_health import ComponenteSalud
+            componentes = list(ComponenteSalud.objects.order_by('nombre').values('id', 'nombre'))
+        except Exception:
+            componentes = []
+
+        context = {
+            **self.admin_site.each_context(request),
+            'template_obj': template,
+            'title': f'Builder — {template.nombre}',
+            'opts': self.model._meta,
+            'sections_json': _json.dumps(sections_data, ensure_ascii=False),
+            'componentes_json': _json.dumps(componentes, ensure_ascii=False),
+            'categorias_json': _json.dumps(ChecklistItemCatalog.CATEGORIA_CHOICES, ensure_ascii=False),
+        }
+        return render(request, 'admin/checklists/template_builder.html', context)
 
     def get_queryset(self, request):
         return super().get_queryset(request).select_related('servicio').prefetch_related('items', 'servicio__categorias')
