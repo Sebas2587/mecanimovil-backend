@@ -458,8 +458,6 @@ class ChecklistTemplateAdmin(admin.ModelAdmin):
         buttons.append(f'<a href="{edit_url}" style="margin-right: 5px; text-decoration: none;">📝 Editar</a>')
         builder_url = reverse('admin:checklist_template_builder', args=[obj.id])
         buttons.append(f'<a href="{builder_url}" style="margin-right: 5px; text-decoration: none; color: #28a745; font-weight: bold;">🏗 Builder</a>')
-        bulk_url = reverse('admin:checklist_template_bulk_add_items', args=[obj.id])
-        buttons.append(f'<a href="{bulk_url}" style="margin-right: 5px; text-decoration: none; color: #007bff;">➕ Bulk Items</a>')
         return format_html(''.join(buttons))
     acciones.short_description = 'Acciones'
     acciones.allow_tags = True

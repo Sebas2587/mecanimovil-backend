@@ -1,709 +1,563 @@
 {% extends "admin/base_site.html" %}
 {% load i18n %}
 
-{# ── Extra <head> ──────────────────────────────────────────────────────────── #}
 {% block extrahead %}
 {{ block.super }}
-<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.3/Sortable.min.js"></script>
+{# Data bags — available to JS below #}
 {{ sections_json|json_script:"b-sections" }}
 {{ componentes_json|json_script:"b-componentes" }}
 {{ categorias_json|json_script:"b-categorias" }}
 {% endblock %}
 
-{# ── CSS ───────────────────────────────────────────────────────────────────── #}
 {% block extrastyle %}
 {{ block.super }}
 <style>
-:root {
-  --p:       #5c6bc0;
-  --p-light: #e8eaf6;
-  --p-dark:  #3949ab;
-  --ok:      #43a047;
-  --err:     #e53935;
-  --txt:     #212121;
-  --txt2:    #757575;
-  --bdr:     #e0e0e0;
-  --sh:      0 1px 4px rgba(0,0,0,.12);
+/* ── Reset / tokens ─────────────────────────────────────────────── */
+:root{
+  --p:#5c6bc0;--pl:#e8eaf6;--pd:#3949ab;
+  --ok:#43a047;--err:#e53935;
+  --t:#212121;--t2:#757575;
+  --bd:#e0e0e0;
+  --sh:0 1px 4px rgba(0,0,0,.12);
+  --r:8px;
 }
-
-/* ── Root layout ──────────────────────────────────────────────────── */
-#bldr {
-  max-width: 860px;
-  margin: 0 auto;
-  padding-bottom: 90px;
-}
-
-/* ── Top bar ──────────────────────────────────────────────────────── */
-.bldr-header {
-  background: var(--p);
-  color: #fff;
-  border-radius: 8px;
-  padding: 14px 20px;
-  margin-bottom: 20px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.bldr-header h2 { margin: 0; font-size: 17px; font-weight: 600; }
-.bldr-header small { opacity: .8; font-size: 12px; }
-.btn-back {
-  background: rgba(255,255,255,.18);
-  color: #fff;
-  border: 1px solid rgba(255,255,255,.4);
-  border-radius: 4px;
-  padding: 6px 14px;
-  font-size: 13px;
-  text-decoration: none;
-  transition: background .15s;
-}
-.btn-back:hover { background: rgba(255,255,255,.3); color: #fff; }
-
-/* ── Section card ─────────────────────────────────────────────────── */
-.sec-card {
-  background: #fff;
-  border-radius: 8px;
-  box-shadow: var(--sh);
-  margin-bottom: 16px;
-  border-top: 4px solid var(--p);
-  overflow: visible;
-}
-.sec-card.sortable-ghost { opacity: .35; }
-
-.sec-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 14px;
-  background: var(--p-light);
-  border-bottom: 1px solid var(--bdr);
-  flex-wrap: wrap;
-}
-
-.sec-name {
-  flex: 1;
-  min-width: 140px;
-  border: none;
-  background: transparent;
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--txt);
-  outline: none;
-  padding: 2px 4px;
-  border-bottom: 2px solid transparent;
-  transition: border-color .15s;
-}
-.sec-name:focus { border-bottom-color: var(--p); }
-
-.sec-cat {
-  font-size: 11px;
-  color: var(--txt2);
-  border: 1px solid var(--bdr);
-  border-radius: 4px;
-  padding: 3px 6px;
-  background: #fff;
-  max-width: 220px;
-}
-
-/* ── Drag handles ─────────────────────────────────────────────────── */
-.handle {
-  cursor: grab;
-  color: #ccc;
-  font-size: 18px;
-  padding: 2px 4px;
-  user-select: none;
-  flex-shrink: 0;
-  line-height: 1;
-}
-.handle:hover { color: var(--p); }
-.handle:active { cursor: grabbing; }
-
-/* ── Items list ───────────────────────────────────────────────────── */
-.items-list {
-  padding: 8px 14px;
-  min-height: 6px;
-}
-
-/* ── Item card ────────────────────────────────────────────────────── */
-.item-card {
-  background: #fafafa;
-  border: 1px solid var(--bdr);
-  border-radius: 6px;
-  margin-bottom: 8px;
-  padding: 10px 12px;
-  transition: box-shadow .15s;
-}
-.item-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,.1); }
-.item-card.sortable-ghost { opacity: .35; }
-
-.item-main {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.item-label {
-  flex: 1;
-  min-width: 160px;
-  border: none;
-  border-bottom: 1px solid var(--bdr);
-  background: transparent;
-  font-size: 14px;
-  padding: 3px 2px;
-  outline: none;
-  color: var(--txt);
-  transition: border-color .15s;
-}
-.item-label:focus { border-bottom-color: var(--p); }
-.item-label::placeholder { color: #ccc; font-style: italic; }
-
-.item-type {
-  border: 1px solid var(--bdr);
-  border-radius: 4px;
-  padding: 4px 8px;
-  font-size: 12px;
-  background: #fff;
-  color: var(--txt);
-  max-width: 230px;
-}
-
-.item-req-lbl {
-  font-size: 11px;
-  color: var(--txt2);
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-/* ── Options row ──────────────────────────────────────────────────── */
-.opts-row { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--bdr); }
-.opts-row.hidden { display: none; }
-
-.quick-opts { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 5px; }
-.qbtn {
-  background: var(--p-light);
-  color: var(--p);
-  border: 1px solid #c5cae9;
-  border-radius: 12px;
-  padding: 3px 10px;
-  font-size: 11px;
-  cursor: pointer;
-  transition: background .15s, color .15s;
-}
-.qbtn:hover { background: var(--p); color: #fff; }
-
-.item-opts {
-  width: 100%;
-  box-sizing: border-box;
-  border: 1px solid var(--bdr);
-  border-radius: 4px;
-  padding: 6px 8px;
-  font-size: 12px;
-  font-family: monospace;
-  resize: vertical;
-  min-height: 72px;
-  transition: border-color .15s;
-}
-.item-opts:focus { outline: none; border-color: var(--p); }
-
-/* ── Health panel ─────────────────────────────────────────────────── */
-.health-panel { margin-top: 6px; }
-.health-panel > summary {
-  font-size: 11px;
-  color: var(--txt2);
-  cursor: pointer;
-  padding: 3px 0;
-  user-select: none;
-  list-style: none;
-}
-.health-panel > summary::before { content: '▶ '; font-size: 9px; }
-.health-panel[open] > summary::before { content: '▼ '; }
-.health-inner {
-  display: flex;
-  gap: 10px;
-  margin-top: 6px;
-  flex-wrap: wrap;
-  padding: 8px;
-  background: var(--p-light);
-  border-radius: 4px;
-}
-.health-inner label { font-size: 11px; color: var(--txt2); display: block; margin-bottom: 2px; }
-.health-inner select {
-  border: 1px solid var(--bdr);
-  border-radius: 4px;
-  padding: 4px 8px;
-  font-size: 12px;
-  background: #fff;
-  min-width: 160px;
-}
-
-/* ── Icon buttons ─────────────────────────────────────────────────── */
-.btn-ic {
-  background: transparent;
-  border: none;
-  color: #ccc;
-  cursor: pointer;
-  font-size: 18px;
-  padding: 2px 6px;
-  border-radius: 4px;
-  line-height: 1;
-  transition: color .15s;
-  flex-shrink: 0;
-}
-.btn-ic:hover { color: var(--err); }
-
-/* ── Add-item button (section footer) ────────────────────────────── */
-.btn-add-item {
-  display: block;
-  width: 100%;
-  text-align: left;
-  border: none;
-  background: transparent;
-  color: var(--p);
-  font-size: 13px;
-  padding: 9px 14px;
-  cursor: pointer;
-  border-top: 1px solid var(--bdr);
-  transition: background .15s;
-}
-.btn-add-item:hover { background: var(--p-light); }
-
-/* ── Add-section button ───────────────────────────────────────────── */
-.btn-add-sec {
-  display: block;
-  width: 100%;
-  background: #fff;
-  border: 2px dashed var(--bdr);
-  border-radius: 8px;
-  color: var(--p);
-  font-size: 14px;
-  padding: 14px;
-  cursor: pointer;
-  text-align: center;
-  transition: all .15s;
-  margin-top: 4px;
-}
-.btn-add-sec:hover { border-color: var(--p); background: var(--p-light); }
-
-/* ── Sticky save bar ──────────────────────────────────────────────── */
-.save-bar {
-  position: fixed;
-  bottom: 0; left: 0; right: 0;
-  background: #fff;
-  border-top: 1px solid var(--bdr);
-  padding: 10px 24px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  box-shadow: 0 -2px 8px rgba(0,0,0,.08);
-  z-index: 200;
-}
-.save-status { font-size: 13px; color: var(--txt2); }
-.save-status.ok  { color: var(--ok); font-weight: 600; }
-.save-status.err { color: var(--err); font-weight: 600; }
-
-.btn-save {
-  background: var(--p);
-  color: #fff;
-  border: none;
-  border-radius: 6px;
-  padding: 10px 28px;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background .15s;
-}
-.btn-save:hover:not(:disabled) { background: var(--p-dark); }
-.btn-save:disabled { background: #9fa8da; cursor: not-allowed; }
-
-/* ── Empty state ──────────────────────────────────────────────────── */
-.empty-hint {
-  text-align: center;
-  padding: 40px 20px;
-  color: var(--txt2);
-  font-size: 14px;
+/* ── Layout ─────────────────────────────────────────────────────── */
+#bldr{max-width:860px;margin:0 auto;padding-bottom:80px;}
+/* ── Top bar ────────────────────────────────────────────────────── */
+.bldr-top{background:var(--p);color:#fff;border-radius:var(--r);
+  padding:14px 20px;margin-bottom:20px;
+  display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;}
+.bldr-top h2{margin:0;font-size:16px;font-weight:700;}
+.bldr-top small{opacity:.8;font-size:12px;}
+.btn-back{background:rgba(255,255,255,.18);color:#fff;border:1px solid rgba(255,255,255,.4);
+  border-radius:4px;padding:6px 14px;font-size:13px;text-decoration:none;}
+.btn-back:hover{background:rgba(255,255,255,.3);color:#fff;}
+/* ── Info pill ──────────────────────────────────────────────────── */
+.bldr-info{background:#fff3e0;border-left:4px solid #ff9800;border-radius:4px;
+  padding:10px 14px;margin-bottom:16px;font-size:13px;color:#5d4037;}
+/* ── Section card ───────────────────────────────────────────────── */
+.sec{background:#fff;border-radius:var(--r);box-shadow:var(--sh);
+  margin-bottom:14px;border-top:4px solid var(--p);}
+.sec.ghost{opacity:.3;}
+/* ── Section header ─────────────────────────────────────────────── */
+.sec-hd{background:var(--pl);border-bottom:1px solid var(--bd);
+  padding:8px 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.drag{cursor:grab;color:#bbb;font-size:20px;user-select:none;flex-shrink:0;}
+.drag:hover{color:var(--p);}
+.drag:active{cursor:grabbing;}
+.sec-name{flex:1;min-width:140px;border:none;border-bottom:2px solid transparent;
+  background:transparent;font-size:15px;font-weight:700;color:var(--t);
+  padding:2px 4px;outline:none;}
+.sec-name:focus{border-bottom-color:var(--p);}
+.sec-cat{font-size:12px;color:var(--t2);border:1px solid var(--bd);border-radius:4px;
+  padding:3px 6px;background:#fff;max-width:220px;}
+.btn-del{background:transparent;border:none;color:#ccc;cursor:pointer;
+  font-size:20px;padding:2px 8px;border-radius:4px;line-height:1;}
+.btn-del:hover{color:var(--err);}
+/* ── Items list ─────────────────────────────────────────────────── */
+.items-list{padding:8px 12px;min-height:8px;}
+/* ── Item card ──────────────────────────────────────────────────── */
+.itm{background:#fafafa;border:1px solid var(--bd);border-radius:6px;
+  margin-bottom:8px;padding:10px 12px;}
+.itm.ghost{opacity:.3;}
+.itm-row1{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.itm-label{flex:1;min-width:160px;border:none;
+  border-bottom:1px solid var(--bd);background:transparent;
+  font-size:14px;padding:3px 2px;outline:none;color:var(--t);}
+.itm-label:focus{border-bottom-color:var(--p);}
+.itm-label::placeholder{color:#ccc;font-style:italic;}
+.itm-type{border:1px solid var(--bd);border-radius:4px;padding:4px 8px;
+  font-size:12px;background:#fff;max-width:230px;}
+.req-lbl{font-size:11px;color:var(--t2);display:flex;align-items:center;gap:3px;
+  cursor:pointer;white-space:nowrap;}
+/* ── Options area ───────────────────────────────────────────────── */
+.opts-area{margin-top:8px;padding-top:8px;border-top:1px dashed var(--bd);}
+.opts-area.hidden{display:none;}
+.qbtns{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;}
+.qb{background:var(--pl);color:var(--p);border:1px solid #c5cae9;
+  border-radius:12px;padding:3px 10px;font-size:11px;cursor:pointer;}
+.qb:hover{background:var(--p);color:#fff;}
+.opts-ta{width:100%;box-sizing:border-box;border:1px solid var(--bd);
+  border-radius:4px;padding:6px 8px;font-size:12px;font-family:monospace;
+  resize:vertical;min-height:72px;}
+.opts-ta:focus{outline:none;border-color:var(--p);}
+.opts-hint{font-size:11px;color:var(--t2);margin-top:3px;}
+/* ── Health panel ───────────────────────────────────────────────── */
+.health-wrap{margin-top:8px;padding-top:8px;border-top:1px dashed var(--bd);}
+.health-toggle{font-size:12px;color:var(--p);cursor:pointer;user-select:none;
+  display:flex;align-items:center;gap:4px;}
+.health-toggle .ico{transition:transform .2s;}
+.health-toggle.open .ico{transform:rotate(90deg);}
+.health-body{display:none;background:var(--pl);border-radius:4px;
+  padding:10px 12px;margin-top:6px;}
+.health-body.visible{display:block;}
+.health-body label{font-size:11px;color:var(--t2);display:block;margin-bottom:3px;}
+.health-body select{border:1px solid var(--bd);border-radius:4px;padding:4px 8px;
+  font-size:12px;background:#fff;width:100%;margin-bottom:8px;}
+.health-desc{font-size:11px;color:var(--t2);margin-top:-4px;margin-bottom:8px;
+  padding:6px 8px;background:rgba(0,0,0,.03);border-radius:3px;}
+/* ── Add-item btn ───────────────────────────────────────────────── */
+.btn-add-itm{display:block;width:100%;text-align:left;border:none;
+  background:transparent;color:var(--p);font-size:13px;
+  padding:9px 14px;cursor:pointer;border-top:1px solid var(--bd);}
+.btn-add-itm:hover{background:var(--pl);}
+/* ── Add-section btn ────────────────────────────────────────────── */
+.btn-add-sec{display:block;width:100%;background:#fff;
+  border:2px dashed var(--bd);border-radius:var(--r);color:var(--p);
+  font-size:14px;padding:14px;cursor:pointer;text-align:center;margin-top:4px;}
+.btn-add-sec:hover{border-color:var(--p);background:var(--pl);}
+/* ── Empty state ────────────────────────────────────────────────── */
+.empty{text-align:center;padding:30px;color:var(--t2);font-size:13px;}
+/* ── Save bar ───────────────────────────────────────────────────── */
+.save-bar{position:fixed;bottom:0;left:0;right:0;background:#fff;
+  border-top:1px solid var(--bd);padding:10px 24px;
+  display:flex;align-items:center;justify-content:space-between;
+  box-shadow:0 -2px 8px rgba(0,0,0,.08);z-index:9999;}
+.save-st{font-size:13px;color:var(--t2);}
+.save-st.ok{color:var(--ok);font-weight:700;}
+.save-st.err{color:var(--err);font-weight:700;}
+.btn-save{background:var(--p);color:#fff;border:none;border-radius:6px;
+  padding:10px 28px;font-size:14px;font-weight:700;cursor:pointer;}
+.btn-save:hover:not(:disabled){background:var(--pd);}
+.btn-save:disabled{background:#9fa8da;cursor:not-allowed;}
+/* ── Responsive ─────────────────────────────────────────────────── */
+@media(max-width:600px){
+  .itm-row1{flex-direction:column;align-items:stretch;}
+  .itm-type{max-width:100%;}
 }
 </style>
 {% endblock %}
 
-{# ── Page content ──────────────────────────────────────────────────────────── #}
 {% block content %}
-{{ block.super }}
 
 <div id="bldr">
 
-  <!-- Header info bar -->
-  <div class="bldr-header">
+  <!-- Header -->
+  <div class="bldr-top">
     <div>
       <h2>{{ template_obj.nombre }}</h2>
-      <small>Servicio: {{ template_obj.servicio }} &nbsp;·&nbsp; v{{ template_obj.version }}</small>
+      <small>Servicio: {{ template_obj.servicio }} &nbsp;·&nbsp; versión {{ template_obj.version }}</small>
     </div>
-    <a href="{% url 'admin:checklists_checklisttemplate_change' template_obj.id %}" class="btn-back">
-      ← Volver al template
-    </a>
+    <a href="{% url 'admin:checklists_checklisttemplate_change' template_obj.id %}" class="btn-back">← Volver</a>
   </div>
 
-  <!-- Sections injected by JS -->
+  <!-- Tip -->
+  <div class="bldr-info">
+    <strong>Cómo usar:</strong> Crea secciones (ej. "Tren Motriz", "Carrocería") y agrega preguntas adentro.
+    Cada pregunta generará el ítem correspondiente en el checklist del proveedor.
+    El panel <em>Salud del vehículo</em> es <strong>opcional</strong>: úsalo solo si la respuesta debe actualizar
+    el diagnóstico del auto (ej. frenos, aceite). Las <strong>firmas del proveedor y del cliente no se afectan</strong>.
+    Guarda con <strong>Ctrl+S</strong> o el botón al pie.
+  </div>
+
+  <!-- Sections rendered by JS -->
   <div id="secs"></div>
 
-  <!-- Add section -->
-  <button class="btn-add-sec" onclick="addSection()">+ Añadir sección</button>
+  <button class="btn-add-sec" id="btn-add-sec">＋ Añadir sección</button>
 
 </div>
 
-<!-- Sticky save bar -->
+<!-- Fixed save bar -->
 <div class="save-bar">
-  <span id="status" class="save-status"><span id="count"></span></span>
-  <button class="btn-save" id="btn-save" onclick="saveTemplate()">Guardar template</button>
+  <span class="save-st" id="save-st"><span id="item-count"></span></span>
+  <button class="btn-save" id="btn-save">Guardar checklist</button>
 </div>
 
 <script>
-(function () {
-'use strict';
+/* ===================================================================
+   Template Builder — global scope (no IIFE so onclick="" works)
+   =================================================================== */
 
-/* ── Data from Django ─────────────────────────────────────────────── */
-const SECS0  = JSON.parse(document.getElementById('b-sections').textContent);
-const COMPS  = JSON.parse(document.getElementById('b-componentes').textContent);
-const CATS   = JSON.parse(document.getElementById('b-categorias').textContent);
-const CSRF   = '{{ csrf_token }}';
-const SAVE_URL = window.location.pathname;
+/* ── JSON data from Django ───────────────────────────────────────── */
+var INIT_SECS   = JSON.parse(document.getElementById('b-sections').textContent   || '[]');
+var COMPONENTES = JSON.parse(document.getElementById('b-componentes').textContent || '[]');
+var CATEGORIAS  = JSON.parse(document.getElementById('b-categorias').textContent  || '[]');
+var CSRF_TOKEN  = '{{ csrf_token }}';
+var SAVE_URL    = window.location.href.split('?')[0];
 
-/* ── Type definitions ─────────────────────────────────────────────── */
-const TIPOS = [
-  {v:'SELECT',           l:'☑  Selección única (Bien/Malo…)',     opts:true,  def:'Bien\nRegular\nMalo\nN/A'},
-  {v:'BOOLEAN',          l:'◉  Sí / No',                          opts:false, def:''},
-  {v:'TEXT',             l:'✏  Texto libre',                       opts:false, def:''},
-  {v:'NUMBER',           l:'#  Número',                            opts:false, def:''},
-  {v:'FLUID_LEVEL',      l:'💧  Nivel de fluido',                  opts:true,  def:'A nivel\nBajo nivel\nFuera de nivel\nN/A'},
-  {v:'COMPONENT_HEALTH', l:'❤  % Vida útil (slider 0–100%)',      opts:false, def:''},
-  {v:'PHOTO',            l:'📷  Fotografía',                       opts:false, def:''},
-  {v:'MULTISELECT',      l:'☑☑  Selección múltiple',              opts:true,  def:''},
-  {v:'RATING',           l:'⭐  Calificación (1–5)',               opts:false, def:''},
-  {v:'KILOMETER_INPUT',  l:'🛣  Kilometraje',                      opts:false, def:''},
-  {v:'DATETIME',         l:'📅  Fecha y hora',                     opts:false, def:''},
-  {v:'SIGNATURE',        l:'✍  Firma digital',                    opts:false, def:''},
+/* ── Counters ───────────────────────────────────────────────────── */
+var _sIdx = 0;
+var _iIdx = 0;
+
+/* ── Type catalogue ─────────────────────────────────────────────── */
+var TIPOS = [
+  {v:'SELECT',           l:'☑  Selección (Bien/Regular/Malo…)',    opts:true,  def:'Bien\nRegular\nMalo\nN/A'},
+  {v:'BOOLEAN',          l:'◉  Sí / No',                            opts:false, def:''},
+  {v:'TEXT',             l:'✏  Texto libre',                         opts:false, def:''},
+  {v:'NUMBER',           l:'#  Número',                              opts:false, def:''},
+  {v:'FLUID_LEVEL',      l:'💧  Nivel de fluido',                    opts:true,  def:'A nivel\nBajo nivel\nFuera de nivel\nN/A'},
+  {v:'COMPONENT_HEALTH', l:'❤  % Vida útil del componente (0–100)', opts:false, def:''},
+  {v:'PHOTO',            l:'📷  Fotografía',                         opts:false, def:''},
+  {v:'MULTISELECT',      l:'☑☑  Selección múltiple',                opts:true,  def:''},
+  {v:'RATING',           l:'⭐  Calificación (1–5)',                 opts:false, def:''},
+  {v:'KILOMETER_INPUT',  l:'🛣  Kilometraje',                        opts:false, def:''},
+  {v:'DATETIME',         l:'📅  Fecha y hora',                       opts:false, def:''},
+  {v:'SIGNATURE',        l:'✍  Firma digital',                      opts:false, def:''},
 ];
 
-const QUICK = [
-  {l:'Bien / Regular / Malo / N/A',        v:'Bien\nRegular\nMalo\nN/A'},
-  {l:'Excelente → Crítico',                v:'Excelente\nBueno\nRegular\nMalo\nCrítico'},
-  {l:'Bueno / Con detalles / Malo / N/A',  v:'Bueno\nCon detalles\nMalo\nN/A'},
-  {l:'A nivel / Bajo / Fuera de nivel',    v:'A nivel\nBajo nivel\nFuera de nivel\nN/A'},
-  {l:'Sí / No / N/A',                      v:'Sí\nNo\nN/A'},
-  {l:'Funciona / Falla / N/A',             v:'Funciona\nFalla\nN/A'},
+/* ── Quick-fill presets ─────────────────────────────────────────── */
+var PRESETS = [
+  {l:'Bien / Regular / Malo / N/A',       v:'Bien\nRegular\nMalo\nN/A'},
+  {l:'Excelente → Crítico',               v:'Excelente\nBueno\nRegular\nMalo\nCrítico'},
+  {l:'Bueno / Con detalles / Malo / N/A', v:'Bueno\nCon detalles\nMalo\nN/A'},
+  {l:'A nivel / Bajo / Fuera de nivel',   v:'A nivel\nBajo nivel\nFuera de nivel\nN/A'},
+  {l:'Sí / No / N/A',                     v:'Sí\nNo\nN/A'},
+  {l:'Funciona / Falla / N/A',            v:'Funciona\nFalla\nN/A'},
 ];
 
-/* ── Counters ─────────────────────────────────────────────────────── */
-let sIdx = 0, iIdx = 0;
-const sortableMap = new Map();
+/* ── Tipo de actualización descriptions ─────────────────────────── */
+var ACT_DESC = {
+  'INSPECCIONA': 'La respuesta declara el estado actual del componente (actualiza salud).',
+  'REEMPLAZA':   'Marca el componente como nuevo (salud = 100%). Usar solo si el ítem confirma un reemplazo.',
+  'INFORMATIVO': 'No afecta las métricas de salud del vehículo.',
+};
 
-/* ── Escape HTML ──────────────────────────────────────────────────── */
-function esc(s) {
-  return String(s ?? '')
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-}
-/* encode newlines for data-* attributes */
-function escAttr(s) { return esc(s).replace(/\n/g,'&#10;'); }
-
-/* ── Option builders ──────────────────────────────────────────────── */
-function tiposOpts(sel) {
-  return TIPOS.map(t =>
-    `<option value="${t.v}"${sel===t.v?' selected':''}>${esc(t.l)}</option>`
-  ).join('');
-}
-function catOpts(sel) {
-  return CATS.map(([v,l]) =>
-    `<option value="${v}"${sel===v?' selected':''}>${esc(l)}</option>`
-  ).join('');
-}
-function compOpts(sel) {
-  const none = `<option value="">— Sin componente de salud —</option>`;
-  return none + COMPS.map(c =>
-    `<option value="${c.id}"${String(sel)===String(c.id)?' selected':''}>${esc(c.nombre)}</option>`
-  ).join('');
-}
-function quickBtns() {
-  return QUICK.map(q =>
-    `<button type="button" class="qbtn" data-opts="${escAttr(q.v)}" onclick="setOpts(this)">${esc(q.l)}</button>`
-  ).join('');
-}
-
-/* ── Guess category from section name ────────────────────────────── */
+/* ── Auto-guess category from section name ──────────────────────── */
 function guessCat(n) {
-  n = n.toLowerCase();
-  if (/motor|compartimiento/.test(n))                    return 'MOTOR_COMPARTIMIENTO';
-  if (/fren[oo]/.test(n))                                return 'SISTEMA_FRENOS';
-  if (/suspensi|tren motriz|direcci/.test(n))            return 'SUSPENSION_DIRECCION';
-  if (/fluido|nivel/.test(n))                            return 'FLUIDOS_NIVELES';
-  if (/el[eé]ctric/.test(n))                             return 'SISTEMA_ELECTRICO';
-  if (/carrocer|exterior/.test(n))                       return 'CARROCERIA_EXTERIOR';
-  if (/neum[aá]t|llanta|rueda/.test(n))                  return 'NEUMATICOS_LLANTAS';
-  if (/interior|cabina/.test(n))                         return 'INTERIOR_CABINA';
-  if (/transmis|embrague/.test(n))                       return 'TRANSMISION_EMBRAGUE';
-  if (/cristal|espejo|vidrio/.test(n))                   return 'CRISTALES_ESPEJOS';
-  if (/luz|luces|se[ñn]ali/.test(n))                     return 'LUCES_SENALIZACION';
-  if (/foto|evidencia|imagen/.test(n))                   return 'FOTOS_FINALES';
-  if (/observa|nota/.test(n))                            return 'OBSERVACIONES_TECNICO';
-  if (/firma|conformidad/.test(n))                       return 'FIRMAS_CONFORMIDAD';
+  n = (n || '').toLowerCase();
+  if (/motor|compartimiento/.test(n))          return 'MOTOR_COMPARTIMIENTO';
+  if (/frenos?|brake/.test(n))                 return 'SISTEMA_FRENOS';
+  if (/suspens|tren motriz|direcci/.test(n))   return 'SUSPENSION_DIRECCION';
+  if (/fluido|nivel/.test(n))                  return 'FLUIDOS_NIVELES';
+  if (/el.ctric/.test(n))                      return 'SISTEMA_ELECTRICO';
+  if (/carrocer|exterior/.test(n))             return 'CARROCERIA_EXTERIOR';
+  if (/neum.t|llanta|rueda/.test(n))           return 'NEUMATICOS_LLANTAS';
+  if (/interior|cabina/.test(n))               return 'INTERIOR_CABINA';
+  if (/transmis|embrague/.test(n))             return 'TRANSMISION_EMBRAGUE';
+  if (/cristal|espejo|vidrio/.test(n))         return 'CRISTALES_ESPEJOS';
+  if (/lu[cz]|se.ali/.test(n))                 return 'LUCES_SENALIZACION';
+  if (/foto|evidencia|imagen/.test(n))         return 'FOTOS_FINALES';
+  if (/observa|nota/.test(n))                  return 'OBSERVACIONES_TECNICO';
+  if (/firma|conformidad/.test(n))             return 'FIRMAS_CONFORMIDAD';
   return null;
 }
 
-/* ── Add section ──────────────────────────────────────────────────── */
-function addSection(data) {
-  data = data || {};
-  const sid  = 'sec' + sIdx++;
-  const cat  = data.categoria || guessCat(data.nombre || '') || (CATS[0] && CATS[0][0]) || 'INFORMACION_GENERAL';
-
-  const div = document.createElement('div');
-  div.className = 'sec-card';
-  div.dataset.sid = sid;
-  div.innerHTML = `
-    <div class="sec-head">
-      <span class="handle sec-handle" title="Arrastrar sección">⠿</span>
-      <input  type="text" class="sec-name"
-              value="${esc(data.nombre || 'Nueva sección')}"
-              placeholder="Nombre de la sección"
-              oninput="autoSetCat(this)">
-      <select class="sec-cat" title="Categoría interna del catálogo">${catOpts(cat)}</select>
-      <button class="btn-ic" title="Eliminar sección" onclick="removeSection(this)">×</button>
-    </div>
-    <div class="items-list" id="items-${sid}"></div>
-    <button class="btn-add-item" onclick="addItem('${sid}')">+ Añadir pregunta</button>
-  `;
-
-  document.getElementById('secs').appendChild(div);
-
-  /* SortableJS for items within this section */
-  sortableMap.set(sid, new Sortable(div.querySelector('.items-list'), {
-    group: 'items',
-    animation: 150,
-    handle: '.item-handle',
-    ghostClass: 'sortable-ghost',
-    onEnd: updateCount,
-  }));
-
-  /* Render initial items */
-  (data.items || []).forEach(it => addItem(sid, it));
-  updateCount();
+/* ── HTML helpers ───────────────────────────────────────────────── */
+function esc(s){
+  return String(s==null?'':s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
-/* ── Auto-set category when section name is typed ─────────────────── */
-function autoSetCat(inp) {
-  const guessed = guessCat(inp.value);
-  if (guessed) inp.closest('.sec-card').querySelector('.sec-cat').value = guessed;
+function buildTiposOpts(sel){
+  return TIPOS.map(function(t){
+    return '<option value="'+esc(t.v)+'"'+(sel===t.v?' selected':'')+'>'+esc(t.l)+'</option>';
+  }).join('');
 }
 
-/* ── Add item ─────────────────────────────────────────────────────── */
-function addItem(sid, data) {
-  data = data || {};
-  const listEl = document.getElementById('items-' + sid);
-  if (!listEl) { console.warn('items list not found for', sid); return; }
-
-  const iid   = 'itm' + iIdx++;
-  const tipo  = data.tipo || 'SELECT';
-  const tInfo = TIPOS.find(t => t.v === tipo);
-  const hasOpts = tInfo ? tInfo.opts : false;
-  const optsText = Array.isArray(data.opciones) && data.opciones.length
-    ? data.opciones.join('\n')
-    : (hasOpts && tInfo ? tInfo.def : '');
-
-  const compSel = String(data.componente_id || '');
-  const hasComp = compSel !== '';
-  const tipoAct = data.tipo_actualizacion || 'INSPECCIONA';
-
-  const div = document.createElement('div');
-  div.className = 'item-card';
-  div.dataset.iid = iid;
-  div.innerHTML = `
-    <div class="item-main">
-      <span class="handle item-handle" title="Arrastrar">⠿</span>
-      <input  type="text" class="item-label"
-              value="${esc(data.label || '')}"
-              placeholder="Pregunta (ej. Suspensión delantera)">
-      <select class="item-type" onchange="onTypeChange(this)">${tiposOpts(tipo)}</select>
-      <label  class="item-req-lbl">
-        <input type="checkbox" class="item-req"${data.requerido !== false ? ' checked' : ''}> Requerido
-      </label>
-      <button class="btn-ic" title="Eliminar pregunta" onclick="removeItem(this)">×</button>
-    </div>
-
-    <div class="opts-row${hasOpts ? '' : ' hidden'}">
-      <div class="quick-opts">${quickBtns()}</div>
-      <textarea class="item-opts"
-                rows="4"
-                placeholder="Escribe cada opción en una línea:\nBien\nRegular\nMalo\nN/A">${esc(optsText)}</textarea>
-    </div>
-
-    <details class="health-panel"${hasComp ? ' open' : ''}>
-      <summary>Componente de salud (opcional)</summary>
-      <div class="health-inner">
-        <div>
-          <label>Componente</label>
-          <select class="item-comp">${compOpts(compSel)}</select>
-        </div>
-        <div>
-          <label>Tipo de actualización</label>
-          <select class="item-tipo-act">
-            <option value="INSPECCIONA"${tipoAct==='INSPECCIONA'?' selected':''}>Inspecciona (declara estado)</option>
-            <option value="REEMPLAZA"  ${tipoAct==='REEMPLAZA'  ?' selected':''}>Reemplaza → salud 100 %</option>
-            <option value="INFORMATIVO"${tipoAct==='INFORMATIVO'?' selected':''}>Informativo (no afecta salud)</option>
-          </select>
-        </div>
-      </div>
-    </details>
-  `;
-
-  listEl.appendChild(div);
-  updateCount();
+function buildCatOpts(sel){
+  return CATEGORIAS.map(function(c){
+    return '<option value="'+esc(c[0])+'"'+(sel===c[0]?' selected':'')+'>'+esc(c[1])+'</option>';
+  }).join('');
 }
 
-/* ── Remove ───────────────────────────────────────────────────────── */
-function removeSection(btn) {
-  if (!confirm('¿Eliminar esta sección y todas sus preguntas?')) return;
-  const card = btn.closest('.sec-card');
-  const sid  = card.dataset.sid;
-  if (sortableMap.has(sid)) { sortableMap.get(sid).destroy(); sortableMap.delete(sid); }
-  card.remove();
-  updateCount();
-}
-
-function removeItem(btn) {
-  btn.closest('.item-card').remove();
-  updateCount();
-}
-
-/* ── Type change ──────────────────────────────────────────────────── */
-function onTypeChange(sel) {
-  const card   = sel.closest('.item-card');
-  const tInfo  = TIPOS.find(t => t.v === sel.value);
-  const row    = card.querySelector('.opts-row');
-  const ta     = card.querySelector('.item-opts');
-
-  if (tInfo && tInfo.opts) {
-    row.classList.remove('hidden');
-    if (!ta.value.trim() && tInfo.def) ta.value = tInfo.def;
-  } else {
-    row.classList.add('hidden');
-  }
-}
-
-/* ── Quick options ────────────────────────────────────────────────── */
-function setOpts(btn) {
-  const ta = btn.closest('.opts-row').querySelector('.item-opts');
-  ta.value = btn.dataset.opts;   /* browser decodes &#10; → \n */
-}
-
-/* ── Count display ────────────────────────────────────────────────── */
-function updateCount() {
-  const s = document.querySelectorAll('#secs .sec-card').length;
-  const i = document.querySelectorAll('#secs .item-card').length;
-  const el = document.getElementById('count');
-  if (el) el.textContent = `${s} sección${s!==1?'es':''} · ${i} pregunta${i!==1?'s':''}`;
-}
-
-/* ── Collect data ─────────────────────────────────────────────────── */
-function collectData() {
-  const sections = [];
-  document.querySelectorAll('#secs .sec-card').forEach(sec => {
-    const nombre    = sec.querySelector('.sec-name').value.trim();
-    const categoria = sec.querySelector('.sec-cat').value;
-    const items = [];
-
-    sec.querySelectorAll('.items-list .item-card').forEach(ic => {
-      const label = ic.querySelector('.item-label').value.trim();
-      if (!label) return;
-
-      const tipo       = ic.querySelector('.item-type').value;
-      const requerido  = ic.querySelector('.item-req').checked;
-      const optsRaw    = ic.querySelector('.item-opts').value;
-      const opciones   = optsRaw.trim()
-        ? optsRaw.split('\n').map(s => s.trim()).filter(Boolean)
-        : [];
-      const comp_id    = ic.querySelector('.item-comp').value || null;
-      const tipo_act   = ic.querySelector('.item-tipo-act').value || null;
-
-      items.push({ label, tipo, requerido, opciones, componente_id: comp_id, tipo_actualizacion: tipo_act });
-    });
-
-    sections.push({ nombre, categoria, items });
+function buildCompOpts(sel){
+  var out='<option value="">— Sin componente de salud —</option>';
+  COMPONENTES.forEach(function(c){
+    out+='<option value="'+esc(c.id)+'"'+(String(sel)===String(c.id)?' selected':'')+'>'+esc(c.nombre)+'</option>';
   });
-  return { sections };
+  return out;
 }
 
-/* ── Save ─────────────────────────────────────────────────────────── */
-async function saveTemplate() {
-  const btn = document.getElementById('btn-save');
-  const st  = document.getElementById('status');
-  btn.disabled = true;
-  btn.textContent = 'Guardando…';
-  st.className = 'save-status';
-  st.textContent = '';
+function buildQbtns(){
+  return PRESETS.map(function(p){
+    return '<button type="button" class="qb" data-val="'+esc(p.v)+'">'+esc(p.l)+'</button>';
+  }).join('');
+}
 
-  try {
-    const resp = await fetch(SAVE_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
-      body: JSON.stringify(collectData()),
-    });
-    const data = await resp.json();
-    if (data.ok) {
-      st.className = 'save-status ok';
-      st.textContent = `✓ Guardado — ${data.items_creados} preguntas`;
-    } else {
-      throw new Error(data.error || 'Error desconocido');
+/* ── updateCount ────────────────────────────────────────────────── */
+function updateCount(){
+  var s=document.querySelectorAll('#secs .sec').length;
+  var i=document.querySelectorAll('#secs .itm').length;
+  var el=document.getElementById('item-count');
+  if(el) el.textContent=s+' sección'+(s!==1?'es':'')+' · '+i+' pregunta'+(i!==1?'s':'');
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   addSection
+   ══════════════════════════════════════════════════════════════════ */
+function addSection(data){
+  data = data || {};
+  var sid = 'sec'+(++_sIdx);
+  var cat = data.categoria || guessCat(data.nombre||'') || (CATEGORIAS[0] && CATEGORIAS[0][0]) || 'INFORMACION_GENERAL';
+  var nombre = data.nombre || 'Nueva sección';
+
+  var wrap = document.createElement('div');
+  wrap.className = 'sec';
+  wrap.id = sid;
+  wrap.innerHTML =
+    '<div class="sec-hd">'+
+      '<span class="drag sec-drag" title="Arrastrar sección">⠿</span>'+
+      '<input type="text" class="sec-name" value="'+esc(nombre)+'" placeholder="Nombre de la sección" oninput="onSecNameInput(this)">'+
+      '<select class="sec-cat" title="Categoría del catálogo (interna)">'+buildCatOpts(cat)+'</select>'+
+      '<button type="button" class="btn-del" title="Eliminar sección" onclick="removeSection(\''+sid+'\')">×</button>'+
+    '</div>'+
+    '<div class="items-list" id="list-'+sid+'"></div>'+
+    '<button type="button" class="btn-add-itm" onclick="addItem(\''+sid+'\')">＋ Añadir pregunta</button>';
+
+  document.getElementById('secs').appendChild(wrap);
+
+  /* SortableJS for items — graceful if Sortable not loaded */
+  try{
+    if(typeof Sortable!=='undefined'){
+      new Sortable(document.getElementById('list-'+sid),{
+        group:'items',animation:150,handle:'.itm-drag',ghostClass:'ghost',
+        onEnd:updateCount
+      });
     }
-  } catch (err) {
-    st.className = 'save-status err';
-    st.textContent = '✗ ' + err.message;
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Guardar template';
+  }catch(e){}
+
+  /* Pre-fill items */
+  var items = data.items || [];
+  for(var k=0;k<items.length;k++) addItem(sid, items[k]);
+
+  updateCount();
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   addItem
+   ══════════════════════════════════════════════════════════════════ */
+function addItem(sid, data){
+  data = data || {};
+  var list = document.getElementById('list-'+sid);
+  if(!list){ console.warn('No list for section', sid); return; }
+
+  var iid   = 'itm'+(++_iIdx);
+  var tipo  = data.tipo || 'SELECT';
+  var tInfo = null;
+  for(var k=0;k<TIPOS.length;k++){ if(TIPOS[k].v===tipo){ tInfo=TIPOS[k]; break; } }
+  var hasOpts  = tInfo ? tInfo.opts : false;
+  var optsText = '';
+  if(Array.isArray(data.opciones) && data.opciones.length){
+    optsText = data.opciones.join('\n');
+  } else if(hasOpts && tInfo){
+    optsText = tInfo.def;
+  }
+  var compId   = String(data.componente_id||'');
+  var hasComp  = compId!=='';
+  var tipoAct  = data.tipo_actualizacion || 'INSPECCIONA';
+  var requerido= (data.requerido!==false);
+
+  var div = document.createElement('div');
+  div.className='itm';
+  div.id=iid;
+  div.innerHTML=
+    '<div class="itm-row1">'+
+      '<span class="drag itm-drag" title="Arrastrar">⠿</span>'+
+      '<input type="text" class="itm-label" value="'+esc(data.label||'')+'"'+
+        ' placeholder="Pregunta (ej. Suspensión delantera)">'+
+      '<select class="itm-type" onchange="onTypeChange(this)">'+buildTiposOpts(tipo)+'</select>'+
+      '<label class="req-lbl"><input type="checkbox" class="itm-req"'+(requerido?' checked':'')+'>Requerido</label>'+
+      '<button type="button" class="btn-del" title="Eliminar" onclick="removeItem(\''+iid+'\')">×</button>'+
+    '</div>'+
+
+    /* Options */
+    '<div class="opts-area'+(hasOpts?'':' hidden')+'">'+
+      '<div class="qbtns">'+buildQbtns()+'</div>'+
+      '<textarea class="opts-ta" rows="4"'+
+        ' placeholder="Una opción por línea:&#10;Bien&#10;Regular&#10;Malo&#10;N/A">'+esc(optsText)+'</textarea>'+
+      '<p class="opts-hint">Escribe una opción por línea. Los botones de arriba rellenan opciones comunes.</p>'+
+    '</div>'+
+
+    /* Health */
+    '<div class="health-wrap">'+
+      '<div class="health-toggle'+(hasComp?' open':'')+'"+'+
+        ' onclick="toggleHealth(this)" id="ht-'+iid+'">'+
+        '<span class="ico">▶</span>'+
+        (hasComp ? '❤ Componente de salud vinculado' : 'Vincular a componente de salud <em>(opcional)</em>')+
+      '</div>'+
+      '<div class="health-body'+(hasComp?' visible':'')+'" id="hb-'+iid+'">'+
+        '<label>Componente del vehículo que se actualiza con esta respuesta</label>'+
+        '<select class="itm-comp" onchange="onCompChange(this,\''+iid+'\')">'+buildCompOpts(compId)+'</select>'+
+        '<label>Tipo de actualización de salud</label>'+
+        '<select class="itm-act">'+
+          '<option value="INSPECCIONA"'+(tipoAct==='INSPECCIONA'?' selected':'')+'>Inspecciona — declara estado actual</option>'+
+          '<option value="REEMPLAZA"'+(tipoAct==='REEMPLAZA'?' selected':'')+'>Reemplaza — pone salud a 100 %</option>'+
+          '<option value="INFORMATIVO"'+(tipoAct==='INFORMATIVO'?' selected':'')+'>Informativo — no afecta salud</option>'+
+        '</select>'+
+        '<p class="health-desc" id="hd-'+iid+'">'+ACT_DESC[tipoAct]+'</p>'+
+      '</div>'+
+    '</div>';
+
+  list.appendChild(div);
+
+  /* Wire quick-fill buttons */
+  var qbtns = div.querySelectorAll('.qb');
+  for(var j=0;j<qbtns.length;j++){
+    (function(btn){
+      btn.addEventListener('click', function(){
+        var ta=btn.closest('.opts-area').querySelector('.opts-ta');
+        if(ta) ta.value=btn.dataset.val;
+      });
+    })(qbtns[j]);
+  }
+
+  /* Wire act select for description update */
+  var actSel = div.querySelector('.itm-act');
+  if(actSel){
+    actSel.addEventListener('change', function(){
+      var desc=document.getElementById('hd-'+iid);
+      if(desc) desc.textContent=ACT_DESC[this.value]||'';
+    });
+  }
+
+  updateCount();
+}
+
+/* ── Event handlers ─────────────────────────────────────────────── */
+function onSecNameInput(inp){
+  var guessed=guessCat(inp.value);
+  if(guessed){
+    var sec=inp.closest('.sec');
+    if(sec){ var s=sec.querySelector('.sec-cat'); if(s) s.value=guessed; }
   }
 }
 
-/* ── Section sortable (outer) ────────────────────────────────────── */
-new Sortable(document.getElementById('secs'), {
-  animation: 150,
-  handle: '.sec-handle',
-  ghostClass: 'sortable-ghost',
-  onEnd: updateCount,
-});
-
-/* ── Keyboard shortcut: Ctrl+S / Cmd+S ───────────────────────────── */
-document.addEventListener('keydown', e => {
-  if ((e.ctrlKey || e.metaKey) && e.key === 's') {
-    e.preventDefault();
-    saveTemplate();
+function onTypeChange(sel){
+  var itm=sel.closest('.itm');
+  if(!itm) return;
+  var tInfo=null;
+  for(var k=0;k<TIPOS.length;k++){ if(TIPOS[k].v===sel.value){ tInfo=TIPOS[k]; break; } }
+  var area=itm.querySelector('.opts-area');
+  var ta=itm.querySelector('.opts-ta');
+  if(!area) return;
+  if(tInfo && tInfo.opts){
+    area.classList.remove('hidden');
+    if(ta && !ta.value.trim() && tInfo.def) ta.value=tInfo.def;
+  } else {
+    area.classList.add('hidden');
   }
+}
+
+function onCompChange(sel, iid){
+  /* Update health-toggle label */
+  var toggle=document.getElementById('ht-'+iid);
+  if(!toggle) return;
+  if(sel.value){
+    toggle.innerHTML='<span class="ico">▼</span>❤ '+esc(sel.options[sel.selectedIndex].text)+' (vinculado)';
+    toggle.classList.add('open');
+  } else {
+    toggle.innerHTML='<span class="ico">▶</span>Vincular a componente de salud <em>(opcional)</em>';
+    toggle.classList.remove('open');
+  }
+}
+
+function toggleHealth(el){
+  el.classList.toggle('open');
+  var body=el.nextElementSibling;
+  if(body) body.classList.toggle('visible');
+}
+
+function removeSection(sid){
+  if(!confirm('¿Eliminar esta sección y todas sus preguntas?')) return;
+  var el=document.getElementById(sid);
+  if(el) el.remove();
+  updateCount();
+}
+
+function removeItem(iid){
+  var el=document.getElementById(iid);
+  if(el) el.remove();
+  updateCount();
+}
+
+/* ── Collect data ───────────────────────────────────────────────── */
+function collectData(){
+  var sections=[];
+  var secCards=document.querySelectorAll('#secs .sec');
+  for(var si=0;si<secCards.length;si++){
+    var sec=secCards[si];
+    var nombre=(sec.querySelector('.sec-name')||{}).value||'';
+    var categoria=(sec.querySelector('.sec-cat')||{}).value||'INFORMACION_GENERAL';
+    var items=[];
+    var itmCards=sec.querySelectorAll('.items-list .itm');
+    for(var ii=0;ii<itmCards.length;ii++){
+      var itm=itmCards[ii];
+      var label=((itm.querySelector('.itm-label')||{}).value||'').trim();
+      if(!label) continue;
+      var tipo=(itm.querySelector('.itm-type')||{}).value||'TEXT';
+      var requerido=(itm.querySelector('.itm-req')||{}).checked!==false;
+      var taVal=((itm.querySelector('.opts-ta')||{}).value||'').trim();
+      var opciones=taVal?taVal.split('\n').map(function(s){return s.trim();}).filter(Boolean):[];
+      var comp_id=((itm.querySelector('.itm-comp')||{}).value||null)||null;
+      var tipo_act=((itm.querySelector('.itm-act')||{}).value||null)||null;
+      items.push({label:label,tipo:tipo,requerido:requerido,opciones:opciones,
+        componente_id:comp_id,tipo_actualizacion:tipo_act});
+    }
+    sections.push({nombre:nombre,categoria:categoria,items:items});
+  }
+  return {sections:sections};
+}
+
+/* ── Save ───────────────────────────────────────────────────────── */
+function saveTemplate(){
+  var btn=document.getElementById('btn-save');
+  var st=document.getElementById('save-st');
+  if(!btn||!st) return;
+  btn.disabled=true;
+  btn.textContent='Guardando…';
+  st.className='save-st';
+  st.textContent='';
+
+  var payload=JSON.stringify(collectData());
+  var xhr=new XMLHttpRequest();
+  xhr.open('POST',SAVE_URL);
+  xhr.setRequestHeader('Content-Type','application/json');
+  xhr.setRequestHeader('X-CSRFToken',CSRF_TOKEN);
+  xhr.onload=function(){
+    btn.disabled=false;
+    btn.textContent='Guardar checklist';
+    try{
+      var d=JSON.parse(xhr.responseText);
+      if(d.ok){
+        st.className='save-st ok';
+        st.textContent='✓ Guardado — '+d.items_creados+' preguntas';
+      } else {
+        st.className='save-st err';
+        st.textContent='✗ '+(d.error||'Error al guardar');
+      }
+    }catch(e){
+      st.className='save-st err';
+      st.textContent='✗ Respuesta inesperada del servidor';
+    }
+  };
+  xhr.onerror=function(){
+    btn.disabled=false;
+    btn.textContent='Guardar checklist';
+    st.className='save-st err';
+    st.textContent='✗ Error de red';
+  };
+  xhr.send(payload);
+}
+
+/* ── Keyboard shortcut ──────────────────────────────────────────── */
+document.addEventListener('keydown',function(e){
+  if((e.ctrlKey||e.metaKey)&&e.key==='s'){e.preventDefault();saveTemplate();}
 });
 
-/* ── Init ─────────────────────────────────────────────────────────── */
-if (SECS0.length) {
-  SECS0.forEach(s => addSection(s));
+/* ── Wire buttons ───────────────────────────────────────────────── */
+document.getElementById('btn-add-sec').addEventListener('click',function(){ addSection(); });
+document.getElementById('btn-save').addEventListener('click',function(){ saveTemplate(); });
+
+/* ── Section-level sortable ─────────────────────────────────────── */
+try{
+  if(typeof Sortable!=='undefined'){
+    new Sortable(document.getElementById('secs'),{
+      animation:150,handle:'.sec-drag',ghostClass:'ghost',onEnd:updateCount
+    });
+  }
+}catch(e){}
+
+/* ── Init from existing data ────────────────────────────────────── */
+if(INIT_SECS.length){
+  for(var k=0;k<INIT_SECS.length;k++) addSection(INIT_SECS[k]);
 } else {
-  /* Default starter section + one item so the page isn't empty */
   addSection({
-    nombre: 'Nueva sección',
-    categoria: 'INFORMACION_GENERAL',
-    items: [{ label: '', tipo: 'SELECT', opciones: ['Bien','Regular','Malo','N/A'], requerido: true }],
+    nombre:'Nueva sección',
+    categoria:'INFORMACION_GENERAL',
+    items:[{label:'',tipo:'SELECT',opciones:['Bien','Regular','Malo','N/A'],requerido:true}]
   });
 }
-
-/* Expose to onclick handlers */
-window.addSection   = addSection;
-window.addItem      = addItem;
-window.removeSection = removeSection;
-window.removeItem   = removeItem;
-window.onTypeChange = onTypeChange;
-window.setOpts      = setOpts;
-window.saveTemplate = saveTemplate;
-window.autoSetCat   = autoSetCat;
-
-})();
 </script>
+
 {% endblock %}
