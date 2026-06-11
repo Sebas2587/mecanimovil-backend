@@ -1,21 +1,25 @@
-# Dispara deploy en Render (api + celery) en cada push a main.
-# Requiere secret RENDER_API_KEY en GitHub → Settings → Secrets → Actions.
+# Deploy manual en Render (solo cuando auto-deploy falle o para forzar redeploy).
+#
+# IMPORTANTE: los servicios ya tienen autoDeploy=commit en Render. NO ejecutar
+# este workflow en cada push vía API además del auto-deploy: genera deploys
+# duplicados y puede dejar la cola atascada en build_in_progress.
+#
+# Uso: GitHub → Actions → Trigger Render deploy → Run workflow
 name: Trigger Render deploy
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy Render services
+      - name: Deploy Render services (manual)
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
         run: |
           if [ -z "$RENDER_API_KEY" ]; then
-            echo "RENDER_API_KEY no definida; conecta Git en Render o añade el secret."
-            exit 0
+            echo "RENDER_API_KEY no definida en GitHub Secrets."
+            exit 1
           fi
           for svc in \
             srv-d5ig4ga4d50c739mhr30 \
