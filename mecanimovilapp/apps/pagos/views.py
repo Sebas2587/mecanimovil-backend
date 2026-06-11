@@ -2680,7 +2680,7 @@ def verificar_pago_mercadopago(request):
                             oferta.estado = 'pagada_parcialmente'
                             
                             if solicitud.estado not in ['en_ejecucion', 'completada']:
-                                solicitud.estado = 'pagada_parcialmente'
+                                solicitud.estado = 'pagada'
                             
                             message = 'Pago de repuestos verificado y confirmado'
                             
