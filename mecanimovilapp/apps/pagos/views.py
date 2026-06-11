@@ -2143,35 +2143,32 @@ def crear_preferencia_pago_proveedor(request):
         if len(servicios_nombres) > 2:
             titulo_servicio += f' (+{len(servicios_nombres) - 2} más)'
         
-        # Calcular el monto según el tipo de pago
+        # Calcular el monto según el tipo de pago (Decimal, sin redondear a entero)
+        from decimal import Decimal
+        IVA = Decimal('1.19')
+
         if tipo_pago == 'repuestos':
-            # Pagar repuestos + gestión de compra (si aplica)
-            # IMPORTANTE: Los repuestos son precio directo (sin IVA adicional)
-            # La gestión de compra es un servicio, por lo tanto lleva IVA
-            costo_repuestos = float(oferta.costo_repuestos or 0)  # Precio directo
-            costo_gestion = float(oferta.costo_gestion_compra or 0)
-            costo_gestion_con_iva = costo_gestion * 1.19  # Solo gestión lleva IVA
-            monto = costo_repuestos + costo_gestion_con_iva
+            costo_repuestos = Decimal(str(oferta.costo_repuestos or 0))
+            costo_gestion = Decimal(str(oferta.costo_gestion_compra or 0))
+            monto = costo_repuestos + costo_gestion * IVA
             
             if costo_gestion > 0:
                 descripcion = f"Repuestos + Gestión de compra - {titulo_servicio}"
             else:
                 descripcion = f"Repuestos - {titulo_servicio}"
             
-            if monto <= 0:
+            if float(monto) <= 0:
                 return Response(
                     {'error': 'Esta oferta no tiene repuestos para pagar'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
                 
         elif tipo_pago == 'servicio':
-            # Solo pagar mano de obra
-            monto = float(oferta.costo_mano_obra) * 1.19  # Con IVA
+            monto = Decimal(str(oferta.costo_mano_obra or 0)) * IVA
             descripcion = f"Mano de obra - {titulo_servicio}"
             
         else:  # total
-            # Pagar todo (precio_total_ofrecido ya incluye IVA)
-            monto = float(oferta.precio_total_ofrecido)
+            monto = Decimal(str(oferta.precio_total_ofrecido or 0))
             descripcion = f"Servicio completo - {titulo_servicio}"
         
         # Crear el SDK de Mercado Pago con el access_token del PROVEEDOR
@@ -2198,12 +2195,10 @@ def crear_preferencia_pago_proveedor(request):
         success_url_proveedor = back_urls_config.get('success', '')
         use_auto_return_proveedor = success_url_proveedor.startswith('https://')
         
-        # Mercado Pago Chile (CLP) requiere montos enteros y unit_price > 0.
-        # En entornos de prueba a veces llegan montos decimales muy pequeños (ej. 0.83),
-        # lo que termina en unit_price=0 si se hace int(monto) y MP rechaza la preferencia.
-        unit_price_clp = int(round(monto))
-        if unit_price_clp <= 0:
-            unit_price_clp = 1
+        # Monto exacto (DecimalField usa 2 decimales). MP recibe el valor sin redondear a entero.
+        unit_price = float(monto)
+        if unit_price <= 0:
+            unit_price = 0.01
 
         preference_data = {
             'items': [
@@ -2212,7 +2207,7 @@ def crear_preferencia_pago_proveedor(request):
                     'title': descripcion,
                     'description': f"Servicio para {oferta.solicitud.vehiculo.marca} {oferta.solicitud.vehiculo.modelo}",
                     'quantity': 1,
-                    'unit_price': unit_price_clp,  # Mercado Pago Chile usa enteros (>0)
+                    'unit_price': unit_price,
                     'currency_id': 'CLP',
                 }
             ],
@@ -2229,7 +2224,7 @@ def crear_preferencia_pago_proveedor(request):
         logger.info(f"   - Oferta: {oferta.id}")
         logger.info(f"   - Tipo pago: {tipo_pago}")
         logger.info(f"   - Monto: ${monto}")
-        logger.info(f"   - Unit price (CLP): ${unit_price_clp}")
+        logger.info(f"   - Unit price (CLP): ${unit_price}")
         logger.info(f"   - Proveedor: {oferta.nombre_proveedor}")
         logger.info(f"   - Back URLs: {back_urls_config}")
         logger.info(f"   - Auto Return: {'approved (HTTPS)' if use_auto_return_proveedor else 'desactivado (deep link nativo)'}")
@@ -2256,7 +2251,7 @@ def crear_preferencia_pago_proveedor(request):
                 'preference_id': preference.get('id'),
                 'init_point': preference.get('init_point'),
                 'sandbox_init_point': preference.get('sandbox_init_point'),
-                'monto': monto,
+                'monto': unit_price,
                 'tipo_pago': tipo_pago,
                 'proveedor': oferta.nombre_proveedor,
                 'external_reference': f"oferta_{oferta.id}_{tipo_pago}",
