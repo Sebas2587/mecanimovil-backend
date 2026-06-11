@@ -2406,9 +2406,10 @@ def confirmar_pago_oferta(request):
             costo_mano_obra = float(oferta.costo_mano_obra or 0)
             monto_pendiente = costo_mano_obra * 1.19  # Con IVA
             
-            # La solicitud también se actualiza a 'pagada_parcialmente' si no tiene otro estado más avanzado
+            # La solicitud pública pasa a 'pagada' (parcialmente pagado es info del nivel de oferta,
+            # no de la solicitud — 'pagada_parcialmente' no existe como choice en SolicitudServicioPublica)
             if solicitud.estado not in ['en_ejecucion', 'completada']:
-                solicitud.estado = 'pagada_parcialmente'
+                solicitud.estado = 'pagada'
             
             message = 'Pago de repuestos confirmado. El servicio se pagará al finalizar.'
             puede_pagar_servicio = True
@@ -2448,7 +2449,28 @@ def confirmar_pago_oferta(request):
         logger.info(f"   - Estado nuevo solicitud: {solicitud.estado}")
         logger.info(f"   - Estado pago repuestos: {oferta.estado_pago_repuestos}")
         logger.info(f"   - Estado pago servicio: {oferta.estado_pago_servicio}")
-        
+
+        # Notificar al proveedor via WebSocket para que refresque su lista de órdenes
+        try:
+            from asgiref.sync import async_to_sync
+            from channels.layers import get_channel_layer
+            channel_layer = get_channel_layer()
+            if channel_layer:
+                async_to_sync(channel_layer.group_send)(
+                    f"proveedor_{oferta.proveedor.id}",
+                    {
+                        'type': 'pago_completado',
+                        'oferta_id': str(oferta.id),
+                        'solicitud_id': str(solicitud.id),
+                        'tipo_pago': tipo_pago,
+                        'estado_oferta': oferta.estado,
+                        'timestamp': str(timezone.now().isoformat()),
+                    },
+                )
+                logger.info(f"✅ Notificación WebSocket pago_completado enviada al proveedor {oferta.proveedor.id}")
+        except Exception as ws_err:
+            logger.warning(f"⚠️ No se pudo enviar notificación WebSocket al proveedor: {ws_err}")
+
         return Response({
             'success': True,
             'oferta_id': str(oferta.id),

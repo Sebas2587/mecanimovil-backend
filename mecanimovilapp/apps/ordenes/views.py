@@ -2114,7 +2114,7 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
         # Obtener todas las ofertas pagadas/en_ejecucion del proveedor
         todas_ofertas_pagadas = OfertaProveedor.objects.filter(
             proveedor=user,
-            estado__in=['pagada', 'en_ejecucion']
+            estado__in=['pagada', 'pagada_parcialmente', 'en_ejecucion']
         ).select_related('solicitud', 'solicitud__cliente', 'solicitud__vehiculo')
         
         # Filtrar las que no tienen SolicitudServicio asociada
