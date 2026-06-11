@@ -286,23 +286,32 @@ class PreferenciaPagoViewSet(viewsets.ReadOnlyModelViewSet):
             back_urls = serializer.validated_data.get('back_urls', {})
             notification_url = serializer.validated_data.get('notification_url')
             
+            # Construir back_urls
+            back_urls_config = {
+                'success': back_urls.get('success', ''),
+                'failure': back_urls.get('failure', ''),
+                'pending': back_urls.get('pending', ''),
+            }
+            # auto_return solo funciona con URLs HTTPS válidas.
+            # Los deep links nativos (mecanimovil://) son manejados por el WebView/app,
+            # por lo que auto_return no es necesario para mobile.
+            success_url = back_urls_config.get('success', '')
+            use_auto_return = success_url.startswith('https://')
+
             # Construir la preferencia según mejores prácticas de Mercado Pago
             preference_data = {
                 'items': items_mp,
                 'payer': payer,
                 'external_reference': external_reference,
-                'back_urls': {
-                    'success': back_urls.get('success', ''),
-                    'failure': back_urls.get('failure', ''),
-                    'pending': back_urls.get('pending', ''),
-                },
-                'auto_return': 'approved',  # Redirigir automáticamente si se aprueba
+                'back_urls': back_urls_config,
                 'statement_descriptor': 'MECANIMOVIL',  # Descripción en el estado de cuenta
                 'binary_mode': False,  # Permitir estados intermedios
                 'expires': True,
                 'expiration_date_from': None,
                 'expiration_date_to': None,
             }
+            if use_auto_return:
+                preference_data['auto_return'] = 'approved'
             
             # Agregar notification_url si está disponible
             if notification_url:
@@ -2176,13 +2185,18 @@ def crear_preferencia_pago_proveedor(request):
         }
         
         # Construir la preferencia
-        # IMPORTANTE: Las back_urls deben usar el scheme de la app (mecanimovil://)
+        # IMPORTANTE: Las back_urls pueden ser HTTPS (web) o mecanimovil:// (nativo).
         # Mercado Pago agregará automáticamente los parámetros de query (status, payment_id, etc.)
         back_urls_config = {
             'success': back_urls.get('success', ''),
             'failure': back_urls.get('failure', ''),
             'pending': back_urls.get('pending', ''),
         }
+
+        # auto_return requiere URLs HTTPS válidas; los deep links nativos (mecanimovil://)
+        # son manejados internamente por el WebView/app y no necesitan auto_return.
+        success_url_proveedor = back_urls_config.get('success', '')
+        use_auto_return_proveedor = success_url_proveedor.startswith('https://')
         
         # Mercado Pago Chile (CLP) requiere montos enteros y unit_price > 0.
         # En entornos de prueba a veces llegan montos decimales muy pequeños (ej. 0.83),
@@ -2205,14 +2219,12 @@ def crear_preferencia_pago_proveedor(request):
             'payer': payer_info,
             'external_reference': f"oferta_{oferta.id}_{tipo_pago}",
             'back_urls': back_urls_config,
-            # auto_return: 'approved' redirige automáticamente solo cuando el pago está aprobado
-            # 'all' redirige en todos los casos (aprobado, pendiente, rechazado)
-            # Usamos 'all' para asegurar que siempre se redirija a la app
-            'auto_return': 'all',
             'statement_descriptor': 'MECANIMOVIL',
             'binary_mode': False,
         }
-        
+        if use_auto_return_proveedor:
+            preference_data['auto_return'] = 'approved'
+
         logger.info(f"📤 Creando preferencia de pago directo al proveedor")
         logger.info(f"   - Oferta: {oferta.id}")
         logger.info(f"   - Tipo pago: {tipo_pago}")
@@ -2220,7 +2232,7 @@ def crear_preferencia_pago_proveedor(request):
         logger.info(f"   - Unit price (CLP): ${unit_price_clp}")
         logger.info(f"   - Proveedor: {oferta.nombre_proveedor}")
         logger.info(f"   - Back URLs: {back_urls_config}")
-        logger.info(f"   - Auto Return: all (redirige en todos los casos)")
+        logger.info(f"   - Auto Return: {'approved (HTTPS)' if use_auto_return_proveedor else 'desactivado (deep link nativo)'}")
 # Crear la preferencia usando el SDK del proveedor
         preference_response = sdk.preference().create(preference_data)
         
