@@ -4038,7 +4038,7 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
             )
         estados_solicitud_activos = [
             'publicada', 'con_ofertas', 'seleccionando_servicios',
-            'adjudicada', 'pendiente_pago', 'pagada', 'en_ejecucion'
+            'adjudicada', 'pendiente_pago', 'pagada', 'pagada_parcialmente', 'en_ejecucion'
         ]
         # Ofertas secundarias que siguen pendientes de acción del usuario (aceptar/rechazar o pagar)
         estados_oferta_secundaria_pendientes = [
