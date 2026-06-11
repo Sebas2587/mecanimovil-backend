@@ -14,6 +14,8 @@ Uso: python manage.py populate_checklists_por_servicio [--dry-run]
 
 Idempotente: seguro de ejecutar en cada deploy a Render (build.sh).
 """
+import logging
+
 from django.core.management.base import BaseCommand
 
 from mecanimovilapp.apps.checklists.models import (
@@ -23,6 +25,27 @@ from mecanimovilapp.apps.checklists.models import (
 )
 from mecanimovilapp.apps.servicios.models import Servicio
 from mecanimovilapp.apps.vehiculos.models_health import ComponenteSalud
+
+logger = logging.getLogger(__name__)
+
+
+def get_or_create_catalog_item(nombre: str, categoria: str, defaults: dict):
+    """
+    Idempotente aunque existan filas duplicadas legacy (sin unique en BD).
+    Evita MultipleObjectsReturned de get_or_create cuando hay >1 fila (nombre, categoria).
+    """
+    qs = ChecklistItemCatalog.objects.filter(nombre=nombre, categoria=categoria).order_by('id')
+    existing = qs.first()
+    if existing:
+        if qs.count() > 1:
+            logger.warning(
+                'ChecklistItemCatalog duplicado para (%s, %s); usando id=%s',
+                nombre,
+                categoria,
+                existing.id,
+            )
+        return existing, False
+    return ChecklistItemCatalog.objects.create(nombre=nombre, categoria=categoria, **defaults), True
 
 
 # Lista de nombres de servicio a mapear (resolver por nombre en BD)
@@ -1016,11 +1039,7 @@ class Command(BaseCommand):
                 'uso_frecuente': item_data.get('uso_frecuente', False),
             }
             if not dry_run:
-                obj, created = ChecklistItemCatalog.objects.get_or_create(
-                    nombre=nombre,
-                    categoria=categoria,
-                    defaults=defaults,
-                )
+                obj, created = get_or_create_catalog_item(nombre, categoria, defaults)
                 catalog_by_name[nombre] = obj
                 if created:
                     total_catalog_created += 1
