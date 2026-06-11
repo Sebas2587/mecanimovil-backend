@@ -33,6 +33,101 @@ class AdjudicacionCarritoError(Exception):
     pass
 
 
+def _parse_oferta_servicio_ids_from_metadata(oferta: OfertaProveedor) -> list[int]:
+    meta = oferta.metadata_ia if isinstance(oferta.metadata_ia, dict) else {}
+    ids: list[int] = []
+    raw_list = meta.get('oferta_servicio_ids')
+    if isinstance(raw_list, (list, tuple)):
+        for value in raw_list:
+            try:
+                ids.append(int(value))
+            except (TypeError, ValueError):
+                continue
+    if not ids and meta.get('oferta_servicio_id') is not None:
+        try:
+            ids.append(int(meta['oferta_servicio_id']))
+        except (TypeError, ValueError):
+            pass
+    if oferta.oferta_servicio_id and oferta.oferta_servicio_id not in ids:
+        ids.insert(0, oferta.oferta_servicio_id)
+    return ids
+
+
+def _map_servicio_id_a_oferta_servicio_catalogo(oferta: OfertaProveedor) -> dict[int, int]:
+    """Mapea servicio_id -> OfertaServicio.pk usando metadata de ofertas catálogo."""
+    ids = _parse_oferta_servicio_ids_from_metadata(oferta)
+    if not ids:
+        return {}
+    mapping: dict[int, int] = {}
+    for row in OfertaServicio.objects.filter(pk__in=ids).only('id', 'servicio_id'):
+        mapping[row.servicio_id] = row.id
+    return mapping
+
+
+def resolver_oferta_servicio_para_detalle(
+    *,
+    oferta: OfertaProveedor,
+    detalle,
+    tipo_proveedor: str,
+    taller,
+    mecanico,
+    solicitud: SolicitudServicioPublica | None = None,
+) -> OfertaServicio:
+    """
+    Resuelve la fila de catálogo (OfertaServicio) para un detalle de oferta.
+    Prioriza ids explícitos de catálogo; evita MultipleObjectsReturned en multimarca/motor.
+    """
+    servicio_id = detalle.servicio_id
+
+    if oferta.origen == 'catalogo':
+        catalog_map = _map_servicio_id_a_oferta_servicio_catalogo(oferta)
+        catalog_id = catalog_map.get(servicio_id)
+        if catalog_id:
+            return OfertaServicio.objects.get(pk=catalog_id)
+        if oferta.oferta_servicio_id and oferta.oferta_servicio.servicio_id == servicio_id:
+            return oferta.oferta_servicio
+
+    qs = OfertaServicio.objects.filter(
+        servicio_id=servicio_id,
+        tipo_proveedor=tipo_proveedor,
+        taller=taller,
+        mecanico=mecanico,
+    )
+
+    vehiculo = getattr(solicitud, 'vehiculo', None) if solicitud else None
+    if vehiculo is not None:
+        if getattr(vehiculo, 'marca_id', None):
+            por_marca = qs.filter(marca_vehiculo_seleccionada_id=vehiculo.marca_id)
+            if por_marca.exists():
+                qs = por_marca
+        tipo_motor = getattr(vehiculo, 'tipo_motor', None)
+        if tipo_motor and str(tipo_motor).strip():
+            from mecanimovilapp.apps.vehiculos.catalogo_resolver import normalizar_tipo_motor_vehiculo
+
+            motor = normalizar_tipo_motor_vehiculo(tipo_motor)
+            por_motor = qs.filter(tipo_motor__in=['', motor])
+            if por_motor.exists():
+                qs = por_motor
+
+    count = qs.count()
+    if count == 1:
+        return qs.get()
+    if count > 1:
+        picked = qs.filter(disponible=True).order_by('-id').first() or qs.order_by('-id').first()
+        if picked:
+            logger.warning(
+                'Múltiples OfertaServicio para servicio %s (proveedor %s); usando id=%s',
+                servicio_id,
+                oferta.proveedor_id,
+                picked.id,
+            )
+            return picked
+
+    raise OfertaServicio.DoesNotExist(
+        f'Sin OfertaServicio para servicio {servicio_id} y proveedor de oferta {oferta.id}'
+    )
+
+
 def _horas_reserva_creditos() -> int:
     return int(getattr(settings, 'ADJUDICACION_CREDITOS_RESERVA_HORAS', 48))
 
@@ -195,11 +290,13 @@ def ejecutar_finalizacion_adjudicacion(solicitud, oferta, taller, mecanico, deta
         for detalle in detalles_servicios:
             try:
                 try:
-                    oferta_servicio = OfertaServicio.objects.get(
-                        servicio=detalle.servicio,
+                    oferta_servicio = resolver_oferta_servicio_para_detalle(
+                        oferta=oferta,
+                        detalle=detalle,
                         tipo_proveedor=tipo_proveedor_servicio,
                         taller=taller,
                         mecanico=mecanico,
+                        solicitud=solicitud,
                     )
                 except OfertaServicio.DoesNotExist:
                     precio_ofrecido = Decimal(str(detalle.precio_servicio))
