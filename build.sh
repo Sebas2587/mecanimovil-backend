@@ -20,6 +20,11 @@ python manage.py init_smart_health
 echo "🧰 Sincronizando templates de checklist por servicio (idempotente)..."
 python manage.py populate_checklists_por_servicio
 
+echo "🔁 Corrección puntual: oferta cerrada sin checklist (si aplica)..."
+python manage.py revertir_oferta_cerrada_prematura \
+  --oferta-id 2ec78118-5cdd-4cf1-aeef-ef8148c5a066 \
+  || echo "ℹ️ Sin corrección necesaria para la oferta puntual"
+
 echo "🎨 Recolectando archivos estáticos..."
 python manage.py collectstatic --noinput
 

@@ -64,6 +64,7 @@ SERVICIOS_NOMBRES = [
     'Cambio de pastillas de frenos',
     'Cambio de pastillas y discos de freno',
     'Cambio de pastillas de frenos y rectificado',
+    'Cambio liquido de frenos',
     'Cambio de batería',
     'Cambio de ampolletas',
     'Lavado a domicilio',
@@ -654,6 +655,7 @@ SERVICIO_TIPO_INTENCION = {
     'Cambio de pastillas de frenos':     'REPARACION',
     'Cambio de pastillas y discos de freno': 'REPARACION',
     'Cambio de pastillas de frenos y rectificado': 'REPARACION',
+    'Cambio liquido de frenos':          'REPARACION',
     'Cambio de batería':                 'REPARACION',
     'Cambio de ampolletas':              'REPARACION',
     'Lavado a domicilio':                'MIXTO',
@@ -892,6 +894,17 @@ SERVICIO_TEMPLATE_ITEMS = {
         ('Firma del Cliente', 8, True),
     ],
     # Frenos
+    'Cambio liquido de frenos': [
+        ('Identificación del Técnico', 1, True),
+        ('Fecha y Hora de Inicio', 2, True),
+        ('Kilometraje Actual', 3, True),
+        ('Líquido Frenos Revisado', 4, True),
+        ('Vida útil — Líquido de frenos', 5, True),
+        ('Fotos Evidencia', 6, False),
+        ('Observaciones del Técnico', 7, False),
+        ('Firma del Técnico', 8, True),
+        ('Firma del Cliente', 9, True),
+    ],
     'Cambio de pastillas de frenos': [
         ('Identificación del Técnico', 1, True),
         ('Fecha y Hora de Inicio', 2, True),
