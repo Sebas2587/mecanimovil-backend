@@ -2189,11 +2189,13 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
                     
                     for detalle in detalles_servicios:
                         try:
-                            oferta_servicio = OfertaServicio.objects.get(
-                                servicio=detalle.servicio,
+                            oferta_servicio = adjudicacion_publica.resolver_oferta_servicio_para_detalle(
+                                oferta=oferta_bloqueada,
+                                detalle=detalle,
                                 tipo_proveedor=tipo_proveedor_servicio,
                                 taller=taller,
-                                mecanico=mecanico
+                                mecanico=mecanico,
+                                solicitud=solicitud_publica,
                             )
                         except OfertaServicio.DoesNotExist:
                             # Crear OfertaServicio temporal si no existe
@@ -3863,11 +3865,13 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
                     
                     # Buscar o crear OfertaServicio
                     try:
-                        oferta_servicio = OfertaServicio.objects.get(
-                            servicio=detalle.servicio,
+                        oferta_servicio = adjudicacion_publica.resolver_oferta_servicio_para_detalle(
+                            oferta=oferta,
+                            detalle=detalle,
                             tipo_proveedor=tipo_proveedor_servicio,
                             taller=taller,
-                            mecanico=mecanico
+                            mecanico=mecanico,
+                            solicitud=solicitud,
                         )
                         logger.info(f"OfertaServicio encontrada: {oferta_servicio.id}")
                     except OfertaServicio.DoesNotExist:
@@ -5581,11 +5585,13 @@ class OfertaProveedorViewSet(viewsets.ModelViewSet):
                             
                             # Buscar o crear OfertaServicio
                             try:
-                                oferta_servicio = OfertaServicio.objects.get(
-                                    servicio=detalle.servicio,
+                                oferta_servicio = adjudicacion_publica.resolver_oferta_servicio_para_detalle(
+                                    oferta=oferta,
+                                    detalle=detalle,
                                     tipo_proveedor=tipo_proveedor_servicio,
                                     taller=taller,
-                                    mecanico=mecanico
+                                    mecanico=mecanico,
+                                    solicitud=oferta.solicitud,
                                 )
                                 logger.info(f"OfertaServicio encontrada: {oferta_servicio.id}")
                             except OfertaServicio.DoesNotExist:
@@ -5780,11 +5786,13 @@ class OfertaProveedorViewSet(viewsets.ModelViewSet):
                     
                     for detalle in detalles_servicios:
                         try:
-                            oferta_servicio = OfertaServicio.objects.get(
-                                servicio=detalle.servicio,
+                            oferta_servicio = adjudicacion_publica.resolver_oferta_servicio_para_detalle(
+                                oferta=oferta,
+                                detalle=detalle,
                                 tipo_proveedor=tipo_proveedor_servicio,
                                 taller=taller,
-                                mecanico=mecanico
+                                mecanico=mecanico,
+                                solicitud=solicitud,
                             )
                         except OfertaServicio.DoesNotExist:
                             # Crear OfertaServicio temporal
