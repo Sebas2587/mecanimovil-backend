@@ -2198,8 +2198,9 @@ def crear_preferencia_pago_proveedor(request):
         success_url_proveedor = back_urls_config.get('success', '')
         use_auto_return_proveedor = success_url_proveedor.startswith('https://')
         
-        # MP exige unit_price entero para CLP (p. ej. mano_obra * 1.19 puede dar decimales).
-        unit_price = int(round(float(monto)))
+        # MP exige unit_price entero para CLP. Usamos ceil para nunca cobrar menos de lo adeudado.
+        import math as _math
+        unit_price = int(_math.ceil(float(monto)))
         if unit_price <= 0:
             unit_price = 1
 
