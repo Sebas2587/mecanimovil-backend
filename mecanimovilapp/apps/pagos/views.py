@@ -2198,9 +2198,11 @@ def crear_preferencia_pago_proveedor(request):
         success_url_proveedor = back_urls_config.get('success', '')
         use_auto_return_proveedor = success_url_proveedor.startswith('https://')
         
-        # MP exige unit_price entero para CLP. Usamos ceil para nunca cobrar menos de lo adeudado.
-        import math as _math
-        unit_price = int(_math.ceil(float(monto)))
+        # CLP no admite decimales (restricción de MP y del peso chileno). Redondeamos a peso
+        # entero con HALF_UP, igual que la boleta del SII y que la app (Math.round), de modo que
+        # el monto cobrado coincida exactamente con el mostrado al usuario.
+        from decimal import ROUND_HALF_UP
+        unit_price = int(Decimal(str(monto)).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
         if unit_price <= 0:
             unit_price = 1
 
