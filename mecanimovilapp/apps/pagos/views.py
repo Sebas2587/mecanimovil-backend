@@ -2089,36 +2089,39 @@ def crear_preferencia_pago_proveedor(request):
         
         # Verificar que la oferta esté en estado válido para pagar
         estados_validos = ['aceptada', 'pendiente_pago']
-        
-        # ✅ Permitir pagos parciales: Si la oferta está en 'pagada_parcialmente' y el tipo de pago es 'servicio',
-        # permitir el pago siempre que solo falte pagar el servicio
-        if oferta.estado == 'pagada_parcialmente':
+        estados_validos_saldo_servicio = ['pagada_parcialmente', 'en_ejecucion']
+
+        saldo_servicio_pendiente = (
+            tipo_pago == 'servicio'
+            and oferta.estado_pago_repuestos == 'pagado'
+            and oferta.estado_pago_servicio == 'pendiente'
+        )
+
+        # ✅ Pago del saldo restante (mano de obra): repuestos ya pagados, servicio pendiente.
+        # Aplica en pagada_parcialmente o en_ejecucion (proveedor ya inició el servicio).
+        if saldo_servicio_pendiente and oferta.estado in estados_validos_saldo_servicio:
+            logger.info(
+                f"✅ Permitiendo pago parcial de servicio para oferta {oferta.id}: "
+                f"estado={oferta.estado}, "
+                f"estado_pago_repuestos={oferta.estado_pago_repuestos}, "
+                f"estado_pago_servicio={oferta.estado_pago_servicio}"
+            )
+        elif oferta.estado == 'pagada_parcialmente':
             if tipo_pago == 'servicio':
-                # Verificar que realmente solo falta pagar el servicio
-                if oferta.estado_pago_repuestos == 'pagado' and oferta.estado_pago_servicio == 'pendiente':
-                    # Estado válido para pagar el saldo restante
-                    logger.info(
-                        f"✅ Permitiendo pago parcial de servicio para oferta {oferta.id}: "
-                        f"estado_pago_repuestos={oferta.estado_pago_repuestos}, "
-                        f"estado_pago_servicio={oferta.estado_pago_servicio}"
-                    )
-                else:
-                    return Response(
-                        {
-                            'error': f'No se puede pagar el servicio. Estado actual: '
-                            f'repuestos={oferta.estado_pago_repuestos}, servicio={oferta.estado_pago_servicio}'
-                        },
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-            else:
-                # No se puede pagar repuestos o total si ya está parcialmente pagada
                 return Response(
                     {
-                        'error': f'La oferta ya tiene un pago parcial. Solo puedes pagar el saldo restante del servicio. '
-                        f'Estado actual: {oferta.estado}'
+                        'error': f'No se puede pagar el servicio. Estado actual: '
+                        f'repuestos={oferta.estado_pago_repuestos}, servicio={oferta.estado_pago_servicio}'
                     },
                     status=status.HTTP_400_BAD_REQUEST
                 )
+            return Response(
+                {
+                    'error': f'La oferta ya tiene un pago parcial. Solo puedes pagar el saldo restante del servicio. '
+                    f'Estado actual: {oferta.estado}'
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
         elif oferta.estado not in estados_validos:
             return Response(
                 {'error': f'La oferta no está en un estado válido para pagar. Estado actual: {oferta.estado}'},
@@ -2242,9 +2245,11 @@ def crear_preferencia_pago_proveedor(request):
             if oferta.estado == 'aceptada':
                 oferta.estado = 'pendiente_pago'
                 oferta.save(update_fields=['estado'])
-            elif oferta.estado == 'pagada_parcialmente':
-                # Mantener el estado 'pagada_parcialmente' hasta que se confirme el pago completo
-                logger.info(f"✅ Manteniendo estado 'pagada_parcialmente' para pago del saldo restante")
+            elif oferta.estado in estados_validos_saldo_servicio and tipo_pago == 'servicio':
+                # Mantener estado hasta confirmar el pago completo del servicio
+                logger.info(
+                    f"✅ Manteniendo estado '{oferta.estado}' para pago del saldo restante"
+                )
             
             return Response({
                 'success': True,
