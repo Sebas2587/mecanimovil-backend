@@ -2198,10 +2198,10 @@ def crear_preferencia_pago_proveedor(request):
         success_url_proveedor = back_urls_config.get('success', '')
         use_auto_return_proveedor = success_url_proveedor.startswith('https://')
         
-        # Monto exacto (DecimalField usa 2 decimales). MP recibe el valor sin redondear a entero.
-        unit_price = float(monto)
+        # MP exige unit_price entero para CLP (p. ej. mano_obra * 1.19 puede dar decimales).
+        unit_price = int(round(float(monto)))
         if unit_price <= 0:
-            unit_price = 0.01
+            unit_price = 1
 
         preference_data = {
             'items': [
