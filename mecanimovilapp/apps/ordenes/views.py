@@ -1958,22 +1958,30 @@ def calcular_precio_detallado(request):
         
         # Convertir a Decimal para precisión
         subtotal_decimal = Decimal(str(subtotal))
-        
+
+        # CLP no admite decimales: redondeamos a peso entero (HALF_UP) y derivamos el
+        # IVA como (total − subtotal − tarifa) para que las partes sumen el total exacto.
+        from decimal import ROUND_HALF_UP
+
+        def _clp(monto):
+            return Decimal(str(monto)).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
+
         # Calcular tarifa de servicio sobre el subtotal
-        tarifa_servicio = subtotal_decimal * (config.tarifa_servicio_porcentaje / Decimal('100'))
-        
+        tarifa_servicio = _clp(subtotal_decimal * (config.tarifa_servicio_porcentaje / Decimal('100')))
+
         # Calcular IVA sobre subtotal + tarifa
         base_iva = subtotal_decimal + tarifa_servicio
-        iva = base_iva * (config.iva_porcentaje / Decimal('100'))
-        
-        # Total final
-        total = subtotal_decimal + tarifa_servicio + iva
-        
+        iva = _clp(base_iva * (config.iva_porcentaje / Decimal('100')))
+
+        # Total final (peso entero)
+        subtotal_entero = _clp(subtotal_decimal)
+        total = subtotal_entero + tarifa_servicio + iva
+
         return Response({
-            'subtotal': float(subtotal_decimal.quantize(Decimal('0.01'))),
-            'tarifa_servicio': float(tarifa_servicio.quantize(Decimal('0.01'))),
-            'iva': float(iva.quantize(Decimal('0.01'))),
-            'total': float(total.quantize(Decimal('0.01'))),
+            'subtotal': float(subtotal_entero),
+            'tarifa_servicio': float(tarifa_servicio),
+            'iva': float(iva),
+            'total': float(total),
             'iva_porcentaje': float(config.iva_porcentaje),
             'tarifa_porcentaje': float(config.tarifa_servicio_porcentaje)
         })

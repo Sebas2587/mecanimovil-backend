@@ -800,11 +800,18 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
     
     @action(detail=False, methods=['get'])
     def calcular_preview(self, request):
-        """Calcular preview de precios sin guardar"""
+        """Calcular preview de precios sin guardar.
+
+        El precio que verá y pagará el cliente se redondea a peso entero (CLP no admite
+        decimales), igual que en OfertaServicio.calcular_precios y que el cobro en MP.
+        """
         costo_mano_obra = float(request.query_params.get('costo_mano_obra', 0))
         costo_repuestos = float(request.query_params.get('costo_repuestos', 0))
         
-        from decimal import Decimal
+        from decimal import Decimal, ROUND_HALF_UP
+
+        def _clp(monto):
+            return Decimal(str(monto)).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
         
         # Constantes
         IVA_RATE = Decimal('0.19')
@@ -813,15 +820,15 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
         # Cálculos
         costo_total_sin_iva = Decimal(str(costo_mano_obra)) + Decimal(str(costo_repuestos))
         iva = costo_total_sin_iva * IVA_RATE
-        precio_final_cliente = costo_total_sin_iva + iva
-        comision = costo_total_sin_iva * COMISION_RATE
-        iva_comision = comision * IVA_RATE
-        ganancia_neta = costo_total_sin_iva - comision
-        monto_transferido = precio_final_cliente - (comision + iva_comision)
+        precio_final_cliente = _clp(costo_total_sin_iva + iva)
+        comision = _clp(costo_total_sin_iva * COMISION_RATE)
+        iva_comision = _clp(comision * IVA_RATE)
+        ganancia_neta = _clp(costo_total_sin_iva - (costo_total_sin_iva * COMISION_RATE))
+        monto_transferido = _clp(precio_final_cliente - (comision + iva_comision))
         
         return Response({
             'costo_total_sin_iva': float(costo_total_sin_iva),
-            'iva_19_porciento': float(iva),
+            'iva_19_porciento': float(_clp(iva)),
             'precio_final_cliente': float(precio_final_cliente),
             'comision_mecanmovil_20_porciento': float(comision),
             'iva_sobre_comision': float(iva_comision),

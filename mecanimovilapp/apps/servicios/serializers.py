@@ -354,21 +354,25 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
         return repuestos_detallados
     
     def get_desglose_precios(self, obj):
-        """Retorna desglose completo de precios para el proveedor"""
-        from decimal import Decimal
-        
-        IVA_RATE = Decimal('0.19')
-        costo_total = obj.costo_mano_de_obra_sin_iva + obj.costo_repuestos_sin_iva
-        iva_total = costo_total * IVA_RATE
-        monto_transferido = obj.precio_publicado_cliente - (obj.comision_mecanmovil + obj.iva_sobre_comision)
+        """Retorna desglose completo de precios para el proveedor (pesos enteros CLP)."""
+        from decimal import Decimal, ROUND_HALF_UP
+
+        def _clp(monto):
+            return Decimal(str(monto)).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
+
+        costo_total = _clp(obj.costo_mano_de_obra_sin_iva + obj.costo_repuestos_sin_iva)
+        precio_final = _clp(obj.precio_publicado_cliente)
+        # IVA derivado como (precio final − costo neto) para que las partes sumen exacto.
+        iva_total = precio_final - costo_total
+        monto_transferido = _clp(obj.precio_publicado_cliente - (obj.comision_mecanmovil + obj.iva_sobre_comision))
         
         return {
             'costo_total_sin_iva': float(costo_total),
             'iva_19_porciento': float(iva_total),
-            'precio_final_cliente': float(obj.precio_publicado_cliente),
-            'comision_mecanmovil_20_porciento': float(obj.comision_mecanmovil),
-            'iva_sobre_comision': float(obj.iva_sobre_comision),
-            'ganancia_neta_proveedor': float(obj.ganancia_neta_proveedor),
+            'precio_final_cliente': float(precio_final),
+            'comision_mecanmovil_20_porciento': float(_clp(obj.comision_mecanmovil)),
+            'iva_sobre_comision': float(_clp(obj.iva_sobre_comision)),
+            'ganancia_neta_proveedor': float(_clp(obj.ganancia_neta_proveedor)),
             'monto_transferido': float(monto_transferido)
         }
     

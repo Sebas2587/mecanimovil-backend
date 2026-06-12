@@ -388,10 +388,18 @@ class OfertaServicio(models.Model):
     
     def calcular_precios(self):
         """
-        Calcula automáticamente todos los campos de precios y comisiones
+        Calcula automáticamente todos los campos de precios y comisiones.
+
+        El peso chileno (CLP) no admite decimales: los precios que verá y pagará el
+        cliente se redondean a peso entero (HALF_UP, igual que la boleta del SII y que
+        lo que exige Mercado Pago). Así el monto configurado, el mostrado y el cobrado
+        coinciden exactamente, sin centavos imposibles de cobrar.
         """
-        from decimal import Decimal
-        
+        from decimal import Decimal, ROUND_HALF_UP
+
+        def _clp(monto):
+            return Decimal(str(monto)).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
+
         # Constantes de cálculo
         IVA_RATE = Decimal('0.19')  # 19%
         COMISION_RATE = Decimal('0.20')  # 20%
@@ -402,22 +410,22 @@ class OfertaServicio(models.Model):
         # IVA sobre el costo total
         iva = costo_total_sin_iva * IVA_RATE
         
-        # Precio final cliente (con IVA)
-        self.precio_publicado_cliente = costo_total_sin_iva + iva
+        # Precio final cliente (con IVA) — peso entero
+        self.precio_publicado_cliente = _clp(costo_total_sin_iva + iva)
         
         # Comisión MecaniMóvil (sobre costo sin IVA)
-        self.comision_mecanmovil = costo_total_sin_iva * COMISION_RATE
+        self.comision_mecanmovil = _clp(costo_total_sin_iva * COMISION_RATE)
         
         # IVA sobre la comisión
-        self.iva_sobre_comision = self.comision_mecanmovil * IVA_RATE
+        self.iva_sobre_comision = _clp(self.comision_mecanmovil * IVA_RATE)
         
         # Ganancia neta del proveedor
-        self.ganancia_neta_proveedor = costo_total_sin_iva - self.comision_mecanmovil
+        self.ganancia_neta_proveedor = _clp(costo_total_sin_iva - (costo_total_sin_iva * COMISION_RATE))
         
-        # Actualizar precios legacy para compatibilidad
+        # Actualizar precios legacy para compatibilidad (peso entero)
         if self.tipo_servicio == 'con_repuestos':
             self.precio_con_repuestos = self.precio_publicado_cliente
-            self.precio_sin_repuestos = self.costo_mano_de_obra_sin_iva + (self.costo_mano_de_obra_sin_iva * IVA_RATE)
+            self.precio_sin_repuestos = _clp(self.costo_mano_de_obra_sin_iva + (self.costo_mano_de_obra_sin_iva * IVA_RATE))
         else:
             self.precio_sin_repuestos = self.precio_publicado_cliente
             self.precio_con_repuestos = self.precio_publicado_cliente

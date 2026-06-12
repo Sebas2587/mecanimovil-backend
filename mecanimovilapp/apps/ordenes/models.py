@@ -1453,6 +1453,15 @@ class OfertaProveedor(models.Model):
     def save(self, *args, **kwargs):
         # Ejecutar validación clean antes de guardar
         self.clean()
+
+        # El peso chileno no admite decimales: el total que pagará el cliente se almacena
+        # como peso entero (HALF_UP), de modo que coincida con lo que cobra Mercado Pago
+        # y con lo que muestra la app. Evita totales con centavos imposibles de cobrar.
+        if self.precio_total_ofrecido is not None:
+            from decimal import Decimal, ROUND_HALF_UP
+            self.precio_total_ofrecido = Decimal(str(self.precio_total_ofrecido)).quantize(
+                Decimal('1'), rounding=ROUND_HALF_UP
+            )
         
         # Establecer tipo de proveedor automáticamente
         if not self.tipo_proveedor:
