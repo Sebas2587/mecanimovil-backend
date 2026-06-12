@@ -638,74 +638,33 @@ class ChecklistInstanceAdmin(admin.ModelAdmin):
 
     @admin.action(description='🔄 Reabrir checklist (limpiar firmas y fotos fallidas → EN_PROGRESO)')
     def action_reabrir_checklist(self, request, queryset):
-        """Acción de admin: reabre uno o varios checklists para que el proveedor los rellene de nuevo."""
         from django.db import transaction
-        from mecanimovilapp.apps.checklists.models import ChecklistPhoto
 
-        FOTO_PATTERNS = ['foto(s) de evidencia', 'fotos de evidencia', 'foto de evidencia']
-
-        def es_texto_foto(texto):
-            if not texto:
-                return False
-            t = str(texto).lower().strip()
-            partes = t.split()
-            return partes and partes[0].isdigit() and any(p in t for p in FOTO_PATTERNS)
+        from mecanimovilapp.apps.checklists.reopen_utils import (
+            puede_reabrir_checklist,
+            reabrir_checklist_instance,
+        )
 
         count_ok = 0
-        count_err = 0
 
-        for instance in queryset:
-            if instance.estado not in ('COMPLETADO', 'PENDIENTE_FIRMA_CLIENTE', 'EN_PROGRESO', 'PAUSADO'):
+        for instance in queryset.select_related('orden'):
+            ok, motivo = puede_reabrir_checklist(instance, instance.orden)
+            if not ok:
                 self.message_user(
                     request,
-                    f'Checklist #{instance.id} en estado "{instance.estado}" — omitido.',
+                    f'Checklist #{instance.id}: {motivo}',
                     level='warning',
                 )
-                count_err += 1
                 continue
 
             try:
                 with transaction.atomic():
-                    respuestas = list(instance.respuestas.all())
-                    total = len(respuestas)
-
-                    for r in respuestas:
-                        if (
-                            r.item_template.catalog_item.tipo_pregunta == 'PHOTO'
-                            or es_texto_foto(r.respuesta_texto)
-                        ):
-                            r.completado = False
-                            if es_texto_foto(r.respuesta_texto):
-                                r.respuesta_texto = ''
-                            r.save(update_fields=['completado', 'respuesta_texto'])
-
-                    completadas = sum(1 for r in respuestas if r.completado)
-                    progreso = int((completadas / total) * 100) if total > 0 else 0
-
-                    fotos_eliminadas, _ = ChecklistPhoto.objects.filter(
-                        response__checklist_instance=instance
-                    ).delete()
-
-                    instance.estado = 'EN_PROGRESO'
-                    instance.firma_tecnico = None
-                    instance.firma_cliente = None
-                    instance.fecha_finalizacion = None
-                    instance.progreso_porcentaje = progreso
-                    instance.save(update_fields=[
-                        'estado', 'firma_tecnico', 'firma_cliente',
-                        'fecha_finalizacion', 'progreso_porcentaje',
-                    ])
-
-                    orden = instance.orden
-                    if orden.estado in ('pendiente_firma_cliente', 'checklist_completado', 'completado'):
-                        orden.estado = 'checklist_en_progreso'
-                        orden.save(update_fields=['estado'])
-
+                    result = reabrir_checklist_instance(instance)
                 count_ok += 1
                 self.message_user(
                     request,
                     f'✅ Checklist #{instance.id} (orden #{instance.orden_id}) reabierto — '
-                    f'progreso={progreso}%, fotos eliminadas={fotos_eliminadas}.',
+                    f'progreso={result["progreso"]}%, fotos eliminadas={result["fotos_eliminadas"]}.',
                 )
             except Exception as exc:
                 self.message_user(
@@ -713,20 +672,21 @@ class ChecklistInstanceAdmin(admin.ModelAdmin):
                     f'❌ Error reabriendo checklist #{instance.id}: {exc}',
                     level='error',
                 )
-                count_err += 1
 
         if count_ok:
             self.message_user(
                 request,
-                f'🔄 {count_ok} checklist(s) reabiertos. El proveedor puede ahora subir las fotos.',
+                f'🔄 {count_ok} checklist(s) reabiertos. El proveedor puede volver a completarlos.',
             )
-    
+
     def orden_info(self, obj):
-        """Información de la orden"""
+        """Información de la orden (marketplace y carrito legacy)."""
+        from mecanimovilapp.apps.checklists.reopen_utils import nombre_cliente_orden
+
         return format_html(
             '<strong>Orden #{}</strong><br><small>{}</small>',
-            obj.orden.id,
-            obj.orden.carrito.cliente.usuario.get_full_name()
+            obj.orden_id,
+            nombre_cliente_orden(obj.orden),
         )
     orden_info.short_description = 'Orden'
     
