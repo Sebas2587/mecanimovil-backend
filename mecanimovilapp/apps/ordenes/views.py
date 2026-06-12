@@ -5947,71 +5947,108 @@ class OfertaProveedorViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='terminar-servicio')
     def terminar_servicio(self, request, pk=None):
         """
-        Permite al proveedor terminar el servicio cuando el checklist está completado.
-        Cambia el estado a completada y cierra la oferta y solicitud.
+        Permite al proveedor terminar el servicio solo cuando NO hay checklist.
+        Si hay checklist, el cierre se produce cuando el cliente firma (firmar-cliente).
+        Valida: existencia de SolicitudServicio, pagos completos y estado del checklist.
         """
         logger = logging.getLogger(__name__)
         logger.info(f"Terminando servicio para oferta {pk}")
-        
+
         try:
             oferta = self.get_object()
-            
-            # Validaciones
+
             if oferta.proveedor != request.user:
                 logger.warning(f"Usuario no autorizado intenta terminar servicio {pk}")
                 return Response(
                     {'error': 'No está autorizado para terminar este servicio'},
                     status=status.HTTP_403_FORBIDDEN
                 )
-            
+
             if oferta.es_oferta_secundaria:
                 return Response(
                     {'error': 'No se puede terminar servicio para ofertas secundarias. Use la oferta original.'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
-            
+
             if oferta.estado != 'en_ejecucion':
                 return Response(
                     {'error': f'Solo se pueden terminar servicios en ejecución. Estado actual: {oferta.estado}'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
-            
+
             solicitud = oferta.solicitud
-            
-            # Buscar SolicitudServicio asociada
+
+            # 1. La SolicitudServicio debe existir siempre
             solicitud_servicio = SolicitudServicio.objects.filter(oferta_proveedor=oferta).first()
-            
-            # Validar checklist si existe
-            if solicitud_servicio:
-                try:
-                    from mecanimovilapp.apps.checklists.models import ChecklistInstance
-                    checklist = ChecklistInstance.objects.filter(orden=solicitud_servicio).first()
-                    
-                    if checklist and checklist.estado != 'COMPLETADO':
-                        return Response(
-                            {'error': 'No se puede terminar el servicio sin completar el checklist'},
-                            status=status.HTTP_400_BAD_REQUEST
-                        )
-                except ImportError:
-                    pass  # Si no hay app de checklists, continuar
-                except Exception as e:
-                    logger.error(f'Error validando checklist: {e}', exc_info=True)
-                    # Continuar si hay error validando checklist
-            
+            if not solicitud_servicio:
+                return Response(
+                    {'error': 'No se encontró la orden de servicio asociada. Asegúrate de haber iniciado el servicio correctamente.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # 2. Validar pagos: no se puede cerrar con mano de obra pendiente
+            if oferta.estado_pago_servicio == 'pendiente':
+                return Response(
+                    {'error': 'El cliente tiene pagos pendientes de mano de obra. Debe completar el pago desde la app de usuarios antes de cerrar la orden.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # 3. Validar checklist — obligatorio cuando existe.
+            #    El cierre con checklist lo ejecuta el cliente vía firmar-cliente,
+            #    NO este endpoint.
+            try:
+                from mecanimovilapp.apps.checklists.models import ChecklistInstance
+                checklist = ChecklistInstance.objects.filter(orden=solicitud_servicio).first()
+            except Exception as e:
+                logger.error(f'Error verificando checklist para orden {solicitud_servicio.id}: {e}', exc_info=True)
+                return Response(
+                    {'error': 'No se pudo verificar el estado del checklist. Intenta nuevamente.'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
+            if checklist:
+                if checklist.estado == 'PENDIENTE_FIRMA_CLIENTE':
+                    return Response(
+                        {
+                            'error': 'Ya firmaste el checklist. Debes esperar a que el cliente firme desde su app para cerrar la orden.',
+                            'estado_checklist': checklist.estado,
+                            'requiere_accion_cliente': True,
+                        },
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                elif checklist.estado == 'COMPLETADO':
+                    # Ambas firmas ya registradas; sincronizar marketplace si quedó desfasado
+                    from mecanimovilapp.apps.ordenes.services.cierre_servicio_marketplace import sincronizar_cierre_marketplace
+                    if solicitud_servicio.estado != 'completado':
+                        solicitud_servicio.estado = 'completado'
+                        solicitud_servicio.save(update_fields=['estado'])
+                    sincronizar_cierre_marketplace(solicitud_servicio.id)
+                    serializer = self.get_serializer(oferta)
+                    return Response(
+                        {'mensaje': 'El servicio ya fue completado con la firma del cliente.', 'oferta': serializer.data},
+                        status=status.HTTP_200_OK
+                    )
+                else:
+                    # PENDIENTE, EN_PROGRESO, PAUSADO, CANCELADO
+                    return Response(
+                        {
+                            'error': 'Debes completar el checklist y firmarlo antes de terminar el servicio. El cliente cerrará la orden con su firma.',
+                            'estado_checklist': checklist.estado,
+                        },
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+            # 4. Sin checklist → cierre directo del proveedor
             with transaction.atomic():
-                # Cambiar estado de oferta a completada
+                solicitud_servicio.estado = 'completado'
+                solicitud_servicio.save(update_fields=['estado'])
+
                 oferta.estado = 'completada'
                 oferta.save(update_fields=['estado'])
-                
-                # Cambiar estado de solicitud pública a completada
+
                 solicitud.estado = 'completada'
                 solicitud.save(update_fields=['estado'])
-                
-                # Cambiar estado de SolicitudServicio a completado si existe
-                if solicitud_servicio:
-                    solicitud_servicio.estado = 'completado'
-                    solicitud_servicio.save(update_fields=['estado'])
-                
+
                 # Notificar al cliente vía WebSocket
                 try:
                     channel_layer = get_channel_layer()
@@ -6030,14 +6067,13 @@ class OfertaProveedorViewSet(viewsets.ModelViewSet):
                         logger.info(f"Notificación WebSocket 'servicio_completado' enviada al cliente: {solicitud.cliente.usuario.id}")
                 except Exception as e:
                     logger.error(f"Error enviando notificación WebSocket: {e}", exc_info=True)
-            
-            # Serializar respuesta
+
             serializer = self.get_serializer(oferta)
             return Response({
                 'mensaje': 'Servicio terminado exitosamente',
                 'oferta': serializer.data
             }, status=status.HTTP_200_OK)
-            
+
         except Exception as e:
             logger.error(f"Error terminando servicio para oferta {pk}: {e}", exc_info=True)
             return Response(
