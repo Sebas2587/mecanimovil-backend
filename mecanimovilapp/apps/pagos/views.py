@@ -461,10 +461,10 @@ class PagoViewSet(viewsets.ReadOnlyModelViewSet):
                         monto = float(oferta.precio_total_ofrecido)
                         tipo_pago = 'servicio_completo'
                     elif oferta.estado_pago_repuestos == 'pagado' and oferta.estado_pago_servicio == 'pendiente':
-                        # Pago parcial (solo repuestos)
+                        # Pago parcial (solo repuestos pagados): IVA sobre (rep + gestión)
                         costo_repuestos = float(oferta.costo_repuestos or 0)
                         costo_gestion = float(oferta.costo_gestion_compra or 0)
-                        monto = costo_repuestos + (costo_gestion * 1.19)
+                        monto = (costo_repuestos + costo_gestion) * 1.19
                         tipo_pago = 'servicio_parcial'
                     else:
                         # Pago completo (caso por defecto)
@@ -1700,15 +1700,15 @@ class CuentaMercadoPagoProveedorViewSet(viewsets.GenericViewSet):
                 # Verificar si es pago parcial (solo repuestos pagados)
                 if (oferta.estado_pago_repuestos == 'pagado' and 
                     oferta.estado_pago_servicio in ['pendiente', None]):
-                    # Solo repuestos y gestión pagados
+                    # IVA sobre (repuestos + gestión), igual que la preferencia de pago MP
                     costo_repuestos = float(oferta.costo_repuestos or 0)
                     costo_gestion = float(oferta.costo_gestion_compra or 0)
-                    total_recibido += costo_repuestos + (costo_gestion * 1.19)
+                    total_recibido += (costo_repuestos + costo_gestion) * 1.19
                 elif oferta.estado == 'pagada_parcialmente':
-                    # Si es pago parcial, solo contar lo que se pagó (repuestos + gestión)
+                    # Si es pago parcial, solo contar lo que se pagó (repuestos + gestión con IVA)
                     costo_repuestos = float(oferta.costo_repuestos or 0)
                     costo_gestion = float(oferta.costo_gestion_compra or 0)
-                    total_recibido += costo_repuestos + (costo_gestion * 1.19)
+                    total_recibido += (costo_repuestos + costo_gestion) * 1.19
                 elif (oferta.estado_pago_servicio == 'pagado' and 
                       oferta.estado_pago_repuestos in ['pendiente', 'no_aplica', None]):
                     # Solo servicio pagado (después de haber pagado repuestos antes)
@@ -1735,15 +1735,15 @@ class CuentaMercadoPagoProveedorViewSet(viewsets.GenericViewSet):
                 # Verificar si es pago parcial (solo repuestos pagados)
                 if (oferta.estado_pago_repuestos == 'pagado' and 
                     oferta.estado_pago_servicio in ['pendiente', None]):
-                    # Solo repuestos y gestión pagados
+                    # IVA sobre (repuestos + gestión), igual que la preferencia de pago MP
                     costo_repuestos = float(oferta.costo_repuestos or 0)
                     costo_gestion = float(oferta.costo_gestion_compra or 0)
-                    total_recibido_mes += costo_repuestos + (costo_gestion * 1.19)
+                    total_recibido_mes += (costo_repuestos + costo_gestion) * 1.19
                 elif oferta.estado == 'pagada_parcialmente':
-                    # Si es pago parcial, solo contar lo que se pagó (repuestos + gestión)
+                    # Si es pago parcial, solo contar lo que se pagó (repuestos + gestión con IVA)
                     costo_repuestos = float(oferta.costo_repuestos or 0)
                     costo_gestion = float(oferta.costo_gestion_compra or 0)
-                    total_recibido_mes += costo_repuestos + (costo_gestion * 1.19)
+                    total_recibido_mes += (costo_repuestos + costo_gestion) * 1.19
                 elif (oferta.estado_pago_servicio == 'pagado' and 
                       oferta.estado_pago_repuestos in ['pendiente', 'no_aplica', None]):
                     # Solo servicio pagado (después de haber pagado repuestos antes)
@@ -1770,11 +1770,11 @@ class CuentaMercadoPagoProveedorViewSet(viewsets.GenericViewSet):
                     oferta.estado_pago_servicio in ['pendiente', None]):
                     costo_repuestos = float(oferta.costo_repuestos or 0)
                     costo_gestion = float(oferta.costo_gestion_compra or 0)
-                    total_recibido_mes_anterior += costo_repuestos + (costo_gestion * 1.19)
+                    total_recibido_mes_anterior += (costo_repuestos + costo_gestion) * 1.19
                 elif oferta.estado == 'pagada_parcialmente':
                     costo_repuestos = float(oferta.costo_repuestos or 0)
                     costo_gestion = float(oferta.costo_gestion_compra or 0)
-                    total_recibido_mes_anterior += costo_repuestos + (costo_gestion * 1.19)
+                    total_recibido_mes_anterior += (costo_repuestos + costo_gestion) * 1.19
                 elif (oferta.estado_pago_servicio == 'pagado' and 
                       oferta.estado_pago_repuestos in ['pendiente', 'no_aplica', None]):
                     costo_mano_obra = float(oferta.costo_mano_obra or 0)
@@ -1929,11 +1929,11 @@ class CuentaMercadoPagoProveedorViewSet(viewsets.GenericViewSet):
                     monto_pagado = float(oferta.precio_total_ofrecido or 0)
                     
                     if oferta.estado == 'pagada_parcialmente':
-                        # Pago parcial: solo repuestos y gestión de compra pagados
+                        # Pago parcial: solo repuestos y gestión de compra pagados (IVA sobre ambos)
                         if oferta.estado_pago_repuestos == 'pagado' and oferta.estado_pago_servicio == 'pendiente':
                             costo_repuestos = float(oferta.costo_repuestos or 0)
                             costo_gestion = float(oferta.costo_gestion_compra or 0)
-                            monto_pagado = costo_repuestos + (costo_gestion * 1.19)
+                            monto_pagado = (costo_repuestos + costo_gestion) * 1.19
                             tipo_pago = 'Pago de repuestos y gestión'
                         # Si pagó el servicio después de repuestos (aunque esto no debería estar en pagada_parcialmente)
                         elif oferta.estado_pago_servicio == 'pagado' and oferta.estado_pago_repuestos == 'pagado':
@@ -1941,10 +1941,10 @@ class CuentaMercadoPagoProveedorViewSet(viewsets.GenericViewSet):
                             monto_pagado = float(oferta.precio_total_ofrecido or 0)
                             tipo_pago = 'Pago completo'
                     elif oferta.estado_pago_repuestos == 'pagado' and oferta.estado_pago_servicio == 'pendiente':
-                        # Solo repuestos pagados (aunque el estado no sea pagada_parcialmente)
+                        # Solo repuestos pagados: IVA sobre (repuestos + gestión)
                         costo_repuestos = float(oferta.costo_repuestos or 0)
                         costo_gestion = float(oferta.costo_gestion_compra or 0)
-                        monto_pagado = costo_repuestos + (costo_gestion * 1.19)
+                        monto_pagado = (costo_repuestos + costo_gestion) * 1.19
                         tipo_pago = 'Pago de repuestos y gestión'
                     elif oferta.estado_pago_servicio == 'pagado' and oferta.estado_pago_repuestos == 'pagado':
                         # Pago completo
@@ -2153,7 +2153,10 @@ def crear_preferencia_pago_proveedor(request):
         if tipo_pago == 'repuestos':
             costo_repuestos = Decimal(str(oferta.costo_repuestos or 0))
             costo_gestion = Decimal(str(oferta.costo_gestion_compra or 0))
-            monto = costo_repuestos + costo_gestion * IVA
+            # IVA aplica sobre repuestos + gestión porque son parte del servicio integral
+            # (mismo criterio que precio_total_ofrecido = (rep + gest + mano) × 1.19).
+            # Así repuestos_payment + servicio_payment = total_payment exacto.
+            monto = (costo_repuestos + costo_gestion) * IVA
             
             if costo_gestion > 0:
                 descripcion = f"Repuestos + Gestión de compra - {titulo_servicio}"
