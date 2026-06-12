@@ -1683,6 +1683,16 @@ def enviar_push_pendiente_firma_cliente(orden):
                 f"⚠️ Notificación in-app pendiente firma no creada para orden {orden.id}: {notif_err}"
             )
 
+        try:
+            from mecanimovilapp.apps.ordenes.services.ws_cliente_solicitud import (
+                notificar_cliente_pendiente_firma,
+            )
+            notificar_cliente_pendiente_firma(orden)
+        except Exception as ws_err:
+            logger.warning(
+                f"⚠️ WS servicio_pendiente_firma no enviado para orden {orden.id}: {ws_err}"
+            )
+
         logger.info(
             f"📲 Push 'pendiente firma cliente' enviado a usuario {user_id} para orden {orden.id}"
         )

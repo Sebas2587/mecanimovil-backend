@@ -2496,6 +2496,10 @@ def confirmar_pago_oferta(request):
                     },
                 )
                 logger.info(f"✅ Notificación WebSocket pago_completado enviada al proveedor {oferta.proveedor.id}")
+            from mecanimovilapp.apps.ordenes.services.ws_cliente_solicitud import (
+                notificar_cliente_pago_completado,
+            )
+            notificar_cliente_pago_completado(oferta, solicitud, tipo_pago)
         except Exception as ws_err:
             logger.warning(f"⚠️ No se pudo enviar notificación WebSocket al proveedor: {ws_err}")
 

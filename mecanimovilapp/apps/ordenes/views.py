@@ -2763,7 +2763,11 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
             'oferta_seleccionada',
             'oferta_seleccionada__proveedor__taller__direccion_fisica',
         ).prefetch_related(
-            'servicios_solicitados', 'proveedores_dirigidos', 'ofertas', 'fotos_necesidad'
+            'servicios_solicitados',
+            'proveedores_dirigidos',
+            'ofertas',
+            'fotos_necesidad',
+            'oferta_seleccionada__solicitudes_servicio',
         )
     
     def get_queryset(self):
@@ -4023,7 +4027,11 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
         ).select_related(
             'cliente', 'cliente__usuario', 'vehiculo', 'direccion_usuario'
         ).prefetch_related(
-            'servicios_solicitados', 'proveedores_dirigidos', 'ofertas', 'fotos_necesidad'
+            'servicios_solicitados',
+            'proveedores_dirigidos',
+            'ofertas',
+            'fotos_necesidad',
+            'oferta_seleccionada__solicitudes_servicio',
         ).order_by('-fecha_creacion')
         estado = request.query_params.get('estado')
         if estado:

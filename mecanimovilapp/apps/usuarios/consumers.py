@@ -1345,6 +1345,16 @@ class ClientStatusConsumer(AsyncWebsocketConsumer):
             'timestamp': event.get('timestamp', timezone.now().isoformat()),
         }))
 
+    async def servicio_pendiente_firma(self, event):
+        """Técnico cerró checklist; el cliente debe firmar para terminar."""
+        await self.send(text_data=json.dumps({
+            'type': 'servicio_pendiente_firma',
+            'solicitud_id': event.get('solicitud_id'),
+            'orden_id': event.get('orden_id'),
+            'mensaje': event.get('mensaje', 'Tu servicio espera tu firma.'),
+            'timestamp': event.get('timestamp', timezone.now().isoformat()),
+        }))
+
     async def rechazo_solicitud(self, event):
         """Un proveedor rechazó la solicitud pública."""
         await self.send(text_data=json.dumps({

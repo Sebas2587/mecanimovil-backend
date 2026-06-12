@@ -1630,7 +1630,7 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
             'adjudicada': 'Adjudicada',
             'pendiente_pago': 'Pendiente de Pago',
             'pagada': 'Pagada',
-            'en_ejecucion': 'En Ejecución',
+            'en_ejecucion': 'Servicio en curso',
             'completada': 'Completada',
             'expirada': 'Expirada',
             'cancelada': 'Cancelada',
@@ -1651,16 +1651,22 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
         )
 
     def get_estado_efectivo(self, obj):
-        """Estado para UI: si hay ofertas secundarias pendientes, priorizar eso sobre completada/finalizada"""
-        if self.get_tiene_ofertas_secundarias_pendientes(obj):
-            return 'ofertas_adicionales_pendientes'
-        return obj.estado
+        """Estado para UI: ofertas secundarias, pago parcial, firma pendiente, etc."""
+        from mecanimovilapp.apps.ordenes.services.estado_solicitud_cliente_ui import (
+            compute_estado_efectivo_cliente,
+        )
+        return compute_estado_efectivo_cliente(
+            obj,
+            tiene_ofertas_secundarias_pendientes=self.get_tiene_ofertas_secundarias_pendientes(obj),
+        )
 
     def get_estado_display_efectivo(self, obj):
-        """Texto del estado efectivo para tags/badges: no mostrar Completada si hay ofertas por revisar"""
-        if self.get_tiene_ofertas_secundarias_pendientes(obj):
-            return 'Ofertas adicionales por revisar'
-        return self.get_estado_display(obj)
+        """Texto del estado efectivo para tags/badges en la app del cliente."""
+        from mecanimovilapp.apps.ordenes.services.estado_solicitud_cliente_ui import (
+            compute_estado_display_efectivo_cliente,
+        )
+        efectivo = self.get_estado_efectivo(obj)
+        return compute_estado_display_efectivo_cliente(obj, efectivo)
 
     def get_fotos_necesidad(self, obj):
         request = self.context.get('request')
