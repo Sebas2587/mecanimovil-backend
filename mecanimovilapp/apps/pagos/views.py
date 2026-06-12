@@ -881,23 +881,24 @@ def webhook_notification(request):
                                             # Actualizar estados según el tipo de pago (misma lógica que confirmar_pago_oferta)
                                             solicitud = oferta.solicitud
                                             
+                                            from mecanimovilapp.apps.ordenes.services.pago_oferta_cliente import (
+                                                aplicar_confirmacion_pago_servicio,
+                                                avanzar_estado_oferta,
+                                                avanzar_estado_solicitud,
+                                            )
                                             if tipo_pago == 'repuestos':
                                                 oferta.estado_pago_repuestos = 'pagado'
                                                 oferta.metodo_pago_cliente = 'repuestos_adelantado'
-                                                oferta.estado = 'pagada_parcialmente'  # Cambiar a estado parcial
-                                                if solicitud.estado not in ['en_ejecucion', 'completada']:
-                                                    solicitud.estado = 'pagada'
+                                                avanzar_estado_oferta(oferta, 'pagada_parcialmente')
+                                                avanzar_estado_solicitud(solicitud, 'pagada')
                                             elif tipo_pago == 'servicio':
-                                                from mecanimovilapp.apps.ordenes.services.pago_oferta_cliente import (
-                                                    aplicar_confirmacion_pago_servicio,
-                                                )
                                                 aplicar_confirmacion_pago_servicio(oferta, solicitud)
                                             else:  # total
                                                 oferta.estado_pago_repuestos = 'pagado' if oferta.costo_repuestos and float(oferta.costo_repuestos) > 0 else 'no_aplica'
                                                 oferta.estado_pago_servicio = 'pagado'
                                                 oferta.metodo_pago_cliente = 'todo_adelantado'
-                                                oferta.estado = 'pagada'
-                                                solicitud.estado = 'pagada'
+                                                avanzar_estado_oferta(oferta, 'pagada')
+                                                avanzar_estado_solicitud(solicitud, 'pagada')
                                             
                                             oferta.save()
                                             solicitud.save()
@@ -2420,12 +2421,19 @@ def confirmar_pago_oferta(request):
         # IMPORTANTE: Actualizar siempre, no solo si no existe, para reflejar la fecha real del pago
         oferta.fecha_respuesta_cliente = timezone.now()
         
+        from mecanimovilapp.apps.ordenes.services.pago_oferta_cliente import (
+            aplicar_confirmacion_pago_servicio,
+            avanzar_estado_oferta,
+            avanzar_estado_solicitud,
+        )
+
         if tipo_pago == 'repuestos':
             # Solo pagó repuestos - El servicio se paga después
             oferta.estado_pago_repuestos = 'pagado'
             oferta.metodo_pago_cliente = 'repuestos_adelantado'
             # IMPORTANTE: Usar estado 'pagada_parcialmente' para indicar que falta pagar el servicio
-            oferta.estado = 'pagada_parcialmente'
+            # (sin regresar si el servicio ya está en ejecución).
+            avanzar_estado_oferta(oferta, 'pagada_parcialmente')
             
             # Calcular monto pendiente del servicio
             costo_mano_obra = float(oferta.costo_mano_obra or 0)
@@ -2433,16 +2441,12 @@ def confirmar_pago_oferta(request):
             
             # La solicitud pública pasa a 'pagada' (parcialmente pagado es info del nivel de oferta,
             # no de la solicitud — 'pagada_parcialmente' no existe como choice en SolicitudServicioPublica)
-            if solicitud.estado not in ['en_ejecucion', 'completada']:
-                solicitud.estado = 'pagada'
+            avanzar_estado_solicitud(solicitud, 'pagada')
             
             message = 'Pago de repuestos confirmado. El servicio se pagará al finalizar.'
             puede_pagar_servicio = True
             
         elif tipo_pago == 'servicio':
-            from mecanimovilapp.apps.ordenes.services.pago_oferta_cliente import (
-                aplicar_confirmacion_pago_servicio,
-            )
             aplicar_confirmacion_pago_servicio(oferta, solicitud)
             monto_pendiente = 0
             puede_pagar_servicio = False
@@ -2452,13 +2456,12 @@ def confirmar_pago_oferta(request):
                 message = 'Pago del servicio confirmado. ¡Pago completo!'
             
         else:  # total
-            # Pagó todo de una vez
+            # Pagó todo de una vez (sin regresar la ejecución ya iniciada)
             oferta.estado_pago_repuestos = 'pagado' if oferta.costo_repuestos and float(oferta.costo_repuestos) > 0 else 'no_aplica'
             oferta.estado_pago_servicio = 'pagado'
             oferta.metodo_pago_cliente = 'todo_adelantado'
-            oferta.estado = 'pagada'
-            
-            solicitud.estado = 'pagada'
+            avanzar_estado_oferta(oferta, 'pagada')
+            avanzar_estado_solicitud(solicitud, 'pagada')
             
             monto_pendiente = 0
             puede_pagar_servicio = False
@@ -2699,20 +2702,21 @@ def verificar_pago_mercadopago(request):
                         # Actualizar fecha_respuesta_cliente
                         oferta.fecha_respuesta_cliente = timezone.now()
                         
+                        from mecanimovilapp.apps.ordenes.services.pago_oferta_cliente import (
+                            aplicar_confirmacion_pago_servicio,
+                            avanzar_estado_oferta,
+                            avanzar_estado_solicitud,
+                        )
+
                         if tipo_pago == 'repuestos':
                             oferta.estado_pago_repuestos = 'pagado'
                             oferta.metodo_pago_cliente = 'repuestos_adelantado'
-                            oferta.estado = 'pagada_parcialmente'
-                            
-                            if solicitud.estado not in ['en_ejecucion', 'completada']:
-                                solicitud.estado = 'pagada'
+                            avanzar_estado_oferta(oferta, 'pagada_parcialmente')
+                            avanzar_estado_solicitud(solicitud, 'pagada')
                             
                             message = 'Pago de repuestos verificado y confirmado'
                             
                         elif tipo_pago == 'servicio':
-                            from mecanimovilapp.apps.ordenes.services.pago_oferta_cliente import (
-                                aplicar_confirmacion_pago_servicio,
-                            )
                             aplicar_confirmacion_pago_servicio(oferta, solicitud)
                             if oferta.metodo_pago_cliente == 'cliente_compra_repuestos':
                                 message = 'Pago de mano de obra verificado (repuestos por el cliente)'
@@ -2723,8 +2727,8 @@ def verificar_pago_mercadopago(request):
                             oferta.estado_pago_repuestos = 'pagado' if oferta.costo_repuestos and float(oferta.costo_repuestos) > 0 else 'no_aplica'
                             oferta.estado_pago_servicio = 'pagado'
                             oferta.metodo_pago_cliente = 'todo_adelantado'
-                            oferta.estado = 'pagada'
-                            solicitud.estado = 'pagada'
+                            avanzar_estado_oferta(oferta, 'pagada')
+                            avanzar_estado_solicitud(solicitud, 'pagada')
                             
                             message = 'Pago completo verificado y confirmado'
                         

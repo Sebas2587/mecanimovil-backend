@@ -52,13 +52,15 @@ def sincronizar_cierre_marketplace(orden_id: int) -> Tuple[bool, Optional['Ofert
             .get(pk=orden.oferta_proveedor_id)
         )
 
-        if oferta.estado == 'en_ejecucion':
+        # Incluye 'pagada'/'pagada_parcialmente' para sanear órdenes cuyo estado de
+        # oferta quedó regresado por una confirmación de pago previa al fix.
+        if oferta.estado in ('en_ejecucion', 'pagada', 'pagada_parcialmente'):
             oferta.estado = 'completada'
             oferta.save(update_fields=['estado'])
             hubo_cambio = True
 
         solicitud_pub = oferta.solicitud
-        if solicitud_pub and solicitud_pub.estado == 'en_ejecucion':
+        if solicitud_pub and solicitud_pub.estado in ('en_ejecucion', 'pagada'):
             solicitud_pub.estado = 'completada'
             solicitud_pub.save(update_fields=['estado'])
             hubo_cambio = True
