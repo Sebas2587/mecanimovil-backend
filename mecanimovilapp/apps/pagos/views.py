@@ -2147,7 +2147,7 @@ def crear_preferencia_pago_proveedor(request):
             titulo_servicio += f' (+{len(servicios_nombres) - 2} más)'
         
         # Calcular el monto según el tipo de pago (Decimal, sin redondear a entero)
-        from decimal import Decimal
+        from decimal import Decimal, ROUND_HALF_UP
         IVA = Decimal('1.19')
 
         if tipo_pago == 'repuestos':
@@ -2170,8 +2170,22 @@ def crear_preferencia_pago_proveedor(request):
                 )
                 
         elif tipo_pago == 'servicio':
-            monto = Decimal(str(oferta.costo_mano_obra or 0)) * IVA
-            descripcion = f"Mano de obra - {titulo_servicio}"
+            if oferta.estado_pago_repuestos == 'pagado':
+                # Saldo restante = total − lo_ya_cobrado_por_repuestos.
+                # Garantiza que primer_pago + saldo = precio_total_ofrecido SIEMPRE,
+                # absorbiendo cualquier peso que el redondeo no capturó en el primer cobro.
+                total_ofrecido = Decimal(str(oferta.precio_total_ofrecido or 0))
+                repuestos_cobrado = (
+                    Decimal(str(oferta.costo_repuestos or 0)) +
+                    Decimal(str(oferta.costo_gestion_compra or 0))
+                ) * IVA
+                repuestos_cobrado = repuestos_cobrado.quantize(Decimal('1'), rounding=ROUND_HALF_UP)
+                monto = total_ofrecido - repuestos_cobrado
+                descripcion = f"Saldo restante (mano de obra) - {titulo_servicio}"
+            else:
+                # Cliente compra sus propios repuestos → solo se cobra la labor
+                monto = Decimal(str(oferta.costo_mano_obra or 0)) * IVA
+                descripcion = f"Mano de obra - {titulo_servicio}"
             
         else:  # total
             monto = Decimal(str(oferta.precio_total_ofrecido or 0))
