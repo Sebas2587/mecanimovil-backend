@@ -377,6 +377,15 @@ def calcular_estado_salud_interno(vehicle_id):
         from mecanimovilapp.apps.usuarios.tasks import send_smart_maintenance_push
         send_smart_maintenance_push.delay(vehicle_id)
 
+    # ── Invalidación de caché (fuente única de verdad) ────────────────────
+    # Cualquier camino que recalcule (management command, post-viaje, post-checklist,
+    # batch diario o vista) deja el snapshot de Redis obsoleto. Invalidar aquí
+    # garantiza que el próximo GET sirva datos frescos desde BD y no la métrica vieja.
+    try:
+        invalidate_vehicle_health_cache(vehicle_id)
+    except Exception as cache_err:  # fail-open: nunca romper el recálculo por Redis
+        logger.warning(f"No se pudo invalidar caché de salud para vehículo {vehicle_id}: {cache_err}")
+
     return estado_global
 
 

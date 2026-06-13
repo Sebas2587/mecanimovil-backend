@@ -1217,23 +1217,22 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
         logger.info(f"  - Resultado serializado: {len(resultado)} ofertas")
         return resultado
     
-    def get_solicitud_servicio_id(self, obj):
-        """Retorna el ID de la SolicitudServicio asociada a esta oferta"""
+    def _ultima_solicitud_servicio(self, obj):
+        """Última SolicitudServicio vinculada (la más reciente manda en la UI)."""
         try:
-            solicitud_servicio = obj.solicitudes_servicio.first()
-            if solicitud_servicio:
-                return solicitud_servicio.id
-            return None
+            return obj.solicitudes_servicio.order_by('-id').first()
         except Exception:
             return None
 
+    def get_solicitud_servicio_id(self, obj):
+        """Retorna el ID de la SolicitudServicio asociada a esta oferta"""
+        solicitud_servicio = self._ultima_solicitud_servicio(obj)
+        return solicitud_servicio.id if solicitud_servicio else None
+
     def get_estado_solicitud_servicio(self, obj):
         """Estado de la orden (SolicitudServicio) vinculada — prioridad sobre oferta.estado en UI."""
-        try:
-            solicitud_servicio = obj.solicitudes_servicio.first()
-            return solicitud_servicio.estado if solicitud_servicio else None
-        except Exception:
-            return None
+        solicitud_servicio = self._ultima_solicitud_servicio(obj)
+        return solicitud_servicio.estado if solicitud_servicio else None
     
     def get_rechazada_por_expiracion(self, obj):
         """
