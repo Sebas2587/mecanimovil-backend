@@ -2722,7 +2722,15 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
                     )
             except Exception as e:
                 logger.error(f"Error enviando push en finalizar_servicio: {e}")
-        
+
+        # Sincronizar OfertaProveedor y SolicitudServicioPublica al estado completada
+        # (puede quedar desfasado en servicios marketplace si este endpoint se llama directamente)
+        try:
+            from mecanimovilapp.apps.ordenes.services.cierre_servicio_marketplace import sincronizar_cierre_marketplace
+            sincronizar_cierre_marketplace(orden.id)
+        except Exception as e:
+            logger.warning(f"No se pudo sincronizar cierre marketplace para orden {orden.id}: {e}")
+
         response_serializer = self.get_serializer(orden)
         return Response({
             'message': 'Servicio finalizado exitosamente',
