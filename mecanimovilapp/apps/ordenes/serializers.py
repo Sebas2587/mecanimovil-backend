@@ -984,6 +984,7 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
     ofertas_secundarias = serializers.SerializerMethodField()
     oferta_original_info = serializers.SerializerMethodField()
     solicitud_servicio_id = serializers.SerializerMethodField()
+    estado_solicitud_servicio = serializers.SerializerMethodField()
     solicitud_estado = serializers.CharField(source='solicitud.estado', read_only=True)
     rechazada_por_expiracion = serializers.SerializerMethodField()
     fecha_limite_pago = serializers.SerializerMethodField()
@@ -1009,7 +1010,8 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
             'total_mensajes_chat', 'mensajes_no_leidos', 'tiempo_restante_solicitud',
             'antiguedad_proveedor', 'servicios_realizados_proveedor', 'proveedor_verificado',
             'proveedor_foto', 'oferta_original', 'es_oferta_secundaria', 'motivo_servicio_adicional',
-            'ofertas_secundarias', 'oferta_original_info', 'solicitud_servicio_id', 'rechazada_por_expiracion',
+            'ofertas_secundarias', 'oferta_original_info', 'solicitud_servicio_id',
+            'estado_solicitud_servicio', 'rechazada_por_expiracion',
             'origen', 'oferta_servicio', 'metadata_ia',
             # Campos de desglose de costos
             'costo_repuestos', 'costo_mano_obra', 'costo_gestion_compra', 'foto_cotizacion_repuestos',
@@ -1222,6 +1224,14 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
             if solicitud_servicio:
                 return solicitud_servicio.id
             return None
+        except Exception:
+            return None
+
+    def get_estado_solicitud_servicio(self, obj):
+        """Estado de la orden (SolicitudServicio) vinculada — prioridad sobre oferta.estado en UI."""
+        try:
+            solicitud_servicio = obj.solicitudes_servicio.first()
+            return solicitud_servicio.estado if solicitud_servicio else None
         except Exception:
             return None
     
