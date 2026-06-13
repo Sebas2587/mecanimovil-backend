@@ -52,8 +52,24 @@ def _orden_de_oferta(oferta):
     cache = getattr(oferta, '_prefetched_objects_cache', None) or {}
     if 'solicitudes_servicio' in cache:
         ordenes = cache['solicitudes_servicio']
-        return ordenes[0] if ordenes else None
-    return oferta.solicitudes_servicio.first()
+        if not ordenes:
+            return None
+        return max(ordenes, key=lambda o: o.id)
+    return oferta.solicitudes_servicio.order_by('-id').first()
+
+
+def _checklist_orden(orden):
+    if not orden:
+        return None
+    cache = getattr(orden, '_prefetched_objects_cache', None) or {}
+    if 'checklistinstance_set' in cache:
+        items = cache['checklistinstance_set']
+        return items[0] if items else None
+    try:
+        from mecanimovilapp.apps.checklists.models import ChecklistInstance
+        return ChecklistInstance.objects.filter(orden=orden).order_by('-id').first()
+    except Exception:
+        return None
 
 
 def compute_estado_efectivo_cliente(
@@ -68,17 +84,31 @@ def compute_estado_efectivo_cliente(
     estado = solicitud.estado
     oferta = getattr(solicitud, 'oferta_seleccionada', None)
     parcial = tiene_pago_parcial(oferta)
+    orden = _orden_de_oferta(oferta)
+    checklist = _checklist_orden(orden)
+
+    # La orden marketplace manda sobre solicitud/oferta desfasadas en BD.
+    if orden and orden.estado == 'completado':
+        return 'completada'
+    if checklist and checklist.estado == 'COMPLETADO':
+        return 'completada'
+    if oferta and getattr(oferta, 'estado', None) == 'completada':
+        return 'completada'
+    if estado == 'completada':
+        return 'completada'
 
     if parcial and estado == 'pagada':
         return 'pagada_parcialmente'
 
-    orden = _orden_de_oferta(oferta)
     if (
         orden
         and orden.estado == 'pendiente_firma_cliente'
         and not parcial
         and (getattr(oferta, 'estado_pago_servicio', None) or 'pendiente') == 'pagado'
     ):
+        return 'pendiente_firma_cliente'
+
+    if checklist and checklist.estado == 'PENDIENTE_FIRMA_CLIENTE':
         return 'pendiente_firma_cliente'
 
     if parcial and (estado == 'en_ejecucion' or getattr(oferta, 'estado', None) == 'en_ejecucion'):

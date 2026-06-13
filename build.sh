@@ -20,11 +20,6 @@ python manage.py init_smart_health
 echo "🧰 Sincronizando templates de checklist por servicio (idempotente)..."
 python manage.py populate_checklists_por_servicio
 
-echo "🔁 Corrección puntual: oferta cerrada sin checklist (si aplica)..."
-python manage.py revertir_oferta_cerrada_prematura \
-  --oferta-id 2ec78118-5cdd-4cf1-aeef-ef8148c5a066 \
-  || echo "ℹ️ Sin corrección necesaria para la oferta puntual"
-
 echo "🔄 Sincronizando ofertas marketplace estancadas en en_ejecucion (idempotente)..."
 python manage.py sincronizar_cierre_marketplace_ordenes \
   || echo "⚠️ Advertencia: sincronizar_cierre_marketplace_ordenes no completó, revisar logs"

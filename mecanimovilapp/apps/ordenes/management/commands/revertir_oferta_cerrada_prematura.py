@@ -53,6 +53,14 @@ class Command(BaseCommand):
             )
             return
 
+        if oferta.estado == 'completada':
+            self.stdout.write(
+                self.style.WARNING(
+                    'Oferta ya está completada. Este comando no revierte servicios cerrados.'
+                )
+            )
+            return
+
         if not orden:
             self.stderr.write(self.style.ERROR('No hay SolicitudServicio asociada a esta oferta.'))
             return
