@@ -90,12 +90,20 @@ _PRIO_TIPO_PREGUNTA_DEFAULT = 10
 
 
 def _nivel_alerta_desde_pct(salud_pct):
-    """Umbrales canónicos compartidos con HealthEngine."""
-    if salud_pct >= 80:
+    """
+    Umbrales canónicos compartidos con HealthEngine.calcular_salud_vehiculo.
+
+    DEBEN coincidir EXACTAMENTE con los del HealthEngine (70/40/10), porque el
+    valor que setea una inspección/checklist es transitorio: el HealthEngine
+    recalcula al final usando salud_anclada_pct y reasigna el nivel. Si los
+    umbrales difieren, el badge "parpadea" (ej. CRÍTICO → URGENTE) entre el
+    guardado del checklist y el recálculo del engine.
+    """
+    if salud_pct >= 70:
         return 'OPTIMO'
-    if salud_pct >= 60:
+    if salud_pct >= 40:
         return 'ATENCION'
-    if salud_pct >= 35:
+    if salud_pct >= 10:
         return 'URGENTE'
     return 'CRITICO'
 
@@ -738,6 +746,10 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
                     },
                 )
 
+                # Snapshot del ancla PREVIA antes de mutar el estado. Solo si el
+                # componente tenía historial confirmado podemos tratar km_delta como
+                # una medición real de "cuántos km/meses duró el componente".
+                prev_historial_conocido = (not created) and bool(comp_salud.historial_conocido)
                 km_anterior = comp_salud.km_ultimo_servicio or 0
                 fecha_anterior = comp_salud.fecha_ultimo_servicio
                 km_delta = max(0, km_para_servicio - km_anterior)
@@ -757,7 +769,15 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
                     comp_salud.historial_conocido = True
                     comp_salud.historial_fuente = 'CHECKLIST'
 
-                    if km_delta > 0 or (created and km_para_servicio > 0):
+                    # Calidad del dataset ML: km_delta solo es una medición de
+                    # intervalo válida si había un ancla previa CONFIRMADA. Si el
+                    # componente fue auto-creado por el engine (sin historial real),
+                    # este servicio solo ESTABLECE el primer ancla → registramos el
+                    # evento para auditoría pero con km/meses = None para que el
+                    # entrenamiento (que filtra km_desde_ultimo_servicio > 0) lo
+                    # excluya y no aprenda "duró el odómetro completo".
+                    intervalo_valido = prev_historial_conocido and km_anterior > 0 and km_delta > 0
+                    if intervalo_valido:
                         eventos_ml_a_crear.append(_construir_evento_ml(
                             vehiculo=vehiculo,
                             componente=componente_maestro,
@@ -768,6 +788,19 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
                             vida_util_eta=comp_salud.vida_util_proyectada,
                             checklist_id=checklist_id,
                             orden_id=getattr(checklist, 'orden_id', None),
+                        ))
+                    else:
+                        eventos_ml_a_crear.append(_construir_evento_ml(
+                            vehiculo=vehiculo,
+                            componente=componente_maestro,
+                            tipo_evento='SERVICIO_REALIZADO',
+                            km_desde_servicio=None,
+                            meses_desde_servicio=None,
+                            salud_porcentaje=100.0,
+                            vida_util_eta=comp_salud.vida_util_proyectada,
+                            checklist_id=checklist_id,
+                            orden_id=getattr(checklist, 'orden_id', None),
+                            metadata={'primer_ancla': True},
                         ))
                     componentes_reemplazados.append(componente_maestro.nombre)
                 else:

@@ -131,3 +131,59 @@ datos de `ComponenteSaludVehiculo` coherentes con el motor de salud.
   multiplicado por el coeficiente climático (`WEAR_MATRIX`)
 - AND **no** se mezcla en ese cálculo `km_estimados_restantes` /
   `vida_util_proyectada` (evita duplicar señal y marcar riesgo ~100 % con salud óptima)
+
+### Requirement: Motor de salud vehicular (HealthEngine)
+
+El sistema **SHALL** calcular la salud de cada componente mediante `HealthEngine`
+(`vehiculos/services/health_engine.py`), aplicando reglas Weibull por km y tiempo,
+caps de conducción, antigüedad del componente y fuente del historial.
+
+Tras completar un checklist, `actualizar_salud_desde_checklist` escribe anclas
+(`REEMPLAZA` → 100 %; `INSPECCIONA` → `salud_anclada_pct`) y encola
+`calcular_salud_vehiculo_async`, que **recalcula** y persiste el estado final.
+
+#### Scenario: Cálculo Weibull doble eje
+- GIVEN un componente con regla `vida_util_km=eta`, `intervalo_meses=T`, `beta`
+- WHEN `HealthEngine.calcular_salud_vehiculo` procesa el componente
+- THEN `salud_km = exp(-(km_recorridos/eta)^beta) × 100`
+- AND si `intervalo_meses` está definido,
+  `salud_tiempo = exp(-(meses_desde_servicio/T)^beta) × 100`
+- AND `salud_porcentaje = min(salud_km, salud_tiempo)` antes de caps adicionales
+
+#### Scenario: Cap por antigüedad del componente (no del vehículo)
+- GIVEN un slug en `_AGE_HARD_CAPS` (ej. `brake-fluid`: óptimo 2 años, crítico 4 años)
+- AND `historial_conocido=True` con `fecha_ultimo_servicio` reciente (< 2 años)
+- WHEN el vehículo tiene 13 años de antigüedad de fabricación
+- THEN el cap por edad **SHALL NOT** forzar salud ≤ 20 % por la edad del vehículo
+- AND la edad medida **SHALL** ser `(now - fecha_ultimo_servicio)` en años
+
+#### Scenario: Cap conservador sin historial confirmado
+- GIVEN un componente en `_AGE_HARD_CAPS` con `historial_conocido=False`
+- AND un vehículo cuya antigüedad supera el límite crítico del componente
+- WHEN `HealthEngine` recalcula
+- THEN `salud_porcentaje` **SHALL** estar capada según `_AGE_HARD_CAPS`
+  usando la antigüedad del vehículo como estimación conservadora
+
+#### Scenario: Umbrales de nivel de alerta unificados
+- GIVEN cualquier fuente que asigne `nivel_alerta` (HealthEngine o tasks post-checklist)
+- THEN los umbrales **SHALL** ser: ≥70 % OPTIMO, ≥40 % ATENCION, ≥10 % URGENTE, <10 % CRITICO
+
+#### Scenario: Pipeline Celery post-checklist
+- GIVEN un `ChecklistInstance` en estado `COMPLETADO`
+- WHEN se dispara `post_save` en checklists
+- THEN se encola `actualizar_salud_desde_checklist` (cola `default`)
+- AND luego `calcular_salud_vehiculo_async(force_recalculate=True)` (cola `default`)
+- AND el worker Render consume colas `default,heavy`
+
+### Requirement: Calidad de eventos ML para entrenamiento
+
+`EventoSaludVehiculo` con `tipo_evento=SERVICIO_REALIZADO` **SHALL** incluir
+`km_desde_ultimo_servicio > 0` solo cuando el componente tenía ancla previa
+confirmada antes del servicio. El primer servicio que establece ancla **SHALL**
+registrar `km_desde_ultimo_servicio=null` para no contaminar el dataset scikit-learn.
+
+#### Scenario: Primer servicio establece ancla sin medir intervalo
+- GIVEN un componente sin historial real previo al checklist
+- WHEN se completa `REEMPLAZA` en checklist
+- THEN el evento ML tiene `metadata.primer_ancla=true` y `km_desde_ultimo_servicio=null`
+- AND `entrenar_modelos_salud` excluye ese registro (filtro `km_desde_ultimo_servicio > 0`)

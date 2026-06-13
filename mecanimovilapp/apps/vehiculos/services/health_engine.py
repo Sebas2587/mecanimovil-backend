@@ -32,7 +32,9 @@ SALUD_MAX_POR_FUENTE = {
 }
 
 # ── Componentes que degradan por EDAD (goma/química), independiente del km ──
-# Si el vehículo supera esta edad, la salud se fuerza a ≤ umbral indicado.
+# La edad relevante es la del COMPONENTE (tiempo desde su último cambio), NO la
+# antigüedad de fabricación del vehículo. Un líquido de frenos recién cambiado en
+# un auto de 13 años es "nuevo" y debe partir cerca del 100 %.
 # Formato: slug → (max_años_optimo, max_años_critico, salud_max_tras_critico)
 _AGE_HARD_CAPS = {
     'tires':        (5,  10, 15.0),   # goma: óptimo ≤5 años, crítico >10 años
@@ -40,6 +42,12 @@ _AGE_HARD_CAPS = {
     'brake-fluid':  (2,   4, 20.0),   # líquido higroscópico: crítico a los 4 años
     'coolant':      (3,   5, 20.0),   # refrigerante se degrada
     'shocks':       (8,  15, 15.0),   # amortiguadores (goma + aceite)
+    # Aliases por slug largo (compatibilidad si el catálogo usara estos slugs)
+    'neumaticos':         (5,  10, 15.0),
+    'correa-distribucion':(6,  10, 10.0),
+    'liquido-frenos':     (2,   4, 20.0),
+    'refrigerante':       (3,   5, 20.0),
+    'amortiguadores':     (8,  15, 15.0),
 }
 
 # ── Slugs de componentes sensibles al perfil de conducción ──────────────────
@@ -75,10 +83,46 @@ def _driving_intensity_factor(km_por_dia: float, slug: str) -> float:
         return 0.90
 
 
-def _age_health_cap(vehiculo, slug: str, salud_pct: float) -> tuple[float, str | None]:
+def _component_age_years(vehiculo, comp_estado, now=None) -> tuple[float | None, bool]:
     """
-    Aplica un cap duro a la salud según la edad real del vehículo para
-    componentes cuya vida útil depende del tiempo más que del kilometraje.
+    Edad EFECTIVA del componente, en años.
+
+    - Si hay historial de servicio confirmado (historial_conocido y
+      fecha_ultimo_servicio), la edad se mide desde el último servicio: una
+      pieza/líquido recién cambiado es "nuevo" aunque el vehículo sea antiguo.
+    - Si NO hay historial, se usa la antigüedad de fabricación del vehículo como
+      estimación conservadora (un componente que nunca se cambió en un auto
+      viejo probablemente está degradado → seguimos protegiendo al usuario).
+
+    Retorna (años | None, basado_en_servicio: bool).
+    """
+    now = now or timezone.now()
+    fecha_serv = getattr(comp_estado, 'fecha_ultimo_servicio', None) if comp_estado else None
+    historial = bool(getattr(comp_estado, 'historial_conocido', False)) if comp_estado else False
+
+    if historial and fecha_serv:
+        if timezone.is_naive(fecha_serv):
+            fecha_serv = timezone.make_aware(fecha_serv)
+        años = max(0.0, (now - fecha_serv).days / 365.25)
+        return años, True
+
+    vehicle_year = getattr(vehiculo, 'year', None)
+    if not vehicle_year:
+        return None, False
+    return float(max(0, now.year - int(vehicle_year))), False
+
+
+def _age_health_cap(vehiculo, slug: str, salud_pct: float, comp_estado=None, now=None) -> tuple[float, str | None]:
+    """
+    Aplica un cap duro a la salud según la edad del COMPONENTE (tiempo desde su
+    último cambio) para piezas cuya vida útil depende del tiempo más que del km.
+
+    Clave: la edad NO es la antigüedad de fabricación del vehículo. Un líquido de
+    frenos cambiado hoy en un auto de 13 años parte cerca del 100 % y se degrada a
+    lo largo de su intervalo (2–4 años) mediante el eje temporal Weibull.
+
+    Solo cuando no hay historial confirmado caemos a la antigüedad del vehículo
+    como estimación conservadora.
 
     Retorna (salud_ajustada, mensaje_extra | None).
     """
@@ -86,31 +130,43 @@ def _age_health_cap(vehiculo, slug: str, salud_pct: float) -> tuple[float, str |
     if not cap_info:
         return salud_pct, None
 
-    vehicle_year = getattr(vehiculo, 'year', None)
-    if not vehicle_year:
+    años_componente, desde_servicio = _component_age_years(vehiculo, comp_estado, now)
+    if años_componente is None:
         return salud_pct, None
 
-    current_year = timezone.now().year
-    años_vehiculo = max(0, current_year - vehicle_year)
     max_años_optimo, max_años_critico, salud_min_critico = cap_info
+    años_txt = int(round(años_componente))
 
-    if años_vehiculo > max_años_critico:
-        # Más antiguo que el límite crítico → forzar salud mínima degradada
+    if años_componente > max_años_critico:
+        # Supera el límite crítico de antigüedad → forzar salud mínima degradada
         salud_ajustada = min(salud_pct, salud_min_critico)
-        msg = (
-            f"Vehículo de {años_vehiculo} años: este componente supera su vida "
-            f"útil recomendada por antigüedad ({max_años_critico} años)."
-        )
+        if desde_servicio:
+            msg = (
+                f"Último cambio hace ~{años_txt} años: supera su vida útil por "
+                f"antigüedad (máx. recomendado {max_años_critico} años) — conviene reemplazarlo."
+            )
+        else:
+            msg = (
+                f"Sin registro de cambio en un vehículo de {años_txt} años: este "
+                f"componente probablemente supera su vida útil por antigüedad "
+                f"({max_años_critico} años). Registra o realiza el servicio para confirmarlo."
+            )
         return salud_ajustada, msg
-    elif años_vehiculo > max_años_optimo:
+    elif años_componente > max_años_optimo:
         # Entre límite óptimo y crítico → degradar proporcionalmente
-        fraccion = (años_vehiculo - max_años_optimo) / max(max_años_critico - max_años_optimo, 1)
+        fraccion = (años_componente - max_años_optimo) / max(max_años_critico - max_años_optimo, 1)
         salud_max = 70.0 - (fraccion * (70.0 - salud_min_critico))
         salud_ajustada = min(salud_pct, salud_max)
-        msg = (
-            f"Vehículo de {años_vehiculo} años: este componente puede estar "
-            f"degradado por antigüedad (recomendado revisar cada {max_años_optimo} años)."
-        )
+        if desde_servicio:
+            msg = (
+                f"Último cambio hace ~{años_txt} años: revisar por antigüedad "
+                f"(se recomienda cada {max_años_optimo} años)."
+            )
+        else:
+            msg = (
+                f"Vehículo de {años_txt} años sin registro de cambio: revisar este "
+                f"componente por antigüedad (recomendado cada {max_años_optimo} años)."
+            )
         return salud_ajustada, msg
 
     return salud_pct, None
@@ -306,6 +362,7 @@ class HealthEngine:
             salud_km  = math.exp(-((km_recorridos / eta) ** beta)) * 100.0 if eta > 0 else 0.0
             salud_pct = salud_km
             months_elapsed = None
+            salud_tiempo = None  # se setea solo si la regla tiene intervalo_meses
 
             # ── Intervalo por tiempo ────────────────────────────────────────
             intervalo_meses = getattr(regla_aplicada, 'intervalo_meses', None)
@@ -394,7 +451,11 @@ class HealthEngine:
                     pass  # No degradar si falla la obtención de km/día
 
             # ── Cap duro por antigüedad (componentes de goma/química) ────────
-            salud_pct, msg_age = _age_health_cap(vehiculo, slug_componente, salud_pct)
+            # La edad se mide desde el último servicio del componente (no la
+            # antigüedad del vehículo): una pieza recién cambiada parte "nueva".
+            salud_pct, msg_age = _age_health_cap(
+                vehiculo, slug_componente, salud_pct, comp_estado=comp_estado, now=now,
+            )
 
             # ── Cap por fuente del historial (integridad de datos) ───────────
             # Si el dato proviene de una declaración del usuario sin verificación
@@ -451,11 +512,17 @@ class HealthEngine:
             else:
                 comp_estado.mensaje_alerta = ""
 
+            # Mensaje "intervalo por tiempo": solo cuando el EJE TEMPORAL fue el
+            # factor que bajó la salud (no cuando bajó por edad/conducción/fuente)
+            # y han pasado al menos ~1 mes desde el servicio (evita "~0 meses"
+            # contradictorio justo después de un servicio reciente).
             if (
                 not historial_desconocido
                 and months_elapsed is not None
+                and months_elapsed >= 1
                 and intervalo_meses
-                and salud_pct < salud_km - 0.5
+                and salud_tiempo is not None
+                and salud_tiempo < salud_km - 0.5
             ):
                 extra = f" Intervalo por tiempo (~{int(months_elapsed)} meses desde último servicio)."
                 comp_estado.mensaje_alerta = (comp_estado.mensaje_alerta or "").strip() + extra

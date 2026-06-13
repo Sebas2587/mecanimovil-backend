@@ -132,6 +132,25 @@ def _predictor_vehicle_age_years(vehiculo) -> int | None:
     return max(0, timezone.now().year - int(year))
 
 
+def _predictor_component_age_years(vehiculo, componente_estado) -> tuple[int | None, bool]:
+    """
+    Edad efectiva del componente en años (espejo de health_engine._component_age_years).
+
+    - Si hay historial de servicio confirmado, se mide desde el último servicio
+      (una pieza recién cambiada es "nueva" aunque el auto sea antiguo).
+    - Si no, cae a la antigüedad de fabricación del vehículo (conservador).
+
+    Retorna (años | None, basado_en_servicio: bool).
+    """
+    fecha_serv = getattr(componente_estado, 'fecha_ultimo_servicio', None)
+    historial = bool(getattr(componente_estado, 'historial_conocido', False))
+    if historial and fecha_serv:
+        if timezone.is_naive(fecha_serv):
+            fecha_serv = timezone.make_aware(fecha_serv)
+        return max(0, int((timezone.now() - fecha_serv).days // 365)), True
+    return _predictor_vehicle_age_years(vehiculo), False
+
+
 def _get_avg_km_per_day(vehiculo):
     """
     Calcula km/día promedio del usuario a partir de viajes registrados de los
@@ -328,25 +347,39 @@ def predecir_componente_bootstrap(vehiculo, componente_estado, regla_eta_km, reg
             f'sugiere conducción urbana que acelera el desgaste en este componente.'
         )
 
-    # Aviso por antigüedad del vehículo para componentes de goma/química
+    # Aviso por antigüedad del COMPONENTE (tiempo desde su último cambio, no la
+    # antigüedad de fabricación del vehículo) para componentes de goma/química.
     age_cap = _AGE_HARD_CAPS_PREDICTOR.get(slug)
     if age_cap:
-        años_vehiculo = _predictor_vehicle_age_years(vehiculo)
-        if años_vehiculo is not None:
+        años_componente, desde_servicio = _predictor_component_age_years(vehiculo, componente_estado)
+        if años_componente is not None:
             max_optimo, max_critico = age_cap
-            if años_vehiculo > max_critico:
-                recomendacion += (
-                    f' ATENCIÓN: vehículo de {años_vehiculo} años — '
-                    f'este componente supera su vida útil por antigüedad '
-                    f'(máximo recomendado {max_critico} años). '
-                    f'Revisar independientemente del kilometraje.'
-                )
-            elif años_vehiculo > max_optimo:
-                recomendacion += (
-                    f' Vehículo de {años_vehiculo} años: '
-                    f'revisar este componente por antigüedad '
-                    f'(se recomienda cada {max_optimo} años).'
-                )
+            if años_componente > max_critico:
+                if desde_servicio:
+                    recomendacion += (
+                        f' ATENCIÓN: último cambio hace ~{años_componente} años — '
+                        f'supera su vida útil por antigüedad '
+                        f'(máximo recomendado {max_critico} años). '
+                        f'Conviene reemplazarlo independientemente del kilometraje.'
+                    )
+                else:
+                    recomendacion += (
+                        f' ATENCIÓN: sin registro de cambio en un vehículo de '
+                        f'{años_componente} años — este componente probablemente supera '
+                        f'su vida útil por antigüedad (máximo recomendado {max_critico} años).'
+                    )
+            elif años_componente > max_optimo:
+                if desde_servicio:
+                    recomendacion += (
+                        f' Último cambio hace ~{años_componente} años: '
+                        f'revisar por antigüedad (se recomienda cada {max_optimo} años).'
+                    )
+                else:
+                    recomendacion += (
+                        f' Vehículo de {años_componente} años sin registro de cambio: '
+                        f'revisar este componente por antigüedad '
+                        f'(se recomienda cada {max_optimo} años).'
+                    )
 
     return {
         'km_recorridos_componente':   km_recorridos,
