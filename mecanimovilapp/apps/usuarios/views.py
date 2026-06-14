@@ -5500,7 +5500,7 @@ class ReviewViewSet(viewsets.ReadOnlyModelViewSet):
             
             serializer = self.get_serializer(data=review_data)
             serializer.is_valid(raise_exception=True)
-            self.perform_create(serializer)
+            serializer.save()
 
             # --- Mirror a Resena (fuente de KPIs proveedor) ---
             # Acepta aspectos como objeto (recomendado) o campos planos.
