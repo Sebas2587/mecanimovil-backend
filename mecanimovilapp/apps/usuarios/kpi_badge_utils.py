@@ -56,6 +56,7 @@ def _sample_points_from_kpis(kpis: dict[str, Any]) -> int:
     """
     Muestra mínima: prioriza servicios terminados (checklist inicio+fin) y reseñas.
     Las ofertas solas aportan poco (no implican servicio ejecutado).
+    La consistencia de días consecutivos también aporta a la muestra.
     """
     terminados = _clamp_int(
         kpis.get("servicios_terminados_en_periodo", kpis.get("ordenes_mercado_completadas", 0)),
@@ -64,7 +65,10 @@ def _sample_points_from_kpis(kpis: dict[str, Any]) -> int:
     )
     resenas = _clamp_int(kpis.get("resenas_muestra", 0), 0, 10_000)
     ofertas = min(_clamp_int(kpis.get("ofertas_total_en_periodo", 0), 0, 10_000), 3)
-    return terminados * 2 + resenas + ofertas
+    # Racha de días consecutivos: cada 5 días de racha = 1 punto de muestra
+    racha = _clamp_int(kpis.get("max_racha_dias_consecutivos", 0), 0, 10)
+    consistencia_pts = racha // 5
+    return terminados * 2 + resenas + ofertas + consistencia_pts
 
 
 def _servicios_terminados_en_periodo(kpis: dict[str, Any]) -> int:
@@ -197,13 +201,31 @@ def compute_kpi_badge_for_proveedor(
     score = _clamp_int(kpis.get("score_rendimiento", 0), 0, 100)
     sample_points = _sample_points_from_kpis(kpis)
     terminados = _servicios_terminados_en_periodo(kpis)
+    resenas = _clamp_int(kpis.get("resenas_muestra", 0), 0, 10_000)
 
     min_sample_points = 5 if window_days <= 30 else 8
     has_min_sample = sample_points >= min_sample_points
     has_any_activity = sample_points > 0
-    # Insignia alta solo con servicios realmente terminados en la ventana.
     has_completed_in_period = terminados > 0
     is_active = bool(has_completed_in_period and has_min_sample)
+
+    # ------------------------------------------------------------------
+    # Umbrales mínimos por tier — sin reseñas no se puede alcanzar Pro+.
+    # Evita que un proveedor con 1 solo servicio y 0 reseñas aparezca
+    # con insignia Elite/Máster/Pro ante los usuarios.
+    # ------------------------------------------------------------------
+    # Elite: ≥5 servicios terminados + ≥3 reseñas en periodo
+    # Máster: ≥3 servicios terminados + ≥2 reseñas en periodo
+    # Pro:   ≥2 servicios terminados + ≥1 reseña en periodo
+    # En ascenso: sin restricción adicional (basta actividad)
+    def _califica_tier_alto(code: str) -> bool:
+        if code == "ELITE":
+            return terminados >= 5 and resenas >= 3
+        if code == "MASTER":
+            return terminados >= 3 and resenas >= 2
+        if code == "PRO":
+            return terminados >= 2 and resenas >= 1
+        return True
 
     if not has_any_activity:
         reason = (
@@ -246,12 +268,34 @@ def compute_kpi_badge_for_proveedor(
         )
         return badge.to_dict()
 
+    # Verificar umbrales mínimos de reseñas para tiers altos.
+    if not _califica_tier_alto(tier.code):
+        faltan_resenas = max(0, {"ELITE": 3, "MASTER": 2, "PRO": 1}.get(tier.code, 0) - resenas)
+        faltan_terminados = max(0, {"ELITE": 5, "MASTER": 3, "PRO": 2}.get(tier.code, 0) - terminados)
+        partes = []
+        if faltan_terminados > 0:
+            partes.append(f"{faltan_terminados} servicio(s) más")
+        if faltan_resenas > 0:
+            partes.append(f"{faltan_resenas} reseña(s) de clientes")
+        reason = (
+            f"Score {score}/100 califica para {tier.short_label}, pero aún faltan: "
+            + " y ".join(partes)
+            + " para confirmar el nivel."
+        )
+        badge = _badge_en_progreso(
+            score=score,
+            window_days=window_days,
+            sample_points=sample_points,
+            reason=reason,
+        )
+        return badge.to_dict()
+
     if tier.code == "ELITE":
-        reason = f"Score ≥ 90 con {terminados} servicio(s) terminado(s) en {window_days} días."
+        reason = f"Score ≥ 90 con {terminados} servicio(s) terminado(s) y {resenas} reseña(s) en {window_days} días."
     elif tier.code == "MASTER":
-        reason = f"Score ≥ 75 con {terminados} servicio(s) terminado(s) en {window_days} días."
+        reason = f"Score ≥ 75 con {terminados} servicio(s) terminado(s) y {resenas} reseña(s) en {window_days} días."
     elif tier.code == "PRO":
-        reason = f"Score ≥ 55 con {terminados} servicio(s) terminado(s) en {window_days} días."
+        reason = f"Score ≥ 55 con {terminados} servicio(s) terminado(s) y {resenas} reseña(s) en {window_days} días."
     else:
         reason = (
             f"Score < 55 con {terminados} servicio(s) terminado(s) en {window_days} días."

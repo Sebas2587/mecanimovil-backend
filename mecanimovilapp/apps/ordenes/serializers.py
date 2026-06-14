@@ -739,24 +739,46 @@ class OrdenEstadisticasSerializer(serializers.Serializer):
     calificacion_promedio = serializers.DecimalField(max_digits=3, decimal_places=2)
 
 
+class AspectosResenaSerializer(serializers.Serializer):
+    """Promedios 1–5 de los aspectos estructurados de reseñas."""
+    puntualidad = serializers.FloatField(allow_null=True)
+    recepcion_a_tiempo = serializers.FloatField(allow_null=True)
+    limpieza_auto = serializers.FloatField(allow_null=True)
+    zona_limpia = serializers.FloatField(allow_null=True)
+    claridad_explicacion = serializers.FloatField(allow_null=True)
+    informacion_relevante = serializers.FloatField(allow_null=True)
+    trato = serializers.FloatField(allow_null=True)
+    pct_entrego_repuestos = serializers.FloatField(allow_null=True)
+
+
 class ProveedorKpisResumenSerializer(serializers.Serializer):
     """Resumen de KPIs para dashboard proveedor (ventana móvil, sin PII)."""
 
     ventana_dias = serializers.IntegerField()
     desde = serializers.CharField()
+    # Ofertas
     ofertas_dirigidas_muestra = serializers.IntegerField()
     ofertas_globales_muestra = serializers.IntegerField()
     ofertas_total_en_periodo = serializers.IntegerField()
     tiempo_respuesta_dirigida_media_minutos = serializers.FloatField(allow_null=True)
     tiempo_respuesta_global_media_minutos = serializers.FloatField(allow_null=True)
+    # Órdenes
     ordenes_mercado_en_periodo = serializers.IntegerField()
     ordenes_mercado_completadas = serializers.IntegerField()
+    servicios_terminados_en_periodo = serializers.IntegerField(default=0)
+    # Checklist
     ordenes_con_checklist = serializers.IntegerField()
     checklist_completados = serializers.IntegerField()
     checklist_cumplimiento_pct = serializers.FloatField(allow_null=True)
     checklist_tiempo_promedio_minutos = serializers.FloatField(allow_null=True)
+    # Ejecución vs estimado
     tiempo_ejecucion_vs_estimado_promedio = serializers.FloatField(allow_null=True)
     tiempo_ejecucion_vs_estimado_muestra = serializers.IntegerField()
+    # Consistencia (nuevo)
+    max_racha_dias_consecutivos = serializers.IntegerField(allow_null=True)
+    # Inicio de checklist (nuevo)
+    tiempo_inicio_checklist_promedio_minutos = serializers.FloatField(allow_null=True)
+    # Reseñas y calificaciones
     resenas_muestra = serializers.IntegerField()
     resenas_totales_proveedor = serializers.IntegerField()
     calificacion_cliente_promedio = serializers.FloatField(allow_null=True)
@@ -764,12 +786,19 @@ class ProveedorKpisResumenSerializer(serializers.Serializer):
     calificacion_servicios_promedio = serializers.FloatField(allow_null=True)
     calificacion_servicios_lineas_muestra = serializers.IntegerField()
     calificacion_servicios_lineas_total = serializers.IntegerField()
+    # Aspectos detallados (nuevo)
+    aspectos_resena = AspectosResenaSerializer(allow_null=True, required=False)
+    # Sub-scores
     score_tiempo_respuesta = serializers.IntegerField(allow_null=True)
     score_calificacion_cliente = serializers.IntegerField(allow_null=True)
     score_calidad_servicio = serializers.IntegerField(allow_null=True)
     score_checklist = serializers.IntegerField(allow_null=True)
     score_tiempo_ejecucion = serializers.IntegerField(allow_null=True)
+    score_consistencia = serializers.IntegerField(allow_null=True)
+    score_inicio_checklist = serializers.IntegerField(allow_null=True)
+    # Score compuesto
     score_rendimiento = serializers.IntegerField()
+    # Suscripción e insignia
     suscripcion_mensual_activa = serializers.BooleanField()
     insignia_visible_a_clientes = serializers.BooleanField()
     sugerencia_suscripcion_para_insignia = serializers.BooleanField()

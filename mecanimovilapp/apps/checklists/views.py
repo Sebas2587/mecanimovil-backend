@@ -663,10 +663,16 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
 
         instance.firma_tecnico = firma_a_payload_base64(firma_tecnico)
 
+        # Registrar el momento exacto en que el proveedor completa su parte.
+        # Se usa para KPIs de tiempo real (excluye espera de firma del cliente).
+        ahora = timezone.now()
+        if not instance.fecha_completado_proveedor:
+            instance.fecha_completado_proveedor = ahora
+
         if firma_cliente_presente:
             # Flujo legacy con cliente presente: cierre inmediato.
             instance.estado = 'COMPLETADO'
-            instance.fecha_finalizacion = timezone.now()
+            instance.fecha_finalizacion = ahora
             instance.firma_cliente = firma_a_payload_base64(firma_cliente)
             instance.progreso_porcentaje = 100
         else:
@@ -684,9 +690,11 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
             except (ValueError, TypeError) as e:
                 logger.warning(f"🔸 Error guardando ubicación: {e}")
 
-        if instance.fecha_inicio and firma_cliente_presente:
-            tiempo_total = timezone.now() - instance.fecha_inicio
-            instance.tiempo_total_minutos = int(tiempo_total.total_seconds() / 60)
+        # tiempo_total_minutos: solo el trabajo del proveedor (inicio → firma técnico).
+        # Esto excluye la espera de firma del cliente, que puede ser horas o días.
+        if instance.fecha_inicio and instance.fecha_completado_proveedor:
+            tiempo_proveedor = instance.fecha_completado_proveedor - instance.fecha_inicio
+            instance.tiempo_total_minutos = max(0, int(tiempo_proveedor.total_seconds() / 60))
 
         instance.save()
 
@@ -841,9 +849,13 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
             firma_cliente_presente = bool(firma_cliente)
             instance.firma_tecnico = firma_a_payload_base64(firma_tecnico)
 
+            ahora = timezone.now()
+            if not instance.fecha_completado_proveedor:
+                instance.fecha_completado_proveedor = ahora
+
             if firma_cliente_presente:
                 instance.estado = 'COMPLETADO'
-                instance.fecha_finalizacion = timezone.now()
+                instance.fecha_finalizacion = ahora
                 instance.firma_cliente = firma_a_payload_base64(firma_cliente)
                 instance.progreso_porcentaje = 100
             else:
@@ -857,9 +869,9 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
                 if lat and lng:
                     instance.ubicacion_finalizacion = Point(lng, lat, srid=4326)
 
-            if instance.fecha_inicio and firma_cliente_presente:
-                tiempo_total = timezone.now() - instance.fecha_inicio
-                instance.tiempo_total_minutos = int(tiempo_total.total_seconds() / 60)
+            if instance.fecha_inicio and instance.fecha_completado_proveedor:
+                tiempo_proveedor = instance.fecha_completado_proveedor - instance.fecha_inicio
+                instance.tiempo_total_minutos = max(0, int(tiempo_proveedor.total_seconds() / 60))
 
             instance.save()
 

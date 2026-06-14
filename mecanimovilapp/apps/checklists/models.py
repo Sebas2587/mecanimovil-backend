@@ -451,6 +451,14 @@ class ChecklistInstance(models.Model):
         blank=True,
         help_text=_('Momento en que se completó el checklist')
     )
+    fecha_completado_proveedor = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=_(
+            'Momento en que el proveedor finaliza su parte (firma del técnico), '
+            'antes de esperar la firma del cliente. Usado en KPIs de tiempo real.'
+        )
+    )
     
     # Información de finalización
     ubicacion_finalizacion = gis_models.PointField(
