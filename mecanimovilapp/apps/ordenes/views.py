@@ -2723,6 +2723,14 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
             except Exception as e:
                 logger.error(f"Error enviando push en finalizar_servicio: {e}")
 
+            try:
+                from mecanimovilapp.apps.usuarios.review_notification_utils import (
+                    notificar_resena_pendiente_si_aplica,
+                )
+                notificar_resena_pendiente_si_aplica(orden.id)
+            except Exception as e:
+                logger.error(f"Error notificando reseña pendiente en finalizar_servicio: {e}")
+
         # Sincronizar OfertaProveedor y SolicitudServicioPublica al estado completada
         # (puede quedar desfasado en servicios marketplace si este endpoint se llama directamente)
         try:

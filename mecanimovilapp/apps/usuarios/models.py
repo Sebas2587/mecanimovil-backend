@@ -1544,6 +1544,7 @@ class Notificacion(models.Model):
         ('suscripcion_vencida', 'Suscripción Vencida'),
         ('suscripcion_pago_fallido', 'Pago de Suscripción Fallido'),
         ('creditos_agotados', 'Créditos Agotados'),
+        ('review_reminder', 'Recordatorio de Reseña'),
         ('system', 'Sistema'),
     ]
     

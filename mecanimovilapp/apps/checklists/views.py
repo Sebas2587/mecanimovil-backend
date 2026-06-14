@@ -713,6 +713,14 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
             hubo_sync, oferta_ref = sincronizar_cierre_marketplace(orden.id)
             if hubo_sync and oferta_ref:
                 _notificar_websocket_cierre_marketplace(oferta_ref, orden.id, logger)
+            if orden.estado == 'completado':
+                try:
+                    from mecanimovilapp.apps.usuarios.review_notification_utils import (
+                        notificar_resena_pendiente_si_aplica,
+                    )
+                    notificar_resena_pendiente_si_aplica(orden.id)
+                except Exception as exc:
+                    logger.warning('review_reminder no enviado (orden %s): %s', orden.id, exc)
         else:
             if orden.estado in ('checklist_en_progreso', 'checklist_completado', 'en_proceso'):
                 orden.estado = 'pendiente_firma_cliente'
@@ -884,6 +892,13 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
                 hubo_sync, oferta_ref = sincronizar_cierre_marketplace(orden.id)
                 if hubo_sync and oferta_ref:
                     _notificar_websocket_cierre_marketplace(oferta_ref, orden.id, logger)
+                try:
+                    from mecanimovilapp.apps.usuarios.review_notification_utils import (
+                        notificar_resena_pendiente_si_aplica,
+                    )
+                    notificar_resena_pendiente_si_aplica(orden.id)
+                except Exception as exc:
+                    logger.warning('review_reminder no enviado (orden %s): %s', orden.id, exc)
             else:
                 if orden.estado in (
                     'checklist_en_progreso',
@@ -1050,6 +1065,14 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
         hubo_sync, oferta_marketplace = sincronizar_cierre_marketplace(orden.id)
         if hubo_sync and oferta_marketplace:
             _notificar_websocket_cierre_marketplace(oferta_marketplace, orden.id, logger)
+
+        try:
+            from mecanimovilapp.apps.usuarios.review_notification_utils import (
+                notificar_resena_pendiente_si_aplica,
+            )
+            notificar_resena_pendiente_si_aplica(orden.id)
+        except Exception as exc:
+            logger.warning('review_reminder no enviado (orden %s): %s', orden.id, exc)
 
         logger.info(
             f"✅ Cliente {request.user.id} firmó checklist {instance.id} → orden {orden.id} completada"
