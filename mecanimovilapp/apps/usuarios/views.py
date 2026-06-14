@@ -2203,27 +2203,8 @@ class TallerViewSet(viewsets.ModelViewSet):
                 
                 logger.info(f"🔍 Talleres con ofertas directas: {len(talleres_con_ofertas)}")
                 
-                # Opción 2: Filtrar por especialidades (si el servicio pertenece a una categoría que el taller tiene)
-                # Obtener categorías de los servicios
-                categorias_servicios = set()
-                for servicio in servicios:
-                    categorias_servicios.update(servicio.categorias.values_list('id', flat=True))
-                
-                logger.info(f"🔍 Categorías de servicios: {categorias_servicios}")
-                
-                talleres_con_especialidades = filtrar_queryset_por_marca_o_multimarca(
-                    Taller.objects.filter(
-                        verificado=True,
-                        activo=True,
-                        especialidades__id__in=categorias_servicios,
-                    ),
-                    marca_vehiculo,
-                ).values_list('id', flat=True).distinct()
-                
-                logger.info(f"🔍 Talleres con especialidades: {len(talleres_con_especialidades)}")
-                
-                # Combinar ambas opciones (OR): talleres con ofertas O talleres con especialidades
-                talleres_ids = set(talleres_con_ofertas) | set(talleres_con_especialidades)
+                # Solo proveedores con OfertaServicio activa (sin fallback por especialidades de perfil)
+                talleres_ids = set(talleres_con_ofertas)
                 
                 logger.info(f"🔍 Total talleres únicos: {len(talleres_ids)}")
                 
@@ -3055,27 +3036,8 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
                 
                 logger.info(f"🔍 Mecánicos con ofertas directas: {len(mecanicos_con_ofertas)}")
                 
-                # Opción 2: Filtrar por especialidades (si el servicio pertenece a una categoría que el mecánico tiene)
-                # Obtener categorías de los servicios
-                categorias_servicios = set()
-                for servicio in servicios:
-                    categorias_servicios.update(servicio.categorias.values_list('id', flat=True))
-                
-                logger.info(f"🔍 Categorías de servicios: {categorias_servicios}")
-                
-                mecanicos_con_especialidades = filtrar_queryset_por_marca_o_multimarca(
-                    MecanicoDomicilio.objects.filter(
-                        verificado=True,
-                        activo=True,
-                        especialidades__id__in=categorias_servicios,
-                    ),
-                    marca_vehiculo,
-                ).values_list('id', flat=True).distinct()
-                
-                logger.info(f"🔍 Mecánicos con especialidades: {len(mecanicos_con_especialidades)}")
-                
-                # Combinar ambas opciones (OR): mecánicos con ofertas O mecánicos con especialidades
-                mecanicos_ids = set(mecanicos_con_ofertas) | set(mecanicos_con_especialidades)
+                # Solo proveedores con OfertaServicio activa (sin fallback por especialidades de perfil)
+                mecanicos_ids = set(mecanicos_con_ofertas)
                 
                 logger.info(f"🔍 Total mecánicos únicos: {len(mecanicos_ids)}")
                 

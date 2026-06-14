@@ -179,9 +179,13 @@ class ServicioViewSet(viewsets.ModelViewSet):
             # Verificar que la categoría existe
             categoria = CategoriaServicio.objects.get(id=categoria_id)
             
-            # Obtener servicios de la categoría (usar 'categorias' porque es ManyToMany)
+            # Servicios de la categoría y de sus subcategorías (explore por categoría padre)
+            categoria_ids = [categoria.id]
+            categoria_ids.extend(
+                categoria.subcategorias.values_list('id', flat=True)
+            )
             servicios = self.queryset.filter(
-                categorias=categoria
+                categorias__id__in=categoria_ids
             ).prefetch_related(
                 'ofertas', 
                 'ofertas__taller__usuario',
