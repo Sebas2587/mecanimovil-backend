@@ -89,20 +89,29 @@ class UsuarioSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=True, allow_blank=False, min_length=8)
     is_client = serializers.SerializerMethodField()
     foto_perfil_url = serializers.SerializerMethodField()
-    
+    cliente_id = serializers.SerializerMethodField()
+
     class Meta:
         model = Usuario
-        fields = ('id', 'username', 'email', 'password', 'first_name', 'last_name', 
-                  'es_mecanico', 'telefono', 'direccion', 'foto_perfil', 'foto_perfil_url', 'is_client')
+        fields = ('id', 'username', 'email', 'password', 'first_name', 'last_name',
+                  'es_mecanico', 'telefono', 'direccion', 'foto_perfil', 'foto_perfil_url',
+                  'is_client', 'cliente_id')
         extra_kwargs = {
             'password': {'write_only': True},
             'username': {'required': True},
             'email': {'required': True}
         }
-    
+
     def get_is_client(self, obj):
         """Determina si el usuario tiene un perfil de cliente"""
         return hasattr(obj, 'cliente')
+
+    def get_cliente_id(self, obj):
+        """Retorna el ID del perfil de cliente asociado al usuario, o null si no existe."""
+        try:
+            return obj.cliente.id
+        except Exception:
+            return None
     
     def get_foto_perfil_url(self, obj):
         """Retorna la URL completa de la foto de perfil usando cPanel si está configurado"""
