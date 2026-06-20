@@ -21,9 +21,8 @@ class CitaAgendaPersonalModelTestCase(TestCase):
         self.taller = Taller.objects.create(
             usuario=self.user,
             nombre='Taller Test Cita',
-            direccion='Calle 1',
             telefono='900000000',
-            verificado=True,
+            estado_verificacion='aprobado',
         )
         HorarioProveedor.objects.create(
             taller=self.taller,
@@ -91,9 +90,8 @@ class CitaAgendaPersonalAPITestCase(TestCase):
         self.taller = Taller.objects.create(
             usuario=self.user,
             nombre='Taller API',
-            direccion='Calle 2',
             telefono='900000001',
-            verificado=True,
+            estado_verificacion='aprobado',
         )
         # 2030-06-17 is Tuesday -> weekday 1
         HorarioProveedor.objects.create(
