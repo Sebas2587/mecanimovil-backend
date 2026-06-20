@@ -1,4 +1,5 @@
 from django.db import models
+from django.db.models.deletion import ProtectedError
 from django.db.models import Q
 from django.utils.translation import gettext_lazy as _
 from django.core.validators import MinValueValidator, MaxValueValidator
@@ -1864,3 +1865,179 @@ class PatronAprendizajeNecesidad(models.Model):
 
     def __str__(self):
         return f'{self.fragmento} → {self.servicio_id} (×{self.confirmaciones})'
+
+
+class CitaAgendaPersonal(models.Model):
+    """
+    Cita agendada manualmente por el proveedor (fuera del marketplace Mecanimovil).
+    Solo estado activa bloquea la agenda pública del proveedor.
+    """
+
+    ESTADO_CHOICES = [
+        ('activa', 'Activa'),
+        ('cerrada', 'Cerrada'),
+        ('cancelada', 'Cancelada'),
+    ]
+    TIPO_SERVICIO_CHOICES = [
+        ('taller', 'Taller'),
+        ('domicilio', 'Domicilio'),
+    ]
+
+    taller = models.ForeignKey(
+        Taller,
+        on_delete=models.CASCADE,
+        related_name='citas_agenda_personal',
+        null=True,
+        blank=True,
+    )
+    mecanico = models.ForeignKey(
+        MecanicoDomicilio,
+        on_delete=models.CASCADE,
+        related_name='citas_agenda_personal',
+        null=True,
+        blank=True,
+    )
+    fecha_servicio = models.DateField()
+    hora_servicio = models.TimeField()
+    duracion_minutos = models.PositiveIntegerField(default=60)
+    tipo_servicio = models.CharField(max_length=20, choices=TIPO_SERVICIO_CHOICES)
+    estado = models.CharField(
+        max_length=20,
+        choices=ESTADO_CHOICES,
+        default='activa',
+        db_index=True,
+    )
+    cerrada_en = models.DateTimeField(null=True, blank=True)
+    cancelada_en = models.DateTimeField(null=True, blank=True)
+    creado_por = models.ForeignKey(
+        Usuario,
+        on_delete=models.PROTECT,
+        related_name='citas_agenda_personal_creadas',
+    )
+    fecha_creacion = models.DateTimeField(auto_now_add=True)
+    fecha_actualizacion = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _('cita agenda personal')
+        verbose_name_plural = _('citas agenda personal')
+        constraints = [
+            models.CheckConstraint(
+                check=(
+                    models.Q(taller__isnull=False, mecanico__isnull=True)
+                    | models.Q(taller__isnull=True, mecanico__isnull=False)
+                ),
+                name='cita_xor_proveedor',
+            ),
+            models.CheckConstraint(
+                check=models.Q(duracion_minutos__gt=0),
+                name='cita_duracion_positiva',
+            ),
+            models.CheckConstraint(
+                check=(
+                    ~models.Q(estado='cerrada')
+                    | models.Q(cerrada_en__isnull=False)
+                ),
+                name='cita_cerrada_requiere_ts',
+            ),
+            models.CheckConstraint(
+                check=(
+                    ~models.Q(estado='cancelada')
+                    | models.Q(cancelada_en__isnull=False)
+                ),
+                name='cita_cancelada_requiere_ts',
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=['taller', 'fecha_servicio', 'estado'],
+                name='cita_taller_fecha_estado_idx',
+            ),
+            models.Index(
+                fields=['mecanico', 'fecha_servicio', 'estado'],
+                name='cita_mecanico_fecha_estado_idx',
+            ),
+            models.Index(
+                fields=['creado_por', '-fecha_creacion'],
+                name='cita_creado_por_idx',
+            ),
+        ]
+
+    def __str__(self):
+        prov = self.taller or self.mecanico
+        return f'Cita personal #{self.id} — {prov} — {self.fecha_servicio} {self.hora_servicio}'
+
+    @property
+    def bloquea_agenda(self) -> bool:
+        return self.estado == 'activa'
+
+    def cerrar(self):
+        if self.estado != 'activa':
+            raise ValueError('Solo se puede cerrar una cita activa.')
+        self.estado = 'cerrada'
+        self.cerrada_en = timezone.now()
+
+    def cancelar(self):
+        if self.estado != 'activa':
+            raise ValueError('Solo se puede cancelar una cita activa.')
+        self.estado = 'cancelada'
+        self.cancelada_en = timezone.now()
+
+    def delete(self, using=None, keep_parents=False):
+        if self.estado != 'cancelada':
+            raise ProtectedError(
+                'Solo se puede eliminar físicamente una cita cancelada.',
+                [self],
+            )
+        return super().delete(using=using, keep_parents=keep_parents)
+
+
+class CitaAgendaPersonalDetalle(models.Model):
+    """Datos del cliente externo y servicio (1:1 con CitaAgendaPersonal)."""
+
+    cita = models.OneToOneField(
+        CitaAgendaPersonal,
+        on_delete=models.CASCADE,
+        primary_key=True,
+        related_name='detalle',
+    )
+    cliente_nombre = models.CharField(max_length=200)
+    cliente_telefono = models.CharField(max_length=20, blank=True, default='')
+    direccion = models.CharField(max_length=500, blank=True, default='')
+    vehiculo_marca = models.CharField(max_length=100, blank=True, default='')
+    vehiculo_modelo = models.CharField(max_length=100, blank=True, default='')
+    vehiculo_patente = models.CharField(max_length=20, blank=True, default='')
+    vehiculo_anio = models.PositiveIntegerField(null=True, blank=True)
+    vehiculo_cilindraje = models.CharField(max_length=30, blank=True, default='')
+    vehiculo_color = models.CharField(max_length=30, blank=True, default='')
+    oferta_servicio = models.ForeignKey(
+        OfertaServicio,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='citas_agenda_personal',
+    )
+    servicio_nombre = models.CharField(max_length=255, blank=True, default='')
+    descripcion = models.TextField(blank=True, default='')
+    precio_referencia = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0)],
+    )
+
+    class Meta:
+        verbose_name = _('detalle cita agenda personal')
+        verbose_name_plural = _('detalles cita agenda personal')
+        constraints = [
+            models.CheckConstraint(
+                check=(
+                    models.Q(oferta_servicio__isnull=False)
+                    | ~models.Q(servicio_nombre='')
+                ),
+                name='cita_detalle_servicio_requerido',
+            ),
+        ]
+
+    def __str__(self):
+        return f'Detalle cita personal {self.cita_id}'
