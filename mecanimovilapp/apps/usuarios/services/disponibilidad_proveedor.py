@@ -12,7 +12,7 @@ from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
-from mecanimovilapp.apps.ordenes.models import SolicitudServicio
+from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonal, SolicitudServicio
 from mecanimovilapp.apps.servicios.models import OfertaServicio
 from mecanimovilapp.apps.usuarios.models import HorarioProveedor, MecanicoDomicilio, Taller
 
@@ -22,6 +22,8 @@ ESTADOS_OCUPAN_AGENDA = (
     'en_proceso',
     'aceptada_por_proveedor',
 )
+
+ESTADOS_CITA_PERSONAL_OCUPAN = ('activa',)
 
 PASO_SLOT_MINUTOS = 15
 DURACION_DEFAULT_MINUTOS = 60
@@ -110,6 +112,35 @@ def _merge_intervals(intervals: list[tuple[datetime, datetime]]) -> list[tuple[d
     return merged
 
 
+def _intervalos_citas_personales_dia(
+    *,
+    taller: Taller | None = None,
+    mecanico: MecanicoDomicilio | None = None,
+    fecha: date,
+    tiempo_descanso: int = 0,
+    excluir_cita_personal_id: int | None = None,
+) -> list[tuple[datetime, datetime]]:
+    filtros = {
+        'fecha_servicio': fecha,
+        'estado__in': ESTADOS_CITA_PERSONAL_OCUPAN,
+    }
+    if taller:
+        filtros['taller'] = taller
+    else:
+        filtros['mecanico'] = mecanico
+
+    qs = CitaAgendaPersonal.objects.filter(**filtros)
+    if excluir_cita_personal_id:
+        qs = qs.exclude(pk=excluir_cita_personal_id)
+
+    intervalos: list[tuple[datetime, datetime]] = []
+    for cita in qs:
+        inicio = datetime.combine(fecha, cita.hora_servicio)
+        fin = inicio + timedelta(minutes=cita.duracion_minutos + tiempo_descanso)
+        intervalos.append((inicio, fin))
+    return intervalos
+
+
 def intervalos_ocupados_dia(
     *,
     taller: Taller | None = None,
@@ -117,6 +148,7 @@ def intervalos_ocupados_dia(
     fecha: date,
     tiempo_descanso: int = 0,
     duracion_fallback: int = DURACION_DEFAULT_MINUTOS,
+    excluir_cita_personal_id: int | None = None,
 ) -> list[tuple[datetime, datetime]]:
     filtros = {
         'fecha_servicio': fecha,
@@ -141,7 +173,15 @@ def intervalos_ocupados_dia(
         fin = inicio + timedelta(minutes=dur + tiempo_descanso)
         intervalos.append((inicio, fin))
 
-    return _merge_intervals(intervalos)
+    intervalos_citas = _intervalos_citas_personales_dia(
+        taller=taller,
+        mecanico=mecanico,
+        fecha=fecha,
+        tiempo_descanso=tiempo_descanso,
+        excluir_cita_personal_id=excluir_cita_personal_id,
+    )
+
+    return _merge_intervals(intervalos + intervalos_citas)
 
 
 def ventanas_libres(

@@ -1,0 +1,132 @@
+from rest_framework import serializers
+
+from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonal, CitaAgendaPersonalDetalle
+from mecanimovilapp.apps.servicios.models import OfertaServicio
+
+
+class CitaAgendaPersonalDetalleSerializer(serializers.ModelSerializer):
+    servicio_nombre_resuelto = serializers.SerializerMethodField()
+    oferta_servicio_id = serializers.PrimaryKeyRelatedField(
+        source='oferta_servicio',
+        queryset=OfertaServicio.objects.all(),
+        required=False,
+        allow_null=True,
+    )
+
+    class Meta:
+        model = CitaAgendaPersonalDetalle
+        fields = [
+            'cliente_nombre',
+            'cliente_telefono',
+            'direccion',
+            'vehiculo_marca',
+            'vehiculo_modelo',
+            'vehiculo_patente',
+            'vehiculo_anio',
+            'vehiculo_cilindraje',
+            'vehiculo_color',
+            'oferta_servicio_id',
+            'servicio_nombre',
+            'servicio_nombre_resuelto',
+            'descripcion',
+            'precio_referencia',
+        ]
+
+    def get_servicio_nombre_resuelto(self, obj: CitaAgendaPersonalDetalle) -> str:
+        if obj.oferta_servicio_id and obj.oferta_servicio:
+            servicio = getattr(obj.oferta_servicio, 'servicio', None)
+            if servicio is not None:
+                return servicio.nombre
+        return (obj.servicio_nombre or '').strip()
+
+
+class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
+    detalle = CitaAgendaPersonalDetalleSerializer()
+    origen = serializers.SerializerMethodField()
+    etiqueta = serializers.SerializerMethodField()
+    editable = serializers.SerializerMethodField()
+    tiene_checklist = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CitaAgendaPersonal
+        fields = [
+            'id',
+            'fecha_servicio',
+            'hora_servicio',
+            'duracion_minutos',
+            'tipo_servicio',
+            'estado',
+            'cerrada_en',
+            'cancelada_en',
+            'fecha_creacion',
+            'fecha_actualizacion',
+            'detalle',
+            'origen',
+            'etiqueta',
+            'editable',
+            'tiene_checklist',
+        ]
+        read_only_fields = [
+            'id',
+            'estado',
+            'cerrada_en',
+            'cancelada_en',
+            'fecha_creacion',
+            'fecha_actualizacion',
+        ]
+
+    def get_origen(self, obj) -> str:
+        return 'personal'
+
+    def get_etiqueta(self, obj) -> str:
+        return 'Personal'
+
+    def get_editable(self, obj) -> bool:
+        return obj.estado == 'activa'
+
+    def get_tiene_checklist(self, obj) -> bool:
+        return False
+
+
+class CitaAgendaPersonalCreateSerializer(serializers.Serializer):
+    fecha_servicio = serializers.DateField()
+    hora_servicio = serializers.TimeField()
+    duracion_minutos = serializers.IntegerField(required=False, min_value=1)
+    tipo_servicio = serializers.ChoiceField(choices=['taller', 'domicilio'])
+    detalle = CitaAgendaPersonalDetalleSerializer()
+
+
+class CitaAgendaPersonalUpdateSerializer(serializers.Serializer):
+    fecha_servicio = serializers.DateField(required=False)
+    hora_servicio = serializers.TimeField(required=False)
+    duracion_minutos = serializers.IntegerField(required=False, min_value=1)
+    tipo_servicio = serializers.ChoiceField(choices=['taller', 'domicilio'], required=False)
+    detalle = CitaAgendaPersonalDetalleSerializer(required=False)
+
+
+class EventoAgendaUnificadoSerializer(serializers.Serializer):
+    """Item del feed unificado calendario / órdenes."""
+
+    id = serializers.CharField()
+    origen = serializers.ChoiceField(choices=['mecanimovil', 'personal'])
+    etiqueta = serializers.CharField()
+    fecha_servicio = serializers.DateField()
+    hora_servicio = serializers.TimeField()
+    duracion_minutos = serializers.IntegerField(required=False)
+    estado = serializers.CharField()
+    editable = serializers.BooleanField()
+    tiene_checklist = serializers.BooleanField()
+    cliente_nombre = serializers.CharField(required=False, allow_blank=True)
+    cliente_telefono = serializers.CharField(required=False, allow_blank=True)
+    vehiculo_marca = serializers.CharField(required=False, allow_blank=True)
+    vehiculo_modelo = serializers.CharField(required=False, allow_blank=True)
+    vehiculo_anio = serializers.IntegerField(required=False, allow_null=True)
+    vehiculo_patente = serializers.CharField(required=False, allow_blank=True)
+    servicio_nombre = serializers.CharField(required=False, allow_blank=True)
+    descripcion = serializers.CharField(required=False, allow_blank=True)
+    precio_referencia = serializers.DecimalField(
+        max_digits=10, decimal_places=2, required=False, allow_null=True,
+    )
+    tipo_servicio = serializers.CharField(required=False, allow_blank=True)
+    oferta_proveedor_id = serializers.CharField(required=False, allow_null=True)
+    orden_id = serializers.IntegerField(required=False, allow_null=True)

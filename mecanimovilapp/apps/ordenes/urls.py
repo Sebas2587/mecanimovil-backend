@@ -9,6 +9,7 @@ from .views import (
     obtener_configuracion_precio, calcular_precio_detallado
 )
 from .views_asistente_agendamiento import AsistenteAgendamientoViewSet
+from .views_cita_agenda_personal import CitaAgendaPersonalViewSet, ProveedorAgendaViewSet
 
 app_name = 'ordenes'
 
@@ -26,6 +27,16 @@ router.register(
     r'asistente-agendamiento',
     AsistenteAgendamientoViewSet,
     basename='asistente-agendamiento',
+)
+router.register(
+    r'citas-agenda-personal',
+    CitaAgendaPersonalViewSet,
+    basename='citas-agenda-personal',
+)
+router.register(
+    r'proveedor-agenda',
+    ProveedorAgendaViewSet,
+    basename='proveedor-agenda',
 )
 
 # RUTAS DE DISPONIBILIDAD ELIMINADAS - REEMPLAZADAS POR ENDPOINTS EN USUARIOS APP
