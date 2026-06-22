@@ -16,7 +16,6 @@ from django.db import migrations
 
 # Tablas con (columna_mecanico, columna_taller) que deben repuntarse al taller.
 REPOINT_TABLES = [
-    ('servicios_ofertaservicio', 'mecanico_id', 'taller_id'),
     ('ordenes_solicitudservicio', 'mecanico_id', 'taller_id'),
     ('ordenes_citaagendapersonal', 'mecanico_id', 'taller_id'),
     ('usuarios_documentoonboarding', 'mecanico_id', 'taller_id'),
@@ -88,6 +87,15 @@ def migrar_mecanicos_a_taller(apps, schema_editor):
 
         # Repuntar relaciones dependientes del mecánico al nuevo taller.
         with connection.cursor() as cursor:
+            # OfertaServicio tiene un discriminador `tipo_proveedor` con un CHECK que exige
+            # coherencia (tipo='taller' <-> taller_id NOT NULL y mecanico_id NULL), por lo que
+            # se actualiza en la misma sentencia para no violar la restricción.
+            cursor.execute(
+                "UPDATE servicios_ofertaservicio "
+                "SET taller_id = %s, mecanico_id = NULL, tipo_proveedor = 'taller' "
+                "WHERE mecanico_id = %s",
+                [taller.id, mecanico.id],
+            )
             for table, col_mecanico, col_taller in REPOINT_TABLES:
                 cursor.execute(
                     f"UPDATE {table} SET {col_taller} = %s, {col_mecanico} = NULL "
