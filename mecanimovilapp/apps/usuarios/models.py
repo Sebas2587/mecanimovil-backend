@@ -17,6 +17,15 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+# Modalidad de atención unificada para proveedores (estrategia strangler).
+# Reemplaza conceptualmente la dicotomía Taller vs MecanicoDomicilio.
+MODALIDAD_ATENCION_CHOICES = [
+    ('en_taller', 'En taller (lugar físico)'),
+    ('a_domicilio', 'A domicilio'),
+    ('ambas', 'En taller y a domicilio'),
+]
+
+
 class Usuario(AbstractUser):
     """
     Modelo personalizado para el usuario que extiende el modelo AbstractUser de Django
@@ -241,6 +250,20 @@ class Taller(ProveedorServicio):
     rut = models.CharField(max_length=20, blank=True, null=True, help_text=_('RUT del taller'))
     capacidad_diaria = models.IntegerField(default=10, help_text=_('Capacidad de servicios por día'))
     horario_atencion = models.CharField(max_length=100, blank=True, null=True)
+
+    # Unificación por modalidad: un taller puede atender en su local, a domicilio o ambas.
+    modalidad_atencion = models.CharField(
+        max_length=20,
+        choices=MODALIDAD_ATENCION_CHOICES,
+        default='en_taller',
+        help_text=_('Modalidad de atención del proveedor: en taller, a domicilio o ambas'),
+    )
+    radio_cobertura = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=10.0,
+        help_text=_('Radio de cobertura en kilómetros para atención a domicilio'),
+    )
     
     # Nuevas relaciones para onboarding (usando string reference)
     especialidades = models.ManyToManyField(
@@ -319,6 +342,113 @@ class MecanicoDomicilio(ProveedorServicio):
         super().save(*args, **kwargs)
 
 
+class MiembroTaller(models.Model):
+    """
+    Miembro del equipo de un taller: mandante (dueño), supervisor o mecánico.
+
+    Los mecánicos son recursos agendables (no requieren login). Cada mecánico tiene
+    especialidades (CategoriaServicio), una modalidad de atención propia y un estado
+    `activo` (habilitado/deshabilitado) que controla el supervisor. Un mecánico
+    deshabilitado deja de aportar disponibilidad y de ser candidato de asignación.
+    """
+    ROL_CHOICES = [
+        ('mandante', 'Mandante (dueño)'),
+        ('supervisor', 'Supervisor'),
+        ('mecanico', 'Mecánico'),
+    ]
+
+    taller = models.ForeignKey(
+        Taller,
+        on_delete=models.CASCADE,
+        related_name='miembros',
+        help_text=_('Taller al que pertenece el miembro'),
+    )
+    usuario = models.OneToOneField(
+        Usuario,
+        on_delete=models.SET_NULL,
+        related_name='miembro_taller',
+        null=True,
+        blank=True,
+        help_text=_('Usuario con login (opcional; mecánicos suelen no tener login)'),
+    )
+    rol = models.CharField(
+        max_length=20,
+        choices=ROL_CHOICES,
+        default='mecanico',
+        help_text=_('Rol dentro del taller'),
+    )
+    nombre = models.CharField(
+        max_length=150,
+        help_text=_('Nombre del miembro (necesario para mecánicos sin login)'),
+    )
+    especialidades = models.ManyToManyField(
+        'servicios.CategoriaServicio',
+        related_name='miembros_taller',
+        blank=True,
+        help_text=_('Especialidades del mecánico'),
+    )
+    modalidad_tecnico = models.CharField(
+        max_length=20,
+        choices=MODALIDAD_ATENCION_CHOICES,
+        default='en_taller',
+        help_text=_('Modalidad de atención del mecánico: en taller, a domicilio o ambas'),
+    )
+    activo = models.BooleanField(
+        default=True,
+        help_text=_('Habilitado por el supervisor. Si es False, no recibe asignaciones ni aporta disponibilidad'),
+    )
+    fecha_creacion = models.DateTimeField(auto_now_add=True)
+    fecha_actualizacion = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _('miembro de taller')
+        verbose_name_plural = _('miembros de taller')
+        constraints = [
+            # Máximo un mandante por taller.
+            models.UniqueConstraint(
+                fields=['taller'],
+                condition=models.Q(rol='mandante'),
+                name='unique_mandante_por_taller',
+            ),
+            # Máximo un supervisor por taller.
+            models.UniqueConstraint(
+                fields=['taller'],
+                condition=models.Q(rol='supervisor'),
+                name='unique_supervisor_por_taller',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['taller', 'rol', 'activo']),
+            models.Index(fields=['taller', 'activo']),
+        ]
+        ordering = ['taller', 'rol', 'nombre']
+
+    def __str__(self):
+        return f"{self.nombre} ({self.get_rol_display()}) - {self.taller.nombre}"
+
+    def clean(self):
+        # Un mecánico debe tener al menos una especialidad. La M2M solo es consultable
+        # cuando el objeto ya tiene pk; la validación dura se aplica en serializer/servicio.
+        if self.rol == 'mecanico' and self.pk:
+            if not self.especialidades.exists():
+                raise ValidationError(_('Un mecánico debe tener al menos una especialidad.'))
+
+    def cubre_especialidad(self, categoria_ids):
+        """True si el miembro tiene alguna de las categorías requeridas."""
+        if not categoria_ids:
+            return True
+        return self.especialidades.filter(id__in=categoria_ids).exists()
+
+    def modalidad_compatible(self, modalidad_requerida):
+        """
+        True si la modalidad del técnico es compatible con la solicitada.
+        'ambas' es compatible con cualquier modalidad concreta.
+        """
+        if not modalidad_requerida or self.modalidad_tecnico == 'ambas':
+            return True
+        return self.modalidad_tecnico == modalidad_requerida
+
+
 class ZonaCobertura(models.Model):
     """
     Modelo para las zonas de cobertura de los mecánicos a domicilio
@@ -372,7 +502,18 @@ class MechanicServiceArea(models.Model):
         MecanicoDomicilio, 
         on_delete=models.CASCADE, 
         related_name='service_areas',
-        verbose_name='Mecánico'
+        verbose_name='Mecánico',
+        null=True,
+        blank=True,
+    )
+    # Cobertura por comunas para talleres con modalidad a domicilio/ambas (XOR con mechanic).
+    taller = models.ForeignKey(
+        Taller,
+        on_delete=models.CASCADE,
+        related_name='service_areas',
+        verbose_name='Taller',
+        null=True,
+        blank=True,
     )
     area_type = models.CharField(
         max_length=20, 
@@ -406,15 +547,27 @@ class MechanicServiceArea(models.Model):
         ordering = ['-created_at']
         indexes = [
             models.Index(fields=['mechanic', 'is_active']),
+            models.Index(fields=['taller', 'is_active']),
             models.Index(fields=['area_type', 'is_active']),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                check=(
+                    models.Q(mechanic__isnull=False, taller__isnull=True)
+                    | models.Q(mechanic__isnull=True, taller__isnull=False)
+                ),
+                name='service_area_xor_proveedor',
+            ),
         ]
     
     def __str__(self):
+        proveedor = self.mechanic or self.taller
+        proveedor_nombre = proveedor.nombre if proveedor else 'Sin proveedor'
         name_part = f" - {self.name}" if self.name else ""
         communes_part = ", ".join(self.commune_names[:3])
         if len(self.commune_names) > 3:
             communes_part += f" (+{len(self.commune_names)-3} más)"
-        return f"{self.mechanic.nombre}{name_part} ({communes_part})"
+        return f"{proveedor_nombre}{name_part} ({communes_part})"
     
     def get_commune_count(self):
         """Retorna el número de comunas en esta zona"""
@@ -748,6 +901,15 @@ class HorarioProveedor(models.Model):
         null=True,
         blank=True
     )
+    # Agenda por mecánico del equipo del taller. Cuando está presente, este horario
+    # pertenece a un miembro específico (y `taller` se conserva para scoping/queries).
+    miembro_taller = models.ForeignKey(
+        'MiembroTaller',
+        on_delete=models.CASCADE,
+        related_name='horarios_configurados',
+        null=True,
+        blank=True
+    )
     
     dia_semana = models.IntegerField(
         choices=DIAS_SEMANA,
@@ -781,18 +943,27 @@ class HorarioProveedor(models.Model):
         verbose_name_plural = _('horarios de proveedores')
         constraints = [
             models.CheckConstraint(
-                check=models.Q(taller__isnull=False) | models.Q(mecanico__isnull=False),
+                check=(
+                    models.Q(taller__isnull=False)
+                    | models.Q(mecanico__isnull=False)
+                    | models.Q(miembro_taller__isnull=False)
+                ),
                 name='horario_debe_tener_taller_o_mecanico'
             ),
             models.UniqueConstraint(
                 fields=['taller', 'dia_semana'],
-                condition=models.Q(taller__isnull=False),
+                condition=models.Q(taller__isnull=False, miembro_taller__isnull=True),
                 name='unique_taller_dia_semana'
             ),
             models.UniqueConstraint(
                 fields=['mecanico', 'dia_semana'],
                 condition=models.Q(mecanico__isnull=False),
                 name='unique_mecanico_dia_semana'
+            ),
+            models.UniqueConstraint(
+                fields=['miembro_taller', 'dia_semana'],
+                condition=models.Q(miembro_taller__isnull=False),
+                name='unique_miembro_taller_dia_semana'
             ),
         ]
         ordering = ['dia_semana']
@@ -809,10 +980,18 @@ class HorarioProveedor(models.Model):
         """Validar que la hora de inicio sea menor que la de fin"""
         if self.activo and self.hora_inicio >= self.hora_fin:
             raise ValidationError('La hora de inicio debe ser menor que la hora de fin')
-        
+
+        # Horario por mecánico del equipo: si hay miembro_taller, se asocia su taller.
+        if self.miembro_taller_id:
+            if not self.taller_id:
+                self.taller = self.miembro_taller.taller
+            if self.mecanico_id:
+                raise ValidationError('No puede especificar mecánico domicilio junto a miembro de taller')
+            return
+
         # Validar que tenga taller o mecánico, pero no ambos
         if not self.taller and not self.mecanico:
-            raise ValidationError('Debe especificar un taller o un mecánico')
+            raise ValidationError('Debe especificar un taller, un mecánico o un miembro de taller')
         if self.taller and self.mecanico:
             raise ValidationError('No puede especificar tanto taller como mecánico')
     

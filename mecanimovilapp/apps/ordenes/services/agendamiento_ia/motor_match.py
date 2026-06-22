@@ -328,10 +328,59 @@ def _modo_desglose_oferta(oferta: OfertaServicio, requiere_repuestos_solicitud: 
     return _oferta_ofrece_repuestos(oferta)
 
 
+def _talleres_excluidos_por_equipo(servicio_ids: list[int]) -> set[int]:
+    """
+    IDs de talleres CON equipo (mecánicos activos) pero SIN ningún mecánico activo que
+    cubra la especialidad requerida. Estos talleres no deben aparecer para este servicio.
+    Talleres sin equipo NO se excluyen (fallback a nivel taller).
+    """
+    from mecanimovilapp.apps.servicios.models import Servicio
+    from mecanimovilapp.apps.usuarios.models import MiembroTaller
+
+    categorias = set(
+        Servicio.objects.filter(id__in=servicio_ids)
+        .values_list('categorias', flat=True)
+    )
+    categorias.discard(None)
+    if not categorias:
+        return set()
+
+    excluidos: set[int] = set()
+    talleres_con_equipo = (
+        MiembroTaller.objects
+        .filter(rol='mecanico', activo=True)
+        .values_list('taller_id', flat=True)
+        .distinct()
+    )
+    for taller_id in talleres_con_equipo:
+        apto = MiembroTaller.objects.filter(
+            taller_id=taller_id,
+            rol='mecanico',
+            activo=True,
+            especialidades__in=categorias,
+        ).exists()
+        if not apto:
+            excluidos.add(taller_id)
+    return excluidos
+
+
+def _modalidad_q(modalidad: str | None):
+    """Q de filtrado por modalidad de atención solicitada (None = sin filtro)."""
+    if modalidad in ('a_domicilio', 'domicilio'):
+        return (
+            Q(tipo_proveedor='mecanico')
+            | Q(tipo_proveedor='taller', taller__modalidad_atencion__in=['a_domicilio', 'ambas'])
+        )
+    if modalidad in ('en_taller', 'taller'):
+        return Q(tipo_proveedor='taller', taller__modalidad_atencion__in=['en_taller', 'ambas'])
+    return None
+
+
 def _queryset_ofertas_compatibles(
     servicio_ids: list[int],
     marca,
     tipo_motor=None,
+    modalidad: str | None = None,
 ) -> Any:
     """
     Alineado con proveedores_filtrados y catalogo_vehiculo:
@@ -370,8 +419,16 @@ def _queryset_ofertas_compatibles(
         )
     )
 
+    modalidad_q = _modalidad_q(modalidad)
+    excluidos_equipo = _talleres_excluidos_por_equipo(servicio_ids)
+
     if not marca:
-        return base.filter(proveedor_activo).distinct()
+        qs_sin_marca = base.filter(proveedor_activo)
+        if modalidad_q is not None:
+            qs_sin_marca = qs_sin_marca.filter(modalidad_q)
+        if excluidos_equipo:
+            qs_sin_marca = qs_sin_marca.exclude(taller_id__in=excluidos_equipo)
+        return qs_sin_marca.distinct()
 
     q_marca_oferta = Q(marca_vehiculo_seleccionada=marca) | Q(
         marca_vehiculo_seleccionada__isnull=True
@@ -403,6 +460,10 @@ def _queryset_ofertas_compatibles(
         .filter(q_oferta_marca)
         .distinct()
     )
+    if modalidad_q is not None:
+        qs = qs.filter(modalidad_q)
+    if excluidos_equipo:
+        qs = qs.exclude(taller_id__in=excluidos_equipo)
 
     from mecanimovilapp.apps.servicios.oferta_resolucion import (
         resolver_ofertas_preferidas_por_marca,
@@ -1174,7 +1235,16 @@ def _serialize_candidato(
     usuario_id, proveedor = _proveedor_usuario(oferta)
     nombre = ''
     rating = 0.0
-    a_domicilio = oferta.tipo_proveedor == 'mecanico'
+    # Modalidad unificada: mecánico siempre a domicilio; taller a domicilio si su
+    # modalidad_atencion incluye domicilio (a_domicilio / ambas).
+    modalidad_atencion = None
+    if oferta.tipo_proveedor == 'taller' and proveedor is not None:
+        modalidad_atencion = getattr(proveedor, 'modalidad_atencion', None)
+        a_domicilio = modalidad_atencion in ('a_domicilio', 'ambas')
+    else:
+        a_domicilio = oferta.tipo_proveedor == 'mecanico'
+        if a_domicilio:
+            modalidad_atencion = 'a_domicilio'
     foto_url = None
     lat_proveedor = None
     lng_proveedor = None
@@ -1246,6 +1316,7 @@ def _serialize_candidato(
             'con_repuestos' if _oferta_ofrece_repuestos(oferta) else 'solo_mano_obra_alternativa'
         ),
         'a_domicilio': a_domicilio,
+        'modalidad_atencion': modalidad_atencion,
         'desglose': desglose,
         'repuestos_info': repuestos_info,
         'detalles_servicios': [
@@ -1281,6 +1352,7 @@ def listar_candidatos_proveedor(
     lat: float | None = None,
     lng: float | None = None,
     request=None,
+    modalidad: str | None = None,
 ) -> dict[str, Any]:
     """Stateless: no persiste consulta."""
     vehiculo = (
@@ -1296,7 +1368,9 @@ def listar_candidatos_proveedor(
 
     marca = vehiculo.marca
     qs = (
-        _queryset_ofertas_compatibles(servicio_ids, marca, getattr(vehiculo, 'tipo_motor', None))
+        _queryset_ofertas_compatibles(
+            servicio_ids, marca, getattr(vehiculo, 'tipo_motor', None), modalidad=modalidad
+        )
         .select_related(
             'servicio',
             'taller',

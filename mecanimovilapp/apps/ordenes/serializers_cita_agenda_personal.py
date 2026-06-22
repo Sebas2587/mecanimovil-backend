@@ -46,6 +46,7 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
     etiqueta = serializers.SerializerMethodField()
     editable = serializers.SerializerMethodField()
     tiene_checklist = serializers.SerializerMethodField()
+    mecanico_nombre = serializers.SerializerMethodField()
 
     class Meta:
         model = CitaAgendaPersonal
@@ -65,6 +66,8 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
             'etiqueta',
             'editable',
             'tiene_checklist',
+            'miembro_taller',
+            'mecanico_nombre',
         ]
         read_only_fields = [
             'id',
@@ -87,12 +90,16 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
     def get_tiene_checklist(self, obj) -> bool:
         return False
 
+    def get_mecanico_nombre(self, obj) -> str | None:
+        return obj.miembro_taller.nombre if obj.miembro_taller_id else None
+
 
 class CitaAgendaPersonalCreateSerializer(serializers.Serializer):
     fecha_servicio = serializers.DateField()
     hora_servicio = serializers.TimeField()
     duracion_minutos = serializers.IntegerField(required=False, min_value=1)
     tipo_servicio = serializers.ChoiceField(choices=['taller', 'domicilio'])
+    miembro_taller = serializers.IntegerField(required=False, allow_null=True)
     detalle = CitaAgendaPersonalDetalleSerializer()
 
 
@@ -101,6 +108,7 @@ class CitaAgendaPersonalUpdateSerializer(serializers.Serializer):
     hora_servicio = serializers.TimeField(required=False)
     duracion_minutos = serializers.IntegerField(required=False, min_value=1)
     tipo_servicio = serializers.ChoiceField(choices=['taller', 'domicilio'], required=False)
+    miembro_taller = serializers.IntegerField(required=False, allow_null=True)
     detalle = CitaAgendaPersonalDetalleSerializer(required=False)
 
 
@@ -130,3 +138,5 @@ class EventoAgendaUnificadoSerializer(serializers.Serializer):
     tipo_servicio = serializers.CharField(required=False, allow_blank=True)
     oferta_proveedor_id = serializers.CharField(required=False, allow_null=True)
     orden_id = serializers.IntegerField(required=False, allow_null=True)
+    miembro_taller_id = serializers.IntegerField(required=False, allow_null=True)
+    mecanico_nombre = serializers.CharField(required=False, allow_blank=True, allow_null=True)

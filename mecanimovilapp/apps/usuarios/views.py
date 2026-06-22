@@ -11,7 +11,7 @@ from django.contrib.gis.db.models.functions import Distance
 from django.contrib.gis.geos import Point
 from django.contrib.gis.measure import D
 from django_filters.rest_framework import DjangoFilterBackend
-from .models import Usuario, Cliente, Taller, MecanicoDomicilio, ZonaCobertura, Resena, DireccionUsuario, DocumentoOnboarding, HorarioProveedor, MechanicServiceArea, ChileanCommune, ConnectionStatus, ProviderProfile, Review, TallerDireccion, PushToken, Notificacion
+from .models import Usuario, Cliente, Taller, MecanicoDomicilio, ZonaCobertura, Resena, DireccionUsuario, DocumentoOnboarding, HorarioProveedor, MechanicServiceArea, ChileanCommune, ConnectionStatus, ProviderProfile, Review, TallerDireccion, PushToken, Notificacion, MiembroTaller
 from .connection_throttle import try_begin_conectar_http_window, clear_conectar_http_window
 from .verification_utils import proveedor_visible_como_verificado
 from .proveedor_cobertura import (
@@ -32,7 +32,7 @@ from .serializers import (
     ConfigurarSemanaCompletaSerializer, ConfigurarHorarioRapidoSerializer,
     MechanicServiceAreaSerializer, MechanicServiceAreaCreateSerializer, MechanicServiceAreaUpdateSerializer,
     ChileanCommuneSerializer, ConnectionStatusSerializer, ProviderProfileSerializer, ReviewSerializer, TallerDireccionSerializer,
-    NotificacionSerializer
+    NotificacionSerializer, MiembroTallerSerializer
 )
 from mecanimovilapp.apps.servicios.models import CategoriaServicio
 from django.contrib.auth import authenticate
@@ -1498,6 +1498,7 @@ class TallerViewSet(viewsets.ModelViewSet):
             )
         oferta_id = request.query_params.get('oferta_servicio_id')
         oferta_servicio_id = int(oferta_id) if oferta_id and str(oferta_id).isdigit() else None
+        modalidad = (request.query_params.get('modalidad') or request.query_params.get('tipo_servicio') or '').strip() or None
 
         import logging
         logger = logging.getLogger(__name__)
@@ -1506,6 +1507,7 @@ class TallerViewSet(viewsets.ModelViewSet):
                 taller=taller,
                 fecha=fecha,
                 oferta_servicio_id=oferta_servicio_id,
+                modalidad=modalidad,
             )
         except Exception:
             logger.exception(
@@ -1539,6 +1541,7 @@ class TallerViewSet(viewsets.ModelViewSet):
         taller = self.get_object()
         oferta_id = request.query_params.get('oferta_servicio_id')
         oferta_servicio_id = int(oferta_id) if oferta_id and str(oferta_id).isdigit() else None
+        modalidad = (request.query_params.get('modalidad') or request.query_params.get('tipo_servicio') or '').strip() or None
         try:
             dias = int(request.query_params.get('dias', 14))
         except (TypeError, ValueError):
@@ -1548,6 +1551,7 @@ class TallerViewSet(viewsets.ModelViewSet):
                 taller=taller,
                 oferta_servicio_id=oferta_servicio_id,
                 dias_adelante=min(max(dias, 1), 30),
+                modalidad=modalidad,
             )
         except Exception:
             logger.exception(
@@ -4318,6 +4322,102 @@ def completar_onboarding(request):
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+class MiembroTallerViewSet(viewsets.ModelViewSet):
+    """
+    Gestión del equipo del taller (mandante, supervisor, mecánicos).
+
+    Scoped al taller del usuario autenticado (el dueño). El dueño hace CRUD de
+    mecánicos y designa supervisor; habilitar/deshabilitar es acción del supervisor
+    (ejercida por el dueño en esta fase).
+    """
+    serializer_class = MiembroTallerSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
+    filterset_fields = ['rol', 'activo']
+    ordering_fields = ['rol', 'nombre', 'fecha_creacion']
+    ordering = ['rol', 'nombre']
+
+    def _get_taller(self):
+        user = self.request.user
+        taller = getattr(user, 'taller', None)
+        if taller is None:
+            taller = Taller.objects.filter(usuario=user).first()
+        return taller
+
+    def get_queryset(self):
+        taller = self._get_taller()
+        if taller is None:
+            return MiembroTaller.objects.none()
+        return (
+            MiembroTaller.objects
+            .filter(taller=taller)
+            .prefetch_related('especialidades')
+        )
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context['taller'] = self._get_taller()
+        return context
+
+    def perform_create(self, serializer):
+        taller = self._get_taller()
+        if taller is None:
+            raise ValidationError('El usuario debe tener un taller para gestionar su equipo.')
+        serializer.save(taller=taller)
+
+    @action(detail=True, methods=['post'])
+    def habilitar(self, request, pk=None):
+        miembro = self.get_object()
+        miembro.activo = True
+        miembro.save(update_fields=['activo', 'fecha_actualizacion'])
+        return Response(self.get_serializer(miembro).data)
+
+    @action(detail=True, methods=['post'])
+    def deshabilitar(self, request, pk=None):
+        miembro = self.get_object()
+        miembro.activo = False
+        miembro.save(update_fields=['activo', 'fecha_actualizacion'])
+        return Response(self.get_serializer(miembro).data)
+
+    @action(detail=False, methods=['get'])
+    def rendimiento(self, request):
+        """
+        Rendimiento por mecánico: órdenes asignadas y completadas en un rango.
+        Query params opcionales: desde=YYYY-MM-DD, hasta=YYYY-MM-DD.
+        """
+        from mecanimovilapp.apps.ordenes.models import SolicitudServicio
+
+        taller = self._get_taller()
+        if taller is None:
+            return Response([], status=status.HTTP_200_OK)
+
+        desde = request.query_params.get('desde')
+        hasta = request.query_params.get('hasta')
+
+        mecanicos = MiembroTaller.objects.filter(taller=taller, rol='mecanico')
+        resultados = []
+        for mecanico in mecanicos:
+            qs = SolicitudServicio.objects.filter(mecanico_asignado=mecanico)
+            if desde:
+                qs = qs.filter(fecha_servicio__gte=desde)
+            if hasta:
+                qs = qs.filter(fecha_servicio__lte=hasta)
+            total = qs.count()
+            completadas = qs.filter(estado='completado').count()
+            en_proceso = qs.filter(
+                estado__in=['en_proceso', 'aceptada_por_proveedor', 'confirmado']
+            ).count()
+            resultados.append({
+                'mecanico_id': mecanico.id,
+                'nombre': mecanico.nombre,
+                'activo': mecanico.activo,
+                'ordenes_asignadas': total,
+                'ordenes_completadas': completadas,
+                'ordenes_en_proceso': en_proceso,
+            })
+        return Response(resultados, status=status.HTTP_200_OK)
+
+
 class HorarioProveedorViewSet(viewsets.ModelViewSet):
     """
     ViewSet para el modelo HorarioProveedor - Gestión unificada de horarios
@@ -4326,7 +4426,7 @@ class HorarioProveedorViewSet(viewsets.ModelViewSet):
     serializer_class = HorarioProveedorSerializer
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
-    filterset_fields = ['dia_semana', 'activo', 'taller', 'mecanico']
+    filterset_fields = ['dia_semana', 'activo', 'taller', 'mecanico', 'miembro_taller']
     ordering_fields = ['dia_semana']
     ordering = ['dia_semana']
     
@@ -4362,12 +4462,46 @@ class HorarioProveedorViewSet(viewsets.ModelViewSet):
         else:
             raise ValidationError("El usuario debe tener un perfil de taller o mecánico para configurar horarios.")
     
+    def _resolver_miembro_taller(self, request, taller):
+        """Resuelve y valida el MiembroTaller indicado para el taller dado.
+
+        Devuelve (miembro, error_response). Si no se indica miembro, retorna
+        (None, None) para operar a nivel taller (fallback)."""
+        miembro_id = request.query_params.get('miembro_taller') or request.data.get('miembro_taller')
+        if miembro_id in (None, '', 'null'):
+            return None, None
+        if taller is None:
+            return None, Response(
+                {'error': 'Solo los talleres pueden configurar horarios por mecánico'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            miembro = MiembroTaller.objects.get(pk=miembro_id, taller=taller)
+        except (MiembroTaller.DoesNotExist, ValueError, TypeError):
+            return None, Response(
+                {'error': 'El miembro indicado no pertenece a tu taller'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return miembro, None
+
     @action(detail=False, methods=['get'])
     def mis_horarios(self, request):
         """
-        Obtener todos los horarios configurados del proveedor autenticado
+        Obtener los horarios configurados del proveedor autenticado.
+
+        Si se indica `?miembro_taller=<id>` devuelve la agenda individual de ese
+        mecánico; en caso contrario devuelve la agenda a nivel taller (fallback).
         """
         queryset = self.get_queryset()
+        taller = getattr(request.user, 'taller', None)
+        miembro, error = self._resolver_miembro_taller(request, taller)
+        if error is not None:
+            return error
+        if miembro is not None:
+            queryset = queryset.filter(miembro_taller=miembro)
+        elif taller is not None:
+            # Agenda a nivel taller: excluir horarios específicos de mecánicos
+            queryset = queryset.filter(miembro_taller__isnull=True)
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
     
@@ -4392,16 +4526,34 @@ class HorarioProveedorViewSet(viewsets.ModelViewSet):
                 'error': 'Debe tener un perfil de taller o mecánico para configurar horarios'
             }, status=status.HTTP_400_BAD_REQUEST)
         
+        # Resolver agenda por mecánico (opcional). Si se indica, los horarios
+        # se asocian al MiembroTaller en lugar de al taller completo.
+        taller = proveedor if tipo_proveedor == 'taller' else None
+        miembro, error = self._resolver_miembro_taller(request, taller)
+        if error is not None:
+            return error
+
         # Validar datos con el serializer
         serializer = ConfigurarSemanaCompletaSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         
         data = serializer.validated_data
+
+        # Claves base del horario según el destino (taller, mecánico legacy o miembro)
+        if miembro is not None:
+            base_kwargs = {'miembro_taller': miembro, 'taller': taller, 'mecanico': None}
+            filtro_existente = {'miembro_taller': miembro}
+        else:
+            base_kwargs = {tipo_proveedor: proveedor}
+            # A nivel taller, no tocar los horarios específicos de mecánicos
+            filtro_existente = {tipo_proveedor: proveedor}
+            if tipo_proveedor == 'taller':
+                filtro_existente['miembro_taller__isnull'] = True
         
         # Eliminar configuraciones existentes si se solicita
         if data.get('eliminar_existente', True):
-            HorarioProveedor.objects.filter(**{tipo_proveedor: proveedor}).delete()
+            HorarioProveedor.objects.filter(**filtro_existente).delete()
         
         # Crear nuevas configuraciones
         horarios_creados = []
@@ -4424,7 +4576,7 @@ class HorarioProveedorViewSet(viewsets.ModelViewSet):
                 tiempo_descanso = data['tiempo_descanso_global']
             
             horario_data = {
-                tipo_proveedor: proveedor,
+                **base_kwargs,
                 'dia_semana': dia,
                 'activo': activo,
                 'hora_inicio': hora_inicio,
@@ -4439,9 +4591,11 @@ class HorarioProveedorViewSet(viewsets.ModelViewSet):
         # Serializar y devolver
         horarios_serializer = self.get_serializer(horarios_creados, many=True)
         
+        destino = f'mecánico {miembro.nombre}' if miembro is not None else f'{tipo_proveedor}: {proveedor.nombre}'
         return Response({
-            'mensaje': f'Horarios configurados exitosamente para {tipo_proveedor}: {proveedor.nombre}',
+            'mensaje': f'Horarios configurados exitosamente para {destino}',
             'tipo_proveedor': tipo_proveedor,
+            'miembro_taller': miembro.id if miembro is not None else None,
             'total_dias_configurados': len(horarios_creados),
             'dias_activos': len([h for h in horarios_creados if h.activo]),
             'horarios': horarios_serializer.data

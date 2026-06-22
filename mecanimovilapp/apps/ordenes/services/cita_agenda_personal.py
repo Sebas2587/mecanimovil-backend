@@ -11,7 +11,13 @@ from django.utils import timezone
 
 from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonal, CitaAgendaPersonalDetalle
 from mecanimovilapp.apps.servicios.models import OfertaServicio
-from mecanimovilapp.apps.usuarios.models import HorarioProveedor, MecanicoDomicilio, Taller, Usuario
+from mecanimovilapp.apps.usuarios.models import (
+    HorarioProveedor,
+    MecanicoDomicilio,
+    MiembroTaller,
+    Taller,
+    Usuario,
+)
 from mecanimovilapp.apps.usuarios.services.disponibilidad_proveedor import (
     duracion_rango_oferta,
     intervalos_ocupados_dia,
@@ -125,11 +131,11 @@ def resolver_duracion_minutos(
     oferta_servicio: OfertaServicio | None,
     duracion_manual: int | None,
 ) -> int:
+    if duracion_manual and duracion_manual > 0:
+        return int(duracion_manual)
     if oferta_servicio is not None:
         _, max_dur = duracion_rango_oferta(oferta_servicio)
         return int(max_dur)
-    if duracion_manual and duracion_manual > 0:
-        return int(duracion_manual)
     return 60
 
 
@@ -173,6 +179,16 @@ def crear_cita_personal(
     tipo_servicio = cabecera.get('tipo_servicio', 'taller')
     validar_detalle(detalle, tipo_servicio=tipo_servicio)
 
+    # Mecánico asignado opcional (solo talleres con equipo)
+    miembro = None
+    miembro_id = cabecera.get('miembro_taller')
+    if miembro_id:
+        if taller is None:
+            raise ValidationError('Solo los talleres pueden asignar un mecánico a la cita.')
+        miembro = MiembroTaller.objects.filter(pk=miembro_id, taller=taller).first()
+        if miembro is None:
+            raise ValidationError({'miembro_taller': 'El mecánico no pertenece a este taller.'})
+
     oferta = None
     oferta_id = detalle.pop('oferta_servicio', None)
     if oferta_id:
@@ -201,6 +217,7 @@ def crear_cita_personal(
     cita = CitaAgendaPersonal(
         taller=taller,
         mecanico=mecanico,
+        miembro_taller=miembro,
         fecha_servicio=fecha,
         hora_servicio=hora,
         duracion_minutos=duracion,
@@ -285,6 +302,19 @@ def actualizar_cita_personal(
         if field in ('fecha_servicio', 'hora_servicio', 'duracion_minutos', 'tipo_servicio'):
             setattr(cita, field, value if field != 'duracion_minutos' else duracion)
     cita.duracion_minutos = duracion
+
+    # Reasignación de mecánico (opcional, solo talleres con equipo)
+    if 'miembro_taller' in cabecera:
+        miembro_id = cabecera.get('miembro_taller')
+        if not miembro_id:
+            cita.miembro_taller = None
+        elif cita.taller_id is None:
+            raise ValidationError('Solo los talleres pueden asignar un mecánico a la cita.')
+        else:
+            miembro = MiembroTaller.objects.filter(pk=miembro_id, taller_id=cita.taller_id).first()
+            if miembro is None:
+                raise ValidationError({'miembro_taller': 'El mecánico no pertenece a este taller.'})
+            cita.miembro_taller = miembro
     cita.full_clean()
     cita.save()
 

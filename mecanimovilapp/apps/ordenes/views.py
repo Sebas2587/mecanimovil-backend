@@ -1145,7 +1145,13 @@ class CarritoAgendamientoViewSet(viewsets.ModelViewSet):
                 }
                 
                 LineaServicio.objects.create(**linea_data)
-                
+
+                # Asignación automática de mecánico (taller con equipo); no bloquea la creación.
+                from mecanimovilapp.apps.ordenes.services.asignacion_mecanico import (
+                    asignar_mecanico_a_solicitud,
+                )
+                asignar_mecanico_a_solicitud(solicitud)
+
                 solicitudes_creadas.append(solicitud)
             
             # Marcar carrito como inactivo
@@ -1466,7 +1472,13 @@ class AgendamientoViewSet(viewsets.ViewSet):
                 }
                 
                 LineaServicio.objects.create(**linea_data)
-                
+
+                # Asignación automática de mecánico (taller con equipo); no bloquea la creación.
+                from mecanimovilapp.apps.ordenes.services.asignacion_mecanico import (
+                    asignar_mecanico_a_solicitud,
+                )
+                asignar_mecanico_a_solicitud(solicitud)
+
                 solicitudes_creadas.append(solicitud)
             
             # Marcar carrito como inactivo
@@ -2237,6 +2249,13 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
                         )
                     
                     logger.info(f"✅ SolicitudServicio creada automáticamente para oferta {oferta.id} (secundaria: {oferta.es_oferta_secundaria}): {solicitud_servicio.id}")
+
+                    # Asignación automática de mecánico (taller con equipo); no bloquea la creación.
+                    from mecanimovilapp.apps.ordenes.services.asignacion_mecanico import (
+                        asignar_mecanico_a_solicitud,
+                    )
+                    asignar_mecanico_a_solicitud(solicitud_servicio)
+
                     ordenes_creadas.append(solicitud_servicio)
                     
                     # ✅ Crear checklist automáticamente si existe template
@@ -3942,7 +3961,13 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
                     )
                     
                     logger.info(f"Línea de servicio creada para {detalle.servicio.nombre}")
-                
+
+                # Asignación automática de mecánico (taller con equipo); no bloquea la creación.
+                from mecanimovilapp.apps.ordenes.services.asignacion_mecanico import (
+                    asignar_mecanico_a_solicitud,
+                )
+                asignar_mecanico_a_solicitud(solicitud_servicio)
+
                 # ✅ NOTA: Los créditos ya se consumieron al adjudicar la oferta (en seleccionar_oferta)
                 # No es necesario consumirlos nuevamente aquí
                 
