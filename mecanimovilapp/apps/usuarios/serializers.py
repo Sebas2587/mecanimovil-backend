@@ -381,6 +381,11 @@ class MiembroTallerSerializer(serializers.ModelSerializer):
         return usuario
 
     def create(self, validated_data):
+        if self.context.get('rol_taller') == 'supervisor':
+            raise serializers.ValidationError(
+                {'rol': 'Solo el dueño del taller puede designar o editar supervisores.'}
+            )
+
         username = validated_data.pop('username', '')
         password = validated_data.pop('password', '')
         email = validated_data.pop('email', '')
@@ -402,6 +407,11 @@ class MiembroTallerSerializer(serializers.ModelSerializer):
         return miembro
 
     def update(self, instance, validated_data):
+        # Un supervisor autenticado no puede alterar credenciales, permisos ni roles.
+        if self.context.get('rol_taller') == 'supervisor':
+            for campo in ('permisos', 'username', 'password', 'email', 'rol'):
+                validated_data.pop(campo, None)
+
         username = validated_data.pop('username', None)
         password = validated_data.pop('password', None)
         email = validated_data.pop('email', None)

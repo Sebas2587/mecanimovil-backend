@@ -4386,15 +4386,22 @@ class MiembroTallerViewSet(viewsets.ModelViewSet):
         taller = self._get_taller()
         if taller is None:
             return MiembroTaller.objects.none()
-        return (
+        qs = (
             MiembroTaller.objects
             .filter(taller=taller)
             .prefetch_related('especialidades')
         )
+        # El supervisor solo ve mecánicos; mandante/supervisor son gestión del dueño.
+        _taller, _miembro, rol = self._contexto()
+        if rol == 'supervisor':
+            qs = qs.filter(rol='mecanico')
+        return qs
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
         context['taller'] = self._get_taller()
+        _taller, _miembro, rol = self._contexto()
+        context['rol_taller'] = rol
         return context
 
     def _exigir_gestion_mecanicos(self):
@@ -4427,8 +4434,13 @@ class MiembroTallerViewSet(viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         instance = serializer.instance
+        _taller, miembro_ctx, rol = self._contexto()
         if instance.rol == 'supervisor' or serializer.validated_data.get('rol') == 'supervisor':
             self._exigir_solo_mandante('editar al supervisor')
+        elif instance.rol == 'mandante':
+            raise PermissionDenied('No se puede modificar al dueño del taller.')
+        elif rol == 'supervisor' and instance.usuario_id == self.request.user.id:
+            raise PermissionDenied('No puedes modificar tu propio perfil de acceso.')
         else:
             self._exigir_gestion_mecanicos()
         serializer.save()
