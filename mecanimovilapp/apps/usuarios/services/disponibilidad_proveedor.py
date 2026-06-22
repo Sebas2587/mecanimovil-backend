@@ -521,6 +521,7 @@ def disponibilidad_con_duracion(
     fecha: date,
     oferta_servicio_id: int | None = None,
     modalidad: str | None = None,
+    miembro_taller_id: int | None = None,
 ) -> dict[str, Any]:
     dia_semana = fecha.weekday()
 
@@ -541,7 +542,7 @@ def disponibilidad_con_duracion(
                 getattr(mecanico, 'id', None),
             )
 
-    # Camino equipo de taller: disponibilidad = UNIÓN por mecánico apto.
+    # Camino equipo de taller: disponibilidad = UNIÓN por mecánico apto (o uno solo si miembro_taller_id).
     if taller is not None:
         categorias_req = _categorias_requeridas(oferta)
         aptos = mecanicos_aptos_taller(
@@ -549,6 +550,35 @@ def disponibilidad_con_duracion(
             categorias_requeridas=categorias_req,
             modalidad=modalidad,
         )
+        if miembro_taller_id:
+            miembro = MiembroTaller.objects.filter(
+                pk=miembro_taller_id,
+                taller=taller,
+                rol='mecanico',
+                activo=True,
+            ).first()
+            if not miembro or not any(m.id == miembro.id for m in aptos):
+                min_dur, max_dur = duracion_rango_oferta(oferta)
+                return {
+                    'fecha': fecha.isoformat(),
+                    'proveedor_disponible': False,
+                    'mensaje': 'El técnico seleccionado no está disponible para este servicio',
+                    'duracion_servicio_solicitado': {
+                        'minimo': min_dur,
+                        'maximo': max_dur,
+                        'etiqueta': etiqueta_duracion(min_dur, max_dur),
+                    },
+                    'estado_actual': estado_actual_proveedor(taller=taller),
+                    'slots_disponibles': [],
+                    'total_slots': 0,
+                }
+            return _disponibilidad_union_equipo(
+                taller=taller,
+                fecha=fecha,
+                dia_semana=dia_semana,
+                oferta=oferta,
+                aptos=[miembro],
+            )
         tiene_equipo = MiembroTaller.objects.filter(
             taller=taller, rol='mecanico', activo=True
         ).exists()
@@ -641,6 +671,7 @@ def dias_con_slots(
     oferta_servicio_id: int | None = None,
     dias_adelante: int = 14,
     modalidad: str | None = None,
+    miembro_taller_id: int | None = None,
 ) -> list[str]:
     """Fechas YYYY-MM-DD con al menos un slot en los próximos N días."""
     hoy = timezone.localdate()
@@ -654,6 +685,7 @@ def dias_con_slots(
                 fecha=f,
                 oferta_servicio_id=oferta_servicio_id,
                 modalidad=modalidad,
+                miembro_taller_id=miembro_taller_id,
             )
         except Exception:
             logger.exception(

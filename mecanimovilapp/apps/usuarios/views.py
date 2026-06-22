@@ -32,7 +32,7 @@ from .serializers import (
     ConfigurarSemanaCompletaSerializer, ConfigurarHorarioRapidoSerializer,
     MechanicServiceAreaSerializer, MechanicServiceAreaCreateSerializer, MechanicServiceAreaUpdateSerializer,
     ChileanCommuneSerializer, ConnectionStatusSerializer, ProviderProfileSerializer, ReviewSerializer, TallerDireccionSerializer,
-    NotificacionSerializer, MiembroTallerSerializer
+    NotificacionSerializer, MiembroTallerSerializer, MiembroTallerPublicoSerializer
 )
 from mecanimovilapp.apps.servicios.models import CategoriaServicio
 from django.contrib.auth import authenticate
@@ -1425,6 +1425,7 @@ class TallerViewSet(viewsets.ModelViewSet):
         if self.action in [
             'list', 'retrieve', 'horarios_disponibles', 'horarios_semanales',
             'disponibilidad_con_duracion', 'dias_disponibles_agenda',
+            'equipo_publico', 'mecanicos_aptos_agenda',
             'create', 'actualizar_propio', 'cerca', 'actualizar_ubicacion_domicilio',
             'proveedores_filtrados', 'reviews',
         ]:
@@ -1548,6 +1549,8 @@ class TallerViewSet(viewsets.ModelViewSet):
         oferta_id = request.query_params.get('oferta_servicio_id')
         oferta_servicio_id = int(oferta_id) if oferta_id and str(oferta_id).isdigit() else None
         modalidad = (request.query_params.get('modalidad') or request.query_params.get('tipo_servicio') or '').strip() or None
+        miembro_raw = request.query_params.get('miembro_taller')
+        miembro_taller_id = int(miembro_raw) if miembro_raw and str(miembro_raw).isdigit() else None
 
         import logging
         logger = logging.getLogger(__name__)
@@ -1557,6 +1560,7 @@ class TallerViewSet(viewsets.ModelViewSet):
                 fecha=fecha,
                 oferta_servicio_id=oferta_servicio_id,
                 modalidad=modalidad,
+                miembro_taller_id=miembro_taller_id,
             )
         except Exception:
             logger.exception(
@@ -1591,6 +1595,8 @@ class TallerViewSet(viewsets.ModelViewSet):
         oferta_id = request.query_params.get('oferta_servicio_id')
         oferta_servicio_id = int(oferta_id) if oferta_id and str(oferta_id).isdigit() else None
         modalidad = (request.query_params.get('modalidad') or request.query_params.get('tipo_servicio') or '').strip() or None
+        miembro_raw = request.query_params.get('miembro_taller')
+        miembro_taller_id = int(miembro_raw) if miembro_raw and str(miembro_raw).isdigit() else None
         try:
             dias = int(request.query_params.get('dias', 14))
         except (TypeError, ValueError):
@@ -1601,6 +1607,7 @@ class TallerViewSet(viewsets.ModelViewSet):
                 oferta_servicio_id=oferta_servicio_id,
                 dias_adelante=min(max(dias, 1), 30),
                 modalidad=modalidad,
+                miembro_taller_id=miembro_taller_id,
             )
         except Exception:
             logger.exception(
@@ -1632,8 +1639,132 @@ class TallerViewSet(viewsets.ModelViewSet):
         from mecanimovilapp.apps.usuarios.models import HorarioProveedor
 
         taller = self.get_object()
-        qs = HorarioProveedor.objects.filter(taller=taller, activo=True).order_by('dia_semana')
+        tiene_equipo = MiembroTaller.objects.filter(
+            taller=taller, rol='mecanico', activo=True,
+        ).exists()
+        qs = HorarioProveedor.objects.filter(taller=taller, activo=True)
+        if tiene_equipo:
+            qs = qs.filter(miembro_taller__isnull=True)
+        qs = qs.order_by('dia_semana')
         return Response(HorarioProveedorSerializer(qs, many=True).data)
+
+    @action(detail=True, methods=['get'], url_path='equipo-publico')
+    def equipo_publico(self, request, pk=None):
+        """Mecánicos activos del taller visibles en el perfil público."""
+        from mecanimovilapp.apps.servicios.models import OfertaServicio
+        from mecanimovilapp.apps.usuarios.services.disponibilidad_proveedor import mecanicos_aptos_taller
+
+        taller = self.get_object()
+        oferta_id = request.query_params.get('oferta_servicio_id')
+        oferta_servicio_id = int(oferta_id) if oferta_id and str(oferta_id).isdigit() else None
+        modalidad = (request.query_params.get('modalidad') or request.query_params.get('tipo_servicio') or '').strip() or None
+
+        oferta = None
+        categorias_req: list[int] = []
+        if oferta_servicio_id:
+            oferta = OfertaServicio.objects.filter(
+                pk=oferta_servicio_id, taller=taller,
+            ).select_related('servicio').first()
+            if oferta and oferta.servicio_id:
+                categorias_req = list(oferta.servicio.categorias.values_list('id', flat=True))
+
+        if oferta_servicio_id and categorias_req:
+            aptos = mecanicos_aptos_taller(
+                taller,
+                categorias_requeridas=categorias_req,
+                modalidad=modalidad,
+            )
+            apto_ids = [m.id for m in aptos]
+            mecanicos = (
+                MiembroTaller.objects.filter(id__in=apto_ids)
+                .prefetch_related('especialidades')
+                .annotate(servicios_asignados=Count('solicitudes_asignadas'))
+                .order_by('nombre')
+            )
+        else:
+            mecanicos = (
+                MiembroTaller.objects.filter(
+                    taller=taller, rol='mecanico', activo=True,
+                ).prefetch_related('especialidades').annotate(
+                    servicios_asignados=Count('solicitudes_asignadas'),
+                ).order_by('nombre')
+            )
+
+        miembro_ids = [m.id for m in mecanicos]
+        horarios_qs = HorarioProveedor.objects.filter(
+            miembro_taller_id__in=miembro_ids, activo=True,
+        ).order_by('dia_semana')
+        horarios_por_miembro: dict[int, list] = {}
+        for h in horarios_qs:
+            horarios_por_miembro.setdefault(h.miembro_taller_id, []).append(h)
+
+        serializer = MiembroTallerPublicoSerializer(
+            mecanicos,
+            many=True,
+            context={
+                'request': request,
+                'horarios_por_miembro': horarios_por_miembro,
+            },
+        )
+        return Response({
+            'taller_id': taller.id,
+            'miembros': serializer.data,
+        })
+
+    @action(detail=True, methods=['get'], url_path='mecanicos-aptos-agenda')
+    def mecanicos_aptos_agenda(self, request, pk=None):
+        """Mecánicos aptos para agendar (picker del calendario del cliente)."""
+        from mecanimovilapp.apps.servicios.models import OfertaServicio
+        from mecanimovilapp.apps.usuarios.services.disponibilidad_proveedor import mecanicos_aptos_taller
+
+        taller = self.get_object()
+        oferta_id = request.query_params.get('oferta_servicio_id')
+        oferta_servicio_id = int(oferta_id) if oferta_id and str(oferta_id).isdigit() else None
+        modalidad = (request.query_params.get('modalidad') or request.query_params.get('tipo_servicio') or '').strip() or None
+
+        oferta = None
+        categorias_req: list[int] = []
+        if oferta_servicio_id:
+            oferta = OfertaServicio.objects.filter(
+                pk=oferta_servicio_id, taller=taller,
+            ).select_related('servicio').first()
+            if oferta and oferta.servicio_id:
+                categorias_req = list(oferta.servicio.categorias.values_list('id', flat=True))
+
+        mecanicos = mecanicos_aptos_taller(
+            taller,
+            categorias_requeridas=categorias_req,
+            modalidad=modalidad,
+        )
+        if not mecanicos:
+            return Response({'taller_id': taller.id, 'miembros': []})
+
+        miembro_ids = [m.id for m in mecanicos]
+        horarios_qs = HorarioProveedor.objects.filter(
+            miembro_taller_id__in=miembro_ids, activo=True,
+        ).order_by('dia_semana')
+        horarios_por_miembro: dict[int, list] = {}
+        for h in horarios_qs:
+            horarios_por_miembro.setdefault(h.miembro_taller_id, []).append(h)
+
+        mecanicos_annotated = (
+            MiembroTaller.objects.filter(id__in=miembro_ids)
+            .prefetch_related('especialidades')
+            .annotate(servicios_asignados=Count('solicitudes_asignadas'))
+            .order_by('nombre')
+        )
+        serializer = MiembroTallerPublicoSerializer(
+            mecanicos_annotated,
+            many=True,
+            context={
+                'request': request,
+                'horarios_por_miembro': horarios_por_miembro,
+            },
+        )
+        return Response({
+            'taller_id': taller.id,
+            'miembros': serializer.data,
+        })
     
     def _generar_horario_defecto_taller(self, dia_semana):
         """
@@ -4507,6 +4638,43 @@ class MiembroTallerViewSet(viewsets.ModelViewSet):
                 'ordenes_en_proceso': en_proceso,
             })
         return Response(resultados, status=status.HTTP_200_OK)
+
+    @action(
+        detail=True,
+        methods=['post'],
+        url_path='subir-foto',
+        parser_classes=[MultiPartParser, FormParser],
+    )
+    def subir_foto(self, request, pk=None):
+        """Sube o reemplaza la foto de perfil de un miembro del equipo."""
+        self._exigir_gestion_mecanicos()
+        miembro = self.get_object()
+        if miembro.rol != 'mecanico':
+            return Response(
+                {'error': 'Solo los mecánicos pueden tener foto de perfil pública.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if 'foto' not in request.FILES:
+            return Response(
+                {'error': 'No se proporcionó ninguna imagen (campo foto).'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        uploaded = request.FILES['foto']
+        allowed_types = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp']
+        if uploaded.content_type not in allowed_types:
+            return Response(
+                {'error': f'Tipo de archivo no permitido. Use: {", ".join(allowed_types)}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        max_size = 10 * 1024 * 1024
+        if uploaded.size > max_size:
+            return Response(
+                {'error': 'El archivo es demasiado grande. Tamaño máximo: 10MB'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        miembro.foto = uploaded
+        miembro.save(update_fields=['foto', 'fecha_actualizacion'])
+        return Response(self.get_serializer(miembro).data)
 
 
 class HorarioProveedorViewSet(viewsets.ModelViewSet):

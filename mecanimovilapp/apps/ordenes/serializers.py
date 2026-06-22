@@ -1018,6 +1018,7 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
     rechazada_por_expiracion = serializers.SerializerMethodField()
     fecha_limite_pago = serializers.SerializerMethodField()
     tiempo_restante_pago = serializers.SerializerMethodField()
+    miembro_taller_detail = serializers.SerializerMethodField()
     
     # Campos para informaci?n de pago directo al proveedor
     proveedor_puede_recibir_pagos = serializers.SerializerMethodField()
@@ -1035,6 +1036,7 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
             'rating_proveedor', 'precio_total_ofrecido', 'incluye_repuestos',
             'tiempo_estimado_total', 'descripcion_oferta', 'garantia_ofrecida',
             'fecha_disponible', 'hora_disponible', 'es_fecha_alternativa', 'motivo_fecha_alternativa', 'estado', 'fecha_envio',
+            'miembro_taller_asignado', 'es_cambio_tecnico', 'miembro_taller_detail',
             'fecha_visualizacion_cliente', 'detalles_servicios', 'servicios_ofertados',
             'total_mensajes_chat', 'mensajes_no_leidos', 'tiempo_restante_solicitud',
             'antiguedad_proveedor', 'servicios_realizados_proveedor', 'proveedor_verificado',
@@ -1195,6 +1197,26 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
         except Exception:
             return False
     
+    def get_miembro_taller_detail(self, obj):
+        miembro = obj.miembro_taller_asignado
+        if not miembro:
+            pref = getattr(obj.solicitud, 'miembro_taller_preferido', None)
+            miembro = pref
+        if not miembro:
+            return None
+        request = self.context.get('request')
+        return {
+            'id': miembro.id,
+            'nombre': miembro.nombre,
+            'foto_url': get_image_url(miembro.foto, request) if miembro.foto else None,
+            'modalidad_tecnico': miembro.modalidad_tecnico,
+            'modalidad_display': miembro.get_modalidad_tecnico_display(),
+            'especialidades': [
+                {'id': c.id, 'nombre': c.nombre}
+                for c in miembro.especialidades.all()
+            ],
+        }
+
     def get_proveedor_foto(self, obj):
         """Retorna la foto del perfil del proveedor usando cPanel si est? configurado"""
         try:
@@ -1618,6 +1640,7 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
     oferta_seleccionada_detail = serializers.SerializerMethodField()
     modalidad_servicio = serializers.SerializerMethodField()
     tipo_proveedor_servicio = serializers.SerializerMethodField()
+    miembro_taller_preferido_detail = serializers.SerializerMethodField()
     puede_reenviar = serializers.SerializerMethodField()
     fotos_necesidad = serializers.SerializerMethodField()
     fotos_necesidad_data = serializers.ListField(
@@ -1641,6 +1664,7 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
             'direccion_usuario', 'direccion_usuario_info',
             'ubicacion_servicio', 'direccion_servicio_texto', 'detalles_ubicacion',
             'modalidad_servicio', 'tipo_proveedor_servicio',
+            'miembro_taller_preferido', 'miembro_taller_preferido_detail',
             'fecha_preferida', 'hora_preferida', 'estado', 'estado_display', 'fecha_creacion',
             'fecha_publicacion', 'fecha_expiracion', 'fecha_limite_pago', 'tiempo_restante',
             'puede_recibir_ofertas', 'puede_ver_datos_cliente', 'total_ofertas', 'total_visualizaciones',
@@ -1911,6 +1935,24 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
 
     def get_modalidad_servicio(self, obj):
         return modalidad_servicio_dict(self.get_tipo_proveedor_servicio(obj))
+
+    def get_miembro_taller_preferido_detail(self, obj):
+        miembro = obj.miembro_taller_preferido
+        if not miembro:
+            return None
+        request = self.context.get('request')
+        from mecanimovilapp.storage.utils import get_image_url
+        return {
+            'id': miembro.id,
+            'nombre': miembro.nombre,
+            'foto_url': get_image_url(miembro.foto, request) if miembro.foto else None,
+            'modalidad_tecnico': miembro.modalidad_tecnico,
+            'modalidad_display': miembro.get_modalidad_tecnico_display(),
+            'especialidades': [
+                {'id': c.id, 'nombre': c.nombre}
+                for c in miembro.especialidades.all()
+            ],
+        }
     
     def get_rechazos(self, obj):
         """Retorna los rechazos de la solicitud"""

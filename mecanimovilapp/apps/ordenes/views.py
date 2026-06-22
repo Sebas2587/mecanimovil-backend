@@ -5293,6 +5293,7 @@ class OfertaProveedorViewSet(viewsets.ModelViewSet):
                 fecha_disponible=data.get('fecha_disponible'),
                 hora_disponible=data.get('hora_disponible'),
                 motivo=data.get('motivo', ''),
+                miembro_taller_id=data.get('miembro_taller_id') or data.get('miembro_taller'),
             )
             return Response(resultado)
         except ConfirmacionCatalogoError as e:

@@ -47,6 +47,9 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
     editable = serializers.SerializerMethodField()
     tiene_checklist = serializers.SerializerMethodField()
     mecanico_nombre = serializers.SerializerMethodField()
+    mecanico_especialidades = serializers.SerializerMethodField()
+    mecanico_modalidad_tecnico = serializers.SerializerMethodField()
+    mecanico_modalidad_display = serializers.SerializerMethodField()
 
     class Meta:
         model = CitaAgendaPersonal
@@ -68,6 +71,9 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
             'tiene_checklist',
             'miembro_taller',
             'mecanico_nombre',
+            'mecanico_especialidades',
+            'mecanico_modalidad_tecnico',
+            'mecanico_modalidad_display',
         ]
         read_only_fields = [
             'id',
@@ -92,6 +98,21 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
 
     def get_mecanico_nombre(self, obj) -> str | None:
         return obj.miembro_taller.nombre if obj.miembro_taller_id else None
+
+    def get_mecanico_especialidades(self, obj) -> list[str]:
+        if not obj.miembro_taller_id:
+            return []
+        return list(obj.miembro_taller.especialidades.values_list('nombre', flat=True))
+
+    def get_mecanico_modalidad_tecnico(self, obj) -> str | None:
+        if not obj.miembro_taller_id:
+            return None
+        return obj.miembro_taller.modalidad_tecnico
+
+    def get_mecanico_modalidad_display(self, obj) -> str | None:
+        if not obj.miembro_taller_id:
+            return None
+        return obj.miembro_taller.get_modalidad_tecnico_display()
 
 
 class CitaAgendaPersonalCreateSerializer(serializers.Serializer):

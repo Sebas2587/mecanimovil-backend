@@ -286,6 +286,7 @@ class MiembroTallerSerializer(serializers.ModelSerializer):
     usuario_username = serializers.SerializerMethodField(read_only=True)
     usuario_email = serializers.SerializerMethodField(read_only=True)
     tiene_acceso = serializers.SerializerMethodField(read_only=True)
+    foto_url = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = MiembroTaller
@@ -293,7 +294,7 @@ class MiembroTallerSerializer(serializers.ModelSerializer):
             'id', 'rol', 'rol_display', 'nombre', 'usuario',
             'especialidades', 'especialidades_detalle',
             'modalidad_tecnico', 'modalidad_tecnico_display',
-            'activo', 'permisos',
+            'activo', 'permisos', 'foto_url',
             'username', 'password', 'email',
             'usuario_username', 'usuario_email', 'tiene_acceso',
             'fecha_creacion', 'fecha_actualizacion',
@@ -314,6 +315,12 @@ class MiembroTallerSerializer(serializers.ModelSerializer):
 
     def get_tiene_acceso(self, obj):
         return bool(obj.usuario_id)
+
+    def get_foto_url(self, obj):
+        request = self.context.get('request')
+        if not obj.foto:
+            return None
+        return get_image_url(obj.foto, request)
 
     def validate(self, data):
         rol = data.get('rol', getattr(self.instance, 'rol', 'mecanico'))
@@ -441,6 +448,46 @@ class MiembroTallerSerializer(serializers.ModelSerializer):
         if especialidades is not None:
             instance.especialidades.set(especialidades)
         return instance
+
+
+class MiembroTallerPublicoSerializer(serializers.ModelSerializer):
+    """Equipo visible en el perfil público del taller (solo mecánicos activos)."""
+    foto_url = serializers.SerializerMethodField()
+    especialidades = serializers.SerializerMethodField()
+    modalidad_display = serializers.CharField(
+        source='get_modalidad_tecnico_display', read_only=True,
+    )
+    servicios_asignados = serializers.IntegerField(read_only=True)
+    horarios_semanales = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MiembroTaller
+        fields = [
+            'id', 'nombre', 'foto_url', 'especialidades',
+            'modalidad_tecnico', 'modalidad_display',
+            'servicios_asignados', 'horarios_semanales',
+        ]
+
+    def get_foto_url(self, obj):
+        request = self.context.get('request')
+        if not obj.foto:
+            return None
+        return get_image_url(obj.foto, request)
+
+    def get_especialidades(self, obj):
+        return [
+            {'id': c.id, 'nombre': c.nombre}
+            for c in obj.especialidades.all()
+        ]
+
+    def get_horarios_semanales(self, obj):
+        horarios_map = self.context.get('horarios_por_miembro') or {}
+        horarios = horarios_map.get(obj.id)
+        if horarios is None:
+            horarios = HorarioProveedor.objects.filter(
+                miembro_taller=obj, activo=True,
+            ).order_by('dia_semana')
+        return HorarioProveedorSerializer(horarios, many=True).data
 
 
 class ConfigurarSemanaCompletaSerializer(serializers.Serializer):

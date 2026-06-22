@@ -50,13 +50,15 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
         if taller:
             return (
                 CitaAgendaPersonal.objects.filter(taller=taller)
-                .select_related('detalle', 'detalle__oferta_servicio__servicio')
+                .select_related('detalle', 'detalle__oferta_servicio__servicio', 'miembro_taller')
+                .prefetch_related('miembro_taller__especialidades')
                 .order_by('-fecha_servicio', '-hora_servicio')
             )
         if mecanico:
             return (
                 CitaAgendaPersonal.objects.filter(mecanico=mecanico)
-                .select_related('detalle', 'detalle__oferta_servicio__servicio')
+                .select_related('detalle', 'detalle__oferta_servicio__servicio', 'miembro_taller')
+                .prefetch_related('miembro_taller__especialidades')
                 .order_by('-fecha_servicio', '-hora_servicio')
             )
         return CitaAgendaPersonal.objects.none()

@@ -157,6 +157,34 @@ def asignar_mecanico_a_solicitud(solicitud, *, guardar: bool = True) -> MiembroT
         categorias = _categorias_de_solicitud(solicitud)
         modalidad = _modalidad_desde_tipo_servicio(getattr(solicitud, 'tipo_servicio', None))
 
+        miembro_pref = None
+        oferta = getattr(solicitud, 'oferta_proveedor', None)
+        if oferta is not None:
+            if oferta.miembro_taller_asignado_id:
+                miembro_pref = oferta.miembro_taller_asignado
+            elif oferta.solicitud.miembro_taller_preferido_id:
+                miembro_pref = oferta.solicitud.miembro_taller_preferido
+
+        if miembro_pref is not None:
+            aptos = mecanicos_aptos_taller(
+                taller,
+                categorias_requeridas=categorias,
+                modalidad=modalidad,
+            )
+            if any(m.id == miembro_pref.id for m in aptos) and _miembro_libre_en_slot(
+                miembro=miembro_pref,
+                taller=taller,
+                fecha=solicitud.fecha_servicio,
+                hora=solicitud.hora_servicio,
+                duracion_minutos=duracion,
+            ):
+                if guardar:
+                    solicitud.mecanico_asignado = miembro_pref
+                    solicitud.save(update_fields=['mecanico_asignado'])
+                else:
+                    solicitud.mecanico_asignado = miembro_pref
+                return miembro_pref
+
         miembro = seleccionar_mecanico(
             taller=taller,
             fecha=solicitud.fecha_servicio,

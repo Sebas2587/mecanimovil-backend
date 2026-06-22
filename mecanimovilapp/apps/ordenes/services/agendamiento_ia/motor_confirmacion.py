@@ -184,6 +184,7 @@ def _crear_oferta_catalogo_con_lineas(
     metadata_ia: dict | None,
     fecha_disponible: date,
     hora_disponible: time | None,
+    miembro_taller_asignado=None,
 ) -> OfertaProveedor:
     """Una OfertaProveedor con un DetalleServicioOferta por cada OfertaServicio del proveedor."""
     if not ofertas_servicio:
@@ -233,6 +234,7 @@ def _crear_oferta_catalogo_con_lineas(
         fecha_disponible=fecha_disponible,
         hora_disponible=hora_disponible,
         es_fecha_alternativa=False,
+        miembro_taller_asignado=miembro_taller_asignado,
         estado='pendiente_confirmacion',
         es_oferta_secundaria=False,
     )
@@ -360,6 +362,24 @@ def confirmar_candidato(cliente: Cliente, payload: dict[str, Any]) -> dict[str, 
     if isinstance(requiere_repuestos, str):
         requiere_repuestos = requiere_repuestos.lower() in ('1', 'true', 'yes', 'si')
 
+    miembro_preferido = None
+    miembro_raw = payload.get('miembro_taller_preferido') or payload.get('miembro_taller_id')
+    if miembro_raw and tipo_proveedor == 'taller':
+        from mecanimovilapp.apps.usuarios.models import MiembroTaller
+        taller_cat = ofertas_servicio[0].taller
+        if taller_cat:
+            miembro_preferido = MiembroTaller.objects.filter(
+                pk=miembro_raw,
+                taller=taller_cat,
+                rol='mecanico',
+                activo=True,
+            ).first()
+            if not miembro_preferido:
+                raise ConfirmacionCatalogoError(
+                    'El técnico seleccionado no es válido para este taller',
+                    'miembro_invalido',
+                )
+
     lat = payload.get('lat')
     lng = payload.get('lng')
     if lat is None or lng is None:
@@ -430,6 +450,7 @@ def confirmar_candidato(cliente: Cliente, payload: dict[str, Any]) -> dict[str, 
         fecha_expiracion=fecha_expiracion,
         metadata_ia_entrada=metadata_entrada,
         total_ofertas=1,
+        miembro_taller_preferido=miembro_preferido,
     )
     solicitud.servicios_solicitados.set(
         Servicio.objects.filter(id__in=servicio_ids)
@@ -445,6 +466,7 @@ def confirmar_candidato(cliente: Cliente, payload: dict[str, Any]) -> dict[str, 
         metadata_ia=metadata_ia_oferta,
         fecha_disponible=fecha_preferida,
         hora_disponible=hora_preferida,
+        miembro_taller_asignado=miembro_preferido,
     )
     solicitud.oferta_seleccionada = oferta
     solicitud.save(update_fields=['oferta_seleccionada', 'fecha_actualizacion'])
@@ -509,17 +531,72 @@ def proveedor_proponer_fecha_catalogo(
     fecha_disponible,
     hora_disponible=None,
     motivo: str = '',
+    miembro_taller_id=None,
 ) -> dict:
+    from mecanimovilapp.apps.usuarios.models import MiembroTaller, Taller
+    from mecanimovilapp.apps.ordenes.services.asignacion_mecanico import (
+        _categorias_de_solicitud,
+        _miembro_libre_en_slot,
+        _modalidad_desde_tipo_servicio,
+        _duracion_solicitud_minutos,
+    )
+    from mecanimovilapp.apps.usuarios.services.disponibilidad_proveedor import (
+        DURACION_DEFAULT_MINUTOS,
+        mecanicos_aptos_taller,
+    )
+
     _validar_oferta_catalogo_proveedor(oferta, proveedor)
     fd = _parse_fecha(fecha_disponible)
     if not fd:
         raise ConfirmacionCatalogoError('fecha_disponible inválida', 'fecha_invalida')
     hd = _parse_hora(hora_disponible)
 
+    miembro_asignado = oferta.miembro_taller_asignado
+    if miembro_taller_id is not None:
+        taller = getattr(oferta.proveedor, 'taller', None)
+        if taller is None:
+            raise ConfirmacionCatalogoError('Proveedor sin taller', 'proveedor_invalido')
+        miembro_nuevo = MiembroTaller.objects.filter(
+            pk=miembro_taller_id,
+            taller=taller,
+            rol='mecanico',
+            activo=True,
+        ).first()
+        if not miembro_nuevo:
+            raise ConfirmacionCatalogoError('Técnico no válido', 'miembro_invalido')
+        aptos = mecanicos_aptos_taller(taller, modalidad=None)
+        if not any(m.id == miembro_nuevo.id for m in aptos):
+            raise ConfirmacionCatalogoError(
+                'El técnico no tiene la especialidad requerida',
+                'miembro_no_apto',
+            )
+        if hd:
+            duracion = DURACION_DEFAULT_MINUTOS
+            if not _miembro_libre_en_slot(
+                miembro=miembro_nuevo,
+                taller=taller,
+                fecha=fd,
+                hora=hd,
+                duracion_minutos=duracion,
+            ):
+                raise ConfirmacionCatalogoError(
+                    'El técnico no está disponible en ese horario',
+                    'slot_no_disponible',
+                )
+        miembro_asignado = miembro_nuevo
+
+    es_cambio_tecnico = bool(
+        miembro_asignado
+        and oferta.solicitud.miembro_taller_preferido_id
+        and miembro_asignado.id != oferta.solicitud.miembro_taller_preferido_id
+    )
+
     oferta.fecha_disponible = fd
     oferta.hora_disponible = hd
     oferta.es_fecha_alternativa = True
     oferta.motivo_fecha_alternativa = (motivo or '')[:500]
+    oferta.miembro_taller_asignado = miembro_asignado
+    oferta.es_cambio_tecnico = es_cambio_tecnico
     oferta.estado = 'en_chat'
     oferta.save(
         update_fields=[
@@ -527,6 +604,8 @@ def proveedor_proponer_fecha_catalogo(
             'hora_disponible',
             'es_fecha_alternativa',
             'motivo_fecha_alternativa',
+            'miembro_taller_asignado',
+            'es_cambio_tecnico',
             'estado',
         ]
     )
@@ -573,7 +652,12 @@ def cliente_aceptar_fecha_catalogo(oferta: OfertaProveedor, cliente) -> dict:
     solicitud = oferta.solicitud
     solicitud.fecha_preferida = oferta.fecha_disponible
     solicitud.hora_preferida = oferta.hora_disponible
-    solicitud.save(update_fields=['fecha_preferida', 'hora_preferida', 'fecha_actualizacion'])
+    if oferta.miembro_taller_asignado_id:
+        solicitud.miembro_taller_preferido_id = oferta.miembro_taller_asignado_id
+    solicitud.save(update_fields=[
+        'fecha_preferida', 'hora_preferida', 'miembro_taller_preferido',
+        'fecha_actualizacion',
+    ])
 
     oferta.es_fecha_alternativa = False
     oferta.estado = 'pendiente_confirmacion'

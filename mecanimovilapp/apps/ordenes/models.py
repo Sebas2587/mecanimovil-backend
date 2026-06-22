@@ -789,6 +789,16 @@ class SolicitudServicioPublica(models.Model):
         help_text='Hora preferida (opcional)',
         verbose_name='Hora Preferida'
     )
+
+    miembro_taller_preferido = models.ForeignKey(
+        'usuarios.MiembroTaller',
+        on_delete=models.SET_NULL,
+        related_name='solicitudes_preferidas',
+        null=True,
+        blank=True,
+        help_text=_('Técnico del taller elegido por el cliente al agendar'),
+        verbose_name='Técnico preferido',
+    )
     
     # Estados del ciclo de vida
     estado = models.CharField(
@@ -1243,6 +1253,21 @@ class OfertaProveedor(models.Model):
         null=True,
         verbose_name='Motivo fecha alternativa',
         help_text='Razón por la que el proveedor propone otra fecha.'
+    )
+
+    miembro_taller_asignado = models.ForeignKey(
+        'usuarios.MiembroTaller',
+        on_delete=models.SET_NULL,
+        related_name='ofertas_asignadas',
+        null=True,
+        blank=True,
+        help_text=_('Técnico acordado para la oferta (preferido del cliente o propuesto por el proveedor)'),
+        verbose_name='Técnico asignado',
+    )
+    es_cambio_tecnico = models.BooleanField(
+        default=False,
+        verbose_name='Cambio de técnico',
+        help_text='True si el proveedor propuso un técnico distinto al preferido por el cliente.',
     )
     
     # Estado de la oferta

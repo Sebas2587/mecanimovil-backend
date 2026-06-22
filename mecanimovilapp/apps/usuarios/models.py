@@ -414,6 +414,12 @@ class MiembroTaller(models.Model):
         default=True,
         help_text=_('Habilitado por el supervisor. Si es False, no recibe asignaciones ni aporta disponibilidad'),
     )
+    foto = models.ImageField(
+        upload_to='equipo/mecanicos/',
+        blank=True,
+        null=True,
+        help_text=_('Foto de perfil del mecánico (visible en la app de usuarios)'),
+    )
     permisos = models.JSONField(
         default=dict,
         blank=True,
