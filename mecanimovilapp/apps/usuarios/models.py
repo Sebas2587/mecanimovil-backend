@@ -25,6 +25,23 @@ MODALIDAD_ATENCION_CHOICES = [
     ('ambas', 'En taller y a domicilio'),
 ]
 
+# Capacidades que el mandante puede otorgar a un supervisor. Cada permiso es
+# "manage": habilita crear/editar/eliminar el recurso correspondiente. 'finanzas'
+# habilita ver finanzas y consumir créditos (no comprar; comprar = MercadoPago).
+PERMISOS_SUPERVISOR_KEYS = [
+    'servicios',
+    'mecanicos',
+    'horarios',
+    'agenda',
+    'zonas_cobertura',
+    'finanzas',
+]
+
+
+def default_permisos_supervisor():
+    """Permisos por defecto al crear un supervisor: todo habilitado."""
+    return {clave: True for clave in PERMISOS_SUPERVISOR_KEYS}
+
 
 class Usuario(AbstractUser):
     """
@@ -397,6 +414,11 @@ class MiembroTaller(models.Model):
         default=True,
         help_text=_('Habilitado por el supervisor. Si es False, no recibe asignaciones ni aporta disponibilidad'),
     )
+    permisos = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text=_('Permisos otorgados a un supervisor (manage por recurso). Vacío para mandante/mecánico.'),
+    )
     fecha_creacion = models.DateTimeField(auto_now_add=True)
     fecha_actualizacion = models.DateTimeField(auto_now=True)
 
@@ -447,6 +469,19 @@ class MiembroTaller(models.Model):
         if not modalidad_requerida or self.modalidad_tecnico == 'ambas':
             return True
         return self.modalidad_tecnico == modalidad_requerida
+
+    def tiene_permiso(self, recurso):
+        """
+        True si este miembro puede gestionar el recurso indicado.
+
+        El mandante (dueño) siempre tiene todos los permisos. El supervisor
+        depende de su mapa `permisos`. Los mecánicos no tienen permisos de gestión.
+        """
+        if self.rol == 'mandante':
+            return True
+        if self.rol == 'supervisor':
+            return bool((self.permisos or {}).get(recurso, False))
+        return False
 
 
 class ZonaCobertura(models.Model):

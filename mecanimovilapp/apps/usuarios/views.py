@@ -458,26 +458,55 @@ def login_proveedor(request):
             # VALIDAR que el usuario SÍ sea un proveedor
             es_proveedor = False
             tipo_proveedor = None
-            
-            # Verificar si es mecánico a domicilio
+            # Rol dentro del taller y permisos (para sesiones de supervisor)
+            rol_taller = None
+            permisos = None
+            taller_id = None
+
+            # Verificar si es taller (proveedor preferente tras la unificación)
             try:
-                mecanico = MecanicoDomicilio.objects.get(usuario=user)
+                taller_obj = Taller.objects.get(usuario=user)
                 es_proveedor = True
-                tipo_proveedor = 'mecanico'
-                logger.info(f"✅ Usuario {username} es mecánico a domicilio")
-            except MecanicoDomicilio.DoesNotExist:
+                tipo_proveedor = 'taller'
+                rol_taller = 'mandante'
+                taller_id = taller_obj.id
+                logger.info(f"✅ Usuario {username} es dueño de taller")
+            except Taller.DoesNotExist:
                 pass
-            
-            # Verificar si es taller
+
+            # Verificar si es mecánico a domicilio (legacy)
             if not es_proveedor:
                 try:
-                    taller = Taller.objects.get(usuario=user)
+                    MecanicoDomicilio.objects.get(usuario=user)
+                    es_proveedor = True
+                    tipo_proveedor = 'mecanico'
+                    rol_taller = 'mandante'
+                    logger.info(f"✅ Usuario {username} es mecánico a domicilio")
+                except MecanicoDomicilio.DoesNotExist:
+                    pass
+
+            # Verificar si es supervisor con login propio (opera sobre el taller del mandante)
+            if not es_proveedor:
+                supervisor = (
+                    MiembroTaller.objects
+                    .filter(usuario=user, rol='supervisor')
+                    .select_related('taller')
+                    .first()
+                )
+                if supervisor is not None:
+                    if not supervisor.activo:
+                        logger.warning(f"❌ Login rechazado: supervisor {username} deshabilitado")
+                        return Response(
+                            {'non_field_errors': ['Tu acceso como supervisor está deshabilitado. Contacta al dueño del taller.']},
+                            status=status.HTTP_403_FORBIDDEN
+                        )
                     es_proveedor = True
                     tipo_proveedor = 'taller'
-                    logger.info(f"✅ Usuario {username} es taller")
-                except Taller.DoesNotExist:
-                    pass
-            
+                    rol_taller = 'supervisor'
+                    permisos = supervisor.permisos or {}
+                    taller_id = supervisor.taller_id
+                    logger.info(f"✅ Usuario {username} es supervisor del taller {taller_id}")
+
             # Si el usuario NO es proveedor, rechazar el login
             if not es_proveedor:
                 logger.warning(f"❌ Login rechazado: Usuario {username} NO es proveedor")
@@ -505,6 +534,9 @@ def login_proveedor(request):
                 'foto_perfil': user.foto_perfil.url if user.foto_perfil else None,
                 'es_mecanico': user.es_mecanico,
                 'tipo_proveedor': tipo_proveedor,
+                'rol_taller': rol_taller,
+                'taller_id': taller_id,
+                'permisos': permisos,
             }
             
             logger.info(f"✅ Login exitoso para proveedor: {username} (email: {user.email})")
@@ -3376,6 +3408,9 @@ class EstadoProveedorView(APIView):
         # Buscar si el usuario tiene un perfil de taller o mecánico usando relaciones directas
         taller = None
         mecanico = None
+        # Rol dentro del taller (mandante por defecto; supervisor si opera el taller de otro)
+        rol_taller = 'mandante'
+        permisos_supervisor = None
         
         # Buscar mecánico (relación directa)
         try:
@@ -3388,6 +3423,19 @@ class EstadoProveedorView(APIView):
             taller = Taller.objects.get(usuario=usuario)
         except Taller.DoesNotExist:
             pass
+
+        # Si no es dueño directo, intentar resolver como supervisor con login propio
+        if taller is None and mecanico is None:
+            supervisor = (
+                MiembroTaller.objects
+                .filter(usuario=usuario, rol='supervisor', activo=True)
+                .select_related('taller')
+                .first()
+            )
+            if supervisor is not None:
+                taller = supervisor.taller
+                rol_taller = 'supervisor'
+                permisos_supervisor = supervisor.permisos or {}
         
         # Determinar el proveedor principal. Unificación: el Taller es el proveedor
         # preferente; MecanicoDomicilio es legacy.
@@ -3455,6 +3503,8 @@ class EstadoProveedorView(APIView):
         return Response({
             'tiene_perfil': True,
             'tipo_proveedor': 'taller' if taller else 'mecanico',
+            'rol_taller': rol_taller,
+            'permisos': permisos_supervisor,
             'tipo_cobertura_marca': getattr(proveedor, 'tipo_cobertura_marca', TIPO_COBERTURA_ESPECIALISTA),
             'nombre': proveedor.nombre,
             'estado_verificacion': proveedor.estado_verificacion,
@@ -4324,11 +4374,12 @@ class MiembroTallerViewSet(viewsets.ModelViewSet):
     ordering_fields = ['rol', 'nombre', 'fecha_creacion']
     ordering = ['rol', 'nombre']
 
+    def _contexto(self):
+        from .services.taller_contexto import resolver_contexto_taller
+        return resolver_contexto_taller(self.request.user)
+
     def _get_taller(self):
-        user = self.request.user
-        taller = getattr(user, 'taller', None)
-        if taller is None:
-            taller = Taller.objects.filter(usuario=user).first()
+        taller, _miembro, _rol = self._contexto()
         return taller
 
     def get_queryset(self):
@@ -4346,14 +4397,54 @@ class MiembroTallerViewSet(viewsets.ModelViewSet):
         context['taller'] = self._get_taller()
         return context
 
+    def _exigir_gestion_mecanicos(self):
+        """El supervisor necesita el permiso 'mecanicos'; el mandante siempre puede."""
+        _taller, miembro, rol = self._contexto()
+        if rol == 'mandante':
+            return
+        if rol == 'supervisor' and miembro and miembro.tiene_permiso('mecanicos'):
+            return
+        raise PermissionDenied('No tienes permiso para gestionar mecánicos.')
+
+    def _exigir_solo_mandante(self, accion='realizar esta acción'):
+        """Acciones reservadas al dueño (p. ej. gestionar al supervisor)."""
+        _taller, _miembro, rol = self._contexto()
+        if rol != 'mandante':
+            raise PermissionDenied(f'Solo el dueño del taller puede {accion}.')
+
     def perform_create(self, serializer):
         taller = self._get_taller()
         if taller is None:
             raise ValidationError('El usuario debe tener un taller para gestionar su equipo.')
+        # Crear/designar supervisor es exclusivo del mandante; otros miembros (mecánicos)
+        # requieren permiso de gestión de mecánicos.
+        rol_nuevo = serializer.validated_data.get('rol', 'mecanico')
+        if rol_nuevo == 'supervisor':
+            self._exigir_solo_mandante('designar un supervisor')
+        else:
+            self._exigir_gestion_mecanicos()
         serializer.save(taller=taller)
+
+    def perform_update(self, serializer):
+        instance = serializer.instance
+        if instance.rol == 'supervisor' or serializer.validated_data.get('rol') == 'supervisor':
+            self._exigir_solo_mandante('editar al supervisor')
+        else:
+            self._exigir_gestion_mecanicos()
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        if instance.rol == 'supervisor':
+            self._exigir_solo_mandante('eliminar al supervisor')
+        elif instance.rol == 'mandante':
+            raise PermissionDenied('No se puede eliminar al dueño del taller.')
+        else:
+            self._exigir_gestion_mecanicos()
+        instance.delete()
 
     @action(detail=True, methods=['post'])
     def habilitar(self, request, pk=None):
+        self._exigir_gestion_mecanicos()
         miembro = self.get_object()
         miembro.activo = True
         miembro.save(update_fields=['activo', 'fecha_actualizacion'])
@@ -4361,6 +4452,7 @@ class MiembroTallerViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def deshabilitar(self, request, pk=None):
+        self._exigir_gestion_mecanicos()
         miembro = self.get_object()
         miembro.activo = False
         miembro.save(update_fields=['activo', 'fecha_actualizacion'])
@@ -4417,22 +4509,40 @@ class HorarioProveedorViewSet(viewsets.ModelViewSet):
     ordering_fields = ['dia_semana']
     ordering = ['dia_semana']
     
+    def _contexto(self):
+        from .services.taller_contexto import resolver_contexto_taller
+        return resolver_contexto_taller(self.request.user)
+
+    def _exigir_permiso_horarios(self):
+        """Escrituras de horarios requieren permiso 'horarios' (supervisor) o ser mandante."""
+        if self.request.method in permissions.SAFE_METHODS:
+            return
+        _taller, miembro, rol = self._contexto()
+        if rol == 'mandante':
+            return
+        if rol == 'supervisor' and miembro and miembro.tiene_permiso('horarios'):
+            return
+        # Mecánico a domicilio legacy (dueño de su propio perfil) sigue permitido.
+        if getattr(self.request.user, 'mecanico_domicilio', None) is not None:
+            return
+        raise PermissionDenied('No tienes permiso para gestionar horarios.')
+
     def get_queryset(self):
         """
-        Filtrar horarios según el usuario autenticado
+        Filtrar horarios según el usuario autenticado (dueño o supervisor del taller)
         """
         user = self.request.user
         queryset = HorarioProveedor.objects.all()
-        
-        # Solo mostrar horarios del proveedor actual
-        if hasattr(user, 'taller'):
-            queryset = queryset.filter(taller=user.taller)
-        elif hasattr(user, 'mecanico_domicilio'):
+
+        taller, _miembro, _rol = self._contexto()
+        if taller is not None:
+            queryset = queryset.filter(taller=taller)
+        elif getattr(user, 'mecanico_domicilio', None) is not None:
             queryset = queryset.filter(mecanico=user.mecanico_domicilio)
         else:
             # Si no es proveedor, no mostrar horarios
             queryset = queryset.none()
-        
+
         return queryset
     
     def perform_create(self, serializer):
@@ -4440,14 +4550,23 @@ class HorarioProveedorViewSet(viewsets.ModelViewSet):
         Establecer automáticamente el proveedor según el usuario autenticado
         """
         user = self.request.user
-        
-        # Determinar el proveedor automáticamente
-        if hasattr(user, 'taller'):
-            serializer.save(taller=user.taller, mecanico=None)
-        elif hasattr(user, 'mecanico_domicilio'):
+        self._exigir_permiso_horarios()
+
+        taller, _miembro, _rol = self._contexto()
+        if taller is not None:
+            serializer.save(taller=taller, mecanico=None)
+        elif getattr(user, 'mecanico_domicilio', None) is not None:
             serializer.save(mecanico=user.mecanico_domicilio, taller=None)
         else:
             raise ValidationError("El usuario debe tener un perfil de taller o mecánico para configurar horarios.")
+
+    def perform_update(self, serializer):
+        self._exigir_permiso_horarios()
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        self._exigir_permiso_horarios()
+        instance.delete()
     
     def _resolver_miembro_taller(self, request, taller):
         """Resuelve y valida el MiembroTaller indicado para el taller dado.
@@ -4480,7 +4599,7 @@ class HorarioProveedorViewSet(viewsets.ModelViewSet):
         mecánico; en caso contrario devuelve la agenda a nivel taller (fallback).
         """
         queryset = self.get_queryset()
-        taller = getattr(request.user, 'taller', None)
+        taller, _miembro_ctx, _rol_ctx = self._contexto()
         miembro, error = self._resolver_miembro_taller(request, taller)
         if error is not None:
             return error
@@ -4499,13 +4618,14 @@ class HorarioProveedorViewSet(viewsets.ModelViewSet):
         Acepta configuración global o configuración específica por día
         """
         user = request.user
-        
-        # Validar que el usuario tenga un perfil de proveedor
-        proveedor = None
-        if hasattr(user, 'taller'):
-            proveedor = user.taller
+        self._exigir_permiso_horarios()
+
+        # Validar que el usuario tenga un perfil de proveedor (dueño o supervisor)
+        taller_ctx, _miembro_ctx, _rol_ctx = self._contexto()
+        if taller_ctx is not None:
+            proveedor = taller_ctx
             tipo_proveedor = 'taller'
-        elif hasattr(user, 'mecanico_domicilio'):
+        elif getattr(user, 'mecanico_domicilio', None) is not None:
             proveedor = user.mecanico_domicilio
             tipo_proveedor = 'mecanico'
         else:
@@ -4594,13 +4714,15 @@ class HorarioProveedorViewSet(viewsets.ModelViewSet):
         Configuración rápida usando presets predefinidos
         """
         user = request.user
-        
-        # Validar que el usuario tenga un perfil de proveedor
+        self._exigir_permiso_horarios()
+
+        # Validar que el usuario tenga un perfil de proveedor (dueño o supervisor)
         proveedor = None
-        if hasattr(user, 'taller'):
-            proveedor = user.taller
+        taller_ctx, _miembro_ctx, _rol_ctx = self._contexto()
+        if taller_ctx is not None:
+            proveedor = taller_ctx
             tipo_proveedor = 'taller'
-        elif hasattr(user, 'mecanico_domicilio'):
+        elif getattr(user, 'mecanico_domicilio', None) is not None:
             proveedor = user.mecanico_domicilio
             tipo_proveedor = 'mecanico'
         else:

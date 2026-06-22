@@ -278,6 +278,14 @@ class MiembroTallerSerializer(serializers.ModelSerializer):
     modalidad_tecnico_display = serializers.CharField(
         source='get_modalidad_tecnico_display', read_only=True
     )
+    # Credenciales para crear el acceso de un supervisor (solo escritura).
+    username = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    password = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    email = serializers.EmailField(write_only=True, required=False, allow_blank=True)
+    # Lectura del usuario asociado (para mostrar el acceso del supervisor).
+    usuario_username = serializers.SerializerMethodField(read_only=True)
+    usuario_email = serializers.SerializerMethodField(read_only=True)
+    tiene_acceso = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = MiembroTaller
@@ -285,7 +293,10 @@ class MiembroTallerSerializer(serializers.ModelSerializer):
             'id', 'rol', 'rol_display', 'nombre', 'usuario',
             'especialidades', 'especialidades_detalle',
             'modalidad_tecnico', 'modalidad_tecnico_display',
-            'activo', 'fecha_creacion', 'fecha_actualizacion',
+            'activo', 'permisos',
+            'username', 'password', 'email',
+            'usuario_username', 'usuario_email', 'tiene_acceso',
+            'fecha_creacion', 'fecha_actualizacion',
         ]
         read_only_fields = ['id', 'fecha_creacion', 'fecha_actualizacion', 'usuario']
 
@@ -294,6 +305,15 @@ class MiembroTallerSerializer(serializers.ModelSerializer):
             {'id': c.id, 'nombre': c.nombre}
             for c in obj.especialidades.all()
         ]
+
+    def get_usuario_username(self, obj):
+        return obj.usuario.username if obj.usuario_id else None
+
+    def get_usuario_email(self, obj):
+        return obj.usuario.email if obj.usuario_id else None
+
+    def get_tiene_acceso(self, obj):
+        return bool(obj.usuario_id)
 
     def validate(self, data):
         rol = data.get('rol', getattr(self.instance, 'rol', 'mecanico'))
@@ -317,20 +337,100 @@ class MiembroTallerSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {'rol': f'El taller ya tiene un {rol}.'}
                 )
-        return data
-    
-    def validate(self, data):
-        """Validaciones personalizadas"""
-        if data.get('activo', True):
-            hora_inicio = data.get('hora_inicio')
-            hora_fin = data.get('hora_fin')
-            
-            if hora_inicio and hora_fin and hora_inicio >= hora_fin:
+
+        # Un supervisor nuevo sin usuario asociado requiere credenciales de acceso.
+        if rol == 'supervisor' and self.instance is None:
+            username = (data.get('username') or '').strip()
+            password = data.get('password') or ''
+            if not username or not password:
                 raise serializers.ValidationError(
-                    "La hora de inicio debe ser menor que la hora de fin"
+                    {'username': 'El supervisor necesita usuario y contraseña para iniciar sesión.'}
                 )
-        
         return data
+
+    def _sanear_permisos(self, permisos):
+        from mecanimovilapp.apps.usuarios.models import PERMISOS_SUPERVISOR_KEYS
+        if not isinstance(permisos, dict):
+            return {clave: True for clave in PERMISOS_SUPERVISOR_KEYS}
+        return {clave: bool(permisos.get(clave, False)) for clave in PERMISOS_SUPERVISOR_KEYS}
+
+    def _crear_usuario_supervisor(self, username, password, email, nombre):
+        from django.contrib.auth import get_user_model
+        Usuario = get_user_model()
+        username = username.strip()
+        if Usuario.objects.filter(username=username).exists():
+            raise serializers.ValidationError(
+                {'username': 'Ya existe un usuario con ese nombre. Elige otro.'}
+            )
+        if email and Usuario.objects.filter(email=email).exists():
+            raise serializers.ValidationError(
+                {'email': 'Ya existe un usuario con ese correo.'}
+            )
+        partes = (nombre or '').strip().split(' ', 1)
+        first_name = partes[0] if partes else ''
+        last_name = partes[1] if len(partes) > 1 else ''
+        usuario = Usuario(
+            username=username,
+            email=email or '',
+            first_name=first_name,
+            last_name=last_name,
+            es_mecanico=True,  # marca de proveedor: no puede entrar a la app de usuarios
+        )
+        usuario.set_password(password)
+        usuario.save()
+        return usuario
+
+    def create(self, validated_data):
+        username = validated_data.pop('username', '')
+        password = validated_data.pop('password', '')
+        email = validated_data.pop('email', '')
+        especialidades = validated_data.pop('especialidades', [])
+        rol = validated_data.get('rol', 'mecanico')
+
+        if rol == 'supervisor':
+            validated_data['permisos'] = self._sanear_permisos(validated_data.get('permisos'))
+            usuario = self._crear_usuario_supervisor(
+                username, password, email, validated_data.get('nombre')
+            )
+            validated_data['usuario'] = usuario
+        else:
+            validated_data['permisos'] = {}
+
+        miembro = MiembroTaller.objects.create(**validated_data)
+        if especialidades:
+            miembro.especialidades.set(especialidades)
+        return miembro
+
+    def update(self, instance, validated_data):
+        username = validated_data.pop('username', None)
+        password = validated_data.pop('password', None)
+        email = validated_data.pop('email', None)
+        especialidades = validated_data.pop('especialidades', None)
+
+        if instance.rol == 'supervisor':
+            if 'permisos' in validated_data:
+                validated_data['permisos'] = self._sanear_permisos(validated_data.get('permisos'))
+            # Actualizar/crear credenciales del supervisor.
+            if instance.usuario_id and (password or email is not None):
+                usuario = instance.usuario
+                if email is not None:
+                    usuario.email = email or ''
+                if password:
+                    usuario.set_password(password)
+                usuario.save()
+            elif not instance.usuario_id and username and password:
+                instance.usuario = self._crear_usuario_supervisor(
+                    username, password, email or '', validated_data.get('nombre', instance.nombre)
+                )
+        else:
+            validated_data.pop('permisos', None)
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        if especialidades is not None:
+            instance.especialidades.set(especialidades)
+        return instance
 
 
 class ConfigurarSemanaCompletaSerializer(serializers.Serializer):
