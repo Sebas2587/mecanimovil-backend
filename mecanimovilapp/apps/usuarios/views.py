@@ -535,16 +535,21 @@ def login_proveedor(request):
 
 
 def _resolve_tipo_proveedor(user):
-    """Retorna (es_proveedor, tipo_proveedor) según perfiles MecanicoDomicilio / Taller."""
-    try:
-        MecanicoDomicilio.objects.get(usuario=user)
-        return True, 'mecanico'
-    except MecanicoDomicilio.DoesNotExist:
-        pass
+    """
+    Retorna (es_proveedor, tipo_proveedor) según perfiles Taller / MecanicoDomicilio.
+
+    Unificación: el Taller es el modelo de proveedor. Se prioriza Taller; MecanicoDomicilio
+    queda como legacy (en proceso de deprecación) y solo se usa como fallback.
+    """
     try:
         Taller.objects.get(usuario=user)
         return True, 'taller'
     except Taller.DoesNotExist:
+        pass
+    try:
+        MecanicoDomicilio.objects.get(usuario=user)
+        return True, 'mecanico'
+    except MecanicoDomicilio.DoesNotExist:
         pass
     return False, None
 
@@ -575,17 +580,18 @@ def _resolve_proveedor_onboarding(usuario, tipo_solicitado=None):
     if tipo_solicitado == 'taller' and taller:
         return taller, 'taller'
 
-    if mecanico and taller:
-        if mecanico.onboarding_iniciado and not mecanico.onboarding_completado:
-            return mecanico, 'mecanico'
+    # Unificación: el Taller es el proveedor preferente; MecanicoDomicilio es legacy.
+    if taller and mecanico:
         if taller.onboarding_iniciado and not taller.onboarding_completado:
             return taller, 'taller'
-        return mecanico, 'mecanico'
+        if mecanico.onboarding_iniciado and not mecanico.onboarding_completado:
+            return mecanico, 'mecanico'
+        return taller, 'taller'
 
-    if mecanico:
-        return mecanico, 'mecanico'
     if taller:
         return taller, 'taller'
+    if mecanico:
+        return mecanico, 'mecanico'
     return None, None
 
 
@@ -3383,8 +3389,9 @@ class EstadoProveedorView(APIView):
         except Taller.DoesNotExist:
             pass
         
-        # Determinar el proveedor principal
-        proveedor = mecanico or taller
+        # Determinar el proveedor principal. Unificación: el Taller es el proveedor
+        # preferente; MecanicoDomicilio es legacy.
+        proveedor = taller or mecanico
         
         if not proveedor:
             return Response({
@@ -3401,6 +3408,11 @@ class EstadoProveedorView(APIView):
             'tipo_cobertura_marca': getattr(
                 proveedor, 'tipo_cobertura_marca', TIPO_COBERTURA_ESPECIALISTA
             ),
+            # Modalidad de atención (en_taller / a_domicilio / ambas). Mecánico legacy = a_domicilio.
+            'modalidad_atencion': getattr(
+                proveedor, 'modalidad_atencion', 'a_domicilio' if mecanico else 'en_taller'
+            ),
+            'radio_cobertura': float(getattr(proveedor, 'radio_cobertura', 10.0) or 10.0),
         }
         
         # Si es un taller, agregar información de dirección física
@@ -3442,7 +3454,7 @@ class EstadoProveedorView(APIView):
         
         return Response({
             'tiene_perfil': True,
-            'tipo_proveedor': 'mecanico' if mecanico else 'taller',
+            'tipo_proveedor': 'taller' if taller else 'mecanico',
             'tipo_cobertura_marca': getattr(proveedor, 'tipo_cobertura_marca', TIPO_COBERTURA_ESPECIALISTA),
             'nombre': proveedor.nombre,
             'estado_verificacion': proveedor.estado_verificacion,
@@ -3463,109 +3475,64 @@ def inicializar_onboarding(request):
     Vista para inicializar el proceso de onboarding para un usuario
     """
     usuario = request.user
-    tipo_proveedor = request.data.get('tipo_proveedor')  # 'taller' o 'mecanico'
-    
-    if not tipo_proveedor or tipo_proveedor not in ['taller', 'mecanico']:
-        return Response({
-            'error': 'Debe especificar tipo_proveedor: "taller" o "mecanico"'
-        }, status=status.HTTP_400_BAD_REQUEST)
-    
-    print(f"🔍 DEBUG inicializar_onboarding:")
-    print(f"   Usuario: {usuario.username}")
-    print(f"   Tipo proveedor: {tipo_proveedor}")
-    print(f"   Datos recibidos: {request.data}")
-    
-    try:
-        modalidad = request.data.get('modalidad_atencion')
-        if modalidad not in ('en_taller', 'a_domicilio', 'ambas', None):
-            modalidad = None
+    # Unificación de proveedores: TODO proveedor es un Taller. La modalidad de atención
+    # (en_taller / a_domicilio / ambas) define si ofrece servicio en local, a domicilio o ambos.
+    # `tipo_proveedor` se mantiene por compatibilidad de contrato pero siempre se trata como taller.
+    tipo_proveedor = 'taller'
 
-        if tipo_proveedor == 'taller':
-            # Verificar si ya tiene un taller
-            if hasattr(usuario, 'taller'):
-                taller = usuario.taller
-                
-                # Actualizar taller con datos del request
-                taller.nombre = request.data.get('nombre', taller.nombre)
-                taller.telefono = request.data.get('telefono', taller.telefono)
-                taller.rut = request.data.get('rut', taller.rut)
-                taller.descripcion = request.data.get('descripcion', taller.descripcion)
-                if modalidad:
-                    taller.modalidad_atencion = modalidad
-                taller.onboarding_iniciado = True
-                taller.save()
-                
-                print(f"   ✅ Taller existente actualizado: {taller.nombre}")
-                
-                return Response({
-                    'mensaje': 'Onboarding de taller inicializado',
-                    'tipo_proveedor': 'taller'
-                })
-            else:
-                # Crear taller básico con datos del request
-                create_kwargs = dict(
-                    usuario=usuario,
-                    nombre=request.data.get('nombre', f"{usuario.first_name} {usuario.last_name}".strip() or usuario.username),
-                    telefono=request.data.get('telefono', usuario.telefono or ''),
-                    rut=request.data.get('rut', ''),
-                    descripcion=request.data.get('descripcion', f"Taller mecánico"),
-                    ubicacion=Point(-70.6693, -33.4489),
-                    onboarding_iniciado=True,
-                )
-                if modalidad:
-                    create_kwargs['modalidad_atencion'] = modalidad
-                taller = Taller.objects.create(**create_kwargs)
-                
-                print(f"   ✅ Taller creado: {taller.nombre}")
-                
-                return Response({
-                    'mensaje': 'Perfil de taller creado y onboarding inicializado',
-                    'tipo_proveedor': 'taller'
-                })
-                
-        else:  # mecanico
-            # Verificar si ya tiene un mecánico
-            if hasattr(usuario, 'mecanico_domicilio'):
-                mecanico = usuario.mecanico_domicilio
-                
-                # Actualizar mecánico con datos del request
-                experiencia_raw = request.data.get('experiencia_anos', mecanico.experiencia_anos)
-                mecanico.nombre = request.data.get('nombre', mecanico.nombre)
-                mecanico.telefono = request.data.get('telefono', mecanico.telefono)
-                mecanico.dni = request.data.get('dni', mecanico.dni)
-                mecanico.experiencia_anos = experiencia_raw if isinstance(experiencia_raw, int) else (int(experiencia_raw) if experiencia_raw and str(experiencia_raw).strip() else mecanico.experiencia_anos)
-                mecanico.descripcion = request.data.get('descripcion', mecanico.descripcion)
-                mecanico.onboarding_iniciado = True
-                mecanico.save()
-                
-                print(f"   ✅ Mecánico existente actualizado: {mecanico.nombre}")
-                
-                return Response({
-                    'mensaje': 'Onboarding de mecánico inicializado',
-                    'tipo_proveedor': 'mecanico'
-                })
-            else:
-                # Crear mecánico básico con datos del request
-                experiencia_raw = request.data.get('experiencia_anos', 0)
-                experiencia_final = experiencia_raw if isinstance(experiencia_raw, int) else (int(experiencia_raw) if experiencia_raw and str(experiencia_raw).strip() else 0)
-                mecanico = MecanicoDomicilio.objects.create(
-                    usuario=usuario,
-                    nombre=request.data.get('nombre', f"{usuario.first_name} {usuario.last_name}".strip() or usuario.username),
-                    telefono=request.data.get('telefono', usuario.telefono or ''),
-                    dni=request.data.get('dni', ''),
-                    experiencia_anos=experiencia_final,
-                    descripcion=request.data.get('descripcion', f"Mecánico a domicilio"),
-                    ubicacion=Point(-70.6693, -33.4489),  # Santiago por defecto
-                    onboarding_iniciado=True
-                )
-                
-                print(f"   ✅ Mecánico creado: {mecanico.nombre}")
-                
-                return Response({
-                    'mensaje': 'Perfil de mecánico creado y onboarding inicializado',
-                    'tipo_proveedor': 'mecanico'
-                })
-                
+    # Resolver modalidad: preferir modalidad_atencion explícita; si no, inferir del tipo legacy.
+    modalidad = request.data.get('modalidad_atencion')
+    if modalidad not in ('en_taller', 'a_domicilio', 'ambas'):
+        tipo_legacy = request.data.get('tipo_proveedor')
+        modalidad = 'a_domicilio' if tipo_legacy == 'mecanico' else 'en_taller'
+
+    print(f"🔍 DEBUG inicializar_onboarding (unificado):")
+    print(f"   Usuario: {usuario.username}")
+    print(f"   Modalidad de atención: {modalidad}")
+    print(f"   Datos recibidos: {request.data}")
+
+    try:
+        # Verificar si ya tiene un taller
+        if hasattr(usuario, 'taller'):
+            taller = usuario.taller
+
+            # Actualizar taller con datos del request
+            taller.nombre = request.data.get('nombre', taller.nombre)
+            taller.telefono = request.data.get('telefono', taller.telefono)
+            taller.rut = request.data.get('rut', taller.rut)
+            taller.descripcion = request.data.get('descripcion', taller.descripcion)
+            taller.modalidad_atencion = modalidad
+            taller.onboarding_iniciado = True
+            taller.save()
+
+            print(f"   ✅ Taller existente actualizado: {taller.nombre} ({modalidad})")
+
+            return Response({
+                'mensaje': 'Onboarding de taller inicializado',
+                'tipo_proveedor': 'taller',
+                'modalidad_atencion': modalidad,
+            })
+        else:
+            # Crear taller básico con datos del request
+            taller = Taller.objects.create(
+                usuario=usuario,
+                nombre=request.data.get('nombre', f"{usuario.first_name} {usuario.last_name}".strip() or usuario.username),
+                telefono=request.data.get('telefono', usuario.telefono or ''),
+                rut=request.data.get('rut', ''),
+                descripcion=request.data.get('descripcion', 'Taller mecánico'),
+                ubicacion=Point(-70.6693, -33.4489),  # Santiago por defecto
+                modalidad_atencion=modalidad,
+                onboarding_iniciado=True,
+            )
+
+            print(f"   ✅ Taller creado: {taller.nombre} ({modalidad})")
+
+            return Response({
+                'mensaje': 'Perfil de taller creado y onboarding inicializado',
+                'tipo_proveedor': 'taller',
+                'modalidad_atencion': modalidad,
+            })
+
     except Exception as e:
         error_message = str(e)
         print(f"   ❌ Error en inicializar_onboarding: {str(e)}")
