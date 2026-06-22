@@ -623,22 +623,62 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
     
     def _get_proveedor_data(self, user):
         """
-        Helper para obtener información del proveedor autenticado
+        Helper para obtener información del proveedor autenticado.
+
+        Incluye al supervisor con login propio, que opera sobre el taller del
+        mandante (se marca con rol='supervisor' para validar permisos).
         """
-        from mecanimovilapp.apps.usuarios.models import MecanicoDomicilio, Taller
+        from mecanimovilapp.apps.usuarios.models import MecanicoDomicilio, Taller, MiembroTaller
         
         try:
             # Buscar si es mecánico
             mecanico = MecanicoDomicilio.objects.get(usuario=user)
-            return {'tipo': 'mecanico', 'proveedor': mecanico}
+            return {'tipo': 'mecanico', 'proveedor': mecanico, 'rol': 'mandante'}
         except MecanicoDomicilio.DoesNotExist:
             try:
                 # Buscar si es taller
                 taller = Taller.objects.get(usuario=user)
-                return {'tipo': 'taller', 'proveedor': taller}
+                return {'tipo': 'taller', 'proveedor': taller, 'rol': 'mandante'}
             except Taller.DoesNotExist:
+                # Supervisor con login propio: opera el taller del mandante
+                supervisor = (
+                    MiembroTaller.objects
+                    .filter(usuario=user, rol='supervisor', activo=True)
+                    .select_related('taller')
+                    .first()
+                )
+                if supervisor is not None:
+                    return {
+                        'tipo': 'taller',
+                        'proveedor': supervisor.taller,
+                        'rol': 'supervisor',
+                        'miembro': supervisor,
+                    }
                 # Usuario no tiene perfil de proveedor
-                return {'tipo': None, 'proveedor': None}
+                return {'tipo': None, 'proveedor': None, 'rol': None}
+
+    def _exigir_permiso_servicios(self):
+        """Escrituras del catálogo requieren permiso 'servicios' (o ser mandante)."""
+        if self.request.method in permissions.SAFE_METHODS:
+            return
+        data = self._get_proveedor_data(self.request.user)
+        if data.get('rol') == 'supervisor':
+            miembro = data.get('miembro')
+            if not (miembro and miembro.tiene_permiso('servicios')):
+                from rest_framework.exceptions import PermissionDenied
+                raise PermissionDenied('No tienes permiso para gestionar servicios.')
+
+    def perform_create(self, serializer):
+        self._exigir_permiso_servicios()
+        super().perform_create(serializer)
+
+    def perform_update(self, serializer):
+        self._exigir_permiso_servicios()
+        super().perform_update(serializer)
+
+    def perform_destroy(self, instance):
+        self._exigir_permiso_servicios()
+        super().perform_destroy(instance)
     
     def get_queryset(self):
         """Filtrar ofertas solo del proveedor autenticado"""
@@ -662,6 +702,7 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
         Los registros se crean con disponible=False y precios en 0 para configurar después.
         Si el par (proveedor, servicio, marca) ya existe, se omite silenciosamente.
         """
+        self._exigir_permiso_servicios()
         proveedor_data = self._get_proveedor_data(request.user)
         if not proveedor_data['proveedor']:
             return Response({'error': 'No se encontró información del proveedor'}, status=404)
@@ -788,6 +829,7 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def cambiar_disponibilidad(self, request, pk=None):
         """Cambiar la disponibilidad de una oferta específica"""
+        self._exigir_permiso_servicios()
         oferta = self.get_object()
         nueva_disponibilidad = request.data.get('disponible')
         

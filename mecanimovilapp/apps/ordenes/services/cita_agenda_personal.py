@@ -35,6 +35,15 @@ def resolver_proveedor_usuario(user: Usuario) -> tuple[Taller | None, MecanicoDo
             return None, user.mecanico_domicilio
         except MecanicoDomicilio.DoesNotExist:
             pass
+    # Supervisor con login propio: opera sobre el taller del mandante.
+    supervisor = (
+        MiembroTaller.objects
+        .filter(usuario=user, rol='supervisor', activo=True)
+        .select_related('taller')
+        .first()
+    )
+    if supervisor is not None:
+        return supervisor.taller, None
     return None, None
 
 

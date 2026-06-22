@@ -6,6 +6,21 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _taller_supervisado(user):
+    """Devuelve el taller que un supervisor con login activo opera, o None."""
+    try:
+        from mecanimovilapp.apps.usuarios.models import MiembroTaller
+        miembro = (
+            MiembroTaller.objects
+            .filter(usuario=user, rol='supervisor', activo=True)
+            .select_related('taller')
+            .first()
+        )
+        return miembro.taller if miembro else None
+    except Exception:
+        return None
+
+
 class IsProveedor(BasePermission):
     """
     Permiso que permite acceso solo a usuarios que sean talleres o mecánicos
@@ -55,6 +70,10 @@ class IsProveedor(BasePermission):
             except Exception as e:
                 logger.error("Error accediendo a mecánico vía relación: %s", e)
 
+        # Supervisor con login propio: opera sobre el taller del mandante.
+        if _taller_supervisado(request.user) is not None:
+            return True
+
         else:
             logger.warning(
                 "Usuario %s no tiene perfil de taller ni mecánico",
@@ -85,6 +104,10 @@ class IsOrderOwnerForProvider(BasePermission):
             return obj.taller == request.user.taller
         elif hasattr(request.user, "mecanico_domicilio"):
             return obj.mecanico == request.user.mecanico_domicilio
+
+        taller_sup = _taller_supervisado(request.user)
+        if taller_sup is not None:
+            return obj.taller_id == taller_sup.id
 
         return False
 
@@ -123,6 +146,10 @@ class CanManageOrder(BasePermission):
             return obj.taller == request.user.taller
         elif hasattr(request.user, "mecanico_domicilio"):
             return obj.mecanico == request.user.mecanico_domicilio
+
+        taller_sup = _taller_supervisado(request.user)
+        if taller_sup is not None:
+            return obj.taller_id == taller_sup.id
 
         # Los administradores pueden gestionar todas las órdenes
         return request.user.is_staff

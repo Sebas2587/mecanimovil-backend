@@ -458,18 +458,27 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
                     )
                 })
         except MecanicoDomicilio.DoesNotExist:
-            try:
-                taller = Taller.objects.get(usuario=user)
-                validated_data['taller'] = taller
-                validated_data['tipo_proveedor'] = 'taller'
-                if servicio and self._oferta_duplicada(taller, 'taller', servicio, marca, tipo_motor):
-                    raise serializers.ValidationError({
-                        'servicio': (
-                            'Ya tienes una oferta para este servicio, marca y tipo de motor.'
-                        )
-                    })
-            except Taller.DoesNotExist:
+            taller = Taller.objects.filter(usuario=user).first()
+            if taller is None:
+                # Supervisor con login propio: opera sobre el taller del mandante
+                from mecanimovilapp.apps.usuarios.models import MiembroTaller
+                supervisor = (
+                    MiembroTaller.objects
+                    .filter(usuario=user, rol='supervisor', activo=True)
+                    .select_related('taller')
+                    .first()
+                )
+                taller = supervisor.taller if supervisor else None
+            if taller is None:
                 raise serializers.ValidationError('Usuario no tiene perfil de proveedor')
+            validated_data['taller'] = taller
+            validated_data['tipo_proveedor'] = 'taller'
+            if servicio and self._oferta_duplicada(taller, 'taller', servicio, marca, tipo_motor):
+                raise serializers.ValidationError({
+                    'servicio': (
+                        'Ya tienes una oferta para este servicio, marca y tipo de motor.'
+                    )
+                })
         
         return super().create(validated_data)
     

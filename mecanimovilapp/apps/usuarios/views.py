@@ -4927,15 +4927,42 @@ class MechanicServiceAreaViewSet(viewsets.ModelViewSet):
     serializer_class = MechanicServiceAreaSerializer
     permission_classes = [permissions.IsAuthenticated]
     
+    def _resolver_propietario(self):
+        """Resuelve el dueño de las zonas: mecánico legacy o taller (dueño/supervisor)."""
+        user = self.request.user
+        mechanic = MecanicoDomicilio.objects.filter(usuario=user).first()
+        if mechanic is not None:
+            return {'mechanic': mechanic, 'taller': None, 'miembro': None, 'rol': 'mandante'}
+        from .services.taller_contexto import resolver_contexto_taller
+        taller, miembro, rol = resolver_contexto_taller(user)
+        return {'mechanic': None, 'taller': taller, 'miembro': miembro, 'rol': rol}
+
+    def _exigir_permiso_zonas(self, info=None):
+        info = info or self._resolver_propietario()
+        if info['rol'] == 'supervisor':
+            miembro = info['miembro']
+            if not (miembro and miembro.tiene_permiso('zonas_cobertura')):
+                raise PermissionDenied('No tienes permiso para gestionar zonas de cobertura.')
+
+    def _es_propietario(self, instance, info):
+        if info['mechanic'] is not None:
+            return instance.mechanic_id == info['mechanic'].id
+        if info['taller'] is not None:
+            return instance.taller_id == info['taller'].id
+        return False
+
     def get_queryset(self):
-        """Retornar solo las zonas del mecánico autenticado"""
-        try:
-            mechanic = MecanicoDomicilio.objects.get(usuario=self.request.user)
+        """Retornar solo las zonas del proveedor autenticado (mecánico o taller)."""
+        info = self._resolver_propietario()
+        if info['mechanic'] is not None:
             return MechanicServiceArea.objects.filter(
-                mechanic=mechanic
+                mechanic=info['mechanic']
             ).order_by('-created_at')
-        except MecanicoDomicilio.DoesNotExist:
-            return MechanicServiceArea.objects.none()
+        if info['taller'] is not None:
+            return MechanicServiceArea.objects.filter(
+                taller=info['taller']
+            ).order_by('-created_at')
+        return MechanicServiceArea.objects.none()
     
     def get_serializer_class(self):
         """Usar serializers específicos según la acción"""
@@ -4953,49 +4980,43 @@ class MechanicServiceAreaViewSet(viewsets.ModelViewSet):
         return context
     
     def perform_create(self, serializer):
-        """Personalizar la creación"""
-        try:
-            mechanic = MecanicoDomicilio.objects.get(usuario=self.request.user)
-            serializer.save(mechanic=mechanic)
-        except MecanicoDomicilio.DoesNotExist:
-            raise ValidationError("Usuario no es un mecánico a domicilio.")
+        """Personalizar la creación (mecánico legacy o taller)."""
+        info = self._resolver_propietario()
+        self._exigir_permiso_zonas(info)
+        if info['mechanic'] is not None:
+            serializer.save(mechanic=info['mechanic'])
+        elif info['taller'] is not None:
+            serializer.save(taller=info['taller'])
+        else:
+            raise ValidationError("Usuario no es un proveedor con zonas de cobertura.")
     
     def perform_update(self, serializer):
         """Personalizar la actualización"""
         instance = self.get_object()
-        try:
-            mechanic = MecanicoDomicilio.objects.get(usuario=self.request.user)
-            if instance.mechanic != mechanic:
-                raise PermissionDenied("No tiene permisos para modificar esta zona.")
-            serializer.save()
-        except MecanicoDomicilio.DoesNotExist:
-            raise ValidationError("Usuario no es un mecánico a domicilio.")
+        info = self._resolver_propietario()
+        if not self._es_propietario(instance, info):
+            raise PermissionDenied("No tiene permisos para modificar esta zona.")
+        self._exigir_permiso_zonas(info)
+        serializer.save()
     
     def perform_destroy(self, instance):
         """Personalizar la eliminación"""
-        try:
-            mechanic = MecanicoDomicilio.objects.get(usuario=self.request.user)
-            if instance.mechanic != mechanic:
-                raise PermissionDenied("No tiene permisos para eliminar esta zona.")
-            instance.delete()
-        except MecanicoDomicilio.DoesNotExist:
-            raise ValidationError("Usuario no es un mecánico a domicilio.")
+        info = self._resolver_propietario()
+        if not self._es_propietario(instance, info):
+            raise PermissionDenied("No tiene permisos para eliminar esta zona.")
+        self._exigir_permiso_zonas(info)
+        instance.delete()
     
     @action(detail=True, methods=['patch'])
     def toggle_active(self, request, pk=None):
         """Activar/desactivar una zona de servicio"""
         instance = self.get_object()
-        
-        try:
-            mechanic = MecanicoDomicilio.objects.get(usuario=request.user)
-            if instance.mechanic != mechanic:
-                return Response({
-                    'error': 'No tiene permisos para modificar esta zona.'
-                }, status=status.HTTP_403_FORBIDDEN)
-        except MecanicoDomicilio.DoesNotExist:
+        info = self._resolver_propietario()
+        if not self._es_propietario(instance, info):
             return Response({
-                'error': 'Usuario no es un mecánico a domicilio.'
-            }, status=status.HTTP_400_BAD_REQUEST)
+                'error': 'No tiene permisos para modificar esta zona.'
+            }, status=status.HTTP_403_FORBIDDEN)
+        self._exigir_permiso_zonas(info)
         
         # Cambiar estado
         instance.is_active = not instance.is_active
@@ -5010,28 +5031,27 @@ class MechanicServiceAreaViewSet(viewsets.ModelViewSet):
     
     @action(detail=False, methods=['get'])
     def stats(self, request):
-        """Estadísticas de las zonas del mecánico"""
-        try:
-            mechanic = MecanicoDomicilio.objects.get(usuario=request.user)
-            queryset = self.get_queryset()
-            
-            total_zones = queryset.count()
-            active_zones = queryset.filter(is_active=True).count()
-            total_communes = sum(
-                zone.get_commune_count() for zone in queryset.filter(is_active=True)
-            )
-            
+        """Estadísticas de las zonas del proveedor (mecánico o taller)"""
+        info = self._resolver_propietario()
+        if info['mechanic'] is None and info['taller'] is None:
             return Response({
-                'total_zones': total_zones,
-                'active_zones': active_zones,
-                'inactive_zones': total_zones - active_zones,
-                'total_communes_covered': total_communes,
-                'coverage_summary': f"{total_communes} comunas en {active_zones} zonas activas"
-            })
-        except MecanicoDomicilio.DoesNotExist:
-            return Response({
-                'error': 'Usuario no es un mecánico a domicilio.'
+                'error': 'Usuario no es un proveedor con zonas de cobertura.'
             }, status=status.HTTP_400_BAD_REQUEST)
+
+        queryset = self.get_queryset()
+        total_zones = queryset.count()
+        active_zones = queryset.filter(is_active=True).count()
+        total_communes = sum(
+            zone.get_commune_count() for zone in queryset.filter(is_active=True)
+        )
+
+        return Response({
+            'total_zones': total_zones,
+            'active_zones': active_zones,
+            'inactive_zones': total_zones - active_zones,
+            'total_communes_covered': total_communes,
+            'coverage_summary': f"{total_communes} comunas en {active_zones} zonas activas"
+        })
 
     @action(detail=False, methods=['get'])
     def cerca(self, request):

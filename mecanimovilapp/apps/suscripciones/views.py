@@ -659,10 +659,35 @@ class CreditoProveedorViewSet(viewsets.ReadOnlyModelViewSet):
     """
     serializer_class = CreditoProveedorSerializer
     permission_classes = [IsAuthenticated, IsProveedor]
+
+    def _resolver_proveedor_creditos(self, request):
+        """
+        Devuelve el usuario dueño de los créditos. Para un supervisor con login
+        propio, los créditos son los del mandante (dueño del taller); exige el
+        permiso 'finanzas'. Para el dueño, es su propio usuario.
+        """
+        from mecanimovilapp.apps.usuarios.models import MiembroTaller
+
+        supervisor = (
+            MiembroTaller.objects
+            .filter(usuario=request.user, rol='supervisor', activo=True)
+            .select_related('taller', 'taller__usuario')
+            .first()
+        )
+        if supervisor is not None:
+            if not supervisor.tiene_permiso('finanzas'):
+                from rest_framework.exceptions import PermissionDenied
+                raise PermissionDenied('No tienes permiso para ver finanzas y créditos.')
+            return supervisor.taller.usuario
+        return request.user
     
     def get_queryset(self):
-        """Solo el proveedor puede ver sus propios créditos"""
-        return CreditoProveedor.objects.filter(proveedor=self.request.user)
+        """Créditos del proveedor (dueño) o del taller supervisado."""
+        try:
+            proveedor = self._resolver_proveedor_creditos(self.request)
+        except Exception:
+            return CreditoProveedor.objects.none()
+        return CreditoProveedor.objects.filter(proveedor=proveedor)
     
     def retrieve(self, request, pk=None):
         """
@@ -672,7 +697,7 @@ class CreditoProveedorViewSet(viewsets.ReadOnlyModelViewSet):
         """
         from .creditos_services import obtener_credito_proveedor
         
-        proveedor = request.user
+        proveedor = self._resolver_proveedor_creditos(request)
         credito_proveedor = obtener_credito_proveedor(proveedor)
         serializer = self.get_serializer(credito_proveedor)
         return Response(serializer.data)
@@ -685,7 +710,7 @@ class CreditoProveedorViewSet(viewsets.ReadOnlyModelViewSet):
         """
         from .creditos_services import obtener_credito_proveedor
         
-        proveedor = request.user
+        proveedor = self._resolver_proveedor_creditos(request)
         credito_proveedor = obtener_credito_proveedor(proveedor)
         serializer = self.get_serializer(credito_proveedor)
         return Response(serializer.data)
@@ -698,7 +723,7 @@ class CreditoProveedorViewSet(viewsets.ReadOnlyModelViewSet):
         """
         from .creditos_services import obtener_estadisticas_creditos
         
-        proveedor = request.user
+        proveedor = self._resolver_proveedor_creditos(request)
         
         try:
             estadisticas = obtener_estadisticas_creditos(proveedor)
@@ -717,7 +742,7 @@ class CreditoProveedorViewSet(viewsets.ReadOnlyModelViewSet):
         Obtiene el historial de consumos de créditos.
         Endpoint: GET /api/creditos/historial-consumos/
         """
-        proveedor = request.user
+        proveedor = self._resolver_proveedor_creditos(request)
         limit = int(request.query_params.get('limit', 50))
         
         consumos = ConsumoCredito.objects.filter(
@@ -733,7 +758,7 @@ class CreditoProveedorViewSet(viewsets.ReadOnlyModelViewSet):
         Obtiene el historial de compras de créditos.
         Endpoint: GET /api/creditos/historial-compras/
         """
-        proveedor = request.user
+        proveedor = self._resolver_proveedor_creditos(request)
         limit = int(request.query_params.get('limit', 50))
         
         compras = CompraCreditos.objects.filter(
@@ -796,7 +821,7 @@ class CreditoProveedorViewSet(viewsets.ReadOnlyModelViewSet):
         from mecanimovilapp.apps.servicios.models import Servicio
         from mecanimovilapp.apps.ordenes.models import SolicitudServicio
         
-        proveedor = request.user
+        proveedor = self._resolver_proveedor_creditos(request)
         solicitud_id = request.data.get('solicitud_id')
         servicios_ids = request.data.get('servicios_ids', [])
         
