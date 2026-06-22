@@ -83,7 +83,51 @@ mandantes, 0 con usuario nulo**.
 - 14 tests nuevos (`test_asignacion_mecanico`, `test_motor_match_modalidad`, `test_disponibilidad_union`): asignación, match por modalidad, disponibilidad-unión y no-regresión para talleres sin equipo. **Todos OK** en BD limpia.
 - Migraciones aplican sobre estado tipo-Render y `makemigrations --check` sin cambios.
 
-## 4. Pendientes / seguimiento
-- Revisar el `migrate` al desplegar el backend en Render tras el merge.
-- (Opcional) Separar a futuro el refactor de formularios/cita-personal incluido en el PR de `mecanimovil-prov`.
-- Verificación visual en las apps (badges de modalidad, pantallas de equipo/agenda por mecánico).
+## 4. Pendientes / seguimiento (completados 2026-06-22)
+
+### Merge y deploy en Render
+- PRs mergeados a `main`:
+  - Backend [#3](https://github.com/Sebas2587/mecanimovil-backend/pull/3) → commit `c311480`
+  - Prov [#3](https://github.com/Sebas2587/mecanimovil-prov/pull/3) → commit `2319ecb` (+ fix TS `3347747`)
+  - Usuarios [#2](https://github.com/Sebas2587/mecanimovil-usuarios/pull/2) → commit `fb716f5`
+- Deploy `mecanimovil-api` en Render: **live** (`dep-d8s9srq8qa3s73af05i0`, ~2 min).
+- Health check: `GET /api/hello/` → **200**.
+
+### Migraciones en producción (Render)
+Todas aplicadas OK durante el build (`build.sh` → `python manage.py migrate --noinput`):
+
+| Migración | Resultado |
+|-----------|-----------|
+| `usuarios.0015_miembrotaller_and_more` | OK |
+| `ordenes.0015_remove_citaagendapersonal_cita_xor_proveedor_and_more` | OK |
+| `ordenes.0016_citaagendapersonal_miembro_taller_and_more` | OK |
+| `usuarios.0016_data_mandante_por_taller` | OK |
+
+Los `RenameIndex` idempotentes no fallaron (índices ya renombrados en Render).
+
+### Data migration verificada en Render
+| Taller | Mandante creado | `modalidad_atencion` |
+|--------|-----------------|----------------------|
+| TECNI-CARS D&L SPA (id 5) | TECNI-CARS D&L SPA (id 1) | `en_taller` |
+| matias toledo (id 11) | matias toledo (id 2) | `en_taller` |
+
+Total: **2 talleres → 2 mandantes** (idempotente, sin duplicados).
+
+### API verificada
+- `GET /api/usuarios/taller/equipo/` sin token → **401** (endpoint registrado, requiere auth como se espera).
+
+### Verificación de apps
+- **Usuarios**: smoke test de `providerModalidad.js` — badges y filtro por modalidad OK.
+- **Prov**: archivos de la funcionalidad sin errores TS; fix menor en `tipo-cuenta.tsx` (callback `onConfirm`) pusheado a `main`.
+- **Expo prov**: Metro levanta con las rutas nuevas (`gestion-equipo` incluida en el stack).
+
+### Checklist visual (manual en dispositivo)
+- [ ] Prov: Inicio → tarjeta **Equipo** → CRUD mecánicos / toggle activo.
+- [ ] Prov: **Configuración de horarios** → selector de mecánico.
+- [ ] Prov: **Calendario** → filtro por mecánico.
+- [ ] Prov: **Agendar cita personal** → selector de mecánico.
+- [ ] Prov: **Rendimiento** → tabla por mecánico.
+- [ ] Usuarios: badges "En taller" / "A domicilio" en lista y detalle de proveedor.
+
+### Nota opcional (no ejecutada)
+Separar el refactor de formularios/cita-personal del PR de prov queda como mejora futura; no bloquea la funcionalidad desplegada.
