@@ -10,6 +10,11 @@ from django.db import transaction
 from django.utils import timezone
 
 from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonal, CitaAgendaPersonalDetalle
+from mecanimovilapp.apps.ordenes.services.asignacion_mecanico import (
+    _miembro_libre_en_slot,
+    _modalidad_desde_tipo_servicio,
+    seleccionar_mecanico,
+)
 from mecanimovilapp.apps.servicios.models import OfertaServicio
 from mecanimovilapp.apps.usuarios.models import (
     HorarioProveedor,
@@ -174,6 +179,154 @@ def validar_detalle(detalle_data: dict, *, tipo_servicio: str) -> None:
         )
 
 
+def _categorias_de_oferta(oferta: OfertaServicio | None) -> list[int]:
+    if oferta is None:
+        return []
+    servicio = getattr(oferta, 'servicio', None)
+    if servicio is None:
+        return []
+    return list(servicio.categorias.values_list('id', flat=True))
+
+
+def _taller_tiene_mecanicos(taller: Taller) -> bool:
+    return MiembroTaller.objects.filter(
+        taller=taller, rol='mecanico', activo=True,
+    ).exists()
+
+
+def _validar_miembro_manual(
+    miembro: MiembroTaller,
+    *,
+    tipo_servicio: str,
+    categorias_requeridas: list[int],
+    taller: Taller,
+    fecha: date,
+    hora,
+    duracion_minutos: int,
+    excluir_cita_id: int | None = None,
+) -> None:
+    if miembro.rol != 'mecanico' or not miembro.activo:
+        raise ValidationError({'miembro_taller': 'Debe seleccionar un mecánico activo del equipo.'})
+    modalidad = _modalidad_desde_tipo_servicio(tipo_servicio)
+    if modalidad and not miembro.modalidad_compatible(modalidad):
+        raise ValidationError(
+            {'miembro_taller': 'El mecánico seleccionado no atiende este tipo de servicio.'},
+        )
+    if categorias_requeridas and not miembro.especialidades.filter(
+        id__in=categorias_requeridas,
+    ).exists():
+        raise ValidationError(
+            {'miembro_taller': 'El mecánico seleccionado no tiene la especialidad requerida.'},
+        )
+    if not _miembro_libre_en_slot(
+        miembro=miembro,
+        taller=taller,
+        fecha=fecha,
+        hora=hora,
+        duracion_minutos=duracion_minutos,
+        excluir_cita_personal_id=excluir_cita_id,
+    ):
+        raise ValidationError('El mecánico seleccionado no está disponible en ese horario.')
+
+
+def resolver_miembro_cita_personal(
+    *,
+    taller: Taller | None,
+    miembro_id: int | None,
+    tipo_servicio: str,
+    fecha: date,
+    hora,
+    duracion_minutos: int,
+    categorias_requeridas: list[int] | None = None,
+    excluir_cita_id: int | None = None,
+) -> MiembroTaller | None:
+    """
+    Resuelve el mecánico de una cita personal.
+    - ID explícito: valida modalidad, especialidad y disponibilidad.
+    - Automático (sin ID) con equipo: asigna al mejor mecánico apto y libre.
+    - Taller sin mecánicos: None (agenda a nivel taller).
+    """
+    if taller is None:
+        if miembro_id:
+            raise ValidationError('Solo los talleres pueden asignar un mecánico a la cita.')
+        return None
+
+    categorias = categorias_requeridas or []
+    tiene_equipo = _taller_tiene_mecanicos(taller)
+
+    if miembro_id:
+        miembro = MiembroTaller.objects.filter(
+            pk=miembro_id, taller=taller, rol='mecanico', activo=True,
+        ).first()
+        if miembro is None:
+            raise ValidationError({'miembro_taller': 'El mecánico no pertenece a este taller.'})
+        _validar_miembro_manual(
+            miembro,
+            tipo_servicio=tipo_servicio,
+            categorias_requeridas=categorias,
+            taller=taller,
+            fecha=fecha,
+            hora=hora,
+            duracion_minutos=duracion_minutos,
+            excluir_cita_id=excluir_cita_id,
+        )
+        return miembro
+
+    if not tiene_equipo:
+        return None
+
+    modalidad = _modalidad_desde_tipo_servicio(tipo_servicio)
+    miembro = seleccionar_mecanico(
+        taller=taller,
+        fecha=fecha,
+        hora=hora,
+        duracion_minutos=duracion_minutos,
+        categorias_requeridas=categorias or None,
+        modalidad=modalidad,
+        excluir_cita_personal_id=excluir_cita_id,
+    )
+    if miembro is None:
+        raise ValidationError(
+            'No hay mecánico disponible compatible con el tipo de servicio en el horario seleccionado.',
+        )
+    return miembro
+
+
+def validar_cita_personal_slot(
+    *,
+    taller: Taller | None,
+    mecanico: MecanicoDomicilio | None,
+    tipo_servicio: str,
+    fecha: date,
+    hora,
+    duracion_minutos: int,
+    miembro_id: int | None,
+    categorias_requeridas: list[int] | None = None,
+    excluir_cita_id: int | None = None,
+) -> MiembroTaller | None:
+    """Valida disponibilidad y resuelve mecánico (manual o automático)."""
+    miembro = resolver_miembro_cita_personal(
+        taller=taller,
+        miembro_id=miembro_id,
+        tipo_servicio=tipo_servicio,
+        fecha=fecha,
+        hora=hora,
+        duracion_minutos=duracion_minutos,
+        categorias_requeridas=categorias_requeridas,
+        excluir_cita_id=excluir_cita_id,
+    )
+    if miembro is None:
+        validar_slot_disponible(
+            taller=taller,
+            mecanico=mecanico,
+            fecha=fecha,
+            hora=hora,
+            duracion_minutos=duracion_minutos,
+            excluir_cita_id=excluir_cita_id,
+        )
+    return miembro
+
+
 @transaction.atomic
 def crear_cita_personal(
     *,
@@ -187,16 +340,6 @@ def crear_cita_personal(
 
     tipo_servicio = cabecera.get('tipo_servicio', 'taller')
     validar_detalle(detalle, tipo_servicio=tipo_servicio)
-
-    # Mecánico asignado opcional (solo talleres con equipo)
-    miembro = None
-    miembro_id = cabecera.get('miembro_taller')
-    if miembro_id:
-        if taller is None:
-            raise ValidationError('Solo los talleres pueden asignar un mecánico a la cita.')
-        miembro = MiembroTaller.objects.filter(pk=miembro_id, taller=taller).first()
-        if miembro is None:
-            raise ValidationError({'miembro_taller': 'El mecánico no pertenece a este taller.'})
 
     oferta = None
     oferta_id = detalle.pop('oferta_servicio', None)
@@ -215,12 +358,17 @@ def crear_cita_personal(
 
     fecha = cabecera['fecha_servicio']
     hora = cabecera['hora_servicio']
-    validar_slot_disponible(
+    categorias = _categorias_de_oferta(oferta)
+
+    miembro = validar_cita_personal_slot(
         taller=taller,
         mecanico=mecanico,
+        tipo_servicio=tipo_servicio,
         fecha=fecha,
         hora=hora,
         duracion_minutos=duracion,
+        miembro_id=cabecera.get('miembro_taller'),
+        categorias_requeridas=categorias,
     )
 
     cita = CitaAgendaPersonal(
@@ -298,12 +446,20 @@ def actualizar_cita_personal(
         duracion_manual=cabecera.get('duracion_minutos', cita.duracion_minutos),
     )
 
-    validar_slot_disponible(
+    miembro_id = cabecera.get('miembro_taller', cita.miembro_taller_id)
+    if 'miembro_taller' in cabecera and cabecera.get('miembro_taller') is None:
+        miembro_id = None
+
+    categorias = _categorias_de_oferta(oferta)
+    miembro = validar_cita_personal_slot(
         taller=cita.taller,
         mecanico=cita.mecanico,
+        tipo_servicio=tipo_servicio,
         fecha=fecha,
         hora=hora,
         duracion_minutos=duracion,
+        miembro_id=miembro_id,
+        categorias_requeridas=categorias,
         excluir_cita_id=cita.pk,
     )
 
@@ -311,19 +467,7 @@ def actualizar_cita_personal(
         if field in ('fecha_servicio', 'hora_servicio', 'duracion_minutos', 'tipo_servicio'):
             setattr(cita, field, value if field != 'duracion_minutos' else duracion)
     cita.duracion_minutos = duracion
-
-    # Reasignación de mecánico (opcional, solo talleres con equipo)
-    if 'miembro_taller' in cabecera:
-        miembro_id = cabecera.get('miembro_taller')
-        if not miembro_id:
-            cita.miembro_taller = None
-        elif cita.taller_id is None:
-            raise ValidationError('Solo los talleres pueden asignar un mecánico a la cita.')
-        else:
-            miembro = MiembroTaller.objects.filter(pk=miembro_id, taller_id=cita.taller_id).first()
-            if miembro is None:
-                raise ValidationError({'miembro_taller': 'El mecánico no pertenece a este taller.'})
-            cita.miembro_taller = miembro
+    cita.miembro_taller = miembro
     cita.full_clean()
     cita.save()
 

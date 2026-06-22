@@ -56,6 +56,7 @@ def _miembro_libre_en_slot(
     fecha: date,
     hora: time,
     duracion_minutos: int,
+    excluir_cita_personal_id: int | None = None,
 ) -> bool:
     """True si el mecánico atiende ese día y no tiene solapamiento en el slot."""
     horario = _horario_config_miembro(miembro, taller, fecha.weekday())
@@ -80,6 +81,7 @@ def _miembro_libre_en_slot(
         fecha=fecha,
         tiempo_descanso=horario.tiempo_descanso,
         duracion_fallback=duracion_minutos,
+        excluir_cita_personal_id=excluir_cita_personal_id,
     )
     for occ_ini, occ_fin in ocupados:
         if inicio < occ_fin and occ_ini < fin:
@@ -105,6 +107,7 @@ def seleccionar_mecanico(
     duracion_minutos: int = DURACION_DEFAULT_MINUTOS,
     categorias_requeridas: list[int] | None = None,
     modalidad: str | None = None,
+    excluir_cita_personal_id: int | None = None,
 ) -> MiembroTaller | None:
     """
     Devuelve el mejor mecánico apto, libre en el slot y con menor carga; o None.
@@ -119,6 +122,7 @@ def seleccionar_mecanico(
         if _miembro_libre_en_slot(
             miembro=m, taller=taller, fecha=fecha, hora=hora,
             duracion_minutos=duracion_minutos,
+            excluir_cita_personal_id=excluir_cita_personal_id,
         )
     ]
     if not libres:

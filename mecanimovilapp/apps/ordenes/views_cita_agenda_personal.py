@@ -26,7 +26,8 @@ from mecanimovilapp.apps.ordenes.services.cita_agenda_personal import (
     actualizar_cita_personal,
     crear_cita_personal,
     resolver_proveedor_usuario,
-    validar_slot_disponible,
+    validar_cita_personal_slot,
+    _categorias_de_oferta,
 )
 
 
@@ -174,18 +175,33 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
         data = ser.validated_data
         taller, mecanico = resolver_proveedor_usuario(request.user)
         excluir = request.data.get('excluir_cita_id')
+        detalle = data.get('detalle') or {}
+        oferta = detalle.get('oferta_servicio')
         try:
-            validar_slot_disponible(
+            validar_cita_personal_slot(
                 taller=taller,
                 mecanico=mecanico,
+                tipo_servicio=data['tipo_servicio'],
                 fecha=data['fecha_servicio'],
                 hora=data['hora_servicio'],
                 duracion_minutos=data.get('duracion_minutos') or 60,
+                miembro_id=data.get('miembro_taller'),
+                categorias_requeridas=_categorias_de_oferta(oferta),
                 excluir_cita_id=int(excluir) if excluir else None,
             )
         except DjangoValidationError as e:
+            msg = e.message if hasattr(e, 'message') and isinstance(e.message, str) else str(e)
+            if hasattr(e, 'message_dict'):
+                parts = []
+                for val in e.message_dict.values():
+                    if isinstance(val, list):
+                        parts.extend(str(v) for v in val)
+                    else:
+                        parts.append(str(val))
+                if parts:
+                    msg = ' '.join(parts)
             return Response(
-                {'valido': False, 'error': str(e.message if hasattr(e, 'message') else e)},
+                {'valido': False, 'error': msg},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return Response({'valido': True})
