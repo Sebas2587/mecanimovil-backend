@@ -83,6 +83,16 @@ class SolicitudServicio(models.Model):
         null=True,
         blank=True
     )
+    # Asignación interna del taller: técnico (MiembroTaller) responsable de esta orden.
+    # No afecta el cobro de créditos (que sigue siendo a nivel del usuario mandante).
+    mecanico_asignado = models.ForeignKey(
+        'usuarios.MiembroTaller',
+        on_delete=models.SET_NULL,
+        related_name='solicitudes_asignadas',
+        null=True,
+        blank=True,
+        help_text=_('Mecánico del equipo del taller asignado a esta orden')
+    )
     fecha_servicio = models.DateField()
     hora_servicio = models.TimeField()
     
@@ -1897,6 +1907,14 @@ class CitaAgendaPersonal(models.Model):
         null=True,
         blank=True,
     )
+    # Mecánico del equipo del taller al que pertenece esta cita personal (agenda por mecánico).
+    miembro_taller = models.ForeignKey(
+        'usuarios.MiembroTaller',
+        on_delete=models.CASCADE,
+        related_name='citas_agenda_personal',
+        null=True,
+        blank=True,
+    )
     fecha_servicio = models.DateField()
     hora_servicio = models.TimeField()
     duracion_minutos = models.PositiveIntegerField(default=60)
@@ -1955,6 +1973,10 @@ class CitaAgendaPersonal(models.Model):
             models.Index(
                 fields=['mecanico', 'fecha_servicio', 'estado'],
                 name='cita_mecanico_fecha_estado_idx',
+            ),
+            models.Index(
+                fields=['miembro_taller', 'fecha_servicio', 'estado'],
+                name='cita_miembro_fecha_estado_idx',
             ),
             models.Index(
                 fields=['creado_por', '-fecha_creacion'],

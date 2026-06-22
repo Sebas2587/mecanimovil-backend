@@ -153,6 +153,7 @@ class AsistenteAgendamientoViewSet(viewsets.ViewSet):
 
         try:
             direccion_texto = (qp.get('direccion_texto') or qp.get('direccion_servicio_texto') or '').strip()
+            modalidad = (qp.get('modalidad') or qp.get('tipo_servicio') or '').strip() or None
 
             resultado = listar_candidatos_proveedor(
                 vehiculo_id=vehiculo_id,
@@ -163,6 +164,7 @@ class AsistenteAgendamientoViewSet(viewsets.ViewSet):
                 lat=lat,
                 lng=lng,
                 request=request,
+                modalidad=modalidad,
             )
             if resultado.get('error') == 'vehiculo_no_encontrado':
                 return Response(

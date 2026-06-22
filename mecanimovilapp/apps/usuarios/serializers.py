@@ -4,7 +4,8 @@ from .models import (
     Usuario, Cliente, Taller, MecanicoDomicilio, ZonaCobertura, 
     Resena, DireccionUsuario, HorarioProveedor, DocumentoOnboarding,
     ConfiguracionSemanalProveedor, MechanicServiceArea, ChileanCommune,
-    ConnectionStatus, ProviderProfile, Review, TallerDireccion, Notificacion
+    ConnectionStatus, ProviderProfile, Review, TallerDireccion, Notificacion,
+    MiembroTaller
 )
 from mecanimovilapp.apps.servicios.models import CategoriaServicio
 from django.contrib.gis.geos import Point
@@ -258,8 +259,65 @@ class HorarioProveedorSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'dia_semana', 'dia_nombre', 'activo', 
             'hora_inicio', 'hora_fin', 'duracion_slot', 'tiempo_descanso',
-            'proveedor_nombre', 'tipo_proveedor'
+            'proveedor_nombre', 'tipo_proveedor', 'miembro_taller'
         ]
+
+
+class MiembroTallerSerializer(serializers.ModelSerializer):
+    """
+    Serializer del equipo del taller (mandante, supervisor, mecánicos).
+    El taller se asigna automáticamente desde el usuario autenticado (no es editable).
+    """
+    especialidades = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=CategoriaServicio.objects.all(),
+        required=False,
+    )
+    especialidades_detalle = serializers.SerializerMethodField(read_only=True)
+    rol_display = serializers.CharField(source='get_rol_display', read_only=True)
+    modalidad_tecnico_display = serializers.CharField(
+        source='get_modalidad_tecnico_display', read_only=True
+    )
+
+    class Meta:
+        model = MiembroTaller
+        fields = [
+            'id', 'rol', 'rol_display', 'nombre', 'usuario',
+            'especialidades', 'especialidades_detalle',
+            'modalidad_tecnico', 'modalidad_tecnico_display',
+            'activo', 'fecha_creacion', 'fecha_actualizacion',
+        ]
+        read_only_fields = ['id', 'fecha_creacion', 'fecha_actualizacion', 'usuario']
+
+    def get_especialidades_detalle(self, obj):
+        return [
+            {'id': c.id, 'nombre': c.nombre}
+            for c in obj.especialidades.all()
+        ]
+
+    def validate(self, data):
+        rol = data.get('rol', getattr(self.instance, 'rol', 'mecanico'))
+        # En create especialidades viene en data; en update parcial puede no venir.
+        especialidades = data.get('especialidades')
+        if especialidades is None and self.instance is not None:
+            especialidades = list(self.instance.especialidades.all())
+
+        if rol == 'mecanico' and not especialidades:
+            raise serializers.ValidationError(
+                {'especialidades': 'Un mecánico debe tener al menos una especialidad.'}
+            )
+
+        # Unicidad de mandante/supervisor por taller (mensaje amigable; la BD lo refuerza).
+        taller = self.context.get('taller')
+        if taller and rol in ('mandante', 'supervisor'):
+            existe = MiembroTaller.objects.filter(taller=taller, rol=rol)
+            if self.instance is not None:
+                existe = existe.exclude(pk=self.instance.pk)
+            if existe.exists():
+                raise serializers.ValidationError(
+                    {'rol': f'El taller ya tiene un {rol}.'}
+                )
+        return data
     
     def validate(self, data):
         """Validaciones personalizadas"""
@@ -528,6 +586,7 @@ class TallerSerializer(PanelServiciosSerializerMixin, serializers.ModelSerialize
         model = Taller
         fields = ('id', 'usuario', 'nombre', 'telefono', 'ubicacion',
                   'rut', 'capacidad_diaria', 'horario_atencion',
+                  'modalidad_atencion', 'radio_cobertura',
                   'especialidades', 'especialidades_nombres',
                   'marcas_atendidas', 'marcas_atendidas_nombres',
                   'tipo_cobertura_marca',

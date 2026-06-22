@@ -98,6 +98,7 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
                     'hora_servicio': data['hora_servicio'],
                     'duracion_minutos': data.get('duracion_minutos'),
                     'tipo_servicio': data['tipo_servicio'],
+                    'miembro_taller': data.get('miembro_taller'),
                 },
                 detalle=data['detalle'],
             )
@@ -234,6 +235,8 @@ def _serializar_cita_personal_evento(cita: CitaAgendaPersonal) -> dict:
         'tipo_servicio': cita.tipo_servicio,
         'oferta_proveedor_id': None,
         'orden_id': None,
+        'miembro_taller_id': cita.miembro_taller_id,
+        'mecanico_nombre': cita.miembro_taller.nombre if cita.miembro_taller_id else None,
     }
 
 
@@ -270,6 +273,8 @@ def _serializar_orden_mecanimovil_evento(orden: SolicitudServicio) -> dict:
         'tipo_servicio': orden.tipo_servicio,
         'oferta_proveedor_id': str(orden.oferta_proveedor_id) if orden.oferta_proveedor_id else None,
         'orden_id': orden.id,
+        'miembro_taller_id': orden.mecanico_asignado_id,
+        'mecanico_nombre': orden.mecanico_asignado.nombre if orden.mecanico_asignado_id else None,
     }
 
 
@@ -286,6 +291,7 @@ class ProveedorAgendaViewSet(viewsets.ViewSet):
         fecha_desde = request.query_params.get('fecha_desde')
         fecha_hasta = request.query_params.get('fecha_hasta')
         incluir = request.query_params.get('incluir', 'activas,cerradas')
+        miembro_taller_id = request.query_params.get('miembro_taller')
 
         estados_cita_map = {
             'activas': ['activa'],
@@ -300,13 +306,15 @@ class ProveedorAgendaViewSet(viewsets.ViewSet):
             estados_cita = ['activa']
 
         citas_qs = CitaAgendaPersonal.objects.select_related(
-            'detalle', 'detalle__oferta_servicio__servicio',
+            'detalle', 'detalle__oferta_servicio__servicio', 'miembro_taller',
         )
         if taller:
             citas_qs = citas_qs.filter(taller=taller)
         else:
             citas_qs = citas_qs.filter(mecanico=mecanico)
         citas_qs = citas_qs.filter(estado__in=estados_cita)
+        if miembro_taller_id:
+            citas_qs = citas_qs.filter(miembro_taller_id=miembro_taller_id)
         if fecha_desde:
             citas_qs = citas_qs.filter(fecha_servicio__gte=fecha_desde)
         if fecha_hasta:
@@ -317,11 +325,13 @@ class ProveedorAgendaViewSet(viewsets.ViewSet):
         if 'mecanimovil' in incluir or 'activas' in incluir or 'cerradas' in incluir:
             ordenes_qs = SolicitudServicio.objects.prefetch_related(
                 'lineas__oferta_servicio__servicio',
-            ).select_related('cliente', 'vehiculo', 'vehiculo__marca', 'vehiculo__modelo')
+            ).select_related('cliente', 'vehiculo', 'vehiculo__marca', 'vehiculo__modelo', 'mecanico_asignado')
             if taller:
                 ordenes_qs = ordenes_qs.filter(taller=taller)
             else:
                 ordenes_qs = ordenes_qs.filter(mecanico=mecanico)
+            if miembro_taller_id:
+                ordenes_qs = ordenes_qs.filter(mecanico_asignado_id=miembro_taller_id)
             if fecha_desde:
                 ordenes_qs = ordenes_qs.filter(fecha_servicio__gte=fecha_desde)
             if fecha_hasta:

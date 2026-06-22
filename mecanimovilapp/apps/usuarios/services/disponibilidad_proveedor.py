@@ -14,7 +14,12 @@ logger = logging.getLogger(__name__)
 
 from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonal, SolicitudServicio
 from mecanimovilapp.apps.servicios.models import OfertaServicio
-from mecanimovilapp.apps.usuarios.models import HorarioProveedor, MecanicoDomicilio, Taller
+from mecanimovilapp.apps.usuarios.models import (
+    HorarioProveedor,
+    MecanicoDomicilio,
+    MiembroTaller,
+    Taller,
+)
 
 ESTADOS_OCUPAN_AGENDA = (
     'pendiente',
@@ -184,6 +189,138 @@ def intervalos_ocupados_dia(
     return _merge_intervals(intervalos + intervalos_citas)
 
 
+# ---------------------------------------------------------------------------
+# Disponibilidad por mecánico (equipo de taller)
+# ---------------------------------------------------------------------------
+
+def _categorias_requeridas(oferta: OfertaServicio | None) -> list[int]:
+    """IDs de CategoriaServicio del servicio ofertado (especialidad requerida)."""
+    if oferta is None:
+        return []
+    servicio = getattr(oferta, 'servicio', None)
+    if servicio is None:
+        return []
+    return list(servicio.categorias.values_list('id', flat=True))
+
+
+def mecanicos_aptos_taller(
+    taller: Taller,
+    *,
+    categorias_requeridas: list[int] | None = None,
+    modalidad: str | None = None,
+) -> list[MiembroTaller]:
+    """
+    Mecánicos activos del taller que cubren la especialidad requerida y la modalidad.
+    Un taller sin mecánicos activos retorna lista vacía (el caller hace fallback).
+    """
+    qs = (
+        MiembroTaller.objects
+        .filter(taller=taller, rol='mecanico', activo=True)
+        .prefetch_related('especialidades')
+    )
+    aptos: list[MiembroTaller] = []
+    for miembro in qs:
+        if categorias_requeridas and not miembro.especialidades.filter(
+            id__in=categorias_requeridas
+        ).exists():
+            continue
+        if modalidad and not miembro.modalidad_compatible(modalidad):
+            continue
+        aptos.append(miembro)
+    return aptos
+
+
+def _horario_config_miembro(
+    miembro: MiembroTaller,
+    taller: Taller,
+    dia_semana: int,
+) -> HorarioProveedor | None:
+    """Horario del mecánico para el día; si no tiene propio, hereda el del taller."""
+    propio = (
+        HorarioProveedor.objects
+        .filter(miembro_taller=miembro, dia_semana=dia_semana, activo=True)
+        .order_by('id')
+        .first()
+    )
+    if propio is not None:
+        return propio
+    return (
+        HorarioProveedor.objects
+        .filter(taller=taller, miembro_taller__isnull=True, dia_semana=dia_semana, activo=True)
+        .order_by('id')
+        .first()
+    )
+
+
+def _intervalos_ocupados_miembro(
+    *,
+    miembro: MiembroTaller,
+    fecha: date,
+    tiempo_descanso: int = 0,
+    duracion_fallback: int = DURACION_DEFAULT_MINUTOS,
+    excluir_cita_personal_id: int | None = None,
+) -> list[tuple[datetime, datetime]]:
+    """Intervalos ocupados de un mecánico: sus órdenes asignadas + sus citas personales."""
+    solicitudes = (
+        SolicitudServicio.objects
+        .filter(
+            mecanico_asignado=miembro,
+            fecha_servicio=fecha,
+            estado__in=ESTADOS_OCUPAN_AGENDA,
+        )
+        .prefetch_related('lineas__oferta_servicio', 'oferta_proveedor__oferta_servicio')
+    )
+
+    intervalos: list[tuple[datetime, datetime]] = []
+    for sol in solicitudes:
+        if not sol.hora_servicio:
+            continue
+        inicio = datetime.combine(fecha, sol.hora_servicio)
+        dur = _duracion_solicitud_minutos(sol, duracion_fallback)
+        fin = inicio + timedelta(minutes=dur + tiempo_descanso)
+        intervalos.append((inicio, fin))
+
+    citas = CitaAgendaPersonal.objects.filter(
+        miembro_taller=miembro,
+        fecha_servicio=fecha,
+        estado__in=ESTADOS_CITA_PERSONAL_OCUPAN,
+    )
+    if excluir_cita_personal_id:
+        citas = citas.exclude(pk=excluir_cita_personal_id)
+    for cita in citas:
+        inicio = datetime.combine(fecha, cita.hora_servicio)
+        fin = inicio + timedelta(minutes=cita.duracion_minutos + tiempo_descanso)
+        intervalos.append((inicio, fin))
+
+    return _merge_intervals(intervalos)
+
+
+def _slots_libres_miembro(
+    *,
+    miembro: MiembroTaller,
+    taller: Taller,
+    fecha: date,
+    dia_semana: int,
+    max_dur: int,
+) -> list[dict[str, Any]]:
+    """Genera los slots donde el mecánico está libre en el día (vacío si no atiende)."""
+    horario = _horario_config_miembro(miembro, taller, dia_semana)
+    if horario is None:
+        return []
+    ocupados = _intervalos_ocupados_miembro(
+        miembro=miembro,
+        fecha=fecha,
+        tiempo_descanso=horario.tiempo_descanso,
+        duracion_fallback=max_dur,
+    )
+    libres = ventanas_libres(horario.hora_inicio, horario.hora_fin, fecha, ocupados)
+    ventana_jornada = _minutos_ventana_jornada(horario.hora_inicio, horario.hora_fin)
+    duracion_slot = int(max_dur)
+    if ventana_jornada > 0:
+        duracion_slot = min(duracion_slot, ventana_jornada)
+    return slots_en_ventanas(libres, duracion_slot)
+
+
 def ventanas_libres(
     hora_inicio: time,
     hora_fin: time,
@@ -298,17 +435,135 @@ def estado_actual_proveedor(
     }
 
 
+def _disponibilidad_union_equipo(
+    *,
+    taller: Taller,
+    fecha: date,
+    dia_semana: int,
+    oferta: OfertaServicio | None,
+    aptos: list[MiembroTaller],
+) -> dict[str, Any]:
+    """
+    Disponibilidad pública del taller = UNIÓN de los slots libres de cada mecánico apto.
+    Un slot se ofrece si al menos un mecánico apto cabe el servicio completo en ese inicio.
+    """
+    min_dur, max_dur = duracion_rango_oferta(oferta)
+
+    estado_actual = estado_actual_proveedor(taller=taller, duracion_fallback=max_dur)
+
+    if not aptos:
+        return {
+            'fecha': fecha.isoformat(),
+            'proveedor_disponible': False,
+            'mensaje': 'No hay mecánicos disponibles para este servicio',
+            'duracion_servicio_solicitado': {
+                'minimo': min_dur,
+                'maximo': max_dur,
+                'etiqueta': etiqueta_duracion(min_dur, max_dur),
+            },
+            'estado_actual': estado_actual,
+            'slots_disponibles': [],
+            'total_slots': 0,
+        }
+
+    # Unión de slots por hora de inicio (dedupe). Un mecánico aporta solo si cabe el servicio.
+    slots_por_hora: dict[str, dict[str, Any]] = {}
+    for miembro in aptos:
+        for slot in _slots_libres_miembro(
+            miembro=miembro,
+            taller=taller,
+            fecha=fecha,
+            dia_semana=dia_semana,
+            max_dur=max_dur,
+        ):
+            slots_por_hora[slot['hora']] = slot
+
+    slots = sorted(slots_por_hora.values(), key=lambda s: s['hora_inicio_24h'])
+
+    if fecha == timezone.localdate():
+        ahora_t = timezone.localtime().time()
+        slots = [s for s in slots if s['hora_inicio_24h'] > ahora_t]
+
+    if not slots:
+        return {
+            'fecha': fecha.isoformat(),
+            'proveedor_disponible': False,
+            'mensaje': 'El proveedor no atiende este día',
+            'duracion_servicio_solicitado': {
+                'minimo': min_dur,
+                'maximo': max_dur,
+                'etiqueta': etiqueta_duracion(min_dur, max_dur),
+            },
+            'estado_actual': estado_actual,
+            'slots_disponibles': [],
+            'total_slots': 0,
+        }
+
+    slots_safe = _slots_json_safe(slots)
+    return {
+        'fecha': fecha.isoformat(),
+        'proveedor_disponible': True,
+        'duracion_servicio_solicitado': {
+            'minimo': min_dur,
+            'maximo': max_dur,
+            'etiqueta': etiqueta_duracion(min_dur, max_dur),
+        },
+        'estado_actual': estado_actual,
+        'slots_disponibles': slots_safe,
+        'total_slots': len(slots_safe),
+    }
+
+
 def disponibilidad_con_duracion(
     *,
     taller: Taller | None = None,
     mecanico: MecanicoDomicilio | None = None,
     fecha: date,
     oferta_servicio_id: int | None = None,
+    modalidad: str | None = None,
 ) -> dict[str, Any]:
     dia_semana = fecha.weekday()
+
+    # Resolver oferta (para duración y especialidad requerida) — común a ambos caminos.
+    oferta = None
+    if oferta_servicio_id:
+        oferta_qs = OfertaServicio.objects.filter(pk=oferta_servicio_id).select_related('servicio')
+        if taller:
+            oferta_qs = oferta_qs.filter(taller=taller)
+        elif mecanico:
+            oferta_qs = oferta_qs.filter(mecanico=mecanico)
+        oferta = oferta_qs.first()
+        if oferta is None:
+            logger.warning(
+                'oferta_servicio_id=%s no pertenece al proveedor taller=%s mecanico=%s',
+                oferta_servicio_id,
+                getattr(taller, 'id', None),
+                getattr(mecanico, 'id', None),
+            )
+
+    # Camino equipo de taller: disponibilidad = UNIÓN por mecánico apto.
+    if taller is not None:
+        categorias_req = _categorias_requeridas(oferta)
+        aptos = mecanicos_aptos_taller(
+            taller,
+            categorias_requeridas=categorias_req,
+            modalidad=modalidad,
+        )
+        tiene_equipo = MiembroTaller.objects.filter(
+            taller=taller, rol='mecanico', activo=True
+        ).exists()
+        if tiene_equipo:
+            return _disponibilidad_union_equipo(
+                taller=taller,
+                fecha=fecha,
+                dia_semana=dia_semana,
+                oferta=oferta,
+                aptos=aptos,
+            )
+
     horario_qs = HorarioProveedor.objects.filter(dia_semana=dia_semana, activo=True)
     if taller:
-        horario_qs = horario_qs.filter(taller=taller)
+        horario_qs = horario_qs.filter(taller=taller, miembro_taller__isnull=True)
     else:
         horario_qs = horario_qs.filter(mecanico=mecanico)
 
@@ -330,22 +585,6 @@ def disponibilidad_con_duracion(
             getattr(mecanico, 'id', None),
             dia_semana,
         )
-
-    oferta = None
-    if oferta_servicio_id:
-        oferta_qs = OfertaServicio.objects.filter(pk=oferta_servicio_id).select_related('servicio')
-        if taller:
-            oferta_qs = oferta_qs.filter(taller=taller)
-        elif mecanico:
-            oferta_qs = oferta_qs.filter(mecanico=mecanico)
-        oferta = oferta_qs.first()
-        if oferta is None:
-            logger.warning(
-                'oferta_servicio_id=%s no pertenece al proveedor taller=%s mecanico=%s',
-                oferta_servicio_id,
-                getattr(taller, 'id', None),
-                getattr(mecanico, 'id', None),
-            )
 
     min_dur, max_dur = duracion_rango_oferta(oferta)
     ocupados = intervalos_ocupados_dia(
@@ -401,6 +640,7 @@ def dias_con_slots(
     mecanico: MecanicoDomicilio | None = None,
     oferta_servicio_id: int | None = None,
     dias_adelante: int = 14,
+    modalidad: str | None = None,
 ) -> list[str]:
     """Fechas YYYY-MM-DD con al menos un slot en los próximos N días."""
     hoy = timezone.localdate()
@@ -413,6 +653,7 @@ def dias_con_slots(
                 mecanico=mecanico,
                 fecha=f,
                 oferta_servicio_id=oferta_servicio_id,
+                modalidad=modalidad,
             )
         except Exception:
             logger.exception(
