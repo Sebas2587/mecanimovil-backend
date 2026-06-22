@@ -4639,6 +4639,51 @@ class MiembroTallerViewSet(viewsets.ModelViewSet):
             })
         return Response(resultados, status=status.HTTP_200_OK)
 
+    @action(detail=False, methods=['get'], url_path='rendimiento-detallado')
+    def rendimiento_detallado(self, request):
+        """
+        KPIs granulares por mecánico: tiempos, facturación, comparativo mensual,
+        scores y órdenes por canal.
+
+        Query params opcionales:
+          - desde=YYYY-MM-DD, hasta=YYYY-MM-DD
+          - dias=30 (si no hay desde/hasta)
+          - mecanico_id=N (solo un mecánico)
+        """
+        from mecanimovilapp.apps.ordenes.services.mecanico_kpis import compute_rendimiento_taller
+
+        taller = self._get_taller()
+        if taller is None:
+            return Response([], status=status.HTTP_200_OK)
+
+        desde = request.query_params.get('desde')
+        hasta = request.query_params.get('hasta')
+        try:
+            dias = int(request.query_params.get('dias', 30))
+        except (TypeError, ValueError):
+            dias = 30
+
+        mecanico_id = request.query_params.get('mecanico_id')
+        mecanico_id_int = None
+        if mecanico_id is not None:
+            try:
+                mecanico_id_int = int(mecanico_id)
+            except (TypeError, ValueError):
+                return Response(
+                    {'error': 'mecanico_id debe ser un entero.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        resultados = compute_rendimiento_taller(
+            taller,
+            desde=desde,
+            hasta=hasta,
+            dias=dias,
+            mecanico_id=mecanico_id_int,
+            request=request,
+        )
+        return Response(resultados, status=status.HTTP_200_OK)
+
     @action(
         detail=True,
         methods=['post'],

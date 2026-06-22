@@ -147,7 +147,31 @@ class ChecklistInstanceSerializer(serializers.ModelSerializer):
     requiere_firma_cliente = serializers.SerializerMethodField()
     firma_tecnico_disponible = serializers.SerializerMethodField()
     firma_cliente_disponible = serializers.SerializerMethodField()
-    
+    mecanico_asignado = serializers.SerializerMethodField()
+
+    def get_mecanico_asignado(self, obj):
+        """Técnico del taller asignado a la orden (foto, nombre, especialidades)."""
+        miembro = getattr(obj.orden, 'mecanico_asignado', None)
+        if miembro is None:
+            return None
+        request = self.context.get('request')
+        foto_url = get_image_url(miembro.foto, request) if miembro.foto else None
+        try:
+            especialidades = [
+                {'id': c.id, 'nombre': c.nombre}
+                for c in miembro.especialidades.all()
+            ]
+        except Exception:
+            especialidades = []
+        return {
+            'id': miembro.id,
+            'nombre': miembro.nombre,
+            'foto_url': foto_url,
+            'especialidades': especialidades,
+            'modalidad_tecnico': miembro.modalidad_tecnico,
+            'modalidad_display': miembro.get_modalidad_tecnico_display(),
+        }
+
     def get_orden_info(self, obj):
         result = {
             'id': obj.orden.id,
@@ -253,7 +277,8 @@ class ChecklistInstanceSerializer(serializers.ModelSerializer):
             'firma_tecnico_disponible', 'firma_cliente_disponible',
             'requiere_firma_cliente',
             'progreso_porcentaje', 'tiempo_total_minutos',
-            'respuestas', 'orden_info', 'progreso_info', 'puede_finalizar_check'
+            'respuestas', 'orden_info', 'progreso_info', 'puede_finalizar_check',
+            'mecanico_asignado',
         ]
         read_only_fields = [
             'fecha_creacion', 'progreso_porcentaje', 'tiempo_total_minutos'

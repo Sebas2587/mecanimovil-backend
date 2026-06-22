@@ -411,9 +411,15 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
                 query = {'orden__id': orden_id}
                 try:
                     instance = ChecklistInstance.objects.select_related(
-                        'orden__cliente__usuario', 'orden__taller', 'orden__mecanico', 'orden__vehiculo'
+                        'orden__cliente__usuario',
+                        'orden__taller',
+                        'orden__mecanico',
+                        'orden__vehiculo',
+                        'orden__mecanico_asignado',
                     ).prefetch_related(
-                        'respuestas__fotos', 'respuestas__item_template__catalog_item'
+                        'respuestas__fotos',
+                        'respuestas__item_template__catalog_item',
+                        'orden__mecanico_asignado__especialidades',
                     ).get(**query)
                 except ChecklistInstance.DoesNotExist:
                     # Si no existe, lanzará 404
@@ -428,9 +434,15 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
                 # Intentamos encontrar la instancia usando diferentes caminos posibles con UUID
                 try:
                     instance = ChecklistInstance.objects.select_related(
-                        'orden__cliente__usuario', 'orden__taller', 'orden__mecanico', 'orden__vehiculo'
+                        'orden__cliente__usuario',
+                        'orden__taller',
+                        'orden__mecanico',
+                        'orden__vehiculo',
+                        'orden__mecanico_asignado',
                     ).prefetch_related(
-                        'respuestas__fotos', 'respuestas__item_template__catalog_item'
+                        'respuestas__fotos',
+                        'respuestas__item_template__catalog_item',
+                        'orden__mecanico_asignado__especialidades',
                     ).filter(
                         Q(orden__oferta_proveedor__solicitud__id=orden_id) |  # Por ID de Solicitud Publica
                         Q(orden__oferta_proveedor__id=orden_id)               # Por ID de Oferta Proveedor
