@@ -26,6 +26,7 @@ from mecanimovilapp.apps.ordenes.services.agendamiento_ia.motor_match import (
 )
 from mecanimovilapp.apps.ordenes.ubicacion_servicio_proveedor import (
     punto_ubicacion_taller,
+    servicio_catalogo_es_a_domicilio,
     texto_direccion_taller,
 )
 from mecanimovilapp.apps.servicios.models import OfertaServicio, Servicio
@@ -394,19 +395,36 @@ def confirmar_candidato(cliente: Cliente, payload: dict[str, Any]) -> dict[str, 
         taller = ofertas_servicio[0].taller
         if not taller:
             raise ConfirmacionCatalogoError('Taller de catálogo inválido', 'proveedor_invalido')
-        punto_taller = punto_ubicacion_taller(taller)
-        if punto_taller is None:
-            raise ConfirmacionCatalogoError(
-                'El taller no tiene ubicación configurada',
-                'taller_sin_ubicacion',
-            )
-        lng, lat = float(punto_taller.x), float(punto_taller.y)
-        direccion_texto = texto_direccion_taller(taller) or direccion_texto
-        if not direccion_texto:
-            raise ConfirmacionCatalogoError(
-                'El taller no tiene dirección configurada',
-                'taller_sin_direccion',
-            )
+        es_a_domicilio = servicio_catalogo_es_a_domicilio(miembro_preferido, payload)
+        if es_a_domicilio:
+            if lat is None or lng is None:
+                raise ConfirmacionCatalogoError('Ubicación (lat/lng) es obligatoria', 'ubicacion_requerida')
+            if not direccion_texto:
+                from mecanimovilapp.apps.usuarios.models import DireccionUsuario
+                dir_id = payload.get('direccion_usuario')
+                if dir_id:
+                    dir_u = DireccionUsuario.objects.filter(pk=dir_id).first()
+                    if dir_u and dir_u.direccion:
+                        direccion_texto = dir_u.direccion.strip()
+            if not direccion_texto:
+                raise ConfirmacionCatalogoError(
+                    'direccion_servicio_texto es obligatoria',
+                    'direccion_requerida',
+                )
+        else:
+            punto_taller = punto_ubicacion_taller(taller)
+            if punto_taller is None:
+                raise ConfirmacionCatalogoError(
+                    'El taller no tiene ubicación configurada',
+                    'taller_sin_ubicacion',
+                )
+            lng, lat = float(punto_taller.x), float(punto_taller.y)
+            direccion_texto = texto_direccion_taller(taller) or direccion_texto
+            if not direccion_texto:
+                raise ConfirmacionCatalogoError(
+                    'El taller no tiene dirección configurada',
+                    'taller_sin_direccion',
+                )
     else:
         if lat is None or lng is None:
             raise ConfirmacionCatalogoError('Ubicación (lat/lng) es obligatoria', 'ubicacion_requerida')

@@ -30,12 +30,29 @@ from .services.solicitud_activa import (
 from mecanimovilapp.apps.ordenes.ubicacion_servicio_proveedor import (
     direccion_servicio_texto_para_solicitud,
     modalidad_servicio_dict,
+    resolve_tipo_proveedor_servicio_efectivo,
 )
 
 # Helper para URLs de archivos en cPanel
 from mecanimovilapp.storage.utils import get_cpanel_file_url, get_image_url
 
 logger = logging.getLogger(__name__)
+
+
+def _foto_perfil_oferta_proveedor(oferta):
+    """ImageField del taller/mecánico; fallback al usuario proveedor."""
+    proveedor = getattr(oferta, 'proveedor', None)
+    if not proveedor:
+        return None
+    if oferta.tipo_proveedor == 'taller':
+        taller = getattr(proveedor, 'taller', None)
+        if taller and taller.foto_perfil:
+            return taller.foto_perfil
+    elif oferta.tipo_proveedor == 'mecanico':
+        mecanico = getattr(proveedor, 'mecanico_domicilio', None)
+        if mecanico and mecanico.foto_perfil:
+            return mecanico.foto_perfil
+    return proveedor.foto_perfil if proveedor.foto_perfil else None
 
 MAX_FOTO_SOLICITUD_BYTES = 5 * 1024 * 1024
 
@@ -1218,12 +1235,12 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
         }
 
     def get_proveedor_foto(self, obj):
-        """Retorna la foto del perfil del proveedor usando cPanel si est? configurado"""
+        """Retorna la foto del taller/mecánico (R2/Cloudflare) o del usuario proveedor."""
         try:
             request = self.context.get('request')
-            proveedor = obj.proveedor
-            if proveedor and proveedor.foto_perfil:
-                return get_image_url(proveedor.foto_perfil, request)
+            image_field = _foto_perfil_oferta_proveedor(obj)
+            if image_field:
+                return get_image_url(image_field, request)
             return None
         except Exception:
             return None
@@ -1929,9 +1946,7 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
         return None
 
     def get_tipo_proveedor_servicio(self, obj):
-        if obj.oferta_seleccionada_id and obj.oferta_seleccionada:
-            return obj.oferta_seleccionada.tipo_proveedor
-        return None
+        return resolve_tipo_proveedor_servicio_efectivo(obj)
 
     def get_modalidad_servicio(self, obj):
         return modalidad_servicio_dict(self.get_tipo_proveedor_servicio(obj))
@@ -2070,6 +2085,10 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
                     tipo_proveedor='taller',
                     taller=taller,
                 )
+        elif tipo_prov == 'mecanico' and instance.direccion_usuario_id:
+            dir_u = instance.direccion_usuario
+            if dir_u and dir_u.direccion:
+                data['direccion_servicio_texto'] = dir_u.direccion.strip()
         
         return data
     
@@ -2466,8 +2485,7 @@ class ChatSolicitudSerializer(serializers.ModelSerializer):
             logger.info(f"?? Nombre proveedor: {oferta.nombre_proveedor}")
             logger.info(f"?? Request presente: {request is not None}")
             
-            # Obtener foto del proveedor usando helper de cPanel
-            foto_url = get_image_url(proveedor.foto_perfil, request) if proveedor else None
+            foto_url = get_image_url(_foto_perfil_oferta_proveedor(oferta), request) if proveedor else None
             
             resultado = {
                 'id': proveedor.id if proveedor else None,

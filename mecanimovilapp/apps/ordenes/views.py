@@ -4066,7 +4066,10 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
         queryset = SolicitudServicioPublica.objects.filter(
             cliente=request.user.cliente
         ).select_related(
-            'cliente', 'cliente__usuario', 'vehiculo', 'direccion_usuario'
+            'cliente', 'cliente__usuario', 'vehiculo', 'direccion_usuario',
+            'oferta_seleccionada__proveedor',
+            'oferta_seleccionada__proveedor__taller',
+            'oferta_seleccionada__proveedor__mecanico_domicilio',
         ).prefetch_related(
             'servicios_solicitados',
             'proveedores_dirigidos',
