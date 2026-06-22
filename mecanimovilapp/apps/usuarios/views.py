@@ -49,6 +49,7 @@ from datetime import timedelta
 import uuid
 from django.core.mail import send_mail
 from django.contrib.auth.hashers import make_password
+from .services.email_bienvenida import enviar_email_bienvenida_cliente, enviar_email_bienvenida_proveedor
 from exponent_server_sdk import PushClient
 from django.utils.decorators import method_decorator
 from django.views.decorators.cache import cache_page
@@ -327,6 +328,8 @@ def google_login(request):
             user.save()
             created = True
             logger.info(f"google_login: nuevo usuario creado automáticamente ({email})")
+            nombre_display = f"{given_name} {family_name}".strip() or email
+            enviar_email_bienvenida_cliente(email, nombre_display)
 
         # Si existe, mantenerlo como cliente y completar nombres si faltan
         dirty = False
@@ -652,6 +655,8 @@ def google_login_proveedor(request):
             user.set_unusable_password()
             user.save()
             logger.info(f'google_login_proveedor: nuevo usuario creado ({email})')
+            nombre_display = f"{given_name} {family_name}".strip() or email
+            enviar_email_bienvenida_proveedor(email, nombre_display)
 
         es_proveedor, tipo_proveedor = _resolve_tipo_proveedor(user)
 
@@ -770,6 +775,12 @@ class UsuarioViewSet(viewsets.ModelViewSet):
             try:
                 user.save()
                 logger.info(f"✅ Usuario creado exitosamente: {user.username} (ID: {user.id})")
+                nombre_display = f"{user.first_name} {user.last_name}".strip() or user.username
+                if user.email:
+                    if user.es_mecanico:
+                        enviar_email_bienvenida_proveedor(user.email, nombre_display)
+                    else:
+                        enviar_email_bienvenida_cliente(user.email, nombre_display)
             except IntegrityError as e:
                 logger.error(f"❌ Error de integridad al crear usuario: {str(e)}")
                 if 'unique constraint' in str(e).lower() or 'duplicate key' in str(e).lower():
@@ -3465,6 +3476,10 @@ def inicializar_onboarding(request):
     print(f"   Datos recibidos: {request.data}")
     
     try:
+        modalidad = request.data.get('modalidad_atencion')
+        if modalidad not in ('en_taller', 'a_domicilio', 'ambas', None):
+            modalidad = None
+
         if tipo_proveedor == 'taller':
             # Verificar si ya tiene un taller
             if hasattr(usuario, 'taller'):
@@ -3475,6 +3490,8 @@ def inicializar_onboarding(request):
                 taller.telefono = request.data.get('telefono', taller.telefono)
                 taller.rut = request.data.get('rut', taller.rut)
                 taller.descripcion = request.data.get('descripcion', taller.descripcion)
+                if modalidad:
+                    taller.modalidad_atencion = modalidad
                 taller.onboarding_iniciado = True
                 taller.save()
                 
@@ -3486,15 +3503,18 @@ def inicializar_onboarding(request):
                 })
             else:
                 # Crear taller básico con datos del request
-                taller = Taller.objects.create(
+                create_kwargs = dict(
                     usuario=usuario,
                     nombre=request.data.get('nombre', f"{usuario.first_name} {usuario.last_name}".strip() or usuario.username),
                     telefono=request.data.get('telefono', usuario.telefono or ''),
                     rut=request.data.get('rut', ''),
                     descripcion=request.data.get('descripcion', f"Taller mecánico"),
-                    ubicacion=Point(-70.6693, -33.4489),  # Santiago por defecto
-                    onboarding_iniciado=True
+                    ubicacion=Point(-70.6693, -33.4489),
+                    onboarding_iniciado=True,
                 )
+                if modalidad:
+                    create_kwargs['modalidad_atencion'] = modalidad
+                taller = Taller.objects.create(**create_kwargs)
                 
                 print(f"   ✅ Taller creado: {taller.nombre}")
                 
