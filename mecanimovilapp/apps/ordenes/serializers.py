@@ -970,41 +970,16 @@ class DetalleServicioOfertaSerializer(serializers.ModelSerializer):
         if not repuestos_raw:
             logger.debug(f"DetalleServicioOferta {obj.id}: No tiene repuestos_seleccionados")
             return []
-        
-        from mecanimovilapp.apps.servicios.models import Repuesto
-        from mecanimovilapp.apps.servicios.serializers import RepuestoSerializer
-        
-        logger.debug(f"DetalleServicioOferta {obj.id}: Procesando {len(repuestos_raw)} repuestos")
-        
-        repuestos_info = []
-        for repuesto_data in repuestos_raw:
-            repuesto_id = repuesto_data.get('id')
-            cantidad = repuesto_data.get('cantidad', 1)
-            # CORRECCI?N: Incluir precio personalizado del proveedor si existe
-            precio_personalizado = repuesto_data.get('precio')
-            
-            if repuesto_id:
-                try:
-                    repuesto = Repuesto.objects.get(id=repuesto_id)
-                    # Pasar el contexto del request si est? disponible
-                    request = self.context.get('request')
-                    repuesto_serializer = RepuestoSerializer(repuesto, context={'request': request} if request else {})
-                    
-                    repuesto_info = {
-                        **repuesto_serializer.data,
-                        'cantidad': cantidad,
-                        # CORRECCI?N: Incluir precio personalizado del proveedor (si difiere del precio_referencia)
-                        'precio': precio_personalizado
-                    }
-                    repuestos_info.append(repuesto_info)
-                    logger.debug(f"Repuesto {repuesto_id} agregado con cantidad {cantidad}, precio personalizado: {precio_personalizado}")
-                except Repuesto.DoesNotExist:
-                    logger.warning(f"Repuesto con ID {repuesto_id} no encontrado")
-                    continue
-            else:
-                logger.warning(f"Repuesto sin ID v?lido: {repuesto_data}")
-        
-        logger.debug(f"DetalleServicioOferta {obj.id}: Retornando {len(repuestos_info)} repuestos con informaci?n completa")
+
+        from mecanimovilapp.apps.servicios.repuestos_info import build_repuestos_info
+
+        request = self.context.get('request')
+        repuestos_info = build_repuestos_info(repuestos_raw, request=request)
+        logger.debug(
+            'DetalleServicioOferta %s: Retornando %s repuestos con información completa',
+            obj.id,
+            len(repuestos_info),
+        )
         return repuestos_info
 
 class OfertaProveedorSerializer(serializers.ModelSerializer):

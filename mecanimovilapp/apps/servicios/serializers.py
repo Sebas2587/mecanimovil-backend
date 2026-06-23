@@ -367,44 +367,36 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
     
     def get_repuestos_info_detallado(self, obj):
         """
-        Retorna información detallada de los repuestos seleccionados incluyendo cantidad estimada y precio personalizado.
-        Este campo es específico para usar en la creación de ofertas desde solicitudes.
+        Repuestos con cantidad, precio, marca y calidad configurados por el proveedor.
         """
         if not obj.repuestos_seleccionados:
             return []
-        
+
         request = self.context.get('request')
         repuestos_detallados = []
-        
-        # Procesar cada repuesto seleccionado
+
         for repuesto_data in obj.repuestos_seleccionados:
+            if not isinstance(repuesto_data, dict):
+                continue
             repuesto_id = repuesto_data.get('id')
-            cantidad_estimada = repuesto_data.get('cantidad', 1)  # Cantidad por defecto es 1
-            precio_personalizado = repuesto_data.get('precio')  # Precio personalizado del proveedor
-            
-            if repuesto_id:
-                try:
-                    repuesto = Repuesto.objects.get(id=repuesto_id)
-                    repuesto_info = {
-                        'id': repuesto.id,
-                        'nombre': repuesto.nombre,
-                        'descripcion': repuesto.descripcion or '',
-                        'precio_referencia': float(repuesto.precio_referencia) if repuesto.precio_referencia else 0.0,
-                        'cantidad_estimada': cantidad_estimada,
-                        'marca': repuesto.marca or '',
-                        'categoria_repuesto': repuesto.categoria_repuesto or '',
-                        'codigo_fabricante': repuesto.codigo_fabricante or '',
-                        'foto': get_image_url(repuesto.foto, request),
-                        # Incluir precio personalizado si existe
-                        'precio': float(precio_personalizado) if precio_personalizado is not None else None
-                    }
-                    repuestos_detallados.append(repuesto_info)
-                except Repuesto.DoesNotExist:
-                    # Si el repuesto no existe, omitirlo pero registrar el error
-                    import logging
-                    logger = logging.getLogger(__name__)
-                    logger.warning(f'Repuesto con ID {repuesto_id} no encontrado en OfertaServicio {obj.id}')
-        
+            if not repuesto_id:
+                continue
+            try:
+                repuesto = Repuesto.objects.get(id=repuesto_id)
+            except Repuesto.DoesNotExist:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(
+                    'Repuesto con ID %s no encontrado en OfertaServicio %s',
+                    repuesto_id,
+                    obj.id,
+                )
+                continue
+            from mecanimovilapp.apps.servicios.repuesto_oferta import enriquecer_repuesto_oferta
+            repuestos_detallados.append(
+                enriquecer_repuesto_oferta(repuesto_data, repuesto, request=request)
+            )
+
         return repuestos_detallados
     
     def get_desglose_precios(self, obj):
@@ -471,8 +463,34 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
             if isinstance(exc, DjangoValidationError):
                 raise serializers.ValidationError({'tipo_motor': exc.messages})
             raise
+
+        repuestos = data.get('repuestos_seleccionados')
+        if repuestos is not None:
+            self._validar_repuestos_seleccionados(repuestos)
         
         return data
+
+    def _validar_repuestos_seleccionados(self, repuestos):
+        from mecanimovilapp.apps.servicios.repuesto_oferta import (
+            CALIDADES_REPUESTO_VALIDAS,
+            normalizar_calidad_repuesto,
+        )
+
+        if not isinstance(repuestos, list):
+            raise serializers.ValidationError('Debe ser una lista de repuestos.')
+        for idx, item in enumerate(repuestos):
+            if not isinstance(item, dict):
+                raise serializers.ValidationError({idx: 'Cada repuesto debe ser un objeto.'})
+            calidad = normalizar_calidad_repuesto(item.get('calidad_repuesto'))
+            if item.get('calidad_repuesto') and not calidad:
+                raise serializers.ValidationError({
+                    idx: f'calidad_repuesto inválida. Use: {", ".join(sorted(CALIDADES_REPUESTO_VALIDAS))}',
+                })
+            marca = item.get('marca_repuesto')
+            if marca is not None and not isinstance(marca, str):
+                raise serializers.ValidationError({idx: 'marca_repuesto debe ser texto.'})
+            if len(str(marca or '').strip()) > 100:
+                raise serializers.ValidationError({idx: 'marca_repuesto demasiado larga (máx. 100).'})
     
     def _oferta_duplicada(
         self,
