@@ -208,6 +208,15 @@ class OfertaServicio(models.Model):
         help_text=_('Marca de vehículo específica para la cual el proveedor ofrece este servicio')
     )
 
+    modelo_vehiculo_seleccionado = models.ForeignKey(
+        'vehiculos.Modelo',
+        on_delete=models.CASCADE,
+        related_name='ofertas_servicio',
+        null=True,
+        blank=True,
+        help_text=_('Modelo específico. Null = todos los modelos de la marca.'),
+    )
+
     # Vacío = todos los motores del catálogo del servicio; valor = motor específico de esta oferta
     tipo_motor = models.CharField(
         max_length=20,
@@ -347,8 +356,20 @@ class OfertaServicio(models.Model):
         verbose_name = _('oferta de servicio')
         verbose_name_plural = _('ofertas de servicios')
         unique_together = [
-            ['taller', 'servicio', 'marca_vehiculo_seleccionada', 'tipo_motor'],
-            ['mecanico', 'servicio', 'marca_vehiculo_seleccionada', 'tipo_motor'],
+            [
+                'taller',
+                'servicio',
+                'marca_vehiculo_seleccionada',
+                'modelo_vehiculo_seleccionado',
+                'tipo_motor',
+            ],
+            [
+                'mecanico',
+                'servicio',
+                'marca_vehiculo_seleccionada',
+                'modelo_vehiculo_seleccionado',
+                'tipo_motor',
+            ],
         ]
         constraints = [
             models.CheckConstraint(

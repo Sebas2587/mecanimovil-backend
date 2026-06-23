@@ -686,6 +686,8 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
         
         base = OfertaServicio.objects.select_related(
             'marca_vehiculo_seleccionada',
+            'modelo_vehiculo_seleccionado',
+            'modelo_vehiculo_seleccionado__marca',
             'servicio',
         ).prefetch_related('servicio__categorias')
         if proveedor_data['tipo'] == 'mecanico':
@@ -698,7 +700,7 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
     def crear_catalogo_inicial(self, request):
         """
         Crea registros OfertaServicio como catálogo inicial de onboarding.
-        Body: { "servicios": [{"servicio_id": 1, "marca_id": 2}, ...] }
+        Body: { "servicios": [{"servicio_id": 1, "marca_id": 2, "modelo_id": 3}, ...] }
         Los registros se crean con disponible=False y precios en 0 para configurar después.
         Si el par (proveedor, servicio, marca) ya existe, se omite silenciosamente.
         """
@@ -714,7 +716,7 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
         tipo = proveedor_data['tipo']
         proveedor = proveedor_data['proveedor']
 
-        from mecanimovilapp.apps.vehiculos.models import MarcaVehiculo
+        from mecanimovilapp.apps.vehiculos.models import MarcaVehiculo, Modelo
 
         creados = 0
         omitidos = 0
@@ -724,6 +726,7 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
         for item in servicios_raw:
             servicio_id = item.get('servicio_id')
             marca_id = item.get('marca_id')
+            modelo_id = item.get('modelo_id')
 
             if not servicio_id:
                 errores.append({'item': item, 'error': 'Falta servicio_id'})
@@ -744,8 +747,29 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
                     errores.append({'item': item, 'error': f'Marca {marca_id} no encontrada'})
                     continue
 
+            modelo = None
+            if modelo_id:
+                try:
+                    modelo = Modelo.objects.get(id=modelo_id)
+                except Modelo.DoesNotExist:
+                    errores.append({'item': item, 'error': f'Modelo {modelo_id} no encontrado'})
+                    continue
+                if marca and modelo.marca_id != marca.id:
+                    errores.append({
+                        'item': item,
+                        'error': f'El modelo {modelo_id} no pertenece a la marca {marca_id}',
+                    })
+                    continue
+                if not marca:
+                    marca = modelo.marca
+
             # Verificar duplicado
-            filtros = {'servicio': servicio, 'marca_vehiculo_seleccionada': marca, 'tipo_motor': ''}
+            filtros = {
+                'servicio': servicio,
+                'marca_vehiculo_seleccionada': marca,
+                'modelo_vehiculo_seleccionado': modelo,
+                'tipo_motor': '',
+            }
             if tipo == 'taller':
                 filtros['taller'] = proveedor
             else:
@@ -759,6 +783,7 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
                 kwargs = {
                     'servicio': servicio,
                     'marca_vehiculo_seleccionada': marca,
+                    'modelo_vehiculo_seleccionado': modelo,
                     'tipo_proveedor': tipo,
                     'disponible': False,
                     'tipo_servicio': 'sin_repuestos',
@@ -1110,7 +1135,7 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
             # Obtener la solicitud y validar que existe
             try:
                 solicitud = SolicitudServicioPublica.objects.select_related(
-                    'vehiculo', 'vehiculo__marca'
+                    'vehiculo', 'vehiculo__marca', 'vehiculo__modelo'
                 ).get(id=solicitud_id)
             except SolicitudServicioPublica.DoesNotExist:
                 logger.error(f'❌ Solicitud no encontrada: {solicitud_id}')
@@ -1119,8 +1144,9 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
                     status=404
                 )
             
-            # Obtener la marca del vehículo
+            # Obtener la marca y modelo del vehículo
             marca_vehiculo = solicitud.vehiculo.marca if solicitud.vehiculo and solicitud.vehiculo.marca else None
+            modelo_vehiculo = solicitud.vehiculo.modelo if solicitud.vehiculo and solicitud.vehiculo.modelo else None
             
             if not marca_vehiculo:
                 logger.error(f'❌ El vehículo de la solicitud no tiene marca asociada')
@@ -1129,7 +1155,11 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
                     status=400
                 )
             
-            logger.info(f'📋 Solicitud encontrada - Vehículo: {solicitud.vehiculo.modelo if solicitud.vehiculo else "N/A"}, Marca: {marca_vehiculo.nombre} (ID: {marca_vehiculo.id})')
+            logger.info(
+                f'📋 Solicitud encontrada - Vehículo: '
+                f'{modelo_vehiculo.nombre if modelo_vehiculo else "N/A"}, '
+                f'Marca: {marca_vehiculo.nombre} (ID: {marca_vehiculo.id})'
+            )
             
             # Obtener información del proveedor autenticado
             proveedor_data = self._get_proveedor_data(request.user)
@@ -1143,47 +1173,56 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
             proveedor = proveedor_data['proveedor']
             logger.info(f'👤 Proveedor: {proveedor.nombre if hasattr(proveedor, "nombre") else "N/A"} (Tipo: {proveedor_data["tipo"]})')
             
-            # Buscar OfertaServicio que coincida:
-            # 1. Servicio solicitado
-            # 2. Marca del vehículo (o NULL para servicios genéricos)
-            # 3. Proveedor autenticado
+            from mecanimovilapp.apps.servicios.oferta_resolucion import elegir_mejor_oferta_entre
+            from django.db.models import Q
             
             queryset = self.get_queryset()
             total_ofertas = queryset.count()
             logger.info(f'📊 Total de ofertas del proveedor: {total_ofertas}')
             
-            # Log de todas las ofertas del proveedor para debug
-            todas_ofertas = queryset.values('id', 'servicio_id', 'servicio__nombre', 'marca_vehiculo_seleccionada_id', 'marca_vehiculo_seleccionada__nombre')
-            logger.info(f'📋 Ofertas del proveedor: {list(todas_ofertas)}')
-            
-            # Buscar primero por marca específica
-            oferta_servicio = queryset.filter(
+            candidatas = queryset.filter(
                 servicio_id=servicio_id,
-                marca_vehiculo_seleccionada=marca_vehiculo
+            ).filter(
+                Q(marca_vehiculo_seleccionada=marca_vehiculo)
+                | Q(marca_vehiculo_seleccionada__isnull=True)
             ).select_related(
-                'servicio', 'marca_vehiculo_seleccionada'
+                'servicio',
+                'marca_vehiculo_seleccionada',
+                'modelo_vehiculo_seleccionado',
             ).prefetch_related(
                 'servicio__categorias'
-            ).first()
+            )
             
-            logger.info(f'🔎 Búsqueda por marca específica ({marca_vehiculo.id}): {"✅ Encontrado" if oferta_servicio else "❌ No encontrado"}')
+            tipo_motor = getattr(solicitud.vehiculo, 'tipo_motor', None)
+            oferta_servicio = elegir_mejor_oferta_entre(
+                candidatas,
+                marca_vehiculo,
+                tipo_motor=tipo_motor,
+                modelo=modelo_vehiculo,
+            )
             
-            # Si no se encuentra, buscar servicio genérico (sin marca específica)
-            if not oferta_servicio:
-                oferta_servicio = queryset.filter(
-                    servicio_id=servicio_id,
-                    marca_vehiculo_seleccionada__isnull=True
-                ).select_related(
-                    'servicio'
-                ).prefetch_related(
-                    'servicio__categorias'
-                ).first()
-                
-                logger.info(f'🔎 Búsqueda genérica (sin marca): {"✅ Encontrado" if oferta_servicio else "❌ No encontrado"}')
+            logger.info(
+                f'🔎 Búsqueda por marca/modelo ({marca_vehiculo.id}/'
+                f'{modelo_vehiculo.id if modelo_vehiculo else "null"}): '
+                f'{"✅ Encontrado" if oferta_servicio else "❌ No encontrado"}'
+            )
             
             # Si no se encuentra ningún servicio configurado, retornar null con información de debug
             if not oferta_servicio:
-                logger.warning(f'⚠️ No se encontró servicio configurado - servicio_id: {servicio_id}, marca_id: {marca_vehiculo.id}')
+                logger.warning(
+                    f'⚠️ No se encontró servicio configurado - servicio_id: {servicio_id}, '
+                    f'marca_id: {marca_vehiculo.id}, modelo_id: '
+                    f'{modelo_vehiculo.id if modelo_vehiculo else None}'
+                )
+                todas_ofertas = queryset.values(
+                    'id',
+                    'servicio_id',
+                    'servicio__nombre',
+                    'marca_vehiculo_seleccionada_id',
+                    'marca_vehiculo_seleccionada__nombre',
+                    'modelo_vehiculo_seleccionado_id',
+                    'modelo_vehiculo_seleccionado__nombre',
+                )
                 return Response({
                     'servicio_configurado': None,
                     'mensaje': 'No se encontró un servicio configurado para esta combinación',
@@ -1191,6 +1230,8 @@ class ProveedorOfertaServicioViewSet(viewsets.ModelViewSet):
                         'servicio_id_buscado': servicio_id,
                         'marca_id_buscada': marca_vehiculo.id,
                         'marca_nombre': marca_vehiculo.nombre,
+                        'modelo_id_buscado': modelo_vehiculo.id if modelo_vehiculo else None,
+                        'modelo_nombre': modelo_vehiculo.nombre if modelo_vehiculo else None,
                         'total_ofertas_proveedor': total_ofertas,
                         'ofertas_disponibles': list(todas_ofertas)
                     }

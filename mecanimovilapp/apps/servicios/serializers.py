@@ -113,6 +113,7 @@ class OfertaServicioSerializer(serializers.ModelSerializer):
     mecanico_info = MecanicoDomicilioSerializer(source='mecanico', read_only=True)
     servicio_info = serializers.SerializerMethodField()
     marca_vehiculo_info = serializers.SerializerMethodField()
+    modelo_vehiculo_info = serializers.SerializerMethodField()
     nombre_proveedor = serializers.CharField(read_only=True)
     fotos_servicio = FotoServicioSerializer(many=True, read_only=True)
     repuestos_info = serializers.SerializerMethodField(read_only=True)
@@ -122,6 +123,7 @@ class OfertaServicioSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'tipo_proveedor', 'taller', 'taller_info', 'mecanico', 'mecanico_info',
             'servicio', 'servicio_info', 'marca_vehiculo_seleccionada', 'marca_vehiculo_info',
+            'modelo_vehiculo_seleccionado', 'modelo_vehiculo_info',
             'tipo_motor',
             'disponible', 'duracion_estimada', 'duracion_minima_minutos', 'duracion_maxima_minutos',
             'precio_con_repuestos', 'precio_sin_repuestos', 'incluye_garantia',
@@ -211,6 +213,31 @@ class OfertaServicioSerializer(serializers.ModelSerializer):
                 }
         return None
 
+    def get_modelo_vehiculo_info(self, obj):
+        """Modelo configurado por el proveedor para esta oferta de catálogo."""
+        modelo = getattr(obj, 'modelo_vehiculo_seleccionado', None)
+        if modelo:
+            marca_obj = getattr(modelo, 'marca', None)
+            return {
+                'id': modelo.id,
+                'nombre': modelo.nombre,
+                'marca_id': getattr(marca_obj, 'id', None) if marca_obj else getattr(modelo, 'marca_id', None),
+                'marca_nombre': getattr(marca_obj, 'nombre', '') if marca_obj else '',
+            }
+        pk = getattr(obj, 'modelo_vehiculo_seleccionado_id', None)
+        if pk:
+            from mecanimovilapp.apps.vehiculos.models import Modelo
+
+            m = Modelo.objects.select_related('marca').filter(pk=pk).first()
+            if m:
+                return {
+                    'id': m.id,
+                    'nombre': m.nombre,
+                    'marca_id': m.marca_id,
+                    'marca_nombre': m.marca.nombre if m.marca_id else '',
+                }
+        return None
+
 
 class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
     """
@@ -221,12 +248,14 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
     repuestos_info_detallado = serializers.SerializerMethodField(read_only=True)
     desglose_precios = serializers.SerializerMethodField(read_only=True)
     marca_vehiculo_info = serializers.SerializerMethodField(read_only=True)
+    modelo_vehiculo_info = serializers.SerializerMethodField(read_only=True)
     motores_catalogo_info = serializers.SerializerMethodField(read_only=True)
     
     class Meta:
         model = OfertaServicio
         fields = (
             'id', 'servicio', 'servicio_info', 'marca_vehiculo_seleccionada', 'marca_vehiculo_info',
+            'modelo_vehiculo_seleccionado', 'modelo_vehiculo_info',
             'tipo_motor', 'motores_catalogo_info',
             'disponible', 'duracion_estimada', 'duracion_minima_minutos', 'duracion_maxima_minutos',
             'incluye_garantia', 'duracion_garantia', 'detalles_adicionales',
@@ -299,6 +328,31 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
                     'id': m.id,
                     'nombre': m.nombre,
                     'logo': get_image_url(m.logo, request),
+                }
+        return None
+
+    def get_modelo_vehiculo_info(self, obj):
+        """Retorna información del modelo de vehículo seleccionado por el proveedor."""
+        modelo = getattr(obj, 'modelo_vehiculo_seleccionado', None)
+        if modelo:
+            marca_obj = getattr(modelo, 'marca', None)
+            return {
+                'id': modelo.id,
+                'nombre': modelo.nombre,
+                'marca_id': getattr(marca_obj, 'id', None) if marca_obj else getattr(modelo, 'marca_id', None),
+                'marca_nombre': getattr(marca_obj, 'nombre', '') if marca_obj else '',
+            }
+        pk = getattr(obj, 'modelo_vehiculo_seleccionado_id', None)
+        if pk:
+            from mecanimovilapp.apps.vehiculos.models import Modelo
+
+            m = Modelo.objects.select_related('marca').filter(pk=pk).first()
+            if m:
+                return {
+                    'id': m.id,
+                    'nombre': m.nombre,
+                    'marca_id': m.marca_id,
+                    'marca_nombre': m.marca.nombre if m.marca_id else '',
                 }
         return None
     
@@ -420,12 +474,22 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
         
         return data
     
-    def _oferta_duplicada(self, proveedor, tipo_proveedor, servicio, marca, tipo_motor='', exclude_id=None):
+    def _oferta_duplicada(
+        self,
+        proveedor,
+        tipo_proveedor,
+        servicio,
+        marca,
+        tipo_motor='',
+        modelo=None,
+        exclude_id=None,
+    ):
         if not servicio:
             return False
         filtros = {
             'servicio': servicio,
             'marca_vehiculo_seleccionada': marca,
+            'modelo_vehiculo_seleccionado': modelo,
             'tipo_motor': normalizar_tipo_motor_oferta(tipo_motor),
         }
         if tipo_proveedor == 'mecanico':
@@ -442,6 +506,7 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
         user = self.context['request'].user
         servicio = validated_data.get('servicio')
         marca = validated_data.get('marca_vehiculo_seleccionada')
+        modelo = validated_data.get('modelo_vehiculo_seleccionado')
         tipo_motor = validated_data.get('tipo_motor', '')
         
         # Determinar si es taller o mecánico
@@ -451,10 +516,12 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
             mecanico = MecanicoDomicilio.objects.get(usuario=user)
             validated_data['mecanico'] = mecanico
             validated_data['tipo_proveedor'] = 'mecanico'
-            if servicio and self._oferta_duplicada(mecanico, 'mecanico', servicio, marca, tipo_motor):
+            if servicio and self._oferta_duplicada(
+                mecanico, 'mecanico', servicio, marca, tipo_motor, modelo
+            ):
                 raise serializers.ValidationError({
                     'servicio': (
-                        'Ya tienes una oferta para este servicio, marca y tipo de motor.'
+                        'Ya tienes una oferta para este servicio, marca, modelo y tipo de motor.'
                     )
                 })
         except MecanicoDomicilio.DoesNotExist:
@@ -473,10 +540,12 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError('Usuario no tiene perfil de proveedor')
             validated_data['taller'] = taller
             validated_data['tipo_proveedor'] = 'taller'
-            if servicio and self._oferta_duplicada(taller, 'taller', servicio, marca, tipo_motor):
+            if servicio and self._oferta_duplicada(
+                taller, 'taller', servicio, marca, tipo_motor, modelo
+            ):
                 raise serializers.ValidationError({
                     'servicio': (
-                        'Ya tienes una oferta para este servicio, marca y tipo de motor.'
+                        'Ya tienes una oferta para este servicio, marca, modelo y tipo de motor.'
                     )
                 })
         
@@ -491,15 +560,25 @@ class OfertaServicioProveedorSerializer(serializers.ModelSerializer):
                 'marca_vehiculo_seleccionada',
                 instance.marca_vehiculo_seleccionada,
             )
+            modelo = validated_data.get(
+                'modelo_vehiculo_seleccionado',
+                instance.modelo_vehiculo_seleccionado,
+            )
             tipo_motor = validated_data.get('tipo_motor', instance.tipo_motor)
             tipo = 'mecanico' if instance.mecanico else 'taller'
             proveedor = instance.mecanico or instance.taller
             if self._oferta_duplicada(
-                proveedor, tipo, nuevo_servicio, marca, tipo_motor, exclude_id=instance.id
+                proveedor,
+                tipo,
+                nuevo_servicio,
+                marca,
+                tipo_motor,
+                modelo,
+                exclude_id=instance.id,
             ):
                 raise serializers.ValidationError({
                     'servicio': (
-                        'Ya tienes una oferta para este servicio, marca y tipo de motor.'
+                        'Ya tienes una oferta para este servicio, marca, modelo y tipo de motor.'
                     )
                 })
         

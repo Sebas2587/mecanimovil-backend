@@ -20,6 +20,15 @@ def _q_oferta_motor(tipo_motor: str | None) -> Q:
     return Q(ofertas__tipo_motor='') | Q(ofertas__tipo_motor=motor)
 
 
+def _q_oferta_modelo(modelo) -> Q:
+    """Oferta universal (modelo null) o específica para el modelo del vehículo."""
+    if not modelo:
+        return Q(pk__isnull=False)
+    return Q(ofertas__modelo_vehiculo_seleccionado=modelo) | Q(
+        ofertas__modelo_vehiculo_seleccionado__isnull=True
+    )
+
+
 def queryset_servicios_disponibles_para_modelo_marca(modelo, marca, tipo_motor=None):
     """
     Unión de:
@@ -35,9 +44,11 @@ def queryset_servicios_disponibles_para_modelo_marca(modelo, marca, tipo_motor=N
         modelo, marca, tipo_motor=tipo_motor
     )
     q_motor = _q_oferta_motor(tipo_motor)
+    q_modelo = _q_oferta_modelo(modelo)
 
     servicios_con_ofertas = Servicio.objects.filter(
         q_motor,
+        q_modelo,
         ofertas__marca_vehiculo_seleccionada=marca,
         ofertas__disponible=True,
     ).distinct()
@@ -55,6 +66,7 @@ def queryset_servicios_disponibles_para_modelo_marca(modelo, marca, tipo_motor=N
 
     servicios_con_ofertas_genericas = Servicio.objects.filter(
         q_motor,
+        q_modelo,
         Q(ofertas__marca_vehiculo_seleccionada__isnull=True)
         & Q(ofertas__disponible=True)
         & (
@@ -69,6 +81,7 @@ def queryset_servicios_disponibles_para_modelo_marca(modelo, marca, tipo_motor=N
     )
     servicios_multimarca = Servicio.objects.filter(
         q_motor,
+        q_modelo,
         Q(ofertas__disponible=True)
         & q_marca_oferta_mm
         & (
