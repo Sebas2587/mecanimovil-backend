@@ -387,7 +387,13 @@ class OfertaServicio(models.Model):
     
     def __str__(self):
         proveedor = self.taller.nombre if self.taller else self.mecanico.nombre
-        return f"{proveedor} - {self.servicio.nombre}: ${self.precio_con_repuestos}"
+        if self.marca_vehiculo_seleccionada_id:
+            marca = self.marca_vehiculo_seleccionada.nombre
+        else:
+            marca = 'Precio base'
+        if self.modelo_vehiculo_seleccionado_id:
+            marca = f"{marca} · {self.modelo_vehiculo_seleccionado.nombre}"
+        return f"{proveedor} - {self.servicio.nombre} ({marca}): ${self.precio_con_repuestos}"
     
     def clean(self):
         """
