@@ -4835,6 +4835,52 @@ class HorarioProveedorViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(miembro_taller__isnull=True)
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
+
+    @action(detail=False, methods=['get'])
+    def estado_configuracion(self, request):
+        """
+        Resumen de agenda operativa del proveedor (para banners y UI).
+
+        Taller: hay agenda si existe horario general activo o al menos un mecánico
+        con días activos. Los mecánicos sin agenda propia heredan el horario general.
+        Mecánico a domicilio: sus propios días activos.
+        """
+        activos = self.get_queryset().filter(activo=True)
+        taller, _miembro_ctx, _rol_ctx = self._contexto()
+
+        if taller is not None:
+            tiene_general = activos.filter(miembro_taller__isnull=True).exists()
+            mecanicos_con_horario_ids = list(
+                activos.filter(miembro_taller__isnull=False)
+                .values_list('miembro_taller', flat=True)
+                .distinct()
+            )
+            agenda_configurada = tiene_general or bool(mecanicos_con_horario_ids)
+            return Response({
+                'agenda_configurada': agenda_configurada,
+                'tiene_horario_general': tiene_general,
+                'mecanicos_con_horario': len(mecanicos_con_horario_ids),
+                'mecanicos_con_horario_ids': mecanicos_con_horario_ids,
+                'necesita_configurar': not agenda_configurada,
+            })
+
+        if getattr(request.user, 'mecanico_domicilio', None) is not None:
+            agenda_configurada = activos.exists()
+            return Response({
+                'agenda_configurada': agenda_configurada,
+                'tiene_horario_general': agenda_configurada,
+                'mecanicos_con_horario': 0,
+                'mecanicos_con_horario_ids': [],
+                'necesita_configurar': not agenda_configurada,
+            })
+
+        return Response({
+            'agenda_configurada': False,
+            'tiene_horario_general': False,
+            'mecanicos_con_horario': 0,
+            'mecanicos_con_horario_ids': [],
+            'necesita_configurar': True,
+        })
     
     @action(detail=False, methods=['post'])
     def configurar_semana_completa(self, request):
