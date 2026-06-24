@@ -17,8 +17,19 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from django.utils import timezone
+
+_ESTADOS_EN_PROCESO = [
+    'pendiente_aceptacion_proveedor',
+    'aceptada_por_proveedor',
+    'confirmado',
+    'checklist_en_progreso',
+    'checklist_completado',
+    'servicio_iniciado',
+    'en_proceso',
+    'pendiente_firma_cliente',
+]
 
 from mecanimovilapp.apps.ordenes.services.proveedor_kpis import (
     _checklist_minutes_real,
@@ -35,6 +46,29 @@ def _parse_date(value: str | None) -> date | None:
         return datetime.strptime(value, '%Y-%m-%d').date()
     except (TypeError, ValueError):
         return None
+
+
+def _ventana_periodo_q(fecha_desde: date, fecha_hasta: date) -> Q:
+    """
+    Órdenes con fecha de servicio O fecha de solicitud dentro del rango.
+    Evita contadores en 0 cuando la cita es futura pero la orden ya está activa.
+    """
+    inicio_dt = timezone.make_aware(datetime.combine(fecha_desde, datetime.min.time()))
+    fin_dt = timezone.make_aware(
+        datetime.combine(fecha_hasta, datetime.max.time().replace(microsecond=0))
+    )
+    return (
+        Q(fecha_servicio__gte=fecha_desde, fecha_servicio__lte=fecha_hasta)
+        | Q(fecha_hora_solicitud__gte=inicio_dt, fecha_hora_solicitud__lte=fin_dt)
+    )
+
+
+def _ordenes_mecanico_periodo(miembro, fecha_desde: date, fecha_hasta: date):
+    from mecanimovilapp.apps.ordenes.models import SolicitudServicio
+
+    return SolicitudServicio.objects.filter(
+        mecanico_asignado=miembro,
+    ).filter(_ventana_periodo_q(fecha_desde, fecha_hasta))
 
 
 def _delta_pct(actual: float | int | None, anterior: float | int | None) -> float | None:
@@ -121,23 +155,10 @@ def _metricas_periodo(
 
     dias_periodo = max(1, (fecha_hasta - fecha_desde).days + 1)
 
-    base_qs = SolicitudServicio.objects.filter(
-        mecanico_asignado=miembro,
-        fecha_servicio__gte=fecha_desde,
-        fecha_servicio__lte=fecha_hasta,
-    )
+    base_qs = _ordenes_mecanico_periodo(miembro, fecha_desde, fecha_hasta)
 
     total_asignados = base_qs.count()
-    servicios_en_proceso = base_qs.filter(
-        estado__in=[
-            'en_proceso',
-            'aceptada_por_proveedor',
-            'confirmado',
-            'checklist_en_progreso',
-            'checklist_completado',
-            'pendiente_firma_cliente',
-        ]
-    ).count()
+    servicios_en_proceso = base_qs.filter(estado__in=_ESTADOS_EN_PROCESO).count()
 
     completadas_qs = base_qs.filter(estado='completado')
     terminadas_qs = _ordenes_servicio_terminado(completadas_qs)

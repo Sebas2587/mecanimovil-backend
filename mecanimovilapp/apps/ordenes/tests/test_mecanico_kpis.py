@@ -145,6 +145,22 @@ class MecanicoKpisMetricasTestCase(TestCase):
         self.assertEqual(kpis['calificacion_cliente_promedio'], 5.0)
         self.assertEqual(kpis['score_calificacion_cliente'], 100)
 
+    def test_orden_por_fecha_solicitud_cuenta_aunque_servicio_futuro(self):
+        """Ventana incluye actividad por fecha_hora_solicitud, no solo fecha_servicio."""
+        from datetime import timedelta
+
+        orden = self._crear_orden_mkt(
+            estado='aceptada_por_proveedor',
+            fecha_servicio=self.hoy + timedelta(days=45),
+        )
+        orden.fecha_hora_solicitud = timezone.now()
+        orden.save(update_fields=['fecha_hora_solicitud'])
+
+        kpis = compute_mecanico_kpis(self.mecanico, dias=30)
+
+        self.assertEqual(kpis['total_asignados'], 1)
+        self.assertEqual(kpis['servicios_en_proceso'], 1)
+
     def test_agenda_personal_no_modifica_score_calidad(self):
         from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonal, CitaAgendaPersonalDetalle
 

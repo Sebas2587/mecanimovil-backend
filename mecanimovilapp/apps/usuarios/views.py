@@ -4605,9 +4605,15 @@ class MiembroTallerViewSet(viewsets.ModelViewSet):
     def rendimiento(self, request):
         """
         Rendimiento por mecánico: órdenes asignadas y completadas en un rango.
-        Query params opcionales: desde=YYYY-MM-DD, hasta=YYYY-MM-DD.
+        Query params opcionales: desde=YYYY-MM-DD, hasta=YYYY-MM-DD, dias=30.
         """
-        from mecanimovilapp.apps.ordenes.models import SolicitudServicio
+        from datetime import timedelta
+
+        from mecanimovilapp.apps.ordenes.services.mecanico_kpis import (
+            _ESTADOS_EN_PROCESO,
+            _ordenes_mecanico_periodo,
+            _parse_date,
+        )
 
         taller = self._get_taller()
         if taller is None:
@@ -4615,27 +4621,27 @@ class MiembroTallerViewSet(viewsets.ModelViewSet):
 
         desde = request.query_params.get('desde')
         hasta = request.query_params.get('hasta')
+        try:
+            dias = int(request.query_params.get('dias', 30))
+        except (TypeError, ValueError):
+            dias = 30
+        dias = max(1, min(dias, 365))
+
+        hoy = timezone.localdate()
+        fecha_hasta = _parse_date(hasta) or hoy
+        fecha_desde = _parse_date(desde) or (fecha_hasta - timedelta(days=dias - 1))
 
         mecanicos = MiembroTaller.objects.filter(taller=taller, rol='mecanico')
         resultados = []
         for mecanico in mecanicos:
-            qs = SolicitudServicio.objects.filter(mecanico_asignado=mecanico)
-            if desde:
-                qs = qs.filter(fecha_servicio__gte=desde)
-            if hasta:
-                qs = qs.filter(fecha_servicio__lte=hasta)
-            total = qs.count()
-            completadas = qs.filter(estado='completado').count()
-            en_proceso = qs.filter(
-                estado__in=['en_proceso', 'aceptada_por_proveedor', 'confirmado']
-            ).count()
+            qs = _ordenes_mecanico_periodo(mecanico, fecha_desde, fecha_hasta)
             resultados.append({
                 'mecanico_id': mecanico.id,
                 'nombre': mecanico.nombre,
                 'activo': mecanico.activo,
-                'ordenes_asignadas': total,
-                'ordenes_completadas': completadas,
-                'ordenes_en_proceso': en_proceso,
+                'ordenes_asignadas': qs.count(),
+                'ordenes_completadas': qs.filter(estado='completado').count(),
+                'ordenes_en_proceso': qs.filter(estado__in=_ESTADOS_EN_PROCESO).count(),
             })
         return Response(resultados, status=status.HTTP_200_OK)
 
