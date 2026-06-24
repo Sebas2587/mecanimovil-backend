@@ -18,6 +18,7 @@ from .serializers import (
     ConfirmarAgendamientoSerializer, SolicitudServicioProveedorSerializer,
     AcceptOrderSerializer, RejectOrderSerializer, UpdateOrderStatusSerializer,
     OrdenEstadisticasSerializer,
+    GananciasTallerResumenSerializer,
     ProveedorKpisResumenSerializer,
     SolicitudServicioPublicaSerializer, OfertaProveedorSerializer,
     DetalleServicioOfertaSerializer, ChatSolicitudSerializer
@@ -2572,6 +2573,20 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
         payload = compute_proveedor_kpis_resumen(request.user, dias=dias)
         payload = merge_kpi_resumen_insignia_cliente_fields(request.user, dias, payload)
         serializer = ProveedorKpisResumenSerializer(data=payload)
+        serializer.is_valid(raise_exception=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'], url_path='ganancias-resumen')
+    def ganancias_resumen(self, request):
+        """
+        Ganancias del mes: órdenes Mecanimovil completadas + agenda personal cerrada.
+        """
+        from mecanimovilapp.apps.ordenes.services.ganancias_taller import (
+            compute_ganancias_taller_resumen,
+        )
+
+        payload = compute_ganancias_taller_resumen(request.user)
+        serializer = GananciasTallerResumenSerializer(data=payload)
         serializer.is_valid(raise_exception=True)
         return Response(serializer.data)
     

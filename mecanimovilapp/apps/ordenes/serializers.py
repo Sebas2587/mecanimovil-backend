@@ -756,6 +756,22 @@ class OrdenEstadisticasSerializer(serializers.Serializer):
     calificacion_promedio = serializers.DecimalField(max_digits=3, decimal_places=2)
 
 
+class GananciasTallerResumenSerializer(serializers.Serializer):
+    """Ganancias del taller: Mecanimovil completadas + agenda personal cerrada."""
+
+    ganancias_mecanimovil = serializers.IntegerField()
+    ganancias_agenda_personal = serializers.IntegerField()
+    ganancias_total = serializers.IntegerField()
+    ordenes_mecanimovil = serializers.IntegerField()
+    ordenes_agenda_personal = serializers.IntegerField()
+    ganancias_mes_anterior = serializers.IntegerField()
+    ganancias_mecanimovil_mes_anterior = serializers.IntegerField()
+    ganancias_agenda_personal_mes_anterior = serializers.IntegerField()
+    delta_pct_mes = serializers.FloatField(allow_null=True)
+    mes_desde = serializers.CharField()
+    mes_hasta = serializers.CharField()
+
+
 class AspectosResenaSerializer(serializers.Serializer):
     """Promedios 1–5 de los aspectos estructurados de reseñas."""
     puntualidad = serializers.FloatField(allow_null=True)
