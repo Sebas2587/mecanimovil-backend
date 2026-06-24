@@ -163,6 +163,11 @@ class SolicitudServicio(models.Model):
         blank=True,
         help_text=_('Fecha cuando el proveedor respondió a la solicitud')
     )
+    fecha_pendiente_aceptacion_proveedor = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=_('Inicio del plazo SLA para aceptar o rechazar la orden (24h)'),
+    )
     motivo_rechazo = models.TextField(
         null=True,
         blank=True,
@@ -273,6 +278,23 @@ class SolicitudServicio(models.Model):
             hasattr(self, 'checklist_instance') and
             self.checklist_instance.estado == 'COMPLETADO'
         )
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            old_estado = (
+                SolicitudServicio.objects.filter(pk=self.pk)
+                .values_list('estado', flat=True)
+                .first()
+            )
+        else:
+            old_estado = None
+
+        if self.estado == 'pendiente_aceptacion_proveedor' and self.fecha_pendiente_aceptacion_proveedor is None:
+            transitioning = (not self.pk) or (old_estado != 'pendiente_aceptacion_proveedor')
+            if transitioning:
+                self.fecha_pendiente_aceptacion_proveedor = timezone.now()
+
+        super().save(*args, **kwargs)
 
 
 class LineaServicio(models.Model):

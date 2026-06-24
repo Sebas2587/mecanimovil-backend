@@ -1,5 +1,5 @@
 """Tests: KPIs de rendimiento por mecánico del taller."""
-from datetime import time
+from datetime import time, timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
@@ -98,3 +98,75 @@ class MecanicoKpisMetricasTestCase(TestCase):
 
         self.assertEqual(kpis['facturacion_periodo'], 75000)
         self.assertEqual(kpis['servicios_completados_con_checklist'], 0)
+
+    def _crear_orden_mkt(self, **kwargs) -> SolicitudServicio:
+        defaults = {
+            'cliente': self.cliente,
+            'vehiculo': self.vehiculo,
+            'taller': self.taller,
+            'tipo_servicio': 'taller',
+            'mecanico_asignado': self.mecanico,
+            'fecha_servicio': self.hoy,
+            'hora_servicio': time(10, 0),
+            'metodo_pago': 'transferencia',
+            'total': Decimal('50000'),
+        }
+        defaults.update(kwargs)
+        return SolicitudServicio.objects.create(**defaults)
+
+    def test_rechazo_baja_score_confiabilidad(self):
+        inicio = timezone.now() - timedelta(hours=2)
+        self._crear_orden_mkt(
+            estado='rechazada_por_proveedor',
+            oferta_proveedor=None,
+            fecha_pendiente_aceptacion_proveedor=inicio,
+            fecha_respuesta_proveedor=timezone.now() - timedelta(hours=1),
+        )
+
+        kpis = compute_mecanico_kpis(self.mecanico, dias=30)
+
+        self.assertLess(kpis['score_confiabilidad'], 100)
+        self.assertGreater(kpis['rechazos_periodo'], 0)
+
+    def test_resena_en_orden_asignada_entra_al_score(self):
+        from mecanimovilapp.apps.usuarios.models import Resena
+
+        orden = self._crear_orden_mkt(estado='completado')
+        Resena.objects.create(
+            cliente=self.cliente,
+            taller=self.taller,
+            solicitud=orden,
+            calificacion=5,
+            comentario='Excelente',
+        )
+
+        kpis = compute_mecanico_kpis(self.mecanico, dias=30)
+
+        self.assertEqual(kpis['calificacion_cliente_promedio'], 5.0)
+        self.assertEqual(kpis['score_calificacion_cliente'], 100)
+
+    def test_agenda_personal_no_modifica_score_calidad(self):
+        from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonal, CitaAgendaPersonalDetalle
+
+        cita = CitaAgendaPersonal.objects.create(
+            taller=self.taller,
+            miembro_taller=self.mecanico,
+            estado='cerrada',
+            fecha_servicio=self.hoy,
+            hora_servicio=time(9, 0),
+            duracion_minutos=60,
+            tipo_servicio='taller',
+            creado_por=self.taller.usuario,
+            cerrada_en=timezone.now(),
+        )
+        CitaAgendaPersonalDetalle.objects.create(
+            cita=cita,
+            cliente_nombre='Cliente particular',
+            servicio_nombre='Servicio externo',
+        )
+
+        kpis = compute_mecanico_kpis(self.mecanico, dias=30)
+
+        self.assertEqual(kpis['ordenes_personales'], 1)
+        self.assertEqual(kpis['servicios_completados_totales'], 0)
+        self.assertIsNone(kpis['score_rendimiento_global'])

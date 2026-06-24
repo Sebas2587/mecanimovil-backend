@@ -813,6 +813,14 @@ class ProveedorKpisResumenSerializer(serializers.Serializer):
     score_tiempo_ejecucion = serializers.IntegerField(allow_null=True)
     score_consistencia = serializers.IntegerField(allow_null=True)
     score_inicio_checklist = serializers.IntegerField(allow_null=True)
+    score_aceptacion_ordenes = serializers.IntegerField(allow_null=True)
+    score_confiabilidad = serializers.IntegerField(allow_null=True)
+    tiempo_aceptacion_ordenes_promedio_minutos = serializers.FloatField(allow_null=True)
+    aceptacion_ordenes_muestra = serializers.IntegerField(default=0)
+    rechazos_periodo = serializers.IntegerField(default=0)
+    rechazos_ultimos_7_dias = serializers.IntegerField(default=0)
+    multiplicador_penalizacion = serializers.FloatField(default=1.0)
+    score_rendimiento_base = serializers.IntegerField(required=False, allow_null=True)
     # Score compuesto
     score_rendimiento = serializers.IntegerField()
     # Suscripción e insignia

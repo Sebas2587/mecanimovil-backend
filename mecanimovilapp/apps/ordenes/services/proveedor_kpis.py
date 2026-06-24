@@ -2,13 +2,17 @@
 Agregación de KPIs para proveedores (solicitudes públicas / marketplace).
 
 Dimensiones del score_rendimiento (todas 0–100):
-  1. score_tiempo_respuesta    — velocidad para enviar oferta tras publicación
-  2. score_calificacion_cliente— estrellas de reseñas (SIEMPRE incluida; 0 sin reseñas)
-  3. score_calidad_servicio    — aspectos estructurados de reseñas (opcional, no penaliza)
-  4. score_checklist           — % checklists completados en órdenes terminadas
-  5. score_tiempo_ejecucion    — tiempo real proveedor vs estimado en oferta
-  6. score_consistencia        — racha máx. de días consecutivos con ≥1 servicio terminado
-  7. score_inicio_checklist    — velocidad para arrancar el checklist tras crear la instancia
+  1. score_tiempo_respuesta       — velocidad para enviar oferta tras publicación
+  2. score_calificacion_cliente   — estrellas de reseñas (SIEMPRE incluida; 0 sin reseñas)
+  3. score_calidad_servicio       — aspectos estructurados de reseñas (opcional, no penaliza)
+  4. score_checklist              — % checklists completados en órdenes terminadas
+  5. score_tiempo_ejecucion       — tiempo real proveedor vs estimado en oferta
+  6. score_consistencia           — racha máx. de días consecutivos con ≥1 servicio terminado
+  7. score_inicio_checklist       — velocidad para arrancar el checklist tras crear la instancia
+  8. score_aceptacion_ordenes     — tiempo para aceptar/rechazar orden pagada (SLA 24h)
+  9. score_confiabilidad          — rechazos recientes con decay temporal
+
+  score_rendimiento puede aplicar multiplicador 0.85 si ≥3 rechazos en 7 días.
 
 Regla central de composición (_merge_score_activity_aware):
   - Sin actividad (ni ofertas ni órdenes) → 0.
@@ -209,8 +213,12 @@ def _merge_score_activity_aware(
     score_ejecucion: int | None,
     score_consistencia: int | None,
     score_inicio_checklist: int | None,
+    score_aceptacion_ordenes: int | None,
+    score_confiabilidad: int | None,
     has_offers: bool,
     has_orders: bool,
+    has_marketplace_orders: bool,
+    has_marketplace_activity: bool,
     has_ratings_in_period: bool,
 ) -> int:
     """
@@ -225,7 +233,7 @@ def _merge_score_activity_aware(
     • score_calidad_servicio es opcional (no penaliza si no hay aspectos).
     • score_inicio_checklist es opcional (no penaliza si no hay datos de timing).
     """
-    if not has_offers and not has_orders:
+    if not has_offers and not has_orders and not has_marketplace_activity:
         return 0
 
     parts: list[int] = []
@@ -234,8 +242,16 @@ def _merge_score_activity_aware(
     if has_offers:
         parts.append(int(score_respuesta) if score_respuesta is not None else 0)
 
-    # Sin servicios terminados: solo respuesta, cap 54 ("En progreso" en insignia).
-    if has_offers and not has_orders:
+    # Confiabilidad: actividad marketplace (ofertas u órdenes).
+    if has_marketplace_activity:
+        parts.append(int(score_confiabilidad) if score_confiabilidad is not None else 100)
+
+    # Aceptación de órdenes pagadas (SLA 24h).
+    if has_marketplace_orders:
+        parts.append(int(score_aceptacion_ordenes) if score_aceptacion_ordenes is not None else 0)
+
+    # Sin servicios terminados: respuesta + confiabilidad (+ aceptación si aplica), cap 54.
+    if has_marketplace_activity and not has_orders:
         if not parts:
             return 0
         return max(0, min(54, int(round(sum(parts) / len(parts)))))
@@ -648,17 +664,47 @@ def compute_proveedor_kpis_resumen(user, dias: int = 30) -> dict[str, Any]:
     )
 
     # -----------------------------------------------------------------------
+    # Aceptación de órdenes (SLA 24h) y confiabilidad (rechazos)
+    # -----------------------------------------------------------------------
+    from mecanimovilapp.apps.ordenes.services.kpi_scoring import (
+        aceptaciones_a_tiempo_count,
+        aplicar_multiplicador_rechazos_recientes,
+        compute_score_aceptacion_ordenes,
+        contar_rechazos_recientes,
+        ordenes_respondidas_en_ventana,
+        rechazos_proveedor_en_ventana,
+        score_confiabilidad_from_eventos,
+    )
+
+    ordenes_respondidas = ordenes_respondidas_en_ventana(orden_base, since)
+    score_aceptacion_ordenes, avg_aceptacion_min, n_aceptacion_muestra = compute_score_aceptacion_ordenes(
+        ordenes_respondidas
+    )
+
+    rechazo_eventos = rechazos_proveedor_en_ventana(user, since, taller, mecanico)
+    aceptaciones_tiempo = aceptaciones_a_tiempo_count(ordenes_respondidas)
+    score_confiabilidad, _pen_conf = score_confiabilidad_from_eventos(
+        rechazo_eventos,
+        aceptaciones_a_tiempo=aceptaciones_tiempo,
+    )
+    rechazos_periodo = len(rechazo_eventos)
+    rechazos_ultimos_7_dias = contar_rechazos_recientes(rechazo_eventos)
+
+    has_offers = bool(base_ofertas.exists())
+    has_marketplace_orders = bool(ordenes_periodo.exists()) or n_aceptacion_muestra > 0
+    has_marketplace_activity = has_offers or has_marketplace_orders or rechazos_periodo > 0
+
+    # -----------------------------------------------------------------------
     # Scores finales y composición
     # -----------------------------------------------------------------------
     score_calificacion = _score_calificacion(calificacion_para_score)
     score_checklist = _score_checklist_cumplimiento(pct_checklist)
 
-    has_offers = bool(base_ofertas.exists())
     has_orders = bool(ordenes_terminadas_periodo.exists())
     has_ratings_in_period = n_resenas_muestra_eff > 0
     n_terminadas = ordenes_terminadas_periodo.count()
 
-    score_rendimiento = _merge_score_activity_aware(
+    score_rendimiento_base = _merge_score_activity_aware(
         score_respuesta=score_respuesta,
         score_calificacion=score_calificacion,
         score_calidad_servicio=score_calidad_servicio,
@@ -666,9 +712,17 @@ def compute_proveedor_kpis_resumen(user, dias: int = 30) -> dict[str, Any]:
         score_ejecucion=score_ejecucion,
         score_consistencia=score_consistencia,
         score_inicio_checklist=score_inicio_checklist,
+        score_aceptacion_ordenes=score_aceptacion_ordenes,
+        score_confiabilidad=score_confiabilidad,
         has_offers=has_offers,
         has_orders=has_orders,
+        has_marketplace_orders=has_marketplace_orders,
+        has_marketplace_activity=has_marketplace_activity,
         has_ratings_in_period=has_ratings_in_period,
+    )
+    score_rendimiento, multiplicador_penalizacion = aplicar_multiplicador_rechazos_recientes(
+        score_rendimiento_base,
+        rechazos_ultimos_7_dias,
     )
 
     return {
@@ -718,6 +772,14 @@ def compute_proveedor_kpis_resumen(user, dias: int = 30) -> dict[str, Any]:
         'score_tiempo_ejecucion': score_ejecucion,
         'score_consistencia': score_consistencia,
         'score_inicio_checklist': score_inicio_checklist,
+        'score_aceptacion_ordenes': score_aceptacion_ordenes,
+        'score_confiabilidad': score_confiabilidad,
+        'tiempo_aceptacion_ordenes_promedio_minutos': avg_aceptacion_min,
+        'aceptacion_ordenes_muestra': n_aceptacion_muestra,
+        'rechazos_periodo': rechazos_periodo,
+        'rechazos_ultimos_7_dias': rechazos_ultimos_7_dias,
+        'multiplicador_penalizacion': multiplicador_penalizacion,
+        'score_rendimiento_base': score_rendimiento_base,
         # Score compuesto
         'score_rendimiento': score_rendimiento,
     }
@@ -763,6 +825,14 @@ def _empty_payload(dias: int) -> dict[str, Any]:
         'score_tiempo_ejecucion': None,
         'score_consistencia': None,
         'score_inicio_checklist': None,
+        'score_aceptacion_ordenes': None,
+        'score_confiabilidad': None,
+        'tiempo_aceptacion_ordenes_promedio_minutos': None,
+        'aceptacion_ordenes_muestra': 0,
+        'rechazos_periodo': 0,
+        'rechazos_ultimos_7_dias': 0,
+        'multiplicador_penalizacion': 1.0,
+        'score_rendimiento_base': 0,
         'score_rendimiento': 0,
     }
 

@@ -291,11 +291,20 @@ def compute_kpi_badge_for_proveedor(
         return badge.to_dict()
 
     if tier.code == "ELITE":
-        reason = f"Score ≥ 90 con {terminados} servicio(s) terminado(s) y {resenas} reseña(s) en {window_days} días."
+        reason = (
+            f"Basado en servicios Mecanimovil completados, tiempos de respuesta y confiabilidad. "
+            f"Score ≥ 90 con {terminados} servicio(s) terminado(s) y {resenas} reseña(s) en {window_days} días."
+        )
     elif tier.code == "MASTER":
-        reason = f"Score ≥ 75 con {terminados} servicio(s) terminado(s) y {resenas} reseña(s) en {window_days} días."
+        reason = (
+            f"Basado en servicios Mecanimovil completados, tiempos de respuesta y confiabilidad. "
+            f"Score ≥ 75 con {terminados} servicio(s) terminado(s) y {resenas} reseña(s) en {window_days} días."
+        )
     elif tier.code == "PRO":
-        reason = f"Score ≥ 55 con {terminados} servicio(s) terminado(s) y {resenas} reseña(s) en {window_days} días."
+        reason = (
+            f"Basado en servicios Mecanimovil completados, tiempos de respuesta y confiabilidad. "
+            f"Score ≥ 55 con {terminados} servicio(s) terminado(s) y {resenas} reseña(s) en {window_days} días."
+        )
     else:
         reason = (
             f"Score < 55 con {terminados} servicio(s) terminado(s) en {window_days} días."

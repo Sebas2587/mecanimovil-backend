@@ -207,12 +207,56 @@ def _metricas_periodo(
     score_checklist = _score_checklist_cumplimiento(pct_checklist)
     score_tiempo = _score_tiempo_ejecucion(ratio_promedio)
     score_productividad = _score_productividad(servicios_completados_con_checklist, dias_periodo)
-    score_global = _merge_score_global([
+
+    # Aceptación 24h, confiabilidad y calificación por órdenes asignadas
+    from mecanimovilapp.apps.ordenes.services.kpi_scoring import (
+        aceptaciones_a_tiempo_count,
+        compute_score_aceptacion_ordenes,
+        ordenes_respondidas_en_ventana,
+        rechazos_mecanico_en_ventana,
+        score_confiabilidad_from_eventos,
+    )
+    from mecanimovilapp.apps.ordenes.services.proveedor_kpis import _score_calificacion
+
+    since_dt = timezone.make_aware(datetime.combine(fecha_desde, datetime.min.time()))
+    ordenes_mkt_asignadas = base_qs.filter(oferta_proveedor__isnull=False)
+    ordenes_respondidas = ordenes_respondidas_en_ventana(ordenes_mkt_asignadas, since_dt)
+    score_aceptacion, avg_aceptacion_min, n_aceptacion = compute_score_aceptacion_ordenes(ordenes_respondidas)
+
+    rechazo_eventos = rechazos_mecanico_en_ventana(miembro, since_dt)
+    aceptaciones_tiempo = aceptaciones_a_tiempo_count(ordenes_respondidas)
+    score_confiabilidad, _ = score_confiabilidad_from_eventos(
+        rechazo_eventos,
+        aceptaciones_a_tiempo=aceptaciones_tiempo,
+    )
+
+    from mecanimovilapp.apps.usuarios.models import Resena
+
+    resenas_qs = Resena.objects.filter(
+        solicitud__mecanico_asignado=miembro,
+        fecha_hora_resena__gte=since_dt,
+        fecha_hora_resena__lte=timezone.make_aware(
+            datetime.combine(fecha_hasta, datetime.max.time().replace(microsecond=0))
+        ),
+    )
+    califs = [float(r.calificacion) for r in resenas_qs.only('calificacion')]
+    calificacion_promedio = round(sum(califs) / len(califs), 2) if califs else None
+    score_calificacion = _score_calificacion(calificacion_promedio)
+
+    score_parts: list[int | None] = [
         score_productividad,
         score_tiempo,
         score_checklist,
         score_inicio,
-    ])
+    ]
+    if ordenes_mkt_asignadas.exists() or n_aceptacion > 0:
+        score_parts.append(score_aceptacion)
+    if rechazo_eventos or ordenes_mkt_asignadas.exists():
+        score_parts.append(score_confiabilidad)
+    if score_calificacion is not None:
+        score_parts.append(score_calificacion)
+
+    score_global = _merge_score_global(score_parts)
 
     return {
         'servicios_completados': servicios_completados_totales,
@@ -233,6 +277,12 @@ def _metricas_periodo(
         'score_tiempo_ejecucion': score_tiempo,
         'score_checklist': score_checklist,
         'score_puntualidad_inicio': score_inicio,
+        'score_confiabilidad': score_confiabilidad if (rechazo_eventos or ordenes_mkt_asignadas.exists()) else None,
+        'score_aceptacion': score_aceptacion if (ordenes_mkt_asignadas.exists() or n_aceptacion > 0) else None,
+        'score_calificacion_cliente': score_calificacion,
+        'calificacion_cliente_promedio': calificacion_promedio,
+        'tiempo_aceptacion_promedio_minutos': avg_aceptacion_min,
+        'rechazos_periodo': len(rechazo_eventos),
         'score_rendimiento_global': score_global,
     }
 
