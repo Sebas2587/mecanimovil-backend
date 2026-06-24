@@ -2850,80 +2850,73 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
                 return self._queryset_solicitudes_del_cliente(cliente)
             return SolicitudServicioPublica.objects.none()
 
-        # Cliente: ÚNICAMENTE sus propias solicitudes (creadas por él).
-        # NO incluir solicitudes de vehículos que el usuario ahora posee (comprados de segunda mano)
-        # porque eso expone historial de dueños anteriores en "Mis Solicitudes", que es una
-        # filtración de datos. El historial de servicios de un vehículo comprado está disponible
-        # en la pantalla de detalle del vehículo via /vehiculos/{id}/historial-servicios/.
-        if cliente is not None:
-            return self._queryset_solicitudes_del_cliente(cliente)
-        
-        # Proveedor viendo solicitudes disponibles (solo si tiene perfil taller o mecánico).
-        # Usuario autenticado sin Cliente ni perfil proveedor: lista vacía — evita filtrar
-        # como proveedor por error y exponer feed global en la app de clientes.
         taller = Taller.objects.filter(usuario=user).first()
         mecanico = MecanicoDomicilio.objects.filter(usuario=user).first()
-        if not taller and not mecanico:
-            logger.warning(
-                "solicitudes-publicas list: usuario id=%s sin Cliente ni perfil proveedor; devolviendo queryset vacío",
-                user.pk,
-            )
-            return SolicitudServicioPublica.objects.none()
-        
-        # IMPORTANTE: Las solicitudes dirigidas SOLO deben aparecer para el proveedor seleccionado
-        # Las solicitudes globales aparecen para todos los proveedores que atienden la marca
-        
-        # Obtener marcas atendidas del proveedor
-        marcas_atendidas = []
-        if taller:
-            marcas_atendidas = list(taller.marcas_atendidas.values_list('id', flat=True))
-        elif mecanico:
-            marcas_atendidas = list(mecanico.marcas_atendidas.values_list('id', flat=True))
-        
-        # Q ya está importado a nivel de módulo; no reimportar aquí (rompe la rama cliente: UnboundLocalError).
-        # Iniciar con una query imposible (que no devuelve nada)
-        query = Q(pk=None)
-        
-        # 1. Solicitudes GLOBALES: filtradas por marca del vehículo y no vencidas
-        if marcas_atendidas:
+
+        # Proveedor (retrieve, disponibles, etc.): prioridad sobre perfil Cliente en la misma cuenta.
+        if taller or mecanico:
+            marcas_atendidas = []
+            if taller:
+                marcas_atendidas = list(taller.marcas_atendidas.values_list('id', flat=True))
+            elif mecanico:
+                marcas_atendidas = list(mecanico.marcas_atendidas.values_list('id', flat=True))
+
+            query = Q(pk=None)
+
+            # 1. Solicitudes GLOBALES activas: filtradas por marca del vehículo
+            if marcas_atendidas:
+                query |= Q(
+                    estado__in=['publicada', 'con_ofertas', 'pendiente_confirmacion'],
+                    fecha_expiracion__gt=timezone.now(),
+                    tipo_solicitud='global',
+                    vehiculo__marca__id__in=marcas_atendidas,
+                )
+
+            # 2. Solicitudes DIRIGIDAS activas para este proveedor
             query |= Q(
+                proveedores_dirigidos=user,
                 estado__in=['publicada', 'con_ofertas', 'pendiente_confirmacion'],
                 fecha_expiracion__gt=timezone.now(),
-                tipo_solicitud='global',
-                vehiculo__marca__id__in=marcas_atendidas
+                tipo_solicitud='dirigida',
             )
-        
-        # 2. Solicitudes DIRIGIDAS: SOLO para este proveedor específico y no vencidas
-        query |= Q(
-            proveedores_dirigidos=user,
-            estado__in=['publicada', 'con_ofertas', 'pendiente_confirmacion'],
-            fecha_expiracion__gt=timezone.now(),
-            tipo_solicitud='dirigida'
+
+            # 3. Historial: ofertas del proveedor (activas, cerradas o rechazadas)
+            query |= Q(
+                ofertas__proveedor=user,
+                ofertas__estado__in=[
+                    'enviada', 'vista', 'en_chat', 'pendiente_confirmacion',
+                    'pendiente_creditos', 'aceptada', 'pendiente_pago', 'pagada',
+                    'pagada_parcialmente', 'en_ejecucion', 'completada',
+                    'rechazada', 'retirada', 'expirada',
+                ],
+            )
+
+            # 4. Historial: rechazos explícitos de solicitud (sin oferta)
+            query |= Q(rechazos__proveedor=user)
+
+            queryset = SolicitudServicioPublica.objects.filter(query).exclude(pk=None).distinct()
+
+            return queryset.select_related(
+                'cliente',
+                'cliente__usuario',
+                'vehiculo',
+                'vehiculo__marca',
+                'direccion_usuario',
+                'oferta_seleccionada',
+                'oferta_seleccionada__proveedor__taller__direccion_fisica',
+            ).prefetch_related(
+                'servicios_solicitados', 'proveedores_dirigidos', 'ofertas', 'rechazos', 'fotos_necesidad',
+            )
+
+        # Cliente sin perfil proveedor: solo sus solicitudes creadas por él.
+        if cliente is not None:
+            return self._queryset_solicitudes_del_cliente(cliente)
+
+        logger.warning(
+            "solicitudes-publicas list: usuario id=%s sin Cliente ni perfil proveedor; devolviendo queryset vacío",
+            user.pk,
         )
-        
-        # 3. ✅ INCLUIR solicitudes donde el proveedor ya tiene una oferta (incluso vencidas)
-        # Esto permite que el proveedor pueda ver el detalle de solicitudes donde ya ofertó
-        # Incluir estados que permiten crear ofertas secundarias: pagada, en_ejecucion
-        query |= Q(
-            ofertas__proveedor=user,
-            ofertas__estado__in=[
-                'enviada', 'vista', 'en_chat', 'pendiente_confirmacion',
-                'pendiente_creditos', 'aceptada', 'pendiente_pago', 'pagada', 'en_ejecucion',
-            ]
-        )
-        
-        # Excluir la condición imposible y aplicar distinct para evitar duplicados
-        queryset = SolicitudServicioPublica.objects.filter(query).exclude(pk=None).distinct()
-        
-        return queryset.select_related(
-            'cliente',
-            'cliente__usuario',
-            'vehiculo',
-            'vehiculo__marca',
-            'direccion_usuario',
-            'oferta_seleccionada',
-            'oferta_seleccionada__proveedor__taller__direccion_fisica',
-        ).prefetch_related('servicios_solicitados', 'proveedores_dirigidos', 'ofertas', 'rechazos', 'fotos_necesidad')
+        return SolicitudServicioPublica.objects.none()
     
     def list(self, request, *args, **kwargs):
         """

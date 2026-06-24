@@ -494,3 +494,49 @@ class MisSolicitudesAislamientoTestCase(TestCase):
         self.assertIn(str(self.solicitud_a.id), ids)
         self.assertIn(str(self.solicitud_global.id), ids)
 
+
+class ProveedorDetalleSolicitudRechazadaTestCase(MisSolicitudesAislamientoTestCase):
+    """Proveedor debe poder abrir detalle de solicitudes rechazadas / historial."""
+
+    def test_proveedor_ve_detalle_con_oferta_rechazada(self):
+        from datetime import time as dt_time, timedelta
+        from decimal import Decimal
+
+        fd = timezone.now().date() + timedelta(days=3)
+        OfertaProveedor.objects.create(
+            solicitud=self.solicitud_global,
+            proveedor=self.proveedor_user,
+            tipo_proveedor='taller',
+            precio_total_ofrecido=Decimal('45000'),
+            incluye_repuestos=False,
+            tiempo_estimado_total=timedelta(hours=1),
+            descripcion_oferta='Oferta rechazada',
+            fecha_disponible=fd,
+            hora_disponible=dt_time(10, 0),
+            estado='rechazada',
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=self.proveedor_user)
+        response = client.get(
+            f'/api/ordenes/solicitudes-publicas/{self.solicitud_global.id}/',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_proveedor_ve_detalle_tras_rechazar_sin_oferta(self):
+        from mecanimovilapp.apps.ordenes.models import RechazoSolicitud
+
+        RechazoSolicitud.objects.create(
+            solicitud=self.solicitud_global,
+            proveedor=self.proveedor_user,
+            tipo_proveedor='taller',
+            motivo='ocupado',
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=self.proveedor_user)
+        response = client.get(
+            f'/api/ordenes/solicitudes-publicas/{self.solicitud_global.id}/',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
