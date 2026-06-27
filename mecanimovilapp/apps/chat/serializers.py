@@ -3,6 +3,9 @@ from .models import Conversation, Message
 from django.contrib.auth import get_user_model
 from mecanimovilapp.storage.utils import get_cpanel_file_url
 
+from mecanimovilapp.apps.omnichannel.serializers import ExternalContactMiniSerializer
+from mecanimovilapp.apps.omnichannel.utils import channel_to_api_slug
+
 User = get_user_model()
 
 class UserMiniSerializer(serializers.ModelSerializer):
@@ -31,16 +34,26 @@ class UserMiniSerializer(serializers.ModelSerializer):
         return full_name if full_name else obj.username
 
 class MessageSerializer(serializers.ModelSerializer):
-    sender_id = serializers.IntegerField(source='sender.id', read_only=True)
+    sender_id = serializers.SerializerMethodField()
     sender_name = serializers.SerializerMethodField()
     
     class Meta:
         model = Message
-        fields = ('id', 'conversation', 'sender_id', 'sender_name', 'content', 'attachment', 'timestamp', 'is_read')
+        fields = (
+            'id', 'conversation', 'sender_id', 'sender_name', 'content', 'attachment',
+            'timestamp', 'is_read', 'direction', 'external_message_id',
+        )
         read_only_fields = ('conversation', 'timestamp', 'is_read')
 
+    def get_sender_id(self, obj):
+        return obj.sender_id
+
     def get_sender_name(self, obj):
-        return f"{obj.sender.first_name} {obj.sender.last_name}"
+        if obj.sender:
+            return f"{obj.sender.first_name} {obj.sender.last_name}".strip() or obj.sender.username
+        if obj.direction == 'inbound' and obj.conversation.external_contact:
+            return obj.conversation.external_contact.display_name
+        return 'Contacto'
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -51,18 +64,32 @@ class MessageSerializer(serializers.ModelSerializer):
             data['archivo_adjunto'] = url
         else:
             data['archivo_adjunto'] = None
+        data['es_propio'] = False
+        req_user = getattr(request, 'user', None) if request else None
+        if req_user and req_user.is_authenticated and instance.sender_id == req_user.id:
+            data['es_propio'] = True
+        elif instance.direction == 'outbound' and req_user and instance.sender_id == req_user.id:
+            data['es_propio'] = True
         return data
 
 class ConversationSerializer(serializers.ModelSerializer):
     last_message = serializers.SerializerMethodField()
     other_participant = serializers.SerializerMethodField()
+    external_contact = ExternalContactMiniSerializer(read_only=True)
     context_info = serializers.SerializerMethodField()
     context_id = serializers.SerializerMethodField()
     unread_count = serializers.SerializerMethodField()
+    channel = serializers.SerializerMethodField()
 
     class Meta:
         model = Conversation
-        fields = ('id', 'type', 'last_message', 'other_participant', 'context_info', 'context_id', 'updated_at', 'unread_count')
+        fields = (
+            'id', 'type', 'source_channel', 'channel', 'last_message', 'other_participant',
+            'external_contact', 'context_info', 'context_id', 'updated_at', 'unread_count',
+        )
+
+    def get_channel(self, obj):
+        return channel_to_api_slug(obj.source_channel)
 
     def get_context_id(self, obj):
         """Return the ID of the context object (Oferta, Solicitud, etc.)"""
@@ -166,5 +193,6 @@ class ConversationSerializer(serializers.ModelSerializer):
         if not request or not request.user:
             return 0
         
-        # Count messages NOT sent by me and NOT read
+        if obj.source_channel != 'APP':
+            return obj.messages.filter(direction='inbound', is_read=False).count()
         return obj.messages.exclude(sender=request.user).filter(is_read=False).count()

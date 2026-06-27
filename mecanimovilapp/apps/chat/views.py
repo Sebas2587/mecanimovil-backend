@@ -4,10 +4,13 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.mixins import DestroyModelMixin
 from django.shortcuts import get_object_or_404
+from django.contrib.contenttypes.models import ContentType
 from .models import Conversation, Message
 from .serializers import ConversationSerializer, MessageSerializer
 from .purge import purge_conversation
+from .inbox import build_unified_inbox
 from mecanimovilapp.storage.utils import get_cpanel_file_url
+from mecanimovilapp.apps.omnichannel.utils import channel_to_api_slug
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +43,41 @@ class ConversationViewSet(DestroyModelMixin, viewsets.ReadOnlyModelViewSet):
             if db_type:
                 queryset = queryset.filter(type=db_type)
         return queryset
+
+    @action(detail=False, methods=['get'])
+    def inbox(self, request):
+        """Inbox unificado: chats de oferta (app) + conversaciones omnicanal."""
+        if hasattr(request.user, 'cliente'):
+            from mecanimovilapp.apps.ordenes.models import ChatSolicitud, OfertaProveedor
+            viewset = __import__(
+                'mecanimovilapp.apps.ordenes.views',
+                fromlist=['ChatSolicitudViewSet'],
+            ).ChatSolicitudViewSet()
+            viewset.request = request
+            viewset.format_kwarg = None
+            return viewset.lista_chats(request)
+        data = build_unified_inbox(request.user, request)
+        return Response(data)
+
+    @action(detail=True, methods=['post'], url_path='vincular-solicitud')
+    def vincular_solicitud(self, request, pk=None):
+        from mecanimovilapp.apps.ordenes.models import SolicitudServicioPublica
+
+        conversation = self.get_object()
+        solicitud_id = request.data.get('solicitud_id')
+        if not solicitud_id:
+            return Response({'error': 'solicitud_id requerido'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            solicitud = SolicitudServicioPublica.objects.get(id=solicitud_id)
+        except SolicitudServicioPublica.DoesNotExist:
+            return Response({'error': 'Solicitud no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+
+        ct = ContentType.objects.get_for_model(SolicitudServicioPublica)
+        conversation.content_type = ct
+        conversation.object_id = str(solicitud.id)
+        conversation.save(update_fields=['content_type', 'object_id', 'updated_at'])
+        serializer = ConversationSerializer(conversation, context={'request': request})
+        return Response(serializer.data)
 
     @action(detail=True, methods=['get'])
     def messages(self, request, pk=None):
@@ -146,8 +184,14 @@ class ConversationViewSet(DestroyModelMixin, viewsets.ReadOnlyModelViewSet):
             conversation=conversation,
             sender=request.user,
             content=content if content else '',
-            attachment=attachment
+            attachment=attachment,
+            direction='outbound',
         )
+        
+        is_omnichannel = conversation.source_channel != 'APP'
+        if is_omnichannel:
+            from mecanimovilapp.apps.omnichannel.tasks import send_meta_message
+            send_meta_message.delay(message.id)
         
         # 🔄 BACKWARDS COMPATIBILITY: Also save to ChatSolicitud table
         # This ensures apps using the old API can see messages sent via new API
@@ -156,7 +200,7 @@ class ConversationViewSet(DestroyModelMixin, viewsets.ReadOnlyModelViewSet):
             
             # Determine if this conversation has an associated Oferta
             oferta = None
-            if conversation.context_object:
+            if conversation.context_object and not is_omnichannel:
                 context_model = conversation.content_type.model_class().__name__
                 
                 if context_model == 'OfertaProveedor':
@@ -255,6 +299,9 @@ class ConversationViewSet(DestroyModelMixin, viewsets.ReadOnlyModelViewSet):
         
         print(f"🔵 [CHAT BACKEND] Sender is provider: {es_proveedor}")
 
+        external_contact = conversation.external_contact
+        channel_slug = channel_to_api_slug(conversation.source_channel)
+
         # Prepare payload for Global Consumers (nuevo_mensaje_chat)
         payload = {
             'type': 'nuevo_mensaje_chat',
@@ -267,10 +314,12 @@ class ConversationViewSet(DestroyModelMixin, viewsets.ReadOnlyModelViewSet):
             'enviado_por': f"{message.sender.first_name} {message.sender.last_name}",
             'mensaje': message.content,
             'content': message.content, # Fallback
-            'message': message.content, # Fallback
             'es_proveedor': es_proveedor,
             'sender_id': message.sender.id,
             'timestamp': message.timestamp.isoformat(),
+            'channel': channel_slug,
+            'external_contact_name': external_contact.display_name if external_contact else None,
+            'external_contact_phone': external_contact.phone if external_contact else None,
             'archivo_adjunto': (
                 get_cpanel_file_url(message.attachment, request) if message.attachment else None
             ),
@@ -351,12 +400,20 @@ class ConversationViewSet(DestroyModelMixin, viewsets.ReadOnlyModelViewSet):
                     or 'Chat'
                 )
                 preview = (message.content or '')[:120] or 'Nuevo mensaje'
+                from mecanimovilapp.apps.omnichannel.services.broadcast import CHANNEL_LABELS
+                label = CHANNEL_LABELS.get(conversation.source_channel, 'Chat')
+                title = (
+                    f'{label} · {sender_name}'
+                    if conversation.source_channel != 'APP'
+                    else f'💬 {sender_name}'
+                )
                 send_expo_push_notification.delay(
                     participant.id,
-                    f"💬 {sender_name}",
+                    title,
                     preview,
                     {
                         'type': 'chat_message',
+                        'channel': channel_slug,
                         'conversation_id': str(conversation.id),
                         'solicitud_id': str(solicitud_id) if solicitud_id else '',
                         'oferta_id': str(oferta_id) if oferta_id else '',
@@ -388,8 +445,11 @@ class ConversationViewSet(DestroyModelMixin, viewsets.ReadOnlyModelViewSet):
         conversation = self.get_object()
         
         # 1. Mark new system Messages as read
-        unread = conversation.messages.exclude(sender=request.user).filter(is_read=False)
-        count = unread.update(is_read=True)
+        if conversation.source_channel != 'APP':
+            count = conversation.messages.filter(direction='inbound', is_read=False).update(is_read=True)
+        else:
+            unread = conversation.messages.exclude(sender=request.user).filter(is_read=False)
+            count = unread.update(is_read=True)
         
         # 2. 🔄 BACKWARDS COMPATIBILITY: Mark legacy ChatSolicitud as read
         try:

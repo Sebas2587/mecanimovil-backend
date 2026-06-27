@@ -75,6 +75,7 @@ INSTALLED_APPS = [
     'mecanimovilapp.apps.pagos',  # App de pagos con Mercado Pago
     'mecanimovilapp.apps.suscripciones',  # App de suscripciones freemium + planes
     'mecanimovilapp.apps.chat', # Sistema de mensajería contextual
+    'mecanimovilapp.apps.omnichannel', # WhatsApp, Messenger, Instagram
     'mecanimovilapp.apps.marketplace', # Marketplace de vehículos y transferencias
 ]
 
@@ -505,6 +506,20 @@ if MERCADOPAGO_MODE == 'production':
     MERCADOPAGO_PUBLIC_KEY = MERCADOPAGO_PUBLIC_KEY_PROD
 else:
     MERCADOPAGO_PUBLIC_KEY = MERCADOPAGO_PUBLIC_KEY_TEST
+
+# ============================================
+# CONFIGURACIÓN OMNICANAL (Meta)
+# ============================================
+OMNICHANNEL_ENABLED = config('OMNICHANNEL_ENABLED', default=False, cast=bool)
+META_APP_ID = config('META_APP_ID', default='')
+META_APP_SECRET = config('META_APP_SECRET', default='')
+META_VERIFY_TOKEN = config('META_VERIFY_TOKEN', default='')
+META_EMBEDDED_SIGNUP_CONFIG_ID = config('META_EMBEDDED_SIGNUP_CONFIG_ID', default='')
+META_OAUTH_REDIRECT_URI = config(
+    'META_OAUTH_REDIRECT_URI',
+    default='http://localhost:8000/api/omnichannel/oauth/callback/',
+)
+META_GRAPH_API_VERSION = config('META_GRAPH_API_VERSION', default='v21.0')
 
 # ============================================
 # CONFIGURACIÓN DE CACHE CON REDIS

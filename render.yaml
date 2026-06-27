@@ -68,6 +68,14 @@ services:
       # - AWS_ACCESS_KEY_ID (para S3 si usas almacenamiento)
       # - AWS_SECRET_ACCESS_KEY
       # - AWS_STORAGE_BUCKET_NAME
+      # Meta Omnichannel (WhatsApp / Messenger / Instagram):
+      # - OMNICHANNEL_ENABLED=True
+      # - META_APP_ID
+      # - META_APP_SECRET
+      # - META_VERIFY_TOKEN
+      # - META_EMBEDDED_SIGNUP_CONFIG_ID
+      # - META_OAUTH_REDIRECT_URI=https://<api-host>/api/omnichannel/oauth/callback/
+      # - META_GRAPH_API_VERSION=v21.0
       # Web Push VAPID (generadas localmente — NO subir al repo):
       # VAPID_PUBLIC_KEY=BN7Gtru3a4tdRrUe9cDw6hxsZax_3SiqxX8xCSXhWtFvoLYUfJfjs3KjCmHf-ix_NYVggp1B2o2rfLkjcako_ak
       # VAPID_PRIVATE_KEY=<tu clave privada — ver llaves generadas en setup>

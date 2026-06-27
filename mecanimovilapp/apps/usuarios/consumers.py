@@ -267,8 +267,8 @@ class ConnectionConsumer(AsyncWebsocketConsumer):
             'type': 'nuevo_mensaje_chat',
             'conversation_id': event.get('conversation_id'),
             'mensaje_id': event['mensaje_id'],
-            'oferta_id': event['oferta_id'],
-            'solicitud_id': event['solicitud_id'],
+            'oferta_id': event.get('oferta_id'),
+            'solicitud_id': event.get('solicitud_id'),
             'enviado_por': event['enviado_por'],
             'mensaje': event['mensaje'],
             'content': event.get('content', event.get('mensaje')),
@@ -278,6 +278,9 @@ class ConnectionConsumer(AsyncWebsocketConsumer):
             'timestamp': event.get('timestamp') or timezone.now().isoformat(),
             'archivo_adjunto': archivo_adjunto,
             'attachment': archivo_adjunto,
+            'channel': event.get('channel', 'app'),
+            'external_contact_name': event.get('external_contact_name'),
+            'external_contact_phone': event.get('external_contact_phone'),
         }))
 
     async def servicio_iniciado(self, event):
@@ -884,8 +887,8 @@ class MechanicStatusConsumer(AsyncWebsocketConsumer):
             'type': 'nuevo_mensaje_chat',
             'conversation_id': event.get('conversation_id'),
             'mensaje_id': event['mensaje_id'],
-            'oferta_id': event['oferta_id'],
-            'solicitud_id': event['solicitud_id'],
+            'oferta_id': event.get('oferta_id'),
+            'solicitud_id': event.get('solicitud_id'),
             'enviado_por': event['enviado_por'],
             'mensaje': event['mensaje'],
             'content': event.get('content', event.get('mensaje')),
@@ -895,6 +898,9 @@ class MechanicStatusConsumer(AsyncWebsocketConsumer):
             'timestamp': event.get('timestamp') or timezone.now().isoformat(),
             'archivo_adjunto': archivo_adjunto,
             'attachment': archivo_adjunto,
+            'channel': event.get('channel', 'app'),
+            'external_contact_name': event.get('external_contact_name'),
+            'external_contact_phone': event.get('external_contact_phone'),
         }))
 
     async def servicio_iniciado(self, event):
@@ -1294,8 +1300,8 @@ class ClientStatusConsumer(AsyncWebsocketConsumer):
             'type': 'nuevo_mensaje_chat',
             'conversation_id': event.get('conversation_id'),
             'mensaje_id': event['mensaje_id'],
-            'oferta_id': event['oferta_id'],
-            'solicitud_id': event['solicitud_id'],
+            'oferta_id': event.get('oferta_id'),
+            'solicitud_id': event.get('solicitud_id'),
             'enviado_por': event['enviado_por'],
             'mensaje': event['mensaje'],
             'content': event.get('content', event.get('mensaje')),
@@ -1305,6 +1311,9 @@ class ClientStatusConsumer(AsyncWebsocketConsumer):
             'timestamp': event.get('timestamp') or timezone.now().isoformat(),
             'archivo_adjunto': archivo_adjunto,
             'attachment': archivo_adjunto,
+            'channel': event.get('channel', 'app'),
+            'external_contact_name': event.get('external_contact_name'),
+            'external_contact_phone': event.get('external_contact_phone'),
         }))
 
     async def servicio_completado(self, event):
