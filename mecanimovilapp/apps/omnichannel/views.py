@@ -245,18 +245,55 @@ def meta_oauth_callback(request):
 
         if conn.channel == 'WHATSAPP':
             business_id = request.GET.get('business_id') or conn.meta_business_id
+            phone_number_id = request.GET.get('phone_number_id')
+            waba_id = request.GET.get('waba_id')
+
+            if phone_number_id:
+                update_fields['phone_number_id'] = phone_number_id
+            if waba_id:
+                update_fields['waba_id'] = waba_id
             if business_id:
                 update_fields['meta_business_id'] = business_id
-                wabas = client.get_whatsapp_business_accounts(business_id, access_token)
-                if wabas:
-                    waba = wabas[0]
-                    update_fields['waba_id'] = waba.get('id')
-                    phones = client.get_phone_numbers(waba.get('id'), access_token)
-                    if phones:
-                        phone = phones[0]
-                        update_fields['phone_number_id'] = phone.get('id')
-                        update_fields['display_identifier'] = phone.get('display_phone_number')
-                        update_fields['display_name'] = phone.get('verified_name') or update_fields.get('display_name')
+
+            if not update_fields.get('phone_number_id'):
+                wa_assets = client.resolve_whatsapp_assets(
+                    access_token,
+                    business_id=business_id,
+                )
+                if wa_assets:
+                    update_fields.update(wa_assets)
+                elif business_id:
+                    wabas = client.get_whatsapp_business_accounts(business_id, access_token)
+                    if wabas:
+                        waba = wabas[0]
+                        update_fields['waba_id'] = waba.get('id')
+                        phones = client.get_phone_numbers(waba.get('id'), access_token)
+                        if phones:
+                            phone = phones[0]
+                            update_fields['phone_number_id'] = phone.get('id')
+                            update_fields['display_identifier'] = phone.get('display_phone_number')
+                            update_fields['display_name'] = phone.get('verified_name') or update_fields.get('display_name')
+
+            if not update_fields.get('phone_number_id'):
+                conn.status = 'error'
+                conn.mensaje_estado = (
+                    'No se detectó un número WhatsApp Business. '
+                    'Usa la cuenta que administra el WABA o configura Embedded Signup.'
+                )
+                conn.save()
+                return JsonResponse({
+                    'success': False,
+                    'message': conn.mensaje_estado,
+                    'instruction': 'Vuelve a la app e intenta conectar de nuevo.',
+                }, status=400)
+
+            waba_for_sub = update_fields.get('waba_id')
+            token_for_sub = update_fields.get('access_token')
+            if waba_for_sub and token_for_sub:
+                try:
+                    client.subscribe_waba_webhooks(waba_for_sub, token_for_sub)
+                except Exception as sub_exc:
+                    logger.warning('WABA webhook subscribe after OAuth failed: %s', sub_exc)
 
         page_id = update_fields.get('page_id')
         page_token = update_fields.get('access_token')

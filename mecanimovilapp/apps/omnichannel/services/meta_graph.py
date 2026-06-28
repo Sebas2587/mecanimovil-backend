@@ -1,5 +1,6 @@
 """Cliente HTTP para Meta Graph API."""
 import logging
+import re
 from typing import Any
 
 import requests
@@ -7,6 +8,12 @@ import requests
 from mecanimovilapp.apps.omnichannel.utils import meta_app_secret, meta_graph_version
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_phone(value: str | None) -> str:
+    if not value:
+        return ''
+    return re.sub(r'\D', '', value)
 
 
 class MetaGraphClient:
@@ -42,6 +49,17 @@ class MetaGraphClient:
             timeout=30,
         )
         resp.raise_for_status()
+        return resp.json().get('data', [])
+
+    def get_user_businesses(self, access_token: str) -> list[dict]:
+        resp = requests.get(
+            self._url('me/businesses'),
+            params={'access_token': access_token},
+            timeout=30,
+        )
+        if resp.status_code >= 400:
+            logger.warning('Business list fetch failed: %s', resp.text)
+            return []
         return resp.json().get('data', [])
 
     def get_whatsapp_business_accounts(self, business_id: str, access_token: str) -> list[dict]:
@@ -85,6 +103,65 @@ class MetaGraphClient:
             logger.warning('Page webhook subscribe failed (%s): %s', page_id, resp.text)
             resp.raise_for_status()
         return resp.json()
+
+    def subscribe_waba_webhooks(self, waba_id: str, access_token: str) -> dict:
+        """Vincula la app al WABA para recibir webhooks de WhatsApp."""
+        resp = requests.post(
+            self._url(f'{waba_id}/subscribed_apps'),
+            params={'access_token': access_token},
+            timeout=30,
+        )
+        if resp.status_code >= 400:
+            logger.warning('WABA webhook subscribe failed (%s): %s', waba_id, resp.text)
+            resp.raise_for_status()
+        return resp.json()
+
+    def resolve_whatsapp_assets(
+        self,
+        access_token: str,
+        *,
+        preferred_display_phone: str | None = None,
+        business_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Resuelve WABA + phone_number_id desde businesses del usuario."""
+        target = normalize_phone(preferred_display_phone)
+        business_ids: list[str] = []
+        if business_id:
+            business_ids.append(business_id)
+        business_ids.extend(b['id'] for b in self.get_user_businesses(access_token) if b.get('id'))
+
+        seen: set[str] = set()
+        for bid in business_ids:
+            if bid in seen:
+                continue
+            seen.add(bid)
+            for waba in self.get_whatsapp_business_accounts(bid, access_token):
+                waba_id = waba.get('id')
+                if not waba_id:
+                    continue
+                phones = self.get_phone_numbers(waba_id, access_token)
+                if not phones:
+                    continue
+                if target:
+                    for phone in phones:
+                        if normalize_phone(phone.get('display_phone_number')) == target:
+                            return {
+                                'meta_business_id': bid,
+                                'waba_id': waba_id,
+                                'phone_number_id': phone.get('id'),
+                                'display_identifier': phone.get('display_phone_number'),
+                                'display_name': phone.get('verified_name') or waba.get('name'),
+                            }
+                else:
+                    phone = phones[0]
+                    return {
+                        'meta_business_id': bid,
+                        'waba_id': waba_id,
+                        'phone_number_id': phone.get('id'),
+                        'display_identifier': phone.get('display_phone_number'),
+                        'display_name': phone.get('verified_name') or waba.get('name'),
+                    }
+        return None
 
     def get_instagram_account(self, page_id: str, access_token: str) -> dict | None:
         resp = requests.get(

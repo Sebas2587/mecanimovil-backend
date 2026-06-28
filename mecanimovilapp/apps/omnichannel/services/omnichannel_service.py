@@ -215,9 +215,17 @@ class OmnichannelService:
         obj = body.get('object')
         logger.info('Meta webhook object=%s entries=%s', obj, len(body.get('entry', [])))
         if body.get('object') == 'whatsapp_business_account':
-            for event in cls.parse_whatsapp_payload(body):
+            events = cls.parse_whatsapp_payload(body)
+            logger.info('Parsed %s WhatsApp events', len(events))
+            for event in events:
                 conn = cls.resolve_connection_for_whatsapp(event['phone_number_id'])
-                if not conn or not event.get('text'):
+                if not conn:
+                    logger.warning(
+                        'No WHATSAPP connection for phone_number_id=%s',
+                        event.get('phone_number_id'),
+                    )
+                    continue
+                if not event.get('text'):
                     continue
                 cls.ingest_inbound_message(
                     conn,
