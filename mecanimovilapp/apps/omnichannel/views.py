@@ -258,6 +258,14 @@ def meta_oauth_callback(request):
                         update_fields['display_identifier'] = phone.get('display_phone_number')
                         update_fields['display_name'] = phone.get('verified_name') or update_fields.get('display_name')
 
+        page_id = update_fields.get('page_id')
+        page_token = update_fields.get('access_token')
+        if page_id and page_token and conn.channel in ('MESSENGER', 'INSTAGRAM'):
+            try:
+                client.subscribe_page_webhooks(page_id, page_token)
+            except Exception as sub_exc:
+                logger.warning('Page webhook subscribe after OAuth failed: %s', sub_exc)
+
         conn.mark_connected(enabled=True, **update_fields)
         return JsonResponse({
             'success': True,

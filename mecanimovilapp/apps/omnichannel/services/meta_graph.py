@@ -65,6 +65,27 @@ class MetaGraphClient:
             return []
         return resp.json().get('data', [])
 
+    def subscribe_page_webhooks(
+        self,
+        page_id: str,
+        access_token: str,
+        *,
+        fields: str = 'messages,messaging_postbacks',
+    ) -> dict:
+        """Vincula la app a la Page y suscribe campos de webhook (Messenger/IG)."""
+        resp = requests.post(
+            self._url(f'{page_id}/subscribed_apps'),
+            params={
+                'subscribed_fields': fields,
+                'access_token': access_token,
+            },
+            timeout=30,
+        )
+        if resp.status_code >= 400:
+            logger.warning('Page webhook subscribe failed (%s): %s', page_id, resp.text)
+            resp.raise_for_status()
+        return resp.json()
+
     def get_instagram_account(self, page_id: str, access_token: str) -> dict | None:
         resp = requests.get(
             self._url(page_id),

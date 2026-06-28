@@ -161,29 +161,59 @@ class OmnichannelService:
         return events
 
     @staticmethod
+    def _messenger_event_from_item(
+        page_id: str,
+        channel: str,
+        item: dict,
+    ) -> dict[str, Any] | None:
+        msg = item.get('message') or {}
+        if not msg or msg.get('is_echo'):
+            return None
+        text = msg.get('text') or ''
+        if not text and msg.get('attachments'):
+            types = [a.get('type', 'file') for a in msg.get('attachments', [])]
+            text = f'[Adjunto: {", ".join(types)}]'
+        if not text:
+            return None
+        sender = item.get('sender', {})
+        return {
+            'kind': channel.lower(),
+            'page_id': page_id,
+            'external_id': sender.get('id'),
+            'external_message_id': msg.get('mid'),
+            'text': text,
+            'display_name': sender.get('id', ''),
+        }
+
+    @staticmethod
     def parse_messenger_payload(body: dict, channel: str) -> list[dict[str, Any]]:
         events = []
         for entry in body.get('entry', []):
             page_id = entry.get('id')
             for messaging in entry.get('messaging', []):
-                msg = messaging.get('message') or {}
-                if not msg or messaging.get('message', {}).get('is_echo'):
+                event = OmnichannelService._messenger_event_from_item(page_id, channel, messaging)
+                if event:
+                    events.append(event)
+            for change in entry.get('changes', []):
+                if change.get('field') != 'messages':
                     continue
-                text = msg.get('text', '')
-                sender = messaging.get('sender', {})
-                events.append({
-                    'kind': channel.lower(),
-                    'page_id': page_id,
-                    'external_id': sender.get('id'),
-                    'external_message_id': msg.get('mid'),
-                    'text': text,
-                    'display_name': sender.get('id', ''),
-                })
+                value = change.get('value') or {}
+                if 'messaging' in value:
+                    for messaging in value.get('messaging', []):
+                        event = OmnichannelService._messenger_event_from_item(page_id, channel, messaging)
+                        if event:
+                            events.append(event)
+                else:
+                    event = OmnichannelService._messenger_event_from_item(page_id, channel, value)
+                    if event:
+                        events.append(event)
         return events
 
     @classmethod
     def process_webhook_body(cls, body: dict) -> int:
         processed = 0
+        obj = body.get('object')
+        logger.info('Meta webhook object=%s entries=%s', obj, len(body.get('entry', [])))
         if body.get('object') == 'whatsapp_business_account':
             for event in cls.parse_whatsapp_payload(body):
                 conn = cls.resolve_connection_for_whatsapp(event['phone_number_id'])
@@ -200,9 +230,17 @@ class OmnichannelService:
                 )
                 processed += 1
         elif body.get('object') == 'page':
-            for event in cls.parse_messenger_payload(body, 'MESSENGER'):
+            events = cls.parse_messenger_payload(body, 'MESSENGER')
+            logger.info('Parsed %s Messenger events', len(events))
+            for event in events:
                 conn = cls.resolve_connection_for_page(event['page_id'], 'MESSENGER')
-                if not conn or not event.get('text'):
+                if not conn:
+                    logger.warning(
+                        'No MESSENGER connection for page_id=%s (status=conectada, enabled=True)',
+                        event['page_id'],
+                    )
+                    continue
+                if not event.get('text'):
                     continue
                 cls.ingest_inbound_message(
                     conn,
@@ -214,9 +252,17 @@ class OmnichannelService:
                 )
                 processed += 1
         elif body.get('object') == 'instagram':
-            for event in cls.parse_messenger_payload(body, 'INSTAGRAM'):
+            events = cls.parse_messenger_payload(body, 'INSTAGRAM')
+            logger.info('Parsed %s Instagram events', len(events))
+            for event in events:
                 conn = cls.resolve_connection_for_page(event['page_id'], 'INSTAGRAM')
-                if not conn or not event.get('text'):
+                if not conn:
+                    logger.warning(
+                        'No INSTAGRAM connection for page_id=%s',
+                        event['page_id'],
+                    )
+                    continue
+                if not event.get('text'):
                     continue
                 cls.ingest_inbound_message(
                     conn,
