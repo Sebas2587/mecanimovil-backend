@@ -140,6 +140,20 @@ class ProviderChannelConnectionViewSet(viewsets.GenericViewSet):
                 'WhatsApp Embedded Signup no configurado: falta META_EMBEDDED_SIGNUP_CONFIG_ID en Render. '
                 'Los talleres no podrán conectar WhatsApp hasta que ops lo configure (una sola vez).'
             )
+        if channel == 'INSTAGRAM' and not embedded:
+            logger.error(
+                'Instagram Login for Business no configurado: falta META_EMBEDDED_SIGNUP_CONFIG_ID_INSTAGRAM. '
+                'Sin esta config Meta muestra "Invalid Scopes" al conectar.'
+            )
+            return Response(
+                {
+                    'error': (
+                        'Instagram aún no está configurado en el servidor. '
+                        'Contacta a soporte Mecanimovil (falta META_EMBEDDED_SIGNUP_CONFIG_ID_INSTAGRAM).'
+                    ),
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         return Response({
             'success': True,
             'connection_id': str(conn.id),

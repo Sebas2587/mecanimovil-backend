@@ -57,36 +57,13 @@ def complete_meta_oauth_connection(
         update_fields: dict[str, Any] = {'access_token': user_token}
 
         if conn.channel in ('MESSENGER', 'INSTAGRAM'):
-            pages = client.get_me_accounts(user_token)
-            if not pages:
-                conn.status = 'error'
-                conn.mensaje_estado = (
-                    'No encontramos una Página de Facebook vinculada. '
-                    'Crea o vincula una Página en Meta Business Suite e intenta de nuevo.'
-                )
-                conn.save(update_fields=['status', 'mensaje_estado', 'updated_at'])
-                return MetaOAuthCompletionResult(
-                    success=False,
-                    message=conn.mensaje_estado,
-                    instruction='Vuelve a la app Mecanimovil Proveedores.',
-                )
-
-            page = pages[0]
-            update_fields['page_id'] = page.get('id')
-            update_fields['display_name'] = page.get('name')
-            page_token = page.get('access_token') or user_token
-            update_fields['access_token'] = page_token
-
             if conn.channel == 'INSTAGRAM':
-                ig = client.get_instagram_account(page.get('id'), page_token)
-                if ig:
-                    update_fields['instagram_account_id'] = ig.get('id')
-                    update_fields['display_identifier'] = ig.get('username') or ig.get('name')
-                else:
+                pages = client.get_me_accounts(user_token, fields='id,name')
+                if not pages:
                     conn.status = 'error'
                     conn.mensaje_estado = (
-                        'Tu Página no tiene Instagram Business vinculado. '
-                        'Vincúlalo en Meta Business Suite e intenta de nuevo.'
+                        'No encontramos una Página de Facebook vinculada. '
+                        'Crea o vincula una Página en Meta Business Suite e intenta de nuevo.'
                     )
                     conn.save(update_fields=['status', 'mensaje_estado', 'updated_at'])
                     return MetaOAuthCompletionResult(
@@ -94,7 +71,61 @@ def complete_meta_oauth_connection(
                         message=conn.mensaje_estado,
                         instruction='Vuelve a la app Mecanimovil Proveedores.',
                     )
-            elif conn.channel == 'MESSENGER':
+
+                resolved = client.resolve_instagram_page(user_token)
+                if not resolved:
+                    page_names = ', '.join(
+                        (p.get('name') or 'Página sin nombre') for p in pages[:5]
+                    )
+                    scopes = client.granted_scopes(user_token)
+                    hint = ''
+                    if 'instagram_basic' not in scopes:
+                        hint = (
+                            ' Falta el permiso instagram_basic en la app Meta de Mecanimovil; '
+                            'contacta a soporte.'
+                        )
+                    conn.status = 'error'
+                    conn.mensaje_estado = (
+                        'Meta no detectó Instagram en ninguna Página que autorizaste. '
+                        f'Páginas detectadas: {page_names}. '
+                        'Vincula tu Instagram profesional a la Página en Meta Business Suite '
+                        'y, al conectar, autoriza esa Página en el diálogo de Meta.'
+                        f'{hint}'
+                    )
+                    conn.save(update_fields=['status', 'mensaje_estado', 'updated_at'])
+                    return MetaOAuthCompletionResult(
+                        success=False,
+                        message=conn.mensaje_estado,
+                        instruction='Vuelve a la app Mecanimovil Proveedores.',
+                    )
+
+                page, ig = resolved
+                update_fields['page_id'] = page.get('id')
+                update_fields['display_name'] = page.get('name')
+                page_token = page.get('access_token') or user_token
+                update_fields['access_token'] = page_token
+                update_fields['instagram_account_id'] = ig.get('id')
+                update_fields['display_identifier'] = ig.get('username') or ig.get('name')
+            else:
+                pages = client.get_me_accounts(user_token)
+                if not pages:
+                    conn.status = 'error'
+                    conn.mensaje_estado = (
+                        'No encontramos una Página de Facebook vinculada. '
+                        'Crea o vincula una Página en Meta Business Suite e intenta de nuevo.'
+                    )
+                    conn.save(update_fields=['status', 'mensaje_estado', 'updated_at'])
+                    return MetaOAuthCompletionResult(
+                        success=False,
+                        message=conn.mensaje_estado,
+                        instruction='Vuelve a la app Mecanimovil Proveedores.',
+                    )
+
+                page = pages[0]
+                update_fields['page_id'] = page.get('id')
+                update_fields['display_name'] = page.get('name')
+                page_token = page.get('access_token') or user_token
+                update_fields['access_token'] = page_token
                 update_fields['display_identifier'] = page.get('name')
 
         if conn.channel == 'WHATSAPP':

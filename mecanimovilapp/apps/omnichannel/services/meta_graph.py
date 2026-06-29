@@ -9,6 +9,16 @@ from mecanimovilapp.apps.omnichannel.utils import meta_app_secret, meta_graph_ve
 
 logger = logging.getLogger(__name__)
 
+PAGE_ACCOUNT_FIELDS = (
+    'id,name,access_token,'
+    'instagram_business_account{id,username,name},'
+    'connected_instagram_account{id,username,name}'
+)
+PAGE_IG_LOOKUP_FIELDS = (
+    'instagram_business_account{id,username,name},'
+    'connected_instagram_account{id,username,name}'
+)
+
 
 def normalize_phone(value: str | None) -> str:
     if not value:
@@ -48,14 +58,78 @@ class MetaGraphClient:
             raise MetaOAuthExchangeError(resp.status_code, resp.text)
         return resp.json()
 
-    def get_me_accounts(self, access_token: str) -> list[dict]:
+    def get_me_accounts(self, access_token: str, *, fields: str | None = None) -> list[dict]:
+        params: dict[str, str] = {'access_token': access_token}
+        if fields:
+            params['fields'] = fields
         resp = requests.get(
             self._url('me/accounts'),
-            params={'access_token': access_token},
+            params=params,
             timeout=30,
         )
         resp.raise_for_status()
         return resp.json().get('data', [])
+
+    def get_business_owned_pages(self, business_id: str, access_token: str) -> list[dict]:
+        resp = requests.get(
+            self._url(f'{business_id}/owned_pages'),
+            params={
+                'access_token': access_token,
+                'fields': PAGE_IG_LOOKUP_FIELDS,
+            },
+            timeout=30,
+        )
+        if resp.status_code >= 400:
+            logger.warning('owned_pages fetch failed for %s: %s', business_id, resp.text[:500])
+            return []
+        return resp.json().get('data', [])
+
+    @staticmethod
+    def _page_instagram_account(page: dict) -> dict | None:
+        return page.get('instagram_business_account') or page.get('connected_instagram_account')
+
+    def resolve_instagram_page(self, user_token: str) -> tuple[dict, dict] | None:
+        """Encuentra la Page con Instagram vinculado entre cuentas autorizadas del usuario."""
+        pages = self.get_me_accounts(user_token, fields=PAGE_ACCOUNT_FIELDS)
+
+        for page in pages:
+            ig = self._page_instagram_account(page)
+            if ig:
+                return page, ig
+
+        for page in pages:
+            page_id = page.get('id')
+            if not page_id:
+                continue
+            page_token = page.get('access_token') or user_token
+            ig = self.get_instagram_account(page_id, page_token)
+            if ig:
+                return page, ig
+
+        pages_by_id = {p['id']: p for p in pages if p.get('id')}
+        for business in self.get_user_businesses(user_token):
+            business_id = business.get('id')
+            if not business_id:
+                continue
+            for owned_page in self.get_business_owned_pages(business_id, user_token):
+                ig = self._page_instagram_account(owned_page)
+                page_id = owned_page.get('id')
+                if ig and page_id and page_id in pages_by_id:
+                    return pages_by_id[page_id], ig
+
+        return None
+
+    def granted_scopes(self, access_token: str) -> set[str]:
+        data = self.debug_token(access_token)
+        scopes: set[str] = set()
+        for scope_entry in data.get('granular_scopes') or []:
+            scope = scope_entry.get('scope')
+            if scope:
+                scopes.add(scope)
+        for scope in (data.get('scopes') or []):
+            if scope:
+                scopes.add(scope)
+        return scopes
 
     def get_user_businesses(self, access_token: str) -> list[dict]:
         resp = requests.get(
@@ -361,15 +435,21 @@ class MetaGraphClient:
         resp = requests.get(
             self._url(page_id),
             params={
-                'fields': 'instagram_business_account{id,username,name}',
+                'fields': PAGE_IG_LOOKUP_FIELDS,
                 'access_token': access_token,
             },
             timeout=30,
         )
         if resp.status_code >= 400:
+            logger.warning(
+                'instagram_business_account lookup failed for page %s (%s): %s',
+                page_id,
+                resp.status_code,
+                resp.text[:500],
+            )
             return None
         data = resp.json()
-        return data.get('instagram_business_account')
+        return data.get('instagram_business_account') or data.get('connected_instagram_account')
 
     def send_whatsapp_text(self, phone_number_id: str, to_wa_id: str, text: str, token: str):
         return requests.post(

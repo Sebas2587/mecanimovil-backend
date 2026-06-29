@@ -19,7 +19,7 @@ API producción: `https://mecanimovil-api.onrender.com`
 | `META_EMBEDDED_SIGNUP_CONFIG_ID` | *(Configuration ID — ver sección 5)* |
 | `META_EMBEDDED_SIGNUP_CONFIG_ID_WHATSAPP` | *(opcional, override por canal)* |
 | `META_EMBEDDED_SIGNUP_CONFIG_ID_MESSENGER` | *(opcional)* |
-| `META_EMBEDDED_SIGNUP_CONFIG_ID_INSTAGRAM` | *(opcional)* |
+| `META_EMBEDDED_SIGNUP_CONFIG_ID_INSTAGRAM` | **Requerido** para conectar Instagram (ver sección 4.4) |
 
 Tras guardar, redeploy de **mecanimovil-api** y **mecanimovil-celery-worker**.
 
@@ -30,7 +30,13 @@ Tras guardar, redeploy de **mecanimovil-api** y **mecanimovil-celery-worker**.
 | Callback URL | `https://mecanimovil-api.onrender.com/api/omnichannel/webhooks/meta/` |
 | Verify token | Valor de `META_VERIFY_TOKEN` |
 
-Suscripciones: WhatsApp `messages`; Page `messages`, `messaging_postbacks`.
+Suscripciones:
+
+| Objeto | Campos |
+|--------|--------|
+| WhatsApp Business Account | `messages` |
+| Page | `messages`, `messaging_postbacks` |
+| Instagram | `messages`, `messaging_postbacks` *(mismo webhook URL)* |
 
 ## 3. OAuth — Redirect URIs válidas
 
@@ -60,12 +66,38 @@ Este paso permite que cada taller conecte WhatsApp (y opcionalmente Page/Instagr
    - **Permissions:** `whatsapp_business_management`, `whatsapp_business_messaging`, `business_management`.
 5. Copia el **Configuration ID** → `META_EMBEDDED_SIGNUP_CONFIG_ID` en Render.
 
-Para **Messenger** e **Instagram**, crea configuraciones adicionales con assets **Pages** (y permisos `pages_messaging`, `pages_show_list`, `instagram_manage_messages`) y guárdalas en:
+Para **Messenger**, crea una configuración con asset **Pages** y permisos `pages_messaging`, `pages_show_list`, `pages_read_engagement`, `business_management` → `META_EMBEDDED_SIGNUP_CONFIG_ID_MESSENGER`.
 
-- `META_EMBEDDED_SIGNUP_CONFIG_ID_MESSENGER`
-- `META_EMBEDDED_SIGNUP_CONFIG_ID_INSTAGRAM`
+Si solo defines una config global para WhatsApp, úsala en `META_EMBEDDED_SIGNUP_CONFIG_ID`. **Instagram requiere su propia config** (no reutilices la de WhatsApp).
 
-Si solo defines una config global, úsala en `META_EMBEDDED_SIGNUP_CONFIG_ID`.
+### 4.4 Instagram — mensajes directos (DM)
+
+El error **"Invalid Scopes: instagram_basic, instagram_manage_messages"** aparece si esos permisos se envían en la URL OAuth. En Mecanimovil los permisos de Instagram van **solo** en la Login Configuration de Meta, no en el parámetro `scope`.
+
+**Requisitos del taller (antes de conectar):**
+
+1. Cuenta **Instagram profesional** (Business o Creator).
+2. Vinculada a una **Página de Facebook** en [Meta Business Suite](https://business.facebook.com) → Configuración → Cuentas de Instagram.
+3. Mensajes de Instagram activados en la app de Instagram → Configuración → Mensajes → Herramientas conectadas.
+
+**Pasos en Meta Developers (ops, una vez):**
+
+1. **mecanimovil_connect** → **Use cases** → agrega **Instagram** (API de mensajería de Instagram) si no está.
+2. **Facebook Login for Business → Configurations → Create configuration**:
+   - **Login variation:** Facebook Login for Business (no WhatsApp Embedded Signup).
+   - **Assets:** Facebook Page (*manage*).
+   - **Permissions:** `instagram_manage_messages`, `pages_messaging`, `pages_show_list`, `pages_read_engagement`, `business_management`.
+   - **No** agregues `instagram_basic` en la config (no es necesario para DMs y puede fallar en Login for Business).
+3. Copia el **Configuration ID** → `META_EMBEDDED_SIGNUP_CONFIG_ID_INSTAGRAM` en Render.
+4. **App Review:** solicita `instagram_manage_messages` (Advanced Access) para producción.
+5. Webhook (sección 2): suscribe el objeto **Instagram** además de Page y WhatsApp.
+
+**Flujo en la app (igual que Messenger):**
+
+- Web: diálogo embebido FB SDK con `config_id` de Instagram.
+- Móvil: popup OAuth (sin `scope` inválidos en la URL).
+
+Tras conectar, el backend obtiene el `instagram_account_id` de la Page y suscribe webhooks de la Page.
 
 ### 4.2 Dominios permitidos (SDK web)
 
@@ -101,7 +133,9 @@ La configuración de esta guía es **interna de Mecanimovil** (una vez). Sin `ME
 - [ ] Env vars en Render (API + worker), incl. `META_EMBEDDED_SIGNUP_CONFIG_ID`
 - [ ] Webhook verificado
 - [ ] OAuth redirect + App Domains
-- [ ] Configuration ID creado en Meta
+- [ ] Configuration ID WhatsApp creado en Meta
+- [ ] `META_EMBEDDED_SIGNUP_CONFIG_ID_INSTAGRAM` + App Review `instagram_manage_messages`
+- [ ] Webhook Instagram suscrito (`messages`)
 - [ ] Dominio web proveedores en Allowed domains SDK
 - [ ] Mensaje inbound + respuesta outbound OK
 

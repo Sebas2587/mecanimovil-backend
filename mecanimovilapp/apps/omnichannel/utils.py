@@ -132,23 +132,33 @@ def build_embedded_signup_url(state: str, channel: str) -> str | None:
     redirect_uri = meta_oauth_redirect_uri()
     if not app_id:
         return None
+    config_id = meta_embedded_signup_config_id_for_channel(channel)
     params = {
         'client_id': app_id,
         'redirect_uri': redirect_uri,
         'state': state,
         'response_type': 'code',
-        'scope': _scopes_for_channel(channel),
     }
-    config_id = meta_embedded_signup_config_id_for_channel(channel)
+    # Con config_id (Facebook Login for Business), los permisos vienen del Dashboard.
+    # Pasar scope en la URL duplica permisos y Meta rechaza instagram_basic /
+    # instagram_manage_messages con "Invalid Scopes".
+    if not config_id:
+        params['scope'] = _scopes_for_channel(channel)
     if config_id:
         params['config_id'] = config_id
     return f'https://www.facebook.com/{meta_graph_version()}/dialog/oauth?{urlencode(params)}'
 
 
 def _scopes_for_channel(channel: str) -> str:
-    base = 'business_management,pages_show_list,pages_messaging'
+    """
+    Scopes para OAuth sin config_id (fallback móvil / popup).
+
+    Instagram: no incluir instagram_basic ni instagram_manage_messages aquí;
+    deben declararse en META_EMBEDDED_SIGNUP_CONFIG_ID_INSTAGRAM.
+    """
+    base = 'business_management,pages_show_list,pages_messaging,pages_read_engagement'
     if channel == 'WHATSAPP':
         return f'{base},whatsapp_business_management,whatsapp_business_messaging'
     if channel == 'INSTAGRAM':
-        return f'{base},instagram_basic,instagram_manage_messages'
+        return base
     return base
