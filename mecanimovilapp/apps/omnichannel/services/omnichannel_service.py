@@ -11,6 +11,11 @@ from mecanimovilapp.apps.omnichannel.services.broadcast import (
     build_chat_payload,
     send_chat_push,
 )
+from mecanimovilapp.apps.omnichannel.services.meta_media import (
+    media_label,
+    parse_messenger_attachments,
+    parse_whatsapp_media,
+)
 from mecanimovilapp.apps.omnichannel.utils import channel_to_api_slug
 
 logger = logging.getLogger(__name__)
@@ -131,9 +136,13 @@ class OmnichannelService:
             connection.usuario_id,
             channel_code=connection.channel,
             sender_name=sender_name,
-            preview=text,
+            preview=text[:140] or 'Nuevo mensaje',
             conversation_id=str(conversation.id),
         )
+        media = (metadata or {}).get('media')
+        if media:
+            from mecanimovilapp.apps.omnichannel.tasks import fetch_inbound_meta_media
+            fetch_inbound_meta_media.delay(message.id)
         return message
 
     @staticmethod
@@ -146,10 +155,15 @@ class OmnichannelService:
                 phone_number_id = metadata.get('phone_number_id')
                 for msg in value.get('messages', []):
                     text = ''
+                    media = None
                     if msg.get('type') == 'text':
                         text = msg.get('text', {}).get('body', '')
                     elif msg.get('type') == 'button':
                         text = msg.get('button', {}).get('text', '')
+                    else:
+                        media = parse_whatsapp_media(msg)
+                        if media:
+                            text = media.get('caption') or media_label(media.get('kind'))
                     events.append({
                         'kind': 'whatsapp',
                         'phone_number_id': phone_number_id,
@@ -157,6 +171,7 @@ class OmnichannelService:
                         'external_message_id': msg.get('id'),
                         'text': text,
                         'display_name': value.get('contacts', [{}])[0].get('profile', {}).get('name', ''),
+                        'media': media,
                     })
         return events
 
@@ -170,10 +185,11 @@ class OmnichannelService:
         if not msg or msg.get('is_echo'):
             return None
         text = msg.get('text') or ''
-        if not text and msg.get('attachments'):
-            types = [a.get('type', 'file') for a in msg.get('attachments', [])]
-            text = f'[Adjunto: {", ".join(types)}]'
-        if not text:
+        attachments = parse_messenger_attachments(msg)
+        media = attachments[0] if attachments else None
+        if not text and media:
+            text = media_label(media.get('kind'))
+        if not text and not media:
             return None
         sender = item.get('sender', {})
         return {
@@ -183,6 +199,7 @@ class OmnichannelService:
             'external_message_id': msg.get('mid'),
             'text': text,
             'display_name': sender.get('id', ''),
+            'media': media,
         }
 
     @staticmethod
@@ -225,16 +242,16 @@ class OmnichannelService:
                         event.get('phone_number_id'),
                     )
                     continue
-                if not event.get('text'):
+                if not event.get('text') and not event.get('media'):
                     continue
                 cls.ingest_inbound_message(
                     conn,
                     external_id=event['external_id'],
-                    text=event['text'],
+                    text=event.get('text') or media_label((event.get('media') or {}).get('kind')),
                     external_message_id=event['external_message_id'],
                     display_name=event.get('display_name', ''),
                     phone=event.get('external_id'),
-                    metadata=event,
+                    metadata={**event, 'media': event.get('media')},
                 )
                 processed += 1
         elif body.get('object') == 'page':
@@ -248,15 +265,15 @@ class OmnichannelService:
                         event['page_id'],
                     )
                     continue
-                if not event.get('text'):
+                if not event.get('text') and not event.get('media'):
                     continue
                 cls.ingest_inbound_message(
                     conn,
                     external_id=event['external_id'],
-                    text=event['text'],
+                    text=event.get('text') or media_label((event.get('media') or {}).get('kind')),
                     external_message_id=event['external_message_id'],
                     display_name=event.get('display_name', ''),
-                    metadata=event,
+                    metadata={**event, 'media': event.get('media')},
                 )
                 processed += 1
         elif body.get('object') == 'instagram':
@@ -270,15 +287,15 @@ class OmnichannelService:
                         event['page_id'],
                     )
                     continue
-                if not event.get('text'):
+                if not event.get('text') and not event.get('media'):
                     continue
                 cls.ingest_inbound_message(
                     conn,
                     external_id=event['external_id'],
-                    text=event['text'],
+                    text=event.get('text') or media_label((event.get('media') or {}).get('kind')),
                     external_message_id=event['external_message_id'],
                     display_name=event.get('display_name', ''),
-                    metadata=event,
+                    metadata={**event, 'media': event.get('media')},
                 )
                 processed += 1
         return processed

@@ -172,8 +172,8 @@ class ConversationViewSet(DestroyModelMixin, viewsets.ReadOnlyModelViewSet):
         HTTP endpoint to send a message (fallback when WebSocket unavailable)
         """
         conversation = self.get_object()
-        content = request.data.get('content')
-        attachment = request.data.get('attachment')
+        content = request.data.get('content') or ''
+        attachment = request.FILES.get('attachment') or request.data.get('attachment')
         
         if not content and not attachment:
             return Response(

@@ -406,3 +406,85 @@ class MetaGraphClient:
             params={'access_token': token},
             timeout=30,
         )
+
+    def send_whatsapp_media(
+        self,
+        phone_number_id: str,
+        to_wa_id: str,
+        media_kind: str,
+        media_url: str,
+        token: str,
+        caption: str | None = None,
+    ):
+        wa_type = media_kind if media_kind in ('image', 'video', 'audio', 'document') else 'document'
+        payload: dict[str, Any] = {
+            'messaging_product': 'whatsapp',
+            'to': to_wa_id,
+            'type': wa_type,
+            wa_type: {'link': media_url},
+        }
+        if caption and wa_type in ('image', 'video', 'document'):
+            payload[wa_type]['caption'] = caption
+        return requests.post(
+            self._url(f'{phone_number_id}/messages'),
+            json=payload,
+            params={'access_token': token},
+            timeout=60,
+        )
+
+    def send_page_attachment(
+        self,
+        page_id: str,
+        recipient_id: str,
+        attachment_type: str,
+        media_url: str,
+        token: str,
+        text: str | None = None,
+    ):
+        att_type = attachment_type if attachment_type in ('image', 'video', 'audio', 'file') else 'file'
+        message: dict[str, Any] = {
+            'attachment': {
+                'type': att_type,
+                'payload': {'url': media_url, 'is_reusable': True},
+            },
+        }
+        if text:
+            message['text'] = text
+        return requests.post(
+            self._url(f'{page_id}/messages'),
+            json={
+                'recipient': {'id': recipient_id},
+                'message': message,
+                'messaging_type': 'RESPONSE',
+            },
+            params={'access_token': token},
+            timeout=60,
+        )
+
+    def send_instagram_attachment(
+        self,
+        instagram_account_id: str,
+        recipient_id: str,
+        attachment_type: str,
+        media_url: str,
+        token: str,
+        text: str | None = None,
+    ):
+        att_type = attachment_type if attachment_type in ('image', 'video', 'audio', 'file') else 'file'
+        message: dict[str, Any] = {
+            'attachment': {
+                'type': att_type,
+                'payload': {'url': media_url},
+            },
+        }
+        if text:
+            message['text'] = text
+        return requests.post(
+            self._url(f'{instagram_account_id}/messages'),
+            json={
+                'recipient': {'id': recipient_id},
+                'message': message,
+            },
+            params={'access_token': token},
+            timeout=60,
+        )
