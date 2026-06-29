@@ -222,31 +222,34 @@ def meta_oauth_callback(request):
             conn.save()
             return JsonResponse({'success': False, 'message': conn.mensaje_estado}, status=400)
 
-        update_fields = {'access_token': access_token}
-        pages = client.get_me_accounts(access_token)
-        if pages:
-            page = pages[0]
-            update_fields['page_id'] = page.get('id')
-            update_fields['display_name'] = page.get('name')
-            page_token = page.get('access_token') or access_token
-            update_fields['access_token'] = page_token
+        user_token = access_token
+        update_fields = {'access_token': user_token}
 
-            if conn.channel == 'INSTAGRAM':
-                ig = client.get_instagram_account(page.get('id'), page_token)
-                if ig:
-                    update_fields['instagram_account_id'] = ig.get('id')
-                    update_fields['display_identifier'] = ig.get('username') or ig.get('name')
-                else:
+        if conn.channel in ('MESSENGER', 'INSTAGRAM'):
+            pages = client.get_me_accounts(user_token)
+            if pages:
+                page = pages[0]
+                update_fields['page_id'] = page.get('id')
+                update_fields['display_name'] = page.get('name')
+                page_token = page.get('access_token') or user_token
+                update_fields['access_token'] = page_token
+
+                if conn.channel == 'INSTAGRAM':
+                    ig = client.get_instagram_account(page.get('id'), page_token)
+                    if ig:
+                        update_fields['instagram_account_id'] = ig.get('id')
+                        update_fields['display_identifier'] = ig.get('username') or ig.get('name')
+                    else:
+                        update_fields['display_identifier'] = page.get('name')
+                elif conn.channel == 'MESSENGER':
                     update_fields['display_identifier'] = page.get('name')
-            elif conn.channel == 'MESSENGER':
-                update_fields['display_identifier'] = page.get('name')
-            elif conn.channel == 'WHATSAPP':
-                update_fields['display_identifier'] = page.get('name')
 
         if conn.channel == 'WHATSAPP':
+            update_fields['access_token'] = user_token
             business_id = request.GET.get('business_id') or conn.meta_business_id
             phone_number_id = request.GET.get('phone_number_id')
             waba_id = request.GET.get('waba_id')
+            shared_waba_ids = request.GET.getlist('shared_waba_id') or request.GET.getlist('shared_waba_ids')
 
             if phone_number_id:
                 update_fields['phone_number_id'] = phone_number_id
@@ -256,29 +259,37 @@ def meta_oauth_callback(request):
                 update_fields['meta_business_id'] = business_id
 
             if not update_fields.get('phone_number_id'):
+                candidate_waba_ids = [wid for wid in shared_waba_ids if wid]
+                if waba_id and waba_id not in candidate_waba_ids:
+                    candidate_waba_ids.insert(0, waba_id)
+                if not candidate_waba_ids:
+                    candidate_waba_ids = client.get_granted_waba_ids(user_token)
+
+                if candidate_waba_ids:
+                    wa_assets = client.resolve_whatsapp_from_waba_ids(
+                        candidate_waba_ids,
+                        user_token,
+                        meta_business_id=business_id,
+                    )
+                    if wa_assets:
+                        update_fields.update({k: v for k, v in wa_assets.items() if v is not None})
+
+            if not update_fields.get('phone_number_id'):
                 wa_assets = client.resolve_whatsapp_assets(
-                    access_token,
+                    user_token,
                     business_id=business_id,
                 )
                 if wa_assets:
                     update_fields.update(wa_assets)
-                elif business_id:
-                    wabas = client.get_whatsapp_business_accounts(business_id, access_token)
-                    if wabas:
-                        waba = wabas[0]
-                        update_fields['waba_id'] = waba.get('id')
-                        phones = client.get_phone_numbers(waba.get('id'), access_token)
-                        if phones:
-                            phone = phones[0]
-                            update_fields['phone_number_id'] = phone.get('id')
-                            update_fields['display_identifier'] = phone.get('display_phone_number')
-                            update_fields['display_name'] = phone.get('verified_name') or update_fields.get('display_name')
 
             if not update_fields.get('phone_number_id'):
+                granted = client.get_granted_waba_ids(user_token)
                 conn.status = 'error'
                 conn.mensaje_estado = (
-                    'No se detectó un número WhatsApp Business. '
-                    'Usa la cuenta que administra el WABA o configura Embedded Signup.'
+                    'No se detectó un número WhatsApp Business en las cuentas autorizadas. '
+                    f'WABAs otorgados: {", ".join(granted) or "ninguno"}. '
+                    'Selecciona el WABA que contiene tu número (+56995945258) en Meta, '
+                    'o regístralo primero en Meta Business Suite → WhatsApp.'
                 )
                 conn.save()
                 return JsonResponse({
@@ -288,10 +299,9 @@ def meta_oauth_callback(request):
                 }, status=400)
 
             waba_for_sub = update_fields.get('waba_id')
-            token_for_sub = update_fields.get('access_token')
-            if waba_for_sub and token_for_sub:
+            if waba_for_sub:
                 try:
-                    client.subscribe_waba_webhooks(waba_for_sub, token_for_sub)
+                    client.subscribe_waba_webhooks(waba_for_sub, user_token)
                 except Exception as sub_exc:
                     logger.warning('WABA webhook subscribe after OAuth failed: %s', sub_exc)
 

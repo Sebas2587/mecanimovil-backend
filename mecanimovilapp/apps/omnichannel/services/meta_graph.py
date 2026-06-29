@@ -116,6 +116,85 @@ class MetaGraphClient:
             resp.raise_for_status()
         return resp.json()
 
+    def get_app_access_token(self) -> str:
+        from decouple import config
+        app_id = config('META_APP_ID', default='')
+        secret = meta_app_secret()
+        return f'{app_id}|{secret}'
+
+    def debug_token(self, input_token: str) -> dict[str, Any]:
+        resp = requests.get(
+            self._url('debug_token'),
+            params={
+                'input_token': input_token,
+                'access_token': self.get_app_access_token(),
+            },
+            timeout=30,
+        )
+        if resp.status_code >= 400:
+            logger.warning('debug_token failed: %s', resp.text)
+            return {}
+        return resp.json().get('data', {}) or {}
+
+    def get_granted_waba_ids(self, access_token: str) -> list[str]:
+        """WABAs que el usuario seleccionó en el diálogo OAuth (granular scopes)."""
+        data = self.debug_token(access_token)
+        waba_ids: list[str] = []
+        for scope_entry in data.get('granular_scopes') or []:
+            scope = scope_entry.get('scope') or ''
+            if scope in ('whatsapp_business_management', 'whatsapp_business_messaging'):
+                waba_ids.extend(scope_entry.get('target_ids') or [])
+        return list(dict.fromkeys(waba_ids))
+
+    def get_client_whatsapp_business_accounts(
+        self, business_id: str, access_token: str
+    ) -> list[dict]:
+        resp = requests.get(
+            self._url(f'{business_id}/client_whatsapp_business_accounts'),
+            params={'access_token': access_token},
+            timeout=30,
+        )
+        if resp.status_code >= 400:
+            return []
+        return resp.json().get('data', [])
+
+    def resolve_whatsapp_from_waba_ids(
+        self,
+        waba_ids: list[str],
+        access_token: str,
+        *,
+        preferred_display_phone: str | None = None,
+        meta_business_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        target = normalize_phone(preferred_display_phone)
+        for waba_id in waba_ids:
+            if not waba_id:
+                continue
+            phones = self.get_phone_numbers(waba_id, access_token)
+            if not phones:
+                logger.warning('WABA %s sin phone_numbers visibles para este token', waba_id)
+                continue
+            if target:
+                for phone in phones:
+                    if normalize_phone(phone.get('display_phone_number')) == target:
+                        return {
+                            'meta_business_id': meta_business_id,
+                            'waba_id': waba_id,
+                            'phone_number_id': phone.get('id'),
+                            'display_identifier': phone.get('display_phone_number'),
+                            'display_name': phone.get('verified_name'),
+                        }
+            else:
+                phone = phones[0]
+                return {
+                    'meta_business_id': meta_business_id,
+                    'waba_id': waba_id,
+                    'phone_number_id': phone.get('id'),
+                    'display_identifier': phone.get('display_phone_number'),
+                    'display_name': phone.get('verified_name'),
+                }
+        return None
+
     def resolve_whatsapp_assets(
         self,
         access_token: str,
@@ -123,7 +202,19 @@ class MetaGraphClient:
         preferred_display_phone: str | None = None,
         business_id: str | None = None,
     ) -> dict[str, Any] | None:
-        """Resuelve WABA + phone_number_id desde businesses del usuario."""
+        """Resuelve WABA + phone_number_id desde OAuth granular scopes o businesses."""
+        granted = self.get_granted_waba_ids(access_token)
+        if granted:
+            logger.info('WABA ids from OAuth granular scopes: %s', granted)
+            result = self.resolve_whatsapp_from_waba_ids(
+                granted,
+                access_token,
+                preferred_display_phone=preferred_display_phone,
+                meta_business_id=business_id,
+            )
+            if result:
+                return result
+
         target = normalize_phone(preferred_display_phone)
         business_ids: list[str] = []
         if business_id:
@@ -135,7 +226,11 @@ class MetaGraphClient:
             if bid in seen:
                 continue
             seen.add(bid)
-            for waba in self.get_whatsapp_business_accounts(bid, access_token):
+            waba_sources = (
+                self.get_whatsapp_business_accounts(bid, access_token)
+                + self.get_client_whatsapp_business_accounts(bid, access_token)
+            )
+            for waba in waba_sources:
                 waba_id = waba.get('id')
                 if not waba_id:
                     continue

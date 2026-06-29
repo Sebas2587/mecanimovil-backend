@@ -34,6 +34,23 @@ class ChannelSlugTests(SimpleTestCase):
         self.assertEqual(channel_to_api_slug('APP'), 'app')
 
 
+class MetaGraphGranularScopeTests(SimpleTestCase):
+    def test_granted_waba_ids_from_debug_token(self):
+        from mecanimovilapp.apps.omnichannel.services.meta_graph import MetaGraphClient
+
+        client = MetaGraphClient()
+        with patch.object(
+            client,
+            'debug_token',
+            return_value={
+                'granular_scopes': [
+                    {'scope': 'whatsapp_business_management', 'target_ids': ['540742045781983']},
+                ],
+            },
+        ):
+            self.assertEqual(client.get_granted_waba_ids('token'), ['540742045781983'])
+
+
 class OmnichannelServiceTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username='taller_omni', password='pass')
