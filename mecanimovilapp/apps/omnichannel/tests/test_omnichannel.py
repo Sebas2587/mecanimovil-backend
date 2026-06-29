@@ -28,6 +28,24 @@ class MetaSignatureTests(SimpleTestCase):
             self.assertFalse(verify_meta_signature(b'{}', 'sha256=bad'))
 
 
+class FriendlyOAuthErrorTests(SimpleTestCase):
+    def test_hides_technical_http_error(self):
+        from mecanimovilapp.apps.omnichannel.utils import MetaOAuthExchangeError, friendly_oauth_error
+
+        msg = friendly_oauth_error(MetaOAuthExchangeError(400, '{"error":"invalid_grant"}'))
+        self.assertNotIn('http', msg)
+        self.assertIn('expiró', msg)
+
+    def test_hides_raw_exception_with_url(self):
+        from mecanimovilapp.apps.omnichannel.utils import friendly_oauth_error
+
+        msg = friendly_oauth_error(
+            Exception('400 Client Error for url: https://graph.facebook.com/...&client_secret=secret')
+        )
+        self.assertNotIn('secret', msg)
+        self.assertNotIn('graph.facebook', msg)
+
+
 class ChannelSlugTests(SimpleTestCase):
     def test_slugs(self):
         self.assertEqual(channel_to_api_slug('WHATSAPP'), 'whatsapp')

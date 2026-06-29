@@ -21,6 +21,7 @@ from mecanimovilapp.apps.omnichannel.services import MetaGraphClient
 from mecanimovilapp.apps.omnichannel.tasks import process_meta_webhook
 from mecanimovilapp.apps.omnichannel.utils import (
     build_embedded_signup_url,
+    friendly_oauth_error,
     generate_oauth_state,
     meta_oauth_redirect_uri,
     meta_verify_token,
@@ -334,7 +335,7 @@ def meta_oauth_callback(request):
                 conn.status = 'pendiente'
                 conn.mensaje_estado = (
                     'WABA autorizado en Meta. Falta el Phone Number ID: '
-                    'Meta Business Suite → WhatsApp → Mecanimovil spa → '
+                    'Meta Business Suite → WhatsApp → Mecanimovil (+56 9 9594 5258) → '
                     'Configuración API → copia "Identificador de número de teléfono". '
                     'Pégalo en la app Mecanimovil.'
                 )
@@ -371,7 +372,12 @@ def meta_oauth_callback(request):
         })
     except Exception as exc:
         logger.exception('OAuth callback failed: %s', exc)
+        friendly = friendly_oauth_error(exc)
         conn.status = 'error'
-        conn.mensaje_estado = f'Error al conectar: {exc}'
+        conn.mensaje_estado = friendly
         conn.save()
-        return JsonResponse({'success': False, 'message': str(exc)}, status=500)
+        return JsonResponse({
+            'success': False,
+            'message': friendly,
+            'instruction': 'Vuelve a la app Mecanimovil Proveedores e intenta de nuevo.',
+        }, status=400)

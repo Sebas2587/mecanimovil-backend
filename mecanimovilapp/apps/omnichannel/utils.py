@@ -43,6 +43,32 @@ def generate_oauth_state():
     return secrets.token_urlsafe(32)
 
 
+class MetaOAuthExchangeError(Exception):
+    """Error al intercambiar code OAuth por token (sin exponer secretos al cliente)."""
+
+    def __init__(self, status_code: int, body: str = ''):
+        self.status_code = status_code
+        self.body = body
+        super().__init__(f'OAuth exchange failed ({status_code})')
+
+
+def friendly_oauth_error(exc: Exception) -> str:
+    """Mensaje seguro para mostrar al taller (sin URLs, tokens ni secrets)."""
+    if isinstance(exc, MetaOAuthExchangeError):
+        if exc.status_code == 400:
+            return (
+                'La autorización expiró o ya fue usada. '
+                'Cierra el navegador, vuelve a la app y pulsa Conectar otra vez.'
+            )
+        return 'Meta rechazó la conexión. Intenta de nuevo en unos minutos.'
+    raw = str(exc)
+    if any(x in raw for x in ('http://', 'https://', 'graph.facebook', 'client_secret', 'Client Error')):
+        return 'No pudimos completar la conexión con Meta. Pulsa Conectar e intenta de nuevo.'
+    if len(raw) > 180:
+        return 'No pudimos completar la conexión con Meta. Pulsa Conectar e intenta de nuevo.'
+    return raw
+
+
 def verify_meta_signature(raw_body: bytes, signature_header: str | None) -> bool:
     secret = meta_app_secret()
     if not secret or not signature_header:

@@ -5,7 +5,7 @@ from typing import Any
 
 import requests
 
-from mecanimovilapp.apps.omnichannel.utils import meta_app_secret, meta_graph_version
+from mecanimovilapp.apps.omnichannel.utils import meta_app_secret, meta_graph_version, MetaOAuthExchangeError
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,13 @@ class MetaGraphClient:
             },
             timeout=30,
         )
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            logger.warning(
+                'OAuth token exchange failed: status=%s body=%s',
+                resp.status_code,
+                resp.text[:400],
+            )
+            raise MetaOAuthExchangeError(resp.status_code, resp.text)
         return resp.json()
 
     def get_me_accounts(self, access_token: str) -> list[dict]:
