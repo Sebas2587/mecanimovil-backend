@@ -79,6 +79,37 @@ class MetaGraphClient:
             return []
         return resp.json().get('data', [])
 
+    def get_waba_profile(self, waba_id: str, access_token: str) -> dict:
+        resp = requests.get(
+            self._url(waba_id),
+            params={'access_token': access_token, 'fields': 'id,name'},
+            timeout=30,
+        )
+        if resp.status_code >= 400:
+            return {'id': waba_id}
+        return resp.json() or {'id': waba_id}
+
+    @staticmethod
+    def _waba_priority_score(waba_id: str, waba_name: str, phones: list[dict]) -> tuple[int, int]:
+        """Menor score = mejor candidato. Deprioriza cuentas de prueba Meta (wp_tel)."""
+        name = (waba_name or '').lower()
+        if name.startswith('wp_tel') or 'test' in name:
+            return (2, len(phones))
+        verified = sum(1 for p in phones if p.get('verified_name'))
+        return (0 if phones else 1, -verified)
+
+    def _sort_waba_candidates(self, waba_ids: list[str], access_token: str) -> list[str]:
+        scored: list[tuple[tuple[int, int], str]] = []
+        for waba_id in waba_ids:
+            if not waba_id:
+                continue
+            profile = self.get_waba_profile(waba_id, access_token)
+            phones = self.get_phone_numbers(waba_id, access_token)
+            score = self._waba_priority_score(waba_id, profile.get('name', ''), phones)
+            scored.append((score, waba_id))
+        scored.sort(key=lambda item: item[0])
+        return [waba_id for _, waba_id in scored]
+
     def get_phone_numbers(self, waba_id: str, access_token: str) -> list[dict]:
         resp = requests.get(
             self._url(f'{waba_id}/phone_numbers'),
@@ -234,7 +265,8 @@ class MetaGraphClient:
         meta_business_id: str | None = None,
     ) -> dict[str, Any] | None:
         target = normalize_phone(preferred_display_phone)
-        for waba_id in waba_ids:
+        ordered_ids = self._sort_waba_candidates(waba_ids, access_token)
+        for waba_id in ordered_ids:
             if not waba_id:
                 continue
             phones = self.get_phone_numbers(waba_id, access_token)
@@ -274,7 +306,7 @@ class MetaGraphClient:
         if granted:
             logger.info('WABA ids from OAuth granular scopes: %s', granted)
             result = self.resolve_whatsapp_from_waba_ids(
-                granted,
+                self._sort_waba_candidates(granted, access_token),
                 access_token,
                 preferred_display_phone=preferred_display_phone,
                 meta_business_id=business_id,

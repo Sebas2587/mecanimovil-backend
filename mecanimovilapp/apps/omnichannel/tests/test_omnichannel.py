@@ -68,6 +68,13 @@ class MetaGraphGranularScopeTests(SimpleTestCase):
         ):
             self.assertEqual(client.get_granted_waba_ids('token'), ['540742045781983'])
 
+    def test_deprioritizes_wp_tel_waba(self):
+        from mecanimovilapp.apps.omnichannel.services.meta_graph import MetaGraphClient
+
+        real_score = MetaGraphClient._waba_priority_score('526378307216132', 'Mecanimovil', [])
+        test_score = MetaGraphClient._waba_priority_score('2665080507196211', 'wp_tel', [])
+        self.assertLess(real_score[0], test_score[0])
+
 
 class OmnichannelServiceTests(TestCase):
     def setUp(self):
