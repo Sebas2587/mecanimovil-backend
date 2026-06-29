@@ -86,14 +86,16 @@ class ConversationViewSet(DestroyModelMixin, viewsets.ReadOnlyModelViewSet):
         Paginated by default from settings.
         """
         conversation = self.get_object()
-        messages = conversation.messages.all().order_by('-timestamp') # Latest first for chat UI often
-        
-        page = self.paginate_queryset(messages)
-        if page is not None:
-            serializer = MessageSerializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
-            
-        serializer = MessageSerializer(messages, many=True)
+        messages = conversation.messages.all().order_by('timestamp')
+
+        page_size = request.query_params.get('page_size')
+        if page_size:
+            page = self.paginate_queryset(messages)
+            if page is not None:
+                serializer = MessageSerializer(page, many=True, context={'request': request})
+                return self.get_paginated_response(serializer.data)
+
+        serializer = MessageSerializer(messages, many=True, context={'request': request})
         return Response(serializer.data)
 
     @action(detail=False, methods=['post'])

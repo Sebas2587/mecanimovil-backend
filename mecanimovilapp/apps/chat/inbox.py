@@ -90,7 +90,7 @@ def build_omnichannel_chats(user):
 
     items = []
     for conv in conversations:
-        last_msg = conv.messages.order_by('-timestamp').last()
+        last_msg = conv.messages.order_by('-timestamp').first()
         if not last_msg:
             continue
         contact = conv.external_contact

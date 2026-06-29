@@ -98,7 +98,7 @@ class ConversationSerializer(serializers.ModelSerializer):
         return None
 
     def get_last_message(self, obj):
-        last_msg = obj.messages.last()
+        last_msg = obj.messages.order_by('-timestamp').first()
         if last_msg:
             return MessageSerializer(last_msg).data
         return None
