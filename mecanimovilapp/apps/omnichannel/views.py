@@ -135,6 +135,11 @@ class ProviderChannelConnectionViewSet(viewsets.GenericViewSet):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
         embedded = build_embedded_config_payload(channel)
+        if channel == 'WHATSAPP' and not embedded:
+            logger.error(
+                'WhatsApp Embedded Signup no configurado: falta META_EMBEDDED_SIGNUP_CONFIG_ID en Render. '
+                'Los talleres no podrán conectar WhatsApp hasta que ops lo configure (una sola vez).'
+            )
         return Response({
             'success': True,
             'connection_id': str(conn.id),

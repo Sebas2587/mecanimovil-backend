@@ -90,11 +90,13 @@ Endpoint nuevo: `POST /api/omnichannel/connections/completar-conexion/` (usado p
 3. Envía un mensaje de prueba al número/Página conectados.
 4. Debe aparecer en **Chats** con badge de canal.
 
-## 6. Fallback Phone Number ID
+## 6. Nota para talleres
 
-Si Embedded Signup no está configurado o Meta no devuelve el número automáticamente, la app muestra un campo para pegar el **Phone Number ID** desde Meta Business Suite → WhatsApp → Configuración API.
+Los talleres **no** configuran Meta ni pegan identificadores técnicos. Solo pulsan **Conectar** en la app.
 
-## 7. Checklist
+La configuración de esta guía es **interna de Mecanimovil** (una vez). Sin `META_EMBEDDED_SIGNUP_CONFIG_ID`, WhatsApp no entrega el número al conectar y la conexión fallará hasta que ops lo complete.
+
+## 7. Checklist ops (Mecanimovil)
 
 - [ ] Env vars en Render (API + worker), incl. `META_EMBEDDED_SIGNUP_CONFIG_ID`
 - [ ] Webhook verificado

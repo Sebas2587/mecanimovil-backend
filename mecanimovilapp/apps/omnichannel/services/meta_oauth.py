@@ -140,17 +140,17 @@ def complete_meta_oauth_connection(
                 if granted:
                     conn.waba_id = granted[0]
                 conn.access_token = user_token
-                conn.status = 'pendiente'
+                conn.status = 'error'
                 conn.mensaje_estado = (
-                    'Autorización recibida. Si Meta no completó el número automáticamente, '
-                    'pega el Phone Number ID desde Meta Business Suite → WhatsApp → Configuración API.'
+                    'No pudimos vincular tu WhatsApp automáticamente. '
+                    'Pulsa Conectar e intenta de nuevo.'
                 )
                 conn.save()
                 return MetaOAuthCompletionResult(
                     success=False,
                     message=conn.mensaje_estado,
-                    instruction='Vuelve a la app e ingresa el Phone Number ID si se solicita.',
-                    needs_phone_number_id=True,
+                    instruction='Vuelve a la app y pulsa Conectar otra vez.',
+                    needs_phone_number_id=False,
                     waba_id=conn.waba_id,
                     channel=conn.channel.lower(),
                 )
