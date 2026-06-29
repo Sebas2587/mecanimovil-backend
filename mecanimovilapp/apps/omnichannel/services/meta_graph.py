@@ -76,12 +76,73 @@ class MetaGraphClient:
     def get_phone_numbers(self, waba_id: str, access_token: str) -> list[dict]:
         resp = requests.get(
             self._url(f'{waba_id}/phone_numbers'),
-            params={'access_token': access_token},
+            params={
+                'access_token': access_token,
+                'fields': 'id,display_phone_number,verified_name,quality_rating',
+            },
+            timeout=30,
+        )
+        if resp.status_code == 200:
+            data = resp.json().get('data', [])
+            if data:
+                return data
+            logger.warning(
+                'WABA %s phone_numbers edge vacío (200): %s',
+                waba_id,
+                resp.text[:500],
+            )
+        else:
+            logger.warning(
+                'WABA %s phone_numbers edge error (%s): %s',
+                waba_id,
+                resp.status_code,
+                resp.text[:500],
+            )
+
+        resp2 = requests.get(
+            self._url(waba_id),
+            params={
+                'access_token': access_token,
+                'fields': 'id,name,phone_numbers{id,display_phone_number,verified_name}',
+            },
+            timeout=30,
+        )
+        if resp2.status_code == 200:
+            nested = (resp2.json().get('phone_numbers') or {}).get('data', [])
+            if nested:
+                return nested
+            logger.warning(
+                'WABA %s nested phone_numbers vacío: %s',
+                waba_id,
+                resp2.text[:500],
+            )
+        else:
+            logger.warning(
+                'WABA %s nested fields error (%s): %s',
+                waba_id,
+                resp2.status_code,
+                resp2.text[:500],
+            )
+        return []
+
+    def get_phone_number_by_id(self, phone_number_id: str, access_token: str) -> dict | None:
+        resp = requests.get(
+            self._url(phone_number_id),
+            params={
+                'access_token': access_token,
+                'fields': 'id,display_phone_number,verified_name',
+            },
             timeout=30,
         )
         if resp.status_code >= 400:
-            return []
-        return resp.json().get('data', [])
+            logger.warning(
+                'phone_number_id %s lookup failed (%s): %s',
+                phone_number_id,
+                resp.status_code,
+                resp.text[:500],
+            )
+            return None
+        return resp.json()
 
     def subscribe_page_webhooks(
         self,

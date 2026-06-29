@@ -156,6 +156,50 @@ class ProviderChannelConnectionViewSet(viewsets.GenericViewSet):
         conn.disconnect()
         return Response(ProviderChannelConnectionSerializer(conn).data)
 
+    @action(detail=True, methods=['post'], url_path='configurar-whatsapp')
+    def configurar_whatsapp(self, request, pk=None):
+        conn = ProviderChannelConnection.objects.filter(
+            pk=pk, usuario=request.user, channel='WHATSAPP',
+        ).first()
+        if not conn:
+            return Response({'error': 'Conexión WhatsApp no encontrada'}, status=404)
+        if not conn.access_token:
+            return Response(
+                {'error': 'Primero autoriza WhatsApp con Meta (Conectar).'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        phone_number_id = (request.data.get('phone_number_id') or '').strip()
+        if not phone_number_id:
+            return Response({'error': 'phone_number_id es requerido'}, status=400)
+
+        client = MetaGraphClient(conn.access_token)
+        phone_meta = client.get_phone_number_by_id(phone_number_id, conn.access_token)
+        if not phone_meta:
+            return Response(
+                {
+                    'error': (
+                        'Phone Number ID inválido o sin permisos. '
+                        'Cópialo desde Meta Business Suite → WhatsApp → Configuración API.'
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        update_fields = {
+            'phone_number_id': phone_number_id,
+            'display_identifier': phone_meta.get('display_phone_number') or conn.display_identifier,
+            'display_name': phone_meta.get('verified_name') or conn.display_name,
+        }
+        if conn.waba_id:
+            try:
+                client.subscribe_waba_webhooks(conn.waba_id, conn.access_token)
+            except Exception as sub_exc:
+                logger.warning('WABA webhook subscribe on configure failed: %s', sub_exc)
+
+        conn.mark_connected(enabled=True, **update_fields)
+        return Response(ProviderChannelConnectionSerializer(conn).data)
+
 
 @csrf_exempt
 @require_GET
@@ -284,18 +328,23 @@ def meta_oauth_callback(request):
 
             if not update_fields.get('phone_number_id'):
                 granted = client.get_granted_waba_ids(user_token)
-                conn.status = 'error'
+                if granted:
+                    conn.waba_id = granted[0]
+                conn.access_token = user_token
+                conn.status = 'pendiente'
                 conn.mensaje_estado = (
-                    'No se detectó un número WhatsApp Business en las cuentas autorizadas. '
-                    f'WABAs otorgados: {", ".join(granted) or "ninguno"}. '
-                    'Selecciona el WABA que contiene tu número (+56995945258) en Meta, '
-                    'o regístralo primero en Meta Business Suite → WhatsApp.'
+                    'WABA autorizado en Meta. Falta el Phone Number ID: '
+                    'Meta Business Suite → WhatsApp → Mecanimovil spa → '
+                    'Configuración API → copia "Identificador de número de teléfono". '
+                    'Pégalo en la app Mecanimovil.'
                 )
                 conn.save()
                 return JsonResponse({
                     'success': False,
+                    'needs_phone_number_id': True,
+                    'waba_id': conn.waba_id,
                     'message': conn.mensaje_estado,
-                    'instruction': 'Vuelve a la app e intenta conectar de nuevo.',
+                    'instruction': 'Vuelve a la app e ingresa el Phone Number ID.',
                 }, status=400)
 
             waba_for_sub = update_fields.get('waba_id')
