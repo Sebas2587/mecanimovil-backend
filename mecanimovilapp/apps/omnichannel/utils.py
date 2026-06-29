@@ -17,7 +17,23 @@ def meta_app_id():
 
 
 def meta_app_secret():
-    return config('META_APP_SECRET', default='')
+    return config('META_APP_SECRET', default='').strip()
+
+
+def meta_instagram_app_secret():
+    """Secret de la app Instagram (solo si usas Instagram Login en el caso de uso)."""
+    return config('META_INSTAGRAM_APP_SECRET', default='').strip()
+
+
+def meta_webhook_secrets() -> list[str]:
+    """Secrets para validar X-Hub-Signature (Facebook Login + Instagram Login)."""
+    seen: set[str] = set()
+    secrets: list[str] = []
+    for value in (meta_app_secret(), meta_instagram_app_secret()):
+        if value and value not in seen:
+            seen.add(value)
+            secrets.append(value)
+    return secrets
 
 
 def meta_verify_token():
@@ -104,18 +120,29 @@ def friendly_oauth_error(exc: Exception) -> str:
 
 
 def verify_meta_signature(raw_body: bytes, signature_header: str | None) -> bool:
-    secret = meta_app_secret()
-    if not secret or not signature_header:
+    secrets = meta_webhook_secrets()
+    if not secrets or not signature_header:
         return False
-    if not signature_header.startswith('sha256='):
+
+    header = signature_header.strip()
+    if header.startswith('sha256='):
+        hash_fn = hashlib.sha256
+        received = header.split('=', 1)[1].strip()
+    elif header.startswith('sha1='):
+        hash_fn = hashlib.sha1
+        received = header.split('=', 1)[1].strip()
+    else:
         return False
-    expected = hmac.new(
-        secret.encode('utf-8'),
-        raw_body,
-        hashlib.sha256,
-    ).hexdigest()
-    received = signature_header.split('=', 1)[1]
-    return hmac.compare_digest(expected, received)
+
+    for secret in secrets:
+        expected = hmac.new(
+            secret.encode('utf-8'),
+            raw_body,
+            hash_fn,
+        ).hexdigest()
+        if hmac.compare_digest(expected, received):
+            return True
+    return False
 
 
 def channel_to_api_slug(channel: str) -> str:

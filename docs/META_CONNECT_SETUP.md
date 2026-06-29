@@ -13,6 +13,7 @@ API producción: `https://mecanimovil-api.onrender.com`
 | `OMNICHANNEL_ENABLED` | `True` |
 | `META_APP_ID` | `1733581160975981` |
 | `META_APP_SECRET` | *(App Secret de Meta — regenerar si se expuso)* |
+| `META_INSTAGRAM_APP_SECRET` | *(solo si el caso de uso Instagram usa Instagram Login; ver abajo)* |
 | `META_VERIFY_TOKEN` | *(mismo valor que en el webhook)* |
 | `META_OAUTH_REDIRECT_URI` | `https://mecanimovil-api.onrender.com/api/omnichannel/oauth/callback/` |
 | `META_GRAPH_API_VERSION` | `v21.0` |
@@ -98,6 +99,14 @@ El error **"Invalid Scopes: instagram_basic, instagram_manage_messages"** aparec
 - Móvil: popup OAuth (sin `scope` inválidos en la URL).
 
 Tras conectar, el backend obtiene el `instagram_account_id` de la Page y suscribe webhooks de la Page.
+
+**Webhook firma inválida (`Invalid Meta webhook signature`):**
+
+Meta firma los POST con el **App Secret** de la app que envía el webhook. Si en el caso de uso Instagram elegiste **Instagram Login**, Meta puede usar un secret distinto al de `META_APP_SECRET`.
+
+1. Preferido: en el caso de uso Instagram usa **API setup with Facebook Login** (mismo secret que la app `1733581160975981`).
+2. Si usas Instagram Login: copia el **Instagram App Secret** del dashboard → `META_INSTAGRAM_APP_SECRET` en Render (API + worker).
+3. Siempre sincroniza **App Secret** (Settings → Basic) → `META_APP_SECRET` en Render (API + worker).
 
 ### 4.2 Dominios permitidos (SDK web)
 

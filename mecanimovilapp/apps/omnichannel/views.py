@@ -322,10 +322,16 @@ def meta_webhook_receive(request):
         logger.warning('Meta webhook POST ignored: OMNICHANNEL_ENABLED=False')
         return JsonResponse({'status': 'disabled'})
 
-    signature = request.headers.get('X-Hub-Signature-256')
+    signature = request.headers.get('X-Hub-Signature-256') or request.headers.get('X-Hub-Signature')
     raw_body = request.body
     if not verify_meta_signature(raw_body, signature):
-        logger.warning('Invalid Meta webhook signature')
+        from mecanimovilapp.apps.omnichannel.utils import meta_webhook_secrets
+        logger.warning(
+            'Invalid Meta webhook signature (body_len=%s, secrets_configured=%s, header=%s)',
+            len(raw_body or b''),
+            len(meta_webhook_secrets()),
+            (signature or '')[:12],
+        )
         return HttpResponse(status=403)
 
     try:
