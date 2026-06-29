@@ -300,24 +300,43 @@ class OmnichannelService:
                 processed += 1
         elif body.get('object') == 'page':
             events = cls.parse_messenger_payload(body, 'MESSENGER')
-            logger.info('Parsed %s Messenger events', len(events))
+            logger.info('Parsed %s Page messaging events', len(events))
             for event in events:
-                conn = cls.resolve_connection_for_page(event['page_id'], 'MESSENGER')
+                ig_lookup = instagram_webhook_account_id(
+                    event.get('page_id'),
+                    event.get('recipient_id'),
+                )
+                ig_conn = cls.resolve_connection_for_page(ig_lookup, 'INSTAGRAM')
+                if not ig_conn and event.get('recipient_id'):
+                    ig_conn = cls.resolve_connection_for_page(event['recipient_id'], 'INSTAGRAM')
+                if ig_conn:
+                    conn = ig_conn
+                    channel_label = 'INSTAGRAM (via page webhook)'
+                else:
+                    conn = cls.resolve_connection_for_page(event['page_id'], 'MESSENGER')
+                    channel_label = 'MESSENGER'
                 if not conn:
                     logger.warning(
-                        'No MESSENGER connection for page_id=%s (status=conectada, enabled=True)',
-                        event['page_id'],
+                        'No PAGE webhook connection for page_id=%s recipient_id=%s',
+                        event.get('page_id'),
+                        event.get('recipient_id'),
                     )
                     continue
                 if not event.get('text') and not event.get('media'):
                     continue
+                logger.info(
+                    'Ingesting Page webhook event as %s page_id=%s recipient_id=%s',
+                    channel_label,
+                    event.get('page_id'),
+                    event.get('recipient_id'),
+                )
                 cls.ingest_inbound_message(
                     conn,
                     external_id=event['external_id'],
                     text=event.get('text') or media_label((event.get('media') or {}).get('kind')),
                     external_message_id=event['external_message_id'],
                     display_name=event.get('display_name', ''),
-                    metadata={**event, 'media': event.get('media')},
+                    metadata={**event, 'media': event.get('media'), 'via_page_webhook': True},
                 )
                 processed += 1
         elif body.get('object') == 'instagram':

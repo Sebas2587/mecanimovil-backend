@@ -260,9 +260,9 @@ class MetaGraphClient:
         page_id: str,
         access_token: str,
         *,
-        fields: str = 'messages,messaging_postbacks',
+        fields: str = 'messages,messaging_postbacks,message_echoes',
     ) -> dict:
-        """Vincula la app a la Page y suscribe campos de webhook (Messenger/IG)."""
+        """Vincula la app a la Page y suscribe campos de webhook (Messenger/IG vía Page)."""
         resp = requests.post(
             self._url(f'{page_id}/subscribed_apps'),
             params={
@@ -272,9 +272,37 @@ class MetaGraphClient:
             timeout=30,
         )
         if resp.status_code >= 400:
-            logger.warning('Page webhook subscribe failed (%s): %s', page_id, resp.text)
+            logger.error(
+                'Page webhook subscribe failed page_id=%s status=%s body=%s',
+                page_id,
+                resp.status_code,
+                resp.text[:500],
+            )
             resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+        logger.info(
+            'Page webhook subscribe OK page_id=%s fields=%s success=%s',
+            page_id,
+            fields,
+            data.get('success'),
+        )
+        return data
+
+    def get_page_subscribed_apps(self, page_id: str, access_token: str) -> list[dict]:
+        resp = requests.get(
+            self._url(f'{page_id}/subscribed_apps'),
+            params={'access_token': access_token},
+            timeout=30,
+        )
+        if resp.status_code >= 400:
+            logger.warning(
+                'Page subscribed_apps fetch failed page_id=%s status=%s body=%s',
+                page_id,
+                resp.status_code,
+                resp.text[:500],
+            )
+            return []
+        return resp.json().get('data', [])
 
     def subscribe_waba_webhooks(self, waba_id: str, access_token: str) -> dict:
         """Vincula la app al WABA para recibir webhooks de WhatsApp."""

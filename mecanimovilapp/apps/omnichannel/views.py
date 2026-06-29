@@ -245,6 +245,47 @@ class ProviderChannelConnectionViewSet(viewsets.GenericViewSet):
         conn.disconnect()
         return Response(ProviderChannelConnectionSerializer(conn).data)
 
+    @action(detail=True, methods=['post'], url_path='resuscribir-webhooks')
+    def resuscribir_webhooks(self, request, pk=None):
+        """Re-suscribe webhooks de Page en Meta (Messenger / Instagram vía Page)."""
+        conn = ProviderChannelConnection.objects.filter(pk=pk, usuario=request.user).first()
+        if not conn:
+            return Response({'error': 'Conexión no encontrada'}, status=404)
+        if conn.channel not in ('MESSENGER', 'INSTAGRAM'):
+            return Response(
+                {'error': 'Solo aplica a Messenger o Instagram.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not conn.page_id or not conn.access_token:
+            return Response(
+                {'error': 'Conecta el canal primero (falta page_id o token).'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        client = MetaGraphClient(conn.access_token)
+        try:
+            result = client.subscribe_page_webhooks(conn.page_id, conn.access_token)
+            subscribed = client.get_page_subscribed_apps(conn.page_id, conn.access_token)
+            logger.info(
+                'Manual page webhook resubscribe conn=%s page_id=%s ig=%s apps=%s',
+                conn.id,
+                conn.page_id,
+                conn.instagram_account_id,
+                [a.get('id') for a in subscribed],
+            )
+            return Response({
+                'ok': True,
+                'page_id': conn.page_id,
+                'instagram_account_id': conn.instagram_account_id,
+                'subscribed_apps': subscribed,
+                'meta_result': result,
+            })
+        except Exception as exc:
+            logger.error('Manual page webhook resubscribe failed conn=%s: %s', conn.id, exc)
+            return Response(
+                {'error': f'No se pudo suscribir webhooks: {exc}'},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
     @action(detail=True, methods=['post'], url_path='configurar-whatsapp')
     def configurar_whatsapp(self, request, pk=None):
         conn = ProviderChannelConnection.objects.filter(
@@ -317,6 +358,17 @@ def meta_webhook_receive(request):
         len(request.body or b''),
         bool(request.headers.get('X-Hub-Signature-256')),
     )
+    try:
+        preview = json.loads(request.body or b'{}')
+        entry = (preview.get('entry') or [{}])[0]
+        logger.info(
+            'Meta webhook POST object=%s entry_id=%s entries=%s',
+            preview.get('object'),
+            entry.get('id'),
+            len(preview.get('entry') or []),
+        )
+    except Exception:
+        pass
 
     if not omnichannel_enabled():
         logger.warning('Meta webhook POST ignored: OMNICHANNEL_ENABLED=False')

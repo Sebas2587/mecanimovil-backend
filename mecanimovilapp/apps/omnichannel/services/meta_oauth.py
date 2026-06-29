@@ -198,8 +198,20 @@ def complete_meta_oauth_connection(
         if page_id and page_token and conn.channel in ('MESSENGER', 'INSTAGRAM'):
             try:
                 client.subscribe_page_webhooks(page_id, page_token)
+                subscribed = client.get_page_subscribed_apps(page_id, page_token)
+                logger.info(
+                    'Page subscribed_apps after OAuth page_id=%s apps=%s channel=%s',
+                    page_id,
+                    [a.get('id') for a in subscribed],
+                    conn.channel,
+                )
             except Exception as sub_exc:
-                logger.warning('Page webhook subscribe after OAuth failed: %s', sub_exc)
+                logger.error(
+                    'Page webhook subscribe after OAuth failed page_id=%s channel=%s: %s',
+                    page_id,
+                    conn.channel,
+                    sub_exc,
+                )
 
         if conn.channel == 'INSTAGRAM':
             logger.info(
