@@ -8,7 +8,10 @@ from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 
 from mecanimovilapp.apps.omnichannel.utils import verify_meta_signature, channel_to_api_slug
-from mecanimovilapp.apps.omnichannel.services.omnichannel_service import OmnichannelService
+from mecanimovilapp.apps.omnichannel.services.omnichannel_service import (
+    OmnichannelService,
+    is_meta_instagram_test_webhook,
+)
 from mecanimovilapp.apps.omnichannel.models import ProviderChannelConnection
 from mecanimovilapp.apps.usuarios.models import Taller
 from mecanimovilapp.apps.chat.models import Conversation, Message
@@ -233,3 +236,60 @@ class OmnichannelServiceTests(TestCase):
         count = OmnichannelService.process_webhook_body(body)
         self.assertEqual(count, 1)
         self.assertEqual(Conversation.objects.filter(source_channel='INSTAGRAM').count(), 1)
+
+    def test_meta_instagram_test_webhook_is_detected(self):
+        self.assertTrue(
+            is_meta_instagram_test_webhook('0', '23245', '12334'),
+        )
+
+    def test_process_instagram_webhook_meta_test_payload_ignored(self):
+        body = {
+            'object': 'instagram',
+            'entry': [{
+                'id': '0',
+                'time': 1527459824,
+                'changes': [{
+                    'field': 'messages',
+                    'value': {
+                        'sender': {'id': '12334'},
+                        'recipient': {'id': '23245'},
+                        'timestamp': '1527459824',
+                        'message': {'mid': 'random_mid', 'text': 'random_text'},
+                    },
+                }],
+            }],
+        }
+        count = OmnichannelService.process_webhook_body(body)
+        self.assertEqual(count, 0)
+
+    def test_process_instagram_webhook_changes_format_with_real_recipient(self):
+        ct = ContentType.objects.get_for_model(Taller)
+        ProviderChannelConnection.objects.create(
+            content_type=ct,
+            object_id=self.taller.id,
+            usuario=self.user,
+            channel='INSTAGRAM',
+            enabled=True,
+            status='conectada',
+            page_id='PAGE123',
+            instagram_account_id='IG456',
+            access_token='token',
+        )
+        body = {
+            'object': 'instagram',
+            'entry': [{
+                'id': '0',
+                'time': 1527459824,
+                'changes': [{
+                    'field': 'messages',
+                    'value': {
+                        'sender': {'id': 'user789'},
+                        'recipient': {'id': 'IG456'},
+                        'timestamp': '1527459824',
+                        'message': {'mid': 'mid.IG2', 'text': 'Hola desde changes'},
+                    },
+                }],
+            }],
+        }
+        count = OmnichannelService.process_webhook_body(body)
+        self.assertEqual(count, 1)

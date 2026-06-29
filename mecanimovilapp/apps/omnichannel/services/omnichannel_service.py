@@ -21,6 +21,42 @@ from mecanimovilapp.apps.omnichannel.utils import channel_to_api_slug
 
 logger = logging.getLogger(__name__)
 
+# IDs fijos del botón "Probar" en Meta Developer → Webhooks → Instagram.
+_META_IG_TEST_ENTRY_ID = '0'
+_META_IG_TEST_RECIPIENT_ID = '23245'
+_META_IG_TEST_SENDER_ID = '12334'
+
+
+def normalize_meta_id(value: Any) -> str:
+    if value is None:
+        return ''
+    return str(value).strip()
+
+
+def is_meta_instagram_test_webhook(
+    entry_id: Any,
+    recipient_id: Any,
+    sender_id: Any = None,
+) -> bool:
+    """Payload de prueba del panel Meta (no coincide con cuentas reales conectadas)."""
+    entry = normalize_meta_id(entry_id)
+    recipient = normalize_meta_id(recipient_id)
+    sender = normalize_meta_id(sender_id)
+    if entry == _META_IG_TEST_ENTRY_ID and recipient == _META_IG_TEST_RECIPIENT_ID:
+        return True
+    if sender == _META_IG_TEST_SENDER_ID and recipient == _META_IG_TEST_RECIPIENT_ID:
+        return True
+    return False
+
+
+def instagram_webhook_account_id(entry_id: Any, recipient_id: Any) -> str:
+    """ID de cuenta profesional para resolver la conexión (entry o recipient)."""
+    entry = normalize_meta_id(entry_id)
+    recipient = normalize_meta_id(recipient_id)
+    if entry and entry != _META_IG_TEST_ENTRY_ID:
+        return entry
+    return recipient
+
 
 class OmnichannelService:
     @staticmethod
@@ -34,6 +70,9 @@ class OmnichannelService:
 
     @staticmethod
     def resolve_connection_for_page(page_id: str, channel: str) -> ProviderChannelConnection | None:
+        account_id = normalize_meta_id(page_id)
+        if not account_id:
+            return None
         base = ProviderChannelConnection.objects.filter(
             channel=channel,
             status='conectada',
@@ -42,9 +81,9 @@ class OmnichannelService:
         if channel == 'INSTAGRAM':
             # Webhook entry.id puede ser instagram_account_id o, en algunos casos, page_id.
             return base.filter(
-                Q(instagram_account_id=page_id) | Q(page_id=page_id),
+                Q(instagram_account_id=account_id) | Q(page_id=account_id),
             ).first()
-        return base.filter(page_id=page_id).first()
+        return base.filter(page_id=account_id).first()
 
     @staticmethod
     def get_or_create_external_contact(
@@ -285,14 +324,40 @@ class OmnichannelService:
             events = cls.parse_messenger_payload(body, 'INSTAGRAM')
             logger.info('Parsed %s Instagram events', len(events))
             for event in events:
-                conn = cls.resolve_connection_for_page(event['page_id'], 'INSTAGRAM')
+                if is_meta_instagram_test_webhook(
+                    event.get('page_id'),
+                    event.get('recipient_id'),
+                    event.get('external_id'),
+                ):
+                    logger.info(
+                        'Meta Instagram webhook de prueba del panel (entry=0, recipient=23245). '
+                        'Ignorado: envía un DM real a la cuenta Instagram conectada en la app.'
+                    )
+                    continue
+
+                lookup_id = instagram_webhook_account_id(
+                    event.get('page_id'),
+                    event.get('recipient_id'),
+                )
+                conn = cls.resolve_connection_for_page(lookup_id, 'INSTAGRAM')
                 if not conn and event.get('recipient_id'):
                     conn = cls.resolve_connection_for_page(event['recipient_id'], 'INSTAGRAM')
+                if not conn and event.get('page_id'):
+                    conn = cls.resolve_connection_for_page(event['page_id'], 'INSTAGRAM')
                 if not conn:
+                    active = ProviderChannelConnection.objects.filter(
+                        channel='INSTAGRAM',
+                        status='conectada',
+                        enabled=True,
+                    ).values_list('instagram_account_id', 'page_id', 'display_identifier')
                     logger.warning(
-                        'No INSTAGRAM connection for entry_id=%s recipient_id=%s',
-                        event['page_id'],
+                        'No INSTAGRAM connection for entry_id=%s recipient_id=%s sender_id=%s '
+                        '(lookup=%s). Conexiones activas: %s',
+                        event.get('page_id'),
                         event.get('recipient_id'),
+                        event.get('external_id'),
+                        lookup_id,
+                        list(active),
                     )
                     continue
                 if not event.get('text') and not event.get('media'):
