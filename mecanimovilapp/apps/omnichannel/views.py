@@ -298,6 +298,11 @@ def meta_webhook_verify(request):
     challenge = request.GET.get('hub.challenge')
     if mode == 'subscribe' and token == meta_verify_token():
         return HttpResponse(challenge, content_type='text/plain')
+    logger.warning(
+        'Meta webhook verify rejected (403): mode=%s token_ok=%s',
+        mode,
+        token == meta_verify_token(),
+    )
     return HttpResponse(status=403)
 
 

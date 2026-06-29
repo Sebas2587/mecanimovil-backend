@@ -275,7 +275,7 @@ def build_oauth_callback_html(
     function notifyOpener(payload) {{
       try {{
         if (window.opener && !window.opener.closed) {{
-          window.opener.postMessage(payload, window.location.origin);
+          window.opener.postMessage(payload, '*');
         }}
       }} catch (e) {{}}
     }}
