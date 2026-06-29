@@ -122,24 +122,8 @@ class ProviderChannelConnectionViewSet(viewsets.GenericViewSet):
         if conn.usuario_id != request.user.id:
             conn.usuario = request.user
             conn.save(update_fields=['usuario'])
-        state = generate_oauth_state()
-        conn.oauth_state = state
-        conn.status = 'pendiente'
-        conn.mensaje_estado = 'Esperando autorización de Meta...'
-        conn.save()
 
-        auth_url = build_embedded_signup_url(state, channel)
-        if not auth_url:
-            return Response(
-                {'error': 'Meta no está configurado (META_APP_ID). Contacta al administrador.'},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
         embedded = build_embedded_config_payload(channel)
-        if channel == 'WHATSAPP' and not embedded:
-            logger.error(
-                'WhatsApp Embedded Signup no configurado: falta META_EMBEDDED_SIGNUP_CONFIG_ID en Render. '
-                'Los talleres no podrán conectar WhatsApp hasta que ops lo configure (una sola vez).'
-            )
         if channel == 'INSTAGRAM' and not embedded:
             logger.error(
                 'Instagram Login for Business no configurado: falta META_EMBEDDED_SIGNUP_CONFIG_ID_INSTAGRAM. '
@@ -148,11 +132,32 @@ class ProviderChannelConnectionViewSet(viewsets.GenericViewSet):
             return Response(
                 {
                     'error': (
-                        'Instagram aún no está configurado en el servidor. '
-                        'Contacta a soporte Mecanimovil (falta META_EMBEDDED_SIGNUP_CONFIG_ID_INSTAGRAM).'
+                        'Instagram aún no está disponible. '
+                        'Estamos terminando la configuración del servidor; intenta más tarde o contacta a soporte.'
                     ),
                 },
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        state = generate_oauth_state()
+        conn.oauth_state = state
+        conn.status = 'pendiente'
+        conn.mensaje_estado = 'Esperando autorización de Meta...'
+        conn.save()
+
+        auth_url = build_embedded_signup_url(state, channel)
+        if not auth_url:
+            conn.status = 'error'
+            conn.mensaje_estado = 'Meta no está configurado en el servidor.'
+            conn.save(update_fields=['status', 'mensaje_estado', 'updated_at'])
+            return Response(
+                {'error': 'Meta no está configurado (META_APP_ID). Contacta al administrador.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        if channel == 'WHATSAPP' and not embedded:
+            logger.error(
+                'WhatsApp Embedded Signup no configurado: falta META_EMBEDDED_SIGNUP_CONFIG_ID en Render. '
+                'Los talleres no podrán conectar WhatsApp hasta que ops lo configure (una sola vez).'
             )
         return Response({
             'success': True,
