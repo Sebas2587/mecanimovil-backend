@@ -39,6 +39,40 @@ def meta_embedded_signup_config_id():
     return config('META_EMBEDDED_SIGNUP_CONFIG_ID', default='')
 
 
+def meta_embedded_signup_config_id_for_channel(channel: str) -> str:
+    """Configuration ID de Embedded Signup / Login for Business por canal."""
+    channel = (channel or '').upper()
+    env_map = {
+        'WHATSAPP': 'META_EMBEDDED_SIGNUP_CONFIG_ID_WHATSAPP',
+        'MESSENGER': 'META_EMBEDDED_SIGNUP_CONFIG_ID_MESSENGER',
+        'INSTAGRAM': 'META_EMBEDDED_SIGNUP_CONFIG_ID_INSTAGRAM',
+    }
+    env_key = env_map.get(channel)
+    if env_key:
+        specific = config(env_key, default='')
+        if specific:
+            return specific
+    return meta_embedded_signup_config_id()
+
+
+def meta_app_id_public():
+    return meta_app_id()
+
+
+def build_embedded_config_payload(channel: str) -> dict | None:
+    app_id = meta_app_id()
+    config_id = meta_embedded_signup_config_id_for_channel(channel)
+    if not app_id or not config_id:
+        return None
+    return {
+        'enabled': True,
+        'app_id': app_id,
+        'config_id': config_id,
+        'redirect_uri': meta_oauth_redirect_uri(),
+        'graph_version': meta_graph_version(),
+    }
+
+
 def generate_oauth_state():
     return secrets.token_urlsafe(32)
 
@@ -105,7 +139,7 @@ def build_embedded_signup_url(state: str, channel: str) -> str | None:
         'response_type': 'code',
         'scope': _scopes_for_channel(channel),
     }
-    config_id = meta_embedded_signup_config_id()
+    config_id = meta_embedded_signup_config_id_for_channel(channel)
     if config_id:
         params['config_id'] = config_id
     return f'https://www.facebook.com/{meta_graph_version()}/dialog/oauth?{urlencode(params)}'

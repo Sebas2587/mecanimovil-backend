@@ -18,12 +18,16 @@ from mecanimovilapp.apps.omnichannel.serializers import (
     ProviderChannelConnectionToggleSerializer,
 )
 from mecanimovilapp.apps.omnichannel.services import MetaGraphClient
+from mecanimovilapp.apps.omnichannel.services.meta_oauth import (
+    MetaOAuthSessionData,
+    build_oauth_callback_html,
+    complete_meta_oauth_connection,
+)
 from mecanimovilapp.apps.omnichannel.tasks import process_meta_webhook
 from mecanimovilapp.apps.omnichannel.utils import (
+    build_embedded_config_payload,
     build_embedded_signup_url,
-    friendly_oauth_error,
     generate_oauth_state,
-    meta_oauth_redirect_uri,
     meta_verify_token,
     omnichannel_enabled,
     verify_meta_signature,
@@ -130,7 +134,67 @@ class ProviderChannelConnectionViewSet(viewsets.GenericViewSet):
                 {'error': 'Meta no está configurado (META_APP_ID). Contacta al administrador.'},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
-        return Response({'success': True, 'auth_url': auth_url, 'channel': channel_param})
+        embedded = build_embedded_config_payload(channel)
+        return Response({
+            'success': True,
+            'connection_id': str(conn.id),
+            'auth_url': auth_url,
+            'channel': channel_param,
+            'embedded': embedded or {'enabled': False},
+        })
+
+    @action(detail=False, methods=['post'], url_path='completar-conexion')
+    def completar_conexion(self, request):
+        """Completa OAuth desde Embedded Signup (FB SDK) con code + IDs de sesión."""
+        if not omnichannel_enabled():
+            return Response(
+                {'error': 'La mensajería omnicanal no está habilitada.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        connection_id = request.data.get('connection_id')
+        code = (request.data.get('code') or '').strip()
+        if not connection_id or not code:
+            return Response({'error': 'connection_id y code son requeridos'}, status=400)
+
+        conn = ProviderChannelConnection.objects.filter(
+            pk=connection_id,
+            usuario=request.user,
+        ).first()
+        if not conn:
+            return Response({'error': 'Conexión no encontrada'}, status=404)
+        if conn.status not in ('pendiente', 'error', 'no_configurada'):
+            return Response(
+                {'error': 'Este canal ya está conectado o no puede completarse.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        shared_waba_ids = request.data.get('shared_waba_ids') or []
+        if isinstance(shared_waba_ids, str):
+            shared_waba_ids = [shared_waba_ids]
+
+        session = MetaOAuthSessionData(
+            phone_number_id=(request.data.get('phone_number_id') or '').strip() or None,
+            waba_id=(request.data.get('waba_id') or '').strip() or None,
+            business_id=(request.data.get('business_id') or '').strip() or None,
+            shared_waba_ids=[str(wid).strip() for wid in shared_waba_ids if wid],
+        )
+        result = complete_meta_oauth_connection(conn, code, session)
+        payload = {
+            'success': result.success,
+            'message': result.message,
+            'instruction': result.instruction,
+            'needs_phone_number_id': result.needs_phone_number_id,
+            'waba_id': result.waba_id,
+            'channel': result.channel or conn.channel.lower(),
+        }
+        if result.success:
+            payload['connection'] = ProviderChannelConnectionSerializer(conn).data
+            return Response(payload)
+        status_code = status.HTTP_400_BAD_REQUEST
+        if result.needs_phone_number_id:
+            payload['connection'] = ProviderChannelConnectionSerializer(conn).data
+        return Response(payload, status=status_code)
 
     @action(detail=True, methods=['patch'])
     def toggle(self, request, pk=None):
@@ -244,140 +308,61 @@ def meta_oauth_callback(request):
     error = request.GET.get('error')
 
     if error:
-        return JsonResponse({
-            'success': False,
-            'message': f'Autorización cancelada: {error}',
-            'instruction': 'Vuelve a la app Mecanimovil Proveedores e intenta de nuevo.',
-        })
+        return build_oauth_callback_html(
+            success=False,
+            title='Autorización cancelada',
+            message='No se completó la conexión con Meta.',
+            instruction='Vuelve a Mecanimovil Proveedores e intenta de nuevo.',
+        )
 
     if not code or not state:
-        return JsonResponse({'success': False, 'message': 'Parámetros OAuth incompletos'}, status=400)
+        return build_oauth_callback_html(
+            success=False,
+            title='Enlace incompleto',
+            message='Faltan datos de autorización.',
+            instruction='Vuelve a la app y pulsa Conectar otra vez.',
+        )
 
     conn = ProviderChannelConnection.objects.filter(oauth_state=state).select_related('usuario').first()
     if not conn:
-        return JsonResponse({'success': False, 'message': 'State inválido o expirado'}, status=400)
+        return build_oauth_callback_html(
+            success=False,
+            title='Sesión expirada',
+            message='El enlace de autorización ya no es válido.',
+            instruction='Vuelve a la app e inicia la conexión de nuevo.',
+        )
 
-    try:
-        client = MetaGraphClient()
-        token_data = client.exchange_code(code, meta_oauth_redirect_uri())
-        access_token = token_data.get('access_token')
-        if not access_token:
-            conn.status = 'error'
-            conn.mensaje_estado = 'No se recibió access token de Meta.'
-            conn.save()
-            return JsonResponse({'success': False, 'message': conn.mensaje_estado}, status=400)
+    session = MetaOAuthSessionData(
+        phone_number_id=request.GET.get('phone_number_id'),
+        waba_id=request.GET.get('waba_id'),
+        business_id=request.GET.get('business_id') or conn.meta_business_id,
+        shared_waba_ids=[
+            wid for wid in (
+                request.GET.getlist('shared_waba_id') or request.GET.getlist('shared_waba_ids')
+            ) if wid
+        ],
+    )
+    result = complete_meta_oauth_connection(conn, code, session)
 
-        user_token = access_token
-        update_fields = {'access_token': user_token}
+    if result.success:
+        return build_oauth_callback_html(
+            success=True,
+            title='Canal conectado',
+            message=result.message,
+            instruction=result.instruction,
+        )
 
-        if conn.channel in ('MESSENGER', 'INSTAGRAM'):
-            pages = client.get_me_accounts(user_token)
-            if pages:
-                page = pages[0]
-                update_fields['page_id'] = page.get('id')
-                update_fields['display_name'] = page.get('name')
-                page_token = page.get('access_token') or user_token
-                update_fields['access_token'] = page_token
+    if result.needs_phone_number_id:
+        return build_oauth_callback_html(
+            success=False,
+            title='Casi listo',
+            message=result.message,
+            instruction=result.instruction,
+        )
 
-                if conn.channel == 'INSTAGRAM':
-                    ig = client.get_instagram_account(page.get('id'), page_token)
-                    if ig:
-                        update_fields['instagram_account_id'] = ig.get('id')
-                        update_fields['display_identifier'] = ig.get('username') or ig.get('name')
-                    else:
-                        update_fields['display_identifier'] = page.get('name')
-                elif conn.channel == 'MESSENGER':
-                    update_fields['display_identifier'] = page.get('name')
-
-        if conn.channel == 'WHATSAPP':
-            update_fields['access_token'] = user_token
-            business_id = request.GET.get('business_id') or conn.meta_business_id
-            phone_number_id = request.GET.get('phone_number_id')
-            waba_id = request.GET.get('waba_id')
-            shared_waba_ids = request.GET.getlist('shared_waba_id') or request.GET.getlist('shared_waba_ids')
-
-            if phone_number_id:
-                update_fields['phone_number_id'] = phone_number_id
-            if waba_id:
-                update_fields['waba_id'] = waba_id
-            if business_id:
-                update_fields['meta_business_id'] = business_id
-
-            if not update_fields.get('phone_number_id'):
-                candidate_waba_ids = [wid for wid in shared_waba_ids if wid]
-                if waba_id and waba_id not in candidate_waba_ids:
-                    candidate_waba_ids.insert(0, waba_id)
-                if not candidate_waba_ids:
-                    candidate_waba_ids = client.get_granted_waba_ids(user_token)
-
-                if candidate_waba_ids:
-                    wa_assets = client.resolve_whatsapp_from_waba_ids(
-                        candidate_waba_ids,
-                        user_token,
-                        meta_business_id=business_id,
-                    )
-                    if wa_assets:
-                        update_fields.update({k: v for k, v in wa_assets.items() if v is not None})
-
-            if not update_fields.get('phone_number_id'):
-                wa_assets = client.resolve_whatsapp_assets(
-                    user_token,
-                    business_id=business_id,
-                )
-                if wa_assets:
-                    update_fields.update(wa_assets)
-
-            if not update_fields.get('phone_number_id'):
-                granted = client.get_granted_waba_ids(user_token)
-                if granted:
-                    conn.waba_id = granted[0]
-                conn.access_token = user_token
-                conn.status = 'pendiente'
-                conn.mensaje_estado = (
-                    'WABA autorizado en Meta. Falta el Phone Number ID: '
-                    'Meta Business Suite → WhatsApp → Mecanimovil (+56 9 9594 5258) → '
-                    'Configuración API → copia "Identificador de número de teléfono". '
-                    'Pégalo en la app Mecanimovil.'
-                )
-                conn.save()
-                return JsonResponse({
-                    'success': False,
-                    'needs_phone_number_id': True,
-                    'waba_id': conn.waba_id,
-                    'message': conn.mensaje_estado,
-                    'instruction': 'Vuelve a la app e ingresa el Phone Number ID.',
-                }, status=400)
-
-            waba_for_sub = update_fields.get('waba_id')
-            if waba_for_sub:
-                try:
-                    client.subscribe_waba_webhooks(waba_for_sub, user_token)
-                except Exception as sub_exc:
-                    logger.warning('WABA webhook subscribe after OAuth failed: %s', sub_exc)
-
-        page_id = update_fields.get('page_id')
-        page_token = update_fields.get('access_token')
-        if page_id and page_token and conn.channel in ('MESSENGER', 'INSTAGRAM'):
-            try:
-                client.subscribe_page_webhooks(page_id, page_token)
-            except Exception as sub_exc:
-                logger.warning('Page webhook subscribe after OAuth failed: %s', sub_exc)
-
-        conn.mark_connected(enabled=True, **update_fields)
-        return JsonResponse({
-            'success': True,
-            'message': 'Canal conectado correctamente.',
-            'instruction': 'Vuelve a la app Mecanimovil Proveedores.',
-            'channel': conn.channel.lower(),
-        })
-    except Exception as exc:
-        logger.exception('OAuth callback failed: %s', exc)
-        friendly = friendly_oauth_error(exc)
-        conn.status = 'error'
-        conn.mensaje_estado = friendly
-        conn.save()
-        return JsonResponse({
-            'success': False,
-            'message': friendly,
-            'instruction': 'Vuelve a la app Mecanimovil Proveedores e intenta de nuevo.',
-        }, status=400)
+    return build_oauth_callback_html(
+        success=False,
+        title='No se pudo conectar',
+        message=result.message,
+        instruction=result.instruction,
+    )

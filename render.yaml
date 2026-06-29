@@ -74,6 +74,9 @@ services:
       # - META_APP_SECRET
       # - META_VERIFY_TOKEN
       # - META_EMBEDDED_SIGNUP_CONFIG_ID
+      # - META_EMBEDDED_SIGNUP_CONFIG_ID_WHATSAPP
+      # - META_EMBEDDED_SIGNUP_CONFIG_ID_MESSENGER
+      # - META_EMBEDDED_SIGNUP_CONFIG_ID_INSTAGRAM
       # - META_OAUTH_REDIRECT_URI=https://<api-host>/api/omnichannel/oauth/callback/
       # - META_GRAPH_API_VERSION=v21.0
       # Web Push VAPID (generadas localmente — NO subir al repo):

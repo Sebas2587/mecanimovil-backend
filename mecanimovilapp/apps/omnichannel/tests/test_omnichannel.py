@@ -46,6 +46,27 @@ class FriendlyOAuthErrorTests(SimpleTestCase):
         self.assertNotIn('graph.facebook', msg)
 
 
+class EmbeddedConfigTests(SimpleTestCase):
+    def test_build_embedded_config_requires_app_and_config_id(self):
+        from mecanimovilapp.apps.omnichannel.utils import build_embedded_config_payload
+
+        with patch('mecanimovilapp.apps.omnichannel.utils.meta_app_id', return_value='123'):
+            with patch(
+                'mecanimovilapp.apps.omnichannel.utils.meta_embedded_signup_config_id_for_channel',
+                return_value='',
+            ):
+                self.assertIsNone(build_embedded_config_payload('WHATSAPP'))
+
+        with patch('mecanimovilapp.apps.omnichannel.utils.meta_app_id', return_value='123'):
+            with patch(
+                'mecanimovilapp.apps.omnichannel.utils.meta_embedded_signup_config_id_for_channel',
+                return_value='cfg-abc',
+            ):
+                payload = build_embedded_config_payload('WHATSAPP')
+                self.assertTrue(payload['enabled'])
+                self.assertEqual(payload['config_id'], 'cfg-abc')
+
+
 class ChannelSlugTests(SimpleTestCase):
     def test_slugs(self):
         self.assertEqual(channel_to_api_slug('WHATSAPP'), 'whatsapp')
