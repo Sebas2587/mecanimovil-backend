@@ -201,6 +201,14 @@ def complete_meta_oauth_connection(
             except Exception as sub_exc:
                 logger.warning('Page webhook subscribe after OAuth failed: %s', sub_exc)
 
+        if conn.channel == 'INSTAGRAM':
+            logger.info(
+                'Instagram OAuth OK page_id=%s instagram_account_id=%s user=%s',
+                update_fields.get('page_id'),
+                update_fields.get('instagram_account_id'),
+                conn.usuario_id,
+            )
+
         conn.mark_connected(enabled=True, **update_fields)
         return MetaOAuthCompletionResult(
             success=True,

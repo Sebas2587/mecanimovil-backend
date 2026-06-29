@@ -3,6 +3,7 @@ import logging
 from typing import Any
 
 from django.db import transaction
+from django.db.models import Q
 
 from mecanimovilapp.apps.chat.models import Conversation, Message
 from mecanimovilapp.apps.omnichannel.models import ExternalContact, ProviderChannelConnection
@@ -33,19 +34,17 @@ class OmnichannelService:
 
     @staticmethod
     def resolve_connection_for_page(page_id: str, channel: str) -> ProviderChannelConnection | None:
-        if channel == 'INSTAGRAM':
-            return ProviderChannelConnection.objects.filter(
-                instagram_account_id=page_id,
-                channel='INSTAGRAM',
-                status='conectada',
-                enabled=True,
-            ).select_related('usuario').first()
-        return ProviderChannelConnection.objects.filter(
-            page_id=page_id,
-            channel='MESSENGER',
+        base = ProviderChannelConnection.objects.filter(
+            channel=channel,
             status='conectada',
             enabled=True,
-        ).select_related('usuario').first()
+        ).select_related('usuario')
+        if channel == 'INSTAGRAM':
+            # Webhook entry.id puede ser instagram_account_id o, en algunos casos, page_id.
+            return base.filter(
+                Q(instagram_account_id=page_id) | Q(page_id=page_id),
+            ).first()
+        return base.filter(page_id=page_id).first()
 
     @staticmethod
     def get_or_create_external_contact(
@@ -108,7 +107,10 @@ class OmnichannelService:
         )
         conversation = cls.get_or_create_conversation(connection, contact)
 
-        if Message.objects.filter(external_message_id=external_message_id).exists():
+        if not external_message_id:
+            ts = (metadata or {}).get('timestamp') or ''
+            external_message_id = f'{connection.channel.lower()}-{external_id}-{ts}'
+        elif Message.objects.filter(external_message_id=external_message_id).exists():
             return None
 
         message = Message.objects.create(
@@ -192,14 +194,17 @@ class OmnichannelService:
         if not text and not media:
             return None
         sender = item.get('sender', {})
+        recipient = item.get('recipient', {})
         return {
             'kind': channel.lower(),
             'page_id': page_id,
+            'recipient_id': recipient.get('id'),
             'external_id': sender.get('id'),
             'external_message_id': msg.get('mid'),
             'text': text,
             'display_name': sender.get('id', ''),
             'media': media,
+            'timestamp': item.get('timestamp'),
         }
 
     @staticmethod
@@ -281,10 +286,13 @@ class OmnichannelService:
             logger.info('Parsed %s Instagram events', len(events))
             for event in events:
                 conn = cls.resolve_connection_for_page(event['page_id'], 'INSTAGRAM')
+                if not conn and event.get('recipient_id'):
+                    conn = cls.resolve_connection_for_page(event['recipient_id'], 'INSTAGRAM')
                 if not conn:
                     logger.warning(
-                        'No INSTAGRAM connection for page_id=%s',
+                        'No INSTAGRAM connection for entry_id=%s recipient_id=%s',
                         event['page_id'],
+                        event.get('recipient_id'),
                     )
                     continue
                 if not event.get('text') and not event.get('media'):

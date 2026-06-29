@@ -186,3 +186,50 @@ class OmnichannelServiceTests(TestCase):
             )
             self.assertEqual(resp.status_code, 200)
             mock_delay.assert_called_once()
+
+    def test_resolve_instagram_by_page_or_ig_account_id(self):
+        ct = ContentType.objects.get_for_model(Taller)
+        ig_conn = ProviderChannelConnection.objects.create(
+            content_type=ct,
+            object_id=self.taller.id,
+            usuario=self.user,
+            channel='INSTAGRAM',
+            enabled=True,
+            status='conectada',
+            page_id='PAGE123',
+            instagram_account_id='IG456',
+            access_token='token',
+        )
+        by_ig = OmnichannelService.resolve_connection_for_page('IG456', 'INSTAGRAM')
+        by_page = OmnichannelService.resolve_connection_for_page('PAGE123', 'INSTAGRAM')
+        self.assertEqual(by_ig.id, ig_conn.id)
+        self.assertEqual(by_page.id, ig_conn.id)
+
+    def test_process_instagram_webhook(self):
+        ct = ContentType.objects.get_for_model(Taller)
+        ProviderChannelConnection.objects.create(
+            content_type=ct,
+            object_id=self.taller.id,
+            usuario=self.user,
+            channel='INSTAGRAM',
+            enabled=True,
+            status='conectada',
+            page_id='PAGE123',
+            instagram_account_id='IG456',
+            access_token='token',
+        )
+        body = {
+            'object': 'instagram',
+            'entry': [{
+                'id': 'IG456',
+                'messaging': [{
+                    'sender': {'id': 'user789'},
+                    'recipient': {'id': 'IG456'},
+                    'timestamp': 1710000000,
+                    'message': {'mid': 'mid.IG1', 'text': 'Hola IG'},
+                }],
+            }],
+        }
+        count = OmnichannelService.process_webhook_body(body)
+        self.assertEqual(count, 1)
+        self.assertEqual(Conversation.objects.filter(source_channel='INSTAGRAM').count(), 1)
