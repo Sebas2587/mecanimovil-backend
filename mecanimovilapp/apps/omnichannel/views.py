@@ -297,6 +297,7 @@ def meta_webhook_verify(request):
     token = request.GET.get('hub.verify_token')
     challenge = request.GET.get('hub.challenge')
     if mode == 'subscribe' and token == meta_verify_token():
+        logger.info('Meta webhook verify OK (GET subscribe)')
         return HttpResponse(challenge, content_type='text/plain')
     logger.warning(
         'Meta webhook verify rejected (403): mode=%s token_ok=%s',
@@ -311,7 +312,14 @@ def meta_webhook_receive(request):
     if request.method == 'GET':
         return meta_webhook_verify(request)
 
+    logger.info(
+        'Meta webhook POST received bytes=%s signature=%s',
+        len(request.body or b''),
+        bool(request.headers.get('X-Hub-Signature-256')),
+    )
+
     if not omnichannel_enabled():
+        logger.warning('Meta webhook POST ignored: OMNICHANNEL_ENABLED=False')
         return JsonResponse({'status': 'disabled'})
 
     signature = request.headers.get('X-Hub-Signature-256')
