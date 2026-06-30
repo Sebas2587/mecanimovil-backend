@@ -235,15 +235,21 @@ def _horario_config_miembro(
     taller: Taller,
     dia_semana: int,
 ) -> HorarioProveedor | None:
-    """Horario del mecánico para el día; si no tiene propio, hereda el del taller."""
+    """
+    Horario del mecánico para el día.
+
+    Si el mecánico tiene configuración propia para ese día (activa o inactiva),
+    se respeta tal cual: un día inactivo NO hereda el horario general del taller.
+    Solo hereda el taller cuando el mecánico no tiene ningún registro para ese día.
+    """
     propio = (
         HorarioProveedor.objects
-        .filter(miembro_taller=miembro, dia_semana=dia_semana, activo=True)
+        .filter(miembro_taller=miembro, dia_semana=dia_semana)
         .order_by('id')
         .first()
     )
     if propio is not None:
-        return propio
+        return propio if propio.activo else None
     return (
         HorarioProveedor.objects
         .filter(taller=taller, miembro_taller__isnull=True, dia_semana=dia_semana, activo=True)

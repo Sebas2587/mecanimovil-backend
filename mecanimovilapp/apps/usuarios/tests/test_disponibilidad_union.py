@@ -69,3 +69,43 @@ class DisponibilidadUnionTests(TestCase):
         domingo = date(2030, 1, 6)
         data = disponibilidad_con_duracion(taller=self.taller, fecha=domingo)
         self.assertFalse(data['proveedor_disponible'])
+
+    def test_mecanico_dia_inactivo_no_hereda_horario_taller(self):
+        """Un día desactivado en la agenda del mecánico no debe usar el horario general del taller."""
+        mec = MiembroTaller.objects.create(
+            taller=self.taller, rol='mecanico', nombre='Mec Lun Off',
+            modalidad_tecnico='ambas', activo=True,
+        )
+        mec.especialidades.add(self.categoria)
+        HorarioProveedor.objects.create(
+            taller=self.taller,
+            miembro_taller=mec,
+            dia_semana=0,
+            activo=False,
+            hora_inicio=time(9, 0),
+            hora_fin=time(13, 0),
+            duracion_slot=60,
+            tiempo_descanso=0,
+        )
+        data = disponibilidad_con_duracion(
+            taller=self.taller,
+            fecha=FECHA_LUNES,
+            miembro_taller_id=mec.id,
+        )
+        self.assertFalse(data['proveedor_disponible'])
+        self.assertEqual(data['slots_disponibles'], [])
+
+    def test_mecanico_sin_config_dia_hereda_taller(self):
+        """Sin horario propio para el día, el mecánico sigue heredando la agenda general del taller."""
+        mec = MiembroTaller.objects.create(
+            taller=self.taller, rol='mecanico', nombre='Mec Sin Config',
+            modalidad_tecnico='ambas', activo=True,
+        )
+        mec.especialidades.add(self.categoria)
+        data = disponibilidad_con_duracion(
+            taller=self.taller,
+            fecha=FECHA_LUNES,
+            miembro_taller_id=mec.id,
+        )
+        self.assertTrue(data['proveedor_disponible'])
+        self.assertGreater(len(data['slots_disponibles']), 0)
