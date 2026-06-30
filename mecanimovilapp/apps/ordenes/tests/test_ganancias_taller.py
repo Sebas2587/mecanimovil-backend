@@ -11,7 +11,10 @@ from mecanimovilapp.apps.ordenes.models import (
     CitaAgendaPersonalDetalle,
     SolicitudServicio,
 )
-from mecanimovilapp.apps.ordenes.services.ganancias_taller import compute_ganancias_taller_resumen
+from mecanimovilapp.apps.ordenes.services.ganancias_taller import (
+    compute_ganancias_taller_resumen,
+    compute_ganancias_taller_serie,
+)
 from mecanimovilapp.apps.usuarios.models import Cliente, MiembroTaller, Taller
 from mecanimovilapp.apps.vehiculos.models import Marca, Modelo, Vehiculo
 
@@ -121,3 +124,99 @@ class GananciasTallerResumenTestCase(TestCase):
         resumen = compute_ganancias_taller_resumen(self.taller_user)
 
         self.assertEqual(resumen['ganancias_mecanimovil'], 60000)
+
+    def test_serie_diaria_separa_canales(self):
+        ayer = self.hoy - timedelta(days=1)
+        SolicitudServicio.objects.create(
+            cliente=self.cliente,
+            vehiculo=self.vehiculo,
+            taller=self.taller,
+            mecanico_asignado=self.mecanico,
+            tipo_servicio='taller',
+            fecha_servicio=ayer,
+            hora_servicio=time(9, 0),
+            metodo_pago='transferencia',
+            total=Decimal('50000'),
+            estado='completado',
+            fecha_hora_solicitud=timezone.now(),
+        )
+        SolicitudServicio.objects.create(
+            cliente=self.cliente,
+            vehiculo=self.vehiculo,
+            taller=self.taller,
+            mecanico_asignado=self.mecanico,
+            tipo_servicio='taller',
+            fecha_servicio=self.hoy,
+            hora_servicio=time(10, 0),
+            metodo_pago='transferencia',
+            total=Decimal('30000'),
+            estado='completado',
+            fecha_hora_solicitud=timezone.now(),
+        )
+        cita = CitaAgendaPersonal.objects.create(
+            taller=self.taller,
+            miembro_taller=self.mecanico,
+            estado='cerrada',
+            fecha_servicio=self.hoy,
+            hora_servicio=time(14, 0),
+            duracion_minutos=60,
+            tipo_servicio='taller',
+            creado_por=self.taller_user,
+            cerrada_en=timezone.now(),
+        )
+        CitaAgendaPersonalDetalle.objects.create(
+            cita=cita,
+            cliente_nombre='Particular',
+            servicio_nombre='Aceite',
+            precio_referencia=Decimal('20000'),
+        )
+
+        serie = compute_ganancias_taller_serie(self.taller_user, granularidad='dia')
+        puntos_hoy = [p for p in serie['puntos'] if p['clave'] == self.hoy.isoformat()]
+        self.assertEqual(len(puntos_hoy), 1)
+        self.assertEqual(puntos_hoy[0]['mecanimovil'], 30000)
+        self.assertEqual(puntos_hoy[0]['agenda_personal'], 20000)
+        self.assertEqual(serie['pico_mayor']['total'], max(p['total'] for p in serie['puntos']))
+
+    def test_serie_filtra_por_mecanico(self):
+        otro = MiembroTaller.objects.create(
+            taller=self.taller,
+            rol='mecanico',
+            nombre='Otro',
+            modalidad_tecnico='ambas',
+            activo=True,
+        )
+        SolicitudServicio.objects.create(
+            cliente=self.cliente,
+            vehiculo=self.vehiculo,
+            taller=self.taller,
+            mecanico_asignado=otro,
+            tipo_servicio='taller',
+            fecha_servicio=self.hoy,
+            hora_servicio=time(11, 0),
+            metodo_pago='transferencia',
+            total=Decimal('99000'),
+            estado='completado',
+            fecha_hora_solicitud=timezone.now(),
+        )
+        SolicitudServicio.objects.create(
+            cliente=self.cliente,
+            vehiculo=self.vehiculo,
+            taller=self.taller,
+            mecanico_asignado=self.mecanico,
+            tipo_servicio='taller',
+            fecha_servicio=self.hoy,
+            hora_servicio=time(12, 0),
+            metodo_pago='transferencia',
+            total=Decimal('10000'),
+            estado='completado',
+            fecha_hora_solicitud=timezone.now(),
+        )
+
+        serie = compute_ganancias_taller_serie(
+            self.taller_user,
+            granularidad='dia',
+            mecanico_id=self.mecanico.id,
+        )
+        hoy = next(p for p in serie['puntos'] if p['clave'] == self.hoy.isoformat())
+        self.assertEqual(hoy['mecanimovil'], 10000)

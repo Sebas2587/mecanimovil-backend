@@ -772,6 +772,41 @@ class GananciasTallerResumenSerializer(serializers.Serializer):
     mes_hasta = serializers.CharField()
 
 
+class GananciasSeriePuntoSerializer(serializers.Serializer):
+    clave = serializers.CharField()
+    etiqueta = serializers.CharField()
+    mecanimovil = serializers.IntegerField()
+    agenda_personal = serializers.IntegerField()
+    total = serializers.IntegerField()
+
+
+class GananciasSerieExtremoSerializer(serializers.Serializer):
+    clave = serializers.CharField()
+    etiqueta = serializers.CharField()
+    mecanimovil = serializers.IntegerField()
+    agenda_personal = serializers.IntegerField()
+    total = serializers.IntegerField()
+
+
+class GananciasPeriodoTotalesSerializer(serializers.Serializer):
+    ganancias_mecanimovil = serializers.IntegerField()
+    ganancias_agenda_personal = serializers.IntegerField()
+    ganancias_total = serializers.IntegerField()
+    ordenes_mecanimovil = serializers.IntegerField()
+    ordenes_agenda_personal = serializers.IntegerField()
+
+
+class GananciasTallerSerieSerializer(serializers.Serializer):
+    granularidad = serializers.CharField()
+    desde = serializers.CharField()
+    hasta = serializers.CharField()
+    mecanico_id = serializers.IntegerField(allow_null=True)
+    puntos = GananciasSeriePuntoSerializer(many=True)
+    totales_periodo = GananciasPeriodoTotalesSerializer()
+    pico_mayor = GananciasSerieExtremoSerializer(allow_null=True)
+    pico_menor = GananciasSerieExtremoSerializer(allow_null=True)
+
+
 class AspectosResenaSerializer(serializers.Serializer):
     """Promedios 1–5 de los aspectos estructurados de reseñas."""
     puntualidad = serializers.FloatField(allow_null=True)

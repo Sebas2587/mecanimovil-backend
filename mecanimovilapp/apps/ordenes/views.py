@@ -2589,6 +2589,38 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
         serializer = GananciasTallerResumenSerializer(data=payload)
         serializer.is_valid(raise_exception=True)
         return Response(serializer.data)
+
+    @action(detail=False, methods=['get'], url_path='ganancias-serie')
+    def ganancias_serie(self, request):
+        """
+        Serie temporal de ingresos: Mecanimovil vs agenda personal.
+        Query: granularidad=dia|semana|mes, mecanico_id (opcional, solo taller).
+        """
+        from mecanimovilapp.apps.ordenes.serializers import GananciasTallerSerieSerializer
+        from mecanimovilapp.apps.ordenes.services.ganancias_taller import (
+            compute_ganancias_taller_serie,
+        )
+
+        granularidad = (request.query_params.get('granularidad') or 'dia').lower()
+        mecanico_raw = request.query_params.get('mecanico_id')
+        mecanico_id = None
+        if mecanico_raw not in (None, ''):
+            try:
+                mecanico_id = int(mecanico_raw)
+            except (TypeError, ValueError):
+                return Response(
+                    {'detail': 'mecanico_id inválido'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        payload = compute_ganancias_taller_serie(
+            request.user,
+            granularidad=granularidad,
+            mecanico_id=mecanico_id,
+        )
+        serializer = GananciasTallerSerieSerializer(data=payload)
+        serializer.is_valid(raise_exception=True)
+        return Response(serializer.data)
     
     @action(detail=True, methods=['post'])
     def iniciar_servicio(self, request, pk=None):

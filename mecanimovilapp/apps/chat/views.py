@@ -180,6 +180,19 @@ class ConversationViewSet(DestroyModelMixin, viewsets.ReadOnlyModelViewSet):
                 {'error': 'content or attachment is required'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+        if conversation.source_channel != 'APP':
+            from mecanimovilapp.apps.omnichannel.services.outbound_guard import (
+                OutboundBlockedError,
+                validate_omnichannel_outbound,
+            )
+            try:
+                validate_omnichannel_outbound(conversation)
+            except OutboundBlockedError as exc:
+                return Response(
+                    {'error': exc.code, 'message': exc.message},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
         
         # Create message
         message = Message.objects.create(
