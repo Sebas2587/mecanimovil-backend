@@ -774,7 +774,7 @@ class GananciasTallerResumenSerializer(serializers.Serializer):
 
 class GananciasSeriePuntoSerializer(serializers.Serializer):
     clave = serializers.CharField()
-    etiqueta = serializers.CharField()
+    etiqueta = serializers.CharField(allow_blank=True)
     mecanimovil = serializers.IntegerField()
     agenda_personal = serializers.IntegerField()
     total = serializers.IntegerField()
@@ -782,7 +782,7 @@ class GananciasSeriePuntoSerializer(serializers.Serializer):
 
 class GananciasSerieExtremoSerializer(serializers.Serializer):
     clave = serializers.CharField()
-    etiqueta = serializers.CharField()
+    etiqueta = serializers.CharField(allow_blank=True)
     mecanimovil = serializers.IntegerField()
     agenda_personal = serializers.IntegerField()
     total = serializers.IntegerField()

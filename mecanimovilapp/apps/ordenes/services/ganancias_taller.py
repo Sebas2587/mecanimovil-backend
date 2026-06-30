@@ -28,10 +28,21 @@ def _delta_pct(actual: float, anterior: float) -> float | None:
 
 def _resolve_proveedor_scope(user, mecanico_id: int | None = None):
     """Devuelve (taller, mecanico_domicilio, miembro_taller_opcional)."""
-    from mecanimovilapp.apps.usuarios.models import MiembroTaller
+    from django.core.exceptions import ObjectDoesNotExist
 
-    taller = getattr(user, 'taller', None)
-    mecanico = getattr(user, 'mecanico_domicilio', None)
+    from mecanimovilapp.apps.usuarios.models import MecanicoDomicilio, MiembroTaller
+    from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
+
+    taller, _, _ = resolver_contexto_taller(user)
+    mecanico = None
+    if taller is None:
+        try:
+            mecanico = MecanicoDomicilio.objects.get(usuario=user)
+        except MecanicoDomicilio.DoesNotExist:
+            mecanico = None
+        except ObjectDoesNotExist:
+            mecanico = None
+
     miembro = None
     if mecanico_id is not None and taller:
         miembro = MiembroTaller.objects.filter(
@@ -40,6 +51,16 @@ def _resolve_proveedor_scope(user, mecanico_id: int | None = None):
             rol='mecanico',
         ).first()
     return taller, mecanico, miembro
+
+
+def _precio_cita_personal(cita) -> float:
+    from django.core.exceptions import ObjectDoesNotExist
+
+    try:
+        detalle = cita.detalle
+    except ObjectDoesNotExist:
+        return 0.0
+    return float(detalle.precio_referencia or Decimal('0'))
 
 
 def _fecha_bucket_orden(orden) -> date | None:
@@ -103,8 +124,7 @@ def _acumular_ganancias_diarias(
         bucket = cita.fecha_servicio
         if not bucket:
             continue
-        precio = float(getattr(getattr(cita, 'detalle', None), 'precio_referencia', 0) or 0)
-        agenda[bucket] += int(round(precio))
+        agenda[bucket] += int(round(_precio_cita_personal(cita)))
 
     return mkt, agenda
 

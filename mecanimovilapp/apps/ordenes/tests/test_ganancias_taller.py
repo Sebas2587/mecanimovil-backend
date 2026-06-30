@@ -220,3 +220,12 @@ class GananciasTallerResumenTestCase(TestCase):
         )
         hoy = next(p for p in serie['puntos'] if p['clave'] == self.hoy.isoformat())
         self.assertEqual(hoy['mecanimovil'], 10000)
+
+    def test_serie_serializer_acepta_etiquetas_vacias(self):
+        from mecanimovilapp.apps.ordenes.serializers import GananciasTallerSerieSerializer
+
+        serie = compute_ganancias_taller_serie(self.taller_user, granularidad='dia')
+        self.assertTrue(any(p['etiqueta'] == '' for p in serie['puntos']))
+
+        serializer = GananciasTallerSerieSerializer(data=serie)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
