@@ -44,6 +44,7 @@ app.conf.task_routes = {
     # Órdenes — notificaciones de estado y pagos
     'mecanimovilapp.apps.ordenes.tasks.enviar_notificacion_cambio_estado': {'queue': 'default'},
     'mecanimovilapp.apps.ordenes.tasks.enviar_push_notificacion_pago_pendiente': {'queue': 'default'},
+    'mecanimovilapp.apps.ordenes.tasks.recordar_solicitudes_por_vencer_proveedor_task': {'queue': 'default'},
 }
 
 # ============================================
@@ -111,6 +112,11 @@ app.conf.beat_schedule = {
     'enviar-alertas-pago-proximo': {
         'task': 'mecanimovilapp.apps.ordenes.tasks.enviar_alertas_pago_proximo_task',
         'schedule': crontab(minute=0),  # Cada hora, en punto
+        'options': {'queue': 'default'},
+    },
+    'recordar-solicitudes-por-vencer-proveedor': {
+        'task': 'mecanimovilapp.apps.ordenes.tasks.recordar_solicitudes_por_vencer_proveedor_task',
+        'schedule': crontab(minute='*/30'),
         'options': {'queue': 'default'},
     },
     'verificar-suscripciones-activas': {

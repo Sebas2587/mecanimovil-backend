@@ -858,8 +858,8 @@ admin.site.register(DocumentoOnboarding, DocumentoOnboardingAdmin)
 
 @admin.register(WebPushSubscription)
 class WebPushSubscriptionAdmin(admin.ModelAdmin):
-    list_display = ('usuario', 'endpoint_preview', 'user_agent_preview', 'activo', 'fecha_creacion')
-    list_filter = ('activo', 'fecha_creacion')
+    list_display = ('usuario', 'app_origen', 'endpoint_preview', 'user_agent_preview', 'activo', 'fecha_creacion')
+    list_filter = ('activo', 'app_origen', 'fecha_creacion')
     search_fields = ('usuario__username', 'usuario__email', 'endpoint')
     readonly_fields = ('endpoint', 'p256dh', 'auth', 'fecha_creacion', 'fecha_actualizacion')
     list_per_page = 30

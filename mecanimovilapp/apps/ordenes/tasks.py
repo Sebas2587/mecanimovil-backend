@@ -342,3 +342,19 @@ def enviar_notificacion_cambio_estado(solicitud_id, user_id, estado_anterior, es
     except Exception as e:
         logger.error(f"❌ Error en enviar_notificacion_cambio_estado: {e}", exc_info=True)
         return {'enviados': 0, 'error': str(e)}
+
+
+@shared_task
+def recordar_solicitudes_por_vencer_proveedor_task():
+    """Tarea periódica: alertas de solicitudes por vencer para proveedores."""
+    try:
+        from mecanimovilapp.apps.ordenes.services.notificaciones_proveedor import (
+            recordar_solicitudes_por_vencer_proveedor,
+        )
+
+        result = recordar_solicitudes_por_vencer_proveedor()
+        logger.info('✅ recordar_solicitudes_por_vencer_proveedor: %s', result)
+        return result
+    except Exception as e:
+        logger.error('❌ recordar_solicitudes_por_vencer_proveedor: %s', e, exc_info=True)
+        return {'error': str(e)}

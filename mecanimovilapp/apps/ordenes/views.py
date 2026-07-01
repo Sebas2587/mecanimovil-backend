@@ -2278,6 +2278,19 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
                                         estado='PENDIENTE'
                                     )
                                     logger.info(f'✅ Checklist creado automáticamente al crear orden: {checklist_instance.id} para orden {solicitud_servicio.id}')
+                                    try:
+                                        from mecanimovilapp.apps.ordenes.services.notificaciones_proveedor import (
+                                            notificar_checklist_pendiente_proveedor,
+                                        )
+                                        notificar_checklist_pendiente_proveedor(
+                                            solicitud_servicio, checklist_instance
+                                        )
+                                    except Exception as push_ck:
+                                        logger.warning(
+                                            'No se pudo encolar push checklist_pendiente orden %s: %s',
+                                            solicitud_servicio.id,
+                                            push_ck,
+                                        )
                                     # No cambiar estado a checklist_en_progreso aquí; se hará cuando el proveedor llame a start()
                                 break
                     except Exception as checklist_error:
@@ -2317,6 +2330,19 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
                                 estado='PENDIENTE'
                             )
                             logger.info(f'✅ Checklist creado retroactivamente: {checklist_instance.id} para orden {orden_sin_checklist.id}')
+                            try:
+                                from mecanimovilapp.apps.ordenes.services.notificaciones_proveedor import (
+                                    notificar_checklist_pendiente_proveedor,
+                                )
+                                notificar_checklist_pendiente_proveedor(
+                                    orden_sin_checklist, checklist_instance
+                                )
+                            except Exception as push_ck:
+                                logger.warning(
+                                    'No se pudo encolar push checklist_pendiente orden %s: %s',
+                                    orden_sin_checklist.id,
+                                    push_ck,
+                                )
                             # No cambiar estado a checklist_en_progreso aquí; se hará cuando el proveedor llame a start()
                             checklist_creados_retroactivos += 1
                             break
@@ -5976,6 +6002,19 @@ class OfertaProveedorViewSet(viewsets.ModelViewSet):
                                         estado='PENDIENTE'
                                     )
                                     logger.info(f'✅ Checklist creado automáticamente: {checklist_instance.id} para orden {solicitud_servicio.id} con template {template.id}')
+                                    try:
+                                        from mecanimovilapp.apps.ordenes.services.notificaciones_proveedor import (
+                                            notificar_checklist_pendiente_proveedor,
+                                        )
+                                        notificar_checklist_pendiente_proveedor(
+                                            solicitud_servicio, checklist_instance
+                                        )
+                                    except Exception as push_ck:
+                                        logger.warning(
+                                            'No se pudo encolar push checklist_pendiente orden %s: %s',
+                                            solicitud_servicio.id,
+                                            push_ck,
+                                        )
                                     # No cambiar estado a checklist_en_progreso aquí; se hará cuando el proveedor llame a start()
                                     checklist_creado = True
                                     break  # Solo crear un checklist (el primero encontrado)

@@ -6520,6 +6520,9 @@ def registrar_web_push(request):
         )
 
     user_agent = request.META.get('HTTP_USER_AGENT', '')[:512]
+    app_origen = request.data.get('app_origen', 'usuario')
+    if app_origen not in ('usuario', 'proveedor'):
+        app_origen = 'usuario'
 
     try:
         sub, created = WebPushSubscription.objects.update_or_create(
@@ -6529,6 +6532,7 @@ def registrar_web_push(request):
                 'p256dh': p256dh,
                 'auth': auth_key,
                 'user_agent': user_agent,
+                'app_origen': app_origen,
                 'activo': True,
             },
         )

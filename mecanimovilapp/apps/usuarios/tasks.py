@@ -6,13 +6,38 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+NATIVE_PUSH_RECENCY_DAYS = 30
+
+
+def _user_has_active_native_push(user_id) -> bool:
+    """True si el usuario tiene token Expo nativo activo reciente (evita duplicar con web)."""
+    from datetime import timedelta
+    from django.utils import timezone
+    from .models import PushToken
+
+    cutoff = timezone.now() - timedelta(days=NATIVE_PUSH_RECENCY_DAYS)
+    return PushToken.objects.filter(
+        usuario_id=user_id,
+        activo=True,
+        plataforma__in=('ios', 'android'),
+        fecha_registro__gte=cutoff,
+    ).exists()
+
 
 def _send_web_push_to_user(user, title, body, data=None):
     """
     Enviar Web Push (VAPID/RFC 8030) a todas las suscripciones web activas del usuario.
     Desactiva automaticamente los endpoints que devuelvan 410 Gone (suscripcion expirada).
+    Omite envío si hay push nativo activo (mismo usuario, app instalada).
     """
     from .models import WebPushSubscription
+
+    if _user_has_active_native_push(user.id):
+        logger.debug(
+            '[web-push] Usuario %s tiene PushToken nativo activo; omitiendo web push.',
+            user.id,
+        )
+        return
 
     vapid_private = getattr(settings, 'VAPID_PRIVATE_KEY', None)
     vapid_public = getattr(settings, 'VAPID_PUBLIC_KEY', None)
@@ -81,6 +106,8 @@ THROTTLE_WINDOWS = {
     'new_offer':                 120,
     'chat_message':              4,    # 4s solo para evitar dobles envíos por race condition
     'solicitud_adjudicada':      60,
+    'solicitud_por_vencer':      3600,
+    'checklist_pendiente':       300,
     # Suscripciones
     'suscripcion_por_vencer':    3600 * 12,
     'suscripcion_vencida':       3600 * 12,
@@ -204,6 +231,8 @@ def send_expo_push_notification(self, user_id, title, body, data=None):
             'solicitud_cancelada_cliente',
             'nueva_solicitud',
             'catalog_assignment',
+            'solicitud_por_vencer',
+            'checklist_pendiente',
         ):
             channel_id = 'servicios'
         elif notif_type in ('suscripcion_por_vencer', 'suscripcion_vencida', 'suscripcion_pago_fallido', 'creditos_agotados'):
@@ -219,6 +248,7 @@ def send_expo_push_notification(self, user_id, title, body, data=None):
             priority='high' if notif_type in (
                 'health_alert', 'global_health_alert', 'salud_actualizada', 'cambio_estado',
                 'chat_message', 'new_offer', 'nueva_oferta', 'nueva_solicitud', 'catalog_assignment',
+                'solicitud_por_vencer', 'checklist_pendiente',
             ) else 'default',
         )
 

@@ -1705,6 +1705,11 @@ class WebPushSubscription(models.Model):
     Suscripcion Web Push (VAPID / RFC 8030) para notificaciones push en navegador.
     Cada navegador/dispositivo web genera un endpoint unico al suscribirse via PushManager.
     """
+    APP_ORIGEN_CHOICES = [
+        ('usuario', 'App Usuarios'),
+        ('proveedor', 'App Proveedores'),
+    ]
+
     usuario = models.ForeignKey(
         Usuario,
         on_delete=models.CASCADE,
@@ -1726,6 +1731,12 @@ class WebPushSubscription(models.Model):
         blank=True,
         default='',
         help_text='User-Agent del navegador al suscribirse',
+    )
+    app_origen = models.CharField(
+        max_length=20,
+        choices=APP_ORIGEN_CHOICES,
+        default='usuario',
+        help_text='App desde la cual se registró la suscripción web',
     )
     activo = models.BooleanField(
         default=True,
