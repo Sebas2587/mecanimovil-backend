@@ -1413,9 +1413,16 @@ class TallerViewSet(viewsets.ModelViewSet):
         
         if self.request.user.is_staff or self.request.user.is_superuser:
             return queryset
-        else:
-            # Solo mostrar talleres verificados y activos para usuarios normales
-            return queryset.filter(verificado=True, activo=True)
+
+        publicos = Q(verificado=True, activo=True)
+        if self.request.user.is_authenticated:
+            from .services.taller_contexto import resolver_contexto_taller
+            taller_propio, _, _ = resolver_contexto_taller(self.request.user)
+            if taller_propio is not None:
+                # El proveedor autenticado puede consultar su propio taller (p. ej. agenda)
+                # aunque aún no esté verificado en marketplace.
+                return queryset.filter(publicos | Q(pk=taller_propio.pk))
+        return queryset.filter(publicos)
     
     def get_permissions(self):
         """
@@ -1551,6 +1558,8 @@ class TallerViewSet(viewsets.ModelViewSet):
         modalidad = (request.query_params.get('modalidad') or request.query_params.get('tipo_servicio') or '').strip() or None
         miembro_raw = request.query_params.get('miembro_taller')
         miembro_taller_id = int(miembro_raw) if miembro_raw and str(miembro_raw).isdigit() else None
+        contexto = (request.query_params.get('contexto') or '').strip()
+        requiere_especialidad = contexto != 'agenda_personal'
 
         import logging
         logger = logging.getLogger(__name__)
@@ -1561,6 +1570,7 @@ class TallerViewSet(viewsets.ModelViewSet):
                 oferta_servicio_id=oferta_servicio_id,
                 modalidad=modalidad,
                 miembro_taller_id=miembro_taller_id,
+                requiere_especialidad=requiere_especialidad,
             )
         except Exception:
             logger.exception(
@@ -1597,6 +1607,8 @@ class TallerViewSet(viewsets.ModelViewSet):
         modalidad = (request.query_params.get('modalidad') or request.query_params.get('tipo_servicio') or '').strip() or None
         miembro_raw = request.query_params.get('miembro_taller')
         miembro_taller_id = int(miembro_raw) if miembro_raw and str(miembro_raw).isdigit() else None
+        contexto = (request.query_params.get('contexto') or '').strip()
+        requiere_especialidad = contexto != 'agenda_personal'
         try:
             dias = int(request.query_params.get('dias', 14))
         except (TypeError, ValueError):
@@ -1608,6 +1620,7 @@ class TallerViewSet(viewsets.ModelViewSet):
                 dias_adelante=min(max(dias, 1), 30),
                 modalidad=modalidad,
                 miembro_taller_id=miembro_taller_id,
+                requiere_especialidad=requiere_especialidad,
             )
         except Exception:
             logger.exception(
@@ -3633,6 +3646,7 @@ class EstadoProveedorView(APIView):
         
         return Response({
             'tiene_perfil': True,
+            'proveedor_id': proveedor.id,
             'tipo_proveedor': 'taller' if taller else 'mecanico',
             'rol_taller': rol_taller,
             'permisos': permisos_supervisor,
@@ -4887,6 +4901,150 @@ class HorarioProveedorViewSet(viewsets.ModelViewSet):
             'mecanicos_con_horario_ids': [],
             'necesita_configurar': True,
         })
+
+    def _params_disponibilidad_agenda(self, request, taller):
+        """Query params comunes para disponibilidad de agenda del proveedor autenticado."""
+        oferta_id = request.query_params.get('oferta_servicio_id')
+        oferta_servicio_id = int(oferta_id) if oferta_id and str(oferta_id).isdigit() else None
+        modalidad = (
+            request.query_params.get('modalidad')
+            or request.query_params.get('tipo_servicio')
+            or ''
+        ).strip() or None
+        miembro, error = self._resolver_miembro_taller(request, taller)
+        if error is not None:
+            return None, error
+        miembro_taller_id = miembro.id if miembro else None
+        contexto = (request.query_params.get('contexto') or '').strip()
+        requiere_especialidad = contexto != 'agenda_personal'
+        return {
+            'oferta_servicio_id': oferta_servicio_id,
+            'modalidad': modalidad,
+            'miembro_taller_id': miembro_taller_id,
+            'requiere_especialidad': requiere_especialidad,
+        }, None
+
+    @action(detail=False, methods=['get'], url_path='disponibilidad_agenda')
+    def disponibilidad_agenda(self, request):
+        """
+        Disponibilidad con duración del proveedor autenticado (app proveedores).
+        Resuelve taller/mecánico desde la sesión; no requiere ID público del taller.
+        Query: fecha=YYYY-MM-DD, oferta_servicio_id, modalidad, miembro_taller
+        """
+        from datetime import datetime
+
+        taller, _, _ = self._contexto()
+        mecanico = None
+        if taller is None:
+            mecanico = getattr(request.user, 'mecanico_domicilio', None)
+        if taller is None and mecanico is None:
+            return Response(
+                {'error': 'Usuario sin perfil de proveedor'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        fecha_str = request.query_params.get('fecha')
+        if not fecha_str:
+            return Response(
+                {'error': "Se requiere el parámetro 'fecha' en formato YYYY-MM-DD"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            fecha = datetime.strptime(fecha_str, '%Y-%m-%d').date()
+        except ValueError:
+            return Response(
+                {'error': 'Formato de fecha inválido. Use YYYY-MM-DD'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        params, error = self._params_disponibilidad_agenda(request, taller)
+        if error is not None:
+            return error
+
+        try:
+            payload = calc_disponibilidad_con_duracion(
+                taller=taller,
+                mecanico=mecanico,
+                fecha=fecha,
+                **params,
+            )
+        except Exception:
+            logger.exception(
+                'disponibilidad_agenda sesion taller=%s mecanico=%s fecha=%s',
+                getattr(taller, 'id', None),
+                getattr(mecanico, 'id', None),
+                fecha_str,
+            )
+            return Response(
+                {
+                    'fecha': fecha.isoformat(),
+                    'proveedor_disponible': False,
+                    'mensaje': 'No se pudo calcular la disponibilidad',
+                    'slots_disponibles': [],
+                    'total_slots': 0,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        if taller is not None:
+            payload['tipo_proveedor'] = 'taller'
+            payload['proveedor_id'] = taller.id
+        else:
+            payload['tipo_proveedor'] = 'mecanico'
+            payload['proveedor_id'] = mecanico.id
+        return Response(payload)
+
+    @action(detail=False, methods=['get'], url_path='dias_disponibles_agenda')
+    def dias_disponibles_agenda(self, request):
+        """Fechas con al menos un slot para el proveedor autenticado."""
+        taller, _, _ = self._contexto()
+        mecanico = None
+        if taller is None:
+            mecanico = getattr(request.user, 'mecanico_domicilio', None)
+        if taller is None and mecanico is None:
+            return Response(
+                {'error': 'Usuario sin perfil de proveedor'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        params, error = self._params_disponibilidad_agenda(request, taller)
+        if error is not None:
+            return error
+
+        try:
+            dias = int(request.query_params.get('dias', 14))
+        except (TypeError, ValueError):
+            dias = 14
+
+        try:
+            fechas = calc_dias_con_slots(
+                taller=taller,
+                mecanico=mecanico,
+                dias_adelante=min(max(dias, 1), 30),
+                **params,
+            )
+        except Exception:
+            logger.exception(
+                'dias_disponibles_agenda sesion taller=%s mecanico=%s',
+                getattr(taller, 'id', None),
+                getattr(mecanico, 'id', None),
+            )
+            return Response(
+                {
+                    'fechas_disponibles': [],
+                    'error': 'No se pudo calcular la disponibilidad',
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        body = {'fechas_disponibles': fechas}
+        if taller is not None:
+            body['tipo_proveedor'] = 'taller'
+            body['proveedor_id'] = taller.id
+        else:
+            body['tipo_proveedor'] = 'mecanico'
+            body['proveedor_id'] = mecanico.id
+        return Response(body)
     
     @action(detail=False, methods=['post'])
     def configurar_semana_completa(self, request):

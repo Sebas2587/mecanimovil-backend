@@ -528,6 +528,7 @@ def disponibilidad_con_duracion(
     oferta_servicio_id: int | None = None,
     modalidad: str | None = None,
     miembro_taller_id: int | None = None,
+    requiere_especialidad: bool = True,
 ) -> dict[str, Any]:
     dia_semana = fecha.weekday()
 
@@ -550,7 +551,7 @@ def disponibilidad_con_duracion(
 
     # Camino equipo de taller: disponibilidad = UNIÓN por mecánico apto (o uno solo si miembro_taller_id).
     if taller is not None:
-        categorias_req = _categorias_requeridas(oferta)
+        categorias_req = _categorias_requeridas(oferta) if requiere_especialidad else []
         aptos = mecanicos_aptos_taller(
             taller,
             categorias_requeridas=categorias_req,
@@ -563,12 +564,27 @@ def disponibilidad_con_duracion(
                 rol='mecanico',
                 activo=True,
             ).first()
-            if not miembro or not any(m.id == miembro.id for m in aptos):
+            if not miembro:
                 min_dur, max_dur = duracion_rango_oferta(oferta)
                 return {
                     'fecha': fecha.isoformat(),
                     'proveedor_disponible': False,
-                    'mensaje': 'El técnico seleccionado no está disponible para este servicio',
+                    'mensaje': 'El técnico seleccionado no pertenece a este taller',
+                    'duracion_servicio_solicitado': {
+                        'minimo': min_dur,
+                        'maximo': max_dur,
+                        'etiqueta': etiqueta_duracion(min_dur, max_dur),
+                    },
+                    'estado_actual': estado_actual_proveedor(taller=taller),
+                    'slots_disponibles': [],
+                    'total_slots': 0,
+                }
+            if modalidad and not miembro.modalidad_compatible(modalidad):
+                min_dur, max_dur = duracion_rango_oferta(oferta)
+                return {
+                    'fecha': fecha.isoformat(),
+                    'proveedor_disponible': False,
+                    'mensaje': 'El técnico seleccionado no atiende este tipo de servicio',
                     'duracion_servicio_solicitado': {
                         'minimo': min_dur,
                         'maximo': max_dur,
@@ -678,6 +694,7 @@ def dias_con_slots(
     dias_adelante: int = 14,
     modalidad: str | None = None,
     miembro_taller_id: int | None = None,
+    requiere_especialidad: bool = True,
 ) -> list[str]:
     """Fechas YYYY-MM-DD con al menos un slot en los próximos N días."""
     hoy = timezone.localdate()
@@ -692,6 +709,7 @@ def dias_con_slots(
                 oferta_servicio_id=oferta_servicio_id,
                 modalidad=modalidad,
                 miembro_taller_id=miembro_taller_id,
+                requiere_especialidad=requiere_especialidad,
             )
         except Exception:
             logger.exception(
