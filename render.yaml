@@ -57,6 +57,11 @@ services:
         value: "True"
       - key: AGENDAMIENTO_IA_SEMANTICO_PROVEEDOR
         value: "lexico"
+      # Asistente IA de reparación (guía por orden asignada)
+      - key: ASISTENTE_DIAGNOSTICO_IA_ENABLED
+        value: "True"
+      - key: ASISTENTE_DIAGNOSTICO_IA_TIMEOUT
+        value: "12"
       # Opcional tier gratuito (elegir uno): GEMINI_API_KEY o HUGGINGFACE_API_TOKEN
       # y AGENDAMIENTO_IA_SEMANTICO_PROVEEDOR=auto
       # Variables que debes configurar manualmente en Render Dashboard:
