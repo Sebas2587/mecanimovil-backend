@@ -458,10 +458,11 @@ def login_proveedor(request):
             # VALIDAR que el usuario SÍ sea un proveedor
             es_proveedor = False
             tipo_proveedor = None
-            # Rol dentro del taller y permisos (para sesiones de supervisor)
+            # Rol dentro del taller y permisos (para sesiones de supervisor/mecánico)
             rol_taller = None
             permisos = None
             taller_id = None
+            miembro_id = None
 
             # Verificar si es taller (proveedor preferente tras la unificación)
             try:
@@ -507,6 +508,29 @@ def login_proveedor(request):
                     taller_id = supervisor.taller_id
                     logger.info(f"✅ Usuario {username} es supervisor del taller {taller_id}")
 
+            # Verificar si es mecánico del equipo con login propio
+            if not es_proveedor:
+                mecanico_equipo = (
+                    MiembroTaller.objects
+                    .filter(usuario=user, rol='mecanico')
+                    .select_related('taller')
+                    .first()
+                )
+                if mecanico_equipo is not None:
+                    if not mecanico_equipo.activo:
+                        logger.warning(f"❌ Login rechazado: mecánico {username} deshabilitado")
+                        return Response(
+                            {'non_field_errors': ['Tu acceso como mecánico está deshabilitado. Contacta al dueño del taller.']},
+                            status=status.HTTP_403_FORBIDDEN
+                        )
+                    es_proveedor = True
+                    tipo_proveedor = 'taller'
+                    rol_taller = 'mecanico'
+                    permisos = None
+                    taller_id = mecanico_equipo.taller_id
+                    miembro_id = mecanico_equipo.id
+                    logger.info(f"✅ Usuario {username} es mecánico del taller {taller_id}")
+
             # Si el usuario NO es proveedor, rechazar el login
             if not es_proveedor:
                 logger.warning(f"❌ Login rechazado: Usuario {username} NO es proveedor")
@@ -536,6 +560,7 @@ def login_proveedor(request):
                 'tipo_proveedor': tipo_proveedor,
                 'rol_taller': rol_taller,
                 'taller_id': taller_id,
+                'miembro_id': miembro_id,
                 'permisos': permisos,
             }
             
@@ -3552,9 +3577,11 @@ class EstadoProveedorView(APIView):
         # Buscar si el usuario tiene un perfil de taller o mecánico usando relaciones directas
         taller = None
         mecanico = None
-        # Rol dentro del taller (mandante por defecto; supervisor si opera el taller de otro)
+        # Rol dentro del taller (mandante por defecto; supervisor/mecánico si opera el taller de otro)
         rol_taller = 'mandante'
         permisos_supervisor = None
+        miembro_id = None
+        miembro_nombre = None
         
         # Buscar mecánico (relación directa)
         try:
@@ -3580,6 +3607,20 @@ class EstadoProveedorView(APIView):
                 taller = supervisor.taller
                 rol_taller = 'supervisor'
                 permisos_supervisor = supervisor.permisos or {}
+
+        # Si no es dueño ni supervisor, intentar resolver como mecánico con login propio
+        if taller is None and mecanico is None:
+            mecanico_equipo = (
+                MiembroTaller.objects
+                .filter(usuario=usuario, rol='mecanico', activo=True)
+                .select_related('taller')
+                .first()
+            )
+            if mecanico_equipo is not None:
+                taller = mecanico_equipo.taller
+                rol_taller = 'mecanico'
+                miembro_id = mecanico_equipo.id
+                miembro_nombre = mecanico_equipo.nombre
         
         # Determinar el proveedor principal. Unificación: el Taller es el proveedor
         # preferente; MecanicoDomicilio es legacy.
@@ -3650,6 +3691,8 @@ class EstadoProveedorView(APIView):
             'tipo_proveedor': 'taller' if taller else 'mecanico',
             'rol_taller': rol_taller,
             'permisos': permisos_supervisor,
+            'miembro_id': miembro_id,
+            'miembro_nombre': miembro_nombre,
             'tipo_cobertura_marca': getattr(proveedor, 'tipo_cobertura_marca', TIPO_COBERTURA_ESPECIALISTA),
             'nombre': proveedor.nombre,
             'estado_verificacion': proveedor.estado_verificacion,
@@ -4537,9 +4580,11 @@ class MiembroTallerViewSet(viewsets.ModelViewSet):
             .prefetch_related('especialidades')
         )
         # El supervisor solo ve mecánicos; mandante/supervisor son gestión del dueño.
-        _taller, _miembro, rol = self._contexto()
+        _taller, miembro, rol = self._contexto()
         if rol == 'supervisor':
             qs = qs.filter(rol='mecanico')
+        elif rol == 'mecanico' and miembro is not None:
+            qs = qs.filter(pk=miembro.pk)
         return qs
 
     def get_serializer_context(self):
@@ -4712,8 +4757,15 @@ class MiembroTallerViewSet(viewsets.ModelViewSet):
     )
     def subir_foto(self, request, pk=None):
         """Sube o reemplaza la foto de perfil de un miembro del equipo."""
-        self._exigir_gestion_mecanicos()
         miembro = self.get_object()
+        _taller, miembro_ctx, rol = self._contexto()
+        es_propio_mecanico = (
+            rol == 'mecanico'
+            and miembro_ctx is not None
+            and miembro_ctx.pk == miembro.pk
+        )
+        if not es_propio_mecanico:
+            self._exigir_gestion_mecanicos()
         if miembro.rol != 'mecanico':
             return Response(
                 {'error': 'Solo los mecánicos pueden tener foto de perfil pública.'},

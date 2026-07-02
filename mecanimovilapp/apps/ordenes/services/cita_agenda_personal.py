@@ -49,6 +49,14 @@ def resolver_proveedor_usuario(user: Usuario) -> tuple[Taller | None, MecanicoDo
     )
     if supervisor is not None:
         return supervisor.taller, None
+    mecanico_equipo = (
+        MiembroTaller.objects
+        .filter(usuario=user, rol='mecanico', activo=True)
+        .select_related('taller')
+        .first()
+    )
+    if mecanico_equipo is not None:
+        return mecanico_equipo.taller, None
     return None, None
 
 

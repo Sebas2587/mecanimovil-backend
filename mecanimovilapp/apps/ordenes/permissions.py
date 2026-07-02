@@ -21,6 +21,21 @@ def _taller_supervisado(user):
         return None
 
 
+def _taller_mecanico_equipo(user):
+    """Devuelve el taller que un mecánico del equipo con login activo opera, o None."""
+    try:
+        from mecanimovilapp.apps.usuarios.models import MiembroTaller
+        miembro = (
+            MiembroTaller.objects
+            .filter(usuario=user, rol='mecanico', activo=True)
+            .select_related('taller')
+            .first()
+        )
+        return miembro.taller if miembro else None
+    except Exception:
+        return None
+
+
 class IsProveedor(BasePermission):
     """
     Permiso que permite acceso solo a usuarios que sean talleres o mecánicos
@@ -74,6 +89,10 @@ class IsProveedor(BasePermission):
         if _taller_supervisado(request.user) is not None:
             return True
 
+        # Mecánico del equipo con login propio.
+        if _taller_mecanico_equipo(request.user) is not None:
+            return True
+
         else:
             logger.warning(
                 "Usuario %s no tiene perfil de taller ni mecánico",
@@ -108,6 +127,11 @@ class IsOrderOwnerForProvider(BasePermission):
         taller_sup = _taller_supervisado(request.user)
         if taller_sup is not None:
             return obj.taller_id == taller_sup.id
+
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
+        taller_ctx, miembro, rol = resolver_contexto_taller(request.user)
+        if rol == 'mecanico' and miembro is not None:
+            return obj.mecanico_asignado_id == miembro.id
 
         return False
 
@@ -150,6 +174,11 @@ class CanManageOrder(BasePermission):
         taller_sup = _taller_supervisado(request.user)
         if taller_sup is not None:
             return obj.taller_id == taller_sup.id
+
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
+        taller_ctx, miembro, rol = resolver_contexto_taller(request.user)
+        if rol == 'mecanico' and miembro is not None:
+            return obj.mecanico_asignado_id == miembro.id
 
         # Los administradores pueden gestionar todas las órdenes
         return request.user.is_staff

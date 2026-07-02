@@ -492,6 +492,7 @@ class SolicitudServicioProveedorSeguroSerializer(serializers.ModelSerializer):
     tiempo_respuesta_requerido = serializers.SerializerMethodField()
     informacion_disponible = serializers.SerializerMethodField()
     oferta_proveedor_id = serializers.SerializerMethodField()
+    mecanico_asignado_id = serializers.IntegerField(source='mecanico_asignado_id', read_only=True)
     
     class Meta:
         model = SolicitudServicio
@@ -501,7 +502,7 @@ class SolicitudServicioProveedorSeguroSerializer(serializers.ModelSerializer):
             'metodo_pago', 'total', 'estado', 'estado_display',
             'notas_cliente', 'notas_proveedor', 'motivo_rechazo', 
             'lineas_detail', 'lineas', 'puede_gestionar', 'tiempo_respuesta_requerido',
-            'informacion_disponible', 'oferta_proveedor_id'
+            'informacion_disponible', 'oferta_proveedor_id', 'mecanico_asignado_id'
         )
     
     def get_cliente_detail(self, obj):

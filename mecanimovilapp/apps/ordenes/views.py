@@ -2021,25 +2021,24 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
         """
         Filtrar órdenes para el proveedor autenticado
         """
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
+
         user = self.request.user
-        
-        # Determinar si es taller o mecánico
+        taller, miembro, rol = resolver_contexto_taller(user)
+
+        base_qs = SolicitudServicio.objects.select_related(
+            'cliente', 'cliente__usuario', 'vehiculo', 'taller', 'mecanico', 'oferta_proveedor', 'mecanico_asignado'
+        ).prefetch_related('lineas__oferta_servicio__servicio')
+
         try:
-            if hasattr(user, 'taller'):
-                return SolicitudServicio.objects.filter(
-                    taller=user.taller
-                ).select_related(
-                    'cliente', 'cliente__usuario', 'vehiculo', 'taller', 'mecanico', 'oferta_proveedor'
-                ).prefetch_related('lineas__oferta_servicio__servicio')
-            elif hasattr(user, 'mecanico_domicilio'):
-                return SolicitudServicio.objects.filter(
-                    mecanico=user.mecanico_domicilio
-                ).select_related(
-                    'cliente', 'cliente__usuario', 'vehiculo', 'taller', 'mecanico', 'oferta_proveedor'
-                ).prefetch_related('lineas__oferta_servicio__servicio')
-            else:
-                return SolicitudServicio.objects.none()
-        except:
+            if rol == 'mecanico' and miembro is not None:
+                return base_qs.filter(taller=taller, mecanico_asignado=miembro)
+            if taller is not None:
+                return base_qs.filter(taller=taller)
+            if hasattr(user, 'mecanico_domicilio'):
+                return base_qs.filter(mecanico=user.mecanico_domicilio)
+            return SolicitudServicio.objects.none()
+        except Exception:
             return SolicitudServicio.objects.none()
     
     def list(self, request, *args, **kwargs):
@@ -2469,6 +2468,9 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
         Permite al proveedor aceptar una orden
         NOTA: La inicialización del servicio es manual, se debe llamar a iniciar_servicio después
         """
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import exigir_no_mecanico_equipo
+
+        exigir_no_mecanico_equipo(request.user, 'aceptar órdenes')
         orden = self.get_object()
         
         # Verificar que la orden puede ser aceptada
@@ -2501,6 +2503,9 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
         """
         Permite al proveedor rechazar una orden
         """
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import exigir_no_mecanico_equipo
+
+        exigir_no_mecanico_equipo(request.user, 'rechazar órdenes')
         orden = self.get_object()
         
         # Verificar que la orden puede ser rechazada
@@ -2538,6 +2543,91 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
         return Response({
             'message': 'Orden rechazada exitosamente'
         })
+
+    def _puede_usar_asistente_ia(self, request, orden) -> bool:
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
+
+        if orden not in self.get_queryset():
+            return False
+        taller, miembro, rol = resolver_contexto_taller(request.user)
+        if rol == 'mecanico' and miembro is not None:
+            return orden.mecanico_asignado_id == miembro.id
+        if taller is not None and orden.taller_id == taller.id:
+            return True
+        if hasattr(request.user, 'mecanico_domicilio') and orden.mecanico_id == request.user.mecanico_domicilio.id:
+            return True
+        return False
+
+    def _respuesta_asistente_ia(self, diagnostico=None, resultado=None):
+        if diagnostico is not None:
+            contenido = diagnostico.contenido or None
+            disponible = diagnostico.estado == 'completado' and bool(contenido)
+            return Response({
+                'disponible': disponible,
+                'contenido': contenido,
+                'error': diagnostico.error or None,
+                'latencia_ms': diagnostico.latencia_ms,
+                'generado_en': diagnostico.creado_en,
+                'diagnostico_id': diagnostico.id,
+            })
+        return Response({
+            'disponible': bool(resultado and resultado.get('disponible')),
+            'contenido': (resultado or {}).get('contenido'),
+            'error': (resultado or {}).get('error'),
+            'latencia_ms': (resultado or {}).get('latencia_ms', 0),
+        })
+
+    @action(detail=True, methods=['get', 'post'], url_path='asistente-ia')
+    def asistente_ia(self, request, pk=None):
+        """Genera o consulta la guía de reparación asistida por IA."""
+        from mecanimovilapp.apps.ordenes.models import DiagnosticoAsistidoOrden
+        from mecanimovilapp.apps.ordenes.services.asistente_diagnostico import (
+            asistente_habilitado,
+            generar_guia_reparacion,
+        )
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
+
+        orden = self.get_object()
+        if not self._puede_usar_asistente_ia(request, orden):
+            return Response({'error': 'No tienes permiso para usar el asistente en esta orden.'}, status=403)
+
+        if request.method == 'GET':
+            ultimo = (
+                DiagnosticoAsistidoOrden.objects
+                .filter(orden=orden, estado='completado')
+                .order_by('-creado_en')
+                .first()
+            )
+            if ultimo is None:
+                return Response({
+                    'disponible': False,
+                    'contenido': None,
+                    'error': None,
+                    'latencia_ms': 0,
+                })
+            return self._respuesta_asistente_ia(diagnostico=ultimo)
+
+        if not asistente_habilitado():
+            return self._respuesta_asistente_ia(resultado={
+                'disponible': False,
+                'contenido': None,
+                'error': 'El asistente de diagnóstico IA no está habilitado.',
+                'latencia_ms': 0,
+            })
+
+        _taller, miembro, rol = resolver_contexto_taller(request.user)
+        generado_por = miembro if rol == 'mecanico' else None
+        resultado = generar_guia_reparacion(orden)
+        estado = 'completado' if resultado.get('disponible') else 'error'
+        diagnostico = DiagnosticoAsistidoOrden.objects.create(
+            orden=orden,
+            generado_por=generado_por,
+            contenido=resultado.get('contenido') or {},
+            estado=estado,
+            error=(resultado.get('error') or '')[:500],
+            latencia_ms=resultado.get('latencia_ms') or 0,
+        )
+        return self._respuesta_asistente_ia(diagnostico=diagnostico)
     
     @action(detail=False, methods=['get'])
     def estadisticas(self, request):
