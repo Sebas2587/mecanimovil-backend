@@ -7,11 +7,44 @@ from django.utils import timezone
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.tokens import AccessToken
 from rest_framework_simplejwt.exceptions import TokenError
-from .models import MecanicoDomicilio, Taller, ConnectionStatus
+from .models import MecanicoDomicilio, MiembroTaller, Taller, ConnectionStatus
 from .connection_throttle import reserve_ws_heartbeat_db_write
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
+
+
+def _resolve_proveedor_for_user(user):
+    """
+    Resuelve la entidad proveedor (MecanicoDomicilio o Taller) para WebSockets.
+    Supervisores y mecánicos de equipo operan sobre el Taller del mandante.
+    Retorna (proveedor, tipo_proveedor, session_user).
+    """
+    if not user or not getattr(user, 'is_authenticated', False):
+        return None, None, None
+
+    try:
+        mecanico = MecanicoDomicilio.objects.get(usuario=user)
+        return mecanico, 'mecanico', user
+    except MecanicoDomicilio.DoesNotExist:
+        pass
+
+    try:
+        taller = Taller.objects.get(usuario=user)
+        return taller, 'taller', user
+    except Taller.DoesNotExist:
+        pass
+
+    miembro = (
+        MiembroTaller.objects
+        .filter(usuario=user, rol__in=('supervisor', 'mecanico'), activo=True)
+        .select_related('taller')
+        .first()
+    )
+    if miembro is not None:
+        return miembro.taller, 'taller', user
+
+    return None, None, None
 
 class ConnectionConsumer(AsyncWebsocketConsumer):
     
@@ -359,29 +392,13 @@ class ConnectionConsumer(AsyncWebsocketConsumer):
         Obtiene el proveedor asociado al usuario autenticado
         """
         try:
-            # Obtener el usuario del scope
             user = self.scope.get('user')
-            if not user or not user.is_authenticated:
+            proveedor, tipo, session_user = _resolve_proveedor_for_user(user)
+            if proveedor is None:
                 return None
-            
-            # Buscar si es un mecánico a domicilio
-            try:
-                mecanico = MecanicoDomicilio.objects.get(usuario=user)
-                self.tipo_proveedor = 'mecanico'
-                return mecanico
-            except MecanicoDomicilio.DoesNotExist:
-                pass
-            
-            # Buscar si es un taller
-            try:
-                taller = Taller.objects.get(usuario=user)
-                self.tipo_proveedor = 'taller'
-                return taller
-            except Taller.DoesNotExist:
-                pass
-            
-            return None
-            
+            self.tipo_proveedor = tipo
+            self.session_user = session_user
+            return proveedor
         except Exception as e:
             logger.error(f"❌ Error obteniendo proveedor: {e}")
             return None
@@ -404,7 +421,10 @@ class ConnectionConsumer(AsyncWebsocketConsumer):
                 nombre = self.proveedor.razon_social
             
             usuario_id = None
-            if hasattr(self.proveedor, 'usuario'):
+            session_user = getattr(self, 'session_user', None)
+            if session_user is not None:
+                usuario_id = session_user.pk if hasattr(session_user, 'pk') else session_user.id
+            elif hasattr(self.proveedor, 'usuario'):
                 try:
                     usuario = self.proveedor.usuario
                     if usuario:
@@ -961,11 +981,13 @@ class MechanicStatusConsumer(AsyncWebsocketConsumer):
             elif hasattr(self.proveedor, 'razon_social'):
                 nombre = self.proveedor.razon_social
             
-            # Obtener usuario_id de forma segura
+            # Obtener usuario_id de forma segura (sesión real para miembros de equipo)
             usuario_id = None
-            if hasattr(self.proveedor, 'usuario'):
+            session_user = getattr(self, 'session_user', None)
+            if session_user is not None:
+                usuario_id = session_user.pk if hasattr(session_user, 'pk') else session_user.id
+            elif hasattr(self.proveedor, 'usuario'):
                 try:
-                    # Acceder al usuario de forma segura
                     usuario = self.proveedor.usuario
                     if usuario:
                         usuario_id = usuario.pk if hasattr(usuario, 'pk') else usuario.id
@@ -1006,22 +1028,14 @@ class MechanicStatusConsumer(AsyncWebsocketConsumer):
                     logger.error("❌ Token inválido (ni DRF ni JWT)")
                     return None
             
-            # Buscar si es un mecánico a domicilio
-            try:
-                mecanico = MecanicoDomicilio.objects.get(usuario=user)
-                return mecanico
-            except MecanicoDomicilio.DoesNotExist:
-                pass
-            
-            # Buscar si es un taller
-            try:
-                taller = Taller.objects.get(usuario=user)
-                return taller
-            except Taller.DoesNotExist:
-                pass
-            
-            logger.error(f"❌ Usuario {user.username} no es un proveedor")
-            return None
+            proveedor, tipo, session_user = _resolve_proveedor_for_user(user)
+            if proveedor is None:
+                logger.error(f"❌ Usuario {user.username} no es un proveedor")
+                return None
+
+            self.tipo_proveedor = tipo
+            self.session_user = session_user
+            return proveedor
             
         except Exception as e:
             logger.error(f"❌ Error autenticando token: {e}")
