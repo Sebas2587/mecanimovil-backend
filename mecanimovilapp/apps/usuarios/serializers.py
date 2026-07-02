@@ -361,7 +361,7 @@ class MiembroTallerSerializer(serializers.ModelSerializer):
             return {clave: True for clave in PERMISOS_SUPERVISOR_KEYS}
         return {clave: bool(permisos.get(clave, False)) for clave in PERMISOS_SUPERVISOR_KEYS}
 
-    def _crear_usuario_supervisor(self, username, password, email, nombre):
+    def _crear_usuario_miembro(self, username, password, email, nombre):
         from django.contrib.auth import get_user_model
         Usuario = get_user_model()
         username = username.strip()
@@ -387,6 +387,9 @@ class MiembroTallerSerializer(serializers.ModelSerializer):
         usuario.save()
         return usuario
 
+    def _crear_usuario_supervisor(self, username, password, email, nombre):
+        return self._crear_usuario_miembro(username, password, email, nombre)
+
     def create(self, validated_data):
         if self.context.get('rol_taller') == 'supervisor':
             raise serializers.ValidationError(
@@ -402,6 +405,12 @@ class MiembroTallerSerializer(serializers.ModelSerializer):
         if rol == 'supervisor':
             validated_data['permisos'] = self._sanear_permisos(validated_data.get('permisos'))
             usuario = self._crear_usuario_supervisor(
+                username, password, email, validated_data.get('nombre')
+            )
+            validated_data['usuario'] = usuario
+        elif rol == 'mecanico' and username and password:
+            validated_data['permisos'] = {}
+            usuario = self._crear_usuario_miembro(
                 username, password, email, validated_data.get('nombre')
             )
             validated_data['usuario'] = usuario
@@ -437,6 +446,19 @@ class MiembroTallerSerializer(serializers.ModelSerializer):
                 usuario.save()
             elif not instance.usuario_id and username and password:
                 instance.usuario = self._crear_usuario_supervisor(
+                    username, password, email or '', validated_data.get('nombre', instance.nombre)
+                )
+        elif instance.rol == 'mecanico':
+            validated_data.pop('permisos', None)
+            if instance.usuario_id and (password or email is not None):
+                usuario = instance.usuario
+                if email is not None:
+                    usuario.email = email or ''
+                if password:
+                    usuario.set_password(password)
+                usuario.save()
+            elif not instance.usuario_id and username and password:
+                instance.usuario = self._crear_usuario_miembro(
                     username, password, email or '', validated_data.get('nombre', instance.nombre)
                 )
         else:

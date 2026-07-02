@@ -247,32 +247,41 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
     """ViewSet para instancias de checklist"""
     serializer_class = ChecklistInstanceSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    def _contexto_proveedor(self):
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
+        return resolver_contexto_taller(self.request.user)
+
+    def _usuario_tiene_acceso_orden(self, user, orden) -> bool:
+        taller, miembro, rol = self._contexto_proveedor()
+        if rol == 'mecanico' and miembro is not None:
+            return orden.mecanico_asignado_id == miembro.id
+        if taller is not None and orden.taller_id == taller.id:
+            return True
+        if hasattr(user, 'mecanico_domicilio') and orden.mecanico_id == user.mecanico_domicilio.id:
+            return True
+        return False
     
     def get_queryset(self):
         """Filtrar checklist por proveedor autenticado"""
         user = self.request.user
-        
-        # Si es taller
-        if hasattr(user, 'taller'):
-            return ChecklistInstance.objects.filter(
-                orden__taller=user.taller
-            ).select_related(
-                'orden', 'checklist_template'
-            ).prefetch_related(
-                'respuestas__fotos', 'respuestas__item_template'
-            )
-        
-        # Si es mecánico a domicilio
-        elif hasattr(user, 'mecanico_domicilio'):
-            return ChecklistInstance.objects.filter(
-                orden__mecanico=user.mecanico_domicilio
-            ).select_related(
-                'orden', 'checklist_template'
-            ).prefetch_related(
-                'respuestas__fotos', 'respuestas__item_template'
-            )
-        
-        # Si no es proveedor, no ver nada
+        taller, miembro, rol = self._contexto_proveedor()
+
+        base_qs = ChecklistInstance.objects.select_related(
+            'orden', 'checklist_template'
+        ).prefetch_related(
+            'respuestas__fotos', 'respuestas__item_template'
+        )
+
+        if rol == 'mecanico' and miembro is not None:
+            return base_qs.filter(orden__mecanico_asignado=miembro)
+
+        if taller is not None:
+            return base_qs.filter(orden__taller=taller)
+
+        if hasattr(user, 'mecanico_domicilio'):
+            return base_qs.filter(orden__mecanico=user.mecanico_domicilio)
+
         return ChecklistInstance.objects.none()
     
     def get_serializer_class(self):
@@ -327,14 +336,10 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
             
             # Verificar que el usuario tiene acceso a esta orden
             user = request.user
-            tiene_acceso = False
+            tiene_acceso = self._usuario_tiene_acceso_orden(user, orden)
             
-            if hasattr(user, 'taller') and orden.taller == user.taller:
-                tiene_acceso = True
-                logger.info(f"🔸 Acceso verificado: Usuario es propietario del taller")
-            elif hasattr(user, 'mecanico_domicilio') and orden.mecanico == user.mecanico_domicilio:
-                tiene_acceso = True
-                logger.info(f"🔸 Acceso verificado: Usuario es el mecánico asignado")
+            if tiene_acceso:
+                logger.info(f"🔸 Acceso verificado para orden {orden_id}")
             
             if not tiene_acceso:
                 logger.error(f"🔸 ERROR: Usuario {user.username} no tiene acceso a orden {orden_id}")

@@ -647,6 +647,10 @@ HUGGINGFACE_MODEL = config('HUGGINGFACE_MODEL', default='Qwen/Qwen2.5-1.5B-Instr
 OLLAMA_BASE_URL = config('OLLAMA_BASE_URL', default='')
 OLLAMA_MODEL = config('OLLAMA_MODEL', default='llama3.2')
 
+# Asistente IA de guía de reparación para técnicos en órdenes asignadas
+ASISTENTE_DIAGNOSTICO_IA_ENABLED = config('ASISTENTE_DIAGNOSTICO_IA_ENABLED', default=False, cast=bool)
+ASISTENTE_DIAGNOSTICO_IA_TIMEOUT = config('ASISTENTE_DIAGNOSTICO_IA_TIMEOUT', default=12, cast=int)
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,

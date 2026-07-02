@@ -48,8 +48,52 @@ def notificar_checklist_pendiente_proveedor(orden, checklist_instance) -> None:
     from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
 
     user_id = resolver_usuario_proveedor_orden(orden)
-    if not user_id:
+    vehiculo_label = _vehiculo_label(orden)
+    solicitud_id = ''
+    if getattr(orden, 'oferta_proveedor_id', None) and orden.oferta_proveedor_id:
+        solicitud_id = str(orden.oferta_proveedor.solicitud_id)
+
+    payload = {
+        'type': 'checklist_pendiente',
+        'orden_id': str(orden.id),
+        'checklist_id': str(checklist_instance.id),
+        'solicitud_id': solicitud_id,
+    }
+    titulo = 'Completa el checklist del servicio'
+    cuerpo = (
+        f'Tienes un checklist pendiente para {vehiculo_label}. '
+        'Ábrelo y complétalo antes de continuar.'
+    )
+
+    mecanico_asignado = getattr(orden, 'mecanico_asignado', None)
+    mecanico_user_id = None
+    if mecanico_asignado is not None and mecanico_asignado.usuario_id:
+        mecanico_user_id = mecanico_asignado.usuario_id
+
+    destinatarios: list[int] = []
+    if mecanico_user_id:
+        destinatarios.append(mecanico_user_id)
+    if user_id and user_id not in destinatarios:
+        destinatarios.append(user_id)
+
+    if not destinatarios:
         logger.debug('[checklist_pendiente] Sin proveedor para orden %s', getattr(orden, 'id', None))
+        return
+
+    for uid in destinatarios:
+        try:
+            send_expo_push_notification.delay(uid, titulo, cuerpo, payload)
+        except Exception as exc:
+            logger.error('[checklist_pendiente] Error encolando push orden %s user %s: %s', orden.id, uid, exc)
+
+
+def notificar_orden_asignada_mecanico(orden, miembro) -> None:
+    """Encola push al mecánico cuando se le asigna una orden."""
+    from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
+
+    if miembro is None or not getattr(miembro, 'usuario_id', None):
+        return
+    if not getattr(miembro, 'activo', True):
         return
 
     vehiculo_label = _vehiculo_label(orden)
@@ -59,18 +103,23 @@ def notificar_checklist_pendiente_proveedor(orden, checklist_instance) -> None:
 
     try:
         send_expo_push_notification.delay(
-            user_id,
-            'Completa el checklist del servicio',
-            f'Tienes un checklist pendiente para {vehiculo_label}. Ábrelo y complétalo antes de continuar.',
+            miembro.usuario_id,
+            'Nueva orden asignada',
+            f'Se te asignó un servicio para {vehiculo_label}. Revisa los detalles y el checklist.',
             {
-                'type': 'checklist_pendiente',
+                'type': 'orden_asignada_mecanico',
                 'orden_id': str(orden.id),
-                'checklist_id': str(checklist_instance.id),
                 'solicitud_id': solicitud_id,
+                'miembro_id': str(miembro.id),
             },
         )
     except Exception as exc:
-        logger.error('[checklist_pendiente] Error encolando push orden %s: %s', orden.id, exc)
+        logger.error(
+            '[orden_asignada_mecanico] Error encolando push orden %s mecanico %s: %s',
+            getattr(orden, 'id', None),
+            getattr(miembro, 'id', None),
+            exc,
+        )
 
 
 def obtener_proveedores_elegibles_solicitud(solicitud):

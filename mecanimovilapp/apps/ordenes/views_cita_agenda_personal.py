@@ -302,7 +302,12 @@ class ProveedorAgendaViewSet(viewsets.ViewSet):
     permission_classes = [permissions.IsAuthenticated, IsProveedor]
 
     def list(self, request):
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
+
+        taller_ctx, miembro_ctx, rol_ctx = resolver_contexto_taller(request.user)
         taller, mecanico = resolver_proveedor_usuario(request.user)
+        if taller_ctx is not None:
+            taller = taller_ctx
         if not taller and not mecanico:
             return Response([])
 
@@ -310,6 +315,8 @@ class ProveedorAgendaViewSet(viewsets.ViewSet):
         fecha_hasta = request.query_params.get('fecha_hasta')
         incluir = request.query_params.get('incluir', 'activas,cerradas')
         miembro_taller_id = request.query_params.get('miembro_taller')
+        if rol_ctx == 'mecanico' and miembro_ctx is not None:
+            miembro_taller_id = str(miembro_ctx.id)
 
         estados_cita_map = {
             'activas': ['activa'],

@@ -7,6 +7,8 @@ qué puede hacer:
 - Mandante (dueño que registró el taller): acceso total.
 - Supervisor (MiembroTaller con login propio): opera sobre el taller del
   mandante, limitado por su mapa de `permisos`.
+- Mecánico (MiembroTaller con login propio): opera sobre el taller del
+  mandante, limitado a órdenes/checklists/agenda asignados a él.
 
 Esto permite que un supervisor inicie sesión y gestione el taller sin ser dueño,
 mientras el backend valida cada permiso (no solo la UI).
@@ -21,6 +23,7 @@ def resolver_contexto_taller(user):
 
     - Dueño directo del taller -> (taller, miembro_mandante|None, 'mandante')
     - Supervisor con login activo -> (taller_supervisado, miembro, 'supervisor')
+    - Mecánico con login activo -> (taller, miembro, 'mecanico')
     - Sin contexto de taller -> (None, None, None)
     """
     if not user or not getattr(user, 'is_authenticated', False):
@@ -46,6 +49,15 @@ def resolver_contexto_taller(user):
     if miembro is not None:
         return miembro.taller, miembro, 'supervisor'
 
+    miembro = (
+        MiembroTaller.objects
+        .filter(usuario=user, rol='mecanico', activo=True)
+        .select_related('taller')
+        .first()
+    )
+    if miembro is not None:
+        return miembro.taller, miembro, 'mecanico'
+
     return None, None, None
 
 
@@ -56,7 +68,18 @@ def usuario_puede(user, recurso):
         return False
     if rol == 'mandante':
         return True
+    if rol == 'mecanico':
+        return False
     return bool(miembro and miembro.tiene_permiso(recurso))
+
+
+def exigir_no_mecanico_equipo(user, accion='realizar esta acción'):
+    """Lanza PermissionDenied si el usuario es mecánico del equipo."""
+    from rest_framework.exceptions import PermissionDenied
+
+    _taller, _miembro, rol = resolver_contexto_taller(user)
+    if rol == 'mecanico':
+        raise PermissionDenied(f'Los mecánicos no pueden {accion}.')
 
 
 def requiere_permiso(recurso):

@@ -147,6 +147,26 @@ def asignar_mecanico_a_solicitud(solicitud, *, guardar: bool = True) -> MiembroT
         if not solicitud.fecha_servicio or not solicitud.hora_servicio:
             return None
 
+        anterior_asignado_id = getattr(solicitud, 'mecanico_asignado_id', None)
+
+        def _notificar_si_asignado(miembro_asignado: MiembroTaller | None) -> None:
+            if (
+                miembro_asignado is None
+                or not guardar
+                or miembro_asignado.id == anterior_asignado_id
+            ):
+                return
+            try:
+                from mecanimovilapp.apps.ordenes.services.notificaciones_proveedor import (
+                    notificar_orden_asignada_mecanico,
+                )
+                notificar_orden_asignada_mecanico(solicitud, miembro_asignado)
+            except Exception:
+                logger.exception(
+                    'Error notificando asignación mecánico solicitud=%s',
+                    getattr(solicitud, 'id', None),
+                )
+
         # Si el taller no tiene mecánicos activos, no se asigna (fallback a nivel taller).
         if not MiembroTaller.objects.filter(
             taller=taller, rol='mecanico', activo=True
@@ -183,6 +203,7 @@ def asignar_mecanico_a_solicitud(solicitud, *, guardar: bool = True) -> MiembroT
                     solicitud.save(update_fields=['mecanico_asignado'])
                 else:
                     solicitud.mecanico_asignado = miembro_pref
+                _notificar_si_asignado(miembro_pref)
                 return miembro_pref
 
         miembro = seleccionar_mecanico(
@@ -206,6 +227,8 @@ def asignar_mecanico_a_solicitud(solicitud, *, guardar: bool = True) -> MiembroT
                 getattr(solicitud, 'id', None), taller.id,
                 solicitud.fecha_servicio, solicitud.hora_servicio,
             )
+        else:
+            _notificar_si_asignado(miembro)
         return miembro
     except Exception:
         logger.exception(
