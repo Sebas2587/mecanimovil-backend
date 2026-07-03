@@ -3582,7 +3582,7 @@ class EstadoProveedorView(APIView):
         permisos_supervisor = None
         miembro_id = None
         miembro_nombre = None
-        
+        mecanico_equipo = None
         # Buscar mecánico (relación directa)
         try:
             mecanico = MecanicoDomicilio.objects.get(usuario=usuario)
@@ -3614,6 +3614,7 @@ class EstadoProveedorView(APIView):
                 MiembroTaller.objects
                 .filter(usuario=usuario, rol='mecanico', activo=True)
                 .select_related('taller')
+                .prefetch_related('especialidades')
                 .first()
             )
             if mecanico_equipo is not None:
@@ -3684,6 +3685,17 @@ class EstadoProveedorView(APIView):
                     datos_proveedor["ubicacion_lng"] = mecanico.ubicacion.x
                 except Exception:
                     pass
+
+        miembro_modalidad_tecnico = None
+        miembro_modalidad_display = None
+        miembro_especialidades = []
+        if mecanico_equipo is not None:
+            miembro_modalidad_tecnico = mecanico_equipo.modalidad_tecnico
+            miembro_modalidad_display = mecanico_equipo.get_modalidad_tecnico_display()
+            miembro_especialidades = [
+                {'id': c.id, 'nombre': c.nombre}
+                for c in mecanico_equipo.especialidades.all()
+            ]
         
         return Response({
             'tiene_perfil': True,
@@ -3693,6 +3705,9 @@ class EstadoProveedorView(APIView):
             'permisos': permisos_supervisor,
             'miembro_id': miembro_id,
             'miembro_nombre': miembro_nombre,
+            'miembro_modalidad_tecnico': miembro_modalidad_tecnico,
+            'miembro_modalidad_display': miembro_modalidad_display,
+            'miembro_especialidades': miembro_especialidades,
             'tipo_cobertura_marca': getattr(proveedor, 'tipo_cobertura_marca', TIPO_COBERTURA_ESPECIALISTA),
             'nombre': proveedor.nombre,
             'estado_verificacion': proveedor.estado_verificacion,
