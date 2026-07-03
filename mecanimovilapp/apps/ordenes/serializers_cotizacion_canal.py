@@ -18,6 +18,19 @@ class RepuestoCotizacionSerializer(serializers.Serializer):
 class CotizacionCanalSerializer(serializers.ModelSerializer):
     repuestos = RepuestoCotizacionSerializer(many=True, required=False)
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        for key in ('mano_obra_clp', 'costo_repuestos_clp', 'total_clp'):
+            if data.get(key) is not None:
+                data[key] = int(data[key])
+        for rep in data.get('repuestos') or []:
+            if rep.get('precio_unitario_clp') is not None:
+                rep['precio_unitario_clp'] = int(rep['precio_unitario_clp'])
+            ref = rep.get('precio_referencia_ia')
+            if ref is not None:
+                rep['precio_referencia_ia'] = int(ref)
+        return data
+
     class Meta:
         model = CotizacionCanal
         fields = (
@@ -73,6 +86,8 @@ class GenerarCotizacionIaSerializer(serializers.Serializer):
     plantilla_id = serializers.IntegerField(required=False, allow_null=True)
 
     def validate(self, attrs):
+        if attrs.get('plantilla_id'):
+            return attrs
         if not (attrs.get('servicio_nombre') or '').strip():
             raise serializers.ValidationError(
                 {'servicio_nombre': 'Indica el servicio a cotizar.'},

@@ -47,6 +47,7 @@ def build_chat_payload(
         'channel': channel_slug,
         'external_contact_name': ext.display_name if ext else None,
         'external_contact_phone': ext.phone if ext else None,
+        'channel_metadata': message.channel_metadata or {},
     }
 
 

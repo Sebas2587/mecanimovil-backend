@@ -124,6 +124,29 @@ def enviar_cotizacion_canal(cotizacion: CotizacionCanal, user) -> Message:
     cotizacion.save(
         update_fields=['message_envio', 'estado', 'enviada_en', 'actualizado_en'],
     )
+
+    from mecanimovilapp.apps.omnichannel.services.broadcast import (
+        broadcast_to_participants,
+        build_chat_payload,
+    )
+    from mecanimovilapp.apps.omnichannel.utils import channel_to_api_slug
+
+    channel_slug = channel_to_api_slug(conversation.source_channel)
+    sender_name = (
+        f'{user.first_name or ""} {user.last_name or ""}'.strip()
+        or getattr(user, 'username', '')
+        or 'Taller'
+    )
+    payload = build_chat_payload(
+        conversation=conversation,
+        message=message,
+        channel_slug=channel_slug,
+        es_proveedor=True,
+        sender_name=sender_name,
+        external_contact=getattr(conversation, 'external_contact', None),
+    )
+    broadcast_to_participants(conversation, payload)
+
     return message
 
 
