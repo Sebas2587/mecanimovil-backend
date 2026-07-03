@@ -65,6 +65,8 @@ services:
       # Opcional tier gratuito (elegir uno): GEMINI_API_KEY o HUGGINGFACE_API_TOKEN
       # y AGENDAMIENTO_IA_SEMANTICO_PROVEEDOR=auto
       # Variables que debes configurar manualmente en Render Dashboard:
+      # - GEMINI_API_KEY (requerido para asistente de diagnóstico IA)
+      # - GEMINI_LIMITE_TOKENS_MENSUAL (opcional, default 1000000 para alertas)
       # - MERCADOPAGO_ACCESS_TOKEN
       # - MERCADOPAGO_MODE (production o test)
       # - MERCADOPAGO_WEBHOOK_SECRET
