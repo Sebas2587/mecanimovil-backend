@@ -2075,6 +2075,7 @@ class CitaAgendaPersonalDetalle(models.Model):
     vehiculo_marca = models.CharField(max_length=100, blank=True, default='')
     vehiculo_modelo = models.CharField(max_length=100, blank=True, default='')
     vehiculo_patente = models.CharField(max_length=20, blank=True, default='')
+    vehiculo_vin = models.CharField(max_length=30, blank=True, default='')
     vehiculo_anio = models.PositiveIntegerField(null=True, blank=True)
     vehiculo_cilindraje = models.CharField(max_length=30, blank=True, default='')
     vehiculo_color = models.CharField(max_length=30, blank=True, default='')

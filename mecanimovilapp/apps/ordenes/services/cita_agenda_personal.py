@@ -421,6 +421,7 @@ def actualizar_cita_personal(
         'vehiculo_marca': detalle.get('vehiculo_marca', det_obj.vehiculo_marca),
         'vehiculo_modelo': detalle.get('vehiculo_modelo', det_obj.vehiculo_modelo),
         'vehiculo_patente': detalle.get('vehiculo_patente', det_obj.vehiculo_patente),
+        'vehiculo_vin': detalle.get('vehiculo_vin', det_obj.vehiculo_vin),
         'vehiculo_anio': detalle.get('vehiculo_anio', det_obj.vehiculo_anio),
         'vehiculo_cilindraje': detalle.get('vehiculo_cilindraje', det_obj.vehiculo_cilindraje),
         'vehiculo_color': detalle.get('vehiculo_color', det_obj.vehiculo_color),

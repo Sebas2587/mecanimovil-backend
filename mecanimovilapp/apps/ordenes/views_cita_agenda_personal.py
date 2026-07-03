@@ -374,6 +374,7 @@ def _serializar_cita_personal_evento(cita: CitaAgendaPersonal) -> dict:
         'vehiculo_modelo': det.vehiculo_modelo,
         'vehiculo_anio': det.vehiculo_anio,
         'vehiculo_patente': det.vehiculo_patente,
+        'vehiculo_vin': det.vehiculo_vin,
         'servicio_nombre': nombre_servicio,
         'descripcion': det.descripcion,
         'precio_referencia': det.precio_referencia,

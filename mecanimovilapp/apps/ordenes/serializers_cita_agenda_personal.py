@@ -22,6 +22,7 @@ class CitaAgendaPersonalDetalleSerializer(serializers.ModelSerializer):
             'vehiculo_marca',
             'vehiculo_modelo',
             'vehiculo_patente',
+            'vehiculo_vin',
             'vehiculo_anio',
             'vehiculo_cilindraje',
             'vehiculo_color',
