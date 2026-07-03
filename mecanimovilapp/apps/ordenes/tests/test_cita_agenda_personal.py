@@ -228,3 +228,11 @@ class CitaAgendaPersonalMecanicoEquipoTestCase(TestCase):
         self.assertEqual(res.status_code, 200, res.content)
         self.assertFalse(res.data['disponible'])
         self.assertIsNone(res.data['contenido'])
+
+    def test_mandante_no_puede_usar_asistente_ia_cita(self):
+        cita = self._crear_cita(self.mecanico_a)
+        self.client.force_authenticate(user=self.taller.usuario)
+        res_get = self.client.get(f'/api/ordenes/citas-agenda-personal/{cita.id}/asistente-ia/')
+        self.assertEqual(res_get.status_code, 403, res_get.content)
+        res_post = self.client.post(f'/api/ordenes/citas-agenda-personal/{cita.id}/asistente-ia/')
+        self.assertEqual(res_post.status_code, 403, res_post.content)

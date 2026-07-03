@@ -193,7 +193,13 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
         return Response(CitaAgendaPersonalSerializer(cita).data)
 
     def _puede_usar_asistente_ia_cita(self, request, cita: CitaAgendaPersonal) -> bool:
-        return self.get_queryset().filter(pk=cita.pk).exists()
+        from mecanimovilapp.apps.ordenes.services.asistente_diagnostico.permisos import (
+            usuario_puede_usar_asistente_ia,
+        )
+
+        if not self.get_queryset().filter(pk=cita.pk).exists():
+            return False
+        return usuario_puede_usar_asistente_ia(request.user, cita=cita)
 
     def _respuesta_asistente_ia_cita(self, diagnostico=None, resultado=None):
         if diagnostico is not None:

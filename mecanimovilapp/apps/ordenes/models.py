@@ -2191,3 +2191,57 @@ class DiagnosticoAsistidoCitaPersonal(models.Model):
 
     def __str__(self):
         return f'Diagnóstico IA cita {self.cita_id} ({self.estado})'
+
+
+class GuiaReparacionGuardada(models.Model):
+    """Guía IA guardada por un mecánico para consulta posterior por marca/modelo."""
+
+    ORIGEN_CHOICES = [
+        ('orden', 'Orden Mecanimovil'),
+        ('cita', 'Cita personal'),
+    ]
+
+    miembro_taller = models.ForeignKey(
+        'usuarios.MiembroTaller',
+        on_delete=models.CASCADE,
+        related_name='guias_reparacion_guardadas',
+    )
+    taller = models.ForeignKey(
+        'usuarios.Taller',
+        on_delete=models.CASCADE,
+        related_name='guias_reparacion_guardadas',
+    )
+    vehiculo_marca = models.CharField(max_length=100, blank=True, default='')
+    vehiculo_modelo = models.CharField(max_length=100, blank=True, default='')
+    vehiculo_anio = models.PositiveIntegerField(null=True, blank=True)
+    vehiculo_patente = models.CharField(max_length=20, blank=True, default='')
+    titulo = models.CharField(max_length=255)
+    contenido = models.JSONField(default=dict, blank=True)
+    origen = models.CharField(max_length=10, choices=ORIGEN_CHOICES)
+    origen_id = models.PositiveIntegerField(null=True, blank=True)
+    diagnostico_orden = models.ForeignKey(
+        DiagnosticoAsistidoOrden,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='guias_guardadas',
+    )
+    diagnostico_cita = models.ForeignKey(
+        DiagnosticoAsistidoCitaPersonal,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='guias_guardadas',
+    )
+    creado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = _('guía de reparación guardada')
+        verbose_name_plural = _('guías de reparación guardadas')
+        ordering = ['-creado_en']
+        indexes = [
+            models.Index(fields=['miembro_taller', 'vehiculo_marca', 'vehiculo_modelo']),
+        ]
+
+    def __str__(self):
+        return f'Guía {self.vehiculo_marca} {self.vehiculo_modelo} ({self.miembro_taller_id})'

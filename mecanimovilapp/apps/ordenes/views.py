@@ -2549,18 +2549,13 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
         })
 
     def _puede_usar_asistente_ia(self, request, orden) -> bool:
-        from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
+        from mecanimovilapp.apps.ordenes.services.asistente_diagnostico.permisos import (
+            usuario_puede_usar_asistente_ia,
+        )
 
         if orden not in self.get_queryset():
             return False
-        taller, miembro, rol = resolver_contexto_taller(request.user)
-        if rol == 'mecanico' and miembro is not None:
-            return orden.mecanico_asignado_id == miembro.id
-        if taller is not None and orden.taller_id == taller.id:
-            return True
-        if hasattr(request.user, 'mecanico_domicilio') and orden.mecanico_id == request.user.mecanico_domicilio.id:
-            return True
-        return False
+        return usuario_puede_usar_asistente_ia(request.user, orden=orden)
 
     def _respuesta_asistente_ia(self, diagnostico=None, resultado=None):
         if diagnostico is not None:

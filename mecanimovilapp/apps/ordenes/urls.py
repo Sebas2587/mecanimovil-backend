@@ -10,6 +10,7 @@ from .views import (
 )
 from .views_asistente_agendamiento import AsistenteAgendamientoViewSet
 from .views_cita_agenda_personal import CitaAgendaPersonalViewSet, ProveedorAgendaViewSet
+from .views_guias_reparacion import GuiaReparacionGuardadaViewSet
 
 app_name = 'ordenes'
 
@@ -37,6 +38,11 @@ router.register(
     r'proveedor-agenda',
     ProveedorAgendaViewSet,
     basename='proveedor-agenda',
+)
+router.register(
+    r'guias-reparacion-guardadas',
+    GuiaReparacionGuardadaViewSet,
+    basename='guias-reparacion-guardadas',
 )
 
 # RUTAS DE DISPONIBILIDAD ELIMINADAS - REEMPLAZADAS POR ENDPOINTS EN USUARIOS APP
