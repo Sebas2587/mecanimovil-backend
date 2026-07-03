@@ -668,6 +668,11 @@ GEMINI_LIMITE_TOKENS_MENSUAL = config('GEMINI_LIMITE_TOKENS_MENSUAL', default=1_
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
+    'filters': {
+        'suppress_routine_api_401': {
+            '()': 'mecanimovilapp.logging_filters.SuppressRoutineHttp401Filter',
+        },
+    },
     'formatters': {
         'verbose': {
             'format': '{levelname} {asctime} {module} {message}',
@@ -683,6 +688,7 @@ LOGGING = {
             'level': 'INFO',
             'class': 'logging.StreamHandler',
             'formatter': 'simple',
+            'filters': ['suppress_routine_api_401'],
         },
     },
     'loggers': {
@@ -690,6 +696,11 @@ LOGGING = {
             'handlers': ['console'],
             'level': 'INFO',
             'propagate': True,
+        },
+        'django.request': {
+            'handlers': ['console'],
+            'level': 'WARNING',
+            'propagate': False,
         },
         'channels': {
             'handlers': ['console'],
