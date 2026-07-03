@@ -1,4 +1,5 @@
 from django.db import models
+from django.conf import settings
 from django.db.models.deletion import ProtectedError
 from django.db.models import Q
 from django.utils.translation import gettext_lazy as _
@@ -2245,3 +2246,123 @@ class GuiaReparacionGuardada(models.Model):
 
     def __str__(self):
         return f'Guía {self.vehiculo_marca} {self.vehiculo_modelo} ({self.miembro_taller_id})'
+
+
+class CotizacionCanal(models.Model):
+    """Cotización generada por el mandante en chat omnicanal."""
+
+    ESTADO_CHOICES = [
+        ('borrador', 'Borrador'),
+        ('enviada', 'Enviada'),
+        ('aceptada', 'Aceptada'),
+        ('rechazada', 'Rechazada'),
+        ('expirada', 'Expirada'),
+        ('cancelada', 'Cancelada'),
+    ]
+
+    MODALIDAD_CHOICES = [
+        ('taller', 'En taller'),
+        ('domicilio', 'A domicilio'),
+    ]
+
+    conversation = models.ForeignKey(
+        'chat.Conversation',
+        on_delete=models.CASCADE,
+        related_name='cotizaciones_canal',
+    )
+    taller = models.ForeignKey(
+        'usuarios.Taller',
+        on_delete=models.CASCADE,
+        related_name='cotizaciones_canal',
+    )
+    creado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='cotizaciones_canal_creadas',
+    )
+    estado = models.CharField(max_length=20, choices=ESTADO_CHOICES, default='borrador', db_index=True)
+    modalidad = models.CharField(max_length=20, choices=MODALIDAD_CHOICES, default='taller')
+
+    vehiculo_marca = models.CharField(max_length=100, blank=True, default='')
+    vehiculo_modelo = models.CharField(max_length=100, blank=True, default='')
+    vehiculo_anio = models.PositiveIntegerField(null=True, blank=True)
+    vehiculo_patente = models.CharField(max_length=20, blank=True, default='')
+    vehiculo_cilindraje = models.CharField(max_length=50, blank=True, default='')
+    vehiculo_vin = models.CharField(max_length=50, blank=True, default='')
+    tipo_motor = models.CharField(max_length=20, blank=True, default='')
+    tipo_motor_label = models.CharField(max_length=80, blank=True, default='')
+    aviso_motor = models.TextField(blank=True, default='')
+
+    servicio_nombre = models.CharField(max_length=255, blank=True, default='')
+    descripcion_problema = models.TextField(blank=True, default='')
+    repuestos = models.JSONField(default=list, blank=True)
+    mano_obra_clp = models.DecimalField(max_digits=12, decimal_places=0, default=0)
+    costo_repuestos_clp = models.DecimalField(max_digits=12, decimal_places=0, default=0)
+    total_clp = models.DecimalField(max_digits=12, decimal_places=0, default=0)
+    duracion_minutos_estimada = models.PositiveIntegerField(null=True, blank=True)
+    advertencias = models.JSONField(default=list, blank=True)
+    contenido_ia = models.JSONField(default=dict, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    tokens_entrada = models.PositiveIntegerField(default=0)
+    tokens_salida = models.PositiveIntegerField(default=0)
+    modelo_ia = models.CharField(max_length=80, blank=True, default='')
+
+    message_envio = models.ForeignKey(
+        'chat.Message',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='cotizacion_canal_enviada',
+    )
+    enviada_en = models.DateTimeField(null=True, blank=True)
+    aceptada_en = models.DateTimeField(null=True, blank=True)
+    rechazada_en = models.DateTimeField(null=True, blank=True)
+    creado_en = models.DateTimeField(auto_now_add=True)
+    actualizado_en = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _('cotización canal')
+        verbose_name_plural = _('cotizaciones canal')
+        ordering = ['-creado_en']
+        indexes = [
+            models.Index(fields=['conversation', 'estado']),
+            models.Index(fields=['taller', '-creado_en']),
+        ]
+
+    def __str__(self):
+        return f'Cotización #{self.pk} ({self.estado}) — {self.servicio_nombre}'
+
+
+class CotizacionCanalPlantilla(models.Model):
+    """Plantilla reutilizable de cotización del taller."""
+
+    taller = models.ForeignKey(
+        'usuarios.Taller',
+        on_delete=models.CASCADE,
+        related_name='plantillas_cotizacion_canal',
+    )
+    creado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='plantillas_cotizacion_canal',
+    )
+    titulo = models.CharField(max_length=255)
+    snapshot = models.JSONField(default=dict, blank=True)
+    uso_count = models.PositiveIntegerField(default=0)
+    creado_en = models.DateTimeField(auto_now_add=True)
+    actualizado_en = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _('plantilla cotización canal')
+        verbose_name_plural = _('plantillas cotización canal')
+        ordering = ['-actualizado_en']
+        indexes = [
+            models.Index(fields=['taller', '-actualizado_en']),
+        ]
+
+    def __str__(self):
+        return f'{self.titulo} ({self.taller_id})'

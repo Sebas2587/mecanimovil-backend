@@ -123,6 +123,7 @@ def send_meta_message(message_id: int):
 
     client = MetaGraphClient(connection.access_token)
     text = (message.content or '').strip()
+    meta = message.channel_metadata or {}
     external_id = contact.external_id
     attachment_url = get_cpanel_file_url(message.attachment) if message.attachment else None
     media_kind = None
@@ -176,7 +177,30 @@ def send_meta_message(message_id: int):
                     connection.access_token,
                 )
         elif text:
-            if connection.channel == 'WHATSAPP' and connection.phone_number_id:
+            if (
+                meta.get('interactive')
+                and meta.get('tipo') == 'cotizacion_canal'
+                and connection.channel == 'WHATSAPP'
+                and connection.phone_number_id
+            ):
+                cot_id = meta.get('cotizacion_id')
+                resp = client.send_whatsapp_interactive_buttons(
+                    connection.phone_number_id,
+                    external_id,
+                    text,
+                    [
+                        {
+                            'id': f'cotizacion_aceptar_{cot_id}',
+                            'title': 'Aceptar',
+                        },
+                        {
+                            'id': f'cotizacion_rechazar_{cot_id}',
+                            'title': 'Rechazar',
+                        },
+                    ],
+                    connection.access_token,
+                )
+            elif connection.channel == 'WHATSAPP' and connection.phone_number_id:
                 resp = client.send_whatsapp_text(
                     connection.phone_number_id,
                     external_id,

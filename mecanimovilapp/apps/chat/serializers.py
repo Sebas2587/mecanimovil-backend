@@ -41,7 +41,7 @@ class MessageSerializer(serializers.ModelSerializer):
         model = Message
         fields = (
             'id', 'conversation', 'sender_id', 'sender_name', 'content', 'attachment',
-            'timestamp', 'is_read', 'direction', 'external_message_id',
+            'timestamp', 'is_read', 'direction', 'external_message_id', 'channel_metadata',
         )
         read_only_fields = ('conversation', 'timestamp', 'is_read')
 

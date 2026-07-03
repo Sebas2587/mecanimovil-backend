@@ -492,6 +492,40 @@ class MetaGraphClient:
             timeout=30,
         )
 
+    def send_whatsapp_interactive_buttons(
+        self,
+        phone_number_id: str,
+        to_wa_id: str,
+        body_text: str,
+        buttons: list[dict[str, str]],
+        token: str,
+    ):
+        """Envía mensaje interactivo con botones reply (máx 3)."""
+        action_buttons = []
+        for btn in buttons[:3]:
+            action_buttons.append({
+                'type': 'reply',
+                'reply': {
+                    'id': btn['id'],
+                    'title': btn['title'][:20],
+                },
+            })
+        return requests.post(
+            self._url(f'{phone_number_id}/messages'),
+            json={
+                'messaging_product': 'whatsapp',
+                'to': to_wa_id,
+                'type': 'interactive',
+                'interactive': {
+                    'type': 'button',
+                    'body': {'text': body_text[:1024]},
+                    'action': {'buttons': action_buttons},
+                },
+            },
+            params={'access_token': token},
+            timeout=30,
+        )
+
     def send_page_message(self, page_id: str, recipient_id: str, text: str, token: str):
         return requests.post(
             self._url(f'{page_id}/messages'),

@@ -201,6 +201,10 @@ class OmnichannelService:
                         text = msg.get('text', {}).get('body', '')
                     elif msg.get('type') == 'button':
                         text = msg.get('button', {}).get('text', '')
+                    elif msg.get('type') == 'interactive':
+                        interactive = msg.get('interactive') or {}
+                        btn = interactive.get('button_reply') or interactive.get('list_reply') or {}
+                        text = btn.get('title') or text
                     else:
                         media = parse_whatsapp_media(msg)
                         if media:
@@ -213,6 +217,8 @@ class OmnichannelService:
                         'text': text,
                         'display_name': value.get('contacts', [{}])[0].get('profile', {}).get('name', ''),
                         'media': media,
+                        'interactive': msg.get('interactive') if msg.get('type') == 'interactive' else None,
+                        'message_type': msg.get('type'),
                     })
         return events
 
@@ -286,9 +292,9 @@ class OmnichannelService:
                         event.get('phone_number_id'),
                     )
                     continue
-                if not event.get('text') and not event.get('media'):
+                if not event.get('text') and not event.get('media') and not event.get('interactive'):
                     continue
-                cls.ingest_inbound_message(
+                msg = cls.ingest_inbound_message(
                     conn,
                     external_id=event['external_id'],
                     text=event.get('text') or media_label((event.get('media') or {}).get('kind')),
@@ -297,6 +303,17 @@ class OmnichannelService:
                     phone=event.get('external_id'),
                     metadata={**event, 'media': event.get('media')},
                 )
+                if msg and event.get('interactive'):
+                    btn = (event.get('interactive') or {}).get('button_reply') or {}
+                    button_id = btn.get('id')
+                    if button_id:
+                        from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
+                            procesar_respuesta_interactive_cotizacion,
+                        )
+                        procesar_respuesta_interactive_cotizacion(
+                            button_id=button_id,
+                            conversation=msg.conversation,
+                        )
                 processed += 1
         elif body.get('object') == 'page':
             events = cls.parse_messenger_payload(body, 'MESSENGER')

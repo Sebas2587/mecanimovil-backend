@@ -655,6 +655,12 @@ ASISTENTE_DIAGNOSTICO_GEMINI_MODEL = config(
 )
 ASISTENTE_DIAGNOSTICO_IA_ENABLED = config('ASISTENTE_DIAGNOSTICO_IA_ENABLED', default=False, cast=bool)
 ASISTENTE_DIAGNOSTICO_IA_TIMEOUT = config('ASISTENTE_DIAGNOSTICO_IA_TIMEOUT', default=12, cast=int)
+ASISTENTE_COTIZACION_GEMINI_MODEL = config(
+    'ASISTENTE_COTIZACION_GEMINI_MODEL',
+    default='',
+)
+ASISTENTE_COTIZACION_IA_ENABLED = config('ASISTENTE_COTIZACION_IA_ENABLED', default=False, cast=bool)
+ASISTENTE_COTIZACION_IA_TIMEOUT = config('ASISTENTE_COTIZACION_IA_TIMEOUT', default=15, cast=int)
 GEMINI_RETRY_MAX = config('GEMINI_RETRY_MAX', default=2, cast=int)
 # Cuota mensual de referencia para alertas de uso Gemini (Google AI Studio renueva cada mes calendario)
 GEMINI_LIMITE_TOKENS_MENSUAL = config('GEMINI_LIMITE_TOKENS_MENSUAL', default=1_000_000, cast=int)

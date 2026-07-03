@@ -67,6 +67,13 @@ services:
         value: "gemini-3.1-flash-lite"
       - key: ASISTENTE_DIAGNOSTICO_GEMINI_MODEL
         value: "gemini-3.1-flash-lite"
+      # Asistente IA cotización chat omnicanal
+      - key: ASISTENTE_COTIZACION_IA_ENABLED
+        value: "True"
+      - key: ASISTENTE_COTIZACION_IA_TIMEOUT
+        value: "15"
+      - key: ASISTENTE_COTIZACION_GEMINI_MODEL
+        value: "gemini-3.1-flash-lite"
       # Opcional tier gratuito (elegir uno): GEMINI_API_KEY o HUGGINGFACE_API_TOKEN
       # y AGENDAMIENTO_IA_SEMANTICO_PROVEEDOR=auto
       # Variables que debes configurar manualmente en Render Dashboard:
