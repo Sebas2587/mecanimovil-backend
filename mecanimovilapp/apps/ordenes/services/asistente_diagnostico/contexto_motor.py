@@ -8,7 +8,7 @@ from mecanimovilapp.apps.vehiculos.catalogo_resolver import normalizar_tipo_moto
 
 MOTOR_LABELS = {
     'GASOLINA': 'Bencinero (gasolina)',
-    'DIESEL': 'Diésel',
+    'DIESEL': 'Diésel (petróleo)',
     'ELECTRICO': 'Eléctrico',
     'HIBRIDO': 'Híbrido',
 }
@@ -19,8 +19,10 @@ MOTOR_REGLAS_PROMPT = {
         'NO glow plugs, NO bomba inyectora diésel, NO prechamber.'
     ),
     'DIESEL': (
-        'Motor diésel: bujías de incandescencia/glow plugs, bomba inyectora, filtros diésel, turbo. '
-        'NO bujías de encendido convencionales de gasolina.'
+        'Motor diésel/petróleo: bujías de incandescencia (glow plugs), bomba inyectora, '
+        'inyectores diésel, filtros diésel, rail/common rail. '
+        'NO bujías de encendido convencionales de gasolina. '
+        'El "sistema de encendido" en diésel se refiere a precalentamiento/incandescencia, no a bujías ICE gasolina.'
     ),
     'ELECTRICO': (
         'Vehículo 100% eléctrico: batería de alto voltaje, motor de tracción, refrigeración de batería. '
@@ -33,11 +35,21 @@ MOTOR_REGLAS_PROMPT = {
 }
 
 _MOTOR_TEXTO_PATTERNS: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r'\b(?:di[eé]sel|petr[oó]leo|petrolero)\b', re.I), 'DIESEL'),
-    (re.compile(r'\b(?:bencin[a-o]|gasolin[a-o]|bencinero)\b', re.I), 'GASOLINA'),
+    (re.compile(r'\b(?:di[eé]sel|petr[oó]leo|petroler[oa]s?)\b', re.I), 'DIESEL'),
+    (re.compile(r'\b(?:bencin[a-o]|gasolin[a-o]|benciner[oa]s?)\b', re.I), 'GASOLINA'),
     (re.compile(r'\b(?:el[eé]ctric[oa-o]s?|bev|100\s*%\s*el[eé]ctric)\b', re.I), 'ELECTRICO'),
     (re.compile(r'\b(?:h[ií]brid[oa-o]s?|hybrid|phev|hev)\b', re.I), 'HIBRIDO'),
 ]
+
+# Indicadores habituales en nombre comercial del modelo (Chile/Latam)
+_MODELO_DIESEL_MARKERS = (
+    'HDI', 'JTD', 'JTDM', 'TDI', 'TDCI', 'CDTI', 'DCI', 'DCi', 'ECOTDI', 'BLUETDI',
+    'MULTIJET', 'CRDI', 'D4D', 'TD ', ' TD', ' 2.0D', '1.6D', '2.2D',
+)
+_MODELO_GASOLINA_MARKERS = (
+    'T-JET', 'TJET', 'T JET', 'TSI', 'TFSI', 'GDI', 'MPI', 'SKYACTIV-G', 'FIRE',
+    'ECOBOOST', 'VTI', '16V', 'VVT', 'TURBO 1.4', '1.4T',
+)
 
 
 def parse_tipo_motor_si_presente(valor: str | None) -> str | None:
@@ -52,6 +64,28 @@ def inferir_tipo_motor_desde_texto(texto: str | None) -> str | None:
     for pattern, codigo in _MOTOR_TEXTO_PATTERNS:
         if pattern.search(str(texto)):
             return codigo
+    return None
+
+
+def inferir_motor_desde_modelo(
+    marca: str = '',
+    modelo: str = '',
+    version: str = '',
+) -> str | None:
+    """Inferencia débil por siglas/nomenclatura del modelo (ej. T-Jet → bencina, HDi → diésel)."""
+    texto = f'{marca} {modelo} {version}'.upper().replace('-', ' ')
+    compacto = re.sub(r'\s+', '', texto)
+
+    for marker in _MODELO_DIESEL_MARKERS:
+        mk = marker.upper().replace('-', '').replace(' ', '')
+        if mk in compacto or marker.upper() in texto:
+            return 'DIESEL'
+
+    for marker in _MODELO_GASOLINA_MARKERS:
+        mk = marker.upper().replace('-', '').replace(' ', '')
+        if mk in compacto or marker.upper() in texto:
+            return 'GASOLINA'
+
     return None
 
 
@@ -97,40 +131,156 @@ def resolver_motor_vehiculo(*, vehiculo=None, patente: str = '') -> str | None:
     return parse_tipo_motor_si_presente(info.get('tipo_motor'))
 
 
+def _label(codigo: str | None) -> str:
+    if not codigo:
+        return 'No especificado'
+    return MOTOR_LABELS.get(codigo, codigo)
+
+
+def _resolver_motor_registro(
+    motor_vehiculo: str | None,
+    motor_modelo: str | None,
+) -> tuple[str | None, bool]:
+    """
+    Motor según datos del vehículo (API patente + nomenclatura del modelo).
+    Retorna (código, es_autoritativo).
+    """
+    if motor_vehiculo and motor_modelo:
+        return motor_vehiculo, True
+    if motor_vehiculo:
+        return motor_vehiculo, True
+    if motor_modelo:
+        return motor_modelo, False
+    return None, False
+
+
+def _incoherencias_operativas(
+    motor_registro: str,
+    *,
+    motor_servicio: str | None,
+    motor_problema: str | None,
+) -> list[str]:
+    """Señales de servicio o nota que no cuadran con el vehículo registrado."""
+    partes: list[str] = []
+    if motor_servicio and motor_servicio != motor_registro:
+        partes.append(
+            f'el servicio/oferta catalogado es {_label(motor_servicio)} '
+            f'(posible error de asignación)'
+        )
+    if motor_problema and motor_problema != motor_registro:
+        partes.append(
+            f'la descripción del caso sugiere {_label(motor_problema)} '
+            f'(puede no concordar con el vehículo)'
+        )
+    return partes
+
+
 def consolidar_contexto_motor(
     *,
     motor_vehiculo: str | None,
     motor_servicio: str | None,
+    motor_problema: str | None = None,
+    motor_modelo: str | None = None,
 ) -> dict[str, Any]:
     """
-    Define el motor efectivo para la guía IA.
-    Prioridad: vehículo (patente/registro) > servicio/oferta.
+    Define el motor efectivo para la guía IA cruzando todas las fuentes.
+
+    Prioridad (datos del vehículo primero — el servicio puede estar mal asignado):
+    1. Patente / API de registro (fuente autoritativa).
+    2. Nomenclatura del modelo (T-Jet, HDi, etc.) si no hay patente.
+    3. Solo sin datos de vehículo: descripción del problema o servicio.
+
+    Si servicio o nota contradicen patente/modelo, se marca conflicto y la guía
+    sigue el motor del vehículo, avisando la posible mala asignación.
     """
-    conflicto = bool(
-        motor_vehiculo and motor_servicio and motor_vehiculo != motor_servicio
+    motor_registro, registro_autoritativo = _resolver_motor_registro(
+        motor_vehiculo, motor_modelo
     )
-    efectivo = motor_vehiculo or motor_servicio
+
+    efectivo: str | None = None
+    razon_conflicto = ''
+    servicio_posible_error = False
+
+    if motor_registro:
+        efectivo = motor_registro
+        incoherencias = _incoherencias_operativas(
+            motor_registro,
+            motor_servicio=motor_servicio,
+            motor_problema=motor_problema,
+        )
+        if incoherencias:
+            servicio_posible_error = bool(
+                motor_servicio and motor_servicio != motor_registro
+            )
+            autoridad = (
+                'patente/registro oficial'
+                if registro_autoritativo
+                else 'nomenclatura del modelo'
+            )
+            razon_conflicto = (
+                f'Según {autoridad}, el vehículo es {_label(motor_registro)}. '
+                f'{"; ".join(incoherencias)}. '
+                'Genera la guía para el motor del vehículo, no para el servicio mal asignado.'
+            )
+        elif (
+            motor_vehiculo
+            and motor_modelo
+            and motor_vehiculo != motor_modelo
+        ):
+            razon_conflicto = (
+                f'Patente indica {_label(motor_vehiculo)} pero el modelo '
+                f'sugiere {_label(motor_modelo)}. Se usa el registro de patente.'
+            )
+    elif motor_problema and motor_servicio:
+        if motor_problema == motor_servicio:
+            efectivo = motor_problema
+        else:
+            efectivo = motor_problema
+            razon_conflicto = (
+                f'La descripción indica {_label(motor_problema)} pero el servicio '
+                f'catalogado indica {_label(motor_servicio)}.'
+            )
+    elif motor_problema:
+        efectivo = motor_problema
+    elif motor_servicio:
+        efectivo = motor_servicio
+
+    fuentes = {
+        k: v
+        for k, v in {
+            'patente_registro': motor_vehiculo,
+            'modelo': motor_modelo,
+            'servicio': motor_servicio,
+            'problema': motor_problema,
+        }.items()
+        if v
+    }
+    conflicto = len(set(fuentes.values())) > 1 or bool(razon_conflicto)
 
     if efectivo:
-        label = MOTOR_LABELS.get(efectivo, efectivo)
         reglas = MOTOR_REGLAS_PROMPT.get(efectivo, '')
     else:
-        label = 'No especificado'
         reglas = (
-            'Si no hay tipo de motor confirmado, no mezcles procedimientos diésel y bencina. '
-            'Indica en advertencias que se debe verificar el combustible antes de intervenir.'
+            'No hay tipo de motor confirmado. No mezcles procedimientos diésel y bencina. '
+            'Indica en advertencias verificar combustible y tipo de motor antes de intervenir.'
         )
-
-    servicio_label = MOTOR_LABELS.get(motor_servicio, motor_servicio or 'No especificado')
-    vehiculo_label = MOTOR_LABELS.get(motor_vehiculo, motor_vehiculo or 'No especificado')
 
     return {
         'tipo_motor_vehiculo': motor_vehiculo or '',
         'tipo_motor_servicio': motor_servicio or '',
+        'tipo_motor_problema': motor_problema or '',
+        'tipo_motor_modelo': motor_modelo or '',
+        'tipo_motor_registro': motor_registro or '',
+        'tipo_motor_registro_label': _label(motor_registro),
         'tipo_motor_efectivo': efectivo or '',
-        'tipo_motor_efectivo_label': label,
-        'tipo_motor_vehiculo_label': vehiculo_label,
-        'tipo_motor_servicio_label': servicio_label,
+        'tipo_motor_efectivo_label': _label(efectivo),
+        'tipo_motor_vehiculo_label': _label(motor_vehiculo),
+        'tipo_motor_servicio_label': _label(motor_servicio),
+        'tipo_motor_problema_label': _label(motor_problema),
+        'tipo_motor_modelo_label': _label(motor_modelo),
         'tipo_motor_conflicto': conflicto,
+        'tipo_motor_conflicto_detalle': razon_conflicto,
+        'tipo_motor_servicio_posible_error': servicio_posible_error,
+        'tipo_motor_registro_autoritativo': registro_autoritativo,
         'tipo_motor_reglas': reglas,
     }

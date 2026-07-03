@@ -14,6 +14,7 @@ from django.conf import settings
 
 from .contexto_motor import (
     consolidar_contexto_motor,
+    inferir_motor_desde_modelo,
     inferir_tipo_motor_desde_texto,
     motor_desde_oferta,
     parse_tipo_motor_si_presente,
@@ -100,12 +101,23 @@ def _contexto_desde_orden(orden) -> dict[str, Any]:
     if motor_servicio is None and servicios:
         motor_servicio = inferir_tipo_motor_desde_texto('; '.join(servicios))
 
+    motor_problema = None
+    for parte in descripcion_partes:
+        inferido = inferir_tipo_motor_desde_texto(parte)
+        if inferido:
+            motor_problema = inferido
+            break
+
     if servicios:
         descripcion_partes.append('Servicios: ' + '; '.join(dict.fromkeys(servicios)))
 
     problema = ' | '.join(p for p in descripcion_partes if p).strip()
     if not problema:
         problema = 'Servicio mecánico general según la orden asignada.'
+    if motor_problema is None:
+        motor_problema = inferir_tipo_motor_desde_texto(problema)
+
+    motor_modelo = inferir_motor_desde_modelo(marca, modelo, version)
 
     return _armar_contexto(
         marca=marca,
@@ -115,6 +127,8 @@ def _contexto_desde_orden(orden) -> dict[str, Any]:
         patente=patente,
         motor_vehiculo=motor_vehiculo,
         motor_servicio=motor_servicio,
+        motor_problema=motor_problema,
+        motor_modelo=motor_modelo,
         version=version,
         kilometraje=kilometraje,
         problema_reportado=problema,
@@ -145,8 +159,10 @@ def _contexto_desde_cita_personal(cita) -> dict[str, Any]:
     motor_servicio = motor_desde_oferta(oferta_servicio)
     if motor_servicio is None:
         motor_servicio = inferir_tipo_motor_desde_texto(servicio_nombre)
-    if motor_servicio is None and det.descripcion:
-        motor_servicio = inferir_tipo_motor_desde_texto(det.descripcion)
+    motor_problema = (
+        inferir_tipo_motor_desde_texto(det.descripcion) if det.descripcion else None
+    )
+    motor_modelo = inferir_motor_desde_modelo(marca, modelo, '')
 
     if not cilindraje and patente:
         from mecanimovilapp.apps.vehiculos.getapi_client import fetch_plate_basic_info
@@ -166,6 +182,8 @@ def _contexto_desde_cita_personal(cita) -> dict[str, Any]:
     problema = ' | '.join(p for p in descripcion_partes if p).strip()
     if not problema:
         problema = 'Servicio mecánico según cita personal agendada.'
+    if motor_problema is None:
+        motor_problema = inferir_tipo_motor_desde_texto(problema)
 
     return _armar_contexto(
         marca=marca,
@@ -175,6 +193,8 @@ def _contexto_desde_cita_personal(cita) -> dict[str, Any]:
         patente=patente,
         motor_vehiculo=motor_vehiculo,
         motor_servicio=motor_servicio,
+        motor_problema=motor_problema,
+        motor_modelo=motor_modelo,
         version='',
         kilometraje='',
         problema_reportado=problema,
@@ -190,6 +210,8 @@ def _armar_contexto(
     patente: str = '',
     motor_vehiculo: str | None = None,
     motor_servicio: str | None = None,
+    motor_problema: str | None = None,
+    motor_modelo: str | None = None,
     version: str = '',
     kilometraje: str | int = '',
     problema_reportado: str,
@@ -197,6 +219,8 @@ def _armar_contexto(
     motor_ctx = consolidar_contexto_motor(
         motor_vehiculo=motor_vehiculo,
         motor_servicio=motor_servicio,
+        motor_problema=motor_problema,
+        motor_modelo=motor_modelo,
     )
     vehiculo_label = f'{marca} {modelo} {anio} ({cilindraje})'.strip()
     return {
@@ -352,6 +376,12 @@ def _normalizar_guia(data: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any
         'problema_reportado': str(data.get('problema_reportado') or ctx['problema_reportado']).strip(),
         'tipo_motor': ctx.get('tipo_motor_efectivo_label') or '',
         'tipo_motor_codigo': ctx.get('tipo_motor_efectivo') or '',
+        'aviso_motor': (
+            str(ctx.get('tipo_motor_conflicto_detalle') or '').strip()
+            if ctx.get('tipo_motor_conflicto')
+            else ''
+        ),
+        'servicio_motor_incoherente': bool(ctx.get('tipo_motor_servicio_posible_error')),
         'causas_probables': causas,
         'procedimiento_reparacion_detallado': pasos,
         'referencia_manual': referencia,
@@ -360,21 +390,34 @@ def _normalizar_guia(data: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any
 
 
 def _bloque_motor_prompt(ctx: dict[str, Any]) -> str:
+    efectivo_label = ctx.get('tipo_motor_efectivo_label') or 'No especificado'
     lineas = [
-        f"- Tipo de motor del vehículo (registro/patente): {ctx.get('tipo_motor_vehiculo_label') or 'No especificado'}",
-        f"- Tipo de motor del servicio/oferta: {ctx.get('tipo_motor_servicio_label') or 'No especificado'}",
-        f"- Motor efectivo para esta guía: {ctx.get('tipo_motor_efectivo_label') or 'No especificado'}",
+        f"- Registro/patente (API — fuente autoritativa): "
+        f"{ctx.get('tipo_motor_vehiculo_label') or 'No disponible'}",
+        f"- Nomenclatura del modelo ({ctx.get('marca', '')} {ctx.get('modelo', '')}): "
+        f"{ctx.get('tipo_motor_modelo_label') or 'Sin indicadores claros'}",
+        f"- Servicio/oferta asignado: {ctx.get('tipo_motor_servicio_label') or 'No especificado'}",
+        f"- Palabras clave en descripción del problema: "
+        f"{ctx.get('tipo_motor_problema_label') or 'Ninguna'}",
+        f"- Motor efectivo para ESTA guía (usa este): {efectivo_label}",
     ]
     if ctx.get('patente'):
         lineas.append(f"- Patente: {ctx['patente']}")
     if ctx.get('tipo_motor_conflicto'):
+        detalle = (ctx.get('tipo_motor_conflicto_detalle') or '').strip()
         lineas.append(
-            '- ATENCIÓN: el servicio y el vehículo indican motores distintos. '
-            'Prioriza SIEMPRE el motor del vehículo (patente/registro).'
+            '- INCOHERENCIA DETECTADA: el servicio asignado y/o la nota del caso NO concuerdan '
+            f'con los datos del vehículo (patente/modelo). '
+            f'Genera la guía EXCLUSIVAMENTE para {efectivo_label} según el vehículo registrado. '
+            'NO sigas el nombre del servicio si contradice la patente. '
+            'Incluye en advertencias que el servicio catalogado puede estar mal asignado '
+            'y que conviene confirmar con el cliente antes de intervenir.'
         )
+        if detalle:
+            lineas.append(f'- Detalle: {detalle}')
     reglas = ctx.get('tipo_motor_reglas') or ''
     if reglas:
-        lineas.append(f"- Reglas obligatorias: {reglas}")
+        lineas.append(f"- Reglas obligatorias para {efectivo_label}: {reglas}")
     return '\n'.join(lineas)
 
 
@@ -399,12 +442,14 @@ Problema / servicio a realizar:
 {ctx['problema_reportado']}
 
 REGLAS CRÍTICAS:
-1. Toda la guía debe ser EXCLUSIVAMENTE para {efectivo}.
-2. PROHIBIDO mezclar procedimientos diésel y bencina/gasolina.
-3. Si el problema es bujías/encendido y el motor es diésel, habla de glow plugs/incandescencia, NO bujías gasolina.
-4. Si el motor es eléctrico, NO menciones bujías, filtros de combustible ni aceite de motor convencional.
-5. Si el motor es híbrido, separa claramente intervenciones ICE vs sistema eléctrico/HV.
-6. Sé específico para marca/modelo/año. No inventes datos no entregados.
+1. Los datos de patente/modelo del vehículo son la fuente de verdad. El servicio asignado puede estar mal (ej. "Diagnóstico Diesel" en un T-Jet bencinero).
+2. Si hay incoherencia, genera la guía para {efectivo} (motor del vehículo), NO para el servicio mal catalogado.
+3. Toda la guía debe ser EXCLUSIVAMENTE para {efectivo}.
+4. PROHIBIDO mezclar procedimientos diésel y bencina/gasolina.
+5. Si el problema menciona "encendido/inyectores" y el motor es bencinero, habla de bujías/bobina/inyectores gasolina; si es diésel, de glow plugs e inyectores diésel.
+6. Si el motor es eléctrico, NO menciones bujías, filtros de combustible ni aceite de motor convencional.
+7. Si el motor es híbrido, separa claramente intervenciones ICE vs sistema eléctrico/HV.
+8. Sé específico para marca/modelo/año. No inventes datos no entregados.
 
 Responde SOLO JSON válido en español con esta estructura exacta:
 {{
