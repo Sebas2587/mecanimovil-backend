@@ -108,17 +108,36 @@ class GenerarCotizacionIaSerializer(serializers.Serializer):
 
 
 class CotizacionCanalPlantillaSerializer(serializers.ModelSerializer):
+    vehiculo_marca = serializers.SerializerMethodField()
+    vehiculo_modelo = serializers.SerializerMethodField()
+    vehiculo_cilindraje = serializers.SerializerMethodField()
+
     class Meta:
         model = CotizacionCanalPlantilla
         fields = (
             'id',
             'titulo',
             'snapshot',
+            'vehiculo_marca',
+            'vehiculo_modelo',
+            'vehiculo_cilindraje',
             'uso_count',
             'creado_en',
             'actualizado_en',
         )
         read_only_fields = ('id', 'uso_count', 'creado_en', 'actualizado_en')
+
+    def _snap(self, obj) -> dict:
+        return obj.snapshot or {}
+
+    def get_vehiculo_marca(self, obj) -> str:
+        return str(self._snap(obj).get('vehiculo_marca') or '')
+
+    def get_vehiculo_modelo(self, obj) -> str:
+        return str(self._snap(obj).get('vehiculo_modelo') or '')
+
+    def get_vehiculo_cilindraje(self, obj) -> str:
+        return str(self._snap(obj).get('vehiculo_cilindraje') or '')
 
 
 class GuardarPlantillaCotizacionSerializer(serializers.Serializer):

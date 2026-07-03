@@ -24,6 +24,7 @@ from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
     enviar_cotizacion_canal,
     snapshot_desde_cotizacion,
 )
+from mecanimovilapp.apps.ordenes.services.plantilla_vehiculo import filtrar_plantillas_por_vehiculo
 from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
 
 
@@ -229,6 +230,21 @@ class CotizacionCanalPlantillaViewSet(viewsets.ModelViewSet):
         except PermissionDenied:
             return CotizacionCanalPlantilla.objects.none()
         return CotizacionCanalPlantilla.objects.filter(taller=taller)
+
+    def list(self, request, *args, **kwargs):
+        queryset = list(self.filter_queryset(self.get_queryset()))
+        marca = (request.query_params.get('marca') or '').strip()
+        modelo = (request.query_params.get('modelo') or '').strip()
+        cilindraje = (request.query_params.get('cilindraje') or '').strip()
+        if marca and modelo:
+            queryset = filtrar_plantillas_por_vehiculo(
+                queryset,
+                marca=marca,
+                modelo=modelo,
+                cilindraje=cilindraje,
+            )
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
 
     def create(self, request, *args, **kwargs):
         taller = self._taller()

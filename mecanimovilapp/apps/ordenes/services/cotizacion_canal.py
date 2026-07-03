@@ -19,34 +19,96 @@ def formatear_moneda_clp(valor: int | Decimal) -> str:
     return f'${n:,}'.replace(',', '.')
 
 
-def formatear_resumen_cotizacion(cotizacion: CotizacionCanal) -> str:
-    lineas = [
-        f'*Cotización — {cotizacion.servicio_nombre}*',
-        f'Vehículo: {cotizacion.vehiculo_marca} {cotizacion.vehiculo_modelo} {cotizacion.vehiculo_anio or ""}'.strip(),
-    ]
+def _linea_vehiculo_cotizacion(cotizacion: CotizacionCanal) -> list[str]:
+    lineas = ['*Vehículo:*']
+    if cotizacion.vehiculo_marca:
+        lineas.append(f'Marca: {cotizacion.vehiculo_marca}')
+    if cotizacion.vehiculo_modelo:
+        lineas.append(f'Modelo: {cotizacion.vehiculo_modelo}')
+    if cotizacion.vehiculo_anio:
+        lineas.append(f'Año: {cotizacion.vehiculo_anio}')
+    if cotizacion.vehiculo_cilindraje:
+        lineas.append(f'Cilindraje: {cotizacion.vehiculo_cilindraje}')
     if cotizacion.vehiculo_patente:
         lineas.append(f'Patente: {cotizacion.vehiculo_patente}')
     if cotizacion.tipo_motor_label:
         lineas.append(f'Motor: {cotizacion.tipo_motor_label}')
+    return lineas
+
+
+def metadata_cotizacion_mensaje(cotizacion: CotizacionCanal, *, estado: str = 'enviada') -> dict:
+    repuestos_meta: list[dict] = []
+    for rep in cotizacion.repuestos or []:
+        cant = int(rep.get('cantidad') or 1)
+        precio = int(rep.get('precio_unitario_clp') or 0)
+        repuestos_meta.append({
+            'nombre': str(rep.get('nombre') or 'Repuesto')[:200],
+            'cantidad': max(1, cant),
+            'precio_unitario_clp': max(0, precio),
+        })
+    advertencias = [str(a).strip() for a in (cotizacion.advertencias or []) if str(a).strip()]
+    return {
+        'tipo': 'cotizacion_canal',
+        'cotizacion_id': cotizacion.id,
+        'estado': estado,
+        'servicio_nombre': cotizacion.servicio_nombre or '',
+        'descripcion_problema': cotizacion.descripcion_problema or '',
+        'modalidad': cotizacion.modalidad or 'taller',
+        'vehiculo_marca': cotizacion.vehiculo_marca or '',
+        'vehiculo_modelo': cotizacion.vehiculo_modelo or '',
+        'vehiculo_anio': cotizacion.vehiculo_anio,
+        'vehiculo_cilindraje': cotizacion.vehiculo_cilindraje or '',
+        'vehiculo_patente': cotizacion.vehiculo_patente or '',
+        'tipo_motor_label': cotizacion.tipo_motor_label or '',
+        'mano_obra_clp': int(cotizacion.mano_obra_clp or 0),
+        'costo_repuestos_clp': int(cotizacion.costo_repuestos_clp or 0),
+        'total_clp': int(cotizacion.total_clp or 0),
+        'duracion_minutos_estimada': cotizacion.duracion_minutos_estimada,
+        'repuestos': repuestos_meta,
+        'advertencias': advertencias,
+        'interactive': True,
+    }
+
+
+def formatear_resumen_cotizacion(cotizacion: CotizacionCanal) -> str:
+    modalidad_label = 'Servicio a domicilio' if cotizacion.modalidad == 'domicilio' else 'Servicio en taller'
+    lineas = [
+        f'*Cotización — {cotizacion.servicio_nombre}*',
+        modalidad_label,
+        '',
+    ]
+    lineas.extend(_linea_vehiculo_cotizacion(cotizacion))
     if cotizacion.descripcion_problema:
-        lineas.append(f'Detalle: {cotizacion.descripcion_problema[:300]}')
+        lineas.extend(['', f'*Detalle del servicio:*', cotizacion.descripcion_problema[:400]])
+
     repuestos = cotizacion.repuestos or []
     if repuestos:
-        lineas.append('')
-        lineas.append('*Repuestos estimados:*')
+        lineas.extend(['', '*Repuestos estimados:*'])
         for rep in repuestos:
             nombre = rep.get('nombre', 'Repuesto')
-            cant = rep.get('cantidad', 1)
+            cant = int(rep.get('cantidad') or 1)
             precio = int(rep.get('precio_unitario_clp') or 0)
             sub = cant * precio
-            lineas.append(f'• {nombre} x{cant}: {formatear_moneda_clp(sub)}')
+            lineas.append(
+                f'• {nombre} x{cant} ({formatear_moneda_clp(precio)} c/u): {formatear_moneda_clp(sub)}',
+            )
         lineas.append(f'Subtotal repuestos: {formatear_moneda_clp(cotizacion.costo_repuestos_clp)}')
-    lineas.append(f'Mano de obra: {formatear_moneda_clp(cotizacion.mano_obra_clp)}')
-    lineas.append(f'*Total estimado: {formatear_moneda_clp(cotizacion.total_clp)}*')
+
+    lineas.extend([
+        '',
+        f'Mano de obra: {formatear_moneda_clp(cotizacion.mano_obra_clp)}',
+        f'*Total estimado: {formatear_moneda_clp(cotizacion.total_clp)}*',
+    ])
     if cotizacion.duracion_minutos_estimada:
         lineas.append(f'Duración estimada: {cotizacion.duracion_minutos_estimada} min')
-    lineas.append('')
-    lineas.append('Precios referenciales. Confirme con el taller antes de agendar.')
+
+    advertencias = [str(a).strip() for a in (cotizacion.advertencias or []) if str(a).strip()]
+    if advertencias:
+        lineas.extend(['', '*Condiciones:*'])
+        lineas.extend(f'• {adv}' for adv in advertencias)
+    else:
+        lineas.extend(['', '*Condiciones:*', '• Precios referenciales. Confirme con el taller antes de agendar.'])
+
     return '\n'.join(lineas)
 
 
@@ -103,20 +165,25 @@ def enviar_cotizacion_canal(cotizacion: CotizacionCanal, user) -> Message:
     if conversation.type != 'OMNICHANNEL':
         raise ValueError('La cotización debe estar ligada a una conversación omnicanal.')
 
+    costo_rep, mo, total = recalcular_totales(
+        cotizacion.repuestos or [],
+        int(cotizacion.mano_obra_clp or 0),
+    )
+    cotizacion.costo_repuestos_clp = costo_rep
+    cotizacion.mano_obra_clp = mo
+    cotizacion.total_clp = total
+    cotizacion.save(
+        update_fields=['costo_repuestos_clp', 'mano_obra_clp', 'total_clp', 'actualizado_en'],
+    )
+
     resumen = formatear_resumen_cotizacion(cotizacion)
+    meta = metadata_cotizacion_mensaje(cotizacion, estado='enviada')
     message = Message.objects.create(
         conversation=conversation,
         sender=user,
         content=resumen,
         direction='outbound',
-        channel_metadata={
-            'tipo': 'cotizacion_canal',
-            'cotizacion_id': cotizacion.id,
-            'estado': 'enviada',
-            'total_clp': int(cotizacion.total_clp or 0),
-            'servicio_nombre': cotizacion.servicio_nombre,
-            'interactive': True,
-        },
+        channel_metadata=meta,
     )
     cotizacion.message_envio = message
     cotizacion.estado = 'enviada'

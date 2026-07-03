@@ -56,10 +56,12 @@ class CotizacionCanalUtilTestCase(SimpleTestCase):
     def test_formatear_resumen_incluye_total(self):
         class FakeCot:
             servicio_nombre = 'Diagnóstico'
+            modalidad = 'taller'
             vehiculo_marca = 'FIAT'
             vehiculo_modelo = 'Bravo'
             vehiculo_anio = 2010
             vehiculo_patente = 'AB1234'
+            vehiculo_cilindraje = '1368'
             tipo_motor_label = 'Bencinero (gasolina)'
             descripcion_problema = 'Fallo encendido'
             repuestos = [{'nombre': 'Bobina', 'cantidad': 1, 'precio_unitario_clp': 50000}]
@@ -67,10 +69,15 @@ class CotizacionCanalUtilTestCase(SimpleTestCase):
             mano_obra_clp = 45000
             total_clp = 95000
             duracion_minutos_estimada = 90
+            advertencias = ['Precios referenciales']
 
         texto = formatear_resumen_cotizacion(FakeCot())
         self.assertIn('Diagnóstico', texto)
         self.assertIn('$95.000', texto)
+        self.assertIn('Marca: FIAT', texto)
+        self.assertIn('Cilindraje: 1368', texto)
+        self.assertIn('Mano de obra:', texto)
+        self.assertIn('Condiciones:', texto)
 
 
 class ContextoCotizacionTestCase(SimpleTestCase):
@@ -92,3 +99,50 @@ class ContextoCotizacionTestCase(SimpleTestCase):
         self.assertEqual(ctx['servicio_nombre'], 'cambio de aceite')
         self.assertEqual(ctx['descripcion_problema'], 'Aceite sintético 5W40')
         self.assertEqual(ctx['tipo_motor_efectivo'], 'GASOLINA')
+
+
+class PlantillaVehiculoTestCase(SimpleTestCase):
+    def test_coincide_marca_modelo_cilindraje(self):
+        from mecanimovilapp.apps.ordenes.services.plantilla_vehiculo import plantilla_coincide_vehiculo
+
+        snap = {
+            'vehiculo_marca': 'FIAT',
+            'vehiculo_modelo': 'BRAVO SPORT TJET',
+            'vehiculo_cilindraje': '1368',
+        }
+        self.assertTrue(
+            plantilla_coincide_vehiculo(
+                snap,
+                marca='Fiat',
+                modelo='Bravo Sport T-Jet',
+                cilindraje='1.368 cc',
+            ),
+        )
+
+    def test_rechaza_cilindraje_distinto(self):
+        from mecanimovilapp.apps.ordenes.services.plantilla_vehiculo import plantilla_coincide_vehiculo
+
+        snap = {
+            'vehiculo_marca': 'FIAT',
+            'vehiculo_modelo': 'BRAVO',
+            'vehiculo_cilindraje': '1368',
+        }
+        self.assertFalse(
+            plantilla_coincide_vehiculo(
+                snap,
+                marca='FIAT',
+                modelo='BRAVO',
+                cilindraje='1600',
+            ),
+        )
+
+    def test_rechaza_sin_vehiculo_en_snapshot(self):
+        from mecanimovilapp.apps.ordenes.services.plantilla_vehiculo import plantilla_coincide_vehiculo
+
+        self.assertFalse(
+            plantilla_coincide_vehiculo(
+                {'servicio_nombre': 'Cambio aceite'},
+                marca='FIAT',
+                modelo='BRAVO',
+            ),
+        )
