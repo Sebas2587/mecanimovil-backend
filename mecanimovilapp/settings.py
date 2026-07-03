@@ -89,6 +89,7 @@ MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'mecanimovilapp.middleware.unauth_burst.UnauthDashboardBurstMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'mecanimovilapp.middleware.vehiculo_activo.VehiculoActivoMiddleware',  # Middleware de vehículo activo
@@ -699,7 +700,7 @@ LOGGING = {
         },
         'django.request': {
             'handlers': ['console'],
-            'level': 'WARNING',
+            'level': 'ERROR',
             'propagate': False,
         },
         'channels': {
