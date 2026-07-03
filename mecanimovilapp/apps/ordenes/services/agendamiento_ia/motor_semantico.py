@@ -324,7 +324,7 @@ def _llamar_gemini(prompt: str) -> dict[str, Any] | None:
     api_key = (getattr(settings, 'GEMINI_API_KEY', '') or '').strip()
     if not api_key:
         return None
-    model = getattr(settings, 'GEMINI_MODEL', 'gemini-2.0-flash') or 'gemini-2.0-flash'
+    model = getattr(settings, 'GEMINI_MODEL', 'gemini-3.1-flash-lite') or 'gemini-3.1-flash-lite'
     timeout = int(getattr(settings, 'AGENDAMIENTO_IA_SEMANTICO_TIMEOUT', 15) or 15)
     url = (
         f'https://generativelanguage.googleapis.com/v1beta/models/{model}:'

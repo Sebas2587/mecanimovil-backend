@@ -238,7 +238,7 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
         if request.method == 'GET':
             ultimo = (
                 DiagnosticoAsistidoCitaPersonal.objects
-                .filter(cita=cita, estado='completado')
+                .filter(cita=cita)
                 .order_by('-creado_en')
                 .first()
             )
@@ -249,7 +249,16 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
                     'error': None,
                     'latencia_ms': 0,
                 })
-            return self._respuesta_asistente_ia_cita(diagnostico=ultimo)
+            if ultimo.estado == 'completado':
+                return self._respuesta_asistente_ia_cita(diagnostico=ultimo)
+            return Response({
+                'disponible': False,
+                'contenido': None,
+                'error': ultimo.error or None,
+                'latencia_ms': ultimo.latencia_ms,
+                'generado_en': ultimo.creado_en,
+                'diagnostico_id': ultimo.id,
+            })
 
         if not asistente_habilitado():
             return self._respuesta_asistente_ia_cita(resultado={
@@ -258,6 +267,17 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
                 'error': 'El asistente de diagnóstico IA no está habilitado.',
                 'latencia_ms': 0,
             })
+
+        regenerar = str(request.query_params.get('regenerar', '')).lower() in ('1', 'true', 'yes')
+        if not regenerar:
+            ultimo = (
+                DiagnosticoAsistidoCitaPersonal.objects
+                .filter(cita=cita, estado='completado')
+                .order_by('-creado_en')
+                .first()
+            )
+            if ultimo is not None:
+                return self._respuesta_asistente_ia_cita(diagnostico=ultimo)
 
         _taller, miembro, rol = resolver_contexto_taller(request.user)
         generado_por = miembro if rol == 'mecanico' else None

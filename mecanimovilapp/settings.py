@@ -639,7 +639,7 @@ AGENDAMIENTO_IA_SEMANTICO_PROVEEDOR = config('AGENDAMIENTO_IA_SEMANTICO_PROVEEDO
 AGENDAMIENTO_IA_SEMANTICO_TIMEOUT = config('AGENDAMIENTO_IA_SEMANTICO_TIMEOUT', default=15, cast=int)
 # Opcional gratuito: Google AI Studio → https://aistudio.google.com/apikey
 GEMINI_API_KEY = config('GEMINI_API_KEY', default='')
-GEMINI_MODEL = config('GEMINI_MODEL', default='gemini-2.0-flash')
+GEMINI_MODEL = config('GEMINI_MODEL', default='gemini-3.1-flash-lite')
 # Opcional gratuito: Hugging Face → https://huggingface.co/settings/tokens
 HUGGINGFACE_API_TOKEN = config('HUGGINGFACE_API_TOKEN', default='')
 HUGGINGFACE_MODEL = config('HUGGINGFACE_MODEL', default='Qwen/Qwen2.5-1.5B-Instruct')
@@ -648,8 +648,14 @@ OLLAMA_BASE_URL = config('OLLAMA_BASE_URL', default='')
 OLLAMA_MODEL = config('OLLAMA_MODEL', default='llama3.2')
 
 # Asistente IA de guía de reparación para técnicos en órdenes asignadas
+# Modelo Gemini para guía de reparación (free tier: preferir gemini-3.1-flash-lite, 500 RPD)
+ASISTENTE_DIAGNOSTICO_GEMINI_MODEL = config(
+    'ASISTENTE_DIAGNOSTICO_GEMINI_MODEL',
+    default='gemini-3.1-flash-lite',
+)
 ASISTENTE_DIAGNOSTICO_IA_ENABLED = config('ASISTENTE_DIAGNOSTICO_IA_ENABLED', default=False, cast=bool)
 ASISTENTE_DIAGNOSTICO_IA_TIMEOUT = config('ASISTENTE_DIAGNOSTICO_IA_TIMEOUT', default=12, cast=int)
+GEMINI_RETRY_MAX = config('GEMINI_RETRY_MAX', default=2, cast=int)
 # Cuota mensual de referencia para alertas de uso Gemini (Google AI Studio renueva cada mes calendario)
 GEMINI_LIMITE_TOKENS_MENSUAL = config('GEMINI_LIMITE_TOKENS_MENSUAL', default=1_000_000, cast=int)
 

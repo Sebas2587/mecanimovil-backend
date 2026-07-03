@@ -2598,7 +2598,7 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
         if request.method == 'GET':
             ultimo = (
                 DiagnosticoAsistidoOrden.objects
-                .filter(orden=orden, estado='completado')
+                .filter(orden=orden)
                 .order_by('-creado_en')
                 .first()
             )
@@ -2609,7 +2609,16 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
                     'error': None,
                     'latencia_ms': 0,
                 })
-            return self._respuesta_asistente_ia(diagnostico=ultimo)
+            if ultimo.estado == 'completado':
+                return self._respuesta_asistente_ia(diagnostico=ultimo)
+            return Response({
+                'disponible': False,
+                'contenido': None,
+                'error': ultimo.error or None,
+                'latencia_ms': ultimo.latencia_ms,
+                'generado_en': ultimo.creado_en,
+                'diagnostico_id': ultimo.id,
+            })
 
         if not asistente_habilitado():
             return self._respuesta_asistente_ia(resultado={
@@ -2618,6 +2627,17 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
                 'error': 'El asistente de diagnóstico IA no está habilitado.',
                 'latencia_ms': 0,
             })
+
+        regenerar = str(request.query_params.get('regenerar', '')).lower() in ('1', 'true', 'yes')
+        if not regenerar:
+            ultimo = (
+                DiagnosticoAsistidoOrden.objects
+                .filter(orden=orden, estado='completado')
+                .order_by('-creado_en')
+                .first()
+            )
+            if ultimo is not None:
+                return self._respuesta_asistente_ia(diagnostico=ultimo)
 
         _taller, miembro, rol = resolver_contexto_taller(request.user)
         generado_por = miembro if rol == 'mecanico' else None

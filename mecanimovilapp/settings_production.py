@@ -24,12 +24,17 @@ AGENDAMIENTO_IA_SEMANTICO_PROVEEDOR = os.environ.get(
 )
 AGENDAMIENTO_IA_SEMANTICO_TIMEOUT = int(os.environ.get('AGENDAMIENTO_IA_SEMANTICO_TIMEOUT', '15'))
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
-GEMINI_MODEL = os.environ.get('GEMINI_MODEL', 'gemini-2.0-flash')
+GEMINI_MODEL = os.environ.get('GEMINI_MODEL', 'gemini-3.1-flash-lite')
 GEMINI_LIMITE_TOKENS_MENSUAL = int(os.environ.get('GEMINI_LIMITE_TOKENS_MENSUAL', '1000000'))
 ASISTENTE_DIAGNOSTICO_IA_ENABLED = os.environ.get(
     'ASISTENTE_DIAGNOSTICO_IA_ENABLED', 'False'
 ).lower() in ('true', '1', 'yes')
+ASISTENTE_DIAGNOSTICO_GEMINI_MODEL = os.environ.get(
+    'ASISTENTE_DIAGNOSTICO_GEMINI_MODEL',
+    'gemini-3.1-flash-lite',
+)
 ASISTENTE_DIAGNOSTICO_IA_TIMEOUT = int(os.environ.get('ASISTENTE_DIAGNOSTICO_IA_TIMEOUT', '12'))
+GEMINI_RETRY_MAX = int(os.environ.get('GEMINI_RETRY_MAX', '2'))
 HUGGINGFACE_API_TOKEN = os.environ.get('HUGGINGFACE_API_TOKEN', '')
 HUGGINGFACE_MODEL = os.environ.get('HUGGINGFACE_MODEL', 'Qwen/Qwen2.5-1.5B-Instruct')
 OLLAMA_BASE_URL = os.environ.get('OLLAMA_BASE_URL', '')

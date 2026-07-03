@@ -158,9 +158,16 @@ def _armar_contexto(
     }
 
 
-def _llamar_gemini(prompt: str) -> tuple[dict[str, Any] | None, dict[str, int | str]]:
+def _llamar_gemini(prompt: str) -> tuple[dict[str, Any] | None, dict[str, int | str], str | None]:
+    """
+    Llama a Gemini. Retorna (json_parseado, uso_tokens, mensaje_error_usuario).
+    """
     api_key = (getattr(settings, 'GEMINI_API_KEY', '') or '').strip()
-    model = getattr(settings, 'GEMINI_MODEL', 'gemini-2.0-flash') or 'gemini-2.0-flash'
+    model = (
+        getattr(settings, 'ASISTENTE_DIAGNOSTICO_GEMINI_MODEL', '')
+        or getattr(settings, 'GEMINI_MODEL', 'gemini-3.1-flash-lite')
+        or 'gemini-3.1-flash-lite'
+    ).strip()
     uso_vacio: dict[str, int | str] = {
         'tokens_entrada': 0,
         'tokens_salida': 0,
@@ -168,8 +175,10 @@ def _llamar_gemini(prompt: str) -> tuple[dict[str, Any] | None, dict[str, int | 
         'modelo': model,
     }
     if not api_key:
-        return None, uso_vacio
+        return None, uso_vacio, 'El asistente IA no está configurado en el servidor (falta GEMINI_API_KEY).'
+
     timeout = int(getattr(settings, 'ASISTENTE_DIAGNOSTICO_IA_TIMEOUT', 12) or 12)
+    max_retries = max(0, min(int(getattr(settings, 'GEMINI_RETRY_MAX', 2) or 2), 4))
     url = (
         f'https://generativelanguage.googleapis.com/v1beta/models/{model}:'
         f'generateContent?key={api_key}'
@@ -178,35 +187,83 @@ def _llamar_gemini(prompt: str) -> tuple[dict[str, Any] | None, dict[str, int | 
         'contents': [{'parts': [{'text': prompt}]}],
         'generationConfig': {
             'temperature': 0.25,
-            'maxOutputTokens': 1800,
+            'maxOutputTokens': 1400,
             'responseMimeType': 'application/json',
         },
     }
-    try:
-        resp = requests.post(url, json=payload, timeout=timeout)
-    except requests.RequestException:
-        logger.warning('Asistente IA: error de red')
-        return None, uso_vacio
-    if resp.status_code != 200:
-        logger.warning('Asistente IA: HTTP %s', resp.status_code)
-        return None, uso_vacio
-    try:
-        body = resp.json()
-        text = body['candidates'][0]['content']['parts'][0]['text']
-    except (KeyError, IndexError, TypeError, ValueError):
-        return None, uso_vacio
 
-    meta = body.get('usageMetadata') or {}
-    tokens_entrada = int(meta.get('promptTokenCount') or 0)
-    tokens_salida = int(meta.get('candidatesTokenCount') or 0)
-    tokens_total = int(meta.get('totalTokenCount') or tokens_entrada + tokens_salida)
-    uso = {
-        'tokens_entrada': tokens_entrada,
-        'tokens_salida': tokens_salida,
-        'tokens_total': tokens_total,
-        'modelo': model,
-    }
-    return _parse_json(text), uso
+    ultimo_status: int | None = None
+    for intento in range(max_retries + 1):
+        try:
+            resp = requests.post(url, json=payload, timeout=timeout)
+        except requests.RequestException:
+            logger.warning('Asistente IA: error de red')
+            return None, uso_vacio, 'Error de conexión con Gemini. Intenta de nuevo en unos segundos.'
+
+        ultimo_status = resp.status_code
+        if resp.status_code == 200:
+            try:
+                body = resp.json()
+                text = body['candidates'][0]['content']['parts'][0]['text']
+            except (KeyError, IndexError, TypeError, ValueError):
+                return None, uso_vacio, 'Gemini respondió en un formato inesperado. Intenta más tarde.'
+
+            meta = body.get('usageMetadata') or {}
+            tokens_entrada = int(meta.get('promptTokenCount') or 0)
+            tokens_salida = int(meta.get('candidatesTokenCount') or 0)
+            tokens_total = int(meta.get('totalTokenCount') or tokens_entrada + tokens_salida)
+            uso = {
+                'tokens_entrada': tokens_entrada,
+                'tokens_salida': tokens_salida,
+                'tokens_total': tokens_total,
+                'modelo': model,
+            }
+            return _parse_json(text), uso, None
+
+        if resp.status_code == 429 and intento < max_retries:
+            retry_after_hdr = resp.headers.get('Retry-After')
+            try:
+                espera = int(retry_after_hdr) if retry_after_hdr else 0
+            except (TypeError, ValueError):
+                espera = 0
+            espera = max(espera, 2 ** intento)
+            espera = min(espera, 10)
+            logger.warning(
+                'Asistente IA: HTTP 429, reintento %s/%s en %ss',
+                intento + 1,
+                max_retries,
+                espera,
+            )
+            time.sleep(espera)
+            continue
+
+        detalle_api = ''
+        try:
+            err_body = resp.json().get('error') or {}
+            detalle_api = str(err_body.get('message') or err_body.get('status') or '').strip()
+        except (ValueError, TypeError, AttributeError):
+            pass
+
+        if resp.status_code == 429:
+            logger.warning('Asistente IA: HTTP 429 (cuota/rate limit)%s', f' — {detalle_api}' if detalle_api else '')
+            return None, uso_vacio, (
+                'Gemini alcanzó el límite de consultas (cuota o velocidad). '
+                'Espera 1–2 minutos e intenta de nuevo. '
+                'Si persiste, revisa la cuota en Google AI Studio o el uso en Rendimiento del taller.'
+            )
+
+        logger.warning(
+            'Asistente IA: HTTP %s%s',
+            resp.status_code,
+            f' — {detalle_api}' if detalle_api else '',
+        )
+        return None, uso_vacio, 'No se pudo generar la guía en este momento. Intenta más tarde.'
+
+    if ultimo_status == 429:
+        return None, uso_vacio, (
+            'Gemini alcanzó el límite de consultas. Espera unos minutos e intenta de nuevo.'
+        )
+    return None, uso_vacio, 'No se pudo generar la guía en este momento. Intenta más tarde.'
 
 
 def _normalizar_guia(data: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
@@ -291,14 +348,14 @@ def _generar_guia_desde_contexto(ctx: dict[str, Any]) -> dict[str, Any]:
 
     prompt = _construir_prompt(ctx)
     inicio = time.monotonic()
-    crudo, uso = _llamar_gemini(prompt)
+    crudo, uso, error_usuario = _llamar_gemini(prompt)
     latencia_ms = int((time.monotonic() - inicio) * 1000)
 
     if not crudo:
         return {
             'disponible': False,
             'contenido': None,
-            'error': 'No se pudo generar la guía en este momento. Intenta más tarde.',
+            'error': error_usuario or 'No se pudo generar la guía en este momento. Intenta más tarde.',
             'latencia_ms': latencia_ms,
             'tokens_entrada': int(uso.get('tokens_entrada') or 0),
             'tokens_salida': int(uso.get('tokens_salida') or 0),
