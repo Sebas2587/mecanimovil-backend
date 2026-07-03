@@ -1,6 +1,7 @@
 """Tests cotización canal IA."""
 from django.test import SimpleTestCase
 
+from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.contexto import armar_contexto_cotizacion
 from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
     normalizar_cotizacion_ia,
     normalizar_repuesto,
@@ -70,3 +71,24 @@ class CotizacionCanalUtilTestCase(SimpleTestCase):
         texto = formatear_resumen_cotizacion(FakeCot())
         self.assertIn('Diagnóstico', texto)
         self.assertIn('$95.000', texto)
+
+
+class ContextoCotizacionTestCase(SimpleTestCase):
+    def test_incluye_vehiculo_servicio_y_descripcion(self):
+        ctx = armar_contexto_cotizacion(
+            servicio_nombre='cambio de aceite',
+            descripcion_problema='Aceite sintético 5W40',
+            modalidad='taller',
+            vehiculo={
+                'marca': 'FIAT',
+                'modelo': 'BRAVO SPORT TJET',
+                'anio': 2010,
+                'patente': 'ABCD12',
+                'cilindraje': '1368',
+            },
+        )
+        self.assertEqual(ctx['marca'], 'FIAT')
+        self.assertEqual(ctx['modelo'], 'BRAVO SPORT TJET')
+        self.assertEqual(ctx['servicio_nombre'], 'cambio de aceite')
+        self.assertEqual(ctx['descripcion_problema'], 'Aceite sintético 5W40')
+        self.assertEqual(ctx['tipo_motor_efectivo'], 'GASOLINA')

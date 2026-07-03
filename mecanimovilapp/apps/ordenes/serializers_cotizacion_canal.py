@@ -72,6 +72,25 @@ class GenerarCotizacionIaSerializer(serializers.Serializer):
     vehiculo = serializers.DictField(required=False, default=dict)
     plantilla_id = serializers.IntegerField(required=False, allow_null=True)
 
+    def validate(self, attrs):
+        if not (attrs.get('servicio_nombre') or '').strip():
+            raise serializers.ValidationError(
+                {'servicio_nombre': 'Indica el servicio a cotizar.'},
+            )
+        v = attrs.get('vehiculo') or {}
+        marca = str(v.get('marca') or '').strip()
+        modelo = str(v.get('modelo') or '').strip()
+        patente = str(v.get('patente') or '').strip()
+        if not marca and not modelo and not patente:
+            raise serializers.ValidationError(
+                {'vehiculo': 'Indica patente o marca y modelo del vehículo.'},
+            )
+        if (not marca or not modelo) and not patente:
+            raise serializers.ValidationError(
+                {'vehiculo': 'Marca y modelo son necesarios para estimar repuestos.'},
+            )
+        return attrs
+
 
 class CotizacionCanalPlantillaSerializer(serializers.ModelSerializer):
     class Meta:
