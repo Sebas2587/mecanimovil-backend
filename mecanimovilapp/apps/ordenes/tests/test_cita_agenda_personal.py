@@ -9,7 +9,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonal, CitaAgendaPersonalDetalle
-from mecanimovilapp.apps.usuarios.models import HorarioProveedor, Taller
+from mecanimovilapp.apps.usuarios.models import HorarioProveedor, MiembroTaller, Taller
 from mecanimovilapp.apps.usuarios.services.disponibilidad_proveedor import intervalos_ocupados_dia
 
 User = get_user_model()
@@ -135,3 +135,96 @@ class CitaAgendaPersonalAPITestCase(TestCase):
 
         res_del_fail = self.client.delete(f'/api/ordenes/citas-agenda-personal/{cita_id}/')
         self.assertEqual(res_del_fail.status_code, 409)
+
+
+class CitaAgendaPersonalMecanicoEquipoTestCase(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+
+        owner = User.objects.create_user(username='owner_cita', password='test123')
+        self.taller = Taller.objects.create(
+            usuario=owner,
+            nombre='Taller Equipo',
+            telefono='900000002',
+            estado_verificacion='aprobado',
+        )
+
+        self.mecanico_a = MiembroTaller.objects.create(
+            taller=self.taller,
+            rol='mecanico',
+            nombre='Mecánico A',
+            activo=True,
+        )
+        self.mecanico_b = MiembroTaller.objects.create(
+            taller=self.taller,
+            rol='mecanico',
+            nombre='Mecánico B',
+            activo=True,
+        )
+
+        self.user_mecanico = User.objects.create_user(username='mec_cita', password='test123')
+        self.mecanico_a.usuario = self.user_mecanico
+        self.mecanico_a.save(update_fields=['usuario'])
+
+    def _crear_cita(self, miembro: MiembroTaller, hora=time(10, 0)):
+        cita = CitaAgendaPersonal.objects.create(
+            taller=self.taller,
+            miembro_taller=miembro,
+            fecha_servicio=date(2030, 6, 17),
+            hora_servicio=hora,
+            duracion_minutos=60,
+            tipo_servicio='taller',
+            estado='activa',
+            creado_por=self.taller.usuario,
+        )
+        CitaAgendaPersonalDetalle.objects.create(
+            cita=cita,
+            cliente_nombre='Cliente Test',
+            cliente_telefono='+56911111111',
+            vehiculo_marca='Toyota',
+            vehiculo_modelo='Yaris',
+            servicio_nombre='Diagnóstico',
+        )
+        return cita
+
+    def test_mecanico_equipo_solo_ve_sus_citas_asignadas(self):
+        cita_propia = self._crear_cita(self.mecanico_a, hora=time(10, 0))
+        self._crear_cita(self.mecanico_b, hora=time(11, 0))
+
+        self.client.force_authenticate(user=self.user_mecanico)
+        res = self.client.get('/api/ordenes/citas-agenda-personal/?estado=activa')
+        self.assertEqual(res.status_code, 200, res.content)
+
+        ids = [item['id'] for item in res.data]
+        self.assertEqual(ids, [cita_propia.id])
+
+    def test_mecanico_equipo_no_puede_ver_cita_de_otro(self):
+        cita_otro = self._crear_cita(self.mecanico_b)
+
+        self.client.force_authenticate(user=self.user_mecanico)
+        res = self.client.get(f'/api/ordenes/citas-agenda-personal/{cita_otro.id}/')
+        self.assertEqual(res.status_code, 404, res.content)
+
+    def test_mecanico_equipo_no_puede_editar_ni_eliminar_cita(self):
+        cita = self._crear_cita(self.mecanico_a)
+        cita.cancelar()
+        cita.save(update_fields=['estado', 'cancelada_en', 'fecha_actualizacion'])
+
+        self.client.force_authenticate(user=self.user_mecanico)
+        res_patch = self.client.patch(
+            f'/api/ordenes/citas-agenda-personal/{cita.id}/',
+            {'detalle': {'cliente_nombre': 'Otro nombre'}},
+            format='json',
+        )
+        self.assertEqual(res_patch.status_code, 403, res_patch.content)
+
+        res_del = self.client.delete(f'/api/ordenes/citas-agenda-personal/{cita.id}/')
+        self.assertEqual(res_del.status_code, 403, res_del.content)
+
+    def test_mecanico_equipo_puede_consultar_asistente_ia_cita(self):
+        cita = self._crear_cita(self.mecanico_a)
+        self.client.force_authenticate(user=self.user_mecanico)
+        res = self.client.get(f'/api/ordenes/citas-agenda-personal/{cita.id}/asistente-ia/')
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertFalse(res.data['disponible'])
+        self.assertIsNone(res.data['contenido'])

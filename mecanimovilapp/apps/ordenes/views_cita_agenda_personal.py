@@ -33,7 +33,15 @@ from mecanimovilapp.apps.ordenes.services.cita_agenda_personal import (
 
 class IsCitaAgendaPersonalOwner(permissions.BasePermission):
     def has_object_permission(self, request, view, obj: CitaAgendaPersonal) -> bool:
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
+
+        taller_ctx, miembro_ctx, rol_ctx = resolver_contexto_taller(request.user)
         taller, mecanico = resolver_proveedor_usuario(request.user)
+        if taller_ctx is not None:
+            taller = taller_ctx
+
+        if rol_ctx == 'mecanico' and miembro_ctx is not None:
+            return obj.miembro_taller_id == miembro_ctx.id
         if taller and obj.taller_id == taller.id:
             return True
         if mecanico and obj.mecanico_id == mecanico.id:
@@ -46,21 +54,26 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
     serializer_class = CitaAgendaPersonalSerializer
 
     def get_queryset(self):
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
+
+        taller_ctx, miembro_ctx, rol_ctx = resolver_contexto_taller(self.request.user)
         taller, mecanico = resolver_proveedor_usuario(self.request.user)
+        if taller_ctx is not None:
+            taller = taller_ctx
+
+        base_qs = (
+            CitaAgendaPersonal.objects
+            .select_related('detalle', 'detalle__oferta_servicio__servicio', 'miembro_taller')
+            .prefetch_related('miembro_taller__especialidades')
+            .order_by('-fecha_servicio', '-hora_servicio')
+        )
+
+        if rol_ctx == 'mecanico' and miembro_ctx is not None:
+            return base_qs.filter(taller=taller, miembro_taller=miembro_ctx)
         if taller:
-            return (
-                CitaAgendaPersonal.objects.filter(taller=taller)
-                .select_related('detalle', 'detalle__oferta_servicio__servicio', 'miembro_taller')
-                .prefetch_related('miembro_taller__especialidades')
-                .order_by('-fecha_servicio', '-hora_servicio')
-            )
+            return base_qs.filter(taller=taller)
         if mecanico:
-            return (
-                CitaAgendaPersonal.objects.filter(mecanico=mecanico)
-                .select_related('detalle', 'detalle__oferta_servicio__servicio', 'miembro_taller')
-                .prefetch_related('miembro_taller__especialidades')
-                .order_by('-fecha_servicio', '-hora_servicio')
-            )
+            return base_qs.filter(mecanico=mecanico)
         return CitaAgendaPersonal.objects.none()
 
     def get_permissions(self):
@@ -90,6 +103,9 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
         return Response(CitaAgendaPersonalSerializer(cita).data)
 
     def create(self, request):
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import exigir_no_mecanico_equipo
+
+        exigir_no_mecanico_equipo(request.user, 'crear citas personales')
         ser = CitaAgendaPersonalCreateSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
@@ -113,6 +129,9 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
         )
 
     def partial_update(self, request, pk=None):
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import exigir_no_mecanico_equipo
+
+        exigir_no_mecanico_equipo(request.user, 'editar citas personales')
         cita = self.get_object()
         ser = CitaAgendaPersonalUpdateSerializer(data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
@@ -128,6 +147,9 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
         return Response(CitaAgendaPersonalSerializer(cita).data)
 
     def destroy(self, request, pk=None):
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import exigir_no_mecanico_equipo
+
+        exigir_no_mecanico_equipo(request.user, 'eliminar citas personales')
         cita = self.get_object()
         if cita.estado != 'cancelada':
             return Response(
@@ -169,6 +191,91 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
         cita.cancelar()
         cita.save(update_fields=['estado', 'cancelada_en', 'fecha_actualizacion'])
         return Response(CitaAgendaPersonalSerializer(cita).data)
+
+    def _puede_usar_asistente_ia_cita(self, request, cita: CitaAgendaPersonal) -> bool:
+        return self.get_queryset().filter(pk=cita.pk).exists()
+
+    def _respuesta_asistente_ia_cita(self, diagnostico=None, resultado=None):
+        if diagnostico is not None:
+            contenido = diagnostico.contenido or None
+            disponible = diagnostico.estado == 'completado' and bool(contenido)
+            return Response({
+                'disponible': disponible,
+                'contenido': contenido,
+                'error': diagnostico.error or None,
+                'latencia_ms': diagnostico.latencia_ms,
+                'generado_en': diagnostico.creado_en,
+                'diagnostico_id': diagnostico.id,
+            })
+        return Response({
+            'disponible': bool(resultado and resultado.get('disponible')),
+            'contenido': (resultado or {}).get('contenido'),
+            'error': (resultado or {}).get('error'),
+            'latencia_ms': (resultado or {}).get('latencia_ms', 0),
+        })
+
+    @action(detail=True, methods=['get', 'post'], url_path='asistente-ia')
+    def asistente_ia(self, request, pk=None):
+        """Genera o consulta la guía de reparación asistida por IA para una cita personal."""
+        from mecanimovilapp.apps.ordenes.models import DiagnosticoAsistidoCitaPersonal
+        from mecanimovilapp.apps.ordenes.services.asistente_diagnostico import (
+            asistente_habilitado,
+            generar_guia_reparacion_cita_personal,
+        )
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
+
+        cita = (
+            self.get_queryset()
+            .select_related('detalle', 'detalle__oferta_servicio__servicio')
+            .get(pk=self.kwargs['pk'])
+        )
+        if not self._puede_usar_asistente_ia_cita(request, cita):
+            return Response(
+                {'error': 'No tienes permiso para usar el asistente en esta cita.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if request.method == 'GET':
+            ultimo = (
+                DiagnosticoAsistidoCitaPersonal.objects
+                .filter(cita=cita, estado='completado')
+                .order_by('-creado_en')
+                .first()
+            )
+            if ultimo is None:
+                return Response({
+                    'disponible': False,
+                    'contenido': None,
+                    'error': None,
+                    'latencia_ms': 0,
+                })
+            return self._respuesta_asistente_ia_cita(diagnostico=ultimo)
+
+        if not asistente_habilitado():
+            return self._respuesta_asistente_ia_cita(resultado={
+                'disponible': False,
+                'contenido': None,
+                'error': 'El asistente de diagnóstico IA no está habilitado.',
+                'latencia_ms': 0,
+            })
+
+        _taller, miembro, rol = resolver_contexto_taller(request.user)
+        generado_por = miembro if rol == 'mecanico' else None
+        resultado = generar_guia_reparacion_cita_personal(cita)
+        estado = 'completado' if resultado.get('disponible') else 'error'
+        diagnostico = DiagnosticoAsistidoCitaPersonal.objects.create(
+            cita=cita,
+            generado_por=generado_por,
+            contenido=resultado.get('contenido') or {},
+            estado=estado,
+            error=(resultado.get('error') or '')[:500],
+            latencia_ms=resultado.get('latencia_ms') or 0,
+            tokens_entrada=resultado.get('tokens_entrada') or 0,
+            tokens_salida=resultado.get('tokens_salida') or 0,
+            tokens_total=resultado.get('tokens_total') or 0,
+            modelo=(resultado.get('modelo') or '')[:80],
+        )
+        return self._respuesta_asistente_ia_cita(diagnostico=diagnostico)
 
     @action(detail=False, methods=['post'], url_path='validar-slot')
     def validar_slot(self, request):

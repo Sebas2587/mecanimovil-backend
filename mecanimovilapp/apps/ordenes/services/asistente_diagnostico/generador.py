@@ -80,24 +80,95 @@ def _contexto_desde_orden(orden) -> dict[str, Any]:
     if not problema:
         problema = 'Servicio mecánico general según la orden asignada.'
 
+    return _armar_contexto(
+        marca=marca,
+        modelo=modelo,
+        anio=anio,
+        cilindraje=cilindraje,
+        tipo_motor=tipo_motor,
+        version=version,
+        kilometraje=kilometraje,
+        problema_reportado=problema,
+    )
+
+
+def _contexto_desde_cita_personal(cita) -> dict[str, Any]:
+    det = getattr(cita, 'detalle', None)
+    if det is None:
+        return _armar_contexto(
+            problema_reportado='Servicio mecánico según cita personal agendada.',
+        )
+
+    marca = (det.vehiculo_marca or '').strip()
+    modelo = (det.vehiculo_modelo or '').strip()
+    anio = det.vehiculo_anio or ''
+    cilindraje = (det.vehiculo_cilindraje or '').strip()
+
+    servicio_nombre = (det.servicio_nombre or '').strip()
+    oferta_servicio = getattr(det, 'oferta_servicio', None)
+    if oferta_servicio is not None:
+        servicio_cat = getattr(oferta_servicio, 'servicio', None)
+        if servicio_cat is not None and getattr(servicio_cat, 'nombre', None):
+            servicio_nombre = servicio_cat.nombre.strip() or servicio_nombre
+
+    descripcion_partes: list[str] = []
+    if det.descripcion:
+        descripcion_partes.append(str(det.descripcion).strip())
+    if servicio_nombre:
+        descripcion_partes.append(f'Servicio: {servicio_nombre}')
+
+    problema = ' | '.join(p for p in descripcion_partes if p).strip()
+    if not problema:
+        problema = 'Servicio mecánico según cita personal agendada.'
+
+    return _armar_contexto(
+        marca=marca,
+        modelo=modelo,
+        anio=anio,
+        cilindraje=cilindraje,
+        tipo_motor='',
+        version='',
+        kilometraje='',
+        problema_reportado=problema,
+    )
+
+
+def _armar_contexto(
+    *,
+    marca: str = '',
+    modelo: str = '',
+    anio: str | int = '',
+    cilindraje: str = '',
+    tipo_motor: str = '',
+    version: str = '',
+    kilometraje: str | int = '',
+    problema_reportado: str,
+) -> dict[str, Any]:
+    vehiculo_label = f'{marca} {modelo} {anio} ({cilindraje})'.strip()
     return {
-        'marca': marca,
-        'modelo': modelo,
-        'anio': anio,
-        'cilindraje': cilindraje,
-        'tipo_motor': tipo_motor,
-        'version': version,
-        'kilometraje': kilometraje,
-        'problema_reportado': problema,
-        'vehiculo_label': f'{marca} {modelo} {anio} ({cilindraje})'.strip(),
+        'marca': str(marca or ''),
+        'modelo': str(modelo or ''),
+        'anio': str(anio or ''),
+        'cilindraje': str(cilindraje or ''),
+        'tipo_motor': str(tipo_motor or ''),
+        'version': str(version or ''),
+        'kilometraje': str(kilometraje or ''),
+        'problema_reportado': problema_reportado,
+        'vehiculo_label': vehiculo_label or 'Vehículo no especificado',
     }
 
 
-def _llamar_gemini(prompt: str) -> dict[str, Any] | None:
+def _llamar_gemini(prompt: str) -> tuple[dict[str, Any] | None, dict[str, int | str]]:
     api_key = (getattr(settings, 'GEMINI_API_KEY', '') or '').strip()
-    if not api_key:
-        return None
     model = getattr(settings, 'GEMINI_MODEL', 'gemini-2.0-flash') or 'gemini-2.0-flash'
+    uso_vacio: dict[str, int | str] = {
+        'tokens_entrada': 0,
+        'tokens_salida': 0,
+        'tokens_total': 0,
+        'modelo': model,
+    }
+    if not api_key:
+        return None, uso_vacio
     timeout = int(getattr(settings, 'ASISTENTE_DIAGNOSTICO_IA_TIMEOUT', 12) or 12)
     url = (
         f'https://generativelanguage.googleapis.com/v1beta/models/{model}:'
@@ -115,15 +186,27 @@ def _llamar_gemini(prompt: str) -> dict[str, Any] | None:
         resp = requests.post(url, json=payload, timeout=timeout)
     except requests.RequestException:
         logger.warning('Asistente IA: error de red')
-        return None
+        return None, uso_vacio
     if resp.status_code != 200:
         logger.warning('Asistente IA: HTTP %s', resp.status_code)
-        return None
+        return None, uso_vacio
     try:
-        text = resp.json()['candidates'][0]['content']['parts'][0]['text']
+        body = resp.json()
+        text = body['candidates'][0]['content']['parts'][0]['text']
     except (KeyError, IndexError, TypeError, ValueError):
-        return None
-    return _parse_json(text)
+        return None, uso_vacio
+
+    meta = body.get('usageMetadata') or {}
+    tokens_entrada = int(meta.get('promptTokenCount') or 0)
+    tokens_salida = int(meta.get('candidatesTokenCount') or 0)
+    tokens_total = int(meta.get('totalTokenCount') or tokens_entrada + tokens_salida)
+    uso = {
+        'tokens_entrada': tokens_entrada,
+        'tokens_salida': tokens_salida,
+        'tokens_total': tokens_total,
+        'modelo': model,
+    }
+    return _parse_json(text), uso
 
 
 def _normalizar_guia(data: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
@@ -162,21 +245,8 @@ def _normalizar_guia(data: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any
     }
 
 
-def generar_guia_reparacion(orden) -> dict[str, Any]:
-    """
-    Genera guía de reparación para una SolicitudServicio.
-    Retorna dict con `disponible`, `contenido`, `error`, `latencia_ms`.
-    """
-    if not asistente_habilitado():
-        return {
-            'disponible': False,
-            'contenido': None,
-            'error': 'El asistente de diagnóstico IA no está habilitado.',
-            'latencia_ms': 0,
-        }
-
-    ctx = _contexto_desde_orden(orden)
-    prompt = f"""Eres un ingeniero mecánico automotriz experto en el mercado chileno.
+def _construir_prompt(ctx: dict[str, Any]) -> str:
+    return f"""Eres un ingeniero mecánico automotriz experto en el mercado chileno.
 Genera una guía práctica para un técnico que va a reparar el siguiente vehículo y problema.
 
 Vehículo:
@@ -209,8 +279,19 @@ Responde SOLO JSON válido en español con esta estructura exacta:
 
 Sé específico para el modelo indicado. No inventes datos del vehículo que no fueron entregados."""
 
+
+def _generar_guia_desde_contexto(ctx: dict[str, Any]) -> dict[str, Any]:
+    if not asistente_habilitado():
+        return {
+            'disponible': False,
+            'contenido': None,
+            'error': 'El asistente de diagnóstico IA no está habilitado.',
+            'latencia_ms': 0,
+        }
+
+    prompt = _construir_prompt(ctx)
     inicio = time.monotonic()
-    crudo = _llamar_gemini(prompt)
+    crudo, uso = _llamar_gemini(prompt)
     latencia_ms = int((time.monotonic() - inicio) * 1000)
 
     if not crudo:
@@ -219,6 +300,10 @@ Sé específico para el modelo indicado. No inventes datos del vehículo que no 
             'contenido': None,
             'error': 'No se pudo generar la guía en este momento. Intenta más tarde.',
             'latencia_ms': latencia_ms,
+            'tokens_entrada': int(uso.get('tokens_entrada') or 0),
+            'tokens_salida': int(uso.get('tokens_salida') or 0),
+            'tokens_total': int(uso.get('tokens_total') or 0),
+            'modelo': str(uso.get('modelo') or ''),
         }
 
     contenido = _normalizar_guia(crudo, ctx)
@@ -227,4 +312,26 @@ Sé específico para el modelo indicado. No inventes datos del vehículo que no 
         'contenido': contenido,
         'error': None,
         'latencia_ms': latencia_ms,
+        'tokens_entrada': int(uso.get('tokens_entrada') or 0),
+        'tokens_salida': int(uso.get('tokens_salida') or 0),
+        'tokens_total': int(uso.get('tokens_total') or 0),
+        'modelo': str(uso.get('modelo') or ''),
     }
+
+
+def generar_guia_reparacion(orden) -> dict[str, Any]:
+    """
+    Genera guía de reparación para una SolicitudServicio.
+    Retorna dict con `disponible`, `contenido`, `error`, `latencia_ms`.
+    """
+    ctx = _contexto_desde_orden(orden)
+    return _generar_guia_desde_contexto(ctx)
+
+
+def generar_guia_reparacion_cita_personal(cita) -> dict[str, Any]:
+    """
+    Genera guía de reparación para una CitaAgendaPersonal.
+    Retorna dict con `disponible`, `contenido`, `error`, `latencia_ms`.
+    """
+    ctx = _contexto_desde_cita_personal(cita)
+    return _generar_guia_desde_contexto(ctx)

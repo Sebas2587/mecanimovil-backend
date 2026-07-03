@@ -395,6 +395,10 @@ def compute_mecanico_kpis(
         ),
     }
 
+    from mecanimovilapp.apps.ordenes.services.asistente_diagnostico.uso_gemini import (
+        compute_uso_gemini_mecanico,
+    )
+
     return {
         **_mecanico_base_info(miembro, request),
         **periodo,
@@ -404,6 +408,11 @@ def compute_mecanico_kpis(
         'comparativo': comparativo,
         'ventana_desde': fecha_desde.isoformat(),
         'ventana_hasta': fecha_hasta.isoformat(),
+        'uso_ia_gemini': compute_uso_gemini_mecanico(
+            miembro,
+            desde=fecha_desde,
+            hasta=fecha_hasta,
+        ),
     }
 
 
@@ -417,7 +426,17 @@ def compute_rendimiento_taller(
     request=None,
 ) -> list[dict[str, Any]]:
     """KPIs detallados para todos los mecánicos del taller (o uno solo)."""
+    from mecanimovilapp.apps.ordenes.services.asistente_diagnostico.uso_gemini import (
+        compute_uso_gemini_taller,
+    )
     from mecanimovilapp.apps.usuarios.models import MiembroTaller
+
+    hoy = timezone.localdate()
+    fecha_hasta = _parse_date(hasta) or hoy
+    fecha_desde = _parse_date(desde)
+    if fecha_desde is None:
+        dias = max(1, min(int(dias), 365))
+        fecha_desde = fecha_hasta - timedelta(days=dias - 1)
 
     qs = (
         MiembroTaller.objects.filter(taller=taller, rol='mecanico')
@@ -425,6 +444,52 @@ def compute_rendimiento_taller(
     )
     if mecanico_id is not None:
         qs = qs.filter(id=mecanico_id)
+
+    mecanicos = list(qs)
+    if not mecanicos:
+        uso = compute_uso_gemini_taller(
+            taller,
+            desde=fecha_desde,
+            hasta=fecha_hasta,
+        )
+        return [{
+            'mecanico_id': None,
+            'nombre': 'Taller',
+            'foto_url': None,
+            'especialidades': [],
+            'activo': True,
+            'servicios_completados': 0,
+            'servicios_completados_totales': 0,
+            'servicios_completados_con_checklist': 0,
+            'servicios_rechazados': 0,
+            'servicios_en_proceso': 0,
+            'ordenes_demoradas': 0,
+            'ordenes_dentro_tiempo': 0,
+            'pct_dentro_tiempo': None,
+            'tiempo_promedio_minutos': None,
+            'facturacion_periodo': 0,
+            'facturacion_mes_actual': 0,
+            'facturacion_mes_anterior': 0,
+            'facturacion_delta_pct': None,
+            'comparativo': {
+                'mes_actual': {'completados': 0, 'tiempo_prom': None, 'facturacion': 0},
+                'mes_anterior': {'completados': 0, 'tiempo_prom': None, 'facturacion': 0},
+                'delta_completados_pct': None,
+                'delta_tiempo_pct': None,
+                'delta_facturacion_pct': None,
+            },
+            'ordenes_mecanimovil': 0,
+            'ordenes_personales': 0,
+            'score_productividad': None,
+            'score_tiempo_ejecucion': None,
+            'score_checklist': None,
+            'score_puntualidad_inicio': None,
+            'score_rendimiento_global': None,
+            'ventana_desde': fecha_desde.isoformat(),
+            'ventana_hasta': fecha_hasta.isoformat(),
+            'uso_ia_gemini': uso,
+            'solo_uso_ia': True,
+        }]
 
     return [
         compute_mecanico_kpis(
@@ -434,5 +499,5 @@ def compute_rendimiento_taller(
             dias=dias,
             request=request,
         )
-        for m in qs
+        for m in mecanicos
     ]

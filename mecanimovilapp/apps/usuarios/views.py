@@ -4717,6 +4717,11 @@ class MiembroTallerViewSet(viewsets.ModelViewSet):
         """
         from mecanimovilapp.apps.ordenes.services.mecanico_kpis import compute_rendimiento_taller
 
+        _taller_ctx, _miembro_ctx, rol = self._contexto()
+        if rol == 'mecanico':
+            raise PermissionDenied('Solo el dueño o supervisor del taller puede ver el rendimiento.')
+        self._exigir_gestion_mecanicos()
+
         taller = self._get_taller()
         if taller is None:
             return Response([], status=status.HTTP_200_OK)

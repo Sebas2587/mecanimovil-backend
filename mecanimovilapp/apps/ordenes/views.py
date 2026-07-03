@@ -2086,15 +2086,19 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
         Excluye órdenes cuya oferta_proveedor esté rechazada, expirada o retirada
         """
         user = request.user
-        
-        # Determinar proveedor
-        taller = None
+
+        # Determinar proveedor (incluye mandante, supervisor y mecánico de equipo)
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
+
+        taller_ctx, _miembro_ctx, _rol_ctx = resolver_contexto_taller(user)
+        taller = taller_ctx
         mecanico = None
-        if hasattr(user, 'taller'):
-            taller = user.taller
-        elif hasattr(user, 'mecanico_domicilio'):
-            mecanico = user.mecanico_domicilio
-        else:
+        if taller is None and hasattr(user, 'mecanico_domicilio'):
+            try:
+                mecanico = user.mecanico_domicilio
+            except Exception:
+                mecanico = None
+        if not taller and not mecanico:
             return Response([])
         
         # ✅ Estados finalizados de SolicitudServicio que NO deben aparecer
@@ -2626,6 +2630,10 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
             estado=estado,
             error=(resultado.get('error') or '')[:500],
             latencia_ms=resultado.get('latencia_ms') or 0,
+            tokens_entrada=resultado.get('tokens_entrada') or 0,
+            tokens_salida=resultado.get('tokens_salida') or 0,
+            tokens_total=resultado.get('tokens_total') or 0,
+            modelo=(resultado.get('modelo') or '')[:80],
         )
         return self._respuesta_asistente_ia(diagnostico=diagnostico)
     

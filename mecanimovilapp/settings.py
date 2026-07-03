@@ -650,6 +650,8 @@ OLLAMA_MODEL = config('OLLAMA_MODEL', default='llama3.2')
 # Asistente IA de guía de reparación para técnicos en órdenes asignadas
 ASISTENTE_DIAGNOSTICO_IA_ENABLED = config('ASISTENTE_DIAGNOSTICO_IA_ENABLED', default=False, cast=bool)
 ASISTENTE_DIAGNOSTICO_IA_TIMEOUT = config('ASISTENTE_DIAGNOSTICO_IA_TIMEOUT', default=12, cast=int)
+# Cuota mensual de referencia para alertas de uso Gemini (Google AI Studio renueva cada mes calendario)
+GEMINI_LIMITE_TOKENS_MENSUAL = config('GEMINI_LIMITE_TOKENS_MENSUAL', default=1_000_000, cast=int)
 
 LOGGING = {
     'version': 1,

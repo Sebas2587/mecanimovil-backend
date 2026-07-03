@@ -2137,6 +2137,10 @@ class DiagnosticoAsistidoOrden(models.Model):
     estado = models.CharField(max_length=20, choices=ESTADO_CHOICES, default='completado')
     error = models.CharField(max_length=500, blank=True, default='')
     latencia_ms = models.PositiveIntegerField(default=0)
+    tokens_entrada = models.PositiveIntegerField(default=0)
+    tokens_salida = models.PositiveIntegerField(default=0)
+    tokens_total = models.PositiveIntegerField(default=0)
+    modelo = models.CharField(max_length=80, blank=True, default='')
     creado_en = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -2146,3 +2150,43 @@ class DiagnosticoAsistidoOrden(models.Model):
 
     def __str__(self):
         return f'Diagnóstico IA orden {self.orden_id} ({self.estado})'
+
+
+class DiagnosticoAsistidoCitaPersonal(models.Model):
+    """Guía de reparación generada por IA para una cita de agenda personal."""
+
+    ESTADO_CHOICES = [
+        ('completado', 'Completado'),
+        ('error', 'Error'),
+        ('deshabilitado', 'Deshabilitado'),
+    ]
+
+    cita = models.ForeignKey(
+        CitaAgendaPersonal,
+        on_delete=models.CASCADE,
+        related_name='diagnosticos_asistidos',
+    )
+    generado_por = models.ForeignKey(
+        'usuarios.MiembroTaller',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='diagnosticos_cita_generados',
+    )
+    contenido = models.JSONField(default=dict, blank=True)
+    estado = models.CharField(max_length=20, choices=ESTADO_CHOICES, default='completado')
+    error = models.CharField(max_length=500, blank=True, default='')
+    latencia_ms = models.PositiveIntegerField(default=0)
+    tokens_entrada = models.PositiveIntegerField(default=0)
+    tokens_salida = models.PositiveIntegerField(default=0)
+    tokens_total = models.PositiveIntegerField(default=0)
+    modelo = models.CharField(max_length=80, blank=True, default='')
+    creado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = _('diagnóstico asistido de cita personal')
+        verbose_name_plural = _('diagnósticos asistidos de cita personal')
+        ordering = ['-creado_en']
+
+    def __str__(self):
+        return f'Diagnóstico IA cita {self.cita_id} ({self.estado})'
