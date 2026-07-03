@@ -395,6 +395,11 @@ def crear_cita_personal(
     det = CitaAgendaPersonalDetalle(cita=cita, **detalle)
     det.full_clean()
     det.save()
+    if miembro is not None:
+        from mecanimovilapp.apps.ordenes.services.notificaciones_proveedor import (
+            notificar_cita_asignada_mecanico,
+        )
+        notificar_cita_asignada_mecanico(cita, miembro)
     return cita
 
 

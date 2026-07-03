@@ -948,6 +948,25 @@ class MechanicStatusConsumer(AsyncWebsocketConsumer):
             'timestamp': event.get('timestamp', timezone.now().isoformat()),
         }))
 
+    async def orden_asignada_mecanico(self, event):
+        """Nueva orden asignada al mecánico de equipo."""
+        await self.send(text_data=json.dumps({
+            'type': 'orden_asignada_mecanico',
+            'orden_id': event.get('orden_id'),
+            'solicitud_id': event.get('solicitud_id', ''),
+            'miembro_id': event.get('miembro_id'),
+            'timestamp': event.get('timestamp', timezone.now().isoformat()),
+        }))
+
+    async def cita_asignada_mecanico(self, event):
+        """Nueva cita personal asignada al mecánico de equipo."""
+        await self.send(text_data=json.dumps({
+            'type': 'cita_asignada_mecanico',
+            'cita_id': event.get('cita_id'),
+            'miembro_id': event.get('miembro_id'),
+            'timestamp': event.get('timestamp', timezone.now().isoformat()),
+        }))
+
     @database_sync_to_async
     def get_proveedor_usuario_id(self):
         """

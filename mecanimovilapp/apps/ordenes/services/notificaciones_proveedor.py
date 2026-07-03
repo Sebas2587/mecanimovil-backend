@@ -43,6 +43,25 @@ def _vehiculo_label(orden) -> str:
     return patente or 'tu servicio'
 
 
+def _broadcast_ws_usuario_proveedor(usuario_id: int | None, event_type: str, payload: dict) -> None:
+    """Envía evento WS al grupo proveedor_{usuario_id} (sesión del mecánico de equipo)."""
+    if not usuario_id:
+        return
+    try:
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+
+        channel_layer = get_channel_layer()
+        if not channel_layer:
+            return
+        async_to_sync(channel_layer.group_send)(
+            f'proveedor_{usuario_id}',
+            {'type': event_type, **payload},
+        )
+    except Exception as exc:
+        logger.warning('[WS mecanico] No se pudo enviar %s a user %s: %s', event_type, usuario_id, exc)
+
+
 def notificar_checklist_pendiente_proveedor(orden, checklist_instance) -> None:
     """Encola push al proveedor cuando hay checklist PENDIENTE por completar."""
     from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
@@ -113,10 +132,64 @@ def notificar_orden_asignada_mecanico(orden, miembro) -> None:
                 'miembro_id': str(miembro.id),
             },
         )
+        _broadcast_ws_usuario_proveedor(
+            miembro.usuario_id,
+            'orden_asignada_mecanico',
+            {
+                'orden_id': str(orden.id),
+                'solicitud_id': solicitud_id,
+                'miembro_id': str(miembro.id),
+                'timestamp': timezone.now().isoformat(),
+            },
+        )
     except Exception as exc:
         logger.error(
             '[orden_asignada_mecanico] Error encolando push orden %s mecanico %s: %s',
             getattr(orden, 'id', None),
+            getattr(miembro, 'id', None),
+            exc,
+        )
+
+
+def notificar_cita_asignada_mecanico(cita, miembro) -> None:
+    """Push + WS al mecánico cuando se le asigna una cita personal."""
+    from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
+
+    if miembro is None or not getattr(miembro, 'usuario_id', None):
+        return
+    if not getattr(miembro, 'activo', True):
+        return
+
+    det = getattr(cita, 'detalle', None)
+    servicio = (getattr(det, 'servicio_nombre', '') or 'Cita personal').strip()
+    vehiculo = ''
+    if det is not None:
+        vehiculo = f'{det.vehiculo_marca} {det.vehiculo_modelo}'.strip()
+
+    try:
+        send_expo_push_notification.delay(
+            miembro.usuario_id,
+            'Nueva cita asignada',
+            f'Se te asignó: {servicio}' + (f' ({vehiculo})' if vehiculo else ''),
+            {
+                'type': 'orden_asignada_mecanico',
+                'cita_id': str(cita.id),
+                'miembro_id': str(miembro.id),
+            },
+        )
+        _broadcast_ws_usuario_proveedor(
+            miembro.usuario_id,
+            'cita_asignada_mecanico',
+            {
+                'cita_id': str(cita.id),
+                'miembro_id': str(miembro.id),
+                'timestamp': timezone.now().isoformat(),
+            },
+        )
+    except Exception as exc:
+        logger.error(
+            '[cita_asignada_mecanico] Error notificando cita %s mecanico %s: %s',
+            getattr(cita, 'id', None),
             getattr(miembro, 'id', None),
             exc,
         )
