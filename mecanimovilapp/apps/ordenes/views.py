@@ -2591,9 +2591,14 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
             return Response({'error': 'No tienes permiso para usar el asistente en esta orden.'}, status=403)
 
         if request.method == 'GET':
+            from mecanimovilapp.apps.ordenes.services.asistente_diagnostico.permisos import (
+                filtrar_diagnosticos_asistente_visibles,
+            )
             ultimo = (
-                DiagnosticoAsistidoOrden.objects
-                .filter(orden=orden)
+                filtrar_diagnosticos_asistente_visibles(
+                    request.user,
+                    DiagnosticoAsistidoOrden.objects.filter(orden=orden),
+                )
                 .order_by('-creado_en')
                 .first()
             )
@@ -2625,9 +2630,14 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
 
         regenerar = str(request.query_params.get('regenerar', '')).lower() in ('1', 'true', 'yes')
         if not regenerar:
+            from mecanimovilapp.apps.ordenes.services.asistente_diagnostico.permisos import (
+                filtrar_diagnosticos_asistente_visibles,
+            )
             ultimo = (
-                DiagnosticoAsistidoOrden.objects
-                .filter(orden=orden, estado='completado')
+                filtrar_diagnosticos_asistente_visibles(
+                    request.user,
+                    DiagnosticoAsistidoOrden.objects.filter(orden=orden, estado='completado'),
+                )
                 .order_by('-creado_en')
                 .first()
             )

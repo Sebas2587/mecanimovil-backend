@@ -12,6 +12,14 @@ from typing import Any
 import requests
 from django.conf import settings
 
+from .contexto_motor import (
+    consolidar_contexto_motor,
+    inferir_tipo_motor_desde_texto,
+    motor_desde_oferta,
+    parse_tipo_motor_si_presente,
+    resolver_motor_vehiculo,
+)
+
 logger = logging.getLogger(__name__)
 
 _JSON_FENCE = re.compile(r'```(?:json)?\s*([\s\S]*?)\s*```', re.IGNORECASE)
@@ -48,9 +56,19 @@ def _contexto_desde_orden(orden) -> dict[str, Any]:
     modelo = getattr(getattr(vehiculo, 'modelo', None), 'nombre', '') or ''
     anio = getattr(vehiculo, 'year', '') or ''
     cilindraje = getattr(vehiculo, 'cilindraje', '') or ''
-    tipo_motor = getattr(vehiculo, 'tipo_motor', '') or ''
+    patente = getattr(vehiculo, 'patente', '') or ''
     version = getattr(vehiculo, 'version', '') or ''
     kilometraje = getattr(vehiculo, 'kilometraje', '') or ''
+
+    motor_vehiculo = resolver_motor_vehiculo(vehiculo=vehiculo, patente=patente)
+    if not cilindraje and patente:
+        from mecanimovilapp.apps.vehiculos.getapi_client import fetch_plate_basic_info
+
+        info_patente = fetch_plate_basic_info(patente)
+        if not motor_vehiculo:
+            motor_vehiculo = parse_tipo_motor_si_presente(info_patente.get('tipo_motor'))
+        if not cilindraje and info_patente.get('cilindraje'):
+            cilindraje = str(info_patente['cilindraje'])
 
     descripcion_partes: list[str] = []
     if getattr(orden, 'notas_cliente', None):
@@ -63,15 +81,24 @@ def _contexto_desde_orden(orden) -> dict[str, Any]:
             descripcion_partes.append(str(solicitud.descripcion_problema).strip())
 
     servicios: list[str] = []
+    motores_servicio: list[str] = []
     try:
         for linea in orden.lineas.select_related('oferta_servicio__servicio').all():
-            servicio = getattr(getattr(linea, 'oferta_servicio', None), 'servicio', None)
+            oferta = getattr(linea, 'oferta_servicio', None)
+            servicio = getattr(oferta, 'servicio', None) if oferta else None
             if servicio and servicio.nombre:
                 servicios.append(servicio.nombre)
                 if servicio.descripcion:
                     servicios.append(servicio.descripcion[:240])
+            motor_oferta = motor_desde_oferta(oferta)
+            if motor_oferta:
+                motores_servicio.append(motor_oferta)
     except Exception:
         pass
+
+    motor_servicio = motores_servicio[0] if len(set(motores_servicio)) == 1 else None
+    if motor_servicio is None and servicios:
+        motor_servicio = inferir_tipo_motor_desde_texto('; '.join(servicios))
 
     if servicios:
         descripcion_partes.append('Servicios: ' + '; '.join(dict.fromkeys(servicios)))
@@ -85,7 +112,9 @@ def _contexto_desde_orden(orden) -> dict[str, Any]:
         modelo=modelo,
         anio=anio,
         cilindraje=cilindraje,
-        tipo_motor=tipo_motor,
+        patente=patente,
+        motor_vehiculo=motor_vehiculo,
+        motor_servicio=motor_servicio,
         version=version,
         kilometraje=kilometraje,
         problema_reportado=problema,
@@ -111,6 +140,23 @@ def _contexto_desde_cita_personal(cita) -> dict[str, Any]:
         if servicio_cat is not None and getattr(servicio_cat, 'nombre', None):
             servicio_nombre = servicio_cat.nombre.strip() or servicio_nombre
 
+    patente = (det.vehiculo_patente or '').strip()
+    motor_vehiculo = resolver_motor_vehiculo(patente=patente)
+    motor_servicio = motor_desde_oferta(oferta_servicio)
+    if motor_servicio is None:
+        motor_servicio = inferir_tipo_motor_desde_texto(servicio_nombre)
+    if motor_servicio is None and det.descripcion:
+        motor_servicio = inferir_tipo_motor_desde_texto(det.descripcion)
+
+    if not cilindraje and patente:
+        from mecanimovilapp.apps.vehiculos.getapi_client import fetch_plate_basic_info
+
+        info_patente = fetch_plate_basic_info(patente)
+        if not motor_vehiculo:
+            motor_vehiculo = parse_tipo_motor_si_presente(info_patente.get('tipo_motor'))
+        if info_patente.get('cilindraje'):
+            cilindraje = str(info_patente['cilindraje'])
+
     descripcion_partes: list[str] = []
     if det.descripcion:
         descripcion_partes.append(str(det.descripcion).strip())
@@ -126,7 +172,9 @@ def _contexto_desde_cita_personal(cita) -> dict[str, Any]:
         modelo=modelo,
         anio=anio,
         cilindraje=cilindraje,
-        tipo_motor='',
+        patente=patente,
+        motor_vehiculo=motor_vehiculo,
+        motor_servicio=motor_servicio,
         version='',
         kilometraje='',
         problema_reportado=problema,
@@ -139,22 +187,29 @@ def _armar_contexto(
     modelo: str = '',
     anio: str | int = '',
     cilindraje: str = '',
-    tipo_motor: str = '',
+    patente: str = '',
+    motor_vehiculo: str | None = None,
+    motor_servicio: str | None = None,
     version: str = '',
     kilometraje: str | int = '',
     problema_reportado: str,
 ) -> dict[str, Any]:
+    motor_ctx = consolidar_contexto_motor(
+        motor_vehiculo=motor_vehiculo,
+        motor_servicio=motor_servicio,
+    )
     vehiculo_label = f'{marca} {modelo} {anio} ({cilindraje})'.strip()
     return {
         'marca': str(marca or ''),
         'modelo': str(modelo or ''),
         'anio': str(anio or ''),
         'cilindraje': str(cilindraje or ''),
-        'tipo_motor': str(tipo_motor or ''),
+        'patente': str(patente or ''),
         'version': str(version or ''),
         'kilometraje': str(kilometraje or ''),
         'problema_reportado': problema_reportado,
         'vehiculo_label': vehiculo_label or 'Vehículo no especificado',
+        **motor_ctx,
     }
 
 
@@ -295,6 +350,8 @@ def _normalizar_guia(data: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any
     return {
         'vehiculo': str(data.get('vehiculo') or ctx['vehiculo_label']).strip(),
         'problema_reportado': str(data.get('problema_reportado') or ctx['problema_reportado']).strip(),
+        'tipo_motor': ctx.get('tipo_motor_efectivo_label') or '',
+        'tipo_motor_codigo': ctx.get('tipo_motor_efectivo') or '',
         'causas_probables': causas,
         'procedimiento_reparacion_detallado': pasos,
         'referencia_manual': referencia,
@@ -302,7 +359,28 @@ def _normalizar_guia(data: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any
     }
 
 
+def _bloque_motor_prompt(ctx: dict[str, Any]) -> str:
+    lineas = [
+        f"- Tipo de motor del vehículo (registro/patente): {ctx.get('tipo_motor_vehiculo_label') or 'No especificado'}",
+        f"- Tipo de motor del servicio/oferta: {ctx.get('tipo_motor_servicio_label') or 'No especificado'}",
+        f"- Motor efectivo para esta guía: {ctx.get('tipo_motor_efectivo_label') or 'No especificado'}",
+    ]
+    if ctx.get('patente'):
+        lineas.append(f"- Patente: {ctx['patente']}")
+    if ctx.get('tipo_motor_conflicto'):
+        lineas.append(
+            '- ATENCIÓN: el servicio y el vehículo indican motores distintos. '
+            'Prioriza SIEMPRE el motor del vehículo (patente/registro).'
+        )
+    reglas = ctx.get('tipo_motor_reglas') or ''
+    if reglas:
+        lineas.append(f"- Reglas obligatorias: {reglas}")
+    return '\n'.join(lineas)
+
+
 def _construir_prompt(ctx: dict[str, Any]) -> str:
+    motor_bloque = _bloque_motor_prompt(ctx)
+    efectivo = ctx.get('tipo_motor_efectivo_label') or 'el motor indicado'
     return f"""Eres un ingeniero mecánico automotriz experto en el mercado chileno.
 Genera una guía práctica para un técnico que va a reparar el siguiente vehículo y problema.
 
@@ -311,12 +389,22 @@ Vehículo:
 - Modelo: {ctx['modelo']}
 - Año: {ctx['anio']}
 - Cilindraje: {ctx['cilindraje']}
-- Tipo motor: {ctx['tipo_motor']}
 - Versión: {ctx['version']}
 - Kilometraje: {ctx['kilometraje']} km
 
+Tipo de motor (OBLIGATORIO — respeta estas restricciones):
+{motor_bloque}
+
 Problema / servicio a realizar:
 {ctx['problema_reportado']}
+
+REGLAS CRÍTICAS:
+1. Toda la guía debe ser EXCLUSIVAMENTE para {efectivo}.
+2. PROHIBIDO mezclar procedimientos diésel y bencina/gasolina.
+3. Si el problema es bujías/encendido y el motor es diésel, habla de glow plugs/incandescencia, NO bujías gasolina.
+4. Si el motor es eléctrico, NO menciones bujías, filtros de combustible ni aceite de motor convencional.
+5. Si el motor es híbrido, separa claramente intervenciones ICE vs sistema eléctrico/HV.
+6. Sé específico para marca/modelo/año. No inventes datos no entregados.
 
 Responde SOLO JSON válido en español con esta estructura exacta:
 {{
@@ -324,7 +412,7 @@ Responde SOLO JSON válido en español con esta estructura exacta:
   "problema_reportado": "resumen del problema",
   "causas_probables": ["causa 1", "causa 2"],
   "procedimiento_reparacion_detallado": [
-    "Paso 1: instrucción específica para este modelo",
+    "Paso 1: instrucción específica para este modelo y tipo de motor",
     "Paso 2: ..."
   ],
   "referencia_manual": {{
@@ -332,9 +420,7 @@ Responde SOLO JSON válido en español con esta estructura exacta:
     "url": "URL de búsqueda YouTube o manual técnico (https://www.youtube.com/results?search_query=...)"
   }},
   "advertencias_seguridad": ["advertencia 1"]
-}}
-
-Sé específico para el modelo indicado. No inventes datos del vehículo que no fueron entregados."""
+}}"""
 
 
 def _generar_guia_desde_contexto(ctx: dict[str, Any]) -> dict[str, Any]:

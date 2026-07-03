@@ -242,9 +242,14 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
             )
 
         if request.method == 'GET':
+            from mecanimovilapp.apps.ordenes.services.asistente_diagnostico.permisos import (
+                filtrar_diagnosticos_asistente_visibles,
+            )
             ultimo = (
-                DiagnosticoAsistidoCitaPersonal.objects
-                .filter(cita=cita)
+                filtrar_diagnosticos_asistente_visibles(
+                    request.user,
+                    DiagnosticoAsistidoCitaPersonal.objects.filter(cita=cita),
+                )
                 .order_by('-creado_en')
                 .first()
             )
@@ -276,9 +281,14 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
 
         regenerar = str(request.query_params.get('regenerar', '')).lower() in ('1', 'true', 'yes')
         if not regenerar:
+            from mecanimovilapp.apps.ordenes.services.asistente_diagnostico.permisos import (
+                filtrar_diagnosticos_asistente_visibles,
+            )
             ultimo = (
-                DiagnosticoAsistidoCitaPersonal.objects
-                .filter(cita=cita, estado='completado')
+                filtrar_diagnosticos_asistente_visibles(
+                    request.user,
+                    DiagnosticoAsistidoCitaPersonal.objects.filter(cita=cita, estado='completado'),
+                )
                 .order_by('-creado_en')
                 .first()
             )

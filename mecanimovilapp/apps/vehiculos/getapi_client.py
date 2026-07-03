@@ -5,12 +5,50 @@ import logging
 
 import requests
 
+from .catalogo_resolver import normalizar_tipo_motor_vehiculo
 from .kilometraje_validation import mileage_from_getapi_payload
 
 logger = logging.getLogger(__name__)
 
 GETAPI_KEY = "28054a51-09f6-4687-a4a7-ecf3ead55ef4"
 GETAPI_HEADERS = {"x-api-key": GETAPI_KEY, "Content-Type": "application/json"}
+
+
+def fetch_plate_basic_info(patente: str) -> dict:
+    """
+    Datos básicos del vehículo desde GetAPI plate.
+    Retorna dict vacío si falla. tipo_motor viene normalizado (GASOLINA, DIESEL, etc.).
+    """
+    patente_norm = (patente or "").upper().strip()
+    if not patente_norm:
+        return {}
+
+    url = f"https://chile.getapi.cl/v1/vehicles/plate/{patente_norm}"
+    try:
+        response = requests.get(url, headers=GETAPI_HEADERS, timeout=8)
+        if response.status_code != 200:
+            return {}
+
+        json_response = response.json()
+        if json_response.get("success") is False:
+            return {}
+
+        data = json_response.get("data", json_response) or {}
+        fuel_raw = data.get("fuel") or data.get("tipo_motor") or ""
+        tipo_motor = normalizar_tipo_motor_vehiculo(fuel_raw) if str(fuel_raw).strip() else None
+
+        return {
+            "patente": data.get("licensePlate", patente_norm),
+            "marca_nombre": data.get("model", {}).get("brand", {}).get("name", ""),
+            "modelo_nombre": data.get("model", {}).get("name", ""),
+            "year": data.get("year", ""),
+            "cilindraje": data.get("engine", ""),
+            "tipo_motor": tipo_motor,
+            "vin": data.get("vinNumber", ""),
+        }
+    except Exception as exc:
+        logger.warning("GetAPI plate falló para patente %s: %s", patente_norm, exc)
+        return {}
 
 
 def fetch_appraisal_for_plate(patente):

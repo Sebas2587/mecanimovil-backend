@@ -229,10 +229,35 @@ class CitaAgendaPersonalMecanicoEquipoTestCase(TestCase):
         self.assertFalse(res.data['disponible'])
         self.assertIsNone(res.data['contenido'])
 
-    def test_mandante_no_puede_usar_asistente_ia_cita(self):
+    def test_mandante_con_mecanico_asignado_no_puede_usar_asistente_ia_cita(self):
         cita = self._crear_cita(self.mecanico_a)
         self.client.force_authenticate(user=self.taller.usuario)
         res_get = self.client.get(f'/api/ordenes/citas-agenda-personal/{cita.id}/asistente-ia/')
         self.assertEqual(res_get.status_code, 403, res_get.content)
         res_post = self.client.post(f'/api/ordenes/citas-agenda-personal/{cita.id}/asistente-ia/')
         self.assertEqual(res_post.status_code, 403, res_post.content)
+
+    def test_mandante_sin_mecanico_puede_usar_asistente_ia_cita(self):
+        cita = CitaAgendaPersonal.objects.create(
+            taller=self.taller,
+            miembro_taller=None,
+            fecha_servicio=date(2030, 6, 17),
+            hora_servicio=time(12, 0),
+            duracion_minutos=60,
+            tipo_servicio='taller',
+            estado='activa',
+            creado_por=self.taller.usuario,
+        )
+        CitaAgendaPersonalDetalle.objects.create(
+            cita=cita,
+            cliente_nombre='Cliente Unipersonal',
+            cliente_telefono='+56922222222',
+            vehiculo_marca='Fiat',
+            vehiculo_modelo='500',
+            servicio_nombre='Bujías',
+        )
+        self.client.force_authenticate(user=self.taller.usuario)
+        res = self.client.get(f'/api/ordenes/citas-agenda-personal/{cita.id}/asistente-ia/')
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertFalse(res.data['disponible'])
+        self.assertIsNone(res.data['contenido'])
