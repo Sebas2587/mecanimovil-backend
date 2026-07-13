@@ -97,8 +97,22 @@ def compute_valor_real(
         rango_min = min(p25, banda_min_api) if banda_min_api else p25
         rango_max = max(p75, banda_max_api) if banda_max_api else p75
     else:
-        rango_min = banda_min_api or int(valor_real * 0.9) if valor_real else 0
-        rango_max = banda_max_api or int(valor_real * 1.1) if valor_real else 0
+        rango_min = banda_min_api or (int(valor_real * 0.9) if valor_real else 0)
+        rango_max = banda_max_api or (int(valor_real * 1.1) if valor_real else 0)
+
+    # Sanear banda invertida o desfasada respecto al valor ajustado.
+    if rango_min and rango_max and rango_min > rango_max:
+        rango_min, rango_max = rango_max, rango_min
+    if valor_real > 0:
+        if not rango_min and not rango_max:
+            rango_min = int(valor_real * 0.92)
+            rango_max = int(valor_real * 1.08)
+        elif valor_real < rango_min or (rango_max and valor_real > rango_max):
+            half = max(int(valor_real * 0.06), int(abs((rango_max or valor_real) - (rango_min or valor_real)) / 2) or 1)
+            rango_min = max(0, valor_real - half)
+            rango_max = valor_real + half
+    if rango_max and rango_min and rango_max <= rango_min:
+        rango_max = rango_min + max(1, int((valor_real or rango_min) * 0.05))
 
     if n_comp >= 8 and n_semanas >= 3:
         confianza = 'alta'
@@ -173,15 +187,25 @@ def _build_synthetic_histogram(
         return []
     lo = rango_min or int(valor_usuario * 0.88)
     hi = rango_max or int(valor_usuario * 1.12)
+    if lo > hi:
+        lo, hi = hi, lo
+    if valor_usuario and (valor_usuario < lo or valor_usuario > hi):
+        half = max(int(valor_usuario * 0.06), int((hi - lo) / 2) or 1)
+        lo = max(0, valor_usuario - half)
+        hi = valor_usuario + half
     if hi <= lo:
         hi = lo + max(1, int(valor_usuario * 0.05))
-    step = max(1, (hi - lo) // buckets)
+    # Eje un poco más ancho para barras grises fuera del selection (Airbnb).
+    pad = max(int((hi - lo) * 0.35), int(valor_usuario * 0.04) if valor_usuario else 1)
+    axis_lo = max(0, lo - pad)
+    axis_hi = hi + pad
+    step = max(1, (axis_hi - axis_lo) // buckets)
     center = float(valor_usuario)
-    sigma = max((hi - lo) / 5.0, step * 2)
+    sigma = max((axis_hi - axis_lo) / 5.0, step * 2)
     raw: list[tuple[int, int, float]] = []
     for i in range(buckets):
-        edge_lo = lo + i * step
-        edge_hi = hi if i == buckets - 1 else edge_lo + step
+        edge_lo = axis_lo + i * step
+        edge_hi = axis_hi if i == buckets - 1 else edge_lo + step
         mid = (edge_lo + edge_hi) / 2.0
         gaussian = math.exp(-0.5 * ((mid - center) / sigma) ** 2)
         raw.append((edge_lo, edge_hi, gaussian))
