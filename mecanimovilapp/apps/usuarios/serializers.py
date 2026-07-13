@@ -749,6 +749,8 @@ class TallerSerializer(PanelServiciosSerializerMixin, serializers.ModelSerialize
     
     # NUEVO: Campo para dirección física del taller
     direccion_fisica = TallerDireccionSerializer(read_only=True)
+    # Texto legible para cards/detalle (prioridad: direccion_fisica → usuario.direccion)
+    direccion = serializers.SerializerMethodField()
     
     # NUEVO: URL de foto de perfil compatible con cPanel
     foto_perfil_url = serializers.SerializerMethodField()
@@ -776,7 +778,7 @@ class TallerSerializer(PanelServiciosSerializerMixin, serializers.ModelSerialize
                   'fecha_registro', 'ultima_actualizacion', 'distance',
                   'ultima_conexion', 'esta_conectado', 'status', 'total_resenas',
                   'servicios_completados', 'comunas_atendidas', 'experiencia_anos',
-                  'latitud', 'longitud', 'direccion_fisica', 'panel_servicios')
+                  'latitud', 'longitud', 'direccion_fisica', 'direccion', 'panel_servicios')
         read_only_fields = ('fecha_registro', 'ultima_actualizacion', 'fecha_verificacion', 
                             'verificado', 'estado_verificacion', 'onboarding_completado', 'onboarding_iniciado',
                             'distance')
@@ -937,6 +939,27 @@ class TallerSerializer(PanelServiciosSerializerMixin, serializers.ModelSerialize
             return []
         except Exception:
             return []
+
+    def get_direccion(self, obj):
+        """Texto legible para detalle/cards: direccion_fisica → usuario.direccion."""
+        try:
+            df = getattr(obj, 'direccion_fisica', None)
+            if df:
+                completa = getattr(df, 'direccion_completa', None) or ''
+                if completa.strip():
+                    return completa.strip()
+                partes = [df.calle, df.numero, df.comuna, df.ciudad]
+                joined = ', '.join(p for p in partes if p)
+                if joined:
+                    return joined
+            user = getattr(obj, 'usuario', None)
+            if user and getattr(user, 'direccion', None):
+                text = str(user.direccion).strip()
+                if text:
+                    return text
+        except Exception:
+            pass
+        return None
     
     def to_representation(self, instance):
         """

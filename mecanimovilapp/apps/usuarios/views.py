@@ -2141,6 +2141,17 @@ class TallerViewSet(viewsets.ModelViewSet):
                 }, status=status.HTTP_400_BAD_REQUEST)
 
             from .geocoding_utils import geocode_address_chile
+            from .taller_direccion_utils import upsert_taller_direccion_fisica
+
+            extras = {
+                'calle': request.data.get('calle'),
+                'numero': request.data.get('numero'),
+                'comuna': request.data.get('comuna'),
+                'ciudad': request.data.get('ciudad'),
+                'region': request.data.get('region'),
+                'codigo_postal': request.data.get('codigo_postal'),
+                'detalles_adicionales': request.data.get('detalles_adicionales'),
+            }
 
             # Si se proporcionan coordenadas directamente
             if has_coords:
@@ -2157,6 +2168,7 @@ class TallerViewSet(viewsets.ModelViewSet):
                         direccion_text = (rev or {}).get("display_name") or f"{lat:.5f}, {lng:.5f}"
                     user.direccion = direccion_text
                     user.save(update_fields=['direccion'])
+                    direccion_fisica = upsert_taller_direccion_fisica(taller, direccion_text, extras)
 
                     return Response({
                         'mensaje': 'Ubicación actualizada exitosamente con coordenadas proporcionadas',
@@ -2164,6 +2176,9 @@ class TallerViewSet(viewsets.ModelViewSet):
                             'latitud': lat,
                             'longitud': lng,
                             'direccion_registrada': direccion_text,
+                            'direccion_fisica': (
+                                direccion_fisica.direccion_completa if direccion_fisica else None
+                            ),
                         }
                     }, status=status.HTTP_200_OK)
 
@@ -2184,15 +2199,20 @@ class TallerViewSet(viewsets.ModelViewSet):
                     lng = geo['lng']
                     taller.ubicacion = Point(lng, lat, srid=4326)
                     taller.save(update_fields=['ubicacion'])
-                    user.direccion = str(direccion).strip()
+                    direccion_text = str(direccion).strip()
+                    user.direccion = direccion_text
                     user.save(update_fields=['direccion'])
+                    direccion_fisica = upsert_taller_direccion_fisica(taller, direccion_text, extras)
 
                     return Response({
                         'mensaje': 'Ubicación actualizada exitosamente mediante geocodificación',
                         'ubicacion': {
                             'latitud': lat,
                             'longitud': lng,
-                            'direccion_geocodificada': geo.get('display_name', '')
+                            'direccion_geocodificada': geo.get('display_name', ''),
+                            'direccion_fisica': (
+                                direccion_fisica.direccion_completa if direccion_fisica else None
+                            ),
                         }
                     }, status=status.HTTP_200_OK)
 
@@ -2976,6 +2996,28 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
                     'error': 'Se requiere una dirección o coordenadas (latitud y longitud)'
                 }, status=status.HTTP_400_BAD_REQUEST)
 
+            extras = {
+                'calle': request.data.get('calle'),
+                'numero': request.data.get('numero'),
+                'comuna': request.data.get('comuna'),
+                'ciudad': request.data.get('ciudad'),
+                'region': request.data.get('region'),
+                'codigo_postal': request.data.get('codigo_postal'),
+                'detalles_adicionales': request.data.get('detalles_adicionales'),
+            }
+
+            def _sync_taller_direccion_si_existe(direccion_text: str):
+                """Si el usuario también tiene Taller, reflejar dirección en usuarios app."""
+                try:
+                    taller = Taller.objects.filter(usuario=user).first()
+                    if not taller:
+                        return None
+                    from .taller_direccion_utils import upsert_taller_direccion_fisica
+                    return upsert_taller_direccion_fisica(taller, direccion_text, extras)
+                except Exception as sync_err:
+                    logger.warning(f"No se pudo sync TallerDireccion desde mecánico: {sync_err}")
+                    return None
+
             if has_coords:
                 try:
                     lat = float(latitud)
@@ -2994,6 +3036,7 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
                     direccion_text = (rev or {}).get("display_name") or f"{lat:.5f}, {lng:.5f}"
                 user.direccion = direccion_text
                 user.save(update_fields=['direccion'])
+                direccion_fisica = _sync_taller_direccion_si_existe(direccion_text)
 
                 return Response({
                     'message': 'Ubicación actualizada correctamente',
@@ -3002,6 +3045,9 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
                         'latitud': lat,
                         'longitud': lng,
                         'direccion_registrada': direccion_text,
+                        'direccion_fisica': (
+                            direccion_fisica.direccion_completa if direccion_fisica else None
+                        ),
                     },
                 })
 
@@ -3015,8 +3061,10 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
             lng = geo['lng']
             mecanico.ubicacion = Point(lng, lat, srid=4326)
             mecanico.save(update_fields=['ubicacion'])
-            user.direccion = str(direccion).strip()
+            direccion_text = str(direccion).strip()
+            user.direccion = direccion_text
             user.save(update_fields=['direccion'])
+            direccion_fisica = _sync_taller_direccion_si_existe(direccion_text)
 
             return Response({
                 'message': 'Ubicación actualizada mediante geocodificación',
@@ -3025,6 +3073,9 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
                     'latitud': lat,
                     'longitud': lng,
                     'direccion_geocodificada': geo.get('display_name', ''),
+                    'direccion_fisica': (
+                        direccion_fisica.direccion_completa if direccion_fisica else None
+                    ),
                 },
             })
 
