@@ -1897,6 +1897,11 @@ class TallerViewSet(viewsets.ModelViewSet):
         ).annotate(
             distance=Distance('ubicacion', user_location, spheroid=True)
         )
+        # Excluir pin histórico Santiago centro (ubicación inventada al crear taller)
+        default_santiago = Point(-70.6693, -33.4489, srid=4326)
+        queryset = queryset.exclude(
+            ubicacion__dwithin=(default_santiago, D(m=25))
+        )
         if max_distance is not None:
             queryset = queryset.filter(
                 ubicacion__distance_lte=(user_location, D(km=max_distance))
@@ -2932,8 +2937,12 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
         ).annotate(
             distance=Distance('ubicacion', user_location, spheroid=True)
         )
+        from django.contrib.gis.measure import D
+        default_santiago = Point(-70.6693, -33.4489, srid=4326)
+        queryset = queryset.exclude(
+            ubicacion__dwithin=(default_santiago, D(m=25))
+        )
         if max_distance is not None:
-            from django.contrib.gis.measure import D
             queryset = queryset.filter(
                 ubicacion__distance_lte=(user_location, D(km=max_distance))
             )
