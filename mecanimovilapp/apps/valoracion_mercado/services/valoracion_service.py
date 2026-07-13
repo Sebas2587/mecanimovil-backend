@@ -41,18 +41,41 @@ def maybe_enqueue_market_scrape(vehiculo, *, force: bool = False) -> dict[str, A
     Dispara scrape on-demand si faltan comparables externos (o force=True).
     No bloquea: el worker scraper actualiza progreso en cache.
     """
+    from datetime import datetime
+
     from mecanimovilapp.apps.valoracion_mercado.tasks import enqueue_scrape_vehiculo
 
     status = get_scrape_status(vehiculo.id)
     if status.get('state') in ('pending', 'running'):
         return status
 
-    # Evitar reintentos en bucle: si ya terminó (ok o error), respetar cooldown.
-    if not force and status.get('state') in ('done', 'error'):
-        return status
-
     comparables = get_comparables_for_vehicle(vehiculo)
-    needs = force or len(comparables) < MIN_COMPARABLES_FOR_MARKET
+    has_market = len(comparables) >= MIN_COMPARABLES_FOR_MARKET
+
+    # Si un scrape previo terminó sin data (p.ej. Chromium roto), reintentar
+    # tras un cooldown corto en lugar de bloquear 30 min.
+    if not force and status.get('state') in ('done', 'error'):
+        if has_market:
+            return status
+        listings = status.get('listings_count')
+        zero_listings = listings == 0 or (
+            isinstance(status.get('message'), str) and '0 avisos' in status['message']
+        )
+        age_ok = True
+        updated_raw = status.get('updated_at')
+        if updated_raw:
+            try:
+                updated = datetime.fromisoformat(str(updated_raw).replace('Z', '+00:00'))
+                if timezone.is_naive(updated):
+                    updated = timezone.make_aware(updated, timezone.get_current_timezone())
+                age_ok = (timezone.now() - updated) >= timedelta(minutes=2)
+            except (TypeError, ValueError):
+                age_ok = True
+        # Reintentar solo si no hubo avisos o ya pasó el cooldown.
+        if not (zero_listings or age_ok):
+            return status
+
+    needs = force or not has_market
     if not needs:
         return {
             'state': 'idle',

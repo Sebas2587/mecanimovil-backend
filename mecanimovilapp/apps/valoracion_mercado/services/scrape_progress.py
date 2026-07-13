@@ -34,13 +34,22 @@ def set_scrape_status(
     progress_pct: int = 0,
     message: str = '',
     task_id: str | None = None,
+    listings_count: int | None = None,
 ) -> dict[str, Any]:
+    from django.utils import timezone
+
     prev = get_scrape_status(vehiculo_id)
     payload = {
         'state': state,
         'progress_pct': max(0, min(100, int(progress_pct))),
         'message': message or '',
         'task_id': task_id if task_id is not None else prev.get('task_id'),
+        'updated_at': timezone.now().isoformat(),
+        'listings_count': (
+            listings_count
+            if listings_count is not None
+            else prev.get('listings_count')
+        ),
     }
     cache.set(_key(vehiculo_id), payload, CACHE_TTL_SEC)
     return payload

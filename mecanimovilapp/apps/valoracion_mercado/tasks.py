@@ -134,6 +134,7 @@ def task_scrape_vehiculo(self, vehiculo_id: int):
             state='done',
             progress_pct=100,
             message=f'Listo · {len(result.listings)} avisos de mercado',
+            listings_count=len(result.listings),
         )
         return len(result.listings)
     except Exception as exc:
