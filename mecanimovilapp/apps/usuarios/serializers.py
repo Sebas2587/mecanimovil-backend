@@ -941,21 +941,47 @@ class TallerSerializer(PanelServiciosSerializerMixin, serializers.ModelSerialize
             return []
 
     def get_direccion(self, obj):
-        """Texto legible para detalle/cards: direccion_fisica → usuario.direccion."""
+        """Texto legible corto: calle [número], comuna (sin s/n ni provincia/región)."""
         try:
             df = getattr(obj, 'direccion_fisica', None)
             if df:
+                calle = (df.calle or '').strip()
+                numero = (df.numero or '').strip()
+                comuna = (df.comuna or '').strip()
+                numero_ok = numero and numero.lower() not in ('s/n', 'sn', 's/n.', '-', '0')
+                street = f'{calle} {numero}'.strip() if numero_ok else calle
+                parts = [p for p in (street, comuna) if p]
+                if parts:
+                    return ', '.join(parts)
                 completa = getattr(df, 'direccion_completa', None) or ''
                 if completa.strip():
-                    return completa.strip()
-                partes = [df.calle, df.numero, df.comuna, df.ciudad]
-                joined = ', '.join(p for p in partes if p)
-                if joined:
-                    return joined
+                    # Fallback limpio desde completa
+                    segs = [s.strip() for s in completa.split(',') if s.strip()]
+                    skip = {'s/n', 'sn', 'chile'}
+                    segs = [
+                        s for s in segs
+                        if s.lower() not in skip
+                        and not s.lower().startswith('provincia de ')
+                        and not s.lower().startswith('región ')
+                        and not s.lower().startswith('region ')
+                    ]
+                    if segs:
+                        return ', '.join(segs[:2])
             user = getattr(obj, 'usuario', None)
             if user and getattr(user, 'direccion', None):
                 text = str(user.direccion).strip()
                 if text:
+                    segs = [s.strip() for s in text.split(',') if s.strip()]
+                    skip = {'s/n', 'sn', 'chile'}
+                    segs = [
+                        s for s in segs
+                        if s.lower() not in skip
+                        and not s.lower().startswith('provincia de ')
+                        and not s.lower().startswith('región ')
+                        and not s.lower().startswith('region ')
+                    ]
+                    if segs:
+                        return ', '.join(segs[:2])
                     return text
         except Exception:
             pass
