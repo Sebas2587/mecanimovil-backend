@@ -142,8 +142,8 @@ services:
     runtime: python
     plan: starter
     region: oregon
-    buildCommand: chmod +x ./build_scraper_worker.sh && ./build_scraper_worker.sh
-    startCommand: celery -A mecanimovilapp worker -l info -Q scraper --concurrency=1 --pool=solo --max-tasks-per-child=10
+    buildCommand: chmod +x ./build_scraper_worker.sh ./scripts/start_scraper_worker.sh && ./build_scraper_worker.sh
+    startCommand: ./scripts/start_scraper_worker.sh
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.7"
@@ -151,6 +151,8 @@ services:
         value: mecanimovilapp.settings_production
       - key: DEBUG
         value: "False"
+      - key: PLAYWRIGHT_BROWSERS_PATH
+        value: "/opt/render/project/src/.playwright"
       - key: SECRET_KEY
         generateValue: true
       - key: DATABASE_URL

@@ -113,27 +113,24 @@ def compute_liquidity(
     year = vehiculo.year or timezone.now().year
     year_min, year_max = year - 1, year + 1
 
-    if n_comp < 8 or n_semanas < 3:
-        health = _health_score(vehiculo)
-        prices = [int(c['precio']) for c in comparables if c.get('precio')]
-        pos = _price_position_score(valor_real, prices)
-        provisional = int(0.5 * (health * 0.8 + pos))
+    if n_comp < 5:
         return {
             'liquidez_score': None,
             'liquidez_label': 'calculando',
             'liquidez_razones': [
-                'Aún estamos recopilando datos del mercado para tu modelo.',
-                'Te mostramos una aproximación basada en salud y posición de precio.',
+                'Aún estamos recopilando avisos del mercado para tu modelo.',
+                'Abre esta pantalla de nuevo en unos minutos mientras scrapemos ML/Chileautos.',
             ],
             'precision_suficiente': False,
         }
 
+    # Con ≥5 avisos ya damos señal usable (aunque falte historial de rotación).
     weights = {
-        'rotacion': 35,
-        'densidad': 25,
-        'salud': 20,
-        'precio': 15,
-        'getapi': 5,
+        'rotacion': 35 if n_semanas >= 3 else 0,
+        'densidad': 25 if n_semanas >= 3 else 35,
+        'salud': 20 if n_semanas >= 3 else 30,
+        'precio': 15 if n_semanas >= 3 else 25,
+        'getapi': 5 if n_semanas >= 3 else 10,
     }
     prices = [int(c['precio']) for c in comparables if c.get('precio')]
     rot_score, rot_pct = _rotation_score(
@@ -150,7 +147,7 @@ def compute_liquidity(
     pos_score = _price_position_score(valor_real, prices)
     api_score = _getapi_signals_score(vehiculo)
 
-    total_w = sum(weights.values())
+    total_w = sum(weights.values()) or 1
     composite = (
         weights['rotacion'] * rot_score
         + weights['densidad'] * den_score
@@ -168,9 +165,11 @@ def compute_liquidity(
         label = 'dificil'
 
     razones = []
+    if n_semanas < 3:
+        razones.append(f'Estimación con {n_comp} avisos actuales (rotación aún midiendo).')
     if den_reason:
         razones.append(den_reason)
-    if rot_pct is not None:
+    if rot_pct is not None and n_semanas >= 3:
         if rot_pct >= 25:
             razones.append(f'El {rot_pct:.0f}% de autos similares salió del mercado en el último mes')
         else:
@@ -188,6 +187,6 @@ def compute_liquidity(
         'liquidez_score': score,
         'liquidez_label': label,
         'liquidez_razones': razones[:2],
-        'precision_suficiente': True,
+        'precision_suficiente': n_comp >= 8 and n_semanas >= 3,
         'tasa_rotacion_pct': rot_pct,
     }

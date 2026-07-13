@@ -69,3 +69,27 @@ class LiquidezEngineTests(SimpleTestCase):
         self.assertEqual(result['liquidez_label'], 'calculando')
         self.assertIsNone(result['liquidez_score'])
         self.assertFalse(result['precision_suficiente'])
+
+    @patch('mecanimovilapp.apps.valoracion_mercado.services.liquidez_engine._rotation_score', return_value=(50.0, None))
+    @patch('mecanimovilapp.apps.valoracion_mercado.services.liquidez_engine._density_score', return_value=(55.0, 'Oferta estable'))
+    def test_provisional_con_cinco_avisos(self, _den, _rot):
+        vehiculo = MagicMock()
+        vehiculo.year = 2018
+        vehiculo.marca_id = 1
+        vehiculo.modelo_id = 2
+        vehiculo.mes_revision_tecnica = 'Marzo'
+        vehiculo.vin = 'ABC'
+        vehiculo.estados_salud = MagicMock()
+        vehiculo.estados_salud.order_by.return_value.first.return_value = MagicMock(
+            salud_general_porcentaje=80
+        )
+        comps = [{'precio': 7_500_000 + i * 100_000} for i in range(6)]
+        result = compute_liquidity(
+            vehiculo,
+            8_000_000,
+            comps,
+            {'n_comparables': 6, 'n_semanas_tracking': 0, 'n_anuncios_activos': 6},
+        )
+        self.assertIn(result['liquidez_label'], ('facil', 'moderado', 'dificil'))
+        self.assertIsNotNone(result['liquidez_score'])
+        self.assertFalse(result['precision_suficiente'])

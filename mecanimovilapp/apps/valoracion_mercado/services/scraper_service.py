@@ -137,7 +137,99 @@ def _titulos_ml_playwright(page) -> list[tuple[str, str, str]]:
     return out
 
 
+def scrape_mercadolibre_api(marca: str, modelo: str, limit: int = 50) -> list[ListingScraped]:
+    """
+    Fallback sin browser: API pública de MercadoLibre (sitio MLC).
+    Evita depender de Chromium en el worker cuando Playwright falla.
+    """
+    import requests
+
+    query = re.sub(r'\s+', ' ', f'{marca} {modelo}').strip()
+    listings: list[ListingScraped] = []
+    # MLC1744 = Autos, Camionetas y 4x4 (Chile)
+    url = 'https://api.mercadolibre.com/sites/MLC/search'
+    params = {
+        'q': query,
+        'category': 'MLC1744',
+        'limit': min(limit, 50),
+    }
+    try:
+        resp = requests.get(
+            url,
+            params=params,
+            timeout=25,
+            headers={
+                'Accept': 'application/json',
+                'User-Agent': 'MecanimovilValoracion/1.0 (+https://mecanimovil.cl)',
+            },
+        )
+        if resp.status_code == 403:
+            logger.warning('MercadoLibre API 403 (posible bloqueo de IP); se intentará Playwright')
+            return listings
+        resp.raise_for_status()
+        results = resp.json().get('results') or []
+    except Exception as exc:
+        logger.warning('MercadoLibre API falló: %s', exc)
+        return listings
+
+    m_cf = marca.casefold()
+    mo_cf = modelo.casefold()
+    seen: set[str] = set()
+    for item in results:
+        titulo = (item.get('title') or '').strip()
+        if not titulo:
+            continue
+        if m_cf not in titulo.casefold() or mo_cf not in titulo.casefold():
+            continue
+        price = item.get('price')
+        try:
+            precio = int(round(float(price)))
+        except (TypeError, ValueError):
+            continue
+        if precio < 100_000:
+            continue
+        eid = str(item.get('id') or '').replace('MLC', '').lstrip('-') or _external_id_from_url(
+            item.get('permalink') or '', titulo, 'mercadolibre'
+        )
+        if eid in seen:
+            continue
+        seen.add(eid)
+        attrs = {a.get('id'): a.get('value_name') for a in (item.get('attributes') or []) if a.get('id')}
+        year = None
+        km = None
+        try:
+            if attrs.get('VEHICLE_YEAR'):
+                year = int(re.sub(r'[^\d]', '', str(attrs['VEHICLE_YEAR'])) or 0) or None
+        except ValueError:
+            year = _parse_year_from_title(titulo)
+        try:
+            if attrs.get('KILOMETERS'):
+                km = int(re.sub(r'[^\d]', '', str(attrs['KILOMETERS'])) or 0) or None
+        except ValueError:
+            km = _parse_km_from_title(titulo)
+        listings.append(
+            ListingScraped(
+                fuente='mercadolibre',
+                external_id=eid,
+                url=(item.get('permalink') or '')[:512],
+                titulo_raw=titulo,
+                precio=precio,
+                year=year or _parse_year_from_title(titulo),
+                kilometraje=km or _parse_km_from_title(titulo),
+                marca_texto=marca,
+                modelo_texto=modelo,
+            )
+        )
+    logger.info('MercadoLibre API: %s avisos para %s %s', len(listings), marca, modelo)
+    return listings
+
+
 def scrape_mercadolibre(marca: str, modelo: str, headless: bool = True) -> list[ListingScraped]:
+    # Prefer API (no Chromium). Playwright only if API returns nothing.
+    api_listings = scrape_mercadolibre_api(marca, modelo)
+    if api_listings:
+        return api_listings
+
     query = re.sub(r'\s+', ' ', f'{marca} {modelo}').strip()
     params = urllib.parse.urlencode({'q': query, 'category_id': ML_CATEGORY_AUTOS})
     url = f'{ML_LISTADO}?{params}'
@@ -146,7 +238,7 @@ def scrape_mercadolibre(marca: str, modelo: str, headless: bool = True) -> list[
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
-        logger.warning('playwright no instalado; omitiendo MercadoLibre')
+        logger.warning('playwright no instalado; omitiendo MercadoLibre HTML')
         return listings
 
     try:
