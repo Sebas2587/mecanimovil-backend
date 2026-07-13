@@ -658,7 +658,7 @@ class SolicitudServicioViewSet(viewsets.ModelViewSet):
                 personas=Count('solicitud__cliente_id', distinct=True),
                 ultima_solicitud=Max('solicitud__fecha_hora_solicitud'),
             )
-            .order_by('-ultima_solicitud')[:limite]
+            .order_by('-personas', '-ultima_solicitud')[:limite]
         )
 
         items = []
