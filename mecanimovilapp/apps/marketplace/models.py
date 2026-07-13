@@ -1,12 +1,14 @@
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 from django.utils import timezone
-import uuid
 import secrets
+
 
 class TransferenciaVehiculo(models.Model):
     """
-    Modelo para gestionar la transferencia digital de vehículos mediante QR/Token.
+    Transferencia digital del registro vehicular (historial, salud, km).
+    Flujo P2P: el dueño genera QR; el comprador lo escanea y asume la propiedad
+    en Mecanimovil (no es traspaso legal de dominio).
     """
     ESTADO_CHOICES = [
         ('PENDIENTE', 'Pendiente'),
@@ -25,26 +27,27 @@ class TransferenciaVehiculo(models.Model):
         on_delete=models.CASCADE,
         related_name='transferencias_ventas'
     )
+    # Nullable: en P2P el comprador se asigna al escanear el QR.
     comprador = models.ForeignKey(
         'usuarios.Usuario',
         on_delete=models.CASCADE,
-        related_name='transferencias_compras'
+        related_name='transferencias_compras',
+        null=True,
+        blank=True,
     )
+    # Nullable: marketplace de ofertas deprecado; se conserva por transferencias legacy.
     oferta_asociada = models.OneToOneField(
         'vehiculos.OfertaVehiculo',
         on_delete=models.CASCADE,
-        related_name='transferencia'
+        related_name='transferencia',
+        null=True,
+        blank=True,
     )
-    
-    # Token seguro para la transferencia (lo que el vendedor muestra/comparte)
+
     token_transferencia = models.CharField(max_length=64, unique=True, editable=False)
-    
-    # Datos encriptados/firmados para el QR (para mayor seguridad off-line o validación extra)
     qr_data = models.TextField(help_text="Datos encriptados para generar el QR")
-    
     fecha_expiracion = models.DateTimeField()
     estado = models.CharField(max_length=20, choices=ESTADO_CHOICES, default='PENDIENTE')
-    
     fecha_creacion = models.DateTimeField(auto_now_add=True)
     fecha_actualizacion = models.DateTimeField(auto_now=True)
 

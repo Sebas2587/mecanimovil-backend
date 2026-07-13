@@ -162,3 +162,71 @@ class TransferenciaVehiculoTests(TestCase):
         
         response = self.client.post('/api/marketplace/transferencias/complete_transfer/', {'token': token})
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_generate_token_by_vehicle_id(self):
+        """P2P: el dueño genera QR desde la ficha del vehículo sin oferta."""
+        self.client.force_authenticate(user=self.seller_user)
+        response = self.client.post(
+            '/api/marketplace/transferencias/generate_transfer_token/',
+            {'vehicle_id': self.vehiculo.id},
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIn('token', response.data)
+        self.assertIn('transfer_id', response.data)
+        transfer = TransferenciaVehiculo.objects.get(id=response.data['transfer_id'])
+        self.assertIsNone(transfer.oferta_asociada_id)
+        self.assertIsNone(transfer.comprador_id)
+        self.assertEqual(transfer.estado, 'PENDIENTE')
+
+    def test_complete_p2p_transfer_any_authenticated_buyer(self):
+        """P2P: quien escanea el QR (distinto del vendedor) se convierte en dueño."""
+        transfer = TransferenciaVehiculo.objects.create(
+            vehiculo=self.vehiculo,
+            vendedor=self.seller_user,
+            comprador=None,
+            oferta_asociada=None,
+            qr_data='{}',
+        )
+        self.client.force_authenticate(user=self.buyer_user)
+        response = self.client.post(
+            '/api/marketplace/transferencias/complete_transfer/',
+            {'token': transfer.token_transferencia},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.vehiculo.refresh_from_db()
+        transfer.refresh_from_db()
+        self.assertEqual(self.vehiculo.cliente.usuario, self.buyer_user)
+        self.assertEqual(transfer.estado, 'COMPLETADO')
+        self.assertEqual(transfer.comprador_id, self.buyer_user.id)
+
+    def test_complete_p2p_rejects_seller_self_transfer(self):
+        transfer = TransferenciaVehiculo.objects.create(
+            vehiculo=self.vehiculo,
+            vendedor=self.seller_user,
+            comprador=None,
+            oferta_asociada=None,
+            qr_data='{}',
+        )
+        self.client.force_authenticate(user=self.seller_user)
+        response = self.client.post(
+            '/api/marketplace/transferencias/complete_transfer/',
+            {'token': transfer.token_transferencia},
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_transfer_status_polling(self):
+        transfer = TransferenciaVehiculo.objects.create(
+            vehiculo=self.vehiculo,
+            vendedor=self.seller_user,
+            comprador=None,
+            oferta_asociada=None,
+            qr_data='{}',
+        )
+        self.client.force_authenticate(user=self.seller_user)
+        response = self.client.get(
+            '/api/marketplace/transferencias/transfer_status/',
+            {'transfer_id': transfer.id},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['estado'], 'PENDIENTE')
+        self.assertEqual(response.data['vehicle_id'], self.vehiculo.id)
