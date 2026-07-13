@@ -43,11 +43,26 @@ def maybe_enqueue_market_scrape(vehiculo, *, force: bool = False) -> dict[str, A
     """
     from datetime import datetime
 
+    from mecanimovilapp.apps.valoracion_mercado.services.scrape_progress import (
+        clear_scrape_status,
+        is_scrape_stale,
+    )
     from mecanimovilapp.apps.valoracion_mercado.tasks import enqueue_scrape_vehiculo
 
     status = get_scrape_status(vehiculo.id)
+
+    # Worker muerto mid-scrape deja running@25% en Redis → desbloquear y reintentar.
     if status.get('state') in ('pending', 'running'):
-        return status
+        if is_scrape_stale(status):
+            logger.warning(
+                'scrape zombie vehiculo=%s state=%s pct=%s → reencolando',
+                vehiculo.id,
+                status.get('state'),
+                status.get('progress_pct'),
+            )
+            clear_scrape_status(vehiculo.id)
+        else:
+            return status
 
     comparables = get_comparables_for_vehicle(vehiculo)
     has_market = len(comparables) >= MIN_COMPARABLES_FOR_MARKET
@@ -85,7 +100,7 @@ def maybe_enqueue_market_scrape(vehiculo, *, force: bool = False) -> dict[str, A
         }
 
     try:
-        return enqueue_scrape_vehiculo(vehiculo.id, force=force)
+        return enqueue_scrape_vehiculo(vehiculo.id, force=True)
     except Exception as exc:
         logger.warning('enqueue scrape vehiculo %s: %s', vehiculo.id, exc)
         return {

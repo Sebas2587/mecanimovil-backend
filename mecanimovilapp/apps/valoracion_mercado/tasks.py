@@ -49,7 +49,13 @@ def task_snapshot_tasacion_mensual(self):
     return count
 
 
-@shared_task(bind=True, max_retries=1, default_retry_delay=180)
+@shared_task(
+    bind=True,
+    max_retries=1,
+    default_retry_delay=180,
+    soft_time_limit=120,
+    time_limit=150,
+)
 def task_scrape_vehiculo(self, vehiculo_id: int):
     """
     Scrape on-demand del segmento de un vehículo (ML + Chileautos),
@@ -138,25 +144,38 @@ def task_scrape_vehiculo(self, vehiculo_id: int):
         )
         return len(result.listings)
     except Exception as exc:
+        # SoftTimeLimitExceeded / worker kill: no dejar la UI en 25% forever.
+        from celery.exceptions import SoftTimeLimitExceeded
+
+        msg = 'Búsqueda de mercado agotó el tiempo' if isinstance(exc, SoftTimeLimitExceeded) else (
+            'No pudimos completar la búsqueda de mercado'
+        )
         logger.exception('task_scrape_vehiculo %s: %s', vehiculo_id, exc)
         set_scrape_status(
             vehiculo_id,
             state='error',
             progress_pct=0,
-            message='No pudimos completar la búsqueda de mercado',
+            message=msg,
+            listings_count=0,
         )
+        if isinstance(exc, SoftTimeLimitExceeded):
+            return 0
         raise
 
 
 def enqueue_scrape_vehiculo(vehiculo_id: int, *, force: bool = False) -> dict:
     """Encola scrape si no hay uno activo. Retorna scrape_status."""
     from mecanimovilapp.apps.valoracion_mercado.services.scrape_progress import (
+        clear_scrape_status,
         get_scrape_status,
         is_scrape_active,
+        is_scrape_stale,
         set_scrape_status,
     )
 
-    if not force and is_scrape_active(vehiculo_id):
+    if force or is_scrape_stale(vehiculo_id=vehiculo_id):
+        clear_scrape_status(vehiculo_id)
+    elif is_scrape_active(vehiculo_id):
         return get_scrape_status(vehiculo_id)
 
     status = set_scrape_status(

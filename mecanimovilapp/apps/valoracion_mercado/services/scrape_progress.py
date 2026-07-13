@@ -3,11 +3,15 @@ Progreso de scrape on-demand por vehículo (cache Redis).
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import Any
 
 from django.core.cache import cache
+from django.utils import timezone
 
 CACHE_TTL_SEC = 60 * 30  # 30 min
+# Si un worker muere mid-scrape, el estado running quedaba pegado hasta TTL.
+STALE_AFTER_SEC = 150  # 2.5 min sin update → se considera zombie
 KEY_PREFIX = 'valoracion_scrape_v1'
 
 
@@ -27,6 +31,32 @@ def get_scrape_status(vehiculo_id: int) -> dict[str, Any]:
     return data
 
 
+def _parse_updated_at(raw) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        updated = datetime.fromisoformat(str(raw).replace('Z', '+00:00'))
+        if timezone.is_naive(updated):
+            updated = timezone.make_aware(updated, timezone.get_current_timezone())
+        return updated
+    except (TypeError, ValueError):
+        return None
+
+
+def is_scrape_stale(status: dict[str, Any] | None = None, *, vehiculo_id: int | None = None) -> bool:
+    data = status if status is not None else get_scrape_status(vehiculo_id or 0)
+    if data.get('state') not in ('pending', 'running'):
+        return False
+    updated = _parse_updated_at(data.get('updated_at'))
+    if updated is None:
+        return True
+    return (timezone.now() - updated) >= timedelta(seconds=STALE_AFTER_SEC)
+
+
+def clear_scrape_status(vehiculo_id: int) -> None:
+    cache.delete(_key(vehiculo_id))
+
+
 def set_scrape_status(
     vehiculo_id: int,
     *,
@@ -36,8 +66,6 @@ def set_scrape_status(
     task_id: str | None = None,
     listings_count: int | None = None,
 ) -> dict[str, Any]:
-    from django.utils import timezone
-
     prev = get_scrape_status(vehiculo_id)
     payload = {
         'state': state,
@@ -56,4 +84,9 @@ def set_scrape_status(
 
 
 def is_scrape_active(vehiculo_id: int) -> bool:
-    return get_scrape_status(vehiculo_id).get('state') in ('pending', 'running')
+    status = get_scrape_status(vehiculo_id)
+    if status.get('state') not in ('pending', 'running'):
+        return False
+    if is_scrape_stale(status):
+        return False
+    return True

@@ -346,10 +346,11 @@ def scrape_mercadolibre(marca: str, modelo: str, headless: bool = True) -> list[
                 viewport={'width': 1366, 'height': 900},
             )
             page = ctx.new_page()
+            page.set_default_timeout(25_000)
             # Warm-up cookies en dominio ML
             try:
-                page.goto('https://www.mercadolibre.cl/', wait_until='domcontentloaded', timeout=45_000)
-                page.wait_for_timeout(1500)
+                page.goto('https://www.mercadolibre.cl/', wait_until='domcontentloaded', timeout=30_000)
+                page.wait_for_timeout(800)
             except Exception:
                 pass
 
@@ -360,14 +361,14 @@ def scrape_mercadolibre(marca: str, modelo: str, headless: bool = True) -> list[
 
             rows: list[tuple[str, str, str]] = []
             used_url = urls[0]
-            for url in urls:
+            for url in urls[:2]:
                 used_url = url
                 try:
-                    page.goto(url, wait_until='domcontentloaded', timeout=60_000)
+                    page.goto(url, wait_until='domcontentloaded', timeout=35_000)
                 except Exception as exc:
                     logger.info('ML goto falló %s: %s', url, exc)
                     continue
-                page.wait_for_timeout(4000)
+                page.wait_for_timeout(2500)
                 title = ''
                 try:
                     title = page.title()
@@ -559,14 +560,24 @@ def scrape_chileautos(marca: str, modelo: str, headless: bool = True) -> list[Li
 
 
 def scrape_segmento(marca: str, modelo: str, year_bucket: int | None = None) -> ScrapeResult:
-    """Scrapea ML + Chileautos para un segmento marca/modelo."""
+    """Scrapea ML (+ Chileautos solo si ML no trae suficientes avisos)."""
     result = ScrapeResult(marca=marca, modelo=modelo, year_bucket=year_bucket)
     headless = True
     try:
         ml = scrape_mercadolibre(marca, modelo, headless=headless)
-        _jitter_sleep()
-        ca = scrape_chileautos(marca, modelo, headless=headless)
-        result.listings = ml + ca
+        result.listings = list(ml)
+        # Chileautos (DataDome) suele colgar/bloquear; solo si ML no aportó.
+        if len(ml) < 5:
+            _jitter_sleep(1.0, 2.0)
+            ca = scrape_chileautos(marca, modelo, headless=headless)
+            result.listings = ml + ca
+        logger.info(
+            'scrape_segmento %s %s → ml=%s total=%s',
+            marca,
+            modelo,
+            len(ml),
+            len(result.listings),
+        )
     except Exception as exc:
         result.errors.append(str(exc))
         logger.exception('scrape_segmento error')
