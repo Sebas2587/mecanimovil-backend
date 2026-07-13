@@ -1854,11 +1854,15 @@ class TallerViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], pagination_class=None)
     def cerca(self, request):
         """
-        Filtrar talleres por proximidad a una ubicación dada
+        Listar talleres con geo real, ordenados por distancia al usuario.
+
+        No excluye por radio: `dist` es opcional y solo limita si se envía
+        (compatibilidad legacy). Destacados / descubrimiento usan todos los
+        elegibles por marca y priorizan cercanía en el cliente o vía order_by.
         """
         lat = request.query_params.get('lat')
         lng = request.query_params.get('lng')
-        max_distance = request.query_params.get('dist', 5)  # default 5km
+        max_distance = request.query_params.get('dist')  # opcional; sin default duro
         
         if not lat or not lng:
             return Response(
@@ -1869,7 +1873,7 @@ class TallerViewSet(viewsets.ModelViewSet):
         try:
             lat = float(lat)
             lng = float(lng)
-            max_distance = float(max_distance)
+            max_distance = float(max_distance) if max_distance not in (None, '') else None
         except ValueError:
             return Response(
                 {"error": "Los parámetros lat, lng y dist deben ser números válidos"},
@@ -1879,8 +1883,6 @@ class TallerViewSet(viewsets.ModelViewSet):
         # Crear un punto a partir de las coordenadas
         user_location = Point(lng, lat, srid=4326)
         
-        # Filtrar talleres cercanos
-        # ✅ CORREGIDO: Usar SphericalDistance para cálculos precisos en kilómetros
         from django.contrib.gis.db.models.functions import Distance
         from django.contrib.gis.measure import D
         
@@ -1894,9 +1896,11 @@ class TallerViewSet(viewsets.ModelViewSet):
             ubicacion__isnull=False,
         ).annotate(
             distance=Distance('ubicacion', user_location, spheroid=True)
-        ).filter(
-            ubicacion__distance_lte=(user_location, D(km=max_distance))
         )
+        if max_distance is not None:
+            queryset = queryset.filter(
+                ubicacion__distance_lte=(user_location, D(km=max_distance))
+            )
         # Opcional: solo talleres que atienden la marca del vehículo seleccionado (mismo criterio que proveedores_filtrados)
         marca_vehiculo = request.query_params.get('marca')
         if marca_vehiculo:
@@ -2868,12 +2872,12 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], pagination_class=None)
     def cerca(self, request):
         """
-        Filtrar mecánicos a domicilio por proximidad a una ubicación dada
-        y opcionalmente por compatibilidad con marcas de vehículos del usuario
+        Listar mecánicos/talleres a domicilio con geo, ordenados por distancia.
+        Sin exclusión por radio salvo que el cliente envíe `dist` explícito.
         """
         lat = request.query_params.get('lat')
         lng = request.query_params.get('lng')
-        max_distance = request.query_params.get('dist', 10)  # default 10km para mecánicos
+        max_distance = request.query_params.get('dist')  # opcional
         marca_vehiculo = request.query_params.get('marca')  # opcional: filtrar por marca
         
         if not lat or not lng:
@@ -2885,7 +2889,7 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
         try:
             lat = float(lat)
             lng = float(lng)
-            max_distance = float(max_distance)
+            max_distance = float(max_distance) if max_distance not in (None, '') else None
         except ValueError:
             return Response(
                 {"error": "Los parámetros lat, lng y dist deben ser números válidos"},
@@ -2895,7 +2899,6 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
         # Crear un punto a partir de las coordenadas
         user_location = Point(lng, lat, srid=4326)
         
-        # Filtrar mecánicos cercanos, verificados y activos
         queryset = MecanicoDomicilio.objects.select_related(
             'usuario',
             'usuario__suscripcion_proveedor',
@@ -2905,13 +2908,15 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
         ).filter(
             verificado=True,
             activo=True,
-            ubicacion__isnull=False  # Solo mecánicos con ubicación registrada
+            ubicacion__isnull=False
         ).annotate(
-            # ✅ CORREGIDO: Usar SphericalDistance para cálculos precisos en kilómetros
             distance=Distance('ubicacion', user_location, spheroid=True)
-        ).filter(
-            ubicacion__distance_lte=(user_location, D(km=max_distance))
         )
+        if max_distance is not None:
+            from django.contrib.gis.measure import D
+            queryset = queryset.filter(
+                ubicacion__distance_lte=(user_location, D(km=max_distance))
+            )
         
         # Filtrar por marca de vehículo si se especifica (incluye multimarca)
         if marca_vehiculo:
@@ -3773,7 +3778,7 @@ def inicializar_onboarding(request):
                 telefono=request.data.get('telefono', usuario.telefono or ''),
                 rut=request.data.get('rut', ''),
                 descripcion=request.data.get('descripcion', 'Taller mecánico'),
-                ubicacion=Point(-70.6693, -33.4489),  # Santiago por defecto
+                ubicacion=None,  # Requiere dirección real vía actualizar-ubicacion
                 modalidad_atencion=modalidad,
                 onboarding_iniciado=True,
             )

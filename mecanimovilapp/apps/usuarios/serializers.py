@@ -1319,10 +1319,8 @@ class MecanicoDomicilioSerializer(PanelServiciosSerializerMixin, serializers.Mod
             except Usuario.DoesNotExist:
                 raise serializers.ValidationError("Usuario no encontrado")
         
-        # Si no se proporciona ubicación, crear una ubicación por defecto
-        if 'ubicacion' not in validated_data:
-            # Coordenadas por defecto para Santiago, Chile (-33.4489, -70.6693)
-            validated_data['ubicacion'] = Point(-70.6693, -33.4489)
+        # Sin pin inventado: ubicacion queda null hasta confirmar dirección/mapa
+        validated_data.setdefault('ubicacion', None)
         
         # Extraer especialidades y marcas si se proporcionan
         especialidades = validated_data.pop('especialidades', [])
