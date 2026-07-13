@@ -192,6 +192,17 @@ class VehiculoViewSet(viewsets.ModelViewSet):
             logger.warning(f"✅ [VehiculoViewSet.perform_create] Vehículo {vehiculo.id} creado. Foto: {vehiculo.foto.name if vehiculo.foto else 'Sin foto'}")
             if vehiculo.foto:
                 logger.warning(f"📸 [VehiculoViewSet.perform_create] Storage usado: {type(vehiculo.foto.storage).__name__}")
+            try:
+                from mecanimovilapp.apps.valoracion_mercado.services.valoracion_service import (
+                    maybe_enqueue_market_scrape,
+                )
+                maybe_enqueue_market_scrape(vehiculo, force=True)
+            except Exception as scrape_exc:
+                logger.warning(
+                    'No se pudo encolar scrape de mercado para vehículo %s: %s',
+                    vehiculo.id,
+                    scrape_exc,
+                )
         else:
             # Si el usuario no tiene un cliente asociado, lanzar error
             from rest_framework import exceptions

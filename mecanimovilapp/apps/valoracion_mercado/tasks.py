@@ -49,6 +49,131 @@ def task_snapshot_tasacion_mensual(self):
     return count
 
 
+@shared_task(bind=True, max_retries=1, default_retry_delay=180)
+def task_scrape_vehiculo(self, vehiculo_id: int):
+    """
+    Scrape on-demand del segmento de un vehículo (ML + Chileautos),
+    con progreso en cache para la UI.
+    """
+    from mecanimovilapp.apps.vehiculos.models import Vehiculo
+    from mecanimovilapp.apps.valoracion_mercado.services.scrape_progress import set_scrape_status
+    from mecanimovilapp.apps.valoracion_mercado.services.scraper_service import (
+        mark_removed_for_segment,
+        scrape_segmento,
+        upsert_listings,
+    )
+    from mecanimovilapp.apps.valoracion_mercado.services.segmento_service import aggregate_segment
+    from mecanimovilapp.apps.valoracion_mercado.services.valoracion_service import (
+        build_valoracion_payload,
+    )
+
+    try:
+        vehiculo = Vehiculo.objects.select_related('marca', 'modelo').get(pk=vehiculo_id)
+    except Vehiculo.DoesNotExist:
+        set_scrape_status(vehiculo_id, state='error', progress_pct=0, message='Vehículo no encontrado')
+        return 0
+
+    if not vehiculo.marca_id or not vehiculo.modelo_id:
+        set_scrape_status(
+            vehiculo_id,
+            state='error',
+            progress_pct=0,
+            message='Falta marca/modelo para buscar comparables',
+        )
+        return 0
+
+    year_bucket = vehiculo.year or timezone.now().year
+    year_min, year_max = year_bucket - 1, year_bucket + 1
+    marca_nombre = getattr(vehiculo.marca, 'nombre', '') or ''
+    modelo_nombre = getattr(vehiculo.modelo, 'nombre', '') or ''
+
+    set_scrape_status(
+        vehiculo_id,
+        state='running',
+        progress_pct=8,
+        message='Buscando autos similares en el mercado…',
+        task_id=getattr(self.request, 'id', None),
+    )
+
+    try:
+        set_scrape_status(
+            vehiculo_id,
+            state='running',
+            progress_pct=25,
+            message='Consultando MercadoLibre y Chileautos…',
+        )
+        result = scrape_segmento(marca_nombre, modelo_nombre, year_bucket=year_bucket)
+
+        set_scrape_status(
+            vehiculo_id,
+            state='running',
+            progress_pct=65,
+            message=f'Guardando {len(result.listings)} avisos encontrados…',
+        )
+        seen = upsert_listings(result.listings, vehiculo.marca, vehiculo.modelo, year_bucket)
+        mark_removed_for_segment(vehiculo.marca, vehiculo.modelo, year_min, year_max, seen)
+
+        set_scrape_status(
+            vehiculo_id,
+            state='running',
+            progress_pct=82,
+            message='Agregando segmento de mercado…',
+        )
+        aggregate_segment(vehiculo.marca, vehiculo.modelo, year_bucket)
+
+        set_scrape_status(
+            vehiculo_id,
+            state='running',
+            progress_pct=92,
+            message='Recalculando valor de tu auto…',
+        )
+        build_valoracion_payload(vehiculo, persist=True)
+
+        set_scrape_status(
+            vehiculo_id,
+            state='done',
+            progress_pct=100,
+            message=f'Listo · {len(result.listings)} avisos de mercado',
+        )
+        return len(result.listings)
+    except Exception as exc:
+        logger.exception('task_scrape_vehiculo %s: %s', vehiculo_id, exc)
+        set_scrape_status(
+            vehiculo_id,
+            state='error',
+            progress_pct=0,
+            message='No pudimos completar la búsqueda de mercado',
+        )
+        raise
+
+
+def enqueue_scrape_vehiculo(vehiculo_id: int, *, force: bool = False) -> dict:
+    """Encola scrape si no hay uno activo. Retorna scrape_status."""
+    from mecanimovilapp.apps.valoracion_mercado.services.scrape_progress import (
+        get_scrape_status,
+        is_scrape_active,
+        set_scrape_status,
+    )
+
+    if not force and is_scrape_active(vehiculo_id):
+        return get_scrape_status(vehiculo_id)
+
+    status = set_scrape_status(
+        vehiculo_id,
+        state='pending',
+        progress_pct=2,
+        message='En cola para buscar datos del mercado…',
+    )
+    async_result = task_scrape_vehiculo.delay(vehiculo_id)
+    return set_scrape_status(
+        vehiculo_id,
+        state='pending',
+        progress_pct=2,
+        message=status['message'],
+        task_id=async_result.id,
+    )
+
+
 @shared_task(bind=True, max_retries=1, default_retry_delay=300)
 def task_scrape_segmentos_activos(self):
     """Scrapea segmentos con vehículos registrados (ML + Chileautos)."""

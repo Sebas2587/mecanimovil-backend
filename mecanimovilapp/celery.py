@@ -47,6 +47,7 @@ app.conf.task_routes = {
     'mecanimovilapp.apps.ordenes.tasks.recordar_solicitudes_por_vencer_proveedor_task': {'queue': 'default'},
     # Valoración mercado — scraping pesado en cola dedicada
     'mecanimovilapp.apps.valoracion_mercado.tasks.task_scrape_segmentos_activos': {'queue': 'scraper'},
+    'mecanimovilapp.apps.valoracion_mercado.tasks.task_scrape_vehiculo': {'queue': 'scraper'},
     'mecanimovilapp.apps.valoracion_mercado.tasks.task_snapshot_tasacion_mensual': {'queue': 'default'},
     'mecanimovilapp.apps.valoracion_mercado.tasks.task_agregar_segmentos': {'queue': 'default'},
     'mecanimovilapp.apps.valoracion_mercado.tasks.task_recalcular_valoracion_vehiculos': {'queue': 'default'},

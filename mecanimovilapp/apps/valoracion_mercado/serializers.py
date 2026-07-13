@@ -8,6 +8,7 @@ class ValoracionVehiculoSerializer(serializers.Serializer):
     valor_real_rango_max = serializers.IntegerField()
     confianza = serializers.CharField()
     liquidez = serializers.DictField()
+    demanda = serializers.DictField(required=False)
     proyeccion = serializers.ListField()
     histograma = serializers.ListField()
     meta = serializers.DictField()

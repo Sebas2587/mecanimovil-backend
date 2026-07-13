@@ -10,8 +10,10 @@ from typing import Any
 from django.utils import timezone
 
 from mecanimovilapp.apps.valoracion_mercado.models import ValoracionVehiculo
+from mecanimovilapp.apps.valoracion_mercado.services.demanda_timing import compute_demanda_timing
 from mecanimovilapp.apps.valoracion_mercado.services.liquidez_engine import compute_liquidity
 from mecanimovilapp.apps.valoracion_mercado.services.proyeccion_engine import project_values
+from mecanimovilapp.apps.valoracion_mercado.services.scrape_progress import get_scrape_status
 from mecanimovilapp.apps.valoracion_mercado.services.segmento_service import (
     get_comparables_for_vehicle,
     get_latest_segment_snapshot,
@@ -22,6 +24,7 @@ from mecanimovilapp.apps.valoracion_mercado.services.valor_engine import compute
 logger = logging.getLogger(__name__)
 
 CACHE_MAX_AGE_DAYS = 14
+MIN_COMPARABLES_FOR_MARKET = 3
 
 
 def valoracion_needs_refresh(vehiculo) -> bool:
@@ -31,6 +34,51 @@ def valoracion_needs_refresh(vehiculo) -> bool:
         return True
     age = timezone.now() - val.fecha_calculo
     return age > timedelta(days=CACHE_MAX_AGE_DAYS)
+
+
+def maybe_enqueue_market_scrape(vehiculo, *, force: bool = False) -> dict[str, Any]:
+    """
+    Dispara scrape on-demand si faltan comparables externos (o force=True).
+    No bloquea: el worker scraper actualiza progreso en cache.
+    """
+    from mecanimovilapp.apps.valoracion_mercado.tasks import enqueue_scrape_vehiculo
+
+    status = get_scrape_status(vehiculo.id)
+    if status.get('state') in ('pending', 'running'):
+        return status
+
+    # Evitar reintentos en bucle: si ya terminó (ok o error), respetar cooldown.
+    if not force and status.get('state') in ('done', 'error'):
+        return status
+
+    comparables = get_comparables_for_vehicle(vehiculo)
+    needs = force or len(comparables) < MIN_COMPARABLES_FOR_MARKET
+    if not needs:
+        return {
+            'state': 'idle',
+            'progress_pct': 100 if comparables else 0,
+            'message': '',
+            'task_id': None,
+        }
+
+    try:
+        return enqueue_scrape_vehiculo(vehiculo.id, force=force)
+    except Exception as exc:
+        logger.warning('enqueue scrape vehiculo %s: %s', vehiculo.id, exc)
+        return {
+            'state': 'error',
+            'progress_pct': 0,
+            'message': 'No se pudo encolar la búsqueda de mercado',
+            'task_id': None,
+        }
+
+
+def _attach_scrape_meta(payload: dict[str, Any], vehiculo, *, enqueue: bool = True) -> dict[str, Any]:
+    scrape = maybe_enqueue_market_scrape(vehiculo) if enqueue else get_scrape_status(vehiculo.id)
+    meta = dict(payload.get('meta') or {})
+    meta['scrape'] = scrape
+    payload['meta'] = meta
+    return payload
 
 
 def build_valoracion_payload(vehiculo, persist: bool = True) -> dict[str, Any]:
@@ -59,6 +107,12 @@ def build_valoracion_payload(vehiculo, persist: bool = True) -> dict[str, Any]:
     )
 
     liquidez = compute_liquidity(
+        vehiculo,
+        valor_data['valor_real_hoy'],
+        comparables,
+        segmento,
+    )
+    demanda = compute_demanda_timing(
         vehiculo,
         valor_data['valor_real_hoy'],
         comparables,
@@ -109,6 +163,7 @@ def build_valoracion_payload(vehiculo, persist: bool = True) -> dict[str, Any]:
             'label': liquidez['liquidez_label'],
             'razones': liquidez['liquidez_razones'],
         },
+        'demanda': demanda,
         'proyeccion': proyeccion,
         'histograma': valor_data['histograma'],
         'meta': meta,
@@ -129,31 +184,40 @@ def build_valoracion_payload(vehiculo, persist: bool = True) -> dict[str, Any]:
                 'liquidez_razones': liquidez['liquidez_razones'],
                 'proyeccion': proyeccion,
                 'histograma': valor_data['histograma'],
-                'meta': meta,
+                'meta': {**meta, 'demanda': demanda},
             },
         )
 
     return payload
 
 
-def get_or_compute_valoracion(vehiculo, force: bool = False) -> dict[str, Any]:
+def get_or_compute_valoracion(vehiculo, force: bool = False, enqueue_scrape: bool = True) -> dict[str, Any]:
     if force or valoracion_needs_refresh(vehiculo):
-        return build_valoracion_payload(vehiculo, persist=True)
-    val = vehiculo.valoracion_mercado
-    return {
-        'vehiculo_id': vehiculo.id,
-        'valor_real_hoy': val.valor_real_hoy,
-        'valor_real_rango_min': val.valor_real_rango_min,
-        'valor_real_rango_max': val.valor_real_rango_max,
-        'confianza': val.confianza,
-        'liquidez': {
-            'score': val.liquidez_score if val.liquidez_label != 'calculando' else None,
-            'label': val.liquidez_label,
-            'razones': val.liquidez_razones or [],
-        },
-        'proyeccion': val.proyeccion or [],
-        'histograma': val.histograma or [],
-        'meta': val.meta or {},
-        'fecha_calculo': val.fecha_calculo.isoformat(),
-        'currency': 'CLP',
-    }
+        payload = build_valoracion_payload(vehiculo, persist=True)
+    else:
+        val = vehiculo.valoracion_mercado
+        payload = {
+            'vehiculo_id': vehiculo.id,
+            'valor_real_hoy': val.valor_real_hoy,
+            'valor_real_rango_min': val.valor_real_rango_min,
+            'valor_real_rango_max': val.valor_real_rango_max,
+            'confianza': val.confianza,
+            'liquidez': {
+                'score': val.liquidez_score if val.liquidez_label != 'calculando' else None,
+                'label': val.liquidez_label,
+                'razones': val.liquidez_razones or [],
+            },
+            'demanda': (val.meta or {}).get('demanda') or {
+                'recomendacion': 'indeterminado',
+                'confianza': 'baja',
+                'titulo': 'Aún midiendo la demanda',
+                'detalle': 'Necesitamos historial de avisos del segmento para comparar hoy vs. próximo mes.',
+                'razones': [],
+            },
+            'proyeccion': val.proyeccion or [],
+            'histograma': val.histograma or [],
+            'meta': dict(val.meta or {}),
+            'fecha_calculo': val.fecha_calculo.isoformat(),
+            'currency': 'CLP',
+        }
+    return _attach_scrape_meta(payload, vehiculo, enqueue=enqueue_scrape)
