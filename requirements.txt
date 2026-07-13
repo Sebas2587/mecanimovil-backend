@@ -103,3 +103,8 @@ py-vapid==1.8.2
 # Google Sign-In (verify id_token)
 # ============================================
 google-auth==2.40.3
+
+# ============================================
+# Scraping valoración mercado (Playwright)
+# ============================================
+playwright==1.49.1

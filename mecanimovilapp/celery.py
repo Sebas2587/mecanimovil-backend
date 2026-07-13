@@ -45,6 +45,11 @@ app.conf.task_routes = {
     'mecanimovilapp.apps.ordenes.tasks.enviar_notificacion_cambio_estado': {'queue': 'default'},
     'mecanimovilapp.apps.ordenes.tasks.enviar_push_notificacion_pago_pendiente': {'queue': 'default'},
     'mecanimovilapp.apps.ordenes.tasks.recordar_solicitudes_por_vencer_proveedor_task': {'queue': 'default'},
+    # Valoración mercado — scraping pesado en cola dedicada
+    'mecanimovilapp.apps.valoracion_mercado.tasks.task_scrape_segmentos_activos': {'queue': 'scraper'},
+    'mecanimovilapp.apps.valoracion_mercado.tasks.task_snapshot_tasacion_mensual': {'queue': 'default'},
+    'mecanimovilapp.apps.valoracion_mercado.tasks.task_agregar_segmentos': {'queue': 'default'},
+    'mecanimovilapp.apps.valoracion_mercado.tasks.task_recalcular_valoracion_vehiculos': {'queue': 'default'},
 }
 
 # ============================================
@@ -127,6 +132,26 @@ app.conf.beat_schedule = {
     'verificar-salud-suscripciones': {
         'task': 'suscripciones.verificar_salud_suscripciones',
         'schedule': crontab(hour='*/6', minute=30),  # Cada 6 horas (00:30, 06:30, 12:30, 18:30)
+        'options': {'queue': 'default'},
+    },
+    'valoracion-snapshot-tasacion-mensual': {
+        'task': 'mecanimovilapp.apps.valoracion_mercado.tasks.task_snapshot_tasacion_mensual',
+        'schedule': crontab(day_of_month=1, hour=7, minute=0),
+        'options': {'queue': 'default'},
+    },
+    'valoracion-scrape-segmentos-lun': {
+        'task': 'mecanimovilapp.apps.valoracion_mercado.tasks.task_scrape_segmentos_activos',
+        'schedule': crontab(day_of_week=1, hour=3, minute=0),
+        'options': {'queue': 'scraper'},
+    },
+    'valoracion-scrape-segmentos-jue': {
+        'task': 'mecanimovilapp.apps.valoracion_mercado.tasks.task_scrape_segmentos_activos',
+        'schedule': crontab(day_of_week=4, hour=3, minute=0),
+        'options': {'queue': 'scraper'},
+    },
+    'valoracion-recalcular-semanal': {
+        'task': 'mecanimovilapp.apps.valoracion_mercado.tasks.task_recalcular_valoracion_vehiculos',
+        'schedule': crontab(day_of_week=5, hour=6, minute=0),
         'options': {'queue': 'default'},
     },
 }

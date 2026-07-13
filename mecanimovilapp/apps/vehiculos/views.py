@@ -621,6 +621,23 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         }
         return Response(data)
 
+    @action(detail=True, methods=['get'], url_path='valor-real')
+    def valor_real(self, request, pk=None):
+        """
+        Valor real estimado, liquidez y proyección del vehículo.
+        GET /api/vehiculos/{id}/valor-real/?refresh=1
+        """
+        from mecanimovilapp.apps.valoracion_mercado.serializers import ValoracionVehiculoSerializer
+        from mecanimovilapp.apps.valoracion_mercado.services.valoracion_service import (
+            get_or_compute_valoracion,
+        )
+
+        vehiculo = self.get_object()
+        force = str(request.query_params.get('refresh', '')).lower() in ('1', 'true', 'yes', 'si')
+        payload = get_or_compute_valoracion(vehiculo, force=force)
+        serializer = ValoracionVehiculoSerializer(payload)
+        return Response(serializer.data)
+
     @action(detail=True, methods=['get', 'patch'], url_path='marketplace')
     def marketplace(self, request, pk=None):
         """

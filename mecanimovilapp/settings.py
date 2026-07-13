@@ -77,6 +77,7 @@ INSTALLED_APPS = [
     'mecanimovilapp.apps.chat', # Sistema de mensajería contextual
     'mecanimovilapp.apps.omnichannel', # WhatsApp, Messenger, Instagram
     'mecanimovilapp.apps.marketplace', # Marketplace de vehículos y transferencias
+    'mecanimovilapp.apps.valoracion_mercado', # Valor real, liquidez y proyección
 ]
 
 # Configuración del modelo de usuario personalizado

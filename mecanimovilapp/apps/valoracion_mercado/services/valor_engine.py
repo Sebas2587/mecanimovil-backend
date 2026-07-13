@@ -1,0 +1,158 @@
+"""
+Motor 1: valor real estimado hoy (blend GetAPI + comparables externos).
+"""
+from __future__ import annotations
+
+import statistics
+from decimal import Decimal
+from typing import Any
+
+from mecanimovilapp.apps.marketplace.valuation_engine import calculate_suggested_price
+
+
+def _percentile(sorted_vals: list[int], p: float) -> int:
+    if not sorted_vals:
+        return 0
+    if len(sorted_vals) == 1:
+        return sorted_vals[0]
+    k = (len(sorted_vals) - 1) * p
+    f = int(k)
+    c = min(f + 1, len(sorted_vals) - 1)
+    if f == c:
+        return sorted_vals[f]
+    return int(sorted_vals[f] + (sorted_vals[c] - sorted_vals[f]) * (k - f))
+
+
+def _km_adjust_factor(vehicle_km: int, comparable_km: int | None) -> float:
+    if not vehicle_km or not comparable_km or comparable_km <= 0:
+        return 1.0
+    ratio = vehicle_km / comparable_km
+    if ratio < 0.7:
+        return 1.03
+    if ratio > 1.3:
+        return 0.97
+    return 1.0
+
+
+def compute_valor_getapi_ajustado(vehiculo) -> int:
+    precio_mercado = vehiculo.precio_mercado_promedio or 0
+    if not precio_mercado:
+        return 0
+    return calculate_suggested_price(
+        vehiculo,
+        precio_mercado,
+        vehiculo.tasacion_fiscal or 0,
+    )
+
+
+def compute_external_median_adjusted(vehiculo, comparables: list[dict]) -> tuple[int, list[int]]:
+    """Mediana de precios externos ajustada por km del vehículo."""
+    prices: list[int] = []
+    for c in comparables:
+        p = int(c.get('precio') or 0)
+        if p <= 0:
+            continue
+        km = c.get('kilometraje')
+        factor = _km_adjust_factor(vehiculo.kilometraje or 0, km)
+        prices.append(int(p * factor))
+    if not prices:
+        return 0, []
+    prices.sort()
+    return int(statistics.median(prices)), prices
+
+
+def compute_valor_real(
+    vehiculo,
+    comparables: list[dict],
+    segmento_snapshot: dict | None,
+) -> dict[str, Any]:
+    """
+    Retorna valor_real_hoy, rango min/max, confianza, histograma buckets, meta.
+    """
+    valor_getapi = compute_valor_getapi_ajustado(vehiculo)
+    mediana_ext, price_list = compute_external_median_adjusted(vehiculo, comparables)
+    n_comp = len(price_list)
+    n_anuncios = (segmento_snapshot or {}).get('n_anuncios_activos', n_comp)
+    n_semanas = (segmento_snapshot or {}).get('n_semanas_tracking', 0)
+
+    w_externo = 0.0
+    if n_anuncios >= 5 and mediana_ext > 0:
+        w_externo = min(0.60, 0.10 + n_comp * 0.05)
+    w_getapi = max(0.40, 1.0 - w_externo)
+
+    if valor_getapi <= 0 and mediana_ext > 0:
+        valor_real = mediana_ext
+    elif valor_getapi > 0 and mediana_ext > 0:
+        valor_real = int(w_getapi * valor_getapi + w_externo * mediana_ext)
+    else:
+        valor_real = valor_getapi or mediana_ext
+
+    banda_min_api = vehiculo.precio_mercado_min or 0
+    banda_max_api = vehiculo.precio_mercado_max or 0
+
+    if price_list:
+        p25 = _percentile(price_list, 0.25)
+        p75 = _percentile(price_list, 0.75)
+        rango_min = min(p25, banda_min_api) if banda_min_api else p25
+        rango_max = max(p75, banda_max_api) if banda_max_api else p75
+    else:
+        rango_min = banda_min_api or int(valor_real * 0.9) if valor_real else 0
+        rango_max = banda_max_api or int(valor_real * 1.1) if valor_real else 0
+
+    if n_comp >= 8 and n_semanas >= 3:
+        confianza = 'alta'
+    elif n_comp >= 1:
+        confianza = 'media'
+    else:
+        confianza = 'estimado'
+
+    histograma = _build_histogram(price_list, rango_min, rango_max, valor_real)
+
+    return {
+        'valor_real_hoy': max(0, valor_real),
+        'valor_real_rango_min': max(0, rango_min),
+        'valor_real_rango_max': max(0, rango_max),
+        'confianza': confianza,
+        'valor_getapi_ajustado': valor_getapi,
+        'mediana_externa': mediana_ext,
+        'histograma': histograma,
+        'n_comparables': n_comp,
+        'w_externo': round(w_externo, 2),
+        'w_getapi': round(w_getapi, 2),
+    }
+
+
+def _build_histogram(
+    prices: list[int],
+    rango_min: int,
+    rango_max: int,
+    valor_usuario: int,
+    buckets: int = 24,
+) -> list[dict]:
+    if not prices:
+        return []
+    lo = min(prices)
+    hi = max(prices)
+    if hi <= lo:
+        hi = lo + 1
+    step = max(1, (hi - lo) // buckets)
+    counts = [0] * buckets
+    edges = [lo + i * step for i in range(buckets)] + [hi + step]
+    for p in prices:
+        idx = min(buckets - 1, (p - lo) // step)
+        counts[idx] += 1
+    max_count = max(counts) or 1
+    out = []
+    for i, c in enumerate(counts):
+        edge_lo = edges[i]
+        edge_hi = edges[i + 1]
+        in_range = edge_hi >= rango_min and edge_lo <= rango_max
+        out.append({
+            'bucket_start': edge_lo,
+            'bucket_end': edge_hi,
+            'count': c,
+            'normalized': round(c / max_count, 3),
+            'in_range': in_range,
+            'is_user_bucket': edge_lo <= valor_usuario < edge_hi if valor_usuario else False,
+        })
+    return out

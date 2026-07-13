@@ -39,20 +39,66 @@ from mecanimovilapp.storage.utils import get_cpanel_file_url, get_image_url
 logger = logging.getLogger(__name__)
 
 
+def _safe_related(usuario, attr):
+    """OneToOne inverso: evita RelatedObjectDoesNotExist / AttributeError."""
+    if not usuario:
+        return None
+    try:
+        return getattr(usuario, attr)
+    except Exception:
+        return None
+
+
+def resolve_proveedor_perfil_nav(oferta):
+    """
+    (tipo, perfil_id) para navegar a /talleres/{id}/ o /mecanicos-domicilio/{id}/.
+    Nunca retorna el PK del Usuario.
+    """
+    proveedor = getattr(oferta, 'proveedor', None)
+    if not proveedor:
+        return None, None
+
+    taller = _safe_related(proveedor, 'taller')
+    mecanico = _safe_related(proveedor, 'mecanico_domicilio')
+    tipo = (getattr(oferta, 'tipo_proveedor', None) or '').lower()
+
+    if tipo == 'taller' and taller is not None:
+        return 'taller', taller.id
+    if tipo == 'mecanico' and mecanico is not None:
+        return 'mecanico', mecanico.id
+    # tipo desfasado o vacío: usar el perfil que exista
+    if taller is not None:
+        return 'taller', taller.id
+    if mecanico is not None:
+        return 'mecanico', mecanico.id
+    return None, None
+
+
 def _foto_perfil_oferta_proveedor(oferta):
     """ImageField del taller/mecánico; fallback al usuario proveedor."""
     proveedor = getattr(oferta, 'proveedor', None)
     if not proveedor:
         return None
-    if oferta.tipo_proveedor == 'taller':
-        taller = getattr(proveedor, 'taller', None)
+
+    tipo, _perfil_id = resolve_proveedor_perfil_nav(oferta)
+    if tipo == 'taller':
+        taller = _safe_related(proveedor, 'taller')
         if taller and taller.foto_perfil:
             return taller.foto_perfil
-    elif oferta.tipo_proveedor == 'mecanico':
-        mecanico = getattr(proveedor, 'mecanico_domicilio', None)
+    if tipo == 'mecanico':
+        mecanico = _safe_related(proveedor, 'mecanico_domicilio')
         if mecanico and mecanico.foto_perfil:
             return mecanico.foto_perfil
-    return proveedor.foto_perfil if proveedor.foto_perfil else None
+
+    taller = _safe_related(proveedor, 'taller')
+    if taller and taller.foto_perfil:
+        return taller.foto_perfil
+    mecanico = _safe_related(proveedor, 'mecanico_domicilio')
+    if mecanico and mecanico.foto_perfil:
+        return mecanico.foto_perfil
+
+    return proveedor.foto_perfil if getattr(proveedor, 'foto_perfil', None) else None
+
 
 MAX_FOTO_SOLICITUD_BYTES = 5 * 1024 * 1024
 
@@ -1062,6 +1108,7 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
     proveedor_verificado = serializers.SerializerMethodField()
     solicitud_detail = serializers.SerializerMethodField()
     proveedor_foto = serializers.SerializerMethodField()
+    proveedor_tipo_detail = serializers.SerializerMethodField()
     ofertas_secundarias = serializers.SerializerMethodField()
     oferta_original_info = serializers.SerializerMethodField()
     solicitud_servicio_id = serializers.SerializerMethodField()
@@ -1092,7 +1139,7 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
             'fecha_visualizacion_cliente', 'detalles_servicios', 'servicios_ofertados',
             'total_mensajes_chat', 'mensajes_no_leidos', 'tiempo_restante_solicitud',
             'antiguedad_proveedor', 'servicios_realizados_proveedor', 'proveedor_verificado',
-            'proveedor_foto', 'oferta_original', 'es_oferta_secundaria', 'motivo_servicio_adicional',
+            'proveedor_foto', 'proveedor_tipo_detail', 'oferta_original', 'es_oferta_secundaria', 'motivo_servicio_adicional',
             'ofertas_secundarias', 'oferta_original_info', 'solicitud_servicio_id',
             'estado_solicitud_servicio', 'rechazada_por_expiracion',
             'origen', 'oferta_servicio', 'metadata_ia',
@@ -1171,13 +1218,15 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
         return obj.rating_proveedor
     
     def get_proveedor_id_detail(self, obj):
-        """Retorna el ID del taller o mec?nico (no del usuario) para navegaci?n"""
-        if obj.tipo_proveedor == 'taller' and hasattr(obj.proveedor, 'taller'):
-            return obj.proveedor.taller.id
-        elif obj.tipo_proveedor == 'mecanico' and hasattr(obj.proveedor, 'mecanico_domicilio'):
-            return obj.proveedor.mecanico_domicilio.id
-        return None
-    
+        """ID de taller o mecanico_domicilio (nunca el Usuario) para la ficha pública."""
+        _tipo, perfil_id = resolve_proveedor_perfil_nav(obj)
+        return perfil_id
+
+    def get_proveedor_tipo_detail(self, obj):
+        """Tipo real del perfil navegable ('taller' | 'mecanico'), alineado a proveedor_id_detail."""
+        tipo, _perfil_id = resolve_proveedor_perfil_nav(obj)
+        return tipo
+
     def get_tiempo_restante_solicitud(self, obj):
         return obj.solicitud.tiempo_restante
     
@@ -1461,6 +1510,7 @@ class OfertaProveedorSerializer(serializers.ModelSerializer):
                         'a?o': getattr(solicitud.vehiculo, 'year', None),
                         'patente': getattr(solicitud.vehiculo, 'patente', '') or '',
                         'kilometraje': getattr(solicitud.vehiculo, 'kilometraje', None),
+                        'foto': get_image_url(solicitud.vehiculo.foto, request) if getattr(solicitud.vehiculo, 'foto', None) else None,
                     }
             except (AttributeError, Exception):
                 pass
@@ -2030,16 +2080,25 @@ class SolicitudServicioPublicaSerializer(GeoFeatureModelSerializer):
         """Retorna info del vehículo; None si la solicitud no tiene vehículo (ej. vehículo eliminado)."""
         if not obj.vehiculo:
             return None
+        request = self.context.get('request')
+        foto_url = None
+        try:
+            if getattr(obj.vehiculo, 'foto', None):
+                foto_url = get_image_url(obj.vehiculo.foto, request)
+        except Exception:
+            foto_url = None
         return {
             'id': obj.vehiculo.id,
             'marca': obj.vehiculo.marca_nombre if hasattr(obj.vehiculo, 'marca_nombre') else str(obj.vehiculo.marca),
             'modelo': obj.vehiculo.modelo_nombre if hasattr(obj.vehiculo, 'modelo_nombre') else str(obj.vehiculo.modelo),
             'año': obj.vehiculo.year if hasattr(obj.vehiculo, 'year') else None,
             'anio': obj.vehiculo.year if hasattr(obj.vehiculo, 'year') else None,  # Alias para compatibilidad
+            'year': obj.vehiculo.year if hasattr(obj.vehiculo, 'year') else None,
             'patente': obj.vehiculo.patente if hasattr(obj.vehiculo, 'patente') else None,
             'kilometraje': obj.vehiculo.kilometraje if hasattr(obj.vehiculo, 'kilometraje') else None,
             'tipo_motor': obj.vehiculo.tipo_motor if hasattr(obj.vehiculo, 'tipo_motor') else None,
             'cilindraje': obj.vehiculo.cilindraje if hasattr(obj.vehiculo, 'cilindraje') else None,
+            'foto': foto_url,
         }
     
     def get_direccion_usuario_info(self, obj):
