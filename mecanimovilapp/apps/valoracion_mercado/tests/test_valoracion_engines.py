@@ -33,6 +33,24 @@ class ValorEngineTests(SimpleTestCase):
         self.assertGreater(result['valor_real_hoy'], 0)
         self.assertIn(result['confianza'], ('alta', 'media', 'estimado'))
 
+    def test_histograma_sintetico_sin_comparables(self):
+        vehiculo = MagicMock()
+        vehiculo.kilometraje = 50000
+        vehiculo.precio_mercado_promedio = 5_000_000
+        vehiculo.precio_mercado_min = 4_700_000
+        vehiculo.precio_mercado_max = 5_300_000
+        vehiculo.tasacion_fiscal = 4_000_000
+
+        with patch(
+            'mecanimovilapp.apps.valoracion_mercado.services.valor_engine.calculate_suggested_price',
+            return_value=5_459_000,
+        ):
+            result = compute_valor_real(vehiculo, [], None)
+
+        self.assertEqual(result['confianza'], 'estimado')
+        self.assertEqual(result['histograma_origen'], 'estimado')
+        self.assertGreaterEqual(len(result['histograma']), 20)
+
 
 class LiquidezEngineTests(SimpleTestCase):
     def test_calculando_sin_datos_suficientes(self):
@@ -49,4 +67,5 @@ class LiquidezEngineTests(SimpleTestCase):
 
         result = compute_liquidity(vehiculo, 8_000_000, [], {'n_comparables': 2, 'n_semanas_tracking': 1})
         self.assertEqual(result['liquidez_label'], 'calculando')
+        self.assertIsNone(result['liquidez_score'])
         self.assertFalse(result['precision_suficiente'])

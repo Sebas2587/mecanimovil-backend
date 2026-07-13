@@ -3,6 +3,7 @@ Motor 1: valor real estimado hoy (blend GetAPI + comparables externos).
 """
 from __future__ import annotations
 
+import math
 import statistics
 from decimal import Decimal
 from typing import Any
@@ -106,7 +107,7 @@ def compute_valor_real(
     else:
         confianza = 'estimado'
 
-    histograma = _build_histogram(price_list, rango_min, rango_max, valor_real)
+    histograma, histograma_origen = _build_histogram(price_list, rango_min, rango_max, valor_real)
 
     return {
         'valor_real_hoy': max(0, valor_real),
@@ -116,6 +117,7 @@ def compute_valor_real(
         'valor_getapi_ajustado': valor_getapi,
         'mediana_externa': mediana_ext,
         'histograma': histograma,
+        'histograma_origen': histograma_origen,
         'n_comparables': n_comp,
         'w_externo': round(w_externo, 2),
         'w_getapi': round(w_getapi, 2),
@@ -127,32 +129,72 @@ def _build_histogram(
     rango_min: int,
     rango_max: int,
     valor_usuario: int,
-    buckets: int = 24,
+    buckets: int = 28,
+) -> tuple[list[dict], str]:
+    if prices:
+        lo = min(prices)
+        hi = max(prices)
+        if hi <= lo:
+            hi = lo + 1
+        step = max(1, (hi - lo) // buckets)
+        counts = [0] * buckets
+        edges = [lo + i * step for i in range(buckets)] + [hi + step]
+        for p in prices:
+            idx = min(buckets - 1, (p - lo) // step)
+            counts[idx] += 1
+        max_count = max(counts) or 1
+        out = []
+        for i, c in enumerate(counts):
+            edge_lo = edges[i]
+            edge_hi = edges[i + 1]
+            in_range = edge_hi >= rango_min and edge_lo <= rango_max
+            out.append({
+                'bucket_start': edge_lo,
+                'bucket_end': edge_hi,
+                'count': c,
+                'normalized': round(c / max_count, 3),
+                'in_range': in_range,
+                'is_user_bucket': edge_lo <= valor_usuario < edge_hi if valor_usuario else False,
+            })
+        return out, 'mercado'
+
+    synthetic = _build_synthetic_histogram(rango_min, rango_max, valor_usuario, buckets)
+    return synthetic, 'estimado'
+
+
+def _build_synthetic_histogram(
+    rango_min: int,
+    rango_max: int,
+    valor_usuario: int,
+    buckets: int = 28,
 ) -> list[dict]:
-    if not prices:
+    """Curva tipo Airbnb cuando aún no hay comparables externos."""
+    if valor_usuario <= 0:
         return []
-    lo = min(prices)
-    hi = max(prices)
+    lo = rango_min or int(valor_usuario * 0.88)
+    hi = rango_max or int(valor_usuario * 1.12)
     if hi <= lo:
-        hi = lo + 1
+        hi = lo + max(1, int(valor_usuario * 0.05))
     step = max(1, (hi - lo) // buckets)
-    counts = [0] * buckets
-    edges = [lo + i * step for i in range(buckets)] + [hi + step]
-    for p in prices:
-        idx = min(buckets - 1, (p - lo) // step)
-        counts[idx] += 1
-    max_count = max(counts) or 1
+    center = float(valor_usuario)
+    sigma = max((hi - lo) / 5.0, step * 2)
+    raw: list[tuple[int, int, float]] = []
+    for i in range(buckets):
+        edge_lo = lo + i * step
+        edge_hi = hi if i == buckets - 1 else edge_lo + step
+        mid = (edge_lo + edge_hi) / 2.0
+        gaussian = math.exp(-0.5 * ((mid - center) / sigma) ** 2)
+        raw.append((edge_lo, edge_hi, gaussian))
+    max_g = max((g for _, _, g in raw), default=0.01)
     out = []
-    for i, c in enumerate(counts):
-        edge_lo = edges[i]
-        edge_hi = edges[i + 1]
-        in_range = edge_hi >= rango_min and edge_lo <= rango_max
+    for edge_lo, edge_hi, gaussian in raw:
         out.append({
             'bucket_start': edge_lo,
             'bucket_end': edge_hi,
-            'count': c,
-            'normalized': round(c / max_count, 3),
-            'in_range': in_range,
-            'is_user_bucket': edge_lo <= valor_usuario < edge_hi if valor_usuario else False,
+            'count': int(round(gaussian * 100)),
+            'normalized': round(gaussian / max_g, 3),
+            'in_range': edge_hi >= lo and edge_lo <= hi,
+            'is_user_bucket': edge_lo <= valor_usuario < edge_hi,
+            'sintetico': True,
         })
     return out

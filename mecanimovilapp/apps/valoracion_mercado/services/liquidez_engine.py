@@ -119,7 +119,7 @@ def compute_liquidity(
         pos = _price_position_score(valor_real, prices)
         provisional = int(0.5 * (health * 0.8 + pos))
         return {
-            'liquidez_score': provisional,
+            'liquidez_score': None,
             'liquidez_label': 'calculando',
             'liquidez_razones': [
                 'Aún estamos recopilando datos del mercado para tu modelo.',

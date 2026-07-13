@@ -106,6 +106,31 @@ def _empirical_rate_from_tasacion(vehiculo_id: int) -> Decimal | None:
     return Decimal(str(round(max(-30, min(30, annual_pct)), 2)))
 
 
+def _health_score(vehiculo) -> float:
+    if hasattr(vehiculo, 'get_health_score'):
+        try:
+            return float(vehiculo.get_health_score() or 70)
+        except Exception:
+            pass
+    if hasattr(vehiculo, 'salud_general') and vehiculo.salud_general is not None:
+        return float(vehiculo.salud_general)
+    if hasattr(vehiculo, 'estados_salud'):
+        ultimo = vehiculo.estados_salud.order_by('-fecha_calculo').first()
+        if ultimo and ultimo.salud_general_porcentaje is not None:
+            return float(ultimo.salud_general_porcentaje)
+    return 70.0
+
+
+def _apply_health_protection(tasa: Decimal, health: float) -> Decimal:
+    """
+    Salud alta frena la depreciación (protege valor).
+    Salud baja la acelera. Factor ~0.55x (salud 100) a ~1.6x (salud 0).
+    """
+    h = max(0.0, min(100.0, health))
+    factor = Decimal(str(round(1.6 - (h / 100.0) * 1.05, 4)))
+    return Decimal(str(round(float(tasa) * float(factor), 2)))
+
+
 def project_values(
     valor_hoy: int,
     vehiculo,
@@ -114,6 +139,7 @@ def project_values(
 ) -> tuple[list[dict], Decimal, str]:
     """
     Retorna proyección [{anio_offset, valor, tendencia}], tasa usada, fuente_tasa.
+    La tasa de mercado se ajusta por salud del vehículo (protección de valor).
     """
     if valor_hoy <= 0:
         return [], DEFAULT_DEPRECIATION_PCT, 'default'
@@ -132,6 +158,10 @@ def project_values(
         tasa = _get_curva_pct(tipo_vehiculo)
         fuente = 'curva_categoria'
 
+    health = _health_score(vehiculo)
+    tasa = _apply_health_protection(tasa, health)
+    fuente = f'{fuente}+salud'
+
     rate_f = float(tasa) / 100.0
     proyeccion = []
     for offset in (0, 1, 3):
@@ -149,9 +179,10 @@ def project_values(
             'valor': max(0, val),
             'tendencia': tendencia,
             'label': 'Hoy' if offset == 0 else f'En {offset} año{"s" if offset > 1 else ""}',
+            'salud_aplicada': health,
         })
 
     if confianza == 'estimado' and fuente.startswith('empirica'):
-        fuente = 'curva_categoria'
+        fuente = 'curva_categoria+salud'
 
     return proyeccion, tasa, fuente

@@ -87,7 +87,16 @@ def build_valoracion_payload(vehiculo, persist: bool = True) -> dict[str, Any]:
         'valor_getapi_ajustado': valor_data.get('valor_getapi_ajustado'),
         'mediana_externa': valor_data.get('mediana_externa'),
         'precision_liquidez': liquidez.get('precision_suficiente', False),
+        'histograma_origen': valor_data.get('histograma_origen', 'estimado'),
+        'salud_aplicada': next(
+            (p.get('salud_aplicada') for p in proyeccion if p.get('salud_aplicada') is not None),
+            None,
+        ),
     }
+
+    liquidez_score = liquidez['liquidez_score']
+    if liquidez['liquidez_label'] == 'calculando':
+        liquidez_score = None
 
     payload = {
         'vehiculo_id': vehiculo.id,
@@ -96,7 +105,7 @@ def build_valoracion_payload(vehiculo, persist: bool = True) -> dict[str, Any]:
         'valor_real_rango_max': valor_data['valor_real_rango_max'],
         'confianza': valor_data['confianza'],
         'liquidez': {
-            'score': liquidez['liquidez_score'],
+            'score': liquidez_score,
             'label': liquidez['liquidez_label'],
             'razones': liquidez['liquidez_razones'],
         },
@@ -115,7 +124,7 @@ def build_valoracion_payload(vehiculo, persist: bool = True) -> dict[str, Any]:
                 'valor_real_rango_min': valor_data['valor_real_rango_min'],
                 'valor_real_rango_max': valor_data['valor_real_rango_max'],
                 'confianza': valor_data['confianza'],
-                'liquidez_score': liquidez['liquidez_score'],
+                'liquidez_score': liquidez['liquidez_score'] or 0,
                 'liquidez_label': liquidez['liquidez_label'],
                 'liquidez_razones': liquidez['liquidez_razones'],
                 'proyeccion': proyeccion,
@@ -138,7 +147,7 @@ def get_or_compute_valoracion(vehiculo, force: bool = False) -> dict[str, Any]:
         'valor_real_rango_max': val.valor_real_rango_max,
         'confianza': val.confianza,
         'liquidez': {
-            'score': val.liquidez_score,
+            'score': val.liquidez_score if val.liquidez_label != 'calculando' else None,
             'label': val.liquidez_label,
             'razones': val.liquidez_razones or [],
         },
