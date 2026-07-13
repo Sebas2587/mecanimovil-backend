@@ -18,9 +18,48 @@ from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
-ML_LISTADO = 'https://listado.mercadolibre.cl/listado'
-ML_CATEGORY_AUTOS = 'MLC1743'
+ML_LISTADO = 'https://listado.mercadolibre.cl'
+ML_CATEGORY_AUTOS = 'MLC1744'  # Autos, Camionetas y 4x4 (Chile)
 DEFAULT_CHILEAUTOS = 'https://www.chileautos.cl'
+
+# Tokens de trim/equipamiento que no sirven para buscar en marketplaces.
+_MODELO_STOP = {
+    'new', 'nuevo', 'nueva', 'aut', 'at', 'mt', 'manual', 'automatico', 'automático',
+    '4x4', '4x2', '2wd', 'awd', 'fwd', 'rwd', 'gt', 'lx', 'ex', 'gl', 'gls', 'ltd',
+    'sport', 'premium', 'full', 'base', 'diesel', 'bencina', 'hibrido', 'híbrido',
+}
+
+
+def _modelo_search_parts(marca: str, modelo: str) -> tuple[str, list[str]]:
+    """
+    Convierte 'New 6 Gt 2.5 Aut' → query 'Mazda 6' + tokens ['6'].
+    Evita filtrar 100% de avisos por trim GetAPI que no aparece en títulos ML.
+    """
+    parts = [p for p in re.split(r'[\s/\-_]+', (modelo or '').strip()) if p]
+    tokens: list[str] = []
+    for p in parts:
+        pl = p.casefold()
+        if pl in _MODELO_STOP:
+            continue
+        if re.fullmatch(r'\d+(\.\d+)?', pl) and '.' in pl:
+            # cilindrada 2.5 / 2.2
+            continue
+        if len(pl) < 1:
+            continue
+        tokens.append(p)
+    primary = tokens[0] if tokens else (parts[0] if parts else '')
+    query = re.sub(r'\s+', ' ', f'{marca} {primary}').strip()
+    return query, [t.casefold() for t in tokens[:4]]
+
+
+def _title_matches_segment(titulo: str, marca: str, modelo_tokens: list[str]) -> bool:
+    t = (titulo or '').casefold()
+    if marca.casefold() not in t:
+        return False
+    meaningful = [tok for tok in modelo_tokens if len(tok) >= 2 or tok.isdigit()]
+    if not meaningful:
+        return True
+    return any(tok in t for tok in meaningful)
 
 
 @dataclass
@@ -96,90 +135,16 @@ def _jitter_sleep(min_s: float = 2.0, max_s: float = 6.0) -> None:
     time.sleep(random.uniform(min_s, max_s))
 
 
-def _titulos_ml_playwright(page) -> list[tuple[str, str, str]]:
-    """Retorna lista de (titulo, url, precio_text)."""
-    from playwright.sync_api import TimeoutError as PWTimeout
-
-    selectors = [
-        'a.poly-component__title',
-        '.poly-card a.poly-component__title',
-        '.ui-search-item__title a',
-        'li.ui-search-layout__item a h2',
-    ]
-    rows: list[tuple[str, str, str]] = []
-    for sel in selectors:
-        try:
-            page.wait_for_selector(sel, timeout=12_000)
-        except PWTimeout:
-            continue
-        for loc in page.locator(sel).all()[:40]:
-            try:
-                t = loc.inner_text().strip()
-                href = loc.get_attribute('href') or ''
-            except Exception:
-                continue
-            if t and len(t) > 5:
-                rows.append((t, href, ''))
-        if rows:
-            break
-
-    price_sel = '.andes-money-amount__fraction, .poly-price__current .andes-money-amount__fraction'
-    prices = page.locator(price_sel).all()[:40]
-    out: list[tuple[str, str, str]] = []
-    for i, (t, href, _) in enumerate(rows):
-        ptxt = ''
-        if i < len(prices):
-            try:
-                ptxt = prices[i].inner_text().strip()
-            except Exception:
-                pass
-        out.append((t, href, ptxt))
-    return out
-
-
-def scrape_mercadolibre_api(marca: str, modelo: str, limit: int = 50) -> list[ListingScraped]:
-    """
-    Fallback sin browser: API pública de MercadoLibre (sitio MLC).
-    Evita depender de Chromium en el worker cuando Playwright falla.
-    """
-    import requests
-
-    query = re.sub(r'\s+', ' ', f'{marca} {modelo}').strip()
+def _listings_from_ml_api_results(
+    results: list[dict],
+    marca: str,
+    modelo_tokens: list[str],
+) -> list[ListingScraped]:
     listings: list[ListingScraped] = []
-    # MLC1744 = Autos, Camionetas y 4x4 (Chile)
-    url = 'https://api.mercadolibre.com/sites/MLC/search'
-    params = {
-        'q': query,
-        'category': 'MLC1744',
-        'limit': min(limit, 50),
-    }
-    try:
-        resp = requests.get(
-            url,
-            params=params,
-            timeout=25,
-            headers={
-                'Accept': 'application/json',
-                'User-Agent': 'MecanimovilValoracion/1.0 (+https://mecanimovil.cl)',
-            },
-        )
-        if resp.status_code == 403:
-            logger.warning('MercadoLibre API 403 (posible bloqueo de IP); se intentará Playwright')
-            return listings
-        resp.raise_for_status()
-        results = resp.json().get('results') or []
-    except Exception as exc:
-        logger.warning('MercadoLibre API falló: %s', exc)
-        return listings
-
-    m_cf = marca.casefold()
-    mo_cf = modelo.casefold()
     seen: set[str] = set()
     for item in results:
         titulo = (item.get('title') or '').strip()
-        if not titulo:
-            continue
-        if m_cf not in titulo.casefold() or mo_cf not in titulo.casefold():
+        if not titulo or not _title_matches_segment(titulo, marca, modelo_tokens):
             continue
         price = item.get('price')
         try:
@@ -217,33 +182,161 @@ def scrape_mercadolibre_api(marca: str, modelo: str, limit: int = 50) -> list[Li
                 year=year or _parse_year_from_title(titulo),
                 kilometraje=km or _parse_km_from_title(titulo),
                 marca_texto=marca,
-                modelo_texto=modelo,
+                modelo_texto=' '.join(modelo_tokens) if modelo_tokens else '',
             )
         )
-    logger.info('MercadoLibre API: %s avisos para %s %s', len(listings), marca, modelo)
     return listings
 
 
+def scrape_mercadolibre_api(marca: str, modelo: str, limit: int = 50) -> list[ListingScraped]:
+    """API pública ML (suele devolver 403 desde IPs datacenter)."""
+    import requests
+
+    query, modelo_tokens = _modelo_search_parts(marca, modelo)
+    listings: list[ListingScraped] = []
+    url = 'https://api.mercadolibre.com/sites/MLC/search'
+    params = {
+        'q': query,
+        'category': ML_CATEGORY_AUTOS,
+        'limit': min(limit, 50),
+    }
+    try:
+        resp = requests.get(
+            url,
+            params=params,
+            timeout=25,
+            headers={
+                'Accept': 'application/json',
+                'User-Agent': (
+                    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                    'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                ),
+            },
+        )
+        if resp.status_code == 403:
+            logger.info('MercadoLibre API 403 desde requests; se usará Playwright')
+            return listings
+        resp.raise_for_status()
+        results = resp.json().get('results') or []
+    except Exception as exc:
+        logger.warning('MercadoLibre API falló: %s', exc)
+        return listings
+
+    listings = _listings_from_ml_api_results(results, marca, modelo_tokens)
+    logger.info('MercadoLibre API: %s avisos para query=%r', len(listings), query)
+    return listings
+
+
+def _scrape_ml_via_browser_api(page, query: str, marca: str, modelo_tokens: list[str]) -> list[ListingScraped]:
+    """
+    Llama a la API de ML desde el contexto del browser (cookies/UA reales).
+    Evita el 403 típico de requests desde datacenter.
+    """
+    q = urllib.parse.quote(query)
+    cat = ML_CATEGORY_AUTOS
+    js = f"""
+    async () => {{
+      try {{
+        const r = await fetch(
+          'https://api.mercadolibre.com/sites/MLC/search?q={q}&category={cat}&limit=50',
+          {{ headers: {{ 'Accept': 'application/json' }} }}
+        );
+        if (!r.ok) return {{ ok: false, status: r.status, results: [] }};
+        const data = await r.json();
+        return {{ ok: true, status: r.status, results: data.results || [] }};
+      }} catch (e) {{
+        return {{ ok: false, status: 0, results: [], error: String(e) }};
+      }}
+    }}
+    """
+    try:
+        payload = page.evaluate(js)
+    except Exception as exc:
+        logger.warning('ML browser API evaluate falló: %s', exc)
+        return []
+    if not payload or not payload.get('ok'):
+        logger.info(
+            'ML browser API no OK status=%s error=%s',
+            (payload or {}).get('status'),
+            (payload or {}).get('error'),
+        )
+        return []
+    results = payload.get('results') or []
+    listings = _listings_from_ml_api_results(results, marca, modelo_tokens)
+    logger.info('MercadoLibre browser-API: %s avisos para query=%r', len(listings), query)
+    return listings
+
+
+def _titulos_ml_playwright(page) -> list[tuple[str, str, str]]:
+    """Retorna lista de (titulo, url, precio_text)."""
+    from playwright.sync_api import TimeoutError as PWTimeout
+
+    selectors = [
+        'a.poly-component__title',
+        '.poly-card a.poly-component__title',
+        '.ui-search-item__title a',
+        '.ui-search-item__group__element h3 a',
+        "[data-testid='search-result'] a",
+        'li.ui-search-layout__item a h2',
+        'h2.ui-search-item__title',
+    ]
+    rows: list[tuple[str, str, str]] = []
+    for sel in selectors:
+        try:
+            page.wait_for_selector(sel, timeout=10_000)
+        except PWTimeout:
+            continue
+        for loc in page.locator(sel).all()[:40]:
+            try:
+                t = loc.inner_text().strip()
+                href = loc.get_attribute('href') or ''
+            except Exception:
+                continue
+            if t and len(t) > 5:
+                rows.append((t, href, ''))
+        if rows:
+            break
+
+    price_sel = '.andes-money-amount__fraction, .poly-price__current .andes-money-amount__fraction'
+    prices = page.locator(price_sel).all()[:40]
+    out: list[tuple[str, str, str]] = []
+    for i, (t, href, _) in enumerate(rows):
+        ptxt = ''
+        if i < len(prices):
+            try:
+                ptxt = prices[i].inner_text().strip()
+            except Exception:
+                pass
+        out.append((t, href, ptxt))
+    return out
+
+
 def scrape_mercadolibre(marca: str, modelo: str, headless: bool = True) -> list[ListingScraped]:
-    # Prefer API (no Chromium). Playwright only if API returns nothing.
+    query, modelo_tokens = _modelo_search_parts(marca, modelo)
     api_listings = scrape_mercadolibre_api(marca, modelo)
     if api_listings:
         return api_listings
 
-    query = re.sub(r'\s+', ' ', f'{marca} {modelo}').strip()
-    params = urllib.parse.urlencode({'q': query, 'category_id': ML_CATEGORY_AUTOS})
-    url = f'{ML_LISTADO}?{params}'
     listings: list[ListingScraped] = []
-
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
         logger.warning('playwright no instalado; omitiendo MercadoLibre HTML')
         return listings
 
+    slug = _slug_url(query)
+    urls = [
+        f'{ML_LISTADO}/{slug}_CategoryID_{ML_CATEGORY_AUTOS}',
+        f'{ML_LISTADO}/listado?{urllib.parse.urlencode({"q": query, "category_id": ML_CATEGORY_AUTOS})}',
+        f'https://autos.mercadolibre.cl/{slug}',
+    ]
+
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=headless)
+            browser = p.chromium.launch(
+                headless=headless,
+                args=['--disable-blink-features=AutomationControlled', '--no-sandbox'],
+            )
             ctx = browser.new_context(
                 locale='es-CL',
                 user_agent=(
@@ -253,20 +346,53 @@ def scrape_mercadolibre(marca: str, modelo: str, headless: bool = True) -> list[
                 viewport={'width': 1366, 'height': 900},
             )
             page = ctx.new_page()
-            page.goto(url, wait_until='domcontentloaded', timeout=60_000)
-            page.wait_for_timeout(3500)
-            rows = _titulos_ml_playwright(page)
+            # Warm-up cookies en dominio ML
+            try:
+                page.goto('https://www.mercadolibre.cl/', wait_until='domcontentloaded', timeout=45_000)
+                page.wait_for_timeout(1500)
+            except Exception:
+                pass
+
+            browser_api = _scrape_ml_via_browser_api(page, query, marca, modelo_tokens)
+            if browser_api:
+                browser.close()
+                return browser_api
+
+            rows: list[tuple[str, str, str]] = []
+            used_url = urls[0]
+            for url in urls:
+                used_url = url
+                try:
+                    page.goto(url, wait_until='domcontentloaded', timeout=60_000)
+                except Exception as exc:
+                    logger.info('ML goto falló %s: %s', url, exc)
+                    continue
+                page.wait_for_timeout(4000)
+                title = ''
+                try:
+                    title = page.title()
+                except Exception:
+                    pass
+                rows = _titulos_ml_playwright(page)
+                logger.info(
+                    'ML HTML url=%s title=%r rows=%s',
+                    url,
+                    title[:80],
+                    len(rows),
+                )
+                if rows:
+                    break
             browser.close()
     except Exception as exc:
         logger.warning('MercadoLibre scrape falló: %s', exc)
         return listings
 
-    m_cf = marca.casefold()
-    mo_cf = modelo.casefold()
     seen: set[str] = set()
+    matched = 0
     for titulo, href, ptxt in rows:
-        if m_cf not in titulo.casefold() or mo_cf not in titulo.casefold():
+        if not _title_matches_segment(titulo, marca, modelo_tokens):
             continue
+        matched += 1
         precio = _parse_price(ptxt) or _parse_price(titulo)
         if not precio:
             continue
@@ -278,22 +404,63 @@ def scrape_mercadolibre(marca: str, modelo: str, headless: bool = True) -> list[
             ListingScraped(
                 fuente='mercadolibre',
                 external_id=eid,
-                url=href or url,
+                url=href or used_url,
                 titulo_raw=titulo,
                 precio=precio,
                 year=_parse_year_from_title(titulo),
                 kilometraje=_parse_km_from_title(titulo),
                 marca_texto=marca,
-                modelo_texto=modelo,
+                modelo_texto=' '.join(modelo_tokens) if modelo_tokens else modelo,
             )
+        )
+
+    # Soft fallback: si el filtro de tokens dejó 0, conservar avisos con marca + precio.
+    if not listings and rows:
+        for titulo, href, ptxt in rows:
+            if marca.casefold() not in titulo.casefold():
+                continue
+            precio = _parse_price(ptxt) or _parse_price(titulo)
+            if not precio:
+                continue
+            eid = _external_id_from_url(href, titulo, 'mercadolibre')
+            if eid in seen:
+                continue
+            seen.add(eid)
+            listings.append(
+                ListingScraped(
+                    fuente='mercadolibre',
+                    external_id=eid,
+                    url=href or used_url,
+                    titulo_raw=titulo,
+                    precio=precio,
+                    year=_parse_year_from_title(titulo),
+                    kilometraje=_parse_km_from_title(titulo),
+                    marca_texto=marca,
+                    modelo_texto=modelo,
+                )
+            )
+        logger.info(
+            'ML soft-fallback: rows=%s matched_tokens=%s kept=%s query=%r',
+            len(rows),
+            matched,
+            len(listings),
+            query,
+        )
+    else:
+        logger.info(
+            'ML HTML final: rows=%s matched=%s listings=%s query=%r',
+            len(rows),
+            matched,
+            len(listings),
+            query,
         )
     return listings
 
 
 def scrape_chileautos(marca: str, modelo: str, headless: bool = True) -> list[ListingScraped]:
-    query = re.sub(r'\s+', ' ', f'{marca} {modelo}').strip()
+    query, modelo_tokens = _modelo_search_parts(marca, modelo)
     base = DEFAULT_CHILEAUTOS.rstrip('/')
-    slug_combo = _slug_url(f'{marca} {modelo}')
+    slug_combo = _slug_url(query)
     q_enc = urllib.parse.quote(query)
     listings: list[ListingScraped] = []
 
@@ -310,7 +477,10 @@ def scrape_chileautos(marca: str, modelo: str, headless: bool = True) -> list[Li
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=headless)
+            browser = p.chromium.launch(
+                headless=headless,
+                args=['--disable-blink-features=AutomationControlled', '--no-sandbox'],
+            )
             ctx = browser.new_context(
                 locale='es-CL',
                 user_agent=(
@@ -326,8 +496,14 @@ def scrape_chileautos(marca: str, modelo: str, headless: bool = True) -> list[Li
                     page.goto(u, wait_until='domcontentloaded', timeout=50_000)
                 except Exception:
                     continue
-                page.wait_for_timeout(3000)
-                for sel in ('article h2 a', 'article h2', "main a[href*='/vehiculos/']"):
+                page.wait_for_timeout(3500)
+                for sel in (
+                    'article h2 a',
+                    'article h2',
+                    "main a[href*='/vehiculos/']",
+                    "[class*='listing'] a",
+                    "[class*='Listing'] a",
+                ):
                     loc = page.locator(sel)
                     try:
                         n = min(loc.count(), 40)
@@ -347,17 +523,17 @@ def scrape_chileautos(marca: str, modelo: str, headless: bool = True) -> list[Li
                         break
                 if titles:
                     break
+            logger.info('Chileautos titles=%s query=%r', len(titles), query)
             browser.close()
     except Exception as exc:
         logger.warning('Chileautos scrape falló: %s', exc)
         return listings
 
-    m_cf = marca.casefold()
-    mo_cf = modelo.casefold()
     seen: set[str] = set()
     for titulo, href in titles:
-        if m_cf not in titulo.casefold() or mo_cf not in titulo.casefold():
-            continue
+        if not _title_matches_segment(titulo, marca, modelo_tokens):
+            if marca.casefold() not in titulo.casefold():
+                continue
         precio = _parse_price(titulo)
         if not precio:
             continue
@@ -375,9 +551,10 @@ def scrape_chileautos(marca: str, modelo: str, headless: bool = True) -> list[Li
                 year=_parse_year_from_title(titulo),
                 kilometraje=_parse_km_from_title(titulo),
                 marca_texto=marca,
-                modelo_texto=modelo,
+                modelo_texto=' '.join(modelo_tokens) if modelo_tokens else modelo,
             )
         )
+    logger.info('Chileautos listings=%s query=%r', len(listings), query)
     return listings
 
 
