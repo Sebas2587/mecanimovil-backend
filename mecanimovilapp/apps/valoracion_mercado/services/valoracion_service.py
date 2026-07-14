@@ -74,21 +74,15 @@ def maybe_enqueue_market_scrape(vehiculo, *, force: bool = False) -> dict[str, A
         if has_market:
             return status
         msg = status.get('message') or ''
+        # NOTA: se confirmó (jul-2026) que ni el OAuth ayuda — ML deprecó la
+        # búsqueda general de terceros en abril 2025 sin reemplazo, así que
+        # ya no existe un estado "recién conectado OAuth" que amerite
+        # saltarse el cooldown largo.
         estimado_sin_mercado = (
             'anti-bot' in msg.casefold()
             or 'no disponible' in msg.casefold()
             or 'estimado con tasación' in msg.casefold()
         )
-        if estimado_sin_mercado:
-            try:
-                from mecanimovilapp.apps.valoracion_mercado.services.ml_auth import (
-                    has_valid_oauth,
-                )
-
-                if has_valid_oauth():
-                    estimado_sin_mercado = False  # OAuth recién conectado: reintentar ya.
-            except Exception:
-                pass
         cooldown_min = 360 if estimado_sin_mercado else 15
         age_ok = True
         updated_raw = status.get('updated_at')

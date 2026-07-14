@@ -218,8 +218,19 @@ def _is_ml_security_challenge(title: str = '', body: str = '') -> bool:
     )
 
 
-def scrape_mercadolibre_api(marca: str, modelo: str, limit: int = 50) -> list[ListingScraped]:
-    """API ML. Desde 2025 requiere Bearer token; sin token suele ser 403."""
+def scrape_mercadolibre_api(marca: str, modelo: str, limit: int = 50) -> tuple[list[ListingScraped], str]:
+    """
+    API ML. Retorna (listings, blocked_reason).
+
+    Confirmado (jul-2026): desde abril 2025 ML deprecó la búsqueda general
+    `/sites/{site}/search?q=...` para apps de terceros — devuelve 403
+    'forbidden' incluso con un access_token OAuth válido y recién emitido
+    por el propio dueño de la app (no es un tema de scope/expiración).
+    Según su documentación oficial, ese endpoint no tiene reemplazo; solo
+    sigue vivo `/users/{user_id}/items/search` para listados de un
+    vendedor puntual que ya autorizó tu app — inútil para comparables de
+    mercado. Se detecta ese 403-con-token para no reintentar en vano.
+    """
     import requests
 
     query, modelo_tokens = _modelo_search_parts(marca, modelo)
@@ -244,22 +255,22 @@ def scrape_mercadolibre_api(marca: str, modelo: str, limit: int = 50) -> list[Li
         resp = requests.get(url, params=params, timeout=25, headers=headers)
         if resp.status_code == 403:
             if token:
-                logger.warning('MercadoLibre API 403 con token (expirado o sin scope)')
-            else:
-                logger.info(
-                    'MercadoLibre API 403 sin token OAuth; '
-                    'configura MERCADOLIBRE_ACCESS_TOKEN en Render'
+                logger.warning(
+                    'MercadoLibre API 403 con token OAuth válido: búsqueda '
+                    'general deprecada por ML (abril 2025), sin reemplazo'
                 )
-            return listings
+                return listings, 'mercadolibre_search_discontinued'
+            logger.info('MercadoLibre API 403 sin token OAuth')
+            return listings, 'mercadolibre_no_oauth'
         resp.raise_for_status()
         results = resp.json().get('results') or []
     except Exception as exc:
         logger.warning('MercadoLibre API falló: %s', exc)
-        return listings
+        return listings, ''
 
     listings = _listings_from_ml_api_results(results, marca, modelo_tokens)
     logger.info('MercadoLibre API: %s avisos para query=%r (auth=%s)', len(listings), query, bool(token))
-    return listings
+    return listings, ''
 
 
 def _scrape_ml_via_browser_api(page, query: str, marca: str, modelo_tokens: list[str]) -> list[ListingScraped]:
@@ -354,17 +365,19 @@ def scrape_mercadolibre(
     """
     Retorna (listings, blocked_reason).
 
-    Desde 2025 ML exige sesión autenticada incluso para listar avisos
-    anónimamente (confirmado: cualquier fetch sin login devuelve muro de
-    "ingresa a tu cuenta" / "Seguridad", sin importar la IP de origen).
-    La única vía confiable es la API oficial con OAuth (`_ml_access_token`).
-    Sin token, no tiene sentido lanzar Chromium: fallaría igual y solo
-    consume tiempo del worker — se retorna bloqueado de inmediato.
+    Confirmado (jul-2026) con un access_token OAuth recién autorizado por
+    el dueño de la app: `/sites/MLC/search` devuelve 403 igual, porque ML
+    deprecó la búsqueda general para terceros en abril 2025 y no tiene
+    reemplazo. Ni el OAuth ni el HTML anónimo (muro "Seguridad") sirven —
+    no tiene sentido lanzar Chromium en ninguno de esos casos: fallaría
+    igual y solo consume tiempo del worker.
     """
     query, modelo_tokens = _modelo_search_parts(marca, modelo)
-    api_listings = scrape_mercadolibre_api(marca, modelo)
+    api_listings, api_blocked = scrape_mercadolibre_api(marca, modelo)
     if api_listings:
         return api_listings, ''
+    if api_blocked == 'mercadolibre_search_discontinued':
+        return [], api_blocked
 
     if not _ml_access_token():
         return [], 'mercadolibre_no_oauth'
