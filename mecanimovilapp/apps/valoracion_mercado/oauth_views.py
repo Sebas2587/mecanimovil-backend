@@ -45,6 +45,8 @@ def ml_oauth_authorize(request):
         'response_type': 'code',
         'client_id': client_id,
         'redirect_uri': _redirect_uri(request),
+        # Sin offline_access, ML no emite refresh_token y el acceso muere en 6h.
+        'scope': 'offline_access read',
     }
     url = f'{ML_AUTH_URL}?{urllib.parse.urlencode(params)}'
     return HttpResponse(
