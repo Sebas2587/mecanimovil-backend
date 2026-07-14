@@ -58,7 +58,7 @@ def task_snapshot_tasacion_mensual(self):
 )
 def task_scrape_vehiculo(self, vehiculo_id: int):
     """
-    Scrape on-demand del segmento de un vehículo (ML + Chileautos),
+    Scrape on-demand del segmento de un vehículo (MercadoLibre vía API OAuth),
     con progreso en cache para la UI.
     """
     from mecanimovilapp.apps.vehiculos.models import Vehiculo
@@ -128,9 +128,9 @@ def task_scrape_vehiculo(self, vehiculo_id: int):
         blocked = bool(result.blocked_reason) and n == 0
 
         if blocked:
-            # Sin OAuth de MercadoLibre (o Chileautos también bloqueado): no hay
-            # comparables externos por ahora. Se resuelve como "estimado"
-            # (GetAPI + curva de depreciación estándar) — nunca deja la UI cargando.
+            # Sin OAuth de MercadoLibre: no hay comparables externos por ahora.
+            # Se resuelve como "estimado" (GetAPI + curva de depreciación
+            # estándar) — nunca deja la UI cargando.
             build_valoracion_payload(vehiculo, persist=True)
             set_scrape_status(
                 vehiculo_id,
@@ -227,7 +227,7 @@ def enqueue_scrape_vehiculo(vehiculo_id: int, *, force: bool = False) -> dict:
 
 @shared_task(bind=True, max_retries=1, default_retry_delay=300)
 def task_scrape_segmentos_activos(self):
-    """Scrapea segmentos con vehículos registrados (ML + Chileautos)."""
+    """Scrapea segmentos con vehículos registrados (MercadoLibre)."""
     from mecanimovilapp.apps.valoracion_mercado.services.scraper_service import (
         mark_removed_for_segment,
         scrape_segmento,

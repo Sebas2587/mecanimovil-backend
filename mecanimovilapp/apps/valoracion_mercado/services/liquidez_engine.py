@@ -123,7 +123,7 @@ def compute_liquidity(
             pass
         razones = ['Estimado con tasación GetAPI y salud del vehículo.']
         if sin_mercado_externo:
-            razones.append('Mercado externo (MercadoLibre/Chileautos) aún no conectado.')
+            razones.append('Mercado externo (MercadoLibre) aún no conectado.')
         else:
             razones.append('Recopilando avisos del mercado para tu modelo; vuelve en unos minutos.')
         return {

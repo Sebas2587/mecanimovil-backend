@@ -680,7 +680,16 @@ def scrape_segmento(
     year_bucket: int | None = None,
     on_progress=None,
 ) -> ScrapeResult:
-    """Scrapea ML (+ Chileautos solo si ML no trae suficientes avisos y no hay antibot)."""
+    """
+    Scrapea solo MercadoLibre (vía API OAuth).
+
+    Chileautos queda deshabilitado por decisión de producto: su API oficial
+    (Global Inventory Integration) es solo para publicar/leer el inventario
+    propio de una automotora, no para buscar avisos de terceros, y su HTML
+    público está protegido por DataDome. `scrape_chileautos` se deja
+    implementada en este módulo por si se retoma más adelante (proxy
+    anti-bot pagado o acceso especial de soporte@chileautos.cl).
+    """
     result = ScrapeResult(marca=marca, modelo=modelo, year_bucket=year_bucket)
     headless = True
 
@@ -699,21 +708,6 @@ def scrape_segmento(
             result.blocked_reason = blocked
             result.errors.append(blocked)
             logger.warning('scrape_segmento ML bloqueado: %s', blocked)
-            _progress(40, 'MercadoLibre bloqueó el acceso; probando Chileautos…')
-        if len(result.listings) < 5:
-            _progress(45, 'Buscando también en Chileautos…')
-            _jitter_sleep(0.3, 0.8)
-            ca, ca_blocked = scrape_chileautos(marca, modelo, headless=headless)
-            result.listings = list(result.listings) + ca
-            if ca_blocked and not result.listings:
-                result.errors.append(ca_blocked)
-                if not result.blocked_reason:
-                    result.blocked_reason = ca_blocked
-                _progress(70, 'Chileautos también bloqueó el acceso (anti-bot)')
-            elif ca:
-                # Si Chileautos aportó, no marcar solo antibot ML como bloqueo total
-                if result.blocked_reason == 'mercadolibre_antibot' and ca:
-                    result.blocked_reason = ''
         logger.info(
             'scrape_segmento %s %s → ml=%s total=%s blocked=%s',
             marca,
