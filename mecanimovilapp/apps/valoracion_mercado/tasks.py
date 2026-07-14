@@ -128,17 +128,15 @@ def task_scrape_vehiculo(self, vehiculo_id: int):
         blocked = bool(result.blocked_reason) and n == 0
 
         if blocked:
-            # Terminar limpio: sin token OAuth / proxy, ML/Chileautos bloquean IPs de Render.
-            # La app puede completar vía POST valor-real/avisos (harvest en dispositivo).
+            # Sin OAuth de MercadoLibre (o Chileautos también bloqueado): no hay
+            # comparables externos por ahora. Se resuelve como "estimado"
+            # (GetAPI + curva de depreciación estándar) — nunca deja la UI cargando.
             build_valoracion_payload(vehiculo, persist=True)
             set_scrape_status(
                 vehiculo_id,
                 state='done',
                 progress_pct=100,
-                message=(
-                    'Mercado bloqueado en servidor (anti-bot). '
-                    'Completando desde el dispositivo…'
-                ),
+                message='Estimado con tasación y salud (mercado externo no disponible aún)',
                 listings_count=0,
             )
             return 0

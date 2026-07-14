@@ -353,13 +353,24 @@ def scrape_mercadolibre(
 ) -> tuple[list[ListingScraped], str]:
     """
     Retorna (listings, blocked_reason).
-    blocked_reason='mercadolibre_antibot' si ML muestra Seguridad / 403 sin data.
+
+    Desde 2025 ML exige sesión autenticada incluso para listar avisos
+    anónimamente (confirmado: cualquier fetch sin login devuelve muro de
+    "ingresa a tu cuenta" / "Seguridad", sin importar la IP de origen).
+    La única vía confiable es la API oficial con OAuth (`_ml_access_token`).
+    Sin token, no tiene sentido lanzar Chromium: fallaría igual y solo
+    consume tiempo del worker — se retorna bloqueado de inmediato.
     """
     query, modelo_tokens = _modelo_search_parts(marca, modelo)
     api_listings = scrape_mercadolibre_api(marca, modelo)
     if api_listings:
         return api_listings, ''
 
+    if not _ml_access_token():
+        return [], 'mercadolibre_no_oauth'
+
+    # Con token pero la API falló (red/rate-limit): último intento vía browser,
+    # reusando la sesión del token en el fetch (no HTML anónimo, que sigue muerto).
     listings: list[ListingScraped] = []
     rows: list[tuple[str, str, str]] = []
     used_url = ''
@@ -367,14 +378,11 @@ def scrape_mercadolibre(
         from playwright.sync_api import sync_playwright
     except ImportError:
         logger.warning('playwright no instalado; omitiendo MercadoLibre HTML')
-        if not _ml_access_token():
-            return [], 'mercadolibre_antibot'
         return listings, ''
 
     slug = _slug_url(query)
     urls = [
         f'{ML_LISTADO}/{slug}_CategoryID_{ML_CATEGORY_AUTOS}',
-        f'{ML_LISTADO}/listado?{urllib.parse.urlencode({"q": query, "category_id": ML_CATEGORY_AUTOS})}',
     ]
 
     try:
@@ -397,26 +405,21 @@ def scrape_mercadolibre(
                 viewport={'width': 1366, 'height': 900},
             )
             page = ctx.new_page()
-            page.set_default_timeout(18_000)
-            try:
-                page.goto('https://www.mercadolibre.cl/', wait_until='domcontentloaded', timeout=20_000)
-                page.wait_for_timeout(400)
-            except Exception:
-                pass
+            page.set_default_timeout(12_000)
 
             browser_api = _scrape_ml_via_browser_api(page, query, marca, modelo_tokens)
             if browser_api:
                 browser.close()
                 return browser_api, ''
 
-            for url in urls[:1 if not _ml_access_token() else 2]:
+            for url in urls:
                 used_url = url
                 try:
-                    page.goto(url, wait_until='domcontentloaded', timeout=22_000)
+                    page.goto(url, wait_until='domcontentloaded', timeout=15_000)
                 except Exception as exc:
                     logger.info('ML goto falló %s: %s', url, exc)
                     continue
-                page.wait_for_timeout(1200)
+                page.wait_for_timeout(800)
                 title = ''
                 body_snip = ''
                 try:
@@ -424,7 +427,7 @@ def scrape_mercadolibre(
                 except Exception:
                     pass
                 try:
-                    body_snip = page.inner_text('body', timeout=3000)[:500]
+                    body_snip = page.inner_text('body', timeout=2500)[:500]
                 except Exception:
                     pass
                 if _is_ml_security_challenge(title=title, body=body_snip):
@@ -447,13 +450,7 @@ def scrape_mercadolibre(
             browser.close()
     except Exception as exc:
         logger.warning('MercadoLibre scrape falló: %s', exc)
-        if not _ml_access_token():
-            return [], 'mercadolibre_antibot'
         return listings, ''
-
-    if not rows and not _ml_access_token():
-        # API 403 + HTML vacío desde datacenter ≈ bloqueo; no seguir reintentando HTML.
-        return [], 'mercadolibre_antibot'
 
     seen: set[str] = set()
     matched = 0

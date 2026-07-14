@@ -96,6 +96,7 @@ urlpatterns = [
     path('api/mercadopago/', include('mecanimovilapp.apps.pagos.urls')),  # URLs de pagos con Mercado Pago Checkout Pro
     path('api/suscripciones/', include('mecanimovilapp.apps.suscripciones.urls')),  # URLs de suscripciones
     path('api/marketplace/', include('mecanimovilapp.apps.marketplace.urls')),  # URLs de marketplace (transferencias)
+    path('api/valoracion-mercado/', include('mecanimovilapp.apps.valoracion_mercado.urls')),  # OAuth MercadoLibre
     
     # Endpoint para prueba de conexión
     path('api/hello/', hello_api, name='hello_api'),

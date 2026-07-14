@@ -173,3 +173,26 @@ class ValoracionVehiculo(models.Model):
 
     def __str__(self):
         return f'Valoración {self.vehiculo_id} — {self.valor_real_hoy}'
+
+
+class MercadoLibreOAuthToken(models.Model):
+    """
+    Token OAuth único (singleton) para /sites/MLC/search.
+    Persistido en Postgres (no env vars) para sobrevivir deploys sin intervención manual.
+    """
+
+    singleton_id = models.PositiveSmallIntegerField(default=1, unique=True, editable=False)
+    access_token = models.CharField(max_length=255, blank=True, default='')
+    refresh_token = models.CharField(max_length=255, blank=True, default='')
+    token_type = models.CharField(max_length=32, blank=True, default='')
+    scope = models.CharField(max_length=255, blank=True, default='')
+    ml_user_id = models.BigIntegerField(null=True, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _('token OAuth MercadoLibre')
+        verbose_name_plural = _('token OAuth MercadoLibre')
+
+    def __str__(self):
+        return f'ML OAuth token (actualizado {self.updated_at:%Y-%m-%d %H:%M})'

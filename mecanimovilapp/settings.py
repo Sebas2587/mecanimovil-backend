@@ -497,11 +497,12 @@ else:
 # ============================================
 MERCADOPAGO_ACCESS_TOKEN = config('MERCADOPAGO_ACCESS_TOKEN', default='APP_USR-8802724849942781-110307-59fe720c1df9cf8be417c6acee855ee7-2959448913')
 
-# MercadoLibre search API (scraper worker). Vacío en local = fallback HTML / client harvest.
+# MercadoLibre search API (scraper worker). El refresh_token real vive en DB
+# (MercadoLibreOAuthToken) una vez autorizado vía /api/valoracion-mercado/ml/oauth/authorize/.
 MERCADOLIBRE_ACCESS_TOKEN = config('MERCADOLIBRE_ACCESS_TOKEN', default='')
-MERCADOLIBRE_REFRESH_TOKEN = config('MERCADOLIBRE_REFRESH_TOKEN', default='')
 MERCADOLIBRE_CLIENT_ID = config('MERCADOLIBRE_CLIENT_ID', default='')
 MERCADOLIBRE_CLIENT_SECRET = config('MERCADOLIBRE_CLIENT_SECRET', default='')
+MERCADOLIBRE_REDIRECT_URI = config('MERCADOLIBRE_REDIRECT_URI', default='')
 PLAYWRIGHT_PROXY = config('PLAYWRIGHT_PROXY', default='')
 MERCADOPAGO_MODE = config('MERCADOPAGO_MODE', default='test')  # 'test' o 'production'
 MERCADOPAGO_WEBHOOK_SECRET = config('MERCADOPAGO_WEBHOOK_SECRET', default='a7934fae72aca801d2bd08aeaa79b0d650c7900c0def8aa559583934d9de44ee')

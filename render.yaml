@@ -49,6 +49,15 @@ services:
           name: mecanimovil-redis
           type: keyvalue
           property: connectionString
+      # OAuth MercadoLibre: bootstrap una sola vez en /api/valoracion-mercado/ml/oauth/authorize/
+      # (requiere estar logueado como staff en Django admin). Registrar el mismo
+      # MERCADOLIBRE_REDIRECT_URI como "Redirect URI" en developers.mercadolibre.cl.
+      - key: MERCADOLIBRE_CLIENT_ID
+        sync: false
+      - key: MERCADOLIBRE_CLIENT_SECRET
+        sync: false
+      - key: MERCADOLIBRE_REDIRECT_URI
+        sync: false
       # Asistente IA: analizar-necesidad + candidatos-proveedor (consultas stateless)
       - key: AGENDAMIENTO_IA_ASISTIDO
         value: "True"
@@ -153,11 +162,9 @@ services:
         value: "False"
       - key: PLAYWRIGHT_BROWSERS_PATH
         value: "/opt/render/project/src/.playwright"
-      # Token OAuth ML (developers.mercadolibre.cl) — sin esto el scrape falla con anti-bot
-      - key: MERCADOLIBRE_ACCESS_TOKEN
-        sync: false
-      - key: MERCADOLIBRE_REFRESH_TOKEN
-        sync: false
+      # OAuth ML: refresh_token real vive en Postgres (MercadoLibreOAuthToken),
+      # autorizado una vez desde el servicio web en /api/valoracion-mercado/ml/oauth/authorize/.
+      # Estas credenciales de app son necesarias para que el worker pueda refrescar el access_token.
       - key: MERCADOLIBRE_CLIENT_ID
         sync: false
       - key: MERCADOLIBRE_CLIENT_SECRET

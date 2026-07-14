@@ -68,18 +68,28 @@ def maybe_enqueue_market_scrape(vehiculo, *, force: bool = False) -> dict[str, A
     has_market = len(comparables) >= MIN_COMPARABLES_FOR_MARKET
 
     # Scrape previo sin comparables: cooldown antes de reintentar.
-    # Anti-bot de ML necesita token/proxy → cooldown largo (no spamear al worker).
+    # Sin OAuth ML no vale la pena reintentar seguido (mismo resultado);
+    # si se acaba de conectar OAuth, no esperar el cooldown.
     if not force and status.get('state') in ('done', 'error'):
         if has_market:
             return status
         msg = status.get('message') or ''
-        antibot = (
+        estimado_sin_mercado = (
             'anti-bot' in msg.casefold()
-            or 'bloqueado en servidor' in msg.casefold()
-            or 'MERCADOLIBRE_ACCESS_TOKEN' in msg
-            or 'completando desde el dispositivo' in msg.casefold()
+            or 'no disponible' in msg.casefold()
+            or 'estimado con tasación' in msg.casefold()
         )
-        cooldown_min = 360 if antibot else 15
+        if estimado_sin_mercado:
+            try:
+                from mecanimovilapp.apps.valoracion_mercado.services.ml_auth import (
+                    has_valid_oauth,
+                )
+
+                if has_valid_oauth():
+                    estimado_sin_mercado = False  # OAuth recién conectado: reintentar ya.
+            except Exception:
+                pass
+        cooldown_min = 360 if estimado_sin_mercado else 15
         age_ok = True
         updated_raw = status.get('updated_at')
         if updated_raw:

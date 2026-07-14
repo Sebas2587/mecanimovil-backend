@@ -649,28 +649,6 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         serializer = ValoracionVehiculoSerializer(payload)
         return Response(serializer.data)
 
-    @action(detail=True, methods=['post'], url_path='valor-real/avisos')
-    def valor_real_avisos(self, request, pk=None):
-        """
-        Ingesta avisos capturados desde el dispositivo del usuario (IP residencial).
-        POST /api/vehiculos/{id}/valor-real/avisos/
-        Body: { "listings": [ { fuente, titulo_raw, precio, url?, year?, kilometraje? } ] }
-        """
-        from mecanimovilapp.apps.valoracion_mercado.serializers import ValoracionVehiculoSerializer
-        from mecanimovilapp.apps.valoracion_mercado.services.client_ingest import (
-            ingest_client_listings,
-        )
-
-        vehiculo = self.get_object()
-        raw = request.data.get('listings')
-        if not isinstance(raw, list):
-            return Response(
-                {'detail': 'Se requiere listings: []'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        payload = ingest_client_listings(vehiculo, raw)
-        return Response(ValoracionVehiculoSerializer(payload).data)
-
     @action(detail=True, methods=['get', 'patch'], url_path='marketplace')
     def marketplace(self, request, pk=None):
         """

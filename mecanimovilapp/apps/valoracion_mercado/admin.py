@@ -3,6 +3,7 @@ from django.contrib import admin
 from .models import (
     AvisoExternoVehiculo,
     CurvaDepreciacionSegmento,
+    MercadoLibreOAuthToken,
     SegmentoValorHistorial,
     TasacionHistorial,
     ValoracionVehiculo,
@@ -52,3 +53,21 @@ class ValoracionVehiculoAdmin(admin.ModelAdmin):
         'fecha_calculo',
     )
     list_filter = ('confianza', 'liquidez_label')
+
+
+@admin.register(MercadoLibreOAuthToken)
+class MercadoLibreOAuthTokenAdmin(admin.ModelAdmin):
+    list_display = ('ml_user_id', 'scope', 'expires_at', 'updated_at')
+    readonly_fields = (
+        'access_token',
+        'refresh_token',
+        'token_type',
+        'scope',
+        'ml_user_id',
+        'expires_at',
+        'updated_at',
+    )
+
+    def has_add_permission(self, request):
+        # Se crea únicamente vía /ml/oauth/callback/ (flujo OAuth).
+        return False

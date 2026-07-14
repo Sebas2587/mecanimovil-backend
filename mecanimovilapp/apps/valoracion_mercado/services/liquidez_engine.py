@@ -114,13 +114,22 @@ def compute_liquidity(
     year_min, year_max = year - 1, year + 1
 
     if n_comp < 5:
+        sin_mercado_externo = True
+        try:
+            from mecanimovilapp.apps.valoracion_mercado.services.ml_auth import has_valid_oauth
+
+            sin_mercado_externo = not has_valid_oauth()
+        except Exception:
+            pass
+        razones = ['Estimado con tasación GetAPI y salud del vehículo.']
+        if sin_mercado_externo:
+            razones.append('Mercado externo (MercadoLibre/Chileautos) aún no conectado.')
+        else:
+            razones.append('Recopilando avisos del mercado para tu modelo; vuelve en unos minutos.')
         return {
             'liquidez_score': None,
             'liquidez_label': 'calculando',
-            'liquidez_razones': [
-                'Aún estamos recopilando avisos del mercado para tu modelo.',
-                'Abre esta pantalla de nuevo en unos minutos mientras scrapemos ML/Chileautos.',
-            ],
+            'liquidez_razones': razones,
             'precision_suficiente': False,
         }
 

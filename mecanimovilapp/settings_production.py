@@ -229,12 +229,14 @@ MERCADOPAGO_WEBHOOK_SECRET = os.environ.get('MERCADOPAGO_WEBHOOK_SECRET', '')
 MERCADOPAGO_PUBLIC_KEY_PROD = os.environ.get('MERCADOPAGO_PUBLIC_KEY_PROD', '')
 MERCADOPAGO_PUBLIC_KEY = MERCADOPAGO_PUBLIC_KEY_PROD
 
-# MercadoLibre API (búsqueda de avisos /sites/MLC/search). Obligatorio desde ~2025.
-# Sin token, Render recibe 403 + página "Seguridad".
+# MercadoLibre API (búsqueda de avisos /sites/MLC/search). Obligatorio desde ~2025:
+# cualquier acceso anónimo (API o HTML) devuelve 403 / muro de login, sin importar
+# la IP de origen. El refresh_token real se guarda en DB vía /ml/oauth/authorize/
+# (ver valoracion_mercado/oauth_views.py); estas env solo alimentan el intercambio.
 MERCADOLIBRE_ACCESS_TOKEN = os.environ.get('MERCADOLIBRE_ACCESS_TOKEN', '')
-MERCADOLIBRE_REFRESH_TOKEN = os.environ.get('MERCADOLIBRE_REFRESH_TOKEN', '')
 MERCADOLIBRE_CLIENT_ID = os.environ.get('MERCADOLIBRE_CLIENT_ID', '')
 MERCADOLIBRE_CLIENT_SECRET = os.environ.get('MERCADOLIBRE_CLIENT_SECRET', '')
+MERCADOLIBRE_REDIRECT_URI = os.environ.get('MERCADOLIBRE_REDIRECT_URI', '')
 # Proxy residencial opcional para Playwright (ej. http://user:pass@host:port)
 PLAYWRIGHT_PROXY = os.environ.get('PLAYWRIGHT_PROXY', '')
 
