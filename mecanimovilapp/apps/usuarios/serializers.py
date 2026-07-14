@@ -862,20 +862,23 @@ class TallerSerializer(PanelServiciosSerializerMixin, serializers.ModelSerialize
     
     def get_esta_conectado(self, obj):
         """
-        Obtiene el estado de conexión desde ConnectionStatus.
-        Sin registro de conexión: se asume disponible (no forzar “no disponible” en clientes).
+        Estado de conexión realtime desde ConnectionStatus.
+        Sin registro → False (no asumir conectado).
         """
         try:
             if hasattr(obj, 'connection_status'):
-                return obj.connection_status.esta_conectado
-            
+                cs = obj.connection_status
+                if cs is None:
+                    return False
+                return bool(getattr(cs, 'esta_conectado', False) or getattr(cs, 'is_online', False))
+
             from .models import ConnectionStatus
             conn_status = ConnectionStatus.objects.filter(taller=obj).first()
             if conn_status:
-                return conn_status.esta_conectado
-            return True
+                return bool(conn_status.esta_conectado or conn_status.is_online)
+            return False
         except Exception:
-            return True
+            return False
     
     def get_ultima_conexion(self, obj):
         """
@@ -1222,28 +1225,23 @@ class MecanicoDomicilioSerializer(PanelServiciosSerializerMixin, serializers.Mod
     
     def get_esta_conectado(self, obj):
         """
-        Obtiene el estado de conexión desde ConnectionStatus.
-        Sin registro de conexión: se asume disponible (no forzar “no disponible” en clientes).
+        Estado de conexión realtime desde ConnectionStatus.
+        Sin registro → False (no asumir conectado).
         """
         try:
-            # **OPTIMIZACIÓN**: Intentar usar relación inversa pre-cargada
-            # Validar si connection_status está en la caché de prefetch o si ya fue cargado por select_related
-            # Nota: para OneToOne invertido, si usamos select_related('connection_status') desde Mecanico,
-            # el atributo connection_status debería estar disponible directamente.
-            
-            # Si se usó select_related (en MecanicoDomicilio -> ConnectionStatus)
             if hasattr(obj, 'connection_status'):
-                return obj.connection_status.esta_conectado
-                
-            # Si se usó prefetch_related, Django lo cachea en _prefetched_objects_cache
-            # pero para relaciones inversa 1-1 es más complejo.
-            # Sin embargo, proveedores_filtrados usa prefetch_related('connection_status').
-            # En ese caso, Django asigna el objeto a la instancia si coincide.
-            
-            return True
-        except Exception as e:
-            # print(f"Error obteniendo estado de conexión: {e}")
-            return True
+                cs = obj.connection_status
+                if cs is None:
+                    return False
+                return bool(getattr(cs, 'esta_conectado', False) or getattr(cs, 'is_online', False))
+
+            from .models import ConnectionStatus
+            conn_status = ConnectionStatus.objects.filter(proveedor=obj).first()
+            if conn_status:
+                return bool(conn_status.esta_conectado or conn_status.is_online)
+            return False
+        except Exception:
+            return False
     
     def get_ultima_conexion(self, obj):
         """
