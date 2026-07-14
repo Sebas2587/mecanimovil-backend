@@ -33,7 +33,33 @@ def valoracion_needs_refresh(vehiculo) -> bool:
     except ValoracionVehiculo.DoesNotExist:
         return True
     age = timezone.now() - val.fecha_calculo
-    return age > timedelta(days=CACHE_MAX_AGE_DAYS)
+    if age > timedelta(days=CACHE_MAX_AGE_DAYS):
+        return True
+    # Schema de proyección Hoy/1/2/3 años (trayectoria por mantenciones).
+    proy = val.proyeccion or []
+    offsets = {
+        p.get('anio_offset')
+        for p in proy
+        if isinstance(p, dict) and p.get('anio_offset') is not None
+    }
+    if not {0, 1, 2, 3}.issubset(offsets):
+        return True
+    return False
+
+
+def invalidate_valoracion_vehiculo(vehiculo_id: int) -> None:
+    """
+    Fuerza recálculo en el próximo GET /valor-real/.
+    Llamar tras un servicio/checklist que cambió la salud del auto.
+    """
+    try:
+        updated = ValoracionVehiculo.objects.filter(vehiculo_id=vehiculo_id).update(
+            fecha_calculo=timezone.now() - timedelta(days=CACHE_MAX_AGE_DAYS + 1)
+        )
+        if updated:
+            logger.info('valoracion invalidada vehiculo=%s', vehiculo_id)
+    except Exception:
+        logger.exception('no se pudo invalidar valoracion vehiculo=%s', vehiculo_id)
 
 
 def maybe_enqueue_market_scrape(vehiculo, *, force: bool = False) -> dict[str, Any]:

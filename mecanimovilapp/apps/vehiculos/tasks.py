@@ -434,6 +434,15 @@ def calcular_salud_vehiculo_async(self, vehicle_id, force_recalculate=False):
         invalidate_vehicle_health_cache(vehicle_id)
         set_cached_health(vehicle_id, data, 'health_calculation', timeout=3600)
 
+        # Mantenciones/salud cambian la proyección de valor → forzar recálculo.
+        try:
+            from mecanimovilapp.apps.valoracion_mercado.services.valoracion_service import (
+                invalidate_valoracion_vehiculo,
+            )
+            invalidate_valoracion_vehiculo(vehicle_id)
+        except Exception as inv_err:
+            logger.debug('No se invalidó valoración post-salud %s: %s', vehicle_id, inv_err)
+
         # Notificar al frontend via WebSocket para que recargue datos inmediatamente
         try:
             from channels.layers import get_channel_layer

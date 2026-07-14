@@ -160,13 +160,16 @@ def project_values(
     tipo_vehiculo: str | None = None,
 ) -> tuple[list[dict], Decimal, str]:
     """
-    Retorna proyección [{anio_offset, valor, tendencia}], tasa usada, fuente_tasa.
+    Retorna proyección de valor en el tiempo + tasa de hoy + fuente_tasa.
 
-    La tasa de mercado se ajusta por salud del vehículo (protección de valor),
-    y esa salud se proyecta a cada horizonte (no se asume que el auto se queda
-    congelado en la salud de hoy): un vehículo con servicios al día proyecta
-    menos deterioro futuro y por tanto menos depreciación a 1/3 años que uno
-    con componentes vencidos, aunque ambos tengan la misma salud HOY.
+    Horizontes: Hoy, +1, +2, +3 años. Cada año se compone con la tasa
+    protegida por la salud PROYECTADA a ese horizonte (historial real de
+    servicios vía `salud_trayectoria`, sklearn cuando hay modelo). Así un
+    auto con mantenciones al día no deprecia igual que uno abandonado —
+    aunque ambos partan con la misma salud hoy.
+
+    Fórmula por año t (compuesta, no un único rate a 3 años):
+        V(t) = V(t-1) * (1 - rate(salud_en_t))
     """
     if valor_hoy <= 0:
         return [], DEFAULT_DEPRECIATION_PCT, 'default'
@@ -192,17 +195,23 @@ def project_values(
         fuente = 'curva_categoria+salud'
 
     proyeccion = []
-    for offset in (0, 1, 3):
+    valor_corrido = valor_hoy
+    for offset in (0, 1, 2, 3):
         if offset == 0:
-            val = valor_hoy
-            tasa_offset = tasa_now
             health_offset = health_now
             fuente_salud_offset = 'actual'
+            tasa_offset = tasa_now
+            val = valor_hoy
         else:
-            health_offset, fuente_salud_offset = _health_score_at_horizon(vehiculo, offset * 12)
+            health_offset, fuente_salud_offset = _health_score_at_horizon(
+                vehiculo, offset * 12
+            )
             tasa_offset = _apply_health_protection(tasa_base, health_offset)
             rate_f = float(tasa_offset) / 100.0
-            val = int(valor_hoy * ((1 - rate_f) ** offset))
+            # Compuesto año a año: el deterioro (o protección) de este año
+            # parte del valor ya proyectado del año anterior.
+            valor_corrido = int(valor_corrido * (1 - rate_f))
+            val = valor_corrido
 
         tendencia = 'estable'
         if tasa_offset > Decimal('1'):
@@ -210,14 +219,26 @@ def project_values(
         elif tasa_offset < Decimal('-1'):
             tendencia = 'apreciacion'
 
+        if offset == 0:
+            label = 'Hoy'
+        elif offset == 1:
+            label = 'En 1 año'
+        else:
+            label = f'En {offset} años'
+
         proyeccion.append({
             'anio_offset': offset,
             'valor': max(0, val),
             'tendencia': tendencia,
-            'label': 'Hoy' if offset == 0 else f'En {offset} año{"s" if offset > 1 else ""}',
+            'label': label,
             'salud_aplicada': health_offset,
             'salud_fuente': fuente_salud_offset,
             'tasa_aplicada_pct': float(tasa_offset),
+            'delta_vs_hoy_pct': (
+                0.0
+                if offset == 0 or valor_hoy <= 0
+                else round(((val - valor_hoy) / valor_hoy) * 100, 1)
+            ),
         })
 
     return proyeccion, tasa_now, fuente
