@@ -3,6 +3,7 @@ Motor 2: proyección de valor (hoy, +1 año, +3 años).
 """
 from __future__ import annotations
 
+import logging
 import math
 from datetime import date, timedelta
 from decimal import Decimal
@@ -17,6 +18,7 @@ from mecanimovilapp.apps.valoracion_mercado.models import (
     TasacionHistorial,
 )
 
+logger = logging.getLogger(__name__)
 
 DEFAULT_DEPRECIATION_PCT = Decimal('7.0')
 
@@ -131,6 +133,26 @@ def _apply_health_protection(tasa: Decimal, health: float) -> Decimal:
     return Decimal(str(round(float(tasa) * float(factor), 2)))
 
 
+def _health_score_at_horizon(vehiculo, meses_futuro: float) -> tuple[float, str]:
+    """
+    Salud proyectada a `meses_futuro` meses, simulando hacia adelante el
+    historial real de servicios del vehículo (ver `salud_trayectoria.py`).
+
+    Si no hay componentes de salud registrados o algo falla, cae a la salud
+    ESTÁTICA de hoy (comportamiento previo) — nunca rompe el cálculo de valor.
+    """
+    try:
+        from mecanimovilapp.apps.vehiculos.services.salud_trayectoria import (
+            proyectar_salud_general,
+        )
+        salud, fuente = proyectar_salud_general(vehiculo, meses_futuro)
+        if salud is not None:
+            return float(salud), fuente
+    except Exception:
+        logger.exception('proyeccion_engine: fallo proyectando salud a futuro, uso salud estática')
+    return _health_score(vehiculo), 'salud_actual_estatica'
+
+
 def project_values(
     valor_hoy: int,
     vehiculo,
@@ -139,50 +161,63 @@ def project_values(
 ) -> tuple[list[dict], Decimal, str]:
     """
     Retorna proyección [{anio_offset, valor, tendencia}], tasa usada, fuente_tasa.
-    La tasa de mercado se ajusta por salud del vehículo (protección de valor).
+
+    La tasa de mercado se ajusta por salud del vehículo (protección de valor),
+    y esa salud se proyecta a cada horizonte (no se asume que el auto se queda
+    congelado en la salud de hoy): un vehículo con servicios al día proyecta
+    menos deterioro futuro y por tanto menos depreciación a 1/3 años que uno
+    con componentes vencidos, aunque ambos tengan la misma salud HOY.
     """
     if valor_hoy <= 0:
         return [], DEFAULT_DEPRECIATION_PCT, 'default'
 
     year_bucket = vehiculo.year or timezone.now().year
-    tasa = _empirical_rate_from_segment(
+    tasa_base = _empirical_rate_from_segment(
         vehiculo.marca_id,
         vehiculo.modelo_id,
         year_bucket,
     )
-    fuente = 'empirica_segmento'
-    if tasa is None:
-        tasa = _empirical_rate_from_tasacion(vehiculo.id)
-        fuente = 'empirica_tasacion'
-    if tasa is None:
-        tasa = _get_curva_pct(tipo_vehiculo)
-        fuente = 'curva_categoria'
+    fuente_base = 'empirica_segmento'
+    if tasa_base is None:
+        tasa_base = _empirical_rate_from_tasacion(vehiculo.id)
+        fuente_base = 'empirica_tasacion'
+    if tasa_base is None:
+        tasa_base = _get_curva_pct(tipo_vehiculo)
+        fuente_base = 'curva_categoria'
 
-    health = _health_score(vehiculo)
-    tasa = _apply_health_protection(tasa, health)
-    fuente = f'{fuente}+salud'
+    health_now = _health_score(vehiculo)
+    tasa_now = _apply_health_protection(tasa_base, health_now)
+    fuente = f'{fuente_base}+salud'
+    if confianza == 'estimado' and fuente_base.startswith('empirica'):
+        fuente = 'curva_categoria+salud'
 
-    rate_f = float(tasa) / 100.0
     proyeccion = []
     for offset in (0, 1, 3):
         if offset == 0:
             val = valor_hoy
+            tasa_offset = tasa_now
+            health_offset = health_now
+            fuente_salud_offset = 'actual'
         else:
+            health_offset, fuente_salud_offset = _health_score_at_horizon(vehiculo, offset * 12)
+            tasa_offset = _apply_health_protection(tasa_base, health_offset)
+            rate_f = float(tasa_offset) / 100.0
             val = int(valor_hoy * ((1 - rate_f) ** offset))
+
         tendencia = 'estable'
-        if tasa > Decimal('1'):
+        if tasa_offset > Decimal('1'):
             tendencia = 'depreciacion'
-        elif tasa < Decimal('-1'):
+        elif tasa_offset < Decimal('-1'):
             tendencia = 'apreciacion'
+
         proyeccion.append({
             'anio_offset': offset,
             'valor': max(0, val),
             'tendencia': tendencia,
             'label': 'Hoy' if offset == 0 else f'En {offset} año{"s" if offset > 1 else ""}',
-            'salud_aplicada': health,
+            'salud_aplicada': health_offset,
+            'salud_fuente': fuente_salud_offset,
+            'tasa_aplicada_pct': float(tasa_offset),
         })
 
-    if confianza == 'estimado' and fuente.startswith('empirica'):
-        fuente = 'curva_categoria+salud'
-
-    return proyeccion, tasa, fuente
+    return proyeccion, tasa_now, fuente
