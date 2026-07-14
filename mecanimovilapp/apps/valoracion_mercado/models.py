@@ -185,7 +185,7 @@ class MercadoLibreOAuthToken(models.Model):
     access_token = models.TextField(blank=True, default='')
     refresh_token = models.TextField(blank=True, default='')
     token_type = models.CharField(max_length=32, blank=True, default='')
-    scope = models.CharField(max_length=255, blank=True, default='')
+    scope = models.TextField(blank=True, default='')
     ml_user_id = models.BigIntegerField(null=True, blank=True)
     expires_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
