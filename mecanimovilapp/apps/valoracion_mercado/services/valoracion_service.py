@@ -73,7 +73,12 @@ def maybe_enqueue_market_scrape(vehiculo, *, force: bool = False) -> dict[str, A
         if has_market:
             return status
         msg = status.get('message') or ''
-        antibot = 'anti-bot' in msg.casefold() or 'MERCADOLIBRE_ACCESS_TOKEN' in msg
+        antibot = (
+            'anti-bot' in msg.casefold()
+            or 'bloqueado en servidor' in msg.casefold()
+            or 'MERCADOLIBRE_ACCESS_TOKEN' in msg
+            or 'completando desde el dispositivo' in msg.casefold()
+        )
         cooldown_min = 360 if antibot else 15
         age_ok = True
         updated_raw = status.get('updated_at')

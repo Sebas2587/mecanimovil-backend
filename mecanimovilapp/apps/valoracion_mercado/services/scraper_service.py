@@ -190,17 +190,16 @@ def _listings_from_ml_api_results(
 
 
 def _ml_access_token() -> str:
-    import os
-
     try:
-        from django.conf import settings
+        from mecanimovilapp.apps.valoracion_mercado.services.ml_auth import (
+            get_mercadolibre_access_token,
+        )
 
-        tok = getattr(settings, 'MERCADOLIBRE_ACCESS_TOKEN', '') or ''
-        if tok:
-            return tok.strip()
+        return get_mercadolibre_access_token()
     except Exception:
-        pass
-    return (os.environ.get('MERCADOLIBRE_ACCESS_TOKEN') or '').strip()
+        import os
+
+        return (os.environ.get('MERCADOLIBRE_ACCESS_TOKEN') or '').strip()
 
 
 def _is_ml_security_challenge(title: str = '', body: str = '') -> bool:
@@ -539,7 +538,10 @@ def _playwright_proxy() -> str:
     return (os.environ.get('PLAYWRIGHT_PROXY') or '').strip()
 
 
-def scrape_chileautos(marca: str, modelo: str, headless: bool = True) -> list[ListingScraped]:
+def scrape_chileautos(
+    marca: str, modelo: str, headless: bool = True
+) -> tuple[list[ListingScraped], str]:
+    """Retorna (listings, blocked_reason)."""
     query, modelo_tokens = _modelo_search_parts(marca, modelo)
     base = DEFAULT_CHILEAUTOS.rstrip('/')
     slug_combo = _slug_url(query)
@@ -550,7 +552,7 @@ def scrape_chileautos(marca: str, modelo: str, headless: bool = True) -> list[Li
         from playwright.sync_api import sync_playwright
     except ImportError:
         logger.warning('playwright no instalado; omitiendo Chileautos')
-        return listings
+        return listings, ''
 
     urls = [
         f'{base}/vehiculos/buscar/?Keywords={q_enc}',
@@ -559,10 +561,15 @@ def scrape_chileautos(marca: str, modelo: str, headless: bool = True) -> list[Li
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=headless,
-                args=['--disable-blink-features=AutomationControlled', '--no-sandbox'],
-            )
+            launch_kwargs: dict[str, Any] = {
+                'headless': headless,
+                'args': ['--disable-blink-features=AutomationControlled', '--no-sandbox'],
+            }
+            proxy = _playwright_proxy()
+            if proxy:
+                launch_kwargs['proxy'] = {'server': proxy}
+
+            browser = p.chromium.launch(**launch_kwargs)
             ctx = browser.new_context(
                 locale='es-CL',
                 user_agent=(
@@ -572,13 +579,40 @@ def scrape_chileautos(marca: str, modelo: str, headless: bool = True) -> list[Li
                 viewport={'width': 1366, 'height': 900},
             )
             page = ctx.new_page()
+            page.set_default_timeout(18_000)
             titles: list[tuple[str, str]] = []
-            for u in urls:
+            for u in urls[:1]:
                 try:
-                    page.goto(u, wait_until='domcontentloaded', timeout=50_000)
+                    page.goto(u, wait_until='domcontentloaded', timeout=22_000)
                 except Exception:
                     continue
-                page.wait_for_timeout(3500)
+                page.wait_for_timeout(1500)
+                title = ''
+                body_snip = ''
+                try:
+                    title = page.title()
+                except Exception:
+                    pass
+                try:
+                    body_snip = page.inner_text('body', timeout=2500)[:600]
+                except Exception:
+                    pass
+                blob = f'{title} {body_snip}'.casefold()
+                if any(
+                    s in blob
+                    for s in (
+                        'datadome',
+                        'captcha',
+                        'access denied',
+                        'please verify',
+                        'are you a human',
+                        'denied request',
+                        'geo.captcha',
+                    )
+                ):
+                    logger.warning('Chileautos anti-bot title=%r — abortando', title[:80])
+                    browser.close()
+                    return [], 'chileautos_antibot'
                 for sel in (
                     'article h2 a',
                     'article h2',
@@ -593,7 +627,7 @@ def scrape_chileautos(marca: str, modelo: str, headless: bool = True) -> list[Li
                         continue
                     for i in range(n):
                         try:
-                            t = loc.nth(i).inner_text(timeout=2000).strip()
+                            t = loc.nth(i).inner_text(timeout=1500).strip()
                             href = ''
                             if 'a' in sel:
                                 href = loc.nth(i).get_attribute('href') or ''
@@ -609,7 +643,10 @@ def scrape_chileautos(marca: str, modelo: str, headless: bool = True) -> list[Li
             browser.close()
     except Exception as exc:
         logger.warning('Chileautos scrape falló: %s', exc)
-        return listings
+        return listings, ''
+
+    if not titles:
+        return [], 'chileautos_empty'
 
     seen: set[str] = set()
     for titulo, href in titles:
@@ -637,7 +674,7 @@ def scrape_chileautos(marca: str, modelo: str, headless: bool = True) -> list[Li
             )
         )
     logger.info('Chileautos listings=%s query=%r', len(listings), query)
-    return listings
+    return listings, ''
 
 
 def scrape_segmento(
@@ -665,12 +702,21 @@ def scrape_segmento(
             result.blocked_reason = blocked
             result.errors.append(blocked)
             logger.warning('scrape_segmento ML bloqueado: %s', blocked)
-            _progress(70, 'MercadoLibre bloqueó el acceso (anti-bot)')
-        elif len(ml) < 5:
+            _progress(40, 'MercadoLibre bloqueó el acceso; probando Chileautos…')
+        if len(result.listings) < 5:
             _progress(45, 'Buscando también en Chileautos…')
-            _jitter_sleep(0.5, 1.0)
-            ca = scrape_chileautos(marca, modelo, headless=headless)
-            result.listings = ml + ca
+            _jitter_sleep(0.3, 0.8)
+            ca, ca_blocked = scrape_chileautos(marca, modelo, headless=headless)
+            result.listings = list(result.listings) + ca
+            if ca_blocked and not result.listings:
+                result.errors.append(ca_blocked)
+                if not result.blocked_reason:
+                    result.blocked_reason = ca_blocked
+                _progress(70, 'Chileautos también bloqueó el acceso (anti-bot)')
+            elif ca:
+                # Si Chileautos aportó, no marcar solo antibot ML como bloqueo total
+                if result.blocked_reason == 'mercadolibre_antibot' and ca:
+                    result.blocked_reason = ''
         logger.info(
             'scrape_segmento %s %s → ml=%s total=%s blocked=%s',
             marca,

@@ -125,18 +125,19 @@ def task_scrape_vehiculo(self, vehiculo_id: int):
         )
 
         n = len(result.listings)
-        blocked = (result.blocked_reason or '').startswith('mercadolibre')
+        blocked = bool(result.blocked_reason) and n == 0
 
-        if blocked and n == 0:
-            # Terminar limpio: sin token OAuth / proxy, ML bloquea IPs de Render.
+        if blocked:
+            # Terminar limpio: sin token OAuth / proxy, ML/Chileautos bloquean IPs de Render.
+            # La app puede completar vía POST valor-real/avisos (harvest en dispositivo).
             build_valoracion_payload(vehiculo, persist=True)
             set_scrape_status(
                 vehiculo_id,
                 state='done',
                 progress_pct=100,
                 message=(
-                    'MercadoLibre bloqueó el acceso (anti-bot). '
-                    'Configura MERCADOLIBRE_ACCESS_TOKEN o PLAYWRIGHT_PROXY.'
+                    'Mercado bloqueado en servidor (anti-bot). '
+                    'Completando desde el dispositivo…'
                 ),
                 listings_count=0,
             )

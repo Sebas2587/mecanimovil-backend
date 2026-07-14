@@ -156,6 +156,12 @@ services:
       # Token OAuth ML (developers.mercadolibre.cl) — sin esto el scrape falla con anti-bot
       - key: MERCADOLIBRE_ACCESS_TOKEN
         sync: false
+      - key: MERCADOLIBRE_REFRESH_TOKEN
+        sync: false
+      - key: MERCADOLIBRE_CLIENT_ID
+        sync: false
+      - key: MERCADOLIBRE_CLIENT_SECRET
+        sync: false
       # Proxy residencial opcional para Playwright
       - key: PLAYWRIGHT_PROXY
         sync: false
