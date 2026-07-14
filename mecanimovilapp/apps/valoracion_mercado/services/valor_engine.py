@@ -3,9 +3,7 @@ Motor 1: valor real estimado hoy (blend GetAPI + comparables externos).
 """
 from __future__ import annotations
 
-import math
 import statistics
-from decimal import Decimal
 from typing import Any
 
 from mecanimovilapp.apps.marketplace.valuation_engine import calculate_suggested_price
@@ -172,53 +170,6 @@ def _build_histogram(
             })
         return out, 'mercado'
 
-    synthetic = _build_synthetic_histogram(rango_min, rango_max, valor_usuario, buckets)
-    return synthetic, 'estimado'
-
-
-def _build_synthetic_histogram(
-    rango_min: int,
-    rango_max: int,
-    valor_usuario: int,
-    buckets: int = 28,
-) -> list[dict]:
-    """Curva tipo Airbnb cuando aún no hay comparables externos."""
-    if valor_usuario <= 0:
-        return []
-    lo = rango_min or int(valor_usuario * 0.88)
-    hi = rango_max or int(valor_usuario * 1.12)
-    if lo > hi:
-        lo, hi = hi, lo
-    if valor_usuario and (valor_usuario < lo or valor_usuario > hi):
-        half = max(int(valor_usuario * 0.06), int((hi - lo) / 2) or 1)
-        lo = max(0, valor_usuario - half)
-        hi = valor_usuario + half
-    if hi <= lo:
-        hi = lo + max(1, int(valor_usuario * 0.05))
-    # Eje un poco más ancho para barras grises fuera del selection (Airbnb).
-    pad = max(int((hi - lo) * 0.35), int(valor_usuario * 0.04) if valor_usuario else 1)
-    axis_lo = max(0, lo - pad)
-    axis_hi = hi + pad
-    step = max(1, (axis_hi - axis_lo) // buckets)
-    center = float(valor_usuario)
-    sigma = max((axis_hi - axis_lo) / 5.0, step * 2)
-    raw: list[tuple[int, int, float]] = []
-    for i in range(buckets):
-        edge_lo = axis_lo + i * step
-        edge_hi = axis_hi if i == buckets - 1 else edge_lo + step
-        mid = (edge_lo + edge_hi) / 2.0
-        gaussian = math.exp(-0.5 * ((mid - center) / sigma) ** 2)
-        raw.append((edge_lo, edge_hi, gaussian))
-    max_g = max((g for _, _, g in raw), default=0.01)
-    out = []
-    for edge_lo, edge_hi, gaussian in raw:
-        out.append({
-            'bucket_start': edge_lo,
-            'bucket_end': edge_hi,
-            'count': int(round(gaussian * 100)),
-            'normalized': round(gaussian / max_g, 3),
-            'in_range': edge_hi >= lo and edge_lo <= hi,
-            'is_user_bucket': edge_lo <= valor_usuario < edge_hi,
-            'sintetico': True,
-        })
-    return out
+    # Sin comparables reales: NO inventar una campana gaussiana. El spec pide
+    # nunca simular certeza falsa; el frontend muestra solo rango + marcador.
+    return [], 'estimado'

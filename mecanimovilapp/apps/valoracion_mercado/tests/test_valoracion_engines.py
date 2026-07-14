@@ -33,7 +33,7 @@ class ValorEngineTests(SimpleTestCase):
         self.assertGreater(result['valor_real_hoy'], 0)
         self.assertIn(result['confianza'], ('alta', 'media', 'estimado'))
 
-    def test_histograma_sintetico_sin_comparables(self):
+    def test_sin_histograma_inventado_sin_comparables(self):
         vehiculo = MagicMock()
         vehiculo.kilometraje = 50000
         vehiculo.precio_mercado_promedio = 5_000_000
@@ -49,7 +49,7 @@ class ValorEngineTests(SimpleTestCase):
 
         self.assertEqual(result['confianza'], 'estimado')
         self.assertEqual(result['histograma_origen'], 'estimado')
-        self.assertGreaterEqual(len(result['histograma']), 20)
+        self.assertEqual(result['histograma'], [])
 
 
 class LiquidezEngineTests(SimpleTestCase):
