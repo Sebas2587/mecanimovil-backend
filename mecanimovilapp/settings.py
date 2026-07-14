@@ -496,6 +496,10 @@ else:
 # CONFIGURACIÓN DE MERCADO PAGO
 # ============================================
 MERCADOPAGO_ACCESS_TOKEN = config('MERCADOPAGO_ACCESS_TOKEN', default='APP_USR-8802724849942781-110307-59fe720c1df9cf8be417c6acee855ee7-2959448913')
+
+# MercadoLibre search API (scraper worker). Vacío en local = fallback HTML.
+MERCADOLIBRE_ACCESS_TOKEN = config('MERCADOLIBRE_ACCESS_TOKEN', default='')
+PLAYWRIGHT_PROXY = config('PLAYWRIGHT_PROXY', default='')
 MERCADOPAGO_MODE = config('MERCADOPAGO_MODE', default='test')  # 'test' o 'production'
 MERCADOPAGO_WEBHOOK_SECRET = config('MERCADOPAGO_WEBHOOK_SECRET', default='a7934fae72aca801d2bd08aeaa79b0d650c7900c0def8aa559583934d9de44ee')
 

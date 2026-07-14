@@ -67,15 +67,14 @@ def maybe_enqueue_market_scrape(vehiculo, *, force: bool = False) -> dict[str, A
     comparables = get_comparables_for_vehicle(vehiculo)
     has_market = len(comparables) >= MIN_COMPARABLES_FOR_MARKET
 
-    # Si un scrape previo terminó sin data (p.ej. Chromium roto), reintentar
-    # tras un cooldown corto en lugar de bloquear 30 min.
+    # Scrape previo sin comparables: cooldown antes de reintentar.
+    # Anti-bot de ML necesita token/proxy → cooldown largo (no spamear al worker).
     if not force and status.get('state') in ('done', 'error'):
         if has_market:
             return status
-        listings = status.get('listings_count')
-        zero_listings = listings == 0 or (
-            isinstance(status.get('message'), str) and '0 avisos' in status['message']
-        )
+        msg = status.get('message') or ''
+        antibot = 'anti-bot' in msg.casefold() or 'MERCADOLIBRE_ACCESS_TOKEN' in msg
+        cooldown_min = 360 if antibot else 15
         age_ok = True
         updated_raw = status.get('updated_at')
         if updated_raw:
@@ -83,11 +82,10 @@ def maybe_enqueue_market_scrape(vehiculo, *, force: bool = False) -> dict[str, A
                 updated = datetime.fromisoformat(str(updated_raw).replace('Z', '+00:00'))
                 if timezone.is_naive(updated):
                     updated = timezone.make_aware(updated, timezone.get_current_timezone())
-                age_ok = (timezone.now() - updated) >= timedelta(minutes=2)
+                age_ok = (timezone.now() - updated) >= timedelta(minutes=cooldown_min)
             except (TypeError, ValueError):
                 age_ok = True
-        # Reintentar solo si no hubo avisos o ya pasó el cooldown.
-        if not (zero_listings or age_ok):
+        if not age_ok:
             return status
 
     needs = force or not has_market

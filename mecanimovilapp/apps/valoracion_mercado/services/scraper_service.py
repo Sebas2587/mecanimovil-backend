@@ -83,6 +83,7 @@ class ScrapeResult:
     year_bucket: int | None
     listings: list[ListingScraped] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    blocked_reason: str = ''
 
 
 def _slug_url(s: str) -> str:
@@ -188,8 +189,38 @@ def _listings_from_ml_api_results(
     return listings
 
 
+def _ml_access_token() -> str:
+    import os
+
+    try:
+        from django.conf import settings
+
+        tok = getattr(settings, 'MERCADOLIBRE_ACCESS_TOKEN', '') or ''
+        if tok:
+            return tok.strip()
+    except Exception:
+        pass
+    return (os.environ.get('MERCADOLIBRE_ACCESS_TOKEN') or '').strip()
+
+
+def _is_ml_security_challenge(title: str = '', body: str = '') -> bool:
+    blob = f'{title} {body[:800]}'.casefold()
+    return any(
+        s in blob
+        for s in (
+            'seguridad — mercado libre',
+            'seguridad - mercado libre',
+            'security — mercado libre',
+            'are you a human',
+            'captcha',
+            'unusual traffic',
+            'access denied',
+        )
+    )
+
+
 def scrape_mercadolibre_api(marca: str, modelo: str, limit: int = 50) -> list[ListingScraped]:
-    """API pública ML (suele devolver 403 desde IPs datacenter)."""
+    """API ML. Desde 2025 requiere Bearer token; sin token suele ser 403."""
     import requests
 
     query, modelo_tokens = _modelo_search_parts(marca, modelo)
@@ -200,21 +231,26 @@ def scrape_mercadolibre_api(marca: str, modelo: str, limit: int = 50) -> list[Li
         'category': ML_CATEGORY_AUTOS,
         'limit': min(limit, 50),
     }
+    headers = {
+        'Accept': 'application/json',
+        'User-Agent': (
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        ),
+    }
+    token = _ml_access_token()
+    if token:
+        headers['Authorization'] = f'Bearer {token}'
     try:
-        resp = requests.get(
-            url,
-            params=params,
-            timeout=25,
-            headers={
-                'Accept': 'application/json',
-                'User-Agent': (
-                    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
-                    'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                ),
-            },
-        )
+        resp = requests.get(url, params=params, timeout=25, headers=headers)
         if resp.status_code == 403:
-            logger.info('MercadoLibre API 403 desde requests; se usará Playwright')
+            if token:
+                logger.warning('MercadoLibre API 403 con token (expirado o sin scope)')
+            else:
+                logger.info(
+                    'MercadoLibre API 403 sin token OAuth; '
+                    'configura MERCADOLIBRE_ACCESS_TOKEN en Render'
+                )
             return listings
         resp.raise_for_status()
         results = resp.json().get('results') or []
@@ -223,23 +259,25 @@ def scrape_mercadolibre_api(marca: str, modelo: str, limit: int = 50) -> list[Li
         return listings
 
     listings = _listings_from_ml_api_results(results, marca, modelo_tokens)
-    logger.info('MercadoLibre API: %s avisos para query=%r', len(listings), query)
+    logger.info('MercadoLibre API: %s avisos para query=%r (auth=%s)', len(listings), query, bool(token))
     return listings
 
 
 def _scrape_ml_via_browser_api(page, query: str, marca: str, modelo_tokens: list[str]) -> list[ListingScraped]:
     """
     Llama a la API de ML desde el contexto del browser (cookies/UA reales).
-    Evita el 403 típico de requests desde datacenter.
+    Desde datacenter suele seguir en 403; con Bearer token suele funcionar.
     """
     q = urllib.parse.quote(query)
     cat = ML_CATEGORY_AUTOS
+    token = _ml_access_token()
+    auth_js = f", 'Authorization': 'Bearer {token}'" if token else ''
     js = f"""
     async () => {{
       try {{
         const r = await fetch(
           'https://api.mercadolibre.com/sites/MLC/search?q={q}&category={cat}&limit=50',
-          {{ headers: {{ 'Accept': 'application/json' }} }}
+          {{ headers: {{ 'Accept': 'application/json'{auth_js} }} }}
         );
         if (!r.ok) return {{ ok: false, status: r.status, results: [] }};
         const data = await r.json();
@@ -283,7 +321,7 @@ def _titulos_ml_playwright(page) -> list[tuple[str, str, str]]:
     rows: list[tuple[str, str, str]] = []
     for sel in selectors:
         try:
-            page.wait_for_selector(sel, timeout=10_000)
+            page.wait_for_selector(sel, timeout=4_000)
         except PWTimeout:
             continue
         for loc in page.locator(sel).all()[:40]:
@@ -311,32 +349,46 @@ def _titulos_ml_playwright(page) -> list[tuple[str, str, str]]:
     return out
 
 
-def scrape_mercadolibre(marca: str, modelo: str, headless: bool = True) -> list[ListingScraped]:
+def scrape_mercadolibre(
+    marca: str, modelo: str, headless: bool = True
+) -> tuple[list[ListingScraped], str]:
+    """
+    Retorna (listings, blocked_reason).
+    blocked_reason='mercadolibre_antibot' si ML muestra Seguridad / 403 sin data.
+    """
     query, modelo_tokens = _modelo_search_parts(marca, modelo)
     api_listings = scrape_mercadolibre_api(marca, modelo)
     if api_listings:
-        return api_listings
+        return api_listings, ''
 
     listings: list[ListingScraped] = []
+    rows: list[tuple[str, str, str]] = []
+    used_url = ''
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
         logger.warning('playwright no instalado; omitiendo MercadoLibre HTML')
-        return listings
+        if not _ml_access_token():
+            return [], 'mercadolibre_antibot'
+        return listings, ''
 
     slug = _slug_url(query)
     urls = [
         f'{ML_LISTADO}/{slug}_CategoryID_{ML_CATEGORY_AUTOS}',
         f'{ML_LISTADO}/listado?{urllib.parse.urlencode({"q": query, "category_id": ML_CATEGORY_AUTOS})}',
-        f'https://autos.mercadolibre.cl/{slug}',
     ]
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=headless,
-                args=['--disable-blink-features=AutomationControlled', '--no-sandbox'],
-            )
+            launch_kwargs: dict[str, Any] = {
+                'headless': headless,
+                'args': ['--disable-blink-features=AutomationControlled', '--no-sandbox'],
+            }
+            proxy = _playwright_proxy()
+            if proxy:
+                launch_kwargs['proxy'] = {'server': proxy}
+
+            browser = p.chromium.launch(**launch_kwargs)
             ctx = browser.new_context(
                 locale='es-CL',
                 user_agent=(
@@ -346,34 +398,44 @@ def scrape_mercadolibre(marca: str, modelo: str, headless: bool = True) -> list[
                 viewport={'width': 1366, 'height': 900},
             )
             page = ctx.new_page()
-            page.set_default_timeout(25_000)
-            # Warm-up cookies en dominio ML
+            page.set_default_timeout(18_000)
             try:
-                page.goto('https://www.mercadolibre.cl/', wait_until='domcontentloaded', timeout=30_000)
-                page.wait_for_timeout(800)
+                page.goto('https://www.mercadolibre.cl/', wait_until='domcontentloaded', timeout=20_000)
+                page.wait_for_timeout(400)
             except Exception:
                 pass
 
             browser_api = _scrape_ml_via_browser_api(page, query, marca, modelo_tokens)
             if browser_api:
                 browser.close()
-                return browser_api
+                return browser_api, ''
 
-            rows: list[tuple[str, str, str]] = []
-            used_url = urls[0]
-            for url in urls[:2]:
+            for url in urls[:1 if not _ml_access_token() else 2]:
                 used_url = url
                 try:
-                    page.goto(url, wait_until='domcontentloaded', timeout=35_000)
+                    page.goto(url, wait_until='domcontentloaded', timeout=22_000)
                 except Exception as exc:
                     logger.info('ML goto falló %s: %s', url, exc)
                     continue
-                page.wait_for_timeout(2500)
+                page.wait_for_timeout(1200)
                 title = ''
+                body_snip = ''
                 try:
                     title = page.title()
                 except Exception:
                     pass
+                try:
+                    body_snip = page.inner_text('body', timeout=3000)[:500]
+                except Exception:
+                    pass
+                if _is_ml_security_challenge(title=title, body=body_snip):
+                    logger.warning(
+                        'ML anti-bot (Seguridad) url=%s title=%r — abortando HTML',
+                        url,
+                        title[:80],
+                    )
+                    browser.close()
+                    return [], 'mercadolibre_antibot'
                 rows = _titulos_ml_playwright(page)
                 logger.info(
                     'ML HTML url=%s title=%r rows=%s',
@@ -386,7 +448,13 @@ def scrape_mercadolibre(marca: str, modelo: str, headless: bool = True) -> list[
             browser.close()
     except Exception as exc:
         logger.warning('MercadoLibre scrape falló: %s', exc)
-        return listings
+        if not _ml_access_token():
+            return [], 'mercadolibre_antibot'
+        return listings, ''
+
+    if not rows and not _ml_access_token():
+        # API 403 + HTML vacío desde datacenter ≈ bloqueo; no seguir reintentando HTML.
+        return [], 'mercadolibre_antibot'
 
     seen: set[str] = set()
     matched = 0
@@ -415,7 +483,6 @@ def scrape_mercadolibre(marca: str, modelo: str, headless: bool = True) -> list[
             )
         )
 
-    # Soft fallback: si el filtro de tokens dejó 0, conservar avisos con marca + precio.
     if not listings and rows:
         for titulo, href, ptxt in rows:
             if marca.casefold() not in titulo.casefold():
@@ -455,7 +522,21 @@ def scrape_mercadolibre(marca: str, modelo: str, headless: bool = True) -> list[
             len(listings),
             query,
         )
-    return listings
+    return listings, ''
+
+
+def _playwright_proxy() -> str:
+    import os
+
+    try:
+        from django.conf import settings
+
+        proxy = getattr(settings, 'PLAYWRIGHT_PROXY', '') or ''
+        if proxy:
+            return proxy.strip()
+    except Exception:
+        pass
+    return (os.environ.get('PLAYWRIGHT_PROXY') or '').strip()
 
 
 def scrape_chileautos(marca: str, modelo: str, headless: bool = True) -> list[ListingScraped]:
@@ -559,24 +640,44 @@ def scrape_chileautos(marca: str, modelo: str, headless: bool = True) -> list[Li
     return listings
 
 
-def scrape_segmento(marca: str, modelo: str, year_bucket: int | None = None) -> ScrapeResult:
-    """Scrapea ML (+ Chileautos solo si ML no trae suficientes avisos)."""
+def scrape_segmento(
+    marca: str,
+    modelo: str,
+    year_bucket: int | None = None,
+    on_progress=None,
+) -> ScrapeResult:
+    """Scrapea ML (+ Chileautos solo si ML no trae suficientes avisos y no hay antibot)."""
     result = ScrapeResult(marca=marca, modelo=modelo, year_bucket=year_bucket)
     headless = True
+
+    def _progress(pct: int, message: str) -> None:
+        if callable(on_progress):
+            try:
+                on_progress(pct, message)
+            except Exception:
+                pass
+
     try:
-        ml = scrape_mercadolibre(marca, modelo, headless=headless)
+        _progress(20, 'Consultando MercadoLibre…')
+        ml, blocked = scrape_mercadolibre(marca, modelo, headless=headless)
         result.listings = list(ml)
-        # Chileautos (DataDome) suele colgar/bloquear; solo si ML no aportó.
-        if len(ml) < 5:
-            _jitter_sleep(1.0, 2.0)
+        if blocked:
+            result.blocked_reason = blocked
+            result.errors.append(blocked)
+            logger.warning('scrape_segmento ML bloqueado: %s', blocked)
+            _progress(70, 'MercadoLibre bloqueó el acceso (anti-bot)')
+        elif len(ml) < 5:
+            _progress(45, 'Buscando también en Chileautos…')
+            _jitter_sleep(0.5, 1.0)
             ca = scrape_chileautos(marca, modelo, headless=headless)
             result.listings = ml + ca
         logger.info(
-            'scrape_segmento %s %s → ml=%s total=%s',
+            'scrape_segmento %s %s → ml=%s total=%s blocked=%s',
             marca,
             modelo,
             len(ml),
             len(result.listings),
+            result.blocked_reason or '-',
         )
     except Exception as exc:
         result.errors.append(str(exc))

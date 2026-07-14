@@ -11,7 +11,7 @@ from django.utils import timezone
 
 CACHE_TTL_SEC = 60 * 30  # 30 min
 # Si un worker muere mid-scrape, el estado running quedaba pegado hasta TTL.
-STALE_AFTER_SEC = 150  # 2.5 min sin update → se considera zombie
+STALE_AFTER_SEC = 90  # 1.5 min sin update → zombie (antes 2.5; antibot fallaba lento)
 KEY_PREFIX = 'valoracion_scrape_v1'
 
 

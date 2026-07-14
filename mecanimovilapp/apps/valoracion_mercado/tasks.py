@@ -53,8 +53,8 @@ def task_snapshot_tasacion_mensual(self):
     bind=True,
     max_retries=1,
     default_retry_delay=180,
-    soft_time_limit=120,
-    time_limit=150,
+    soft_time_limit=90,
+    time_limit=110,
 )
 def task_scrape_vehiculo(self, vehiculo_id: int):
     """
@@ -101,20 +101,52 @@ def task_scrape_vehiculo(self, vehiculo_id: int):
         task_id=getattr(self.request, 'id', None),
     )
 
+    def on_progress(pct: int, message: str) -> None:
+        set_scrape_status(
+            vehiculo_id,
+            state='running',
+            progress_pct=pct,
+            message=message,
+            task_id=getattr(self.request, 'id', None),
+        )
+
     try:
         set_scrape_status(
             vehiculo_id,
             state='running',
-            progress_pct=25,
-            message='Consultando MercadoLibre y Chileautos…',
+            progress_pct=18,
+            message='Consultando MercadoLibre…',
         )
-        result = scrape_segmento(marca_nombre, modelo_nombre, year_bucket=year_bucket)
+        result = scrape_segmento(
+            marca_nombre,
+            modelo_nombre,
+            year_bucket=year_bucket,
+            on_progress=on_progress,
+        )
+
+        n = len(result.listings)
+        blocked = (result.blocked_reason or '').startswith('mercadolibre')
+
+        if blocked and n == 0:
+            # Terminar limpio: sin token OAuth / proxy, ML bloquea IPs de Render.
+            build_valoracion_payload(vehiculo, persist=True)
+            set_scrape_status(
+                vehiculo_id,
+                state='done',
+                progress_pct=100,
+                message=(
+                    'MercadoLibre bloqueó el acceso (anti-bot). '
+                    'Configura MERCADOLIBRE_ACCESS_TOKEN o PLAYWRIGHT_PROXY.'
+                ),
+                listings_count=0,
+            )
+            return 0
 
         set_scrape_status(
             vehiculo_id,
             state='running',
             progress_pct=65,
-            message=f'Guardando {len(result.listings)} avisos encontrados…',
+            message=f'Guardando {n} avisos encontrados…',
         )
         seen = upsert_listings(result.listings, vehiculo.marca, vehiculo.modelo, year_bucket)
         mark_removed_for_segment(vehiculo.marca, vehiculo.modelo, year_min, year_max, seen)
@@ -139,10 +171,10 @@ def task_scrape_vehiculo(self, vehiculo_id: int):
             vehiculo_id,
             state='done',
             progress_pct=100,
-            message=f'Listo · {len(result.listings)} avisos de mercado',
-            listings_count=len(result.listings),
+            message=f'Listo · {n} avisos de mercado',
+            listings_count=n,
         )
-        return len(result.listings)
+        return n
     except Exception as exc:
         # SoftTimeLimitExceeded / worker kill: no dejar la UI en 25% forever.
         from celery.exceptions import SoftTimeLimitExceeded
