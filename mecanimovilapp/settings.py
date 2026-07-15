@@ -200,6 +200,9 @@ REST_FRAMEWORK = {
         'rest_framework.filters.SearchFilter',
         'rest_framework.filters.OrderingFilter',
     ],
+    'DEFAULT_THROTTLE_RATES': {
+        'guest_patente': '10/hour',
+    },
 }
 
 # ===========================

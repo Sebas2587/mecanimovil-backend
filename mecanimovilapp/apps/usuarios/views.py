@@ -2370,10 +2370,99 @@ class TallerViewSet(viewsets.ModelViewSet):
                     {"error": "Los IDs de servicios deben ser números válidos"},
                     status=status.HTTP_400_BAD_REQUEST
                 )
+
+        marca_id_param = request.query_params.get('marca_id')
+        if not vehiculo_id and marca_id_param:
+            try:
+                marca_vehiculo = MarcaVehiculo.objects.get(id=int(marca_id_param))
+            except (ValueError, MarcaVehiculo.DoesNotExist):
+                return Response(
+                    {"error": "El parámetro 'marca_id' debe ser un ID de marca válido"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            solo_especialistas = request.query_params.get('solo_especialistas', '').lower() in (
+                '1', 'true', 'yes',
+            )
+            queryset = Taller.objects.filter(
+                verificado=True,
+                activo=True,
+            )
+            if solo_especialistas:
+                queryset = filtrar_queryset_solo_especialistas_marca(queryset, marca_vehiculo)
+            else:
+                queryset = filtrar_queryset_por_marca_o_multimarca(queryset, marca_vehiculo)
+            queryset = queryset.select_related(
+                'usuario',
+                'direccion_fisica',
+                'connection_status',
+            ).prefetch_related(
+                'especialidades',
+                'marcas_atendidas',
+            ).annotate(
+                servicios_completados_count=Count(
+                    'solicitudes', filter=Q(solicitudes__estado='completado')
+                )
+            )
+
+            if servicio_ids:
+                try:
+                    servicio_ids_int = [int(sid) for sid in servicio_ids]
+                    servicios = Servicio.objects.filter(id__in=servicio_ids_int)
+                    if not servicios.exists():
+                        return Response(
+                            {"error": "Ninguno de los servicios especificados existe"},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    talleres_con_ofertas = OfertaServicio.objects.filter(
+                        servicio__in=servicios,
+                        tipo_proveedor='taller',
+                        disponible=True,
+                        taller__verificado=True,
+                        taller__activo=True,
+                    ).filter(
+                        Q(taller__marcas_atendidas=marca_vehiculo)
+                        | Q(taller__tipo_cobertura_marca=TIPO_COBERTURA_MULTIMARCA)
+                    ).filter(
+                        Q(marca_vehiculo_seleccionada=marca_vehiculo)
+                        | Q(marca_vehiculo_seleccionada__isnull=True)
+                    ).values_list('taller_id', flat=True).distinct()
+                    talleres_ids = set(talleres_con_ofertas)
+                    if not talleres_ids:
+                        return Response({
+                            "talleres": [],
+                            "mensaje": "No se encontraron talleres que atiendan esta marca y ofrezcan los servicios seleccionados",
+                        })
+                    queryset = queryset.filter(id__in=talleres_ids)
+                except ValueError:
+                    return Response(
+                        {"error": "Los IDs de servicios deben ser números válidos"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+            ordered = _order_proveedores_by_kpi_relevancia(list(queryset), window_days=30)
+            if request_wants_panel_servicios(request):
+                attach_panel_servicios_to_proveedores(
+                    ordered,
+                    'taller',
+                    marca_id=marca_vehiculo.id,
+                    tipo_motor=None,
+                )
+            serializer = self.get_serializer(ordered, many=True)
+            return Response({
+                "talleres": serializer.data,
+                "total": queryset.count(),
+                "filtros_aplicados": {
+                    "marca_vehiculo": marca_vehiculo.nombre,
+                    "marca_id": marca_vehiculo.id,
+                    "servicios": servicio_ids if servicio_ids else "todos",
+                    "sin_vehiculo": True,
+                },
+            })
         
         if not vehiculo_id:
             return Response(
-                {"error": "Se requiere el parámetro 'vehiculo_id', servicio_ids sin vehículo o tipo_cobertura_marca=multimarca"},
+                {"error": "Se requiere el parámetro 'vehiculo_id', 'marca_id', servicio_ids sin vehículo o tipo_cobertura_marca=multimarca"},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
@@ -3238,10 +3327,100 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
                     {"error": "Los IDs de servicios deben ser números válidos"},
                     status=status.HTTP_400_BAD_REQUEST
                 )
+
+        marca_id_param = request.query_params.get('marca_id')
+        if not vehiculo_id and marca_id_param:
+            try:
+                marca_vehiculo = MarcaVehiculo.objects.get(id=int(marca_id_param))
+            except (ValueError, MarcaVehiculo.DoesNotExist):
+                return Response(
+                    {"error": "El parámetro 'marca_id' debe ser un ID de marca válido"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            solo_especialistas = request.query_params.get('solo_especialistas', '').lower() in (
+                '1', 'true', 'yes',
+            )
+            queryset = MecanicoDomicilio.objects.filter(
+                verificado=True,
+                activo=True,
+            )
+            if solo_especialistas:
+                queryset = filtrar_queryset_solo_especialistas_marca(queryset, marca_vehiculo)
+            else:
+                queryset = filtrar_queryset_por_marca_o_multimarca(queryset, marca_vehiculo)
+            queryset = queryset.select_related(
+                'usuario',
+                'connection_status',
+            ).prefetch_related(
+                'especialidades',
+                'marcas_atendidas',
+                'service_areas',
+                'resenas',
+            ).annotate(
+                servicios_completados_count=Count(
+                    'solicitudes', filter=Q(solicitudes__estado='completado')
+                )
+            )
+
+            if servicio_ids:
+                try:
+                    servicio_ids_int = [int(sid) for sid in servicio_ids]
+                    servicios = Servicio.objects.filter(id__in=servicio_ids_int)
+                    if not servicios.exists():
+                        return Response(
+                            {"error": "Ninguno de los servicios especificados existe"},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    mecanicos_con_ofertas = OfertaServicio.objects.filter(
+                        servicio__in=servicios,
+                        tipo_proveedor='mecanico',
+                        disponible=True,
+                        mecanico__verificado=True,
+                        mecanico__activo=True,
+                    ).filter(
+                        Q(mecanico__marcas_atendidas=marca_vehiculo)
+                        | Q(mecanico__tipo_cobertura_marca=TIPO_COBERTURA_MULTIMARCA)
+                    ).filter(
+                        Q(marca_vehiculo_seleccionada=marca_vehiculo)
+                        | Q(marca_vehiculo_seleccionada__isnull=True)
+                    ).values_list('mecanico_id', flat=True).distinct()
+                    mecanicos_ids = set(mecanicos_con_ofertas)
+                    if not mecanicos_ids:
+                        return Response({
+                            "mecanicos": [],
+                            "mensaje": "No se encontraron mecánicos que atiendan esta marca y ofrezcan los servicios seleccionados",
+                        })
+                    queryset = queryset.filter(id__in=mecanicos_ids)
+                except ValueError:
+                    return Response(
+                        {"error": "Los IDs de servicios deben ser números válidos"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+            ordered = _order_proveedores_by_kpi_relevancia(list(queryset), window_days=30)
+            if request_wants_panel_servicios(request):
+                attach_panel_servicios_to_proveedores(
+                    ordered,
+                    'mecanico',
+                    marca_id=marca_vehiculo.id,
+                    tipo_motor=None,
+                )
+            serializer = self.get_serializer(ordered, many=True)
+            return Response({
+                "mecanicos": serializer.data,
+                "total": queryset.count(),
+                "filtros_aplicados": {
+                    "marca_vehiculo": marca_vehiculo.nombre,
+                    "marca_id": marca_vehiculo.id,
+                    "servicios": servicio_ids if servicio_ids else "todos",
+                    "sin_vehiculo": True,
+                },
+            })
         
         if not vehiculo_id:
             return Response(
-                {"error": "Se requiere el parámetro 'vehiculo_id', servicio_ids sin vehículo o tipo_cobertura_marca=multimarca"},
+                {"error": "Se requiere el parámetro 'vehiculo_id', 'marca_id', servicio_ids sin vehículo o tipo_cobertura_marca=multimarca"},
                 status=status.HTTP_400_BAD_REQUEST
             )
         

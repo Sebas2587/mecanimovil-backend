@@ -67,8 +67,9 @@ class ModeloViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 from mecanimovilapp.apps.ordenes.models import SolicitudServicio, SolicitudServicioPublica
-from .getapi_client import fetch_appraisal_for_plate
-from .kilometraje_validation import merge_mileage_metadata, validar_kilometraje_usuario
+from .kilometraje_validation import validar_kilometraje_usuario
+from .services.guest_patente_lookup import fetch_patente_normalized, get_guest_patente_public
+from .throttling import GuestPatenteThrottle
 
 class VehiculoViewSet(viewsets.ModelViewSet):
     """
@@ -125,6 +126,8 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         if self.action == 'get_marcas':
             return [permissions.AllowAny()]
         if self.action in ('marketplace_listings', 'marketplace_public_detail'):
+            return [permissions.AllowAny()]
+        if self.action == 'consultar_patente_publica':
             return [permissions.AllowAny()]
         return [permissions.IsAuthenticated()]
     
@@ -520,91 +523,57 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         """
         Consulta una patente en GetAPI.cl y normaliza la respuesta
         """
-        import requests
-        
         patente = request.query_params.get('patente', '').upper()
         if not patente:
             return Response({"error": "Debe proporcionar una patente"}, status=status.HTTP_400_BAD_REQUEST)
-            
-        API_KEY = "28054a51-09f6-4687-a4a7-ecf3ead55ef4"
-        URL = f"https://chile.getapi.cl/v1/vehicles/plate/{patente}"
-        
-        try:
-            # Using endpoint /v1/vehicles/plate/{plate}
-            # API requires x-api-key header based on 401 response
-            headers = {
-                "x-api-key": API_KEY,
-                "Content-Type": "application/json"
-            }
-            response = requests.get(URL, headers=headers, timeout=10)
-            
-            if response.status_code == 200:
-                json_response = response.json()
-                
-                # Check for success flag if present in wrapper
-                # User example: { "success": true, "data": { ... } }
-                if json_response.get("success") is False:
-                    return Response(
-                        {
-                            "error": "La patente ingresada no existe en el registro nacional de vehículos.",
-                            "code": "patente_no_encontrada",
-                        },
-                        status=status.HTTP_404_NOT_FOUND,
-                    )
 
-                data = json_response.get("data", json_response)
-                
-                # Map nested fields
-                # structure: data.model.brand.name, data.model.name, etc.
-                
-                marca_nombre = data.get("model", {}).get("brand", {}).get("name", "")
-                modelo_nombre = data.get("model", {}).get("name", "")
-                
-                normalized_data = {
-                    "patente": data.get("licensePlate", patente),
-                    "marca_nombre": marca_nombre,
-                    "modelo_nombre": modelo_nombre,
-                    "year": data.get("year", ""),
-                    "color": data.get("color", ""),
-                    "motor": data.get("engine", ""),
-                    "vin": data.get("vinNumber", ""),
-                    "tipo_motor": data.get("fuel", "GASOLINA"), # e.g. "BENCINA" -> mapping might be needed later
-                    "cilindraje": data.get("engine", ""), 
-                    "raw_data": data
-                }
-                
-                # Try to map Marca/Modelo to internal IDs (misma lógica que al registrar)
-                try:
-                    from .catalogo_resolver import resolve_marca, resolve_modelo
+        normalized_data, http_status, error_code = fetch_patente_normalized(
+            patente,
+            include_private_fields=True,
+        )
+        if normalized_data is None:
+            if error_code == 'servicio_externo':
+                return Response({"error": "Error al consultar servicio externo"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+            return Response(
+                {
+                    "error": "La patente ingresada no existe en el registro nacional de vehículos.",
+                    "code": "patente_no_encontrada",
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
-                    marca_obj = resolve_marca(normalized_data["marca_nombre"])
-                    if marca_obj:
-                        normalized_data["marca_id"] = marca_obj.id
-                        modelo_obj = resolve_modelo(marca_obj, normalized_data["modelo_nombre"])
-                        if modelo_obj:
-                            normalized_data["modelo_id"] = modelo_obj.id
-                except Exception as e:
-                    print(f"Error mapping marca/modelo: {e}")
+        return Response(normalized_data)
 
-                appraisal_extra = fetch_appraisal_for_plate(patente)
-                normalized_data.update(appraisal_extra)
-                if "tiene_tasacion_mercado" not in normalized_data:
-                    normalized_data["tiene_tasacion_mercado"] = False
-                normalized_data.update(merge_mileage_metadata(data, appraisal_extra))
+    @action(
+        detail=False,
+        methods=['get'],
+        url_path='consultar-patente-publica',
+        permission_classes=[permissions.AllowAny],
+        throttle_classes=[GuestPatenteThrottle],
+    )
+    def consultar_patente_publica(self, request):
+        """
+        Consulta pública de patente para flujo invitado (sin registro).
+        Respuesta recortada, cacheada 24h por patente.
+        GET /api/vehiculos/consultar-patente-publica/?patente=ABCD12
+        """
+        patente = request.query_params.get('patente', '').upper().strip()
+        if not patente:
+            return Response({"error": "Debe proporcionar una patente"}, status=status.HTTP_400_BAD_REQUEST)
 
-                return Response(normalized_data)
-            else:
-                return Response(
-                    {
-                        "error": "La patente ingresada no existe en el registro nacional de vehículos.",
-                        "code": "patente_no_encontrada",
-                    },
-                    status=status.HTTP_404_NOT_FOUND,
-                )
-                
-        except Exception as e:
-            print(f"Error connecting to GetAPI: {e}")
-            return Response({"error": "Error al consultar servicio externo"}, status=status.HTTP_503_SERVICE_UNAVAILABLE) 
+        public_payload, http_status, error_code = get_guest_patente_public(patente)
+        if public_payload is None:
+            if error_code == 'servicio_externo':
+                return Response({"error": "Error al consultar servicio externo"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+            return Response(
+                {
+                    "error": "La patente ingresada no existe en el registro nacional de vehículos.",
+                    "code": "patente_no_encontrada",
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        return Response(public_payload)
 
     @action(detail=True, methods=['get'], url_path='tasacion')
     def tasacion(self, request, pk=None):

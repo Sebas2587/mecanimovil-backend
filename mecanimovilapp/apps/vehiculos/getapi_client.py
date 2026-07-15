@@ -2,16 +2,27 @@
 Cliente auxiliar para consultas GetAPI.cl (patente y tasación).
 """
 import logging
+import os
 
 import requests
+from decouple import config
 
 from .catalogo_resolver import normalizar_tipo_motor_vehiculo
 from .kilometraje_validation import mileage_from_getapi_payload
 
 logger = logging.getLogger(__name__)
 
-GETAPI_KEY = "28054a51-09f6-4687-a4a7-ecf3ead55ef4"
-GETAPI_HEADERS = {"x-api-key": GETAPI_KEY, "Content-Type": "application/json"}
+GETAPI_KEY = config(
+    'GETAPI_API_KEY',
+    default=os.environ.get('GETAPI_API_KEY', '28054a51-09f6-4687-a4a7-ecf3ead55ef4'),
+)
+
+
+def get_getapi_headers() -> dict:
+    return {'x-api-key': GETAPI_KEY, 'Content-Type': 'application/json'}
+
+
+GETAPI_HEADERS = get_getapi_headers()
 
 
 def fetch_plate_basic_info(patente: str) -> dict:
