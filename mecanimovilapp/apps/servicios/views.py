@@ -148,10 +148,18 @@ def _serializar_servicios_con_ofertas(servicio_ids, totales_por_servicio=None):
         categoria = servicio.categorias.first()
 
         resultado.append({
+            # `id` = alias de servicio_id para clientes legacy (p. ej. precompra).
+            'id': sid,
             'servicio_id': sid,
             'nombre': servicio.nombre,
+            'descripcion': servicio.descripcion or '',
             'categoria_nombre': categoria.nombre if categoria else None,
             'foto': servicio.foto.url if servicio.foto else None,
+            'precio_referencia': (
+                float(servicio.precio_referencia)
+                if servicio.precio_referencia is not None
+                else None
+            ),
             'total_solicitudes': totales_por_servicio.get(sid),
             'precio_desde': min(precios) if precios else None,
             'precio_hasta': max(precios) if precios else None,
