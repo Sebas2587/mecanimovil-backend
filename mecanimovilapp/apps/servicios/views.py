@@ -24,6 +24,122 @@ from .compatibilidad_vehiculo import (
 )
 
 
+def _precio_oferta_publica(oferta):
+    pub = float(oferta.precio_publicado_cliente or 0)
+    if pub > 0:
+        return pub
+    return float(oferta.precio_sin_repuestos or 0)
+
+
+def _proveedor_payload_publico(oferta):
+    proveedor = oferta.taller if oferta.tipo_proveedor == 'taller' else oferta.mecanico
+    if not proveedor:
+        return None
+    return {
+        'id': proveedor.id,
+        'nombre': proveedor.nombre,
+        'tipo': oferta.tipo_proveedor,
+        'foto_perfil': proveedor.foto_perfil.url if proveedor.foto_perfil else None,
+        'calificacion_promedio': proveedor.calificacion_promedio,
+        'direccion': proveedor.direccion,
+        'verificado': proveedor.verificado,
+        'tipo_cobertura_marca': getattr(proveedor, 'tipo_cobertura_marca', 'especialista'),
+    }
+
+
+def _cobertura_vehiculo_payload(oferta, provider_data):
+    """
+    Para qué vehículo aplica esta oferta: marca específica de la oferta si existe,
+    o el alcance del proveedor (multimarca vs especialista, con sus marcas) como fallback.
+    Requiere que `taller__marcas_atendidas` / `mecanico__marcas_atendidas` estén
+    prefetched en el queryset de ofertas para no generar N+1 queries.
+    """
+    marca = getattr(oferta, 'marca_vehiculo_seleccionada', None)
+    if marca is not None:
+        return {'alcance': 'marca', 'marca_nombre': marca.nombre, 'marcas_nombres': []}
+    if provider_data and provider_data.get('tipo_cobertura_marca') == 'multimarca':
+        return {'alcance': 'multimarca', 'marca_nombre': None, 'marcas_nombres': []}
+
+    proveedor = oferta.taller if oferta.tipo_proveedor == 'taller' else oferta.mecanico
+    marcas_nombres = []
+    if proveedor is not None:
+        marcas_nombres = [m.nombre for m in list(proveedor.marcas_atendidas.all())[:4]]
+    return {'alcance': 'especialista', 'marca_nombre': None, 'marcas_nombres': marcas_nombres}
+
+
+def _serializar_servicios_con_ofertas(servicio_ids, totales_por_servicio=None):
+    """
+    Payload público compartido (`buscar` + `mas_solicitados`): por cada servicio,
+    todas sus ofertas disponibles (talleres/mecánicos) con precio, tipo de servicio
+    (con/sin repuestos) y cobertura de vehículo (marca específica / multimarca).
+    Mantiene el orden de `servicio_ids`.
+    """
+    totales_por_servicio = totales_por_servicio or {}
+
+    servicios_map = {
+        s.id: s
+        for s in Servicio.objects.filter(id__in=servicio_ids).prefetch_related('categorias')
+    }
+
+    ofertas_qs = (
+        OfertaServicio.objects
+        .filter(servicio_id__in=servicio_ids, disponible=True)
+        .select_related('taller', 'mecanico', 'marca_vehiculo_seleccionada')
+        .prefetch_related('taller__marcas_atendidas', 'mecanico__marcas_atendidas')
+        .order_by('precio_publicado_cliente')
+    )
+
+    ofertas_por_servicio = {}
+    for oferta in ofertas_qs:
+        ofertas_por_servicio.setdefault(oferta.servicio_id, []).append(oferta)
+
+    resultado = []
+    for sid in servicio_ids:
+        servicio = servicios_map.get(sid)
+        if not servicio:
+            continue
+
+        ofertas_payload = []
+        precios = []
+        for oferta in ofertas_por_servicio.get(sid, []):
+            provider_data = _proveedor_payload_publico(oferta)
+            if not provider_data:
+                continue
+            precio = _precio_oferta_publica(oferta)
+            if precio > 0:
+                precios.append(precio)
+            ofertas_payload.append({
+                'oferta_id': oferta.id,
+                'servicio_id': sid,
+                'nombre': servicio.nombre,
+                'precio': precio,
+                'precio_publicado_cliente': float(oferta.precio_publicado_cliente or 0),
+                'tipo_servicio': oferta.tipo_servicio or 'sin_repuestos',
+                'provider': provider_data,
+                'provider_type': oferta.tipo_proveedor,
+                'cobertura_vehiculo': _cobertura_vehiculo_payload(oferta, provider_data),
+            })
+
+        if not ofertas_payload:
+            continue
+
+        categoria = servicio.categorias.first()
+
+        resultado.append({
+            'servicio_id': sid,
+            'nombre': servicio.nombre,
+            'categoria_nombre': categoria.nombre if categoria else None,
+            'foto': servicio.foto.url if servicio.foto else None,
+            'total_solicitudes': totales_por_servicio.get(sid),
+            'precio_desde': min(precios) if precios else None,
+            'precio_hasta': max(precios) if precios else None,
+            'total_proveedores': len(ofertas_payload),
+            'ofertas': ofertas_payload,
+        })
+
+    return resultado
+
+
 def servicios_catalogo_por_marca_queryset(marca_id, tipo_motor=None):
     """
     Servicios del catálogo filtrados por compatibilidad de marca/modelo,
@@ -126,17 +242,26 @@ class ServicioViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], url_path='buscar')
     def buscar(self, request):
         """
-        Busca servicios por nombre o descripción (query param q).
-        Compatibilidad con cliente que llama GET .../servicios/buscar/?q=...
+        Busca servicios por nombre o descripción (query param q). Público (AllowAny).
+
+        Devuelve, para cada servicio que coincide, TODAS las ofertas disponibles
+        (talleres + mecánicos) con precio, tipo (con/sin repuestos) y marca/vehículo
+        para el que aplica — igual forma que `mas_solicitados` — en vez de un único
+        taller "adivinado". Así el cliente ve el servicio y elige entre talleres.
         """
         termino = (request.query_params.get('q') or '').strip()
         if not termino:
             return Response([])
-        qs = self.get_queryset().filter(
-            models.Q(nombre__icontains=termino) | models.Q(descripcion__icontains=termino)
-        ).distinct()[:50]
-        serializer = ServicioListSerializer(qs, many=True)
-        return Response(serializer.data)
+        servicio_ids = list(
+            self.get_queryset().filter(
+                models.Q(nombre__icontains=termino) | models.Q(descripcion__icontains=termino)
+            ).distinct().values_list('id', flat=True)[:30]
+        )
+        if not servicio_ids:
+            return Response([])
+
+        resultado = _serializar_servicios_con_ofertas(servicio_ids)
+        return Response(resultado)
 
     @action(detail=False, methods=['get'], url_path='mas_solicitados')
     def mas_solicitados(self, request):
@@ -185,85 +310,10 @@ class ServicioViewSet(viewsets.ModelViewSet):
             return Response([])
 
         servicio_ids = [sid for sid, _ in ranking]
-        servicios_map = {
-            s.id: s
-            for s in Servicio.objects.filter(id__in=servicio_ids).prefetch_related('categorias')
-        }
-
-        ofertas_qs = (
-            OfertaServicio.objects
-            .filter(servicio_id__in=servicio_ids, disponible=True)
-            .select_related('taller', 'mecanico')
-            .order_by('precio_publicado_cliente')
+        totales_por_servicio = dict(ranking)
+        resultado = _serializar_servicios_con_ofertas(
+            servicio_ids, totales_por_servicio=totales_por_servicio,
         )
-
-        ofertas_por_servicio = {}
-        for oferta in ofertas_qs:
-            ofertas_por_servicio.setdefault(oferta.servicio_id, []).append(oferta)
-
-        def _provider_payload(oferta):
-            proveedor = oferta.taller if oferta.tipo_proveedor == 'taller' else oferta.mecanico
-            if not proveedor:
-                return None
-            return {
-                'id': proveedor.id,
-                'nombre': proveedor.nombre,
-                'tipo': oferta.tipo_proveedor,
-                'foto_perfil': proveedor.foto_perfil.url if proveedor.foto_perfil else None,
-                'calificacion_promedio': proveedor.calificacion_promedio,
-                'direccion': proveedor.direccion,
-                'verificado': proveedor.verificado,
-            }
-
-        def _precio_oferta(oferta):
-            pub = float(oferta.precio_publicado_cliente or 0)
-            if pub > 0:
-                return pub
-            return float(oferta.precio_sin_repuestos or 0)
-
-        resultado = []
-        for sid, total in ranking:
-            servicio = servicios_map.get(sid)
-            if not servicio:
-                continue
-
-            ofertas_payload = []
-            precios = []
-            for oferta in ofertas_por_servicio.get(sid, []):
-                provider_data = _provider_payload(oferta)
-                if not provider_data:
-                    continue
-                precio = _precio_oferta(oferta)
-                if precio > 0:
-                    precios.append(precio)
-                ofertas_payload.append({
-                    'oferta_id': oferta.id,
-                    'servicio_id': sid,
-                    'nombre': servicio.nombre,
-                    'precio': precio,
-                    'precio_publicado_cliente': float(oferta.precio_publicado_cliente or 0),
-                    'tipo_servicio': oferta.tipo_servicio or 'sin_repuestos',
-                    'provider': provider_data,
-                    'provider_type': oferta.tipo_proveedor,
-                })
-
-            if not ofertas_payload:
-                continue
-
-            categoria = servicio.categorias.first()
-
-            resultado.append({
-                'servicio_id': sid,
-                'nombre': servicio.nombre,
-                'categoria_nombre': categoria.nombre if categoria else None,
-                'foto': servicio.foto.url if servicio.foto else None,
-                'total_solicitudes': total,
-                'precio_desde': min(precios) if precios else None,
-                'precio_hasta': max(precios) if precios else None,
-                'total_proveedores': len(ofertas_payload),
-                'ofertas': ofertas_payload,
-            })
-
         return Response(resultado)
 
     @action(detail=False, methods=['get'], url_path='catalogo_por_marca')
