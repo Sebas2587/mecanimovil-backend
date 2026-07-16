@@ -31,20 +31,65 @@ def _precio_oferta_publica(oferta):
     return float(oferta.precio_sin_repuestos or 0)
 
 
-def _resolve_provider_direccion(proveedor):
+_SKIP_NUMERO = frozenset({'s/n', 'sn', 's/n.', '-', '0', 'null', 'undefined', ''})
+
+
+def _clean_dir_part(raw):
+    s = str(raw or '').strip()
+    if not s:
+        return ''
+    lower = s.lower()
+    if lower.startswith('provincia de '):
+        return ''
+    if lower.startswith('región ') or lower.startswith('region '):
+        return ''
+    if lower == 'chile':
+        return ''
+    return s
+
+
+def _resolve_provider_direccion_payload(proveedor):
     """
-    Taller no tiene campo `direccion` (usa `direccion_fisica`);
-    MecanicoDomicilio / otros pueden tener `direccion` directo.
+    Dirección legible + campos estructurados para cards.
+    Taller usa `direccion_fisica`; evita exponer solo "1499" o "s/n".
     """
     if proveedor is None:
-        return None
+        return {'direccion': None, 'direccion_fisica': None, 'comuna': None}
+
     df = getattr(proveedor, 'direccion_fisica', None)
     if df is not None:
-        completa = getattr(df, 'direccion_completa', None)
-        if completa:
-            return completa
-        return str(df)
-    return getattr(proveedor, 'direccion', None)
+        calle = _clean_dir_part(getattr(df, 'calle', None))
+        numero_raw = str(getattr(df, 'numero', None) or '').strip()
+        numero = '' if numero_raw.lower() in _SKIP_NUMERO else numero_raw
+        comuna = _clean_dir_part(getattr(df, 'comuna', None))
+        ciudad = _clean_dir_part(getattr(df, 'ciudad', None))
+        street = ' '.join(p for p in (calle, numero) if p).strip()
+        place = comuna or ciudad or ''
+        parts = []
+        if street:
+            parts.append(street)
+        if place and (not street or place.lower() not in street.lower()):
+            parts.append(place)
+        direccion = ', '.join(parts) if parts else None
+        return {
+            'direccion': direccion,
+            'comuna': comuna or None,
+            'direccion_fisica': {
+                'calle': calle or None,
+                'numero': numero or None,
+                'comuna': comuna or None,
+                'ciudad': ciudad or None,
+                'direccion_completa': direccion,
+            },
+        }
+
+    raw = getattr(proveedor, 'direccion', None)
+    text = str(raw).strip() if raw else ''
+    return {
+        'direccion': text or None,
+        'comuna': None,
+        'direccion_fisica': None,
+    }
 
 
 def _proveedor_payload_publico(oferta):
@@ -52,13 +97,16 @@ def _proveedor_payload_publico(oferta):
     if not proveedor:
         return None
     foto = getattr(proveedor, 'foto_perfil', None)
+    dir_payload = _resolve_provider_direccion_payload(proveedor)
     return {
         'id': proveedor.id,
         'nombre': proveedor.nombre,
         'tipo': oferta.tipo_proveedor,
         'foto_perfil': foto.url if foto else None,
         'calificacion_promedio': getattr(proveedor, 'calificacion_promedio', 0) or 0,
-        'direccion': _resolve_provider_direccion(proveedor),
+        'direccion': dir_payload['direccion'],
+        'comuna': dir_payload['comuna'],
+        'direccion_fisica': dir_payload['direccion_fisica'],
         'verificado': bool(getattr(proveedor, 'verificado', False)),
         'tipo_cobertura_marca': getattr(proveedor, 'tipo_cobertura_marca', 'especialista'),
     }
@@ -163,6 +211,11 @@ def _serializar_servicios_con_ofertas(servicio_ids, totales_por_servicio=None):
             continue
 
         categoria = servicio.categorias.first()
+        proveedores_unicos = {
+            (o.get('provider_type'), (o.get('provider') or {}).get('id'))
+            for o in ofertas_payload
+            if (o.get('provider') or {}).get('id') is not None
+        }
 
         resultado.append({
             # `id` = alias de servicio_id para clientes legacy (p. ej. precompra).
@@ -180,7 +233,8 @@ def _serializar_servicios_con_ofertas(servicio_ids, totales_por_servicio=None):
             'total_solicitudes': totales_por_servicio.get(sid),
             'precio_desde': min(precios) if precios else None,
             'precio_hasta': max(precios) if precios else None,
-            'total_proveedores': len(ofertas_payload),
+            # Talleres/mecánicos distintos (no cantidad de ofertas por marca).
+            'total_proveedores': len(proveedores_unicos),
             'ofertas': ofertas_payload,
         })
 
