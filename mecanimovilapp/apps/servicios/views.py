@@ -31,18 +31,35 @@ def _precio_oferta_publica(oferta):
     return float(oferta.precio_sin_repuestos or 0)
 
 
+def _resolve_provider_direccion(proveedor):
+    """
+    Taller no tiene campo `direccion` (usa `direccion_fisica`);
+    MecanicoDomicilio / otros pueden tener `direccion` directo.
+    """
+    if proveedor is None:
+        return None
+    df = getattr(proveedor, 'direccion_fisica', None)
+    if df is not None:
+        completa = getattr(df, 'direccion_completa', None)
+        if completa:
+            return completa
+        return str(df)
+    return getattr(proveedor, 'direccion', None)
+
+
 def _proveedor_payload_publico(oferta):
     proveedor = oferta.taller if oferta.tipo_proveedor == 'taller' else oferta.mecanico
     if not proveedor:
         return None
+    foto = getattr(proveedor, 'foto_perfil', None)
     return {
         'id': proveedor.id,
         'nombre': proveedor.nombre,
         'tipo': oferta.tipo_proveedor,
-        'foto_perfil': proveedor.foto_perfil.url if proveedor.foto_perfil else None,
-        'calificacion_promedio': proveedor.calificacion_promedio,
-        'direccion': proveedor.direccion,
-        'verificado': proveedor.verificado,
+        'foto_perfil': foto.url if foto else None,
+        'calificacion_promedio': getattr(proveedor, 'calificacion_promedio', 0) or 0,
+        'direccion': _resolve_provider_direccion(proveedor),
+        'verificado': bool(getattr(proveedor, 'verificado', False)),
         'tipo_cobertura_marca': getattr(proveedor, 'tipo_cobertura_marca', 'especialista'),
     }
 
@@ -84,7 +101,12 @@ def _serializar_servicios_con_ofertas(servicio_ids, totales_por_servicio=None):
     ofertas_qs = (
         OfertaServicio.objects
         .filter(servicio_id__in=servicio_ids, disponible=True)
-        .select_related('taller', 'mecanico', 'marca_vehiculo_seleccionada')
+        .select_related(
+            'taller',
+            'taller__direccion_fisica',
+            'mecanico',
+            'marca_vehiculo_seleccionada',
+        )
         .prefetch_related('taller__marcas_atendidas', 'mecanico__marcas_atendidas')
         .order_by('precio_publicado_cliente')
     )
@@ -1654,13 +1676,19 @@ class FotoServicioViewSet(viewsets.ModelViewSet):
 def servicios_buscar_alias(request):
     """
     GET /api/servicios/buscar/?q=...
-    Alias porque el router registra la acción en .../servicios/servicios/buscar/
+    Alias porque el router registra la acción en .../servicios/servicios/buscar/.
+
+    Misma forma que `mas_solicitados` / ViewSet.buscar: grupos por servicio con
+    TODAS las ofertas (talleres + precios), no un único taller_principal.
     """
     termino = (request.query_params.get('q') or '').strip()
     if not termino:
         return Response([])
-    qs = Servicio.objects.filter(
-        models.Q(nombre__icontains=termino) | models.Q(descripcion__icontains=termino)
-    ).distinct()[:50]
-    serializer = ServicioListSerializer(qs, many=True)
-    return Response(serializer.data)
+    servicio_ids = list(
+        Servicio.objects.filter(
+            models.Q(nombre__icontains=termino) | models.Q(descripcion__icontains=termino)
+        ).distinct().values_list('id', flat=True)[:30]
+    )
+    if not servicio_ids:
+        return Response([])
+    return Response(_serializar_servicios_con_ofertas(servicio_ids))
