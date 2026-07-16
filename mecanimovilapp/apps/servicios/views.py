@@ -138,6 +138,134 @@ class ServicioViewSet(viewsets.ModelViewSet):
         serializer = ServicioListSerializer(qs, many=True)
         return Response(serializer.data)
 
+    @action(detail=False, methods=['get'], url_path='mas_solicitados')
+    def mas_solicitados(self, request):
+        """
+        Servicios realmente más solicitados (demanda histórica de solicitudes reales),
+        no solo catálogo. Público (AllowAny): usado en la landing de invitado.
+
+        Para cada servicio top, devuelve TODAS las ofertas disponibles (talleres +
+        mecánicos) con su propio precio, para que el cliente compare y elija proveedor
+        en vez de ver un único taller "adivinado".
+        """
+        from mecanimovilapp.apps.ordenes.models import LineaServicio
+
+        try:
+            limit = max(1, min(int(request.query_params.get('limit', 12)), 24))
+        except (TypeError, ValueError):
+            limit = 12
+
+        estados_excluidos = [
+            'cancelado',
+            'rechazada_por_proveedor',
+            'solicitud_cancelacion',
+        ]
+
+        conteos = (
+            LineaServicio.objects
+            .exclude(solicitud__estado__in=estados_excluidos)
+            .exclude(oferta_servicio__isnull=True)
+            .values('oferta_servicio__servicio_id')
+            .annotate(total=models.Count('id'))
+            .order_by('-total')
+        )
+
+        ranking = []
+        seen_ids = set()
+        for row in conteos:
+            sid = row['oferta_servicio__servicio_id']
+            if sid is None or sid in seen_ids:
+                continue
+            seen_ids.add(sid)
+            ranking.append((sid, row['total']))
+            if len(ranking) >= limit:
+                break
+
+        if not ranking:
+            return Response([])
+
+        servicio_ids = [sid for sid, _ in ranking]
+        servicios_map = {
+            s.id: s
+            for s in Servicio.objects.filter(id__in=servicio_ids).prefetch_related('categorias')
+        }
+
+        ofertas_qs = (
+            OfertaServicio.objects
+            .filter(servicio_id__in=servicio_ids, disponible=True)
+            .select_related('taller', 'mecanico')
+            .order_by('precio_publicado_cliente')
+        )
+
+        ofertas_por_servicio = {}
+        for oferta in ofertas_qs:
+            ofertas_por_servicio.setdefault(oferta.servicio_id, []).append(oferta)
+
+        def _provider_payload(oferta):
+            proveedor = oferta.taller if oferta.tipo_proveedor == 'taller' else oferta.mecanico
+            if not proveedor:
+                return None
+            return {
+                'id': proveedor.id,
+                'nombre': proveedor.nombre,
+                'tipo': oferta.tipo_proveedor,
+                'foto_perfil': proveedor.foto_perfil.url if proveedor.foto_perfil else None,
+                'calificacion_promedio': proveedor.calificacion_promedio,
+                'direccion': proveedor.direccion,
+                'verificado': proveedor.verificado,
+            }
+
+        def _precio_oferta(oferta):
+            pub = float(oferta.precio_publicado_cliente or 0)
+            if pub > 0:
+                return pub
+            return float(oferta.precio_sin_repuestos or 0)
+
+        resultado = []
+        for sid, total in ranking:
+            servicio = servicios_map.get(sid)
+            if not servicio:
+                continue
+
+            ofertas_payload = []
+            precios = []
+            for oferta in ofertas_por_servicio.get(sid, []):
+                provider_data = _provider_payload(oferta)
+                if not provider_data:
+                    continue
+                precio = _precio_oferta(oferta)
+                if precio > 0:
+                    precios.append(precio)
+                ofertas_payload.append({
+                    'oferta_id': oferta.id,
+                    'servicio_id': sid,
+                    'nombre': servicio.nombre,
+                    'precio': precio,
+                    'precio_publicado_cliente': float(oferta.precio_publicado_cliente or 0),
+                    'tipo_servicio': oferta.tipo_servicio or 'sin_repuestos',
+                    'provider': provider_data,
+                    'provider_type': oferta.tipo_proveedor,
+                })
+
+            if not ofertas_payload:
+                continue
+
+            categoria = servicio.categorias.first()
+
+            resultado.append({
+                'servicio_id': sid,
+                'nombre': servicio.nombre,
+                'categoria_nombre': categoria.nombre if categoria else None,
+                'foto': servicio.foto.url if servicio.foto else None,
+                'total_solicitudes': total,
+                'precio_desde': min(precios) if precios else None,
+                'precio_hasta': max(precios) if precios else None,
+                'total_proveedores': len(ofertas_payload),
+                'ofertas': ofertas_payload,
+            })
+
+        return Response(resultado)
+
     @action(detail=False, methods=['get'], url_path='catalogo_por_marca')
     def catalogo_por_marca(self, request):
         """

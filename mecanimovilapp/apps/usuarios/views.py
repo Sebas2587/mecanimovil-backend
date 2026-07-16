@@ -2330,6 +2330,37 @@ class TallerViewSet(viewsets.ModelViewSet):
                 'filtros_aplicados': {'tipo_cobertura_marca': TIPO_COBERTURA_MULTIMARCA},
             })
 
+        # Landing invitado: especialistas verificados (sin patente), agrupables por marca en cliente
+        if tipo_cobertura_param == TIPO_COBERTURA_ESPECIALISTA and not vehiculo_id:
+            queryset_esp = Taller.objects.filter(
+                verificado=True,
+                activo=True,
+            ).exclude(
+                tipo_cobertura_marca=TIPO_COBERTURA_MULTIMARCA,
+            ).filter(
+                marcas_atendidas__isnull=False,
+            ).select_related(
+                'usuario',
+                'direccion_fisica',
+                'connection_status',
+            ).prefetch_related(
+                'especialidades',
+                'marcas_atendidas',
+            ).annotate(
+                servicios_completados_count=Count(
+                    'solicitudes', filter=Q(solicitudes__estado='completado')
+                )
+            ).distinct()
+            ordered_esp = _order_proveedores_by_kpi_relevancia(list(queryset_esp), window_days=30)
+            if request_wants_panel_servicios(request):
+                attach_panel_servicios_to_proveedores(ordered_esp, 'taller', marca_id=None)
+            serializer_esp = self.get_serializer(ordered_esp, many=True)
+            return Response({
+                'talleres': serializer_esp.data,
+                'total': len(ordered_esp),
+                'filtros_aplicados': {'tipo_cobertura_marca': TIPO_COBERTURA_ESPECIALISTA},
+            })
+
         # Sin vehículo pero con servicios (ej. precompra): listar talleres que ofrecen esos servicios
         if not vehiculo_id and servicio_ids:
             try:
@@ -2462,7 +2493,7 @@ class TallerViewSet(viewsets.ModelViewSet):
         
         if not vehiculo_id:
             return Response(
-                {"error": "Se requiere el parámetro 'vehiculo_id', 'marca_id', servicio_ids sin vehículo o tipo_cobertura_marca=multimarca"},
+                {"error": "Se requiere el parámetro 'vehiculo_id', 'marca_id', servicio_ids sin vehículo, tipo_cobertura_marca=multimarca o tipo_cobertura_marca=especialista"},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
@@ -3285,6 +3316,38 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
                 'filtros_aplicados': {'tipo_cobertura_marca': TIPO_COBERTURA_MULTIMARCA},
             })
 
+        # Landing invitado: especialistas verificados (sin patente), agrupables por marca en cliente
+        if tipo_cobertura_param == TIPO_COBERTURA_ESPECIALISTA and not vehiculo_id:
+            queryset_esp = MecanicoDomicilio.objects.filter(
+                verificado=True,
+                activo=True,
+            ).exclude(
+                tipo_cobertura_marca=TIPO_COBERTURA_MULTIMARCA,
+            ).filter(
+                marcas_atendidas__isnull=False,
+            ).select_related(
+                'usuario',
+                'connection_status',
+            ).prefetch_related(
+                'especialidades',
+                'marcas_atendidas',
+                'service_areas',
+                'resenas',
+            ).annotate(
+                servicios_completados_count=Count(
+                    'solicitudes', filter=Q(solicitudes__estado='completado')
+                )
+            ).distinct()
+            ordered_esp = _order_proveedores_by_kpi_relevancia(list(queryset_esp), window_days=30)
+            if request_wants_panel_servicios(request):
+                attach_panel_servicios_to_proveedores(ordered_esp, 'mecanico', marca_id=None)
+            serializer_esp = self.get_serializer(ordered_esp, many=True)
+            return Response({
+                'mecanicos': serializer_esp.data,
+                'total': len(ordered_esp),
+                'filtros_aplicados': {'tipo_cobertura_marca': TIPO_COBERTURA_ESPECIALISTA},
+            })
+
         # Sin vehículo pero con servicios (ej. precompra): listar mecánicos que ofrecen esos servicios
         if not vehiculo_id and servicio_ids:
             try:
@@ -3420,7 +3483,7 @@ class MecanicoDomicilioViewSet(viewsets.ModelViewSet):
         
         if not vehiculo_id:
             return Response(
-                {"error": "Se requiere el parámetro 'vehiculo_id', 'marca_id', servicio_ids sin vehículo o tipo_cobertura_marca=multimarca"},
+                {"error": "Se requiere el parámetro 'vehiculo_id', 'marca_id', servicio_ids sin vehículo, tipo_cobertura_marca=multimarca o tipo_cobertura_marca=especialista"},
                 status=status.HTTP_400_BAD_REQUEST
             )
         

@@ -573,6 +573,11 @@ class VehiculoViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        public_payload = {
+            **public_payload,
+            'registered_in_app': Vehiculo.objects.filter(patente=patente).exists(),
+        }
+
         return Response(public_payload)
 
     @action(detail=True, methods=['get'], url_path='tasacion')
