@@ -368,11 +368,16 @@ class ServicioViewSet(viewsets.ModelViewSet):
     def mas_solicitados(self, request):
         """
         Servicios realmente más solicitados (demanda histórica de solicitudes reales),
-        no solo catálogo. Público (AllowAny): usado en la landing de invitado.
+        no solo catálogo. Público (AllowAny): usado en la landing de invitado y en el
+        panel de usuarios logueados.
 
         Para cada servicio top, devuelve TODAS las ofertas disponibles (talleres +
         mecánicos) con su propio precio, para que el cliente compare y elija proveedor
         en vez de ver un único taller "adivinado".
+
+        `marca_id` opcional: acota la demanda a solicitudes de vehículos de esa marca
+        (usuarios logueados con auto registrado ven lo que realmente pidieron otros
+        dueños de su misma marca, no el ranking genérico global).
         """
         from mecanimovilapp.apps.ordenes.models import LineaServicio
 
@@ -387,10 +392,21 @@ class ServicioViewSet(viewsets.ModelViewSet):
             'solicitud_cancelacion',
         ]
 
+        marca_id = request.query_params.get('marca_id')
+        try:
+            marca_id = int(marca_id) if marca_id not in (None, '') else None
+        except (TypeError, ValueError):
+            marca_id = None
+
         conteos = (
             LineaServicio.objects
             .exclude(solicitud__estado__in=estados_excluidos)
             .exclude(oferta_servicio__isnull=True)
+        )
+        if marca_id is not None:
+            conteos = conteos.filter(solicitud__vehiculo__marca_id=marca_id)
+        conteos = (
+            conteos
             .values('oferta_servicio__servicio_id')
             .annotate(total=models.Count('id'))
             .order_by('-total')

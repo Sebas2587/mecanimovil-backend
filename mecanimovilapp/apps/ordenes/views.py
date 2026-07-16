@@ -637,47 +637,56 @@ class SolicitudServicioViewSet(viewsets.ModelViewSet):
         except (TypeError, ValueError):
             limite = 20
 
-        lineas_qs = (
-            LineaServicio.objects.filter(
-                solicitud__vehiculo__isnull=False,
-                solicitud__vehiculo__marca_id=vehiculo.marca_id,
-                solicitud__vehiculo__modelo_id=vehiculo.modelo_id,
-                solicitud__estado__in=estados_visibles,
-                oferta_servicio__isnull=False,
-                oferta_servicio__servicio__isnull=False,
+        def _agregar(filtros):
+            lineas_qs = (
+                LineaServicio.objects.filter(
+                    solicitud__vehiculo__isnull=False,
+                    solicitud__estado__in=estados_visibles,
+                    oferta_servicio__isnull=False,
+                    oferta_servicio__servicio__isnull=False,
+                    **filtros,
+                )
+                .exclude(solicitud__cliente=cliente)
             )
-            .exclude(solicitud__cliente=cliente)
-        )
-
-        agregados = (
-            lineas_qs.values(
-                'oferta_servicio__servicio_id',
-                'oferta_servicio__servicio__nombre',
+            agregados = (
+                lineas_qs.values(
+                    'oferta_servicio__servicio_id',
+                    'oferta_servicio__servicio__nombre',
+                )
+                .annotate(
+                    personas=Count('solicitud__cliente_id', distinct=True),
+                    ultima_solicitud=Max('solicitud__fecha_hora_solicitud'),
+                )
+                .order_by('-personas', '-ultima_solicitud')[:limite]
             )
-            .annotate(
-                personas=Count('solicitud__cliente_id', distinct=True),
-                ultima_solicitud=Max('solicitud__fecha_hora_solicitud'),
-            )
-            .order_by('-personas', '-ultima_solicitud')[:limite]
-        )
-
-        items = []
-        for row in agregados:
-            sid = row.get('oferta_servicio__servicio_id')
-            nombre = (row.get('oferta_servicio__servicio__nombre') or '').strip() or 'Servicio'
-            items.append(
+            return [
                 {
-                    'servicio_id': sid,
-                    'servicio_nombre': nombre,
+                    'servicio_id': row.get('oferta_servicio__servicio_id'),
+                    'servicio_nombre': (
+                        row.get('oferta_servicio__servicio__nombre') or ''
+                    ).strip() or 'Servicio',
                     'personas': int(row.get('personas') or 0),
                     'ultima_solicitud': row.get('ultima_solicitud'),
                 }
-            )
+                for row in agregados
+            ]
+
+        # Modelo exacto primero; si un modelo tiene poco historial (p. ej. Fiat Fiorino),
+        # se amplía a la marca completa para que la sección no quede vacía.
+        items = _agregar({
+            'solicitud__vehiculo__marca_id': vehiculo.marca_id,
+            'solicitud__vehiculo__modelo_id': vehiculo.modelo_id,
+        })
+        scope = 'modelo'
+        if not items:
+            items = _agregar({'solicitud__vehiculo__marca_id': vehiculo.marca_id})
+            scope = 'marca'
 
         return Response(
             {
                 'marca': vehiculo.marca.nombre if vehiculo.marca else None,
                 'modelo': vehiculo.modelo.nombre if vehiculo.modelo else None,
+                'scope': scope,
                 'items': items,
             }
         )
