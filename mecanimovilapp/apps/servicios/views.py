@@ -66,22 +66,38 @@ def _proveedor_payload_publico(oferta):
 
 def _cobertura_vehiculo_payload(oferta, provider_data):
     """
-    Para qué vehículo aplica esta oferta: marca específica de la oferta si existe,
-    o el alcance del proveedor (multimarca vs especialista, con sus marcas) como fallback.
-    Requiere que `taller__marcas_atendidas` / `mecanico__marcas_atendidas` estén
-    prefetched en el queryset de ofertas para no generar N+1 queries.
+    Para qué vehículo aplica esta oferta: marca/modelo específicos de la oferta
+    si existen, o el alcance del proveedor (multimarca vs especialista) como fallback.
+    Requiere prefetch de marcas_atendidas y select_related de marca/modelo.
     """
     marca = getattr(oferta, 'marca_vehiculo_seleccionada', None)
+    modelo = getattr(oferta, 'modelo_vehiculo_seleccionado', None)
+    modelo_nombre = modelo.nombre if modelo is not None else None
     if marca is not None:
-        return {'alcance': 'marca', 'marca_nombre': marca.nombre, 'marcas_nombres': []}
+        return {
+            'alcance': 'marca',
+            'marca_nombre': marca.nombre,
+            'modelo_nombre': modelo_nombre,
+            'marcas_nombres': [],
+        }
     if provider_data and provider_data.get('tipo_cobertura_marca') == 'multimarca':
-        return {'alcance': 'multimarca', 'marca_nombre': None, 'marcas_nombres': []}
+        return {
+            'alcance': 'multimarca',
+            'marca_nombre': None,
+            'modelo_nombre': None,
+            'marcas_nombres': [],
+        }
 
     proveedor = oferta.taller if oferta.tipo_proveedor == 'taller' else oferta.mecanico
     marcas_nombres = []
     if proveedor is not None:
         marcas_nombres = [m.nombre for m in list(proveedor.marcas_atendidas.all())[:4]]
-    return {'alcance': 'especialista', 'marca_nombre': None, 'marcas_nombres': marcas_nombres}
+    return {
+        'alcance': 'especialista',
+        'marca_nombre': None,
+        'modelo_nombre': None,
+        'marcas_nombres': marcas_nombres,
+    }
 
 
 def _serializar_servicios_con_ofertas(servicio_ids, totales_por_servicio=None):
@@ -106,6 +122,7 @@ def _serializar_servicios_con_ofertas(servicio_ids, totales_por_servicio=None):
             'taller__direccion_fisica',
             'mecanico',
             'marca_vehiculo_seleccionada',
+            'modelo_vehiculo_seleccionado',
         )
         .prefetch_related('taller__marcas_atendidas', 'mecanico__marcas_atendidas')
         .order_by('precio_publicado_cliente')
