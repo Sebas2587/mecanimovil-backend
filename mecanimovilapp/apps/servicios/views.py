@@ -53,8 +53,8 @@ def _clean_dir_part(raw):
 
 def _resolve_provider_direccion_payload(proveedor):
     """
-    Dirección legible + campos estructurados para cards.
-    Taller usa `direccion_fisica`; evita exponer solo "1499" o "s/n".
+    Dirección legible + campos estructurados para cards/detalle.
+    Taller usa `direccion_fisica`; incluye N° y ciudad para que el usuario sepa dónde queda.
     """
     if proveedor is None:
         return {'direccion': None, 'direccion_fisica': None, 'comuna': None}
@@ -66,23 +66,39 @@ def _resolve_provider_direccion_payload(proveedor):
         numero = '' if numero_raw.lower() in _SKIP_NUMERO else numero_raw
         comuna = _clean_dir_part(getattr(df, 'comuna', None))
         ciudad = _clean_dir_part(getattr(df, 'ciudad', None))
+        region = _clean_dir_part(getattr(df, 'region', None))
         street = ' '.join(p for p in (calle, numero) if p).strip()
-        place = comuna or ciudad or ''
-        parts = []
+        short_parts = []
         if street:
-            parts.append(street)
-        if place and (not street or place.lower() not in street.lower()):
-            parts.append(place)
-        direccion = ', '.join(parts) if parts else None
+            short_parts.append(street)
+        if comuna and (not street or comuna.lower() not in street.lower()):
+            short_parts.append(comuna)
+        direccion_corta = ', '.join(short_parts) if short_parts else None
+
+        full_parts = []
+        if street:
+            full_parts.append(street)
+        for part in (comuna, ciudad):
+            if part and all(part.lower() != p.lower() for p in full_parts):
+                if not any(part.lower() in p.lower() for p in full_parts):
+                    full_parts.append(part)
+        # Preferir property del modelo si trae más contexto (región, etc.)
+        model_full = _clean_dir_part(getattr(df, 'direccion_completa', None) or '')
+        if not model_full:
+            model_parts = [calle, numero, comuna, ciudad, region]
+            model_full = ', '.join(p for p in model_parts if p) or None
+        direccion_completa = ', '.join(full_parts) if full_parts else (model_full or direccion_corta)
+
         return {
-            'direccion': direccion,
+            'direccion': direccion_completa or direccion_corta,
             'comuna': comuna or None,
             'direccion_fisica': {
                 'calle': calle or None,
                 'numero': numero or None,
                 'comuna': comuna or None,
                 'ciudad': ciudad or None,
-                'direccion_completa': direccion,
+                'region': region or None,
+                'direccion_completa': direccion_completa or model_full or direccion_corta,
             },
         }
 

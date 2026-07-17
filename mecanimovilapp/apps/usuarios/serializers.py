@@ -944,16 +944,23 @@ class TallerSerializer(PanelServiciosSerializerMixin, serializers.ModelSerialize
             return []
 
     def get_direccion(self, obj):
-        """Texto legible corto: calle [número], comuna (sin s/n ni provincia/región)."""
+        """Dirección legible completa: calle N°, comuna, ciudad (sin s/n ni provincia/región)."""
         try:
             df = getattr(obj, 'direccion_fisica', None)
             if df:
                 calle = (df.calle or '').strip()
                 numero = (df.numero or '').strip()
                 comuna = (df.comuna or '').strip()
+                ciudad = (df.ciudad or '').strip()
                 numero_ok = numero and numero.lower() not in ('s/n', 'sn', 's/n.', '-', '0')
                 street = f'{calle} {numero}'.strip() if numero_ok else calle
-                parts = [p for p in (street, comuna) if p]
+                parts = []
+                for part in (street, comuna, ciudad):
+                    if not part:
+                        continue
+                    if any(part.lower() == p.lower() for p in parts):
+                        continue
+                    parts.append(part)
                 if parts:
                     return ', '.join(parts)
                 completa = getattr(df, 'direccion_completa', None) or ''
@@ -969,7 +976,7 @@ class TallerSerializer(PanelServiciosSerializerMixin, serializers.ModelSerialize
                         and not s.lower().startswith('region ')
                     ]
                     if segs:
-                        return ', '.join(segs[:2])
+                        return ', '.join(segs)
             user = getattr(obj, 'usuario', None)
             if user and getattr(user, 'direccion', None):
                 text = str(user.direccion).strip()
