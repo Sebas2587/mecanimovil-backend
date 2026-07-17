@@ -22,9 +22,17 @@ class CategoriaServicioBasicSerializer(serializers.ModelSerializer):
     """
     Serializador básico para el modelo CategoriaServicio sin relaciones anidadas
     """
+    imagen_url = serializers.SerializerMethodField()
+
     class Meta:
         model = CategoriaServicio
-        fields = ('id', 'nombre', 'descripcion', 'icono', 'orden')
+        fields = ('id', 'nombre', 'descripcion', 'icono', 'imagen_url', 'orden')
+
+    def get_imagen_url(self, obj):
+        if not getattr(obj, 'imagen', None):
+            return None
+        request = self.context.get('request')
+        return get_image_url(obj.imagen, request)
 
 
 class CategoriaServicioSerializer(serializers.ModelSerializer):
@@ -35,18 +43,32 @@ class CategoriaServicioSerializer(serializers.ModelSerializer):
     subcategorias = serializers.SerializerMethodField()
     es_categoria_principal = serializers.BooleanField(read_only=True)
     tiene_subcategorias = serializers.BooleanField(read_only=True)
-    
+    imagen_url = serializers.SerializerMethodField()
+
     class Meta:
         model = CategoriaServicio
-        fields = ('id', 'nombre', 'descripcion', 'icono', 'orden', 
-                  'categoria_padre', 'categoria_padre_info',
-                  'subcategorias', 'es_categoria_principal', 'tiene_subcategorias')
-    
+        fields = (
+            'id', 'nombre', 'descripcion', 'icono', 'imagen', 'imagen_url', 'orden',
+            'categoria_padre', 'categoria_padre_info',
+            'subcategorias', 'es_categoria_principal', 'tiene_subcategorias',
+        )
+        extra_kwargs = {
+            'imagen': {'write_only': True, 'required': False},
+        }
+
+    def get_imagen_url(self, obj):
+        if not getattr(obj, 'imagen', None):
+            return None
+        request = self.context.get('request')
+        return get_image_url(obj.imagen, request)
+
     def get_subcategorias(self, obj):
         """Obtiene las subcategorías inmediatas, sin anidación adicional para evitar recursión"""
         subcategorias = obj.subcategorias.all()
         if subcategorias:
-            return CategoriaServicioBasicSerializer(subcategorias, many=True).data
+            return CategoriaServicioBasicSerializer(
+                subcategorias, many=True, context=self.context
+            ).data
         return []
 
 

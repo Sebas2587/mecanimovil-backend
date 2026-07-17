@@ -76,9 +76,35 @@ class ServicioRepuestoInline(admin.TabularInline):
 
 @admin.register(CategoriaServicio)
 class CategoriaServicioAdmin(admin.ModelAdmin):
-    list_display = ('id', 'nombre', 'categoria_padre', 'descripcion')
+    list_display = ('id', 'nombre', 'categoria_padre', 'icono', 'tiene_imagen', 'orden')
     list_filter = ('categoria_padre',)
-    search_fields = ('nombre', 'descripcion')
+    search_fields = ('nombre', 'descripcion', 'icono')
+    list_editable = ('orden',)
+    fieldsets = (
+        (None, {
+            'fields': ('nombre', 'descripcion', 'categoria_padre', 'orden'),
+        }),
+        ('Iconografía', {
+            'fields': ('imagen', 'icono'),
+            'description': (
+                'Sube una imagen cuadrada (PNG/WebP recomendado) para el home. '
+                'El campo icono es fallback por nombre si no hay imagen.'
+            ),
+        }),
+    )
+
+    @admin.display(boolean=True, description='Imagen')
+    def tiene_imagen(self, obj):
+        return bool(obj.imagen)
+
+    def save_model(self, request, obj, form, change):
+        super().save_model(request, obj, form, change)
+        # list/principales usan cache_page 24h — invalidar para ver imagen al instante
+        try:
+            from django.core.cache import cache
+            cache.clear()
+        except Exception:
+            pass
 
 @admin.register(Servicio)
 class ServicioAdmin(admin.ModelAdmin):

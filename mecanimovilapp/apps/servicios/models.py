@@ -14,8 +14,19 @@ class CategoriaServicio(models.Model):
     """
     nombre = models.CharField(max_length=100, unique=True)
     descripcion = models.TextField(blank=True, null=True, help_text=_('Descripción opcional de la categoría'))
-    icono = models.CharField(max_length=50, blank=True, null=True, help_text=_('Nombre del ícono para representar la categoría'))
-    
+    icono = models.CharField(
+        max_length=50,
+        blank=True,
+        null=True,
+        help_text=_('Nombre del ícono Lucide/legacy (fallback si no hay imagen)'),
+    )
+    imagen = models.ImageField(
+        upload_to='categorias/',
+        blank=True,
+        null=True,
+        help_text=_('Imagen del ícono (reemplaza el círculo con Lucide en la app)'),
+    )
+
     # Campo para la jerarquía de categorías
     categoria_padre = models.ForeignKey(
         'self',
