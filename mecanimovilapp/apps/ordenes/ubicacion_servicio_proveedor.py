@@ -7,25 +7,59 @@ from typing import Any
 
 from django.contrib.gis.geos import Point
 
+_SKIP_NUMERO = frozenset({'s/n', 'sn', 's/n.', '-', '0', 'null', 'undefined', ''})
+
+
+def _clean_dir_part(raw) -> str:
+    s = str(raw or '').strip()
+    if not s:
+        return ''
+    lower = s.lower()
+    if lower.startswith('provincia de '):
+        return ''
+    if lower.startswith('región ') or lower.startswith('region '):
+        return ''
+    if lower == 'chile':
+        return ''
+    return s
+
 
 def texto_direccion_taller(taller) -> str | None:
+    """Calle N°, comuna, ciudad — sin s/n ni provincia/región."""
     if not taller:
         return None
     try:
         direccion = getattr(taller, 'direccion_fisica', None)
         if direccion:
-            completa = (getattr(direccion, 'direccion_completa', None) or '').strip()
+            calle = _clean_dir_part(getattr(direccion, 'calle', None))
+            numero_raw = str(getattr(direccion, 'numero', None) or '').strip()
+            numero = '' if numero_raw.lower() in _SKIP_NUMERO else numero_raw
+            comuna = _clean_dir_part(getattr(direccion, 'comuna', None))
+            ciudad = _clean_dir_part(getattr(direccion, 'ciudad', None))
+            street = ' '.join(p for p in (calle, numero) if p).strip()
+            parts: list[str] = []
+            if street:
+                parts.append(street)
+            for part in (comuna, ciudad):
+                if not part:
+                    continue
+                if any(part.lower() == p.lower() or part.lower() in p.lower() for p in parts):
+                    continue
+                parts.append(part)
+            if parts:
+                return ', '.join(parts)
+
+            completa = _clean_dir_part(getattr(direccion, 'direccion_completa', None) or '')
             if completa:
-                return completa
-            partes = [
-                getattr(direccion, 'calle', None),
-                getattr(direccion, 'numero', None),
-                getattr(direccion, 'comuna', None),
-                getattr(direccion, 'ciudad', None),
-            ]
-            texto = ', '.join(p for p in partes if p)
-            if texto.strip():
-                return texto.strip()
+                segments = [
+                    p for p in (
+                        _clean_dir_part(seg)
+                        for seg in completa.split(',')
+                    )
+                    if p and p.lower() not in _SKIP_NUMERO
+                ]
+                if segments:
+                    return ', '.join(segments)
     except Exception:
         pass
     return None

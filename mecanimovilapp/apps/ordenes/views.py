@@ -4298,9 +4298,12 @@ class SolicitudPublicaViewSet(viewsets.ModelViewSet):
                 {'error': 'Solo los clientes pueden ver sus solicitudes activas'},
                 status=status.HTTP_403_FORBIDDEN
             )
-        estados_solicitud_activos = [
-            'publicada', 'con_ofertas', 'seleccionando_servicios',
-            'adjudicada', 'pendiente_pago', 'pagada', 'pagada_parcialmente', 'en_ejecucion'
+        # Incluye pendiente_confirmacion / esperando_creditos_proveedor (catálogo a la espera).
+        from mecanimovilapp.apps.ordenes.services.solicitud_activa import (
+            ESTADOS_SOLICITUD_ACTIVA_DUPLICADO,
+        )
+        estados_solicitud_activos = list(ESTADOS_SOLICITUD_ACTIVA_DUPLICADO) + [
+            'pagada_parcialmente',
         ]
         # Ofertas secundarias que siguen pendientes de acción del usuario (aceptar/rechazar o pagar)
         estados_oferta_secundaria_pendientes = [
