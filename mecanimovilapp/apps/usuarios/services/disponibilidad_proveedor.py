@@ -441,6 +441,19 @@ def estado_actual_proveedor(
     }
 
 
+def _servicio_meta_from_oferta(oferta: OfertaServicio | None) -> dict[str, Any]:
+    servicio = getattr(oferta, 'servicio', None) if oferta else None
+    return {
+        'servicio_id': getattr(servicio, 'id', None) if servicio else None,
+        'servicio_nombre': (getattr(servicio, 'nombre', None) or None) if servicio else None,
+    }
+
+
+def _with_servicio_meta(payload: dict[str, Any], oferta: OfertaServicio | None) -> dict[str, Any]:
+    payload.update(_servicio_meta_from_oferta(oferta))
+    return payload
+
+
 def _disponibilidad_union_equipo(
     *,
     taller: Taller,
@@ -458,7 +471,7 @@ def _disponibilidad_union_equipo(
     estado_actual = estado_actual_proveedor(taller=taller, duracion_fallback=max_dur)
 
     if not aptos:
-        return {
+        return _with_servicio_meta({
             'fecha': fecha.isoformat(),
             'proveedor_disponible': False,
             'mensaje': 'No hay mecánicos disponibles para este servicio',
@@ -470,7 +483,7 @@ def _disponibilidad_union_equipo(
             'estado_actual': estado_actual,
             'slots_disponibles': [],
             'total_slots': 0,
-        }
+        }, oferta)
 
     # Unión de slots por hora de inicio (dedupe). Un mecánico aporta solo si cabe el servicio.
     slots_por_hora: dict[str, dict[str, Any]] = {}
@@ -491,7 +504,7 @@ def _disponibilidad_union_equipo(
         slots = [s for s in slots if s['hora_inicio_24h'] > ahora_t]
 
     if not slots:
-        return {
+        return _with_servicio_meta({
             'fecha': fecha.isoformat(),
             'proveedor_disponible': False,
             'mensaje': 'El proveedor no atiende este día',
@@ -503,10 +516,10 @@ def _disponibilidad_union_equipo(
             'estado_actual': estado_actual,
             'slots_disponibles': [],
             'total_slots': 0,
-        }
+        }, oferta)
 
     slots_safe = _slots_json_safe(slots)
-    return {
+    return _with_servicio_meta({
         'fecha': fecha.isoformat(),
         'proveedor_disponible': True,
         'duracion_servicio_solicitado': {
@@ -517,7 +530,7 @@ def _disponibilidad_union_equipo(
         'estado_actual': estado_actual,
         'slots_disponibles': slots_safe,
         'total_slots': len(slots_safe),
-    }
+    }, oferta)
 
 
 def disponibilidad_con_duracion(
@@ -566,7 +579,7 @@ def disponibilidad_con_duracion(
             ).first()
             if not miembro:
                 min_dur, max_dur = duracion_rango_oferta(oferta)
-                return {
+                return _with_servicio_meta({
                     'fecha': fecha.isoformat(),
                     'proveedor_disponible': False,
                     'mensaje': 'El técnico seleccionado no pertenece a este taller',
@@ -578,10 +591,10 @@ def disponibilidad_con_duracion(
                     'estado_actual': estado_actual_proveedor(taller=taller),
                     'slots_disponibles': [],
                     'total_slots': 0,
-                }
+                }, oferta)
             if modalidad and not miembro.modalidad_compatible(modalidad):
                 min_dur, max_dur = duracion_rango_oferta(oferta)
-                return {
+                return _with_servicio_meta({
                     'fecha': fecha.isoformat(),
                     'proveedor_disponible': False,
                     'mensaje': 'El técnico seleccionado no atiende este tipo de servicio',
@@ -593,7 +606,7 @@ def disponibilidad_con_duracion(
                     'estado_actual': estado_actual_proveedor(taller=taller),
                     'slots_disponibles': [],
                     'total_slots': 0,
-                }
+                }, oferta)
             return _disponibilidad_union_equipo(
                 taller=taller,
                 fecha=fecha,
@@ -621,7 +634,7 @@ def disponibilidad_con_duracion(
 
     horario_config = horario_qs.order_by('id').first()
     if horario_config is None:
-        return {
+        return _with_servicio_meta({
             'fecha': fecha.isoformat(),
             'proveedor_disponible': False,
             'mensaje': 'El proveedor no atiende este día',
@@ -629,7 +642,7 @@ def disponibilidad_con_duracion(
             'estado_actual': estado_actual_proveedor(
                 taller=taller, mecanico=mecanico,
             ),
-        }
+        }, oferta)
     if horario_qs.count() > 1:
         logger.warning(
             'HorarioProveedor duplicado activo: taller=%s mecanico=%s dia=%s',
@@ -668,7 +681,7 @@ def disponibilidad_con_duracion(
 
     slots_safe = _slots_json_safe(slots)
 
-    return {
+    return _with_servicio_meta({
         'fecha': fecha.isoformat(),
         'proveedor_disponible': True,
         'duracion_servicio_solicitado': {
@@ -683,7 +696,7 @@ def disponibilidad_con_duracion(
         ),
         'slots_disponibles': slots_safe,
         'total_slots': len(slots_safe),
-    }
+    }, oferta)
 
 
 def dias_con_slots(
