@@ -13,10 +13,12 @@ from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework import filters
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.shortcuts import get_object_or_404
+from django.http import FileResponse, Http404
 from mecanimovilapp.apps.vehiculos.models import Marca, Vehiculo, Modelo
 from django.db import models
 from django.utils.decorators import method_decorator
 from django.views.decorators.cache import cache_page
+import mimetypes
 
 from .compatibilidad_vehiculo import (
     queryset_servicios_catalogo_por_marca,
@@ -262,8 +264,28 @@ class CategoriaServicioViewSet(viewsets.ModelViewSet):
     filter_backends = [filters.SearchFilter]
     search_fields = ['nombre', 'descripcion']
     pagination_class = None  # Deshabilitar paginación para categorías
-    
-    @method_decorator(cache_page(60*60*24)) # Cache por 24 horas
+
+    @action(detail=True, methods=['get'], url_path='imagen')
+    def imagen(self, request, pk=None):
+        """
+        Sirve la imagen de categoría vía API (CORS de Django).
+        Necesario en web: R2 privado sin CORS bloquea expo-image en el browser.
+        """
+        categoria = self.get_object()
+        if not categoria.imagen:
+            raise Http404('Categoría sin imagen')
+        try:
+            file_handle = categoria.imagen.open('rb')
+        except Exception as exc:
+            raise Http404('Imagen no disponible') from exc
+
+        content_type = mimetypes.guess_type(categoria.imagen.name)[0] or 'application/octet-stream'
+        response = FileResponse(file_handle, content_type=content_type)
+        response['Cache-Control'] = 'public, max-age=86400'
+        response['Access-Control-Allow-Origin'] = '*'
+        return response
+
+    @method_decorator(cache_page(60 * 15))  # 15 min — iconos nuevos deben verse pronto
     def list(self, request, *args, **kwargs):
         """
         Sobrescribir el método list para devolver todas las categorías sin filtros
@@ -273,7 +295,7 @@ class CategoriaServicioViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
     
     @action(detail=False, methods=['get'])
-    @method_decorator(cache_page(60*60*24))
+    @method_decorator(cache_page(60 * 15))
     def principales(self, request):
         """
         Obtiene solo las categorías principales (sin categoría padre)

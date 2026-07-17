@@ -18,6 +18,19 @@ from django.db import models
 from mecanimovilapp.storage.utils import get_image_url
 
 
+def build_categoria_imagen_url(obj, request=None):
+    """
+    URL estable vía API (CORS correcto en web).
+    Evita R2 firmado directo: el bucket privado no tiene CORS y expo-image falla en browser.
+    """
+    if not getattr(obj, 'imagen', None):
+        return None
+    path = f'/api/servicios/categorias/{obj.id}/imagen/'
+    if request is not None:
+        return request.build_absolute_uri(path)
+    return path
+
+
 class CategoriaServicioBasicSerializer(serializers.ModelSerializer):
     """
     Serializador básico para el modelo CategoriaServicio sin relaciones anidadas
@@ -29,10 +42,7 @@ class CategoriaServicioBasicSerializer(serializers.ModelSerializer):
         fields = ('id', 'nombre', 'descripcion', 'icono', 'imagen_url', 'orden')
 
     def get_imagen_url(self, obj):
-        if not getattr(obj, 'imagen', None):
-            return None
-        request = self.context.get('request')
-        return get_image_url(obj.imagen, request)
+        return build_categoria_imagen_url(obj, self.context.get('request'))
 
 
 class CategoriaServicioSerializer(serializers.ModelSerializer):
@@ -57,10 +67,7 @@ class CategoriaServicioSerializer(serializers.ModelSerializer):
         }
 
     def get_imagen_url(self, obj):
-        if not getattr(obj, 'imagen', None):
-            return None
-        request = self.context.get('request')
-        return get_image_url(obj.imagen, request)
+        return build_categoria_imagen_url(obj, self.context.get('request'))
 
     def get_subcategorias(self, obj):
         """Obtiene las subcategorías inmediatas, sin anidación adicional para evitar recursión"""
