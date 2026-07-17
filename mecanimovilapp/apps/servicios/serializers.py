@@ -19,17 +19,21 @@ from mecanimovilapp.storage.utils import get_image_url
 
 
 # Bump cuando cambie el pipeline de normalización (rompe caché de CDN/browser).
-CATEGORIA_IMAGEN_VERSION = 'trim1'
+CATEGORIA_IMAGEN_VERSION = 'trim2'
 
 
 def build_categoria_imagen_url(obj, request=None):
     """
     URL estable vía API (CORS correcto en web).
     Evita R2 firmado directo: el bucket privado no tiene CORS y expo-image falla en browser.
+    Incluye hash del nombre en storage para bustear caché al re-subir desde admin.
     """
     if not getattr(obj, 'imagen', None):
         return None
-    path = f'/api/servicios/categorias/{obj.id}/imagen/?v={CATEGORIA_IMAGEN_VERSION}'
+    from .categoria_imagen import categoria_imagen_cache_key
+
+    token = categoria_imagen_cache_key(obj)
+    path = f'/api/servicios/categorias/{obj.id}/imagen/?v={CATEGORIA_IMAGEN_VERSION}-{token}'
     if request is not None:
         return request.build_absolute_uri(path)
     return path

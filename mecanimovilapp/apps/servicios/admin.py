@@ -101,7 +101,15 @@ class CategoriaServicioAdmin(admin.ModelAdmin):
 
     def save_model(self, request, obj, form, change):
         super().save_model(request, obj, form, change)
-        # list/principales usan cache_page 24h — invalidar para ver imagen al instante
+        # Normaliza PNG en R2 al subir desde admin (mismo pipeline que /imagen/).
+        if obj.imagen and 'imagen' in (form.changed_data or []):
+            try:
+                from .categoria_imagen import persist_normalized_categoria_imagen
+                if persist_normalized_categoria_imagen(obj):
+                    obj.save(update_fields=['imagen'])
+            except Exception:
+                pass
+        # Invalidar caché Redis por si quedan keys viejas de cache_page
         try:
             from django.core.cache import cache
             cache.clear()

@@ -272,32 +272,44 @@ class CategoriaServicioViewSet(viewsets.ModelViewSet):
         Sirve la imagen de categoría vía API (CORS de Django).
         Necesario en web: R2 privado sin CORS bloquea expo-image en el browser.
         Normaliza: recorta padding transparente y centra en cuadrado (Explore).
+        Si falla el trim, sirve el archivo original (mejor que 404 en el home).
         """
         categoria = self.get_object()
         if not categoria.imagen:
             raise Http404('Categoría sin imagen')
+
+        payload = None
+        content_type = 'image/png'
         try:
             with categoria.imagen.open('rb') as file_handle:
-                buf = normalize_categoria_icon(file_handle)
-        except Exception as exc:
-            raise Http404('Imagen no disponible') from exc
+                payload = normalize_categoria_icon(file_handle).getvalue()
+        except Exception:
+            try:
+                with categoria.imagen.open('rb') as file_handle:
+                    payload = file_handle.read()
+                guessed = mimetypes.guess_type(categoria.imagen.name)[0]
+                content_type = guessed or 'application/octet-stream'
+            except Exception as exc:
+                raise Http404('Imagen no disponible') from exc
 
-        response = HttpResponse(buf.getvalue(), content_type='image/png')
+        response = HttpResponse(payload, content_type=content_type)
+        # Público: el home (web/native) debe poder pintar el PNG sin pelear con COEP/CORS.
         response['Cache-Control'] = 'public, max-age=86400'
         response['Access-Control-Allow-Origin'] = '*'
+        response['Cross-Origin-Resource-Policy'] = 'cross-origin'
+        response['Timing-Allow-Origin'] = '*'
         return response
 
-    @method_decorator(cache_page(60 * 15))  # 15 min — iconos nuevos deben verse pronto
     def list(self, request, *args, **kwargs):
         """
-        Sobrescribir el método list para devolver todas las categorías sin filtros
+        Lista sin cache_page: tras subir iconos en admin deben verse al instante.
+        El payload es pequeño; no justifica 15 min de imagen_url stale.
         """
         queryset = self.get_queryset()
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
     
     @action(detail=False, methods=['get'])
-    @method_decorator(cache_page(60 * 15))
     def principales(self, request):
         """
         Obtiene solo las categorías principales (sin categoría padre)
