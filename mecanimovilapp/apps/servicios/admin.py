@@ -87,8 +87,10 @@ class CategoriaServicioAdmin(admin.ModelAdmin):
         ('Iconografía', {
             'fields': ('imagen', 'icono'),
             'description': (
-                'Sube una imagen cuadrada (PNG/WebP recomendado) para el home. '
-                'El campo icono es fallback por nombre si no hay imagen.'
+                'Sube un PNG/WebP cuadrado con fondo transparente. '
+                'El dibujo debe ocupar casi todo el lienzo (poco padding); '
+                'si queda muy centrado y chico, se verá pequeño en el home. '
+                'El campo icono es fallback Lucide si no hay imagen.'
             ),
         }),
     )

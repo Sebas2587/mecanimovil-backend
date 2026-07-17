@@ -18,6 +18,10 @@ from django.db import models
 from mecanimovilapp.storage.utils import get_image_url
 
 
+# Bump cuando cambie el pipeline de normalización (rompe caché de CDN/browser).
+CATEGORIA_IMAGEN_VERSION = 'trim1'
+
+
 def build_categoria_imagen_url(obj, request=None):
     """
     URL estable vía API (CORS correcto en web).
@@ -25,7 +29,7 @@ def build_categoria_imagen_url(obj, request=None):
     """
     if not getattr(obj, 'imagen', None):
         return None
-    path = f'/api/servicios/categorias/{obj.id}/imagen/'
+    path = f'/api/servicios/categorias/{obj.id}/imagen/?v={CATEGORIA_IMAGEN_VERSION}'
     if request is not None:
         return request.build_absolute_uri(path)
     return path

@@ -13,7 +13,7 @@ from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework import filters
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.shortcuts import get_object_or_404
-from django.http import FileResponse, Http404
+from django.http import HttpResponse, Http404
 from mecanimovilapp.apps.vehiculos.models import Marca, Vehiculo, Modelo
 from django.db import models
 from django.utils.decorators import method_decorator
@@ -24,6 +24,7 @@ from .compatibilidad_vehiculo import (
     queryset_servicios_catalogo_por_marca,
     servicios_comunes_por_marcas_queryset,
 )
+from .categoria_imagen import normalize_categoria_icon
 
 
 def _precio_oferta_publica(oferta):
@@ -270,17 +271,18 @@ class CategoriaServicioViewSet(viewsets.ModelViewSet):
         """
         Sirve la imagen de categoría vía API (CORS de Django).
         Necesario en web: R2 privado sin CORS bloquea expo-image en el browser.
+        Normaliza: recorta padding transparente y centra en cuadrado (Explore).
         """
         categoria = self.get_object()
         if not categoria.imagen:
             raise Http404('Categoría sin imagen')
         try:
-            file_handle = categoria.imagen.open('rb')
+            with categoria.imagen.open('rb') as file_handle:
+                buf = normalize_categoria_icon(file_handle)
         except Exception as exc:
             raise Http404('Imagen no disponible') from exc
 
-        content_type = mimetypes.guess_type(categoria.imagen.name)[0] or 'application/octet-stream'
-        response = FileResponse(file_handle, content_type=content_type)
+        response = HttpResponse(buf.getvalue(), content_type='image/png')
         response['Cache-Control'] = 'public, max-age=86400'
         response['Access-Control-Allow-Origin'] = '*'
         return response
