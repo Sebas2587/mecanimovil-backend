@@ -40,10 +40,17 @@ logger = logging.getLogger(__name__)
 class ConfirmacionCatalogoError(Exception):
     """Error de negocio en confirmación catálogo."""
 
-    def __init__(self, message: str, code: str = 'error', status_code: int = 400):
+    def __init__(
+        self,
+        message: str,
+        code: str = 'error',
+        status_code: int = 400,
+        extra: dict | None = None,
+    ):
         super().__init__(message)
         self.code = code
         self.status_code = status_code
+        self.extra = extra or {}
 
 
 def _parse_fecha(value) -> date | None:
@@ -501,17 +508,30 @@ def confirmar_candidato(cliente: Cliente, payload: dict[str, Any]) -> dict[str, 
     }
 
 
-def _validar_oferta_catalogo_proveedor(oferta: OfertaProveedor, proveedor: Usuario):
+def _validar_oferta_catalogo_proveedor(
+    oferta: OfertaProveedor,
+    proveedor: Usuario,
+    *,
+    permitir_pendiente_creditos: bool = False,
+):
     if oferta.origen != 'catalogo':
         raise ConfirmacionCatalogoError('No es una oferta de catálogo', 'no_es_catalogo')
     if oferta.proveedor_id != proveedor.id:
         raise ConfirmacionCatalogoError('No autorizado', 'no_autorizado', 403)
-    if oferta.estado != 'pendiente_confirmacion':
+
+    estados_oferta_ok = {'pendiente_confirmacion'}
+    estados_sol_ok = {'pendiente_confirmacion'}
+    if permitir_pendiente_creditos:
+        # Escapes para reservas legacy (antes del hard-gate de confirmación).
+        estados_oferta_ok.add('pendiente_creditos')
+        estados_sol_ok.add('esperando_creditos_proveedor')
+
+    if oferta.estado not in estados_oferta_ok:
         raise ConfirmacionCatalogoError(
             f'La oferta no está pendiente de confirmación (estado: {oferta.estado})',
             'estado_invalido',
         )
-    if oferta.solicitud.estado != 'pendiente_confirmacion':
+    if oferta.solicitud.estado not in estados_sol_ok:
         raise ConfirmacionCatalogoError(
             'La solicitud no está pendiente de confirmación',
             'solicitud_estado_invalido',
@@ -520,14 +540,27 @@ def _validar_oferta_catalogo_proveedor(oferta: OfertaProveedor, proveedor: Usuar
 
 @transaction.atomic
 def proveedor_rechazar_catalogo(oferta: OfertaProveedor, proveedor: Usuario, motivo: str = '') -> dict:
-    _validar_oferta_catalogo_proveedor(oferta, proveedor)
+    _validar_oferta_catalogo_proveedor(
+        oferta,
+        proveedor,
+        permitir_pendiente_creditos=True,
+    )
     ahora = timezone.now()
     oferta.estado = 'rechazada'
-    oferta.save(update_fields=['estado'])
+    oferta.fecha_respuesta_cliente = ahora
+    oferta.save(update_fields=['estado', 'fecha_respuesta_cliente'])
     solicitud = oferta.solicitud
     solicitud.estado = 'cancelada'
     solicitud.oferta_seleccionada = None
-    solicitud.save(update_fields=['estado', 'oferta_seleccionada', 'fecha_actualizacion'])
+    solicitud.fecha_limite_confirmacion_creditos = None
+    solicitud.save(
+        update_fields=[
+            'estado',
+            'oferta_seleccionada',
+            'fecha_limite_confirmacion_creditos',
+            'fecha_actualizacion',
+        ]
+    )
 
     cliente_user = solicitud.cliente.usuario_id
     transaction.on_commit(
@@ -707,6 +740,7 @@ def cliente_aceptar_fecha_catalogo(oferta: OfertaProveedor, cliente) -> dict:
 def adjudicar_oferta_catalogo_confirmada(oferta: OfertaProveedor) -> dict[str, Any]:
     """
     Ejecuta adjudicación tras confirmación del proveedor (créditos + carrito).
+    Hard-gate: sin créditos suficientes NO muta estados (sigue pendiente_confirmacion).
     Debe llamarse dentro de transaction.atomic del view.
     Retorna dict con estado_resultado, carrito_id, etc.
     """
@@ -722,10 +756,9 @@ def adjudicar_oferta_catalogo_confirmada(oferta: OfertaProveedor) -> dict[str, A
     if not detalles:
         raise ConfirmacionCatalogoError('La oferta no tiene servicios', 'sin_detalles', 400)
 
-    use_reserve = False
-    creditos_necesarios_reserva = 0
     try:
         from mecanimovilapp.apps.suscripciones.creditos_services import (
+            obtener_credito_proveedor,
             puede_adjudicar as puede_adjudicar_creditos,
             validar_creditos_suficientes,
         )
@@ -740,24 +773,32 @@ def adjudicar_oferta_catalogo_confirmada(oferta: OfertaProveedor) -> dict[str, A
             servicio_principal,
         )
         if not puede_adjudicar:
-            use_reserve = True
-            creditos_necesarios_reserva = creditos_necesarios
+            saldo = int(obtener_credito_proveedor(oferta.proveedor).saldo_creditos or 0)
+            faltantes = max(0, int(creditos_necesarios or 0) - saldo)
+            # No llamar aplicar_reserva_por_falta_creditos: evita atrapar al taller/cliente.
+            raise ConfirmacionCatalogoError(
+                mensaje,
+                'creditos_insuficientes',
+                402,
+                extra={
+                    'estado_resultado': 'creditos_insuficientes',
+                    'creditos_necesarios': int(creditos_necesarios or 0),
+                    'saldo_actual': saldo,
+                    'creditos_faltantes': faltantes,
+                    'oferta_id': str(oferta.id),
+                    'solicitud_id': str(solicitud.id),
+                    'estado_oferta': oferta.estado,
+                    'estado_solicitud': solicitud.estado,
+                    'puede_rechazar': True,
+                    'mensaje_ux': (
+                        'No tienes créditos suficientes para confirmar. '
+                        'La asignación sigue pendiente: puedes comprar créditos y reintentar, '
+                        'o rechazar sin quedar bloqueado.'
+                    ),
+                },
+            )
     except ImportError:
         pass
-
-    if use_reserve:
-        reserva = adjudicacion_publica.aplicar_reserva_por_falta_creditos(
-            solicitud.id,
-            oferta.id,
-            creditos_necesarios_reserva,
-        )
-        return {
-            'estado_resultado': 'esperando_creditos_proveedor',
-            'creditos_necesarios': creditos_necesarios_reserva,
-            'fecha_limite_confirmacion_creditos': reserva['fecha_limite_confirmacion_creditos'].isoformat(),
-            'oferta_id': str(oferta.id),
-            'solicitud_id': str(solicitud.id),
-        }
 
     carrito_id = adjudicacion_publica.ejecutar_finalizacion_adjudicacion(
         solicitud,
@@ -766,6 +807,23 @@ def adjudicar_oferta_catalogo_confirmada(oferta: OfertaProveedor) -> dict[str, A
         mecanico,
         detalles,
     )
+
+    # Notificar cliente (push + canal) al confirmar con éxito.
+    cliente_user = getattr(getattr(solicitud, 'cliente', None), 'usuario_id', None)
+    if cliente_user:
+        transaction.on_commit(
+            lambda: _notificar_cliente_catalogo(
+                cliente_user,
+                'Asignación confirmada',
+                'El taller confirmó tu solicitud. Ya puedes continuar con el pago.',
+                {
+                    'type': 'catalog_confirmed',
+                    'solicitud_id': str(solicitud.id),
+                    'oferta_id': str(oferta.id),
+                },
+            )
+        )
+
     return {
         'estado_resultado': 'adjudicada',
         'carrito_id': carrito_id,

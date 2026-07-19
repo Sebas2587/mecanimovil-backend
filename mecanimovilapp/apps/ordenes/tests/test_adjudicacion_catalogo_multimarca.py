@@ -12,6 +12,10 @@ from django.utils import timezone
 
 from mecanimovilapp.apps.ordenes.models import DetalleServicioOferta, OfertaProveedor, SolicitudServicioPublica
 from mecanimovilapp.apps.ordenes.services import adjudicacion_publica
+from mecanimovilapp.apps.ordenes.services.agendamiento_ia.motor_confirmacion import (
+    ConfirmacionCatalogoError,
+    adjudicar_oferta_catalogo_confirmada,
+)
 from mecanimovilapp.apps.servicios.models import OfertaServicio, Servicio
 from mecanimovilapp.apps.suscripciones.models import CreditoProveedor
 from mecanimovilapp.apps.usuarios.models import Cliente, DireccionUsuario, MecanicoDomicilio
@@ -171,3 +175,56 @@ class ResolverOfertaServicioCatalogoMultimarcaTest(TestCase):
         oferta.refresh_from_db()
         self.assertEqual(solicitud.estado, 'adjudicada')
         self.assertEqual(oferta.estado, 'aceptada')
+
+    def test_confirmar_catalogo_sin_creditos_hard_gate_no_muta_estados(self):
+        """Sin saldo: error 402-equivalente, estados siguen pendiente_confirmacion."""
+        CreditoProveedor.objects.create(proveedor=self.proveedor_user, saldo_creditos=0)
+        oferta, solicitud, _detalle = self._crear_oferta_catalogo(self.oferta_diesel)
+
+        with self.assertRaises(ConfirmacionCatalogoError) as ctx:
+            adjudicar_oferta_catalogo_confirmada(oferta)
+
+        err = ctx.exception
+        self.assertEqual(err.code, 'creditos_insuficientes')
+        self.assertEqual(err.status_code, 402)
+        self.assertTrue(err.extra.get('puede_rechazar'))
+        self.assertGreater(err.extra.get('creditos_necesarios', 0), 0)
+
+        solicitud.refresh_from_db()
+        oferta.refresh_from_db()
+        self.assertEqual(solicitud.estado, 'pendiente_confirmacion')
+        self.assertEqual(oferta.estado, 'pendiente_confirmacion')
+        self.assertIsNone(solicitud.oferta_seleccionada_id)
+        self.assertIsNone(solicitud.fecha_limite_confirmacion_creditos)
+
+    def test_liberar_reserva_creditos_catalogo_cancela(self):
+        CreditoProveedor.objects.create(proveedor=self.proveedor_user, saldo_creditos=0)
+        oferta, solicitud, _detalle = self._crear_oferta_catalogo(self.oferta_diesel)
+        oferta.estado = 'pendiente_creditos'
+        oferta.save(update_fields=['estado'])
+        solicitud.estado = 'esperando_creditos_proveedor'
+        solicitud.oferta_seleccionada = oferta
+        solicitud.fecha_limite_confirmacion_creditos = timezone.now() + timedelta(hours=24)
+        solicitud.save(
+            update_fields=[
+                'estado',
+                'oferta_seleccionada',
+                'fecha_limite_confirmacion_creditos',
+                'fecha_actualizacion',
+            ]
+        )
+
+        with patch('mecanimovilapp.apps.usuarios.tasks.send_expo_push_notification.delay'):
+            result = adjudicacion_publica.liberar_reserva_creditos_proveedor(
+                oferta.id,
+                self.proveedor_user.id,
+                motivo='sin saldo',
+            )
+
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['estado_solicitud'], 'cancelada')
+        solicitud.refresh_from_db()
+        oferta.refresh_from_db()
+        self.assertEqual(solicitud.estado, 'cancelada')
+        self.assertEqual(oferta.estado, 'rechazada')
+        self.assertIsNone(solicitud.oferta_seleccionada_id)

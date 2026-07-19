@@ -5412,14 +5412,6 @@ class OfertaProveedorViewSet(viewsets.ModelViewSet):
             solicitud.refresh_from_db()
             ctx = {'request': request}
 
-            if resultado.get('estado_resultado') == 'esperando_creditos_proveedor':
-                return Response({
-                    **resultado,
-                    'message': 'Debes acreditar créditos para confirmar la asignación.',
-                    'solicitud': SolicitudServicioPublicaSerializer(solicitud, context=ctx).data,
-                    'oferta': self.get_serializer(oferta).data,
-                })
-
             carrito_id = resultado.get('carrito_id')
             payload = {
                 **resultado,
@@ -5443,7 +5435,8 @@ class OfertaProveedorViewSet(viewsets.ModelViewSet):
                 payload['sin_carrito'] = True
             return Response(payload)
         except ConfirmacionCatalogoError as e:
-            return Response({'error': str(e), 'codigo': e.code}, status=e.status_code)
+            body = {'error': str(e), 'codigo': e.code, **(e.extra or {})}
+            return Response(body, status=e.status_code)
         except adjudicacion_publica.AdjudicacionCarritoError as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         except Exception:
@@ -5474,7 +5467,42 @@ class OfertaProveedorViewSet(viewsets.ModelViewSet):
             )
             return Response(resultado)
         except ConfirmacionCatalogoError as e:
-            return Response({'error': str(e), 'codigo': e.code}, status=e.status_code)
+            return Response(
+                {'error': str(e), 'codigo': e.code, **(getattr(e, 'extra', None) or {})},
+                status=e.status_code,
+            )
+
+    @action(detail=True, methods=['post'], url_path='liberar-reserva-creditos')
+    def liberar_reserva_creditos(self, request, pk=None):
+        """
+        Proveedor declina una reserva pendiente_creditos (marketplace legado).
+        Libera al cliente para elegir otra oferta; no obliga a comprar créditos.
+        """
+        if hasattr(request.user, 'cliente'):
+            return Response(
+                {'error': 'Solo proveedores pueden liberar la reserva'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        oferta = self.get_object()
+        try:
+            resultado = adjudicacion_publica.liberar_reserva_creditos_proveedor(
+                oferta.id,
+                request.user.id,
+                motivo=(request.data or {}).get('motivo', ''),
+            )
+            return Response({
+                **resultado,
+                'message': 'Reserva liberada. El cliente puede continuar con otra oferta.',
+            })
+        except ValidationError as e:
+            msg = e.messages[0] if hasattr(e, 'messages') and e.messages else str(e)
+            return Response({'error': msg, 'codigo': 'no_se_pudo_liberar'}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
+            logger.exception('Error liberar-reserva-creditos oferta %s', pk)
+            return Response(
+                {'error': 'No se pudo liberar la reserva'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
     @action(detail=True, methods=['post'], url_path='proponer-fecha-catalogo')
     def proponer_fecha_catalogo(self, request, pk=None):

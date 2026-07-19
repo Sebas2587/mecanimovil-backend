@@ -480,3 +480,107 @@ def reintentar_adjudicaciones_pendientes_tras_acreditacion(proveedor):
             logger.error(f"Error completando adjudicación oferta {oid}: {e}", exc_info=True)
             resultados.append((str(oid), {'ok': False, 'reason': str(e)}))
     return resultados
+
+
+@transaction.atomic
+def liberar_reserva_creditos_proveedor(oferta_id, proveedor_id, motivo: str = '') -> dict:
+    """
+    El taller declina una reserva pendiente_creditos (legado marketplace o stuck).
+    Libera la solicitud para que el cliente pueda elegir otra oferta / no quede atrapado.
+    """
+    oferta = (
+        OfertaProveedor.objects.select_for_update()
+        .select_related('solicitud', 'solicitud__cliente', 'solicitud__cliente__usuario')
+        .filter(pk=oferta_id)
+        .first()
+    )
+    if not oferta:
+        raise ValidationError('Oferta no encontrada')
+    if oferta.proveedor_id != proveedor_id:
+        raise ValidationError('No autorizado')
+    if oferta.estado != 'pendiente_creditos':
+        raise ValidationError(f'La oferta no está pendiente de créditos (estado: {oferta.estado})')
+
+    solicitud = SolicitudServicioPublica.objects.select_for_update().get(pk=oferta.solicitud_id)
+    if solicitud.estado != 'esperando_creditos_proveedor':
+        raise ValidationError('La solicitud no está esperando créditos del proveedor')
+
+    ahora = timezone.now()
+    oferta.estado = 'rechazada'
+    oferta.fecha_respuesta_cliente = ahora
+    oferta.save(update_fields=['estado', 'fecha_respuesta_cliente'])
+
+    solicitud.oferta_seleccionada = None
+    solicitud.fecha_limite_confirmacion_creditos = None
+
+    if oferta.origen == 'catalogo':
+        solicitud.estado = 'cancelada'
+        nuevo_estado = 'cancelada'
+    else:
+        tiene_abiertas = OfertaProveedor.objects.filter(
+            solicitud=solicitud,
+            estado__in=['enviada', 'vista', 'en_chat'],
+            es_oferta_secundaria=False,
+        ).exclude(pk=oferta.pk).exists()
+        solicitud.estado = 'con_ofertas' if tiene_abiertas else 'publicada'
+        nuevo_estado = solicitud.estado
+
+    solicitud.save(
+        update_fields=[
+            'estado',
+            'oferta_seleccionada',
+            'fecha_limite_confirmacion_creditos',
+            'fecha_actualizacion',
+        ]
+    )
+
+    cliente_user = getattr(getattr(solicitud, 'cliente', None), 'usuario', None)
+    if cliente_user:
+        try:
+            channel_layer = get_channel_layer()
+            if channel_layer:
+                async_to_sync(channel_layer.group_send)(
+                    f'cliente_{cliente_user.id}',
+                    {
+                        'type': 'solicitud_actualizada',
+                        'solicitud_id': str(solicitud.id),
+                        'estado': nuevo_estado,
+                        'motivo': 'proveedor_libero_reserva_creditos',
+                    },
+                )
+        except Exception as e:
+            logger.warning('WS cliente al liberar reserva créditos: %s', e)
+        try:
+            send_expo_push_notification.delay(
+                cliente_user.id,
+                'El taller no pudo confirmar',
+                (
+                    'El proveedor no confirmó con créditos. '
+                    + (
+                        'Puedes buscar otro taller.'
+                        if oferta.origen == 'catalogo'
+                        else 'Puedes elegir otra oferta.'
+                    )
+                ),
+                {
+                    'type': 'provider_released_credit_hold',
+                    'solicitud_id': str(solicitud.id),
+                    'oferta_id': str(oferta.id),
+                },
+            )
+        except Exception as e:
+            logger.warning('Push cliente al liberar reserva créditos: %s', e)
+
+    logger.info(
+        'Reserva créditos liberada por proveedor: oferta=%s solicitud=%s -> %s motivo=%s',
+        oferta_id,
+        solicitud.id,
+        nuevo_estado,
+        (motivo or '')[:120],
+    )
+    return {
+        'ok': True,
+        'estado_solicitud': nuevo_estado,
+        'oferta_estado': 'rechazada',
+        'motivo': motivo or '',
+    }
