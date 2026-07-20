@@ -12,7 +12,13 @@ from rest_framework.response import Response
 from mecanimovilapp.apps.checklists.firma_utils import firma_a_payload_base64
 from mecanimovilapp.apps.checklists.models_informe import InformeServicioPublico
 from mecanimovilapp.apps.checklists.throttling import InformePublicThrottle
-from mecanimovilapp.apps.checklists.services.informe_servicio import construir_url_publica
+from mecanimovilapp.apps.checklists.services.informe_servicio import (
+    construir_url_publica,
+    _es_hallazgo_relevante,
+    _extraer_hallazgos,
+    _valor_respuesta,
+    regenerar_resumen_si_es_dump,
+)
 from mecanimovilapp.storage.utils import get_image_url
 
 logger = logging.getLogger(__name__)
@@ -23,32 +29,40 @@ def _serializar_informe_publico(informe: InformeServicioPublico, request) -> dic
     cita = checklist.cita_personal
     det = getattr(cita, 'detalle', None) if cita else None
 
-    items = []
+    fotos_evidencia = []
+    hallazgos_ui = []
     tpl = checklist.checklist_template
     resp_map = {r.item_template_id: r for r in checklist.respuestas.all()}
     for item_tpl in tpl.items.select_related('catalog_item').order_by('orden_visual'):
         cat = item_tpl.catalog_item
         resp = resp_map.get(item_tpl.id)
-        fotos = []
-        if resp:
-            for foto in resp.fotos.all():
-                fotos.append({
+        if not resp or not resp.completado:
+            continue
+        pregunta = (cat.pregunta_texto or cat.nombre or '').strip()
+        valor = _valor_respuesta(resp, cat)
+        for foto in resp.fotos.all():
+            url = get_image_url(foto.imagen, request)
+            if url:
+                fotos_evidencia.append({
                     'id': foto.id,
-                    'descripcion': foto.descripcion,
-                    'orden_en_respuesta': foto.orden_en_respuesta,
-                    'imagen_url': get_image_url(foto.imagen, request),
+                    'descripcion': foto.descripcion or pregunta,
+                    'imagen_url': url,
                 })
-        items.append({
-            'id': item_tpl.id,
-            'pregunta_texto': cat.pregunta_texto,
-            'tipo_pregunta': cat.tipo_pregunta,
-            'completado': bool(resp and resp.completado),
-            'respuesta_texto': getattr(resp, 'respuesta_texto', None),
-            'respuesta_numero': getattr(resp, 'respuesta_numero', None),
-            'respuesta_booleana': getattr(resp, 'respuesta_booleana', None),
-            'respuesta_seleccion': getattr(resp, 'respuesta_seleccion', None),
-            'fotos': fotos,
-        })
+        if _es_hallazgo_relevante(pregunta, valor, cat.tipo_pregunta or ''):
+            hallazgos_ui.append({
+                'id': item_tpl.id,
+                'pregunta': pregunta,
+                'valor': valor,
+            })
+
+    # Fallback si el filtro quedó vacío pero hay hallazgos del servicio.
+    if not hallazgos_ui:
+        for h in _extraer_hallazgos(checklist, limite=8):
+            hallazgos_ui.append({
+                'id': f"{h['pregunta']}:{h['valor']}",
+                'pregunta': h['pregunta'],
+                'valor': h['valor'],
+            })
 
     taller_nombre = ''
     if cita and cita.taller_id:
@@ -72,11 +86,13 @@ def _serializar_informe_publico(informe: InformeServicioPublico, request) -> dic
         'cliente_nombre': getattr(det, 'cliente_nombre', '') if det else '',
         'servicio_descripcion': getattr(det, 'descripcion', '') if det else '',
         'taller_nombre': taller_nombre,
+        'hallazgos': hallazgos_ui,
+        'fotos_evidencia': fotos_evidencia,
         'checklist': {
             'id': checklist.id,
             'estado': checklist.estado,
             'template_nombre': getattr(tpl, 'nombre', ''),
-            'items': items,
+            'items_completados': sum(1 for r in checklist.respuestas.all() if r.completado),
             'firma_tecnico_presente': bool(checklist.firma_tecnico),
             'firma_supervisor_presente': bool(checklist.firma_supervisor),
             'firma_cliente_presente': bool(checklist.firma_cliente),
@@ -106,6 +122,9 @@ class InformePublicoDetailView(views.APIView):
             ).get(token=token)
         except InformeServicioPublico.DoesNotExist:
             return Response({'error': 'Informe no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Informes antiguos pegaban todo el checklist en el resumen: reescribir una vez.
+        informe = regenerar_resumen_si_es_dump(informe)
 
         return Response(_serializar_informe_publico(informe, request))
 

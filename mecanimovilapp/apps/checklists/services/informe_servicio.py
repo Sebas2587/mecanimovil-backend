@@ -69,12 +69,62 @@ def _snapshot_vehiculo_desde_cita(cita) -> dict[str, Any]:
     }
 
 
-def _resumen_checklist_texto(instance: ChecklistInstance) -> str:
-    lineas: list[str] = []
-    tpl = instance.checklist_template
-    nombre_tpl = getattr(tpl, 'nombre', 'Checklist')
-    lineas.append(f'Checklist: {nombre_tpl}')
+_VALORES_OK = frozenset({
+    'bien', 'bueno', 'buena', 'a nivel', 'ok', 'normal', 'valor normal',
+    'valor  normal', 'n/a', 'na', 'no', 'sin novedad', 'correcto', 'correcta',
+    'dentro de rango', 'completo', 'completado',
+})
 
+
+def _valor_respuesta(resp, cat) -> str:
+    tipo = (getattr(cat, 'tipo_pregunta', '') or '').strip()
+    if resp.respuesta_texto:
+        return str(resp.respuesta_texto).strip()
+    if resp.respuesta_numero is not None:
+        if tipo == 'KILOMETER_INPUT':
+            return f'{int(resp.respuesta_numero):,}'.replace(',', '.')
+        return str(resp.respuesta_numero).rstrip('0').rstrip('.') if isinstance(resp.respuesta_numero, float) else str(resp.respuesta_numero)
+    if resp.respuesta_booleana is not None:
+        return 'Sí' if resp.respuesta_booleana else 'No'
+    if resp.respuesta_seleccion:
+        return str(resp.respuesta_seleccion).strip()
+    return ''
+
+
+def _es_hallazgo_relevante(pregunta: str, valor: str, tipo: str) -> bool:
+    """True si el ítem merece mención al cliente (no es un OK rutinario)."""
+    if not valor:
+        return False
+    v = ' '.join(valor.lower().split())
+    p = (pregunta or '').lower()
+
+    if tipo == 'KILOMETER_INPUT' or 'kilometraje' in p:
+        return False
+    if v in _VALORES_OK:
+        return False
+
+    keywords_alerta = (
+        'bajo', 'alta', 'alto', 'malo', 'mala', 'regular', 'fuga', 'desgaste',
+        'ruido', 'golpe', 'fisura', 'grieta', 'oxid', 'reemplaz', 'cambiar',
+        'urgente', 'crític', 'critic', 'falla', 'dañ', 'danad',
+    )
+    if any(k in v for k in keywords_alerta):
+        return True
+    if v in ('sí', 'si') and any(k in p for k in ('fuga', 'ruido', 'golpe', 'falla', 'pérdida', 'perdida')):
+        return True
+
+    try:
+        num = float(v.replace('%', '').replace(',', '.'))
+        if ('vida' in p or 'filtro' in p or 'pastilla' in p or 'disco' in p or 'neum' in p) and num <= 40:
+            return True
+    except (TypeError, ValueError):
+        pass
+
+    return False
+
+
+def _extraer_hallazgos(instance: ChecklistInstance, limite: int = 8) -> list[dict[str, str]]:
+    hallazgos: list[dict[str, str]] = []
     respuestas = list(
         instance.respuestas.select_related('item_template__catalog_item').prefetch_related('fotos').all()
     )
@@ -84,37 +134,112 @@ def _resumen_checklist_texto(instance: ChecklistInstance) -> str:
         cat = resp.item_template.catalog_item
         pregunta = (cat.pregunta_texto or cat.nombre or '').strip()
         tipo = (cat.tipo_pregunta or '').strip()
-        valor = ''
-        if resp.respuesta_texto:
-            valor = str(resp.respuesta_texto).strip()
-        elif resp.respuesta_numero is not None:
-            valor = str(int(resp.respuesta_numero)) if tipo == 'KILOMETER_INPUT' else str(resp.respuesta_numero)
-        elif resp.respuesta_booleana is not None:
-            valor = 'Sí' if resp.respuesta_booleana else 'No'
-        elif resp.respuesta_seleccion:
-            valor = str(resp.respuesta_seleccion)
-        fotos = resp.fotos.count() if hasattr(resp, 'fotos') else 0
-        if fotos:
-            valor = (valor + f' ({fotos} foto(s))').strip()
-        if pregunta:
-            lineas.append(f'- {pregunta}: {valor or "completado"}')
+        valor = _valor_respuesta(resp, cat)
+        if not _es_hallazgo_relevante(pregunta, valor, tipo):
+            continue
+        hallazgos.append({'pregunta': pregunta, 'valor': valor})
+        if len(hallazgos) >= limite:
+            break
+    return hallazgos
 
+
+def _resumen_checklist_para_ia(instance: ChecklistInstance) -> str:
+    """Contexto compacto para Gemini: solo hallazgos + conteo de ítems OK."""
+    hallazgos = _extraer_hallazgos(instance, limite=12)
+    total = instance.respuestas.filter(completado=True).count()
+    lineas = [f'Ítems completados: {total}', f'Hallazgos relevantes: {len(hallazgos)}']
+    for h in hallazgos:
+        lineas.append(f"- {h['pregunta']}: {h['valor']}")
+    if not hallazgos:
+        lineas.append('- Sin observaciones críticas en la inspección.')
     return '\n'.join(lineas)
 
 
-def _fallback_resumen_ia(ctx: dict[str, Any], checklist_texto: str, km: int | None) -> str:
-    vehiculo = ctx.get('vehiculo_label') or 'Vehículo'
-    patente = ctx.get('patente') or 'sin patente'
-    problema = ctx.get('problema_reportado') or 'Servicio mecánico'
-    km_txt = f' Kilometraje registrado: {km:,} km.' if km else ''
-    return (
-        f'Se realizó un servicio en {vehiculo} (patente {patente}). '
-        f'Motivo / alcance: {problema}.{km_txt}\n\n'
-        f'Resumen del checklist:\n{checklist_texto}\n\n'
-        'Este informe resume el trabajo ejecutado por el taller. '
-        'Si deseas llevar el historial de mantenciones de tu vehículo en Mecanimovil, '
-        'puedes crear una cuenta y vincular este servicio escaneando el código QR del informe.'
+def resumen_parece_dump_checklist(texto: str | None) -> bool:
+    if not texto:
+        return False
+    if 'Resumen del checklist:' in texto:
+        return True
+    return texto.count('\n- ') >= 6
+
+
+def normalizar_resumen_publico(texto: str | None) -> str:
+    """Quita dumps antiguos del fallback para no repetir el detalle del checklist."""
+    if not texto:
+        return ''
+    cleaned = texto
+    for marker in ('\n\nResumen del checklist:', '\nResumen del checklist:'):
+        if marker in cleaned:
+            cleaned = cleaned.split(marker, 1)[0].strip()
+            break
+    return cleaned.strip()
+
+
+def _fallback_resumen_ia(
+    ctx: dict[str, Any],
+    hallazgos: list[dict[str, str]],
+    km: int | None,
+    taller_nombre: str = '',
+) -> str:
+    vehiculo = ctx.get('vehiculo_label') or 'su vehículo'
+    patente = ctx.get('patente') or ''
+    problema = ctx.get('problema_reportado') or 'servicio mecánico'
+    km_txt = f', con {km:,} km registrados'.replace(',', '.') if km else ''
+    patente_txt = f' (patente {patente})' if patente else ''
+    taller_txt = f' en {taller_nombre}' if taller_nombre else ' en el taller'
+
+    intro = (
+        f'Se realizó un {problema.lower() if not problema.lower().startswith("servicio") else problema}'
+        f'{taller_txt} para su {vehiculo}{patente_txt}{km_txt}.'
     )
+    # Normalizar "Servicio: X" → más legible
+    if problema.lower().startswith('servicio:'):
+        intro = (
+            f'Se realizó {problema[len("Servicio:"):].strip()}'
+            f'{taller_txt} para su {vehiculo}{patente_txt}{km_txt}.'
+        )
+
+    if hallazgos:
+        bullets = '\n'.join(f'• {h["pregunta"]}: {h["valor"]}' for h in hallazgos[:6])
+        cuerpo = (
+            'Hallazgos que conviene tener presente:\n'
+            f'{bullets}\n\n'
+            'El resto de la inspección no presentó observaciones críticas.'
+        )
+    else:
+        cuerpo = (
+            'La inspección no presentó observaciones críticas: '
+            'los sistemas revisados quedaron dentro de parámetros normales.'
+        )
+
+    cierre = (
+        'Este documento certifica el trabajo ejecutado. '
+        'Si desea llevar el historial de mantenciones en Mecanimovil, '
+        'puede crear una cuenta y vincular este servicio con el código del informe.'
+    )
+    return f'{intro}\n\n{cuerpo}\n\n{cierre}'
+
+
+def regenerar_resumen_si_es_dump(informe: InformeServicioPublico) -> InformeServicioPublico:
+    """ Reescribe resúmenes antiguos que pegaban todo el checklist (sin llamar a Gemini). """
+    if not resumen_parece_dump_checklist(informe.resumen_ia):
+        return informe
+    instance = informe.checklist_instance
+    if not instance or not instance.cita_personal_id:
+        informe.resumen_ia = normalizar_resumen_publico(informe.resumen_ia)
+        informe.save(update_fields=['resumen_ia'])
+        return informe
+
+    cita = instance.cita_personal
+    ctx = _contexto_desde_cita_personal(cita)
+    km = informe.kilometraje_servicio or extraer_kilometraje_desde_checklist_instance(instance)
+    hallazgos = _extraer_hallazgos(instance)
+    taller_nombre = ''
+    if cita and cita.taller_id:
+        taller_nombre = getattr(cita.taller, 'nombre', '') or ''
+    informe.resumen_ia = _fallback_resumen_ia(ctx, hallazgos, km, taller_nombre=taller_nombre)
+    informe.save(update_fields=['resumen_ia'])
+    return informe
 
 
 def generar_informe(checklist_instance: ChecklistInstance) -> InformeServicioPublico:
@@ -129,28 +254,36 @@ def generar_informe(checklist_instance: ChecklistInstance) -> InformeServicioPub
     vehiculo_snap = _snapshot_vehiculo_desde_cita(cita)
     km_servicio = extraer_kilometraje_desde_checklist_instance(checklist_instance)
     ctx = _contexto_desde_cita_personal(cita)
-    checklist_texto = _resumen_checklist_texto(checklist_instance)
+    hallazgos = _extraer_hallazgos(checklist_instance)
+    hallazgos_texto = _resumen_checklist_para_ia(checklist_instance)
+    taller_nombre = ''
+    if cita and cita.taller_id:
+        taller_nombre = getattr(cita.taller, 'nombre', '') or ''
 
     prompt = (
-        'Eres un asistente técnico automotriz. Redacta un informe claro para el dueño del vehículo '
-        'sobre el servicio realizado en el taller. Usa tono profesional, español de Chile, '
-        'segunda persona (usted). Incluye: vehículo, trabajo realizado, hallazgos relevantes del '
-        'checklist y recomendaciones breves. No inventes repuestos no mencionados.\n\n'
-        f'Contexto vehículo: {json.dumps(ctx, ensure_ascii=False)}\n'
-        f'Kilometraje servicio: {km_servicio or "no registrado"}\n\n'
-        f'Detalle checklist:\n{checklist_texto}\n\n'
+        'Eres un asesor automotriz que escribe para el dueño del vehículo (no para mecánicos). '
+        'Redacta un informe breve, claro y humano en español de Chile, segunda persona (usted).\n'
+        'Estructura: 1) qué servicio se realizó y en qué vehículo; 2) solo hallazgos relevantes '
+        'que el dueño deba conocer; 3) una recomendación corta si aplica.\n'
+        'PROHIBIDO: listar ítem por ítem del checklist; repetir valores "Bien/Bueno/A nivel/No/N/A"; '
+        'usar jerga técnica innecesaria; inventar repuestos o fallas no mencionadas.\n'
+        'Máximo 180 palabras, 2 a 4 párrafos cortos.\n\n'
+        f'Contexto: {json.dumps(ctx, ensure_ascii=False)}\n'
+        f'Taller: {taller_nombre or "taller"}\n'
+        f'Kilometraje: {km_servicio or "no registrado"}\n'
+        f'Hallazgos ya filtrados:\n{hallazgos_texto}\n\n'
         'Responde SOLO un JSON válido con esta forma exacta:\n'
-        '{"informe": "<texto del informe en español, máx. 800 palabras>"}\n'
+        '{"informe": "<texto del informe>"}\n'
         'Sin markdown ni texto fuera del JSON.'
     )
 
-    resumen_ia = _fallback_resumen_ia(ctx, checklist_texto, km_servicio)
+    resumen_ia = _fallback_resumen_ia(ctx, hallazgos, km_servicio, taller_nombre=taller_nombre)
     parsed, _usage, err = _llamar_gemini(prompt)
     if parsed and isinstance(parsed, dict):
         texto = (parsed.get('informe') or parsed.get('resumen') or parsed.get('texto') or '').strip()
-        if texto:
+        if texto and not resumen_parece_dump_checklist(texto):
             resumen_ia = texto
-    elif isinstance(parsed, str) and parsed.strip():
+    elif isinstance(parsed, str) and parsed.strip() and not resumen_parece_dump_checklist(parsed):
         resumen_ia = parsed.strip()
     elif err:
         logger.info('Informe IA fallback (Gemini): %s', err)
