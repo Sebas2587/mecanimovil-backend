@@ -773,8 +773,8 @@ class CobroSuscripcion(models.Model):
         ordering = ['-date_approved']
         unique_together = [('suscripcion', 'charge_id')]
         indexes = [
-            models.Index(fields=['charge_id']),
-            models.Index(fields=['payment_id']),
+            models.Index(fields=['charge_id'], name='suscripcion_charge__f5c1c7_idx'),
+            models.Index(fields=['payment_id'], name='suscripcion_payment_6cf9a3_idx'),
         ]
 
     def __str__(self):

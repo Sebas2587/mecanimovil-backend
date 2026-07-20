@@ -60,9 +60,9 @@ class ProviderChannelConnection(models.Model):
             ),
         ]
         indexes = [
-            models.Index(fields=['phone_number_id']),
-            models.Index(fields=['page_id']),
-            models.Index(fields=['instagram_account_id']),
+            models.Index(fields=['phone_number_id'], name='omnichannel_phone_n_163449_idx'),
+            models.Index(fields=['page_id'], name='omnichannel_page_id_6be930_idx'),
+            models.Index(fields=['instagram_account_id'], name='omnichannel_instagr_be243e_idx'),
         ]
 
     def __str__(self):

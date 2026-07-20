@@ -2241,7 +2241,10 @@ class GuiaReparacionGuardada(models.Model):
         verbose_name_plural = _('guías de reparación guardadas')
         ordering = ['-creado_en']
         indexes = [
-            models.Index(fields=['miembro_taller', 'vehiculo_marca', 'vehiculo_modelo']),
+            models.Index(
+                fields=['miembro_taller', 'vehiculo_marca', 'vehiculo_modelo'],
+                name='ordenes_gui_miembro_0ea153_idx',
+            ),
         ]
 
     def __str__(self):
@@ -2327,8 +2330,8 @@ class CotizacionCanal(models.Model):
         verbose_name_plural = _('cotizaciones canal')
         ordering = ['-creado_en']
         indexes = [
-            models.Index(fields=['conversation', 'estado']),
-            models.Index(fields=['taller', '-creado_en']),
+            models.Index(fields=['conversation', 'estado'], name='ordenes_cot_convers_fbf312_idx'),
+            models.Index(fields=['taller', '-creado_en'], name='ordenes_cot_taller__12b798_idx'),
         ]
 
     def __str__(self):
@@ -2361,7 +2364,7 @@ class CotizacionCanalPlantilla(models.Model):
         verbose_name_plural = _('plantillas cotización canal')
         ordering = ['-actualizado_en']
         indexes = [
-            models.Index(fields=['taller', '-actualizado_en']),
+            models.Index(fields=['taller', '-actualizado_en'], name='ordenes_cot_taller__2ff310_idx'),
         ]
 
     def __str__(self):

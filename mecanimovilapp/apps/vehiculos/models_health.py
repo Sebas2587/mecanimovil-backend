@@ -357,9 +357,18 @@ class EventoSaludVehiculo(models.Model):
         verbose_name_plural = 'Eventos de Salud (ML)'
         ordering = ['-fecha_evento']
         indexes = [
-            models.Index(fields=['componente', 'tipo_evento']),
-            models.Index(fields=['marca', 'modelo']),
-            models.Index(fields=['tipo_evento', 'fecha_evento']),
+            models.Index(
+                fields=['componente', 'tipo_evento'],
+                name='vehiculos_e_compone_d77ded_idx',
+            ),
+            models.Index(
+                fields=['marca', 'modelo'],
+                name='vehiculos_e_marca_fab556_idx',
+            ),
+            models.Index(
+                fields=['tipo_evento', 'fecha_evento'],
+                name='vehiculos_e_tipo_ev_bdef42_idx',
+            ),
         ]
 
     def __str__(self):
