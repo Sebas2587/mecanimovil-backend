@@ -31,31 +31,50 @@ def _serializar_informe_publico(informe: InformeServicioPublico, request) -> dic
 
     fotos_evidencia = []
     hallazgos_ui = []
+    items = []
     tpl = checklist.checklist_template
     resp_map = {r.item_template_id: r for r in checklist.respuestas.all()}
     for item_tpl in tpl.items.select_related('catalog_item').order_by('orden_visual'):
         cat = item_tpl.catalog_item
         resp = resp_map.get(item_tpl.id)
-        if not resp or not resp.completado:
-            continue
         pregunta = (cat.pregunta_texto or cat.nombre or '').strip()
-        valor = _valor_respuesta(resp, cat)
-        for foto in resp.fotos.all():
-            url = get_image_url(foto.imagen, request)
-            if url:
-                fotos_evidencia.append({
+        tipo = cat.tipo_pregunta or ''
+        valor = _valor_respuesta(resp, cat) if resp and resp.completado else ''
+        fotos = []
+        if resp:
+            for foto in resp.fotos.all():
+                url = get_image_url(foto.imagen, request)
+                if not url:
+                    continue
+                foto_payload = {
                     'id': foto.id,
                     'descripcion': foto.descripcion or pregunta,
                     'imagen_url': url,
-                })
-        if _es_hallazgo_relevante(pregunta, valor, cat.tipo_pregunta or ''):
+                    'item_id': item_tpl.id,
+                }
+                fotos.append(foto_payload)
+                fotos_evidencia.append(foto_payload)
+
+        es_hallazgo = bool(
+            resp and resp.completado and _es_hallazgo_relevante(pregunta, valor, tipo)
+        )
+        if es_hallazgo:
             hallazgos_ui.append({
                 'id': item_tpl.id,
                 'pregunta': pregunta,
                 'valor': valor,
             })
 
-    # Fallback si el filtro quedó vacío pero hay hallazgos del servicio.
+        items.append({
+            'id': item_tpl.id,
+            'pregunta_texto': pregunta,
+            'tipo_pregunta': tipo,
+            'completado': bool(resp and resp.completado),
+            'valor': valor or ('—' if not (resp and resp.completado) else ''),
+            'es_hallazgo': es_hallazgo,
+            'fotos': fotos,
+        })
+
     if not hallazgos_ui:
         for h in _extraer_hallazgos(checklist, limite=8):
             hallazgos_ui.append({
@@ -92,7 +111,9 @@ def _serializar_informe_publico(informe: InformeServicioPublico, request) -> dic
             'id': checklist.id,
             'estado': checklist.estado,
             'template_nombre': getattr(tpl, 'nombre', ''),
-            'items_completados': sum(1 for r in checklist.respuestas.all() if r.completado),
+            'items': items,
+            'items_completados': sum(1 for it in items if it['completado']),
+            'items_total': len(items),
             'firma_tecnico_presente': bool(checklist.firma_tecnico),
             'firma_supervisor_presente': bool(checklist.firma_supervisor),
             'firma_cliente_presente': bool(checklist.firma_cliente),
