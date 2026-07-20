@@ -30,6 +30,7 @@ def _drop_noncanonical_indexes(table_name, canonical, schema_editor):
             WHERE i.schemaname = 'public'
               AND i.tablename = %s
               AND NOT ix.indisprimary
+              AND NOT ix.indisunique
               AND i.indexname <> ALL(%s)
             """,
             [table_name, list(canonical)],
