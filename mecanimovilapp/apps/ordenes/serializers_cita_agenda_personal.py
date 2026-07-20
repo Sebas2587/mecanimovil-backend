@@ -54,6 +54,8 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
     checklist_items_completados = serializers.SerializerMethodField()
     checklist_items_total = serializers.SerializerMethodField()
     checklist_minutos_transcurridos = serializers.SerializerMethodField()
+    informe_publico_url = serializers.SerializerMethodField()
+    informe_publico_token = serializers.SerializerMethodField()
     puede_cancelar = serializers.SerializerMethodField()
     template_generado_por_ia = serializers.SerializerMethodField()
     estado_operativo = serializers.SerializerMethodField()
@@ -88,6 +90,8 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
             'checklist_items_completados',
             'checklist_items_total',
             'checklist_minutos_transcurridos',
+            'informe_publico_url',
+            'informe_publico_token',
             'puede_cancelar',
             'template_generado_por_ia',
             'estado_operativo',
@@ -186,6 +190,25 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
         fin = inst.fecha_finalizacion or timezone.now()
         return max(0, int((fin - inst.fecha_inicio).total_seconds() // 60))
 
+    def _informe_publico(self, obj):
+        inst = self._checklist_instance(obj)
+        if inst is None:
+            return None
+        try:
+            return inst.informe_publico
+        except Exception:
+            return None
+
+    def get_informe_publico_url(self, obj) -> str | None:
+        informe = self._informe_publico(obj)
+        if informe is None:
+            return None
+        return informe.url_publica or None
+
+    def get_informe_publico_token(self, obj) -> str | None:
+        informe = self._informe_publico(obj)
+        return informe.token if informe else None
+
     def get_puede_cancelar(self, obj) -> bool:
         """No cancelable una vez iniciado el checklist operativo."""
         if obj.estado != 'activa':
@@ -215,7 +238,10 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
             return 'agendado'
         if inst.estado in ('EN_PROGRESO', 'PAUSADO'):
             return 'en_ejecucion'
-        if inst.estado in ('PENDIENTE_FIRMA_CLIENTE',):
+        if inst.estado in (
+            'PENDIENTE_FIRMA_SUPERVISOR',
+            'PENDIENTE_FIRMA_CLIENTE',
+        ):
             return 'en_ejecucion'
         if inst.estado == 'COMPLETADO':
             return 'completado'
