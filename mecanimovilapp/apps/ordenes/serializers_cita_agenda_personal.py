@@ -51,6 +51,7 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
     mecanico_especialidades = serializers.SerializerMethodField()
     mecanico_modalidad_tecnico = serializers.SerializerMethodField()
     mecanico_modalidad_display = serializers.SerializerMethodField()
+    conversation_id = serializers.IntegerField(source='conversation_origen_id', read_only=True)
 
     class Meta:
         model = CitaAgendaPersonal
@@ -75,6 +76,7 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
             'mecanico_especialidades',
             'mecanico_modalidad_tecnico',
             'mecanico_modalidad_display',
+            'conversation_id',
         ]
         read_only_fields = [
             'id',
@@ -122,6 +124,7 @@ class CitaAgendaPersonalCreateSerializer(serializers.Serializer):
     duracion_minutos = serializers.IntegerField(required=False, min_value=1)
     tipo_servicio = serializers.ChoiceField(choices=['taller', 'domicilio'])
     miembro_taller = serializers.IntegerField(required=False, allow_null=True)
+    conversation_id = serializers.IntegerField(required=False, allow_null=True)
     detalle = CitaAgendaPersonalDetalleSerializer()
 
 

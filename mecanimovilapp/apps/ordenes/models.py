@@ -1963,6 +1963,15 @@ class CitaAgendaPersonal(models.Model):
         null=True,
         blank=True,
     )
+    # Trazabilidad: conversación de canal (WhatsApp/IG/Messenger) desde la que se creó
+    # esta cita, cuando aplica. Permite volver al hilo de mensajes original.
+    conversation_origen = models.ForeignKey(
+        'chat.Conversation',
+        on_delete=models.SET_NULL,
+        related_name='citas_agenda_personal_generadas',
+        null=True,
+        blank=True,
+    )
     fecha_servicio = models.DateField()
     hora_servicio = models.TimeField()
     duracion_minutos = models.PositiveIntegerField(default=60)

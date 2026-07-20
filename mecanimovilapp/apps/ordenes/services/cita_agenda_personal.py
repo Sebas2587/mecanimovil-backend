@@ -379,10 +379,18 @@ def crear_cita_personal(
         categorias_requeridas=categorias,
     )
 
+    conversation_id = cabecera.get('conversation_id')
+    conversation = None
+    if conversation_id:
+        from mecanimovilapp.apps.chat.models import Conversation
+
+        conversation = Conversation.objects.filter(pk=conversation_id).first()
+
     cita = CitaAgendaPersonal(
         taller=taller,
         mecanico=mecanico,
         miembro_taller=miembro,
+        conversation_origen=conversation,
         fecha_servicio=fecha,
         hora_servicio=hora,
         duracion_minutos=duracion,

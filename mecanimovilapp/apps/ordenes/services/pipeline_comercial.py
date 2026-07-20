@@ -313,6 +313,7 @@ def _filas_citas_personales(taller: Taller, miembro_id: int | None = None) -> li
                 monto_clp=_monto_a_float(det.precio_referencia),
                 fecha_referencia=cita.fecha_creacion,
                 cita_id=cita.id,
+                conversation_id=cita.conversation_origen_id,
                 miembro_taller_id=cita.miembro_taller_id,
                 miembro_taller_nombre=(
                     cita.miembro_taller.nombre if cita.miembro_taller_id else None
