@@ -779,6 +779,27 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_200_OK,
             )
 
+        # ✅ Idempotencia: ya en pendiente firma supervisor (cita taller).
+        if instance.estado == 'PENDIENTE_FIRMA_SUPERVISOR':
+            informe_data = None
+            try:
+                inf = getattr(instance, 'informe_publico', None)
+                if inf:
+                    informe_data = {'token': inf.token, 'url': inf.url_publica}
+            except Exception:
+                pass
+            return Response(
+                {
+                    'message': 'El checklist ya fue cerrado por el técnico, esperando firma del supervisor.',
+                    'checklist_id': instance.id,
+                    'cita_personal_id': instance.cita_personal_id,
+                    'estado': instance.estado,
+                    'requiere_firma_supervisor': True,
+                    'informe': informe_data,
+                },
+                status=status.HTTP_200_OK,
+            )
+
         # ✅ Idempotencia: ya en pendiente firma cliente, devolver 200 con flag.
         if instance.estado == 'PENDIENTE_FIRMA_CLIENTE':
             logger.warning(
@@ -835,10 +856,16 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
             instance.firma_cliente = firma_a_payload_base64(firma_cliente)
             instance.progreso_porcentaje = 100
         elif instance.cita_personal_id:
-            # Cita personal: no hay firma de cliente en app; cierra con firma del técnico.
-            instance.estado = 'COMPLETADO'
-            instance.fecha_finalizacion = ahora
-            instance.progreso_porcentaje = 100
+            cita = instance.cita_personal
+            # Cita de taller: supervisor debe rectificar antes del informe al cliente.
+            if cita.taller_id:
+                instance.estado = 'PENDIENTE_FIRMA_SUPERVISOR'
+                instance.progreso_porcentaje = 100
+            else:
+                # Mecánico a domicilio sin taller: cierre directo (sin informe público).
+                instance.estado = 'COMPLETADO'
+                instance.fecha_finalizacion = ahora
+                instance.progreso_porcentaje = 100
         else:
             # Flujo marketplace (firma diferida): el cliente firmará desde su app.
             instance.estado = 'PENDIENTE_FIRMA_CLIENTE'
@@ -869,13 +896,19 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
                 cita.cerrar()
                 cita.save(update_fields=['estado', 'cerrada_en', 'fecha_actualizacion'])
                 logger.info('Cita personal %s cerrada tras checklist completado', cita.id)
+            requiere_supervisor = instance.estado == 'PENDIENTE_FIRMA_SUPERVISOR'
             return Response(
                 {
-                    'message': 'Checklist finalizado correctamente',
+                    'message': (
+                        'Checklist enviado al supervisor para rectificación'
+                        if requiere_supervisor
+                        else 'Checklist finalizado correctamente'
+                    ),
                     'checklist_id': instance.id,
                     'cita_personal_id': cita.id,
                     'cita_estado_nuevo': cita.estado,
                     'estado': instance.estado,
+                    'requiere_firma_supervisor': requiere_supervisor,
                     'requiere_firma_cliente': False,
                     'template_generado_por_ia': bool(
                         getattr(instance.checklist_template, 'generado_por_ia', False)
@@ -1132,6 +1165,109 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
                 {'error': f'Error interno: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+
+    def _usuario_puede_firmar_supervisor(self, user, cita) -> bool:
+        taller_ctx, miembro, rol = self._contexto_proveedor()
+        if cita is None or not cita.taller_id:
+            return False
+        if taller_ctx is None or cita.taller_id != taller_ctx.id:
+            return False
+        return rol in ('mandante', 'supervisor')
+
+    @action(detail=True, methods=['post'], url_path='firmar-supervisor')
+    def firmar_supervisor(self, request, pk=None):
+        """
+        Firma de rectificación del supervisor/taller (solo citas personales de taller).
+        Genera informe público y deja el checklist en PENDIENTE_FIRMA_CLIENTE.
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        instance = self.get_object()
+        if not instance.cita_personal_id:
+            return Response(
+                {'error': 'Solo aplica a checklists de cita personal'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        cita = instance.cita_personal
+        if not cita.taller_id:
+            return Response(
+                {'error': 'Esta cita no requiere firma de supervisor'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not self._usuario_puede_firmar_supervisor(request.user, cita):
+            return Response(
+                {'error': 'No tienes permiso para rectificar este checklist'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if instance.estado == 'PENDIENTE_FIRMA_CLIENTE':
+            try:
+                informe = instance.informe_publico
+                envio = {'enviado': False, 'via': informe.enviado_via, 'url': informe.url_publica}
+            except Exception:
+                envio = {}
+            return Response(
+                {
+                    'message': 'El checklist ya fue rectificado; esperando firma del cliente.',
+                    'estado': instance.estado,
+                    'informe': envio,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        if instance.estado != 'PENDIENTE_FIRMA_SUPERVISOR':
+            return Response(
+                {'error': f'Estado inválido para firma de supervisor ({instance.estado})'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        firma_supervisor = request.data.get('firma_supervisor')
+        if not firma_supervisor:
+            return Response(
+                {'error': 'Se requiere la firma del supervisor o responsable del taller'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        _, miembro, _rol = self._contexto_proveedor()
+        ahora = timezone.now()
+        instance.firma_supervisor = firma_a_payload_base64(firma_supervisor)
+        instance.firma_supervisor_por = miembro
+        instance.fecha_firma_supervisor = ahora
+        instance.estado = 'PENDIENTE_FIRMA_CLIENTE'
+        instance.save()
+
+        from mecanimovilapp.apps.checklists.services.informe_servicio import (
+            generar_informe,
+            enviar_informe,
+        )
+
+        informe = generar_informe(instance)
+        envio = enviar_informe(cita, informe)
+
+        logger.info(
+            'Supervisor firmó checklist %s → informe %s enviado=%s',
+            instance.id,
+            informe.token[:8],
+            envio.get('enviado'),
+        )
+
+        return Response(
+            {
+                'message': 'Trabajo rectificado. Informe listo para el cliente.',
+                'checklist_id': instance.id,
+                'estado': instance.estado,
+                'informe': {
+                    'token': informe.token,
+                    'url': informe.url_publica,
+                    'enviado': envio.get('enviado', False),
+                    'via': envio.get('via', 'manual_link'),
+                    'mensaje_envio': envio.get('message'),
+                },
+            }
+        )
 
     @action(
         detail=True,

@@ -79,6 +79,8 @@ class Command(BaseCommand):
                 tipo_evento__in=['SERVICIO_REALIZADO', 'NIVEL_CRITICO'],
                 km_desde_ultimo_servicio__isnull=False,
                 km_desde_ultimo_servicio__gt=0,
+            ).exclude(
+                metadata__excluido_entrenamiento=True,
             ).values(
                 'marca', 'modelo', 'year', 'tipo_motor',
                 'kilometraje', 'salud_porcentaje', 'km_desde_ultimo_servicio',

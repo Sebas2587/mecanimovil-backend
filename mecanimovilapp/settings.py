@@ -202,6 +202,7 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_THROTTLE_RATES': {
         'guest_patente': '10/hour',
+        'informe_publico': '60/hour',
     },
 }
 

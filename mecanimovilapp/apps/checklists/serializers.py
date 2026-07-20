@@ -151,12 +151,27 @@ class ChecklistInstanceSerializer(serializers.ModelSerializer):
     firma_cliente_disponible = serializers.SerializerMethodField()
     mecanico_asignado = serializers.SerializerMethodField()
     template_generado_por_ia = serializers.SerializerMethodField()
+    informe_publico = serializers.SerializerMethodField()
 
     def get_template_generado_por_ia(self, obj):
         tpl = getattr(obj, 'checklist_template', None)
         if tpl is None:
             return False
         return bool(getattr(tpl, 'generado_por_ia', False)) and tpl.revisado_en is None
+
+    def get_informe_publico(self, obj):
+        try:
+            informe = obj.informe_publico
+        except Exception:
+            return None
+        if informe is None:
+            return None
+        return {
+            'token': informe.token,
+            'url': informe.url_publica,
+            'estado': informe.estado,
+            'enviado_via': informe.enviado_via or '',
+        }
 
     def get_mecanico_asignado(self, obj):
         """Técnico del taller asignado a la orden o cita personal."""
@@ -308,8 +323,10 @@ class ChecklistInstanceSerializer(serializers.ModelSerializer):
             'id', 'orden', 'cita_personal', 'checklist_template', 'estado',
             'fecha_creacion', 'fecha_inicio', 'fecha_finalizacion',
             'ubicacion_finalizacion', 'firma_tecnico', 'firma_cliente',
+            'firma_supervisor', 'fecha_firma_supervisor',
             'firma_tecnico_disponible', 'firma_cliente_disponible',
             'requiere_firma_cliente', 'template_generado_por_ia',
+            'informe_publico',
             'progreso_porcentaje', 'tiempo_total_minutos',
             'respuestas', 'orden_info', 'cita_personal_info', 'progreso_info',
             'puede_finalizar_check', 'mecanico_asignado',

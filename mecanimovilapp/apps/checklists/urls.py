@@ -4,6 +4,7 @@ from .views import (
     ChecklistTemplateViewSet, ChecklistInstanceViewSet,
     ChecklistResponseViewSet, ChecklistPhotoViewSet
 )
+from .views_informe import InformePublicoDetailView, InformePublicoFirmarClienteView
 
 # Crear router para las APIs
 router = DefaultRouter()
@@ -15,8 +16,17 @@ router.register(r'photos', ChecklistPhotoViewSet, basename='checklist-photos')
 app_name = 'checklists'
 
 urlpatterns = [
-    # Solo incluir las rutas del API REST
     path('', include(router.urls)),
+    path(
+        'informes/<str:token>/',
+        InformePublicoDetailView.as_view(),
+        name='informe-publico-detail',
+    ),
+    path(
+        'informes/<str:token>/firmar-cliente/',
+        InformePublicoFirmarClienteView.as_view(),
+        name='informe-publico-firmar',
+    ),
 ]
 
 # URLs específicas para el frontend de proveedores

@@ -423,6 +423,7 @@ class ChecklistInstance(models.Model):
         ('PENDIENTE', 'Pendiente de inicio'),
         ('EN_PROGRESO', 'En progreso'),
         ('PAUSADO', 'Pausado temporalmente'),
+        ('PENDIENTE_FIRMA_SUPERVISOR', 'Pendiente de firma del supervisor'),
         ('PENDIENTE_FIRMA_CLIENTE', 'Pendiente de firma del cliente'),
         ('COMPLETADO', 'Completado'),
         ('CANCELADO', 'Cancelado'),
@@ -496,6 +497,22 @@ class ChecklistInstance(models.Model):
         null=True,
         blank=True,
         help_text=_('Firma digital del cliente en formato Base64')
+    )
+    firma_supervisor = models.TextField(
+        null=True,
+        blank=True,
+        help_text=_('Firma digital del supervisor/taller que rectifica el trabajo')
+    )
+    firma_supervisor_por = models.ForeignKey(
+        'usuarios.MiembroTaller',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='checklists_firmados_supervisor',
+    )
+    fecha_firma_supervisor = models.DateTimeField(
+        null=True,
+        blank=True,
     )
     
     # Metadatos adicionales
@@ -632,4 +649,8 @@ class ChecklistPhoto(models.Model):
         if self.response.item_template.catalog_item:
             return f"Foto #{self.id} - {self.response.item_template.catalog_item.nombre}"
         else:
-            return f"Foto #{self.id} - [Item sin catálogo]" 
+            return f"Foto #{self.id} - [Item sin catálogo]"
+
+
+# Registro explícito del modelo en módulo hermano (Django no auto-importa models_*.py).
+from .models_informe import InformeServicioPublico  # noqa: E402,F401
