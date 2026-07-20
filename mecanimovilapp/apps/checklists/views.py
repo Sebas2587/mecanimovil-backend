@@ -1517,30 +1517,72 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
             )
 
 
+def _usuario_tiene_acceso_checklist_instance(user, instance) -> bool:
+    """Acceso a checklist de orden marketplace o cita personal (incluye mecánico de equipo)."""
+    from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
+
+    taller, miembro, rol = resolver_contexto_taller(user)
+    if instance.orden_id:
+        orden = instance.orden
+        if rol == 'mecanico' and miembro is not None:
+            return orden.mecanico_asignado_id == miembro.id
+        if taller is not None and orden.taller_id == taller.id:
+            return True
+        if hasattr(user, 'mecanico_domicilio') and orden.mecanico_id == user.mecanico_domicilio.id:
+            return True
+        return False
+
+    if instance.cita_personal_id:
+        cita = instance.cita_personal
+        if rol == 'mecanico' and miembro is not None:
+            return cita.miembro_taller_id == miembro.id
+        if taller is not None and cita.taller_id == taller.id:
+            return True
+        if hasattr(user, 'mecanico_domicilio') and cita.mecanico_id == user.mecanico_domicilio.id:
+            return True
+        return False
+
+    return False
+
+
+def _queryset_respuestas_proveedor(user):
+    from django.db.models import Q
+    from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
+
+    taller, miembro, rol = resolver_contexto_taller(user)
+    base = ChecklistItemResponse.objects.select_related(
+        'checklist_instance',
+        'checklist_instance__orden',
+        'checklist_instance__cita_personal',
+        'item_template',
+    ).prefetch_related('fotos')
+
+    if rol == 'mecanico' and miembro is not None:
+        return base.filter(
+            Q(checklist_instance__orden__mecanico_asignado=miembro)
+            | Q(checklist_instance__cita_personal__miembro_taller=miembro)
+        )
+    if taller is not None:
+        return base.filter(
+            Q(checklist_instance__orden__taller=taller)
+            | Q(checklist_instance__cita_personal__taller=taller)
+        )
+    if hasattr(user, 'mecanico_domicilio'):
+        return base.filter(
+            Q(checklist_instance__orden__mecanico=user.mecanico_domicilio)
+            | Q(checklist_instance__cita_personal__mecanico=user.mecanico_domicilio)
+        )
+    return ChecklistItemResponse.objects.none()
+
+
 class ChecklistResponseViewSet(viewsets.ModelViewSet):
     """ViewSet para respuestas de checklist"""
     serializer_class = ChecklistItemResponseSerializer
     permission_classes = [permissions.IsAuthenticated]
     
     def get_queryset(self):
-        """Filtrar respuestas por checklist del proveedor"""
-        user = self.request.user
-        
-        # Filtrar por proveedor
-        if hasattr(user, 'taller'):
-            return ChecklistItemResponse.objects.filter(
-                checklist_instance__orden__taller=user.taller
-            ).select_related(
-                'checklist_instance', 'item_template'
-            ).prefetch_related('fotos')
-        elif hasattr(user, 'mecanico_domicilio'):
-            return ChecklistItemResponse.objects.filter(
-                checklist_instance__orden__mecanico=user.mecanico_domicilio
-            ).select_related(
-                'checklist_instance', 'item_template'
-            ).prefetch_related('fotos')
-        
-        return ChecklistItemResponse.objects.none()
+        """Filtrar respuestas por checklist del proveedor (orden o cita personal)."""
+        return _queryset_respuestas_proveedor(self.request.user)
     
     def create(self, request, *args, **kwargs):
         """Override create para agregar logging y mejor manejo de errores"""
@@ -1568,22 +1610,19 @@ class ChecklistResponseViewSet(viewsets.ModelViewSet):
         try:
             # Verificar que la instancia del checklist existe y el usuario tiene acceso
             checklist_instance_id = request.data.get('checklist_instance')
-            instance = ChecklistInstance.objects.get(id=checklist_instance_id)
-            
-            # Verificar acceso del usuario
-            user = self.request.user
-            tiene_acceso = False
-            
-            if hasattr(user, 'taller') and instance.orden.taller == user.taller:
-                tiene_acceso = True
-            elif hasattr(user, 'mecanico_domicilio') and instance.orden.mecanico == user.mecanico_domicilio:
-                tiene_acceso = True
-                
-            if not tiene_acceso:
-                logger.warning(f"🔸 Usuario {user.username} no tiene acceso a checklist {checklist_instance_id}")
+            instance = ChecklistInstance.objects.select_related(
+                'orden', 'cita_personal',
+            ).get(id=checklist_instance_id)
+
+            if not _usuario_tiene_acceso_checklist_instance(request.user, instance):
+                logger.warning(
+                    'Usuario %s no tiene acceso a checklist %s',
+                    request.user.username,
+                    checklist_instance_id,
+                )
                 return Response(
-                    {'error': 'No tienes acceso a este checklist'}, 
-                    status=status.HTTP_403_FORBIDDEN
+                    {'error': 'No tienes acceso a este checklist'},
+                    status=status.HTTP_403_FORBIDDEN,
                 )
             
             logger.info(f"🔸 Creando respuesta para checklist {checklist_instance_id}, item {request.data.get('item_template')}")
@@ -1657,18 +1696,34 @@ class ChecklistPhotoViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     
     def get_queryset(self):
-        """Filtrar fotos por checklist del proveedor"""
+        """Filtrar fotos por checklist del proveedor (orden o cita personal)."""
+        from django.db.models import Q
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
+
         user = self.request.user
-        
-        if hasattr(user, 'taller'):
-            return ChecklistPhoto.objects.filter(
-                response__checklist_instance__orden__taller=user.taller
-            ).select_related('response', 'response__checklist_instance')
-        elif hasattr(user, 'mecanico_domicilio'):
-            return ChecklistPhoto.objects.filter(
-                response__checklist_instance__orden__mecanico=user.mecanico_domicilio
-            ).select_related('response', 'response__checklist_instance')
-        
+        taller, miembro, rol = resolver_contexto_taller(user)
+        base = ChecklistPhoto.objects.select_related(
+            'response',
+            'response__checklist_instance',
+            'response__checklist_instance__orden',
+            'response__checklist_instance__cita_personal',
+        )
+
+        if rol == 'mecanico' and miembro is not None:
+            return base.filter(
+                Q(response__checklist_instance__orden__mecanico_asignado=miembro)
+                | Q(response__checklist_instance__cita_personal__miembro_taller=miembro)
+            )
+        if taller is not None:
+            return base.filter(
+                Q(response__checklist_instance__orden__taller=taller)
+                | Q(response__checklist_instance__cita_personal__taller=taller)
+            )
+        if hasattr(user, 'mecanico_domicilio'):
+            return base.filter(
+                Q(response__checklist_instance__orden__mecanico=user.mecanico_domicilio)
+                | Q(response__checklist_instance__cita_personal__mecanico=user.mecanico_domicilio)
+            )
         return ChecklistPhoto.objects.none()
     
     def create(self, request, *args, **kwargs):
