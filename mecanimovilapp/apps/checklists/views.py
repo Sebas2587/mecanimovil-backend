@@ -658,24 +658,36 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
     def start(self, request, pk=None):
         """Iniciar un checklist (solo entonces la orden pasa a 'checklist_en_progreso')."""
         instance = self.get_object()
-        
+
+        # Idempotente: si ya está en progreso, devolver la instancia (evita error al reintentar).
+        if instance.estado == 'EN_PROGRESO':
+            serializer = self.get_serializer(instance)
+            return Response(serializer.data)
+
+        if instance.estado == 'PAUSADO':
+            return Response(
+                {'error': 'El checklist está pausado. Usa reanudar para continuar.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         if instance.estado != 'PENDIENTE':
             return Response(
-                {'error': 'El checklist no está en estado pendiente'},
-                status=status.HTTP_400_BAD_REQUEST
+                {'error': f'El checklist no se puede iniciar desde el estado {instance.estado}'},
+                status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
         instance.estado = 'EN_PROGRESO'
         instance.fecha_inicio = timezone.now()
-        instance.save()
-        
+        instance.save(update_fields=['estado', 'fecha_inicio'])
+
         # Pasar la orden a checklist_en_progreso solo cuando el proveedor inicia el checklist
         if instance.orden_id and instance.orden.estado == 'confirmado':
             orden = instance.orden
             orden.estado = 'checklist_en_progreso'
             orden.save(update_fields=['estado'])
-        
-        return Response({'message': 'Checklist iniciado correctamente'})
+
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
     
     @action(detail=True, methods=['post'])
     def pause(self, request, pk=None):

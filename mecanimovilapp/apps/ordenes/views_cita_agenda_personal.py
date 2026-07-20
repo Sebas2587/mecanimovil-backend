@@ -346,10 +346,17 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
                 }
             )
 
+        # Dejar el checklist en EN_PROGRESO para que el técnico vea los ítems al abrir.
+        if checklist_instance.estado == 'PENDIENTE':
+            checklist_instance.estado = 'EN_PROGRESO'
+            checklist_instance.fecha_inicio = timezone.now()
+            checklist_instance.save(update_fields=['estado', 'fecha_inicio'])
+
         return Response({
             'message': 'Servicio iniciado. Checklist listo para completar.',
             'tiene_checklist': True,
             'checklist_id': checklist_instance.id,
+            'checklist_estado': checklist_instance.estado,
             'template_generado_por_ia': bool(
                 checklist_instance.checklist_template.generado_por_ia
                 and checklist_instance.checklist_template.revisado_en is None
