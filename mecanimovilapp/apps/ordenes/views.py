@@ -2271,42 +2271,38 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
 
                     ordenes_creadas.append(solicitud_servicio)
                     
-                    # ✅ Crear checklist automáticamente si existe template
+                    # ✅ Crear checklist automáticamente (con generación IA si no hay template)
                     try:
-                        from mecanimovilapp.apps.checklists.models import ChecklistTemplate, ChecklistInstance
-                        detalles_servicios = list(oferta.detalles_servicios.all())
-                        for detalle in detalles_servicios:
-                            servicio = detalle.servicio
-                            template = ChecklistTemplate.objects.filter(
-                                servicio=servicio,
-                                activo=True
-                            ).first()
-                            if template:
-                                existing_instance = ChecklistInstance.objects.filter(orden=solicitud_servicio).first()
-                                if not existing_instance:
-                                    checklist_instance = ChecklistInstance.objects.create(
-                                        orden=solicitud_servicio,
-                                        checklist_template=template,
-                                        estado='PENDIENTE'
-                                    )
-                                    logger.info(f'✅ Checklist creado automáticamente al crear orden: {checklist_instance.id} para orden {solicitud_servicio.id}')
-                                    try:
-                                        from mecanimovilapp.apps.ordenes.services.notificaciones_proveedor import (
-                                            notificar_checklist_pendiente_proveedor,
-                                        )
-                                        notificar_checklist_pendiente_proveedor(
-                                            solicitud_servicio, checklist_instance
-                                        )
-                                    except Exception as push_ck:
-                                        logger.warning(
-                                            'No se pudo encolar push checklist_pendiente orden %s: %s',
-                                            solicitud_servicio.id,
-                                            push_ck,
-                                        )
-                                    # No cambiar estado a checklist_en_progreso aquí; se hará cuando el proveedor llame a start()
-                                break
+                        from mecanimovilapp.apps.checklists.services import crear_checklist_para_orden
+                        checklist_instance = crear_checklist_para_orden(
+                            solicitud_servicio,
+                            generar_template_si_ausente=True,
+                        )
+                        if checklist_instance:
+                            logger.info(
+                                'Checklist creado al crear orden: %s para orden %s',
+                                checklist_instance.id,
+                                solicitud_servicio.id,
+                            )
+                            try:
+                                from mecanimovilapp.apps.ordenes.services.notificaciones_proveedor import (
+                                    notificar_checklist_pendiente_proveedor,
+                                )
+                                notificar_checklist_pendiente_proveedor(
+                                    solicitud_servicio, checklist_instance
+                                )
+                            except Exception as push_ck:
+                                logger.warning(
+                                    'No se pudo encolar push checklist_pendiente orden %s: %s',
+                                    solicitud_servicio.id,
+                                    push_ck,
+                                )
                     except Exception as checklist_error:
-                        logger.warning(f'⚠️ Error creando checklist para orden {solicitud_servicio.id}: {checklist_error}')
+                        logger.warning(
+                            'Error creando checklist para orden %s: %s',
+                            solicitud_servicio.id,
+                            checklist_error,
+                        )
                     
             except Exception as e:
                 logger.error(f"❌ Error creando SolicitudServicio para oferta {oferta.id}: {e}", exc_info=True)
@@ -2316,7 +2312,8 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
         
         # ✅ 3. Verificar órdenes existentes sin checklist y crearlos si corresponde
         try:
-            from mecanimovilapp.apps.checklists.models import ChecklistTemplate, ChecklistInstance
+            from mecanimovilapp.apps.checklists.models import ChecklistInstance
+            from mecanimovilapp.apps.checklists.services import crear_checklist_para_orden
             ordenes_sin_checklist = ordenes.filter(
                 oferta_proveedor__isnull=False,
                 estado__in=['confirmado', 'en_ejecucion', 'checklist_en_progreso']
@@ -2326,38 +2323,23 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
             
             checklist_creados_retroactivos = 0
             for orden_sin_checklist in ordenes_sin_checklist:
-                if orden_sin_checklist.oferta_proveedor:
-                    oferta = orden_sin_checklist.oferta_proveedor
-                    detalles_servicios = list(oferta.detalles_servicios.all())
-                    for detalle in detalles_servicios:
-                        servicio = detalle.servicio
-                        template = ChecklistTemplate.objects.filter(
-                            servicio=servicio,
-                            activo=True
-                        ).first()
-                        if template:
-                            checklist_instance = ChecklistInstance.objects.create(
-                                orden=orden_sin_checklist,
-                                checklist_template=template,
-                                estado='PENDIENTE'
-                            )
-                            logger.info(f'✅ Checklist creado retroactivamente: {checklist_instance.id} para orden {orden_sin_checklist.id}')
-                            try:
-                                from mecanimovilapp.apps.ordenes.services.notificaciones_proveedor import (
-                                    notificar_checklist_pendiente_proveedor,
-                                )
-                                notificar_checklist_pendiente_proveedor(
-                                    orden_sin_checklist, checklist_instance
-                                )
-                            except Exception as push_ck:
-                                logger.warning(
-                                    'No se pudo encolar push checklist_pendiente orden %s: %s',
-                                    orden_sin_checklist.id,
-                                    push_ck,
-                                )
-                            # No cambiar estado a checklist_en_progreso aquí; se hará cuando el proveedor llame a start()
-                            checklist_creados_retroactivos += 1
-                            break
+                instance = crear_checklist_para_orden(
+                    orden_sin_checklist,
+                    generar_template_si_ausente=True,
+                )
+                if instance:
+                    checklist_creados_retroactivos += 1
+                    try:
+                        from mecanimovilapp.apps.ordenes.services.notificaciones_proveedor import (
+                            notificar_checklist_pendiente_proveedor,
+                        )
+                        notificar_checklist_pendiente_proveedor(orden_sin_checklist, instance)
+                    except Exception as push_ck:
+                        logger.warning(
+                            'No se pudo encolar push checklist_pendiente orden %s: %s',
+                            orden_sin_checklist.id,
+                            push_ck,
+                        )
             
             if checklist_creados_retroactivos > 0:
                 logger.info(f'📊 Total checklists creados retroactivamente: {checklist_creados_retroactivos}')
@@ -2407,72 +2389,39 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
         logger = logging.getLogger(__name__)
         
         try:
-            # Refrescar la orden con las relaciones necesarias para asegurar que las líneas estén cargadas
+            from mecanimovilapp.apps.checklists.services import crear_checklist_para_orden
+
             orden.refresh_from_db()
-            # Prefechar las líneas con sus relaciones
             from django.db.models import Prefetch
             from .models import LineaServicio
             orden = SolicitudServicio.objects.prefetch_related(
                 Prefetch('lineas', queryset=LineaServicio.objects.select_related('oferta_servicio__servicio'))
             ).get(id=orden.id)
-            
-            # Obtener el servicio de la primera línea de la orden
-            primera_linea = orden.lineas.first()
-            if not primera_linea or not primera_linea.oferta_servicio or not primera_linea.oferta_servicio.servicio:
-                logger.warning(f'⚠️ No se pudo obtener servicio de la orden {orden.id}')
-                return False
-            
-            servicio = primera_linea.oferta_servicio.servicio
-            
-            # Intentar importar modelos de checklist
-            try:
-                from mecanimovilapp.apps.checklists.models import ChecklistTemplate, ChecklistInstance
-                
-                # Buscar template activo para este servicio
-                template = ChecklistTemplate.objects.filter(
-                    servicio=servicio,
-                    activo=True
-                ).first()
-                
-                if template:
-                    # Verificar que no exista ya una instancia para esta orden
-                    existing_instance = ChecklistInstance.objects.filter(orden=orden).first()
-                    if not existing_instance:
-                        # Crear automáticamente la instancia de checklist
-                        checklist_instance = ChecklistInstance.objects.create(
-                            orden=orden,
-                            checklist_template=template,
-                            estado='PENDIENTE'
-                        )
-                        logger.info(f'✅ Checklist creado automáticamente: {checklist_instance.id} para orden {orden.id} con template {template.id}')
-                        
-                        # Cambiar estado de orden a checklist_en_progreso
-                        orden.estado = 'checklist_en_progreso'
-                        orden.save()
-                        return True
-                    else:
-                        logger.info(f'⚠️ Ya existe checklist para orden {orden.id}: {existing_instance.id}')
-                        # Si ya existe checklist, cambiar a checklist_en_progreso
-                        orden.estado = 'checklist_en_progreso'
-                        orden.save()
-                        return True
-                else:
-                    logger.info(f'💭 No hay template de checklist para servicio: {servicio.nombre} - manteniendo estado actual')
-                    # Si no hay template, cambiar estado a servicio_iniciado
-                    orden.estado = 'servicio_iniciado'
-                    orden.save()
-                    return True
-            except ImportError:
-                logger.warning('⚠️ App de checklists no disponible')
-                # Si no hay app de checklists, cambiar estado a servicio_iniciado
-                orden.estado = 'servicio_iniciado'
-                orden.save()
+
+            checklist_instance = crear_checklist_para_orden(orden, generar_template_si_ausente=True)
+            if checklist_instance:
+                orden.estado = 'checklist_en_progreso'
+                orden.save(update_fields=['estado'])
                 return True
-        except Exception as e:
-            logger.error(f'⚠️ Error procesando checklist para orden {orden.id}: {str(e)}', exc_info=True)
-            # En caso de error, al menos cambiar a servicio_iniciado
+
+            primera_linea = orden.lineas.first()
+            if primera_linea and primera_linea.oferta_servicio and primera_linea.oferta_servicio.servicio:
+                logger.info(
+                    'No hay checklist para servicio %s — manteniendo servicio_iniciado',
+                    primera_linea.oferta_servicio.servicio.nombre,
+                )
             orden.estado = 'servicio_iniciado'
-            orden.save()
+            orden.save(update_fields=['estado'])
+            return True
+        except ImportError:
+            logger.warning('App de checklists no disponible')
+            orden.estado = 'servicio_iniciado'
+            orden.save(update_fields=['estado'])
+            return True
+        except Exception as e:
+            logger.error(f'Error procesando checklist para orden {orden.id}: {str(e)}', exc_info=True)
+            orden.estado = 'servicio_iniciado'
+            orden.save(update_fields=['estado'])
             return False
 
     @action(detail=True, methods=['post'])
@@ -2828,6 +2777,40 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
             response_data['aviso'] = 'Debe completar el checklist asociado al servicio antes de continuar'
         
         return Response(response_data)
+
+    @action(detail=True, methods=['post'], url_path='asignar-mecanico')
+    def asignar_mecanico(self, request, pk=None):
+        """Asigna o reasigna el técnico de una orden marketplace."""
+        from django.core.exceptions import ValidationError as DjangoValidationError
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import exigir_no_mecanico_equipo
+
+        exigir_no_mecanico_equipo(request.user, 'asignar técnicos')
+        orden = self.get_object()
+        miembro_id = request.data.get('miembro_taller_id')
+        if miembro_id is not None and miembro_id != '':
+            try:
+                miembro_id = int(miembro_id)
+            except (TypeError, ValueError):
+                return Response({'error': 'miembro_taller_id inválido'}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            miembro_id = None
+
+        from mecanimovilapp.apps.ordenes.services.reasignacion_mecanico import reasignar_mecanico_solicitud
+
+        try:
+            miembro = reasignar_mecanico_solicitud(orden, miembro_id, user=request.user)
+        except DjangoValidationError as exc:
+            msg = exc.message if hasattr(exc, 'message') and isinstance(exc.message, str) else str(exc)
+            return Response({'error': msg}, status=status.HTTP_400_BAD_REQUEST)
+
+        orden.refresh_from_db()
+        response_serializer = self.get_serializer(orden)
+        return Response({
+            'message': 'Técnico asignado correctamente',
+            'miembro_taller_id': miembro.id if miembro else None,
+            'miembro_taller_nombre': miembro.nombre if miembro else None,
+            'orden': response_serializer.data,
+        })
     
     @action(detail=True, methods=['post'])
     def actualizar_estado(self, request, pk=None):
@@ -5380,6 +5363,42 @@ class OfertaProveedorViewSet(viewsets.ModelViewSet):
             logger.error(f"Error en perform_create: {str(e)}", exc_info=True)
             raise
 
+    @action(detail=True, methods=['post'], url_path='asignar-mecanico')
+    def asignar_mecanico(self, request, pk=None):
+        """Asigna o reasigna el técnico de una oferta (y su orden si existe)."""
+        from django.core.exceptions import ValidationError as DjangoValidationError
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import exigir_no_mecanico_equipo
+
+        exigir_no_mecanico_equipo(request.user, 'asignar técnicos')
+        oferta = self.get_object()
+        if oferta.proveedor_id != request.user.id and not request.user.is_staff:
+            return Response({'error': 'No autorizado'}, status=status.HTTP_403_FORBIDDEN)
+
+        miembro_id = request.data.get('miembro_taller_id')
+        if miembro_id is not None and miembro_id != '':
+            try:
+                miembro_id = int(miembro_id)
+            except (TypeError, ValueError):
+                return Response({'error': 'miembro_taller_id inválido'}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            miembro_id = None
+
+        from mecanimovilapp.apps.ordenes.services.reasignacion_mecanico import reasignar_mecanico_oferta
+
+        try:
+            miembro = reasignar_mecanico_oferta(oferta, miembro_id)
+        except DjangoValidationError as exc:
+            msg = exc.message if hasattr(exc, 'message') and isinstance(exc.message, str) else str(exc)
+            return Response({'error': msg}, status=status.HTTP_400_BAD_REQUEST)
+
+        serializer = self.get_serializer(oferta)
+        return Response({
+            'message': 'Técnico asignado correctamente',
+            'miembro_taller_id': miembro.id if miembro else None,
+            'miembro_taller_nombre': miembro.nombre if miembro else None,
+            'oferta': serializer.data,
+        })
+
     @action(detail=True, methods=['post'], url_path='confirmar-catalogo')
     def confirmar_catalogo(self, request, pk=None):
         """Proveedor confirma asignación desde catálogo IA (adjudica + créditos)."""
@@ -6129,74 +6148,39 @@ class OfertaProveedorViewSet(viewsets.ModelViewSet):
                 # Buscar checklist template del servicio configurado
                 # Manejar el caso cuando no hay checklist disponible sin fallar
                 try:
-                    from mecanimovilapp.apps.checklists.models import ChecklistTemplate, ChecklistInstance
-                    
-                    detalles_servicios = list(oferta.detalles_servicios.all())
-                    logger.info(f'🔍 Buscando checklist para oferta {oferta.id} con {len(detalles_servicios)} servicios')
-                    checklist_creado = False
-                    
-                    for detalle in detalles_servicios:
-                        servicio = detalle.servicio
+                    from mecanimovilapp.apps.checklists.services import crear_checklist_para_orden
+                    checklist_instance = crear_checklist_para_orden(
+                        solicitud_servicio,
+                        generar_template_si_ausente=True,
+                    )
+                    checklist_creado = checklist_instance is not None
+                    if checklist_instance:
                         logger.info(
-                            f'🔍 Buscando checklist template para servicio {servicio.id} ({servicio.nombre}) '
-                            f'en orden {solicitud_servicio.id}'
+                            'Checklist creado automáticamente: %s para orden %s',
+                            checklist_instance.id,
+                            solicitud_servicio.id,
                         )
-                        
                         try:
-                            # Buscar template activo para este servicio
-                            # ✅ Usar 'activo' en lugar de 'disponible'
-                            template = ChecklistTemplate.objects.filter(
-                                servicio=servicio,
-                                activo=True
-                            ).first()
-                            
-                            if template:
-                                logger.info(
-                                    f'✅ Template encontrado: {template.nombre} (ID: {template.id}) '
-                                    f'para servicio {servicio.nombre}'
-                                )
-                                # Verificar que no exista ya una instancia para esta solicitud_servicio
-                                existing_instance = ChecklistInstance.objects.filter(orden=solicitud_servicio).first()
-                                if not existing_instance:
-                                    # Crear automáticamente la instancia de checklist
-                                    checklist_instance = ChecklistInstance.objects.create(
-                                        orden=solicitud_servicio,
-                                        checklist_template=template,
-                                        estado='PENDIENTE'
-                                    )
-                                    logger.info(f'✅ Checklist creado automáticamente: {checklist_instance.id} para orden {solicitud_servicio.id} con template {template.id}')
-                                    try:
-                                        from mecanimovilapp.apps.ordenes.services.notificaciones_proveedor import (
-                                            notificar_checklist_pendiente_proveedor,
-                                        )
-                                        notificar_checklist_pendiente_proveedor(
-                                            solicitud_servicio, checklist_instance
-                                        )
-                                    except Exception as push_ck:
-                                        logger.warning(
-                                            'No se pudo encolar push checklist_pendiente orden %s: %s',
-                                            solicitud_servicio.id,
-                                            push_ck,
-                                        )
-                                    # No cambiar estado a checklist_en_progreso aquí; se hará cuando el proveedor llame a start()
-                                    checklist_creado = True
-                                    break  # Solo crear un checklist (el primero encontrado)
-                                else:
-                                    logger.info(f'⚠️ Ya existe checklist para orden {solicitud_servicio.id}: {existing_instance.id}')
-                                    checklist_creado = True
-                                    break
-                            else:
-                                logger.warning(
-                                    f'⚠️ No se encontró checklist template activo para servicio {servicio.id} ({servicio.nombre}). '
-                                    f'Verificar que existe un ChecklistTemplate con servicio={servicio.id} y activo=True'
-                                )
-                        except Exception as e:
-                            logger.warning(f'⚠️ Error buscando checklist template para servicio {servicio.id}: {e}')
-                            # Continuar con el siguiente servicio
-                            continue
-                    
-                    if not checklist_creado:
-                        logger.info(f'ℹ️ No se encontró checklist template para los servicios de la oferta {oferta.id}. El servicio continuará sin checklist.')
+                            from mecanimovilapp.apps.ordenes.services.notificaciones_proveedor import (
+                                notificar_checklist_pendiente_proveedor,
+                            )
+                            notificar_checklist_pendiente_proveedor(
+                                solicitud_servicio, checklist_instance
+                            )
+                        except Exception as push_ck:
+                            logger.warning(
+                                'No se pudo encolar push checklist_pendiente orden %s: %s',
+                                solicitud_servicio.id,
+                                push_ck,
+                            )
+                    else:
+                        logger.info(
+                            'No se encontró checklist para oferta %s. El servicio continuará sin checklist.',
+                            oferta.id,
+                        )
+                except Exception as e:
+                    logger.warning('Error buscando checklist para oferta %s: %s', oferta.id, e)
+                    checklist_creado = False
                         # Si no hay checklist, el servicio puede continuar sin él
                         # El estado de solicitud_servicio permanece en 'confirmado' o 'en_ejecucion'
                         

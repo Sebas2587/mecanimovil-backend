@@ -314,6 +314,78 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
         )
         return self._respuesta_asistente_ia_cita(diagnostico=diagnostico)
 
+    @action(detail=True, methods=['post'], url_path='iniciar-servicio')
+    def iniciar_servicio(self, request, pk=None):
+        """Inicia el servicio operativo: crea checklist (con IA si hace falta) para la cita."""
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import exigir_no_mecanico_equipo
+        from mecanimovilapp.apps.checklists.services import crear_checklist_para_cita_personal
+        from mecanimovilapp.apps.checklists.models import ChecklistInstance
+
+        cita = self.get_object()
+        if cita.estado != 'activa':
+            return Response(
+                {'error': 'Solo se puede iniciar servicio en citas activas.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        exigir_no_mecanico_equipo(request.user, 'iniciar servicios')
+
+        checklist_instance = crear_checklist_para_cita_personal(
+            cita,
+            generar_template_si_ausente=True,
+        )
+        if checklist_instance is None:
+            return Response(
+                {
+                    'message': 'Servicio iniciado sin checklist (servicio no resuelto)',
+                    'tiene_checklist': False,
+                    'cita': CitaAgendaPersonalSerializer(cita).data,
+                }
+            )
+
+        return Response({
+            'message': 'Servicio iniciado. Checklist listo para completar.',
+            'tiene_checklist': True,
+            'checklist_id': checklist_instance.id,
+            'template_generado_por_ia': bool(
+                checklist_instance.checklist_template.generado_por_ia
+                and checklist_instance.checklist_template.revisado_en is None
+            ),
+            'cita': CitaAgendaPersonalSerializer(cita).data,
+        })
+
+    @action(detail=True, methods=['post'], url_path='asignar-mecanico')
+    def asignar_mecanico(self, request, pk=None):
+        """Asigna o reasigna el técnico de una cita personal."""
+        from django.core.exceptions import ValidationError as DjangoValidationError
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import exigir_no_mecanico_equipo
+
+        exigir_no_mecanico_equipo(request.user, 'asignar técnicos')
+        cita = self.get_object()
+        miembro_id = request.data.get('miembro_taller_id')
+        if miembro_id is not None and miembro_id != '':
+            try:
+                miembro_id = int(miembro_id)
+            except (TypeError, ValueError):
+                return Response({'error': 'miembro_taller_id inválido'}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            miembro_id = None
+
+        from mecanimovilapp.apps.ordenes.services.reasignacion_mecanico import reasignar_mecanico_cita_personal
+
+        try:
+            miembro = reasignar_mecanico_cita_personal(cita, miembro_id)
+        except DjangoValidationError as exc:
+            msg = exc.message if hasattr(exc, 'message') and isinstance(exc.message, str) else str(exc)
+            return Response({'error': msg}, status=status.HTTP_400_BAD_REQUEST)
+
+        cita.refresh_from_db()
+        return Response({
+            'message': 'Técnico asignado correctamente',
+            'miembro_taller_id': miembro.id if miembro else None,
+            'miembro_taller_nombre': miembro.nombre if miembro else None,
+            'cita': CitaAgendaPersonalSerializer(cita).data,
+        })
+
     @action(detail=False, methods=['post'], url_path='validar-slot')
     def validar_slot(self, request):
         ser = CitaAgendaPersonalCreateSerializer(data=request.data)
@@ -384,7 +456,7 @@ def _serializar_cita_personal_evento(cita: CitaAgendaPersonal) -> dict:
         'duracion_minutos': cita.duracion_minutos,
         'estado': cita.estado,
         'editable': cita.estado == 'activa',
-        'tiene_checklist': False,
+        'tiene_checklist': CitaAgendaPersonalSerializer(cita).data.get('tiene_checklist', False),
         'cliente_nombre': det.cliente_nombre,
         'cliente_telefono': det.cliente_telefono,
         'vehiculo_marca': det.vehiculo_marca,

@@ -88,7 +88,8 @@ class ChecklistTemplateSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'nombre', 'descripcion', 'servicio', 'servicio_nombre',
             'tipo_intencion_default',
-            'activo', 'version', 'fecha_creacion', 'fecha_actualizacion',
+            'activo', 'generado_por_ia', 'revisado_en', 'version',
+            'fecha_creacion', 'fecha_actualizacion',
             'items', 'total_items'
         ]
         read_only_fields = ['fecha_creacion', 'fecha_actualizacion']
@@ -142,16 +143,28 @@ class ChecklistInstanceSerializer(serializers.ModelSerializer):
     respuestas = ChecklistItemResponseSerializer(many=True, read_only=True)
     checklist_template = ChecklistTemplateSerializer(read_only=True)
     orden_info = serializers.SerializerMethodField()
+    cita_personal_info = serializers.SerializerMethodField()
     progreso_info = serializers.SerializerMethodField()
     puede_finalizar_check = serializers.SerializerMethodField()
     requiere_firma_cliente = serializers.SerializerMethodField()
     firma_tecnico_disponible = serializers.SerializerMethodField()
     firma_cliente_disponible = serializers.SerializerMethodField()
     mecanico_asignado = serializers.SerializerMethodField()
+    template_generado_por_ia = serializers.SerializerMethodField()
+
+    def get_template_generado_por_ia(self, obj):
+        tpl = getattr(obj, 'checklist_template', None)
+        if tpl is None:
+            return False
+        return bool(getattr(tpl, 'generado_por_ia', False)) and tpl.revisado_en is None
 
     def get_mecanico_asignado(self, obj):
-        """Técnico del taller asignado a la orden (foto, nombre, especialidades)."""
-        miembro = getattr(obj.orden, 'mecanico_asignado', None)
+        """Técnico del taller asignado a la orden o cita personal."""
+        miembro = None
+        if obj.orden_id:
+            miembro = getattr(obj.orden, 'mecanico_asignado', None)
+        elif obj.cita_personal_id:
+            miembro = getattr(obj.cita_personal, 'miembro_taller', None)
         if miembro is None:
             return None
         request = self.context.get('request')
@@ -173,6 +186,8 @@ class ChecklistInstanceSerializer(serializers.ModelSerializer):
         }
 
     def get_orden_info(self, obj):
+        if not obj.orden_id:
+            return None
         result = {
             'id': obj.orden.id,
             'cliente': obj.orden.cliente.usuario.get_full_name(),
@@ -222,6 +237,25 @@ class ChecklistInstanceSerializer(serializers.ModelSerializer):
 
         result['proveedor_info'] = proveedor_info
         return result
+
+    def get_cita_personal_info(self, obj):
+        if not obj.cita_personal_id:
+            return None
+        cita = obj.cita_personal
+        det = getattr(cita, 'detalle', None)
+        cliente = det.cliente_nombre if det else ''
+        vehiculo = ''
+        if det:
+            vehiculo = f"{det.vehiculo_marca} {det.vehiculo_modelo}".strip()
+        return {
+            'id': cita.id,
+            'cliente': cliente,
+            'vehiculo': vehiculo,
+            'fecha_servicio': cita.fecha_servicio,
+            'hora_servicio': cita.hora_servicio,
+            'estado': cita.estado,
+            'tipo_servicio': cita.tipo_servicio,
+        }
     
     def get_progreso_info(self, obj):
         total_items = obj.checklist_template.items.count()
@@ -271,14 +305,14 @@ class ChecklistInstanceSerializer(serializers.ModelSerializer):
     class Meta:
         model = ChecklistInstance
         fields = [
-            'id', 'orden', 'checklist_template', 'estado',
+            'id', 'orden', 'cita_personal', 'checklist_template', 'estado',
             'fecha_creacion', 'fecha_inicio', 'fecha_finalizacion',
             'ubicacion_finalizacion', 'firma_tecnico', 'firma_cliente',
             'firma_tecnico_disponible', 'firma_cliente_disponible',
-            'requiere_firma_cliente',
+            'requiere_firma_cliente', 'template_generado_por_ia',
             'progreso_porcentaje', 'tiempo_total_minutos',
-            'respuestas', 'orden_info', 'progreso_info', 'puede_finalizar_check',
-            'mecanico_asignado',
+            'respuestas', 'orden_info', 'cita_personal_info', 'progreso_info',
+            'puede_finalizar_check', 'mecanico_asignado',
         ]
         read_only_fields = [
             'fecha_creacion', 'progreso_porcentaje', 'tiempo_total_minutos'
@@ -287,10 +321,28 @@ class ChecklistInstanceSerializer(serializers.ModelSerializer):
 
 class ChecklistInstanceCreateSerializer(serializers.ModelSerializer):
     """Serializer simplificado para crear instancias"""
-    
+
+    cita_personal = serializers.PrimaryKeyRelatedField(
+        queryset=__import__(
+            'mecanimovilapp.apps.ordenes.models',
+            fromlist=['CitaAgendaPersonal'],
+        ).CitaAgendaPersonal.objects.all(),
+        required=False,
+        allow_null=True,
+    )
+
+    def validate(self, attrs):
+        orden = attrs.get('orden')
+        cita = attrs.get('cita_personal')
+        if bool(orden) == bool(cita):
+            raise serializers.ValidationError(
+                'Debe indicar exactamente uno: orden o cita_personal.'
+            )
+        return attrs
+
     class Meta:
         model = ChecklistInstance
-        fields = ['orden', 'checklist_template']
+        fields = ['orden', 'cita_personal', 'checklist_template']
 
 
 class ChecklistPhotoUploadSerializer(serializers.ModelSerializer):

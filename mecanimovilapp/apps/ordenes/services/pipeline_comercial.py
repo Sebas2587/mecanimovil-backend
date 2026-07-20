@@ -163,6 +163,7 @@ def _fila_base(
     cotizacion_id: int | None = None,
     miembro_taller_id: int | None = None,
     miembro_taller_nombre: str | None = None,
+    template_generado_por_ia: bool = False,
 ) -> dict[str, Any]:
     return {
         'tipo_entidad': tipo_entidad,
@@ -189,7 +190,31 @@ def _fila_base(
         'cotizacion_id': cotizacion_id,
         'miembro_taller_id': miembro_taller_id,
         'miembro_taller_nombre': miembro_taller_nombre,
+        'template_generado_por_ia': template_generado_por_ia,
     }
+
+
+def _template_generado_por_ia_desde_instancia(inst) -> bool:
+    if inst is None or inst.checklist_template is None:
+        return False
+    tpl = inst.checklist_template
+    return bool(tpl.generado_por_ia and tpl.revisado_en is None)
+
+
+def _estado_normalizado_cita_personal(cita) -> str:
+    if cita.estado == 'cancelada':
+        return 'rechazado_perdido'
+    if cita.estado == 'cerrada':
+        return 'completado'
+
+    inst = getattr(cita, 'checklist_instance', None)
+    if inst is None:
+        return CITA_PERSONAL_MAP.get(cita.estado, 'aceptado_agendado')
+    if inst.estado in ('EN_PROGRESO', 'PAUSADO', 'PENDIENTE_FIRMA_CLIENTE'):
+        return 'en_ejecucion'
+    if inst.estado == 'COMPLETADO':
+        return 'completado'
+    return 'aceptado_agendado'
 
 
 def _filas_ofertas(proveedor_user, taller: Taller | None) -> list[dict[str, Any]]:
@@ -287,7 +312,7 @@ def _filas_cotizaciones_canal(taller: Taller) -> list[dict[str, Any]]:
 def _filas_citas_personales(taller: Taller, miembro_id: int | None = None) -> list[dict[str, Any]]:
     qs = (
         CitaAgendaPersonal.objects.filter(taller=taller)
-        .select_related('detalle', 'miembro_taller')
+        .select_related('detalle', 'miembro_taller', 'checklist_instance__checklist_template')
         .order_by('-fecha_servicio', '-hora_servicio')[:200]
     )
     if miembro_id:
@@ -295,7 +320,8 @@ def _filas_citas_personales(taller: Taller, miembro_id: int | None = None) -> li
     filas: list[dict[str, Any]] = []
     for cita in qs:
         det = cita.detalle
-        estado_norm = CITA_PERSONAL_MAP.get(cita.estado, 'aceptado_agendado')
+        estado_norm = _estado_normalizado_cita_personal(cita)
+        inst = getattr(cita, 'checklist_instance', None)
         vehiculo_txt = ' '.join(
             p for p in [det.vehiculo_marca, det.vehiculo_modelo] if p
         ).strip()
@@ -318,6 +344,7 @@ def _filas_citas_personales(taller: Taller, miembro_id: int | None = None) -> li
                 miembro_taller_nombre=(
                     cita.miembro_taller.nombre if cita.miembro_taller_id else None
                 ),
+                template_generado_por_ia=_template_generado_por_ia_desde_instancia(inst),
             )
         )
     return filas
@@ -444,6 +471,40 @@ def _filas_solicitudes_directas(taller: Taller, proveedor_user) -> list[dict[str
     return filas
 
 
+def _dedupe_pipeline_filas(filas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Colapsa filas repetidas del mismo hilo comercial.
+
+    Prioridad de clave:
+    1. conversation_id (mismo chat omnicanal → una sola fila, la más reciente)
+    2. cotizacion_id / oferta_id / solicitud_id / cita_id / orden_id
+    3. tipo_entidad + entidad_id
+    """
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for fila in filas:
+        conv_id = fila.get('conversation_id')
+        if conv_id:
+            key = f'conv:{conv_id}'
+        elif fila.get('cotizacion_id'):
+            key = f'cot:{fila["cotizacion_id"]}'
+        elif fila.get('oferta_id'):
+            key = f'oferta:{fila["oferta_id"]}'
+        elif fila.get('solicitud_id'):
+            key = f'sol:{fila["solicitud_id"]}'
+        elif fila.get('cita_id'):
+            key = f'cita:{fila["cita_id"]}'
+        elif fila.get('orden_id'):
+            key = f'orden:{fila["orden_id"]}'
+        else:
+            key = f'{fila.get("tipo_entidad")}:{fila.get("entidad_id")}'
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(fila)
+    return out
+
+
 def construir_pipeline_comercial(
     *,
     user,
@@ -478,6 +539,9 @@ def construir_pipeline_comercial(
         ]
 
     filas.sort(key=lambda f: f.get('fecha_referencia') or '', reverse=True)
+    # Una fila por conversación/cotización de canal: evita repetir el mismo
+    # contacto varias veces cuando hay cotizaciones sucesivas en el mismo hilo.
+    filas = _dedupe_pipeline_filas(filas)
     filas = filas[:limite]
 
     resumen: dict[str, int] = {k: 0 for k in ESTADOS_NORMALIZADOS}

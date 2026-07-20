@@ -230,6 +230,15 @@ class ChecklistTemplate(models.Model):
         default=True,
         help_text=_('Indica si este template está disponible para uso')
     )
+    generado_por_ia = models.BooleanField(
+        default=False,
+        help_text=_('True si el template fue generado automáticamente por IA'),
+    )
+    revisado_en = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=_('Fecha en que un administrador revisó/validó el template generado por IA'),
+    )
     version = models.CharField(
         max_length=10,
         default='1.0',
@@ -419,11 +428,20 @@ class ChecklistInstance(models.Model):
         ('CANCELADO', 'Cancelado'),
     ]
     
-    # Relación con la orden
+    # Relación con la orden (marketplace) o cita personal del taller
     orden = models.OneToOneField(
         'ordenes.SolicitudServicio',
         on_delete=models.CASCADE,
-        related_name='checklist_instance'
+        related_name='checklist_instance',
+        null=True,
+        blank=True,
+    )
+    cita_personal = models.OneToOneField(
+        'ordenes.CitaAgendaPersonal',
+        on_delete=models.CASCADE,
+        related_name='checklist_instance',
+        null=True,
+        blank=True,
     )
     
     # Template utilizado
@@ -496,9 +514,26 @@ class ChecklistInstance(models.Model):
         verbose_name = _('Instancia de Checklist')
         verbose_name_plural = _('Instancias de Checklist')
         ordering = ['-fecha_creacion']
-    
+        constraints = [
+            models.CheckConstraint(
+                check=(
+                    models.Q(orden__isnull=False, cita_personal__isnull=True)
+                    | models.Q(orden__isnull=True, cita_personal__isnull=False)
+                ),
+                name='checklist_instance_exactly_one_parent',
+            ),
+        ]
+
+    @property
+    def parent_label(self) -> str:
+        if self.orden_id:
+            return f'Orden {self.orden_id}'
+        if self.cita_personal_id:
+            return f'Cita {self.cita_personal_id}'
+        return 'Sin padre'
+
     def __str__(self):
-        return f"Checklist #{self.id} - Orden {self.orden.id} - {self.estado}"
+        return f"Checklist #{self.id} - {self.parent_label} - {self.estado}"
 
 
 class ChecklistItemResponse(models.Model):

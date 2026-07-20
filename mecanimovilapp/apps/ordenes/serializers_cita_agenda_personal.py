@@ -47,6 +47,9 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
     etiqueta = serializers.SerializerMethodField()
     editable = serializers.SerializerMethodField()
     tiene_checklist = serializers.SerializerMethodField()
+    checklist_id = serializers.SerializerMethodField()
+    template_generado_por_ia = serializers.SerializerMethodField()
+    estado_operativo = serializers.SerializerMethodField()
     mecanico_nombre = serializers.SerializerMethodField()
     mecanico_especialidades = serializers.SerializerMethodField()
     mecanico_modalidad_tecnico = serializers.SerializerMethodField()
@@ -71,6 +74,9 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
             'etiqueta',
             'editable',
             'tiene_checklist',
+            'checklist_id',
+            'template_generado_por_ia',
+            'estado_operativo',
             'miembro_taller',
             'mecanico_nombre',
             'mecanico_especialidades',
@@ -97,7 +103,53 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
         return obj.estado == 'activa'
 
     def get_tiene_checklist(self, obj) -> bool:
-        return False
+        from mecanimovilapp.apps.checklists.models import ChecklistInstance
+        from mecanimovilapp.apps.checklists.services import resolver_servicio_desde_cita_personal
+
+        if ChecklistInstance.objects.filter(cita_personal=obj).exists():
+            return True
+        return resolver_servicio_desde_cita_personal(obj) is not None
+
+    def get_checklist_id(self, obj) -> int | None:
+        from mecanimovilapp.apps.checklists.models import ChecklistInstance
+
+        inst = ChecklistInstance.objects.filter(cita_personal=obj).only('id').first()
+        return inst.id if inst else None
+
+    def get_template_generado_por_ia(self, obj) -> bool:
+        from mecanimovilapp.apps.checklists.models import ChecklistInstance
+
+        inst = (
+            ChecklistInstance.objects
+            .filter(cita_personal=obj)
+            .select_related('checklist_template')
+            .first()
+        )
+        if inst is None or inst.checklist_template is None:
+            return False
+        tpl = inst.checklist_template
+        return bool(tpl.generado_por_ia and tpl.revisado_en is None)
+
+    def get_estado_operativo(self, obj) -> str:
+        from mecanimovilapp.apps.checklists.models import ChecklistInstance
+
+        if obj.estado == 'cancelada':
+            return 'cancelado'
+        if obj.estado == 'cerrada':
+            return 'cerrado'
+
+        inst = ChecklistInstance.objects.filter(cita_personal=obj).only('estado').first()
+        if inst is None:
+            return 'agendado' if obj.miembro_taller_id else 'nuevo'
+        if inst.estado in ('PENDIENTE',):
+            return 'agendado'
+        if inst.estado in ('EN_PROGRESO', 'PAUSADO'):
+            return 'en_ejecucion'
+        if inst.estado in ('PENDIENTE_FIRMA_CLIENTE',):
+            return 'en_ejecucion'
+        if inst.estado == 'COMPLETADO':
+            return 'completado'
+        return 'agendado'
 
     def get_mecanico_nombre(self, obj) -> str | None:
         return obj.miembro_taller.nombre if obj.miembro_taller_id else None

@@ -19,6 +19,8 @@ from .serializers import (
 from mecanimovilapp.apps.ordenes.services.cierre_servicio_marketplace import (
     sincronizar_cierre_marketplace,
 )
+from mecanimovilapp.apps.checklists.services import resolver_o_generar_template
+from mecanimovilapp.apps.servicios.models import Servicio
 from .firma_utils import firma_a_payload_base64
 
 
@@ -125,16 +127,24 @@ class ChecklistTemplateViewSet(viewsets.ReadOnlyModelViewSet):
             )
         
         try:
-            template = self.get_queryset().get(
-                servicio_id=servicio_id, 
-                activo=True
-            )
+            servicio = Servicio.objects.get(id=servicio_id)
+            template = resolver_o_generar_template(servicio, generar_si_ausente=True)
+            if template is None:
+                return Response(
+                    {'error': 'No existe template de checklist para este servicio'},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
             serializer = self.get_serializer(template)
             return Response(serializer.data)
-        except ChecklistTemplate.DoesNotExist:
+        except Servicio.DoesNotExist:
+            return Response(
+                {'error': 'Servicio no encontrado'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        except Exception:
             return Response(
                 {'error': 'No existe template de checklist para este servicio'},
-                status=status.HTTP_404_NOT_FOUND
+                status=status.HTTP_404_NOT_FOUND,
             )
 
     @action(detail=True, methods=['post'], url_path='bulk-add-items', permission_classes=[permissions.IsAdminUser])
@@ -261,26 +271,52 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
         if hasattr(user, 'mecanico_domicilio') and orden.mecanico_id == user.mecanico_domicilio.id:
             return True
         return False
+
+    def _usuario_tiene_acceso_cita(self, user, cita) -> bool:
+        taller, miembro, rol = self._contexto_proveedor()
+        if rol == 'mecanico' and miembro is not None:
+            return cita.miembro_taller_id == miembro.id
+        if taller is not None and cita.taller_id == taller.id:
+            return True
+        if hasattr(user, 'mecanico_domicilio') and cita.mecanico_id == user.mecanico_domicilio.id:
+            return True
+        return False
+
+    def _usuario_tiene_acceso_instance(self, user, instance) -> bool:
+        if instance.orden_id:
+            return self._usuario_tiene_acceso_orden(user, instance.orden)
+        if instance.cita_personal_id:
+            return self._usuario_tiene_acceso_cita(user, instance.cita_personal)
+        return False
     
     def get_queryset(self):
         """Filtrar checklist por proveedor autenticado"""
+        from django.db.models import Q
+
         user = self.request.user
         taller, miembro, rol = self._contexto_proveedor()
 
         base_qs = ChecklistInstance.objects.select_related(
-            'orden', 'checklist_template'
+            'orden', 'cita_personal', 'checklist_template'
         ).prefetch_related(
             'respuestas__fotos', 'respuestas__item_template'
         )
 
         if rol == 'mecanico' and miembro is not None:
-            return base_qs.filter(orden__mecanico_asignado=miembro)
+            return base_qs.filter(
+                Q(orden__mecanico_asignado=miembro) | Q(cita_personal__miembro_taller=miembro)
+            )
 
         if taller is not None:
-            return base_qs.filter(orden__taller=taller)
+            return base_qs.filter(
+                Q(orden__taller=taller) | Q(cita_personal__taller=taller)
+            )
 
         if hasattr(user, 'mecanico_domicilio'):
-            return base_qs.filter(orden__mecanico=user.mecanico_domicilio)
+            return base_qs.filter(
+                Q(orden__mecanico=user.mecanico_domicilio)
+                | Q(cita_personal__mecanico=user.mecanico_domicilio)
+            )
 
         return ChecklistInstance.objects.none()
     
@@ -304,27 +340,47 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
         
         try:
             # Validar datos básicos
-            if 'orden' not in request.data:
-                logger.error("🔸 ERROR: Falta campo 'orden' en los datos")
-                return Response({'error': 'Se requiere el campo orden'}, status=status.HTTP_400_BAD_REQUEST)
-            
+            orden_id = request.data.get('orden')
+            cita_id = request.data.get('cita_personal')
+            template_id = request.data.get('checklist_template')
+
+            if not orden_id and not cita_id:
+                logger.error("🔸 ERROR: Falta campo 'orden' o 'cita_personal' en los datos")
+                return Response(
+                    {'error': 'Se requiere el campo orden o cita_personal'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if orden_id and cita_id:
+                return Response(
+                    {'error': 'Indique solo uno: orden o cita_personal'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
             if 'checklist_template' not in request.data:
                 logger.error("🔸 ERROR: Falta campo 'checklist_template' en los datos")
                 return Response({'error': 'Se requiere el campo checklist_template'}, status=status.HTTP_400_BAD_REQUEST)
             
-            orden_id = request.data.get('orden')
-            template_id = request.data.get('checklist_template')
+            logger.info(f"🔸 Orden ID: {orden_id}, Cita ID: {cita_id}, Template ID: {template_id}")
             
-            logger.info(f"🔸 Orden ID: {orden_id}, Template ID: {template_id}")
-            
-            # Verificar que la orden existe
-            try:
-                from mecanimovilapp.apps.ordenes.models import SolicitudServicio
-                orden = SolicitudServicio.objects.get(id=orden_id)
-                logger.info(f"🔸 Orden encontrada: ID {orden.id}, Estado: {orden.estado}")
-            except SolicitudServicio.DoesNotExist:
-                logger.error(f"🔸 ERROR: No existe orden con ID {orden_id}")
-                return Response({'error': f'No existe orden con ID {orden_id}'}, status=status.HTTP_400_BAD_REQUEST)
+            orden = None
+            cita = None
+            if orden_id:
+                try:
+                    from mecanimovilapp.apps.ordenes.models import SolicitudServicio
+                    orden = SolicitudServicio.objects.get(id=orden_id)
+                    logger.info(f"🔸 Orden encontrada: ID {orden.id}, Estado: {orden.estado}")
+                except SolicitudServicio.DoesNotExist:
+                    logger.error(f"🔸 ERROR: No existe orden con ID {orden_id}")
+                    return Response({'error': f'No existe orden con ID {orden_id}'}, status=status.HTTP_400_BAD_REQUEST)
+            else:
+                try:
+                    from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonal
+                    cita = CitaAgendaPersonal.objects.get(id=cita_id)
+                    logger.info(f"🔸 Cita personal encontrada: ID {cita.id}, Estado: {cita.estado}")
+                except CitaAgendaPersonal.DoesNotExist:
+                    logger.error(f"🔸 ERROR: No existe cita con ID {cita_id}")
+                    return Response({'error': f'No existe cita con ID {cita_id}'}, status=status.HTTP_400_BAD_REQUEST)
             
             # Verificar que el template existe
             try:
@@ -334,21 +390,30 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
                 logger.error(f"🔸 ERROR: No existe template con ID {template_id}")
                 return Response({'error': f'No existe template con ID {template_id}'}, status=status.HTTP_400_BAD_REQUEST)
             
-            # Verificar que el usuario tiene acceso a esta orden
+            # Verificar acceso
             user = request.user
-            tiene_acceso = self._usuario_tiene_acceso_orden(user, orden)
+            tiene_acceso = (
+                self._usuario_tiene_acceso_orden(user, orden)
+                if orden is not None
+                else self._usuario_tiene_acceso_cita(user, cita)
+            )
             
             if tiene_acceso:
-                logger.info(f"🔸 Acceso verificado para orden {orden_id}")
+                parent_id = orden.id if orden else cita.id
+                logger.info(f"🔸 Acceso verificado para {'orden' if orden else 'cita'} {parent_id}")
             
             if not tiene_acceso:
-                logger.error(f"🔸 ERROR: Usuario {user.username} no tiene acceso a orden {orden_id}")
-                return Response({'error': 'No tienes acceso a esta orden'}, status=status.HTTP_403_FORBIDDEN)
+                logger.error(f"🔸 ERROR: Usuario {user.username} sin acceso")
+                return Response({'error': 'No tienes acceso a este checklist'}, status=status.HTTP_403_FORBIDDEN)
             
-            # Verificar que no exista ya un checklist para esta orden
-            existing = ChecklistInstance.objects.filter(orden=orden).first()
+            # Verificar instancia existente
+            if orden is not None:
+                existing = ChecklistInstance.objects.filter(orden=orden).first()
+            else:
+                existing = ChecklistInstance.objects.filter(cita_personal=cita).first()
             if existing:
-                logger.warning(f"🔸 ADVERTENCIA: Ya existe checklist para orden {orden_id} - ID: {existing.id}")
+                parent_label = orden.id if orden else cita.id
+                logger.warning(f"🔸 ADVERTENCIA: Ya existe checklist para {parent_label} - ID: {existing.id}")
                 # Devolver el existente en lugar de error
                 response_serializer = ChecklistInstanceSerializer(
                     existing, context=self.get_serializer_context()
@@ -541,6 +606,45 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
                 {'error': f'Error interno: {str(e)}'}, 
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+    @action(detail=False, methods=['get'], url_path='by_cita_personal/(?P<cita_id>[^/.]+)')
+    def by_cita_personal(self, request, cita_id=None):
+        """Obtener checklist por ID de cita personal del taller."""
+        import logging
+        logger = logging.getLogger(__name__)
+
+        if not cita_id:
+            return Response(
+                {'error': 'Se requiere el ID de la cita personal'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            instance = ChecklistInstance.objects.select_related(
+                'cita_personal__detalle',
+                'cita_personal__miembro_taller',
+                'checklist_template',
+            ).prefetch_related(
+                'respuestas__fotos',
+                'respuestas__item_template__catalog_item',
+                'cita_personal__miembro_taller__especialidades',
+            ).get(cita_personal_id=cita_id)
+        except ChecklistInstance.DoesNotExist:
+            return Response(
+                {'error': 'No existe checklist para esta cita personal'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        user = request.user
+        if not self._usuario_tiene_acceso_cita(user, instance.cita_personal):
+            return Response(
+                {'error': 'No tienes acceso a este checklist'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = self.get_serializer(instance)
+        logger.info('Checklist devuelto para cita personal %s', cita_id)
+        return Response(serializer.data)
     
     @action(detail=True, methods=['post'])
     def start(self, request, pk=None):
@@ -558,8 +662,8 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
         instance.save()
         
         # Pasar la orden a checklist_en_progreso solo cuando el proveedor inicia el checklist
-        orden = instance.orden
-        if orden.estado == 'confirmado':
+        if instance.orden_id and instance.orden.estado == 'confirmado':
+            orden = instance.orden
             orden.estado = 'checklist_en_progreso'
             orden.save(update_fields=['estado'])
         
@@ -614,15 +718,33 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
         logger = logging.getLogger(__name__)
 
         instance = self.get_object()
+        parent_ref = (
+            f'orden {instance.orden_id}'
+            if instance.orden_id
+            else f'cita {instance.cita_personal_id}'
+        )
         logger.info(
-            f"🔸 Finalizando checklist ID: {instance.id} para orden: {instance.orden.id}"
+            f"🔸 Finalizando checklist ID: {instance.id} para {parent_ref}"
         )
 
         # ✅ Idempotencia: ya completado, devolver 200 (evita fallos por reintentos).
         if instance.estado == 'COMPLETADO':
             logger.warning(f"🔸 finalize llamado pero checklist ya COMPLETADO: {instance.id}")
+            if instance.cita_personal_id:
+                cita = instance.cita_personal
+                return Response(
+                    {
+                        'message': 'El checklist ya fue finalizado anteriormente',
+                        'checklist_id': instance.id,
+                        'cita_personal_id': cita.id,
+                        'cita_estado_nuevo': cita.estado,
+                        'estado': instance.estado,
+                        'requiere_firma_cliente': False,
+                    },
+                    status=status.HTTP_200_OK,
+                )
             orden = instance.orden
-            if orden.estado == 'completado':
+            if orden and orden.estado == 'completado':
                 hubo, oferta_ref = sincronizar_cierre_marketplace(orden.id)
                 if hubo and oferta_ref:
                     _notificar_websocket_cierre_marketplace(oferta_ref, orden.id, logger)
@@ -630,7 +752,7 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
                 {
                     'message': 'El checklist ya fue finalizado anteriormente',
                     'checklist_id': instance.id,
-                    'orden_id': instance.orden.id,
+                    'orden_id': instance.orden_id,
                     'estado': instance.estado,
                     'requiere_firma_cliente': False,
                 },
@@ -646,7 +768,7 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
                 {
                     'message': 'El checklist ya fue cerrado por el técnico, esperando firma del cliente.',
                     'checklist_id': instance.id,
-                    'orden_id': instance.orden.id,
+                    'orden_id': instance.orden_id,
                     'estado': instance.estado,
                     'requiere_firma_cliente': True,
                 },
@@ -692,8 +814,13 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
             instance.fecha_finalizacion = ahora
             instance.firma_cliente = firma_a_payload_base64(firma_cliente)
             instance.progreso_porcentaje = 100
+        elif instance.cita_personal_id:
+            # Cita personal: no hay firma de cliente en app; cierra con firma del técnico.
+            instance.estado = 'COMPLETADO'
+            instance.fecha_finalizacion = ahora
+            instance.progreso_porcentaje = 100
         else:
-            # Flujo nuevo (firma diferida): el cliente firmará desde su app.
+            # Flujo marketplace (firma diferida): el cliente firmará desde su app.
             instance.estado = 'PENDIENTE_FIRMA_CLIENTE'
             instance.progreso_porcentaje = 100
 
@@ -715,7 +842,28 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
 
         instance.save()
 
-        # ✅ ACTUALIZAR ESTADO DE LA ORDEN
+        # Actualizar estado de la orden o cita personal
+        if instance.cita_personal_id:
+            cita = instance.cita_personal
+            if instance.estado == 'COMPLETADO' and cita.estado == 'activa':
+                cita.cerrar()
+                cita.save(update_fields=['estado', 'cerrada_en', 'fecha_actualizacion'])
+                logger.info('Cita personal %s cerrada tras checklist completado', cita.id)
+            return Response(
+                {
+                    'message': 'Checklist finalizado correctamente',
+                    'checklist_id': instance.id,
+                    'cita_personal_id': cita.id,
+                    'cita_estado_nuevo': cita.estado,
+                    'estado': instance.estado,
+                    'requiere_firma_cliente': False,
+                    'template_generado_por_ia': bool(
+                        getattr(instance.checklist_template, 'generado_por_ia', False)
+                        and instance.checklist_template.revisado_en is None
+                    ),
+                }
+            )
+
         orden = instance.orden
         estado_anterior = orden.estado
 
