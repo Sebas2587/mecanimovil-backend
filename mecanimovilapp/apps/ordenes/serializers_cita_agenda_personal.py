@@ -48,6 +48,13 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
     editable = serializers.SerializerMethodField()
     tiene_checklist = serializers.SerializerMethodField()
     checklist_id = serializers.SerializerMethodField()
+    checklist_estado = serializers.SerializerMethodField()
+    checklist_progreso_porcentaje = serializers.SerializerMethodField()
+    checklist_fecha_inicio = serializers.SerializerMethodField()
+    checklist_items_completados = serializers.SerializerMethodField()
+    checklist_items_total = serializers.SerializerMethodField()
+    checklist_minutos_transcurridos = serializers.SerializerMethodField()
+    puede_cancelar = serializers.SerializerMethodField()
     template_generado_por_ia = serializers.SerializerMethodField()
     estado_operativo = serializers.SerializerMethodField()
     mecanico_nombre = serializers.SerializerMethodField()
@@ -75,6 +82,13 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
             'editable',
             'tiene_checklist',
             'checklist_id',
+            'checklist_estado',
+            'checklist_progreso_porcentaje',
+            'checklist_fecha_inicio',
+            'checklist_items_completados',
+            'checklist_items_total',
+            'checklist_minutos_transcurridos',
+            'puede_cancelar',
             'template_generado_por_ia',
             'estado_operativo',
             'miembro_taller',
@@ -93,6 +107,22 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
             'fecha_actualizacion',
         ]
 
+    def _checklist_instance(self, obj):
+        cache = self.context.setdefault('_checklist_by_cita', {})
+        if obj.pk in cache:
+            return cache[obj.pk]
+        from mecanimovilapp.apps.checklists.models import ChecklistInstance
+
+        inst = (
+            ChecklistInstance.objects
+            .filter(cita_personal=obj)
+            .select_related('checklist_template')
+            .prefetch_related('respuestas', 'checklist_template__items')
+            .first()
+        )
+        cache[obj.pk] = inst
+        return inst
+
     def get_origen(self, obj) -> str:
         return 'personal'
 
@@ -103,42 +133,82 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
         return obj.estado == 'activa'
 
     def get_tiene_checklist(self, obj) -> bool:
-        from mecanimovilapp.apps.checklists.models import ChecklistInstance
         from mecanimovilapp.apps.checklists.services import resolver_servicio_desde_cita_personal
 
-        if ChecklistInstance.objects.filter(cita_personal=obj).exists():
+        if self._checklist_instance(obj) is not None:
             return True
         return resolver_servicio_desde_cita_personal(obj) is not None
 
     def get_checklist_id(self, obj) -> int | None:
-        from mecanimovilapp.apps.checklists.models import ChecklistInstance
-
-        inst = ChecklistInstance.objects.filter(cita_personal=obj).only('id').first()
+        inst = self._checklist_instance(obj)
         return inst.id if inst else None
 
-    def get_template_generado_por_ia(self, obj) -> bool:
-        from mecanimovilapp.apps.checklists.models import ChecklistInstance
+    def get_checklist_estado(self, obj) -> str | None:
+        inst = self._checklist_instance(obj)
+        return inst.estado if inst else None
 
-        inst = (
-            ChecklistInstance.objects
-            .filter(cita_personal=obj)
-            .select_related('checklist_template')
-            .first()
-        )
+    def get_checklist_progreso_porcentaje(self, obj) -> int:
+        inst = self._checklist_instance(obj)
+        if inst is None:
+            return 0
+        if inst.progreso_porcentaje is not None:
+            return int(inst.progreso_porcentaje)
+        total = inst.checklist_template.items.count() if inst.checklist_template_id else 0
+        if total <= 0:
+            return 0
+        done = inst.respuestas.filter(completado=True).count()
+        return max(0, min(100, int(round((done / total) * 100))))
+
+    def get_checklist_fecha_inicio(self, obj) -> str | None:
+        inst = self._checklist_instance(obj)
+        if inst is None or not inst.fecha_inicio:
+            return None
+        return inst.fecha_inicio.isoformat()
+
+    def get_checklist_items_completados(self, obj) -> int:
+        inst = self._checklist_instance(obj)
+        if inst is None:
+            return 0
+        return inst.respuestas.filter(completado=True).count()
+
+    def get_checklist_items_total(self, obj) -> int:
+        inst = self._checklist_instance(obj)
+        if inst is None or not inst.checklist_template_id:
+            return 0
+        return inst.checklist_template.items.count()
+
+    def get_checklist_minutos_transcurridos(self, obj) -> int | None:
+        from django.utils import timezone
+
+        inst = self._checklist_instance(obj)
+        if inst is None or not inst.fecha_inicio:
+            return None
+        fin = inst.fecha_finalizacion or timezone.now()
+        return max(0, int((fin - inst.fecha_inicio).total_seconds() // 60))
+
+    def get_puede_cancelar(self, obj) -> bool:
+        """No cancelable una vez iniciado el checklist operativo."""
+        if obj.estado != 'activa':
+            return False
+        inst = self._checklist_instance(obj)
+        if inst is None:
+            return True
+        return inst.estado in ('PENDIENTE',)
+
+    def get_template_generado_por_ia(self, obj) -> bool:
+        inst = self._checklist_instance(obj)
         if inst is None or inst.checklist_template is None:
             return False
         tpl = inst.checklist_template
         return bool(tpl.generado_por_ia and tpl.revisado_en is None)
 
     def get_estado_operativo(self, obj) -> str:
-        from mecanimovilapp.apps.checklists.models import ChecklistInstance
-
         if obj.estado == 'cancelada':
             return 'cancelado'
         if obj.estado == 'cerrada':
             return 'cerrado'
 
-        inst = ChecklistInstance.objects.filter(cita_personal=obj).only('estado').first()
+        inst = self._checklist_instance(obj)
         if inst is None:
             return 'agendado' if obj.miembro_taller_id else 'nuevo'
         if inst.estado in ('PENDIENTE',):

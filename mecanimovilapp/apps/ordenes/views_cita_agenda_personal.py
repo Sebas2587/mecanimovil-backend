@@ -189,6 +189,19 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
                 {'error': 'Solo se pueden cancelar citas activas.'},
                 status=status.HTTP_409_CONFLICT,
             )
+        from mecanimovilapp.apps.checklists.models import ChecklistInstance
+
+        checklist = ChecklistInstance.objects.filter(cita_personal=cita).only('estado').first()
+        if checklist is not None and checklist.estado not in ('PENDIENTE',):
+            return Response(
+                {
+                    'error': (
+                        'No se puede cancelar: el servicio ya fue iniciado. '
+                        'El técnico debe completar el checklist operativo.'
+                    ),
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
         cita.cancelar()
         cita.save(update_fields=['estado', 'cancelada_en', 'fecha_actualizacion'])
         return Response(CitaAgendaPersonalSerializer(cita).data)
