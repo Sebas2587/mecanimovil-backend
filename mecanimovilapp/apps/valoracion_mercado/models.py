@@ -46,11 +46,11 @@ class AvisoExternoVehiculo(models.Model):
         indexes = [
             models.Index(
                 fields=['marca', 'modelo', 'year', 'activo'],
-                name='valoracion__marca_i_8a3f2d_idx',
+                name='val_aviso_mrc_mdl_yr_idx',
             ),
             models.Index(
                 fields=['fecha_ultima_vista'],
-                name='valoracion__fecha_u_4b1c9e_idx',
+                name='val_aviso_fec_vista_idx',
             ),
         ]
 

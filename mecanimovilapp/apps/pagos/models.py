@@ -641,11 +641,11 @@ class LiquidacionProveedor(models.Model):
         indexes = [
             models.Index(
                 fields=['usuario', 'estado'],
-                name='pagos_liquid_usuario_0a1b2c_idx',
+                name='pagos_liq_usr_estado_idx',
             ),
             models.Index(
                 fields=['estado', '-creado_en'],
-                name='pagos_liquid_estado__3d4e5f_idx',
+                name='pagos_liq_est_creado_idx',
             ),
         ]
 

@@ -1,8 +1,13 @@
 """Índices idempotentes de AvisoExternoVehiculo (evita RenameIndex frágiles en Render)."""
 
-from django.db import migrations
+from django.db import migrations, models
 
 CANONICAL_INDEXES = (
+    'val_aviso_mrc_mdl_yr_idx',
+    'val_aviso_fec_vista_idx',
+)
+
+LEGACY_INDEX_NAMES = (
     'valoracion__marca_i_8a3f2d_idx',
     'valoracion__fecha_u_4b1c9e_idx',
 )
@@ -41,13 +46,13 @@ def _ensure_aviso_indexes(apps, schema_editor):
     with schema_editor.connection.cursor() as cursor:
         cursor.execute(
             """
-            CREATE INDEX IF NOT EXISTS valoracion__marca_i_8a3f2d_idx
+            CREATE INDEX IF NOT EXISTS val_aviso_mrc_mdl_yr_idx
             ON valoracion_mercado_avisoexternovehiculo (marca_id, modelo_id, year, activo)
             """
         )
         cursor.execute(
             """
-            CREATE INDEX IF NOT EXISTS valoracion__fecha_u_4b1c9e_idx
+            CREATE INDEX IF NOT EXISTS val_aviso_fec_vista_idx
             ON valoracion_mercado_avisoexternovehiculo (fecha_ultima_vista)
             """
         )
@@ -71,4 +76,30 @@ class Migration(migrations.Migration):
     operations = [
         migrations.RunPython(_cleanup_ghost_migration_records, migrations.RunPython.noop),
         migrations.RunPython(_ensure_aviso_indexes, migrations.RunPython.noop),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[],
+            state_operations=[
+                migrations.RemoveIndex(
+                    model_name='avisoexternovehiculo',
+                    name=legacy_name,
+                )
+                for legacy_name in LEGACY_INDEX_NAMES
+            ]
+            + [
+                migrations.AddIndex(
+                    model_name='avisoexternovehiculo',
+                    index=models.Index(
+                        fields=['marca', 'modelo', 'year', 'activo'],
+                        name='val_aviso_mrc_mdl_yr_idx',
+                    ),
+                ),
+                migrations.AddIndex(
+                    model_name='avisoexternovehiculo',
+                    index=models.Index(
+                        fields=['fecha_ultima_vista'],
+                        name='val_aviso_fec_vista_idx',
+                    ),
+                ),
+            ],
+        ),
     ]

@@ -1,13 +1,17 @@
 """Índices idempotentes de LiquidacionProveedor (evita RenameIndex frágiles en Render)."""
 
-from django.db import migrations
+from django.db import migrations, models
 
 CANONICAL_INDEXES = (
+    'pagos_liq_usr_estado_idx',
+    'pagos_liq_est_creado_idx',
+)
+
+LEGACY_INDEX_NAMES = (
     'pagos_liquid_usuario_0a1b2c_idx',
     'pagos_liquid_estado__3d4e5f_idx',
 )
 
-# Migraciones auto-generadas con makemigrations que fallan o duplican en producción.
 GHOST_MIGRATION_NAMES = (
     '0004_rename_pagos_liquid_usuario_0a1b2c_idx_pagos_liqui_usuario_06881e_idx_and_more',
 )
@@ -36,23 +40,19 @@ def _drop_noncanonical_indexes(table_name, canonical, schema_editor):
 
 def _ensure_liquidacion_indexes(apps, schema_editor):
     table = 'pagos_liquidacionproveedor'
-    _drop_noncanonical_indexes(
-        table,
-        CANONICAL_INDEXES,
-        schema_editor,
-    )
+    _drop_noncanonical_indexes(table, CANONICAL_INDEXES, schema_editor)
     if schema_editor.connection.vendor != 'postgresql':
         return
     with schema_editor.connection.cursor() as cursor:
         cursor.execute(
             """
-            CREATE INDEX IF NOT EXISTS pagos_liquid_usuario_0a1b2c_idx
+            CREATE INDEX IF NOT EXISTS pagos_liq_usr_estado_idx
             ON pagos_liquidacionproveedor (usuario_id, estado)
             """
         )
         cursor.execute(
             """
-            CREATE INDEX IF NOT EXISTS pagos_liquid_estado__3d4e5f_idx
+            CREATE INDEX IF NOT EXISTS pagos_liq_est_creado_idx
             ON pagos_liquidacionproveedor (estado, creado_en DESC)
             """
         )
@@ -76,4 +76,30 @@ class Migration(migrations.Migration):
     operations = [
         migrations.RunPython(_cleanup_ghost_migration_records, migrations.RunPython.noop),
         migrations.RunPython(_ensure_liquidacion_indexes, migrations.RunPython.noop),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[],
+            state_operations=[
+                migrations.RemoveIndex(
+                    model_name='liquidacionproveedor',
+                    name=legacy_name,
+                )
+                for legacy_name in LEGACY_INDEX_NAMES
+            ]
+            + [
+                migrations.AddIndex(
+                    model_name='liquidacionproveedor',
+                    index=models.Index(
+                        fields=['usuario', 'estado'],
+                        name='pagos_liq_usr_estado_idx',
+                    ),
+                ),
+                migrations.AddIndex(
+                    model_name='liquidacionproveedor',
+                    index=models.Index(
+                        fields=['estado', '-creado_en'],
+                        name='pagos_liq_est_creado_idx',
+                    ),
+                ),
+            ],
+        ),
     ]
