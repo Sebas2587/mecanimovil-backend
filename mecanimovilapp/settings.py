@@ -206,6 +206,13 @@ REST_FRAMEWORK = {
     },
 }
 
+# Base URL de la app usuarios (Expo Web) para enlaces públicos de informe de servicio.
+# Ejemplo: https://mecanimovil-usuarios.vercel.app
+INFORME_PUBLIC_BASE_URL = config(
+    'INFORME_PUBLIC_BASE_URL',
+    default='https://mecanimovil-usuarios.vercel.app',
+)
+
 # ===========================
 # Google OAuth (mobile login)
 # ===========================

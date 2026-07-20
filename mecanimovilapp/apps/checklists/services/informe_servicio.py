@@ -139,7 +139,9 @@ def generar_informe(checklist_instance: ChecklistInstance) -> InformeServicioPub
         f'Contexto vehículo: {json.dumps(ctx, ensure_ascii=False)}\n'
         f'Kilometraje servicio: {km_servicio or "no registrado"}\n\n'
         f'Detalle checklist:\n{checklist_texto}\n\n'
-        'Responde SOLO con el texto del informe (máx. 800 palabras).'
+        'Responde SOLO un JSON válido con esta forma exacta:\n'
+        '{"informe": "<texto del informe en español, máx. 800 palabras>"}\n'
+        'Sin markdown ni texto fuera del JSON.'
     )
 
     resumen_ia = _fallback_resumen_ia(ctx, checklist_texto, km_servicio)

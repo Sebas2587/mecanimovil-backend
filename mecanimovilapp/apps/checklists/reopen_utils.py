@@ -113,6 +113,9 @@ def reabrir_checklist_instance(
     instance.estado = 'EN_PROGRESO'
     instance.firma_tecnico = None
     instance.firma_cliente = None
+    instance.firma_supervisor = None
+    instance.firma_supervisor_por = None
+    instance.fecha_firma_supervisor = None
     instance.fecha_finalizacion = None
     instance.progreso_porcentaje = progreso
     if not instance.fecha_inicio:
@@ -120,6 +123,7 @@ def reabrir_checklist_instance(
         instance.fecha_inicio = timezone.now()
     instance.save(update_fields=[
         'estado', 'firma_tecnico', 'firma_cliente',
+        'firma_supervisor', 'firma_supervisor_por', 'fecha_firma_supervisor',
         'fecha_finalizacion', 'progreso_porcentaje', 'fecha_inicio',
     ])
 
