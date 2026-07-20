@@ -76,19 +76,83 @@ _VALORES_OK = frozenset({
 })
 
 
-def _valor_respuesta(resp, cat) -> str:
+def _parse_numero_respuesta(resp) -> float | None:
+    if resp is None or resp.respuesta_numero is None:
+        return None
+    try:
+        return float(resp.respuesta_numero)
+    except (TypeError, ValueError):
+        return None
+
+
+def _es_porcentaje_vida_util(tipo: str, pregunta: str) -> bool:
+    """COMPONENT_HEALTH y textos de vida útil son % (0–100), no montos."""
+    if (tipo or '').strip() == 'COMPONENT_HEALTH':
+        return True
+    p = (pregunta or '').lower()
+    return 'vida útil' in p or 'vida util' in p
+
+
+def _severidad_porcentaje(pct: float) -> str:
+    """Gravedad de vida útil restante (misma lógica que preview de impacto en prov)."""
+    if pct >= 80:
+        return 'ok'
+    if pct >= 60:
+        return 'atencion'
+    if pct >= 35:
+        return 'alerta'
+    return 'critico'
+
+
+def _meta_valor_respuesta(resp, cat) -> dict[str, Any]:
+    """
+    Valor legible + metadatos de formato para la UI pública.
+    formato: texto | km | porcentaje
+    """
     tipo = (getattr(cat, 'tipo_pregunta', '') or '').strip()
-    if resp.respuesta_texto:
-        return str(resp.respuesta_texto).strip()
-    if resp.respuesta_numero is not None:
-        if tipo == 'KILOMETER_INPUT':
-            return f'{int(resp.respuesta_numero):,}'.replace(',', '.')
-        return str(resp.respuesta_numero).rstrip('0').rstrip('.') if isinstance(resp.respuesta_numero, float) else str(resp.respuesta_numero)
-    if resp.respuesta_booleana is not None:
-        return 'Sí' if resp.respuesta_booleana else 'No'
+    pregunta = (getattr(cat, 'pregunta_texto', None) or getattr(cat, 'nombre', '') or '')
+    num = _parse_numero_respuesta(resp)
+    meta: dict[str, Any] = {
+        'valor': '',
+        'formato': 'texto',
+        'porcentaje': None,
+        'severidad': None,
+    }
+    if resp is None:
+        return meta
+
+    if tipo == 'KILOMETER_INPUT' and num is not None:
+        meta['formato'] = 'km'
+        meta['valor'] = f'{int(round(num)):,}'.replace(',', '.')
+        return meta
+
+    if _es_porcentaje_vida_util(tipo, pregunta) and num is not None:
+        pct = max(0.0, min(100.0, num))
+        meta['formato'] = 'porcentaje'
+        meta['porcentaje'] = round(pct, 1)
+        meta['severidad'] = _severidad_porcentaje(pct)
+        meta['valor'] = f'{int(round(pct))}%'
+        return meta
+
     if resp.respuesta_seleccion:
-        return str(resp.respuesta_seleccion).strip()
-    return ''
+        meta['valor'] = str(resp.respuesta_seleccion).strip()
+        return meta
+    if resp.respuesta_booleana is not None:
+        meta['valor'] = 'Sí' if resp.respuesta_booleana else 'No'
+        return meta
+    if resp.respuesta_texto:
+        meta['valor'] = str(resp.respuesta_texto).strip()
+        return meta
+    if num is not None:
+        if abs(num - round(num)) < 1e-9:
+            meta['valor'] = str(int(round(num)))
+        else:
+            meta['valor'] = f'{num:.2f}'.rstrip('0').rstrip('.')
+    return meta
+
+
+def _valor_respuesta(resp, cat) -> str:
+    return str(_meta_valor_respuesta(resp, cat).get('valor') or '')
 
 
 def _es_hallazgo_relevante(pregunta: str, valor: str, tipo: str) -> bool:
@@ -115,8 +179,9 @@ def _es_hallazgo_relevante(pregunta: str, valor: str, tipo: str) -> bool:
 
     try:
         num = float(v.replace('%', '').replace(',', '.'))
-        if ('vida' in p or 'filtro' in p or 'pastilla' in p or 'disco' in p or 'neum' in p) and num <= 40:
-            return True
+        if _es_porcentaje_vida_util(tipo, pregunta) or 'vida' in p or 'filtro' in p or 'pastilla' in p or 'disco' in p or 'neum' in p:
+            if num <= 40:
+                return True
     except (TypeError, ValueError):
         pass
 

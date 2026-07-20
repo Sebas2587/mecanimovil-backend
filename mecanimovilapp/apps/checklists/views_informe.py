@@ -16,7 +16,7 @@ from mecanimovilapp.apps.checklists.services.informe_servicio import (
     construir_url_publica,
     _es_hallazgo_relevante,
     _extraer_hallazgos,
-    _valor_respuesta,
+    _meta_valor_respuesta,
     regenerar_resumen_si_es_dump,
 )
 from mecanimovilapp.storage.utils import get_image_url
@@ -39,7 +39,12 @@ def _serializar_informe_publico(informe: InformeServicioPublico, request) -> dic
         resp = resp_map.get(item_tpl.id)
         pregunta = (cat.pregunta_texto or cat.nombre or '').strip()
         tipo = cat.tipo_pregunta or ''
-        valor = _valor_respuesta(resp, cat) if resp and resp.completado else ''
+        valor_meta = (
+            _meta_valor_respuesta(resp, cat)
+            if resp and resp.completado
+            else {'valor': '', 'formato': 'texto', 'porcentaje': None, 'severidad': None}
+        )
+        valor = valor_meta.get('valor') or ''
         fotos = []
         if resp:
             for foto in resp.fotos.all().order_by('orden_en_respuesta', 'id'):
@@ -63,22 +68,29 @@ def _serializar_informe_publico(informe: InformeServicioPublico, request) -> dic
         es_hallazgo = bool(
             resp and resp.completado and _es_hallazgo_relevante(pregunta, valor, tipo)
         )
-        if es_hallazgo:
-            hallazgos_ui.append({
-                'id': item_tpl.id,
-                'pregunta': pregunta,
-                'valor': valor,
-            })
-
-        items.append({
+        item_payload = {
             'id': item_tpl.id,
             'pregunta_texto': pregunta,
             'tipo_pregunta': tipo,
             'completado': bool(resp and resp.completado),
             'valor': valor or ('—' if not (resp and resp.completado) else ''),
+            'formato': valor_meta.get('formato') or 'texto',
+            'porcentaje': valor_meta.get('porcentaje'),
+            'severidad': valor_meta.get('severidad'),
             'es_hallazgo': es_hallazgo,
             'fotos': fotos,
-        })
+        }
+        if es_hallazgo:
+            hallazgos_ui.append({
+                'id': item_tpl.id,
+                'pregunta': pregunta,
+                'valor': item_payload['valor'],
+                'formato': item_payload['formato'],
+                'porcentaje': item_payload['porcentaje'],
+                'severidad': item_payload['severidad'],
+            })
+
+        items.append(item_payload)
 
     if not hallazgos_ui:
         for h in _extraer_hallazgos(checklist, limite=8):
@@ -86,6 +98,9 @@ def _serializar_informe_publico(informe: InformeServicioPublico, request) -> dic
                 'id': f"{h['pregunta']}:{h['valor']}",
                 'pregunta': h['pregunta'],
                 'valor': h['valor'],
+                'formato': 'texto',
+                'porcentaje': None,
+                'severidad': None,
             })
 
     taller_nombre = ''
