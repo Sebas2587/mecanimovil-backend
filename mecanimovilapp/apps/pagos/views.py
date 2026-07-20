@@ -873,6 +873,19 @@ def webhook_notification(request):
                                                 pago.receipt_url = receipt_url
                                         
                                         pago.save()
+
+                                        if pago.status == 'approved':
+                                            from mecanimovilapp.apps.pagos.liquidacion_proveedor_service import (
+                                                registrar_liquidacion_desde_pago,
+                                            )
+                                            try:
+                                                registrar_liquidacion_desde_pago(pago)
+                                            except Exception as liq_err:
+                                                logger.error(
+                                                    'Error registrando liquidación desde webhook oferta: %s',
+                                                    liq_err,
+                                                    exc_info=True,
+                                                )
                                         
                                         logger.info(f"✅ Pago de oferta {'creado' if created else 'actualizado'}: {pago.id} para oferta {oferta_id}")
                                         
@@ -952,6 +965,19 @@ def webhook_notification(request):
                                             pago.receipt_url = receipt_url
                                     
                                     pago.save()
+
+                                    if pago.status == 'approved':
+                                        from mecanimovilapp.apps.pagos.liquidacion_proveedor_service import (
+                                            registrar_liquidacion_desde_pago,
+                                        )
+                                        try:
+                                            registrar_liquidacion_desde_pago(pago)
+                                        except Exception as liq_err:
+                                            logger.error(
+                                                'Error registrando liquidación desde webhook carrito: %s',
+                                                liq_err,
+                                                exc_info=True,
+                                            )
                                     
                                     logger.info(f"✅ Pago {'creado' if created else 'actualizado'}: {pago.id}")
                                     
@@ -2768,6 +2794,19 @@ def verificar_pago_mercadopago(request):
                         
                         if not created:
                             logger.info(f"   - Pago  ya existía en BD: {pago.id}")
+
+                        if pago.status == 'approved':
+                            from mecanimovilapp.apps.pagos.liquidacion_proveedor_service import (
+                                registrar_liquidacion_desde_pago,
+                            )
+                            try:
+                                registrar_liquidacion_desde_pago(pago)
+                            except Exception as liq_err:
+                                logger.error(
+                                    'Error registrando liquidación desde verificación MP: %s',
+                                    liq_err,
+                                    exc_info=True,
+                                )
                         
                         return Response({
                             'success': True,

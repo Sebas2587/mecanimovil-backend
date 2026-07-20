@@ -14,11 +14,13 @@ from .views import (
     obtener_estado_pago_oferta,
     verificar_pago_mercadopago,
 )
+from .views_liquidacion import LiquidacionProveedorViewSet
 
 router = DefaultRouter()
 router.register(r'preferences', PreferenciaPagoViewSet, basename='preference')
 router.register(r'payments', PagoViewSet, basename='payment')
 router.register(r'cuenta-proveedor', CuentaMercadoPagoProveedorViewSet, basename='cuenta-proveedor')
+router.register(r'liquidaciones-proveedor', LiquidacionProveedorViewSet, basename='liquidaciones-proveedor')
 
 urlpatterns = [
     path('', include(router.urls)),

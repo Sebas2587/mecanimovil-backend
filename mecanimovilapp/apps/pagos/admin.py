@@ -2,7 +2,7 @@
 Admin para la app de pagos con Mercado Pago Checkout Pro
 """
 from django.contrib import admin
-from .models import PreferenciaPago, Pago, WebhookNotificacion
+from .models import PreferenciaPago, Pago, WebhookNotificacion, LiquidacionProveedor
 
 
 @admin.register(PreferenciaPago)
@@ -141,5 +141,53 @@ class WebhookNotificacionAdmin(admin.ModelAdmin):
         }),
         ('Fechas', {
             'fields': ('fecha_creacion',)
+        }),
+    )
+
+
+@admin.register(LiquidacionProveedor)
+class LiquidacionProveedorAdmin(admin.ModelAdmin):
+    list_display = [
+        'id',
+        'usuario',
+        'estado',
+        'monto_cobrado_cliente',
+        'comision_plataforma',
+        'monto_neto_proveedor',
+        'moneda',
+        'oferta_id',
+        'orden_id',
+        'creado_en',
+    ]
+    list_filter = ['estado', 'moneda', 'creado_en']
+    search_fields = [
+        'usuario__username',
+        'usuario__email',
+        'referencia_transferencia',
+        'oferta_id',
+    ]
+    readonly_fields = [
+        'id',
+        'pago',
+        'creado_en',
+        'actualizado_en',
+    ]
+    fieldsets = (
+        ('Proveedor', {
+            'fields': ('id', 'usuario', 'content_type', 'object_id', 'estado'),
+        }),
+        ('Montos', {
+            'fields': (
+                'monto_cobrado_cliente',
+                'comision_plataforma',
+                'monto_neto_proveedor',
+                'moneda',
+            ),
+        }),
+        ('Referencias', {
+            'fields': ('pago', 'oferta_id', 'orden_id', 'referencia_transferencia', 'fecha_liquidacion', 'notas'),
+        }),
+        ('Fechas', {
+            'fields': ('creado_en', 'actualizado_en'),
         }),
     )

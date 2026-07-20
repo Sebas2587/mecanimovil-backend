@@ -12,6 +12,7 @@ from .views_asistente_agendamiento import AsistenteAgendamientoViewSet
 from .views_cita_agenda_personal import CitaAgendaPersonalViewSet, ProveedorAgendaViewSet
 from .views_guias_reparacion import GuiaReparacionGuardadaViewSet
 from .views_cotizacion_canal import CotizacionCanalViewSet, CotizacionCanalPlantillaViewSet
+from .views_pipeline_comercial import PipelineComercialViewSet
 
 app_name = 'ordenes'
 
@@ -54,6 +55,11 @@ router.register(
     r'cotizaciones-canal',
     CotizacionCanalViewSet,
     basename='cotizaciones-canal',
+)
+router.register(
+    r'pipeline-comercial',
+    PipelineComercialViewSet,
+    basename='pipeline-comercial',
 )
 
 # RUTAS DE DISPONIBILIDAD ELIMINADAS - REEMPLAZADAS POR ENDPOINTS EN USUARIOS APP

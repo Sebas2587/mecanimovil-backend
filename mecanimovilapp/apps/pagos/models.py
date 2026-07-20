@@ -587,3 +587,61 @@ class WebhookNotificacion(models.Model):
     
     def __str__(self):
         return f"Webhook {self.notification_type} - Payment {self.payment_id_mp or 'N/A'}"
+
+
+class LiquidacionProveedor(models.Model):
+    """
+    Registro de liquidación al proveedor tras cobro al cliente vía Checkout Pro.
+    """
+
+    ESTADO_CHOICES = [
+        ('pendiente', 'Pendiente de liquidación'),
+        ('procesada', 'Procesada'),
+        ('pagada', 'Pagada al proveedor'),
+        ('cancelada', 'Cancelada'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    usuario = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='liquidaciones_proveedor',
+    )
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
+    object_id = models.PositiveIntegerField()
+    proveedor = GenericForeignKey('content_type', 'object_id')
+
+    pago = models.ForeignKey(
+        'pagos.Pago',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='liquidaciones',
+    )
+    oferta_id = models.UUIDField(null=True, blank=True, db_index=True)
+    orden_id = models.PositiveIntegerField(null=True, blank=True, db_index=True)
+
+    monto_cobrado_cliente = models.DecimalField(max_digits=12, decimal_places=0, default=0)
+    comision_plataforma = models.DecimalField(max_digits=12, decimal_places=0, default=0)
+    monto_neto_proveedor = models.DecimalField(max_digits=12, decimal_places=0, default=0)
+    moneda = models.CharField(max_length=3, default='CLP')
+
+    estado = models.CharField(max_length=20, choices=ESTADO_CHOICES, default='pendiente', db_index=True)
+    referencia_transferencia = models.CharField(max_length=255, blank=True, default='')
+    fecha_liquidacion = models.DateTimeField(null=True, blank=True)
+    notas = models.TextField(blank=True, default='')
+
+    creado_en = models.DateTimeField(auto_now_add=True)
+    actualizado_en = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _('liquidación proveedor')
+        verbose_name_plural = _('liquidaciones proveedor')
+        ordering = ['-creado_en']
+        indexes = [
+            models.Index(fields=['usuario', 'estado']),
+            models.Index(fields=['estado', '-creado_en']),
+        ]
+
+    def __str__(self):
+        return f'Liquidación {self.id} — {self.estado} — ${self.monto_neto_proveedor}'

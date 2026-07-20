@@ -2,7 +2,7 @@
 Serializers para la app de pagos con Mercado Pago Checkout Pro
 """
 from rest_framework import serializers
-from .models import PreferenciaPago, Pago, WebhookNotificacion, CuentaMercadoPagoProveedor
+from .models import PreferenciaPago, Pago, WebhookNotificacion, CuentaMercadoPagoProveedor, LiquidacionProveedor
 from django.contrib.auth import get_user_model
 
 User = get_user_model()
@@ -338,3 +338,27 @@ class PaymentStatusSerializer(serializers.Serializer):
     status_detail = serializers.CharField(required=False, allow_null=True)
     success = serializers.BooleanField(required=True)
     payment = serializers.DictField(required=False, allow_null=True)
+
+
+class LiquidacionProveedorSerializer(serializers.ModelSerializer):
+    estado_display = serializers.CharField(source='get_estado_display', read_only=True)
+
+    class Meta:
+        model = LiquidacionProveedor
+        fields = [
+            'id',
+            'estado',
+            'estado_display',
+            'monto_cobrado_cliente',
+            'comision_plataforma',
+            'monto_neto_proveedor',
+            'moneda',
+            'oferta_id',
+            'orden_id',
+            'referencia_transferencia',
+            'fecha_liquidacion',
+            'notas',
+            'creado_en',
+            'actualizado_en',
+        ]
+        read_only_fields = fields
