@@ -82,6 +82,37 @@ def exigir_no_mecanico_equipo(user, accion='realizar esta acción'):
         raise PermissionDenied(f'Los mecánicos no pueden {accion}.')
 
 
+def puede_ejecutar_servicio(user, *, miembro_asignado_id=None) -> bool:
+    """
+    Quién puede iniciar/avanzar/finalizar un servicio operativo:
+
+    - Mecánico de equipo: sí solo si está asignado a esa orden/cita.
+    - Mandante / supervisor: sí (cualquier orden/cita del taller).
+    - Proveedor sin rol de equipo (dueño legacy o mecánico a domicilio): sí;
+      la autorización de pertenencia la hacen las vistas (get_object / queryset).
+    """
+    _taller, miembro, rol = resolver_contexto_taller(user)
+    if rol == 'mecanico':
+        if miembro is None or miembro_asignado_id is None:
+            return False
+        try:
+            return int(miembro_asignado_id) == int(miembro.id)
+        except (TypeError, ValueError):
+            return False
+    return True
+
+
+def exigir_puede_ejecutar_servicio(user, *, miembro_asignado_id=None, accion='ejecutar este servicio'):
+    """Lanza PermissionDenied si el usuario no puede operar el servicio."""
+    from rest_framework.exceptions import PermissionDenied
+
+    if not puede_ejecutar_servicio(user, miembro_asignado_id=miembro_asignado_id):
+        raise PermissionDenied(
+            f'No tienes permiso para {accion}. '
+            'Solo el taller/supervisor o el técnico asignado pueden hacerlo.'
+        )
+
+
 def requiere_permiso(recurso):
     """
     Fabrica una permission class de DRF que exige permiso de gestión sobre

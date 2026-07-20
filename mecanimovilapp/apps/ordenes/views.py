@@ -2735,8 +2735,15 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
         Permite al proveedor iniciar el servicio después de aceptar la orden
         Al inicializar, se crea automáticamente el checklist asociado al servicio
         """
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import exigir_puede_ejecutar_servicio
+
         orden = self.get_object()
-        
+        exigir_puede_ejecutar_servicio(
+            request.user,
+            miembro_asignado_id=orden.mecanico_asignado_id,
+            accion='iniciar este servicio',
+        )
+
         # Verificar que la orden puede iniciarse
         if orden.estado != 'aceptada_por_proveedor':
             return Response(
@@ -4982,15 +4989,26 @@ class OfertaProveedorViewSet(viewsets.ModelViewSet):
             ).prefetch_related(
                 'detalles_servicios__servicio', 'mensajes_chat', 'solicitud__fotos_necesidad'
             )
-        # Proveedor viendo sus ofertas
+        # Proveedor / equipo del taller viendo ofertas
         else:
-            queryset = OfertaProveedor.objects.filter(
-                proveedor=user
-            ).select_related(
-                'solicitud', 'solicitud__cliente', 'proveedor'
+            from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
+
+            taller_ctx, miembro_ctx, rol_ctx = resolver_contexto_taller(user)
+            base_ofertas = OfertaProveedor.objects.select_related(
+                'solicitud', 'solicitud__cliente', 'proveedor', 'miembro_taller_asignado'
             ).prefetch_related(
                 'detalles_servicios__servicio', 'mensajes_chat', 'solicitud__fotos_necesidad'
             )
+            if rol_ctx == 'mecanico' and miembro_ctx is not None and taller_ctx is not None:
+                # Mecánico: solo ofertas del taller asignadas a él.
+                queryset = base_ofertas.filter(
+                    proveedor__taller=taller_ctx,
+                    miembro_taller_asignado=miembro_ctx,
+                )
+            elif taller_ctx is not None and rol_ctx in ('mandante', 'supervisor'):
+                queryset = base_ofertas.filter(proveedor__taller=taller_ctx)
+            else:
+                queryset = base_ofertas.filter(proveedor=user)
         
         # ✅ FILTRAR POR SOLICITUD si viene en query params
         # Compatible con WSGIRequest (query_params) y ASGIRequest (GET)
@@ -6027,15 +6045,34 @@ class OfertaProveedorViewSet(viewsets.ModelViewSet):
         logger.info(f"Iniciando servicio para oferta {pk}")
         
         try:
+            from mecanimovilapp.apps.usuarios.services.taller_contexto import (
+                exigir_puede_ejecutar_servicio,
+                resolver_contexto_taller,
+            )
+
             oferta = self.get_object()
-            
-            # Validaciones
-            if oferta.proveedor != request.user:
+
+            # Taller/supervisor del proveedor, o mecánico asignado a la oferta.
+            taller_ctx, _miembro_ctx, _rol_ctx = resolver_contexto_taller(request.user)
+            es_proveedor_directo = oferta.proveedor_id == request.user.id
+            taller_proveedor = getattr(oferta.proveedor, 'taller', None)
+            es_mismo_taller = (
+                taller_ctx is not None
+                and taller_proveedor is not None
+                and taller_proveedor.id == taller_ctx.id
+            )
+            if not (es_proveedor_directo or es_mismo_taller or request.user.is_staff):
                 logger.warning(f"Usuario no autorizado intenta iniciar servicio {pk}")
                 return Response(
                     {'error': 'No está autorizado para iniciar este servicio'},
                     status=status.HTTP_403_FORBIDDEN
                 )
+
+            exigir_puede_ejecutar_servicio(
+                request.user,
+                miembro_asignado_id=oferta.miembro_taller_asignado_id,
+                accion='iniciar este servicio',
+            )
             
             # ✅ Permitir iniciar servicio para ofertas secundarias también
             # Las ofertas secundarias son servicios independientes que deben poder iniciarse

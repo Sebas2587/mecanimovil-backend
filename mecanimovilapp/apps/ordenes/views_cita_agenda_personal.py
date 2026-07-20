@@ -317,9 +317,8 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
     @action(detail=True, methods=['post'], url_path='iniciar-servicio')
     def iniciar_servicio(self, request, pk=None):
         """Inicia el servicio operativo: crea checklist (con IA si hace falta) para la cita."""
-        from mecanimovilapp.apps.usuarios.services.taller_contexto import exigir_no_mecanico_equipo
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import exigir_puede_ejecutar_servicio
         from mecanimovilapp.apps.checklists.services import crear_checklist_para_cita_personal
-        from mecanimovilapp.apps.checklists.models import ChecklistInstance
 
         cita = self.get_object()
         if cita.estado != 'activa':
@@ -327,7 +326,12 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
                 {'error': 'Solo se puede iniciar servicio en citas activas.'},
                 status=status.HTTP_409_CONFLICT,
             )
-        exigir_no_mecanico_equipo(request.user, 'iniciar servicios')
+        # Taller/supervisor o el mecánico asignado pueden iniciar el servicio.
+        exigir_puede_ejecutar_servicio(
+            request.user,
+            miembro_asignado_id=cita.miembro_taller_id,
+            accion='iniciar este servicio',
+        )
 
         checklist_instance = crear_checklist_para_cita_personal(
             cita,
