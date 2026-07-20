@@ -639,8 +639,14 @@ class LiquidacionProveedor(models.Model):
         verbose_name_plural = _('liquidaciones proveedor')
         ordering = ['-creado_en']
         indexes = [
-            models.Index(fields=['usuario', 'estado']),
-            models.Index(fields=['estado', '-creado_en']),
+            models.Index(
+                fields=['usuario', 'estado'],
+                name='pagos_liquid_usuario_0a1b2c_idx',
+            ),
+            models.Index(
+                fields=['estado', '-creado_en'],
+                name='pagos_liquid_estado__3d4e5f_idx',
+            ),
         ]
 
     def __str__(self):

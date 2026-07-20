@@ -13,7 +13,9 @@ mkdir -p staticfiles
 mkdir -p media
 
 echo "📊 Ejecutando migraciones de base de datos..."
+python manage.py cleanup_ghost_rename_migrations
 python manage.py migrate --noinput
+python manage.py makemigrations --check --dry-run
 echo "🔧 Inicializando sistema Smart Health..."
 python manage.py init_smart_health
 

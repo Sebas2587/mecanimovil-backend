@@ -44,8 +44,14 @@ class AvisoExternoVehiculo(models.Model):
         verbose_name_plural = _('avisos externos de vehículos')
         unique_together = [('fuente', 'external_id')]
         indexes = [
-            models.Index(fields=['marca', 'modelo', 'year', 'activo']),
-            models.Index(fields=['fecha_ultima_vista']),
+            models.Index(
+                fields=['marca', 'modelo', 'year', 'activo'],
+                name='valoracion__marca_i_8a3f2d_idx',
+            ),
+            models.Index(
+                fields=['fecha_ultima_vista'],
+                name='valoracion__fecha_u_4b1c9e_idx',
+            ),
         ]
 
     def __str__(self):
