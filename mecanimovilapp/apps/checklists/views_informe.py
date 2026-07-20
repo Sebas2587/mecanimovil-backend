@@ -42,13 +42,18 @@ def _serializar_informe_publico(informe: InformeServicioPublico, request) -> dic
         valor = _valor_respuesta(resp, cat) if resp and resp.completado else ''
         fotos = []
         if resp:
-            for foto in resp.fotos.all():
+            for foto in resp.fotos.all().order_by('orden_en_respuesta', 'id'):
                 url = get_image_url(foto.imagen, request)
                 if not url:
                     continue
+                # Nombre que puso el técnico al subir la foto (no el título del ítem).
+                desc = (foto.descripcion or '').strip()
+                if not desc:
+                    orden = foto.orden_en_respuesta or (len(fotos) + 1)
+                    desc = f'Foto {orden}'
                 foto_payload = {
                     'id': foto.id,
-                    'descripcion': foto.descripcion or pregunta,
+                    'descripcion': desc,
                     'imagen_url': url,
                     'item_id': item_tpl.id,
                 }
