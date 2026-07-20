@@ -99,6 +99,19 @@ def crear_checklist_para_orden(
     return instance
 
 
+def _vehiculo_contexto_desde_cita(cita: CitaAgendaPersonal) -> str:
+    det = getattr(cita, 'detalle', None)
+    if det is None:
+        return ''
+    partes = [
+        (det.vehiculo_marca or '').strip(),
+        (det.vehiculo_modelo or '').strip(),
+        str(det.vehiculo_anio).strip() if getattr(det, 'vehiculo_anio', None) else '',
+        (det.vehiculo_patente or '').strip(),
+    ]
+    return ' '.join(p for p in partes if p).strip()
+
+
 def crear_checklist_para_cita_personal(
     cita: CitaAgendaPersonal,
     *,
@@ -109,9 +122,16 @@ def crear_checklist_para_cita_personal(
         logger.warning('No se pudo resolver servicio para cita personal %s', cita.id)
         return None
 
+    det = getattr(cita, 'detalle', None)
+    descripcion_extra = ''
+    if det is not None:
+        descripcion_extra = (det.descripcion or det.servicio_nombre or '').strip()
+
     template = resolver_o_generar_template(
         servicio,
         generar_si_ausente=generar_template_si_ausente,
+        descripcion_extra=descripcion_extra,
+        vehiculo_contexto=_vehiculo_contexto_desde_cita(cita),
     )
     if template is None:
         logger.info(

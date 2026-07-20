@@ -1,5 +1,6 @@
 """
 Genera ChecklistTemplate estructurados vía Gemini cuando no existe uno para el servicio.
+Si la IA no está disponible o falla, persiste un template mínimo de fallback.
 """
 from __future__ import annotations
 
@@ -28,11 +29,21 @@ _CATEGORIAS_PERMITIDAS = {
     c[0] for c in ChecklistItemCatalog.CATEGORIA_CHOICES
 }
 
+_FALLBACK_ITEMS = [
+    ('Kilometraje actual', 'KILOMETER_INPUT', 'DATOS_VEHICULO', 'Registra el kilometraje actual del vehículo'),
+    ('Estado general del vehículo', 'BOOLEAN', 'INFORMACION_GENERAL', '¿El vehículo llega en condiciones aptas para el servicio?'),
+    ('Inspección visual inicial', 'PHOTO', 'FOTOS_INICIALES', 'Toma fotos del estado inicial del vehículo'),
+    ('Trabajo realizado', 'WORK_SUMMARY', 'OBSERVACIONES_TECNICO', 'Describe el trabajo realizado'),
+    ('Fotos del trabajo final', 'PHOTO', 'FOTOS_FINALES', 'Toma fotos del resultado del servicio'),
+    ('Firma del técnico', 'SIGNATURE', 'FIRMAS_CONFORMIDAD', 'Firma para confirmar el servicio'),
+]
+
 _PROMPT_TEMPLATE = """Eres un experto en procesos de taller mecánico automotriz en Chile.
-Genera un checklist operativo estructurado para el siguiente servicio de catálogo.
+Genera un checklist operativo estructurado para el siguiente servicio.
 
 Servicio: {nombre_servicio}
-Descripción: {descripcion_servicio}
+Descripción / requerimiento: {descripcion_servicio}
+Vehículo (contexto opcional): {vehiculo_contexto}
 
 Devuelve SOLO un JSON con esta estructura exacta:
 {{
@@ -60,15 +71,22 @@ REGLAS:
 3. tipo_pregunta válidos: {tipos}
 4. categoria válidas: {categorias}
 5. Para PHOTO usa min_fotos entre 1 y 3.
-6. El checklist es genérico por tipo de servicio, NO por marca de vehículo.
+6. El checklist es reutilizable por tipo de servicio. Usa el vehículo solo para adaptar ítems relevantes (p.ej. diésel vs gasolina), no crees un template exclusivo de esa marca.
 7. Responde en español chileno, técnico pero claro.
 """
 
 
-def _construir_prompt(servicio: Servicio) -> str:
+def _construir_prompt(
+    servicio: Servicio,
+    *,
+    descripcion_extra: str = '',
+    vehiculo_contexto: str = '',
+) -> str:
+    descripcion = (descripcion_extra or servicio.descripcion or servicio.nombre or '').strip()
     return _PROMPT_TEMPLATE.format(
         nombre_servicio=servicio.nombre,
-        descripcion_servicio=(servicio.descripcion or servicio.nombre).strip()[:1200],
+        descripcion_servicio=descripcion[:1200],
+        vehiculo_contexto=(vehiculo_contexto or 'No especificado').strip()[:400],
         tipos=', '.join(sorted(_TIPOS_PERMITIDOS)),
         categorias=', '.join(sorted(_CATEGORIAS_PERMITIDAS)),
     )
@@ -114,6 +132,28 @@ def _get_or_create_catalog_item(item_data: dict[str, Any]) -> ChecklistItemCatal
     )
 
 
+def _agregar_items_fallback(template: ChecklistTemplate, orden_inicio: int = 1) -> int:
+    orden = orden_inicio
+    for fb_nombre, fb_tipo, fb_cat, fb_pregunta in _FALLBACK_ITEMS:
+        catalog_item = _get_or_create_catalog_item({
+            'nombre': fb_nombre,
+            'tipo_pregunta': fb_tipo,
+            'categoria': fb_cat,
+            'pregunta_texto': fb_pregunta,
+            'es_obligatorio': True,
+            'min_fotos': 1 if fb_tipo == 'PHOTO' else None,
+            'max_fotos': 3 if fb_tipo == 'PHOTO' else None,
+        })
+        ChecklistItemTemplate.objects.create(
+            checklist_template=template,
+            catalog_item=catalog_item,
+            orden_visual=orden,
+            es_obligatorio=True,
+        )
+        orden += 1
+    return orden
+
+
 def _persistir_template_desde_ia(servicio: Servicio, data: dict[str, Any]) -> ChecklistTemplate:
     intencion = str(data.get('tipo_intencion_default') or 'MIXTO').upper()
     if intencion not in dict(ChecklistTemplate.TIPO_INTENCION_CHOICES):
@@ -150,63 +190,90 @@ def _persistir_template_desde_ia(servicio: Servicio, data: dict[str, Any]) -> Ch
             orden += 1
 
         if orden == 1:
-            # Fallback mínimo si la IA no devolvió ítems válidos
-            fallback_items = [
-                ('Kilometraje actual', 'KILOMETER_INPUT', 'DATOS_VEHICULO'),
-                ('Estado general del vehículo', 'BOOLEAN', 'INFORMACION_GENERAL'),
-                ('Fotos del trabajo realizado', 'PHOTO', 'FOTOS_FINALES'),
-                ('Resumen del trabajo', 'WORK_SUMMARY', 'OBSERVACIONES_TECNICO'),
-                ('Firma del técnico', 'SIGNATURE', 'FIRMAS_CONFORMIDAD'),
-            ]
-            for fb_nombre, fb_tipo, fb_cat in fallback_items:
-                catalog_item = _get_or_create_catalog_item({
-                    'nombre': fb_nombre,
-                    'tipo_pregunta': fb_tipo,
-                    'categoria': fb_cat,
-                    'pregunta_texto': fb_nombre,
-                    'es_obligatorio': True,
-                    'min_fotos': 1 if fb_tipo == 'PHOTO' else None,
-                    'max_fotos': 3 if fb_tipo == 'PHOTO' else None,
-                })
-                ChecklistItemTemplate.objects.create(
-                    checklist_template=template,
-                    catalog_item=catalog_item,
-                    orden_visual=orden,
-                    es_obligatorio=True,
-                )
-                orden += 1
+            _agregar_items_fallback(template, orden_inicio=1)
 
         return template
 
 
-def generar_template_checklist_ia(servicio: Servicio) -> ChecklistTemplate | None:
-    """
-    Llama a Gemini y persiste un ChecklistTemplate reutilizable para el servicio.
-    Retorna None si la IA no está habilitada o falla.
-    """
-    if not asistente_habilitado():
-        logger.info('Generador IA checklist: asistente deshabilitado para servicio %s', servicio.id)
-        return None
-
-    prompt = _construir_prompt(servicio)
-    data, _uso, error = _llamar_gemini(prompt)
-    if error or not data:
-        logger.warning(
-            'Generador IA checklist falló para servicio %s: %s',
-            servicio.id,
-            error or 'sin datos',
+def _persistir_template_fallback(servicio: Servicio) -> ChecklistTemplate:
+    """Template mínimo operativo cuando Gemini no está disponible o falla."""
+    with transaction.atomic():
+        template = ChecklistTemplate.objects.create(
+            nombre=f'Checklist {servicio.nombre}'[:255],
+            descripcion=f'Checklist base generado automáticamente para {servicio.nombre}'[:2000],
+            servicio=servicio,
+            tipo_intencion_default='MIXTO',
+            activo=True,
+            generado_por_ia=True,
+            version='1.0-fallback',
         )
-        return None
+        _agregar_items_fallback(template, orden_inicio=1)
+        return template
+
+
+def generar_template_checklist_ia(
+    servicio: Servicio,
+    *,
+    descripcion_extra: str = '',
+    vehiculo_contexto: str = '',
+) -> ChecklistTemplate | None:
+    """
+    Intenta generar con Gemini un ChecklistTemplate reutilizable.
+    Si la IA falla o está deshabilitada, crea un fallback mínimo (nunca deja sin checklist).
+    """
+    # Doble-check: otro proceso pudo crear el template mientras tanto.
+    existing = (
+        ChecklistTemplate.objects
+        .filter(servicio=servicio, activo=True)
+        .order_by('-fecha_creacion')
+        .first()
+    )
+    if existing:
+        return existing
+
+    if asistente_habilitado():
+        prompt = _construir_prompt(
+            servicio,
+            descripcion_extra=descripcion_extra,
+            vehiculo_contexto=vehiculo_contexto,
+        )
+        data, _uso, error = _llamar_gemini(prompt)
+        if not error and data:
+            try:
+                template = _persistir_template_desde_ia(servicio, data)
+                logger.info(
+                    'ChecklistTemplate IA creado id=%s servicio=%s items=%s',
+                    template.id,
+                    servicio.id,
+                    template.items.count(),
+                )
+                return template
+            except Exception as exc:
+                logger.exception(
+                    'Error persistiendo template IA para servicio %s: %s',
+                    servicio.id,
+                    exc,
+                )
+        else:
+            logger.warning(
+                'Generador IA checklist falló para servicio %s: %s — usando fallback',
+                servicio.id,
+                error or 'sin datos',
+            )
+    else:
+        logger.info(
+            'Generador IA checklist deshabilitado para servicio %s — usando fallback',
+            servicio.id,
+        )
 
     try:
-        template = _persistir_template_desde_ia(servicio, data)
+        template = _persistir_template_fallback(servicio)
         logger.info(
-            'ChecklistTemplate IA creado id=%s servicio=%s items=%s',
+            'ChecklistTemplate fallback creado id=%s servicio=%s',
             template.id,
             servicio.id,
-            template.items.count(),
         )
         return template
     except Exception as exc:
-        logger.exception('Error persistiendo template IA para servicio %s: %s', servicio.id, exc)
+        logger.exception('Error creando template fallback para servicio %s: %s', servicio.id, exc)
         return None

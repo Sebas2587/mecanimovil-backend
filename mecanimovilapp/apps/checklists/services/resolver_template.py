@@ -17,10 +17,12 @@ def resolver_o_generar_template(
     servicio: Servicio | None,
     *,
     generar_si_ausente: bool = True,
+    descripcion_extra: str = '',
+    vehiculo_contexto: str = '',
 ) -> ChecklistTemplate | None:
     """
     Devuelve el template activo para el servicio. Si no existe y generar_si_ausente
-    es True, intenta crear uno vía IA.
+    es True, genera uno vía IA (o fallback mínimo).
     """
     if servicio is None:
         return None
@@ -40,4 +42,8 @@ def resolver_o_generar_template(
         return None
 
     logger.info('Generando template IA para servicio %s (%s)', servicio.id, servicio.nombre)
-    return generar_template_checklist_ia(servicio)
+    return generar_template_checklist_ia(
+        servicio,
+        descripcion_extra=descripcion_extra,
+        vehiculo_contexto=vehiculo_contexto,
+    )

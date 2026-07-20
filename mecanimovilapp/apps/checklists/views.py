@@ -71,22 +71,28 @@ class ChecklistTemplateViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     
     def get_queryset(self):
-        """Filtrar templates por proveedor autenticado"""
+        """Templates activos visibles para cualquier miembro del taller o proveedor."""
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
+
         user = self.request.user
-        
-        # Si es taller - mostrar templates de servicios que el taller puede ofrecer
-        if hasattr(user, 'taller'):
-            return ChecklistTemplate.objects.filter(
-                activo=True
-            ).select_related('servicio').prefetch_related('items')
-        
-        # Si es mecánico a domicilio - mostrar templates de servicios que puede ofrecer
-        elif hasattr(user, 'mecanico_domicilio'):
-            return ChecklistTemplate.objects.filter(
-                activo=True
-            ).select_related('servicio').prefetch_related('items')
-        
-        # Si no es proveedor, no ver nada
+        taller_ctx, _miembro, rol = resolver_contexto_taller(user)
+        base = (
+            ChecklistTemplate.objects
+            .filter(activo=True)
+            .select_related('servicio')
+            .prefetch_related('items__catalog_item')
+        )
+
+        # Mandante, supervisor o mecánico de equipo del taller.
+        if taller_ctx is not None and rol in ('mandante', 'supervisor', 'mecanico'):
+            return base
+
+        # Dueño legacy / mecánico a domicilio (hasattr evita DoesNotExist del reverse FK).
+        if hasattr(user, 'taller') and user.taller is not None:
+            return base
+        if hasattr(user, 'mecanico_domicilio') and user.mecanico_domicilio is not None:
+            return base
+
         return ChecklistTemplate.objects.none()
     
     def retrieve(self, request, pk=None):
@@ -624,7 +630,9 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
                 'cita_personal__detalle',
                 'cita_personal__miembro_taller',
                 'checklist_template',
+                'checklist_template__servicio',
             ).prefetch_related(
+                'checklist_template__items__catalog_item',
                 'respuestas__fotos',
                 'respuestas__item_template__catalog_item',
                 'cita_personal__miembro_taller__especialidades',
