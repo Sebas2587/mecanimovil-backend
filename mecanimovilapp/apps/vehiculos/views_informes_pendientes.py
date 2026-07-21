@@ -60,6 +60,8 @@ class ReclamarInformesBatchView(views.APIView):
                     'success': True,
                     'message': result.get('message') or 'Servicio vinculado correctamente.',
                     'already_claimed': bool(result.get('already_claimed')),
+                    'vehiculo_id': result.get('vehiculo_id'),
+                    'componentes_oficiales': result.get('componentes_oficiales') or [],
                 })
                 exitosos += 1
             except ValueError as exc:

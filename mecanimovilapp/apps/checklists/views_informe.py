@@ -107,6 +107,14 @@ def _serializar_informe_publico(informe: InformeServicioPublico, request) -> dic
     if cita and cita.taller_id:
         taller_nombre = getattr(cita.taller, 'nombre', '') or ''
 
+    componentes_oficiales = []
+    try:
+        from mecanimovilapp.apps.vehiculos.services.reclamar_informe import _componentes_desde_checklist
+
+        componentes_oficiales = _componentes_desde_checklist(checklist)
+    except Exception:
+        logger.warning('No se pudo calcular componentes_oficiales del informe %s', informe.token, exc_info=True)
+
     return {
         'token': informe.token,
         'estado': informe.estado,
@@ -144,6 +152,8 @@ def _serializar_informe_publico(informe: InformeServicioPublico, request) -> dic
         ),
         'reclamado': informe.estado == 'VEHICULO_RECLAMADO',
         'qr_payload': informe.url_publica or construir_url_publica(informe.token),
+        # Componentes de salud que este checklist cubrirá al vincularlo (preview pre-reclamo).
+        'componentes_oficiales': componentes_oficiales,
     }
 
 

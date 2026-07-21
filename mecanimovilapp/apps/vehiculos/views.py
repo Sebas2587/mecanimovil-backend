@@ -824,6 +824,7 @@ class VehiculoViewSet(viewsets.ModelViewSet):
             km_servicio = kilometraje_al_momento_del_servicio(sol)
             history.append({
                 'id': sol.id,
+                'tipo': 'solicitud',
                 'solicitud_publica_id': solicitud_publica_id,
                 'fecha_servicio': sol.fecha_servicio.isoformat() if sol.fecha_servicio else None,
                 'servicio_nombre': service_name,
@@ -835,6 +836,43 @@ class VehiculoViewSet(viewsets.ModelViewSet):
                 'verified': True,
                 'cliente_original': sol.cliente.usuario.username if sol.cliente and sol.cliente.usuario else None,
             })
+
+        # Servicios de taller externo vinculados vía informe/checklist (QR), no generan
+        # SolicitudServicio pero sí deben verse en el historial del vehículo.
+        from mecanimovilapp.apps.checklists.models_informe import InformeServicioPublico
+
+        informes_reclamados = InformeServicioPublico.objects.filter(
+            reclamado_por_vehiculo=vehiculo,
+        ).select_related(
+            'checklist_instance__cita_personal__taller',
+        ).order_by('-reclamado_en')
+
+        for informe in informes_reclamados:
+            cita = getattr(informe.checklist_instance, 'cita_personal', None)
+            taller_nombre = 'Taller externo'
+            provider_avatar = None
+            if cita and cita.taller_id:
+                taller_nombre = cita.taller.nombre or taller_nombre
+                if cita.taller.logo:
+                    provider_avatar = get_image_url(cita.taller.logo, request)
+
+            fecha = informe.fecha_firma_cliente or informe.generado_en
+            history.append({
+                'id': f'informe-{informe.id}',
+                'tipo': 'informe_taller',
+                'informe_token': informe.token,
+                'fecha_servicio': fecha.isoformat() if fecha else None,
+                'servicio_nombre': 'Checklist de mantención',
+                'nombre_proveedor': taller_nombre,
+                'proveedor_foto': provider_avatar,
+                'tipo_proveedor': 'taller',
+                'total': None,
+                'kilometraje': informe.kilometraje_servicio,
+                'verified': True,
+                'cliente_original': None,
+            })
+
+        history.sort(key=lambda item: item.get('fecha_servicio') or '', reverse=True)
 
         return Response(history)
 
