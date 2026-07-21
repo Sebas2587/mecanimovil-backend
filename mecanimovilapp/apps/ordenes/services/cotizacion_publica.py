@@ -53,6 +53,9 @@ def marcar_visto(cotizacion: CotizacionCanal) -> CotizacionCanal:
 
 def serializar_cotizacion_publica(cotizacion: CotizacionCanal) -> dict:
     taller = cotizacion.taller
+    # direccion_fisica es reverse OneToOne: no existe taller.direccion_fisica_id
+    direccion_fisica = getattr(taller, 'direccion_fisica', None) if taller else None
+    foto_perfil = getattr(taller, 'foto_perfil', None) if taller else None
     return {
         'id': cotizacion.id,
         'estado': cotizacion.estado,
@@ -77,16 +80,14 @@ def serializar_cotizacion_publica(cotizacion: CotizacionCanal) -> dict:
         'visto_en': cotizacion.visto_en.isoformat() if cotizacion.visto_en else None,
         'cliente_nombre': cotizacion.cliente_nombre,
         'taller': {
-            'nombre': getattr(taller, 'nombre', '') or '',
-            'telefono': getattr(taller, 'telefono', '') or '',
+            'nombre': (getattr(taller, 'nombre', None) or '') if taller else '',
+            'telefono': (getattr(taller, 'telefono', None) or '') if taller else '',
             'direccion': (
-                taller.direccion_fisica.direccion_completa
-                if hasattr(taller, 'direccion_fisica') and taller.direccion_fisica_id
+                (getattr(direccion_fisica, 'direccion_completa', None) or '')
+                if direccion_fisica is not None
                 else ''
             ),
-            'foto_perfil': (
-                taller.foto_perfil.url if getattr(taller, 'foto_perfil', None) else None
-            ),
+            'foto_perfil': foto_perfil.url if foto_perfil else None,
         },
         'puede_responder': cotizacion.estado == 'enviada',
     }
