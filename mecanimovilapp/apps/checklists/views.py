@@ -887,15 +887,20 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
             tiempo_proveedor = instance.fecha_completado_proveedor - instance.fecha_inicio
             instance.tiempo_total_minutos = max(0, int(tiempo_proveedor.total_seconds() / 60))
 
-        instance.save()
-
-        # Actualizar estado de la orden o cita personal
+        # Cita personal: guardar checklist y cerrar cita en la misma transacción
+        # para no dejar COMPLETADO + cita activa si falla el cierre.
         if instance.cita_personal_id:
-            cita = instance.cita_personal
-            if instance.estado == 'COMPLETADO' and cita.estado == 'activa':
-                cita.cerrar()
-                cita.save(update_fields=['estado', 'cerrada_en', 'fecha_actualizacion'])
-                logger.info('Cita personal %s cerrada tras checklist completado', cita.id)
+            from django.db import transaction
+            from mecanimovilapp.apps.ordenes.services.cita_cierre_sync import (
+                asegurar_cierre_cita_si_checklist_completo,
+            )
+
+            with transaction.atomic():
+                instance.save()
+                cita = instance.cita_personal
+                if instance.estado == 'COMPLETADO':
+                    asegurar_cierre_cita_si_checklist_completo(cita)
+                    cita.refresh_from_db(fields=['estado', 'cerrada_en', 'horario_por_confirmar'])
             requiere_supervisor = instance.estado == 'PENDIENTE_FIRMA_SUPERVISOR'
             return Response(
                 {
@@ -917,6 +922,9 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
                 }
             )
 
+        instance.save()
+
+        # Actualizar estado de la orden marketplace
         orden = instance.orden
         estado_anterior = orden.estado
 

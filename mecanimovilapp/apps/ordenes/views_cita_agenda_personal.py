@@ -85,8 +85,16 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
         return get_object_or_404(self.get_queryset(), pk=self.kwargs['pk'])
 
     def list(self, request):
-        qs = self.get_queryset()
+        from mecanimovilapp.apps.ordenes.services.cita_cierre_sync import (
+            reparar_citas_activas_con_checklist_completo,
+        )
+
+        # Si piden activas (o sin filtro), sana desfases checklist COMPLETADO ↔ cita activa.
         estado = request.query_params.get('estado')
+        if estado in (None, '', 'activa'):
+            reparar_citas_activas_con_checklist_completo(self.get_queryset())
+
+        qs = self.get_queryset()
         if estado:
             qs = qs.filter(estado=estado)
         fecha_desde = request.query_params.get('fecha_desde')
@@ -99,7 +107,13 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
         return Response(serializer.data)
 
     def retrieve(self, request, pk=None):
+        from mecanimovilapp.apps.ordenes.services.cita_cierre_sync import (
+            asegurar_cierre_cita_si_checklist_completo,
+        )
+
         cita = self.get_object()
+        if asegurar_cierre_cita_si_checklist_completo(cita):
+            cita.refresh_from_db()
         return Response(CitaAgendaPersonalSerializer(cita).data)
 
     def create(self, request):
@@ -485,6 +499,12 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
         Query opcional ?dias=N limita a los últimos N días si se necesita.
         """
         from django.db.models import F
+        from mecanimovilapp.apps.ordenes.services.cita_cierre_sync import (
+            reparar_citas_activas_con_checklist_completo,
+        )
+
+        # Repara citas con checklist ya COMPLETADO que quedaron activas por desfase.
+        reparar_citas_activas_con_checklist_completo(self.get_queryset())
 
         qs = self.get_queryset().filter(estado='cerrada')
         dias_raw = request.query_params.get('dias')
@@ -620,7 +640,6 @@ class ProveedorAgendaViewSet(viewsets.ViewSet):
             citas_qs = citas_qs.filter(taller=taller)
         else:
             citas_qs = citas_qs.filter(mecanico=mecanico)
-        citas_qs = citas_qs.filter(estado__in=estados_cita)
         if miembro_taller_id:
             citas_qs = citas_qs.filter(miembro_taller_id=miembro_taller_id)
         if fecha_desde:
@@ -628,6 +647,15 @@ class ProveedorAgendaViewSet(viewsets.ViewSet):
         if fecha_hasta:
             citas_qs = citas_qs.filter(fecha_servicio__lte=fecha_hasta)
 
+        if 'activas' in incluir or 'cerradas' in incluir:
+            from mecanimovilapp.apps.ordenes.services.cita_cierre_sync import (
+                reparar_citas_activas_con_checklist_completo,
+            )
+            # Reparar sobre el scope del proveedor (antes del filtro de estado),
+            # para no omitir citas activas con checklist ya COMPLETADO.
+            reparar_citas_activas_con_checklist_completo(citas_qs)
+
+        citas_qs = citas_qs.filter(estado__in=estados_cita)
         eventos = [_serializar_cita_personal_evento(c) for c in citas_qs]
 
         if 'mecanimovil' in incluir or 'activas' in incluir or 'cerradas' in incluir:

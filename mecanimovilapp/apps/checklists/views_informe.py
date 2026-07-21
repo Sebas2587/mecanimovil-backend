@@ -218,6 +218,11 @@ class InformePublicoFirmarClienteView(views.APIView):
         checklist = informe.checklist_instance
         if checklist.estado not in ('PENDIENTE_FIRMA_CLIENTE', 'PENDIENTE_FIRMA_SUPERVISOR'):
             if checklist.estado == 'COMPLETADO' and informe.firma_cliente:
+                # Idempotencia: también repara cita que quedó activa por desfase.
+                from mecanimovilapp.apps.ordenes.services.cita_cierre_sync import (
+                    asegurar_cierre_cita_si_checklist_completo,
+                )
+                asegurar_cierre_cita_si_checklist_completo(checklist.cita_personal)
                 return Response({'message': 'Ya firmado', 'estado': informe.estado})
             return Response(
                 {'error': f'El checklist no acepta firma (estado: {checklist.estado})'},
@@ -244,10 +249,10 @@ class InformePublicoFirmarClienteView(views.APIView):
             informe.estado = 'FIRMADO'
             informe.save()
 
-            cita = checklist.cita_personal
-            if cita and cita.estado == 'activa':
-                cita.cerrar()
-                cita.save(update_fields=['estado', 'cerrada_en', 'fecha_actualizacion'])
+            from mecanimovilapp.apps.ordenes.services.cita_cierre_sync import (
+                asegurar_cierre_cita_si_checklist_completo,
+            )
+            asegurar_cierre_cita_si_checklist_completo(checklist.cita_personal)
 
         logger.info('Cliente firmó informe público token=%s checklist=%s', token, checklist.id)
         return Response({
