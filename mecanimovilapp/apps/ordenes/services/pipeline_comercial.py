@@ -130,6 +130,18 @@ def _esperando_respuesta_24h(fecha_ref, estado_normalizado: str) -> bool:
     return timezone.now() - fecha_ref >= timedelta(hours=24)
 
 
+def _demorado_48h(fecha_ref, estado_normalizado: str) -> bool:
+    if estado_normalizado != 'cotizacion_enviada':
+        return False
+    if not fecha_ref:
+        return False
+    return timezone.now() - fecha_ref >= timedelta(hours=48)
+
+
+def _visto_sin_respuesta(estado_normalizado: str, visto_en) -> bool:
+    return estado_normalizado == 'cotizacion_enviada' and visto_en is not None
+
+
 def _monto_a_float(val) -> float | None:
     if val is None:
         return None
@@ -164,6 +176,8 @@ def _fila_base(
     miembro_taller_id: int | None = None,
     miembro_taller_nombre: str | None = None,
     template_generado_por_ia: bool = False,
+    visto_sin_respuesta: bool = False,
+    demorado_48h: bool = False,
 ) -> dict[str, Any]:
     return {
         'tipo_entidad': tipo_entidad,
@@ -191,6 +205,8 @@ def _fila_base(
         'miembro_taller_id': miembro_taller_id,
         'miembro_taller_nombre': miembro_taller_nombre,
         'template_generado_por_ia': template_generado_por_ia,
+        'visto_sin_respuesta': visto_sin_respuesta,
+        'demorado_48h': demorado_48h,
     }
 
 
@@ -280,11 +296,18 @@ def _filas_cotizaciones_canal(taller: Taller) -> list[dict[str, Any]]:
         estado_norm = COTIZACION_CANAL_MAP.get(cot.estado, 'nuevo')
         conv = cot.conversation
         ext = getattr(conv, 'external_contact', None) if conv else None
-        cliente_nombre = (
-            getattr(ext, 'display_name', None)
-            or cot.vehiculo_marca
-            or 'Contacto'
-        )
+        if cot.es_libre:
+            cliente_nombre = cot.cliente_nombre or 'Cliente'
+            cliente_telefono = cot.cliente_telefono or ''
+            origen = 'directo'
+        else:
+            cliente_nombre = (
+                getattr(ext, 'display_name', None)
+                or cot.vehiculo_marca
+                or 'Contacto'
+            )
+            cliente_telefono = getattr(ext, 'phone', '') or ''
+            origen = _canal_origen(conv)
         fecha_ref = cot.enviada_en or cot.actualizado_en or cot.creado_en
         vehiculo_txt = ' '.join(
             p for p in [cot.vehiculo_marca, cot.vehiculo_modelo] if p
@@ -293,17 +316,19 @@ def _filas_cotizaciones_canal(taller: Taller) -> list[dict[str, Any]]:
             _fila_base(
                 tipo_entidad='cotizacion_canal',
                 entidad_id=str(cot.id),
-                origen=_canal_origen(conv),
+                origen=origen,
                 estado_normalizado=estado_norm,
                 estado_raw=cot.estado,
                 cliente_nombre=str(cliente_nombre),
-                cliente_telefono=getattr(ext, 'phone', '') or '',
+                cliente_telefono=cliente_telefono,
                 vehiculo_resumen=vehiculo_txt,
                 servicio_resumen=(cot.servicio_nombre or cot.descripcion_problema or '')[:120],
                 monto_clp=_monto_a_float(cot.total_clp),
                 fecha_referencia=fecha_ref,
                 conversation_id=conv.id if conv else None,
                 cotizacion_id=cot.id,
+                visto_sin_respuesta=_visto_sin_respuesta(estado_norm, cot.visto_en),
+                demorado_48h=_demorado_48h(fecha_ref, estado_norm),
             )
         )
     return filas

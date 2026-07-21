@@ -24,6 +24,7 @@ from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
     enviar_cotizacion_canal,
     snapshot_desde_cotizacion,
 )
+from mecanimovilapp.apps.ordenes.services.cotizacion_publica import enviar_cotizacion_libre
 from mecanimovilapp.apps.ordenes.services.plantilla_vehiculo import filtrar_plantillas_por_vehiculo
 from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
 
@@ -60,7 +61,15 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
         ser = GenerarCotizacionIaSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
-        conversation = self._get_conversation(data['conversation_id'])
+
+        conversation_id = data.get('conversation_id')
+        conversation = None
+        es_libre = conversation_id is None
+        if conversation_id is not None:
+            conversation = self._get_conversation(conversation_id)
+
+        cliente_nombre = (data.get('cliente_nombre') or '').strip()
+        cliente_telefono = (data.get('cliente_telefono') or '').strip()
 
         plantilla_id = data.get('plantilla_id')
         if plantilla_id:
@@ -73,6 +82,9 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             )
             cotizacion = CotizacionCanal.objects.create(
                 conversation=conversation,
+                es_libre=es_libre,
+                cliente_nombre=cliente_nombre,
+                cliente_telefono=cliente_telefono,
                 taller=taller,
                 creado_por=request.user,
                 estado='borrador',
@@ -121,6 +133,9 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
 
         cotizacion = CotizacionCanal.objects.create(
             conversation=conversation,
+            es_libre=es_libre,
+            cliente_nombre=cliente_nombre,
+            cliente_telefono=cliente_telefono,
             taller=taller,
             creado_por=request.user,
             estado='borrador',
@@ -167,6 +182,18 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             raise ValidationError({'estado': 'La cotización ya fue enviada o cerrada.'})
         if not cotizacion.servicio_nombre.strip():
             raise ValidationError({'servicio_nombre': 'Indica el nombre del servicio.'})
+
+        if cotizacion.es_libre or cotizacion.conversation_id is None:
+            try:
+                cotizacion = enviar_cotizacion_libre(cotizacion)
+            except ValueError as exc:
+                raise ValidationError(str(exc)) from exc
+            return Response({
+                'cotizacion': CotizacionCanalSerializer(cotizacion).data,
+                'message_id': None,
+                'share_url': cotizacion.url_publica,
+            })
+
         try:
             message = enviar_cotizacion_canal(cotizacion, request.user)
         except ValueError as exc:
@@ -180,6 +207,7 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
         return Response({
             'cotizacion': CotizacionCanalSerializer(cotizacion).data,
             'message_id': message.id,
+            'share_url': None,
         })
 
     @action(detail=True, methods=['post'])

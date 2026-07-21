@@ -17,6 +17,15 @@ class RepuestoCotizacionSerializer(serializers.Serializer):
 
 class CotizacionCanalSerializer(serializers.ModelSerializer):
     repuestos = RepuestoCotizacionSerializer(many=True, required=False)
+    share_url = serializers.SerializerMethodField()
+
+    def get_share_url(self, obj) -> str | None:
+        if obj.url_publica:
+            return obj.url_publica
+        if obj.token and obj.es_libre:
+            from mecanimovilapp.apps.ordenes.services.cotizacion_publica import construir_url_publica_cotizacion
+            return construir_url_publica_cotizacion(obj.token)
+        return None
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -36,6 +45,13 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
         fields = (
             'id',
             'conversation',
+            'es_libre',
+            'cliente_nombre',
+            'cliente_telefono',
+            'token',
+            'url_publica',
+            'share_url',
+            'visto_en',
             'estado',
             'modalidad',
             'vehiculo_marca',
@@ -65,6 +81,11 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
         read_only_fields = (
             'id',
             'conversation',
+            'es_libre',
+            'token',
+            'url_publica',
+            'share_url',
+            'visto_en',
             'estado',
             'costo_repuestos_clp',
             'total_clp',
@@ -78,7 +99,9 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
 
 
 class GenerarCotizacionIaSerializer(serializers.Serializer):
-    conversation_id = serializers.IntegerField()
+    conversation_id = serializers.IntegerField(required=False, allow_null=True)
+    cliente_nombre = serializers.CharField(max_length=200, required=False, allow_blank=True, default='')
+    cliente_telefono = serializers.CharField(max_length=20, required=False, allow_blank=True, default='')
     servicio_nombre = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
     descripcion_problema = serializers.CharField(required=False, allow_blank=True, default='')
     modalidad = serializers.ChoiceField(choices=('taller', 'domicilio'), default='taller')
@@ -86,6 +109,13 @@ class GenerarCotizacionIaSerializer(serializers.Serializer):
     plantilla_id = serializers.IntegerField(required=False, allow_null=True)
 
     def validate(self, attrs):
+        conversation_id = attrs.get('conversation_id')
+        if conversation_id is None:
+            nombre = (attrs.get('cliente_nombre') or '').strip()
+            if not nombre:
+                raise serializers.ValidationError(
+                    {'cliente_nombre': 'Indica el nombre del cliente para cotización libre.'},
+                )
         if attrs.get('plantilla_id'):
             return attrs
         if not (attrs.get('servicio_nombre') or '').strip():

@@ -1972,6 +1972,17 @@ class CitaAgendaPersonal(models.Model):
         null=True,
         blank=True,
     )
+    cotizacion_canal_origen = models.ForeignKey(
+        'ordenes.CotizacionCanal',
+        on_delete=models.SET_NULL,
+        related_name='citas_generadas',
+        null=True,
+        blank=True,
+    )
+    horario_por_confirmar = models.BooleanField(
+        default=False,
+        help_text='True si la cita se creó desde cotización pública sin horario definido.',
+    )
     fecha_servicio = models.DateField()
     hora_servicio = models.TimeField()
     duracion_minutos = models.PositiveIntegerField(default=60)
@@ -2047,6 +2058,8 @@ class CitaAgendaPersonal(models.Model):
 
     @property
     def bloquea_agenda(self) -> bool:
+        if self.horario_por_confirmar:
+            return False
         return self.estado == 'activa'
 
     def cerrar(self):
@@ -2261,7 +2274,7 @@ class GuiaReparacionGuardada(models.Model):
 
 
 class CotizacionCanal(models.Model):
-    """Cotización generada por el mandante en chat omnicanal."""
+    """Cotización generada por el mandante (chat omnicanal o link libre)."""
 
     ESTADO_CHOICES = [
         ('borrador', 'Borrador'),
@@ -2281,7 +2294,24 @@ class CotizacionCanal(models.Model):
         'chat.Conversation',
         on_delete=models.CASCADE,
         related_name='cotizaciones_canal',
+        null=True,
+        blank=True,
     )
+    es_libre = models.BooleanField(
+        default=False,
+        help_text='Cotización creada sin conversación omnicanal (link público).',
+    )
+    cliente_nombre = models.CharField(max_length=200, blank=True, default='')
+    cliente_telefono = models.CharField(max_length=20, blank=True, default='')
+    token = models.CharField(
+        max_length=64,
+        unique=True,
+        null=True,
+        blank=True,
+        db_index=True,
+    )
+    url_publica = models.URLField(max_length=500, blank=True, default='')
+    visto_en = models.DateTimeField(null=True, blank=True)
     taller = models.ForeignKey(
         'usuarios.Taller',
         on_delete=models.CASCADE,

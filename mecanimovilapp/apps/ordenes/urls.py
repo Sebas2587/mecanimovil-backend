@@ -12,6 +12,11 @@ from .views_asistente_agendamiento import AsistenteAgendamientoViewSet
 from .views_cita_agenda_personal import CitaAgendaPersonalViewSet, ProveedorAgendaViewSet
 from .views_guias_reparacion import GuiaReparacionGuardadaViewSet
 from .views_cotizacion_canal import CotizacionCanalViewSet, CotizacionCanalPlantillaViewSet
+from .views_cotizacion_publica import (
+    CotizacionPublicaAceptarView,
+    CotizacionPublicaDetailView,
+    CotizacionPublicaRechazarView,
+)
 from .views_pipeline_comercial import PipelineComercialViewSet
 
 app_name = 'ordenes'
@@ -78,4 +83,19 @@ urlpatterns = [
     # Endpoints para configuración de precios
     path('configuracion_precio/', obtener_configuracion_precio, name='configuracion_precio'),
     path('calcular_precio/', calcular_precio_detallado, name='calcular_precio'),
+    path(
+        'cotizaciones-publicas/<str:token>/',
+        CotizacionPublicaDetailView.as_view(),
+        name='cotizacion-publica-detail',
+    ),
+    path(
+        'cotizaciones-publicas/<str:token>/aceptar/',
+        CotizacionPublicaAceptarView.as_view(),
+        name='cotizacion-publica-aceptar',
+    ),
+    path(
+        'cotizaciones-publicas/<str:token>/rechazar/',
+        CotizacionPublicaRechazarView.as_view(),
+        name='cotizacion-publica-rechazar',
+    ),
 ] 

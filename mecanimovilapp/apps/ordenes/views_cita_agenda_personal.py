@@ -450,11 +450,25 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
 
     @action(detail=False, methods=['get'])
     def cerradas(self, request):
-        fecha_limite = timezone.now() - timedelta(days=30)
-        qs = self.get_queryset().filter(
-            estado='cerrada',
-            cerrada_en__gte=fecha_limite,
-        )
+        """
+        Historial de citas personales cerradas del taller.
+        Sin ventana de 30 días: deben aparecer en Servicios → Completadas
+        igual que en la agenda (antes solo se veían al elegir el día).
+        Query opcional ?dias=N limita a los últimos N días si se necesita.
+        """
+        from django.db.models import F
+
+        qs = self.get_queryset().filter(estado='cerrada')
+        dias_raw = request.query_params.get('dias')
+        if dias_raw is not None:
+            try:
+                dias = int(dias_raw)
+            except (TypeError, ValueError):
+                dias = None
+            if dias is not None and dias > 0:
+                fecha_limite = timezone.now() - timedelta(days=dias)
+                qs = qs.filter(cerrada_en__gte=fecha_limite)
+        qs = qs.order_by(F('cerrada_en').desc(nulls_last=True), '-fecha_servicio', '-id')
         return Response(CitaAgendaPersonalSerializer(qs, many=True).data)
 
     @action(detail=False, methods=['get'])
