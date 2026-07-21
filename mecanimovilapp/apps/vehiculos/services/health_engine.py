@@ -310,13 +310,21 @@ class HealthEngine:
                 and historial_fuente_pre == 'CHECKLIST'
                 and eta > 0
             )
+            km_desde_inspeccion = 0
+            snapshot_ancla_fresco = False
             if usa_ancla:
-                km_consumido_inferido = eta * max(0.0, min(1.0, 1 - (ancla_pct / 100.0)))
                 km_desde_inspeccion = max(
                     0,
-                    vehiculo.kilometraje - comp_estado.km_ultimo_servicio,
+                    vehiculo.kilometraje - (comp_estado.km_ultimo_servicio or 0),
                 )
-                km_recorridos_real = int(km_consumido_inferido + km_desde_inspeccion)
+                # Si no hubo km nuevos desde la inspección/reclamo, respetar el %
+                # declarado por el taller (evita que Weibull+tiempo reescriba 25%→0%).
+                if km_desde_inspeccion <= 0:
+                    snapshot_ancla_fresco = True
+                    km_recorridos_real = 0
+                else:
+                    km_consumido_inferido = eta * max(0.0, min(1.0, 1 - (ancla_pct / 100.0)))
+                    km_recorridos_real = int(km_consumido_inferido + km_desde_inspeccion)
 
             # ── Modo historial desconocido ──────────────────────────────────
             # Estimación inteligente: si el vehículo no tiene historial conocido,
@@ -359,17 +367,25 @@ class HealthEngine:
                 fecha_ref_tiempo = None  # se usará fecha_ultimo_servicio normal
 
             # ── Salud por km (Weibull) ──────────────────────────────────────
-            salud_km  = math.exp(-((km_recorridos / eta) ** beta)) * 100.0 if eta > 0 else 0.0
-            salud_pct = salud_km
             months_elapsed = None
             salud_tiempo = None  # se setea solo si la regla tiene intervalo_meses
+
+            if snapshot_ancla_fresco:
+                # % del técnico como verdad actual; degradará en futuros recálculos
+                # cuando el odómetro avance desde km_ultimo_servicio.
+                salud_km = float(ancla_pct)
+                salud_pct = salud_km
+                km_recorridos = 0
+            else:
+                salud_km  = math.exp(-((km_recorridos / eta) ** beta)) * 100.0 if eta > 0 else 0.0
+                salud_pct = salud_km
 
             # ── Intervalo por tiempo ────────────────────────────────────────
             intervalo_meses = getattr(regla_aplicada, 'intervalo_meses', None)
             if not intervalo_meses and es_especifica and regla_generica:
                 intervalo_meses = getattr(regla_generica, 'intervalo_meses', None)
 
-            if intervalo_meses and intervalo_meses > 0:
+            if (not snapshot_ancla_fresco) and intervalo_meses and intervalo_meses > 0:
                 fecha_eje = None
 
                 if historial_desconocido:

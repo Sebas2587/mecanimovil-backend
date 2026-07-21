@@ -630,6 +630,7 @@ def actualizar_salud_desde_checklist(
     checklist_id,
     vehicle_id,
     km_servicio_override=None,
+    fecha_servicio_override=None,
     actualizar_odometro=True,
 ):
     """
@@ -649,6 +650,9 @@ def actualizar_salud_desde_checklist(
         km_servicio_override: Si se indica, ancla componentes a este km (p.ej. odómetro
             actual al reclamar un informe antiguo) en lugar del km del checklist.
             Evita degradar por la diferencia entre km del taller y km actual.
+        fecha_servicio_override: Si se indica, usa esta fecha como ancla temporal
+            (p.ej. now() en reclamos) para que el desgaste por meses no parta
+            desde la fecha antigua del taller.
         actualizar_odometro: Si False, no escribe el km del checklist en el vehículo
             (usar en reclamos retroactivos).
     """
@@ -785,7 +789,11 @@ def actualizar_salud_desde_checklist(
 
             try:
                 km_para_servicio = km_ancla_default
-                fecha_servicio = checklist.fecha_finalizacion or timezone.now()
+                fecha_servicio = (
+                    fecha_servicio_override
+                    or checklist.fecha_finalizacion
+                    or timezone.now()
+                )
 
                 comp_salud, created = ComponenteSaludVehiculo.objects.get_or_create(
                     vehiculo=vehiculo,

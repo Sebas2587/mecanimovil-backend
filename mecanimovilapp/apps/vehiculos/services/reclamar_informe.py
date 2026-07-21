@@ -93,6 +93,7 @@ def reclamar_informe_por_token(token: str, cliente) -> dict:
                 checklist_id,
                 vehicle_id,
                 km_servicio_override=km_ancla,
+                fecha_servicio_override=timezone.now(),
                 actualizar_odometro=False,
             )
         except Exception as exc:
