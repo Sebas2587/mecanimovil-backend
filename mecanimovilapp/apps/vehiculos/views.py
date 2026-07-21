@@ -125,7 +125,7 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         """
         if self.action == 'get_marcas':
             return [permissions.AllowAny()]
-        if self.action in ('marketplace_listings', 'marketplace_public_detail'):
+        if self.action in ('marketplace_listings', 'marketplace_public_detail', 'ficha_publica'):
             return [permissions.AllowAny()]
         if self.action == 'consultar_patente_publica':
             return [permissions.AllowAny()]
@@ -763,6 +763,27 @@ class VehiculoViewSet(viewsets.ModelViewSet):
             
         serializer = VehiculoMarketplaceDetailSerializer(vehiculo, context={'request': request})
         return Response(serializer.data)
+
+    @action(detail=True, methods=['get'], url_path='ficha-publica', permission_classes=[permissions.AllowAny])
+    def ficha_publica(self, request, pk=None):
+        """
+        Ficha compartible: marca/modelo/año/cilindraje, salud y servicios con talleres.
+        Sin patente, VIN, dueño, precios ni otros datos sensibles.
+        """
+        from mecanimovilapp.apps.vehiculos.services.ficha_publica import (
+            serializar_ficha_publica_vehiculo,
+        )
+
+        try:
+            vehiculo = (
+                Vehiculo.objects
+                .select_related('marca', 'modelo')
+                .get(pk=pk)
+            )
+        except Vehiculo.DoesNotExist:
+            return Response({"error": "Vehículo no disponible"}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response(serializar_ficha_publica_vehiculo(vehiculo, request))
 
     @action(detail=True, methods=['get'], url_path='historial-servicios')
     def historial_servicios(self, request, pk=None):
