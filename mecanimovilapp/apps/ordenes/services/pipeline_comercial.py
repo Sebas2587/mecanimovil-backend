@@ -337,7 +337,13 @@ def _filas_cotizaciones_canal(taller: Taller) -> list[dict[str, Any]]:
 def _filas_citas_personales(taller: Taller, miembro_id: int | None = None) -> list[dict[str, Any]]:
     qs = (
         CitaAgendaPersonal.objects.filter(taller=taller)
-        .select_related('detalle', 'miembro_taller', 'checklist_instance__checklist_template')
+        .select_related(
+            'detalle',
+            'miembro_taller',
+            'checklist_instance__checklist_template',
+            'cotizacion_canal_origen',
+            'conversation_origen',
+        )
         .order_by('-fecha_servicio', '-hora_servicio')[:200]
     )
     if miembro_id:
@@ -350,21 +356,31 @@ def _filas_citas_personales(taller: Taller, miembro_id: int | None = None) -> li
         vehiculo_txt = ' '.join(
             p for p in [det.vehiculo_marca, det.vehiculo_modelo] if p
         ).strip()
+        cot_origen = getattr(cita, 'cotizacion_canal_origen', None)
+        if cot_origen is not None and getattr(cot_origen, 'es_libre', False):
+            origen_cita = 'directo'
+        elif cita.conversation_origen_id:
+            origen_cita = _canal_origen(cita.conversation_origen)
+        else:
+            origen_cita = 'manual'
         filas.append(
             _fila_base(
                 tipo_entidad='cita_personal',
                 entidad_id=str(cita.id),
-                origen='manual',
+                origen=origen_cita,
                 estado_normalizado=estado_norm,
                 estado_raw=cita.estado,
                 cliente_nombre=det.cliente_nombre or 'Cliente',
                 cliente_telefono=det.cliente_telefono or '',
                 vehiculo_resumen=vehiculo_txt,
                 servicio_resumen=(det.descripcion or det.servicio_nombre or '')[:120],
-                monto_clp=_monto_a_float(det.precio_referencia),
+                monto_clp=_monto_a_float(
+                    cot_origen.total_clp if cot_origen is not None else det.precio_referencia
+                ),
                 fecha_referencia=cita.fecha_creacion,
                 cita_id=cita.id,
                 conversation_id=cita.conversation_origen_id,
+                cotizacion_id=cot_origen.id if cot_origen is not None else None,
                 miembro_taller_id=cita.miembro_taller_id,
                 miembro_taller_nombre=(
                     cita.miembro_taller.nombre if cita.miembro_taller_id else None
