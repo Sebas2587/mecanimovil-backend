@@ -267,8 +267,17 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
     def marcar_perdida(self, request, pk=None):
         """Cierra el lead comercial desde la bandeja (taller)."""
         cotizacion = self.get_object()
-        if cotizacion.estado in ('aceptada', 'cancelada', 'rechazada'):
+        if cotizacion.estado in ('cancelada', 'rechazada', 'expirada'):
             raise ValidationError({'estado': 'Esta cotización ya está cerrada.'})
+        # Aceptada sin cita activa (o cita cancelada) también puede ir a Perdidos.
+        if cotizacion.estado == 'aceptada':
+            from mecanimovilapp.apps.ordenes.services.cita_cotizacion_sync import (
+                cotizacion_aceptada_tiene_cita_activa,
+            )
+            if cotizacion_aceptada_tiene_cita_activa(cotizacion):
+                raise ValidationError({
+                    'estado': 'Hay una cita activa. Cancélala o elimínala antes de cerrar el caso.',
+                })
         cotizacion.estado = 'cancelada'
         cotizacion.save(update_fields=['estado', 'actualizado_en'])
         return Response(CotizacionCanalSerializer(cotizacion).data)

@@ -289,6 +289,21 @@ def _filas_ofertas(proveedor_user, taller: Taller | None) -> list[dict[str, Any]
     return filas
 
 
+def _estado_normalizado_cotizacion_canal(cot: CotizacionCanal) -> str:
+    """
+    Aceptada solo es «negociando» si aún hay cita activa por confirmar/agendar.
+    Si la cita se canceló o eliminó, el lead va a Perdidos (no queda zombie Agendado).
+    """
+    if cot.estado == 'aceptada':
+        from mecanimovilapp.apps.ordenes.services.cita_cotizacion_sync import (
+            cotizacion_aceptada_tiene_cita_activa,
+        )
+        if not cotizacion_aceptada_tiene_cita_activa(cot):
+            return 'rechazado_perdido'
+        return 'en_negociacion'
+    return COTIZACION_CANAL_MAP.get(cot.estado, 'nuevo')
+
+
 def _filas_cotizaciones_canal(taller: Taller) -> list[dict[str, Any]]:
     qs = (
         CotizacionCanal.objects.filter(taller=taller)
@@ -298,7 +313,7 @@ def _filas_cotizaciones_canal(taller: Taller) -> list[dict[str, Any]]:
     )
     filas: list[dict[str, Any]] = []
     for cot in qs:
-        estado_norm = COTIZACION_CANAL_MAP.get(cot.estado, 'nuevo')
+        estado_norm = _estado_normalizado_cotizacion_canal(cot)
         conv = cot.conversation
         ext = getattr(conv, 'external_contact', None) if conv else None
         if cot.es_libre:
@@ -518,38 +533,61 @@ def _filas_solicitudes_directas(taller: Taller, proveedor_user) -> list[dict[str
     return filas
 
 
+_DEDUPE_TIPO_PRIORITY = {
+    # Si hay cita y cotización del mismo caso, la cita manda el estado real.
+    'cita_personal': 0,
+    'orden_directa': 1,
+    'oferta': 2,
+    'cotizacion_canal': 3,
+    'solicitud_publica': 4,
+}
+
+
+def _pipeline_dedupe_key(fila: dict[str, Any]) -> str:
+    conv_id = fila.get('conversation_id')
+    if conv_id:
+        return f'conv:{conv_id}'
+    if fila.get('cotizacion_id'):
+        return f'cot:{fila["cotizacion_id"]}'
+    if fila.get('oferta_id'):
+        return f'oferta:{fila["oferta_id"]}'
+    if fila.get('solicitud_id'):
+        return f'sol:{fila["solicitud_id"]}'
+    if fila.get('cita_id'):
+        return f'cita:{fila["cita_id"]}'
+    if fila.get('orden_id'):
+        return f'orden:{fila["orden_id"]}'
+    return f'{fila.get("tipo_entidad")}:{fila.get("entidad_id")}'
+
+
 def _dedupe_pipeline_filas(filas: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
     Colapsa filas repetidas del mismo hilo comercial.
 
     Prioridad de clave:
-    1. conversation_id (mismo chat omnicanal → una sola fila, la más reciente)
+    1. conversation_id (mismo chat omnicanal → una sola fila)
     2. cotizacion_id / oferta_id / solicitud_id / cita_id / orden_id
     3. tipo_entidad + entidad_id
+
+    Ante empate de clave, prioriza cita_personal sobre cotizacion_canal.
     """
-    seen: set[str] = set()
-    out: list[dict[str, Any]] = []
+    best: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
     for fila in filas:
-        conv_id = fila.get('conversation_id')
-        if conv_id:
-            key = f'conv:{conv_id}'
-        elif fila.get('cotizacion_id'):
-            key = f'cot:{fila["cotizacion_id"]}'
-        elif fila.get('oferta_id'):
-            key = f'oferta:{fila["oferta_id"]}'
-        elif fila.get('solicitud_id'):
-            key = f'sol:{fila["solicitud_id"]}'
-        elif fila.get('cita_id'):
-            key = f'cita:{fila["cita_id"]}'
-        elif fila.get('orden_id'):
-            key = f'orden:{fila["orden_id"]}'
-        else:
-            key = f'{fila.get("tipo_entidad")}:{fila.get("entidad_id")}'
-        if key in seen:
+        key = _pipeline_dedupe_key(fila)
+        prev = best.get(key)
+        if prev is None:
+            best[key] = fila
+            order.append(key)
             continue
-        seen.add(key)
-        out.append(fila)
-    return out
+        p_new = _DEDUPE_TIPO_PRIORITY.get(str(fila.get('tipo_entidad')), 9)
+        p_old = _DEDUPE_TIPO_PRIORITY.get(str(prev.get('tipo_entidad')), 9)
+        if p_new < p_old:
+            best[key] = fila
+        elif p_new == p_old:
+            if (fila.get('fecha_referencia') or '') > (prev.get('fecha_referencia') or ''):
+                best[key] = fila
+    return [best[k] for k in order]
 
 
 def construir_pipeline_comercial(

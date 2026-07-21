@@ -160,6 +160,11 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
                 },
                 status=status.HTTP_409_CONFLICT,
             )
+        from mecanimovilapp.apps.ordenes.services.cita_cotizacion_sync import (
+            marcar_cotizacion_origen_cancelada,
+        )
+        # Antes del delete: sincronizar cotización origen → Perdidos.
+        marcar_cotizacion_origen_cancelada(cita)
         try:
             cita.delete()
         except ProtectedError:
@@ -215,6 +220,10 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
             )
         cita.cancelar()
         cita.save(update_fields=['estado', 'cancelada_en', 'fecha_actualizacion'])
+        from mecanimovilapp.apps.ordenes.services.cita_cotizacion_sync import (
+            marcar_cotizacion_origen_cancelada,
+        )
+        marcar_cotizacion_origen_cancelada(cita)
         return Response(CitaAgendaPersonalSerializer(cita).data)
 
     def _puede_usar_asistente_ia_cita(self, request, cita: CitaAgendaPersonal) -> bool:

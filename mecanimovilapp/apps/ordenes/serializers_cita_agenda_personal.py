@@ -233,7 +233,7 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
         if obj.estado == 'cerrada':
             return 'cerrado'
         if obj.horario_por_confirmar:
-            return 'nuevo'
+            return 'por_agendar'
 
         inst = self._checklist_instance(obj)
         if inst is None:
