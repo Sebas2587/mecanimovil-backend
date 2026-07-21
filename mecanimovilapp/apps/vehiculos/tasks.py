@@ -959,24 +959,38 @@ def actualizar_salud_desde_checklist(
         except Exception:
             pass
 
-        # Recalcular salud (cola o mismo proceso si Celery no entrega el trabajo)
-        try:
-            calcular_salud_vehiculo_async.delay(vehicle_id, force_recalculate=True)
-        except Exception as celery_err:
-            logger.warning(
-                "No se pudo encolar calcular_salud_vehiculo_async para vehículo %s: %s — recalculando en proceso",
-                vehicle_id,
-                celery_err,
-            )
+        # Recalcular salud.
+        # En reclamo (km_servicio_override) forzamos sync: el % anclado del taller
+        # no debe quedar a merced de un worker Celery con código viejo.
+        if km_servicio_override is not None:
             try:
-                calcular_estado_salud_interno(vehicle_id)
+                from .services.health_engine import HealthEngine
+                HealthEngine.calcular_salud_vehiculo(vehicle_id)
             except Exception as sync_err:
                 logger.error(
-                    "Recálculo síncrono de salud falló para vehículo %s: %s",
+                    "Recálculo sync post-claim falló para vehículo %s: %s",
                     vehicle_id,
                     sync_err,
                     exc_info=True,
                 )
+        else:
+            try:
+                calcular_salud_vehiculo_async.delay(vehicle_id, force_recalculate=True)
+            except Exception as celery_err:
+                logger.warning(
+                    "No se pudo encolar calcular_salud_vehiculo_async para vehículo %s: %s — recalculando en proceso",
+                    vehicle_id,
+                    celery_err,
+                )
+                try:
+                    calcular_estado_salud_interno(vehicle_id)
+                except Exception as sync_err:
+                    logger.error(
+                        "Recálculo síncrono de salud falló para vehículo %s: %s",
+                        vehicle_id,
+                        sync_err,
+                        exc_info=True,
+                    )
         
         # Obtener usuario del vehículo para notificaciones
         usuario = None

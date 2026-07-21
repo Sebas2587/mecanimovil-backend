@@ -454,7 +454,7 @@ class HealthEngine:
             # el cálculo Weibull ya consumió los km, aquí aplicamos el factor
             # recalculando la salud_km con los km_recorridos amplificados.
             slug_componente = comp_maestro.slug
-            if slug_componente in _WEAR_BY_DRIVING_SLUGS:
+            if (not snapshot_ancla_fresco) and slug_componente in _WEAR_BY_DRIVING_SLUGS:
                 try:
                     from .predictor_salud import _get_avg_km_per_day
                     km_dia = _get_avg_km_per_day(vehiculo)
@@ -469,9 +469,13 @@ class HealthEngine:
             # ── Cap duro por antigüedad (componentes de goma/química) ────────
             # La edad se mide desde el último servicio del componente (no la
             # antigüedad del vehículo): una pieza recién cambiada parte "nueva".
-            salud_pct, msg_age = _age_health_cap(
-                vehiculo, slug_componente, salud_pct, comp_estado=comp_estado, now=now,
-            )
+            # En snapshot fresco del taller no aplicar cap de antigüedad del auto.
+            if not snapshot_ancla_fresco:
+                salud_pct, msg_age = _age_health_cap(
+                    vehiculo, slug_componente, salud_pct, comp_estado=comp_estado, now=now,
+                )
+            else:
+                msg_age = ''
 
             # ── Cap por fuente del historial (integridad de datos) ───────────
             # Si el dato proviene de una declaración del usuario sin verificación
