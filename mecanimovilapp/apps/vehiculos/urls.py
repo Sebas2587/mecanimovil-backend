@@ -4,6 +4,10 @@ from .views import VehiculoViewSet, MarcaViewSet, MarcaVehiculoViewSet, ModeloVi
 from .views_health import VehicleHealthViewSet
 from .views_weather import weather_prediction, weather_stations
 from .views_reclamar_informe import ReclamarInformeView
+from .views_informes_pendientes import (
+    InformesPendientesPorPatenteView,
+    ReclamarInformesBatchView,
+)
 
 # Configuración del router
 router = DefaultRouter()
@@ -21,6 +25,16 @@ urlpatterns = [
         'reclamar-informe/<str:token>/',
         ReclamarInformeView.as_view(),
         name='reclamar-informe',
+    ),
+    path(
+        'informes-pendientes/',
+        InformesPendientesPorPatenteView.as_view(),
+        name='informes-pendientes',
+    ),
+    path(
+        'reclamar-informes/',
+        ReclamarInformesBatchView.as_view(),
+        name='reclamar-informes',
     ),
     path('', include(router.urls)),
 ] 

@@ -573,9 +573,14 @@ class VehiculoViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        from mecanimovilapp.apps.vehiculos.services.informes_por_patente import (
+            contar_informes_pendientes_por_patente,
+        )
+
         public_payload = {
             **public_payload,
             'registered_in_app': Vehiculo.objects.filter(patente=patente).exists(),
+            'servicios_pendientes_count': contar_informes_pendientes_por_patente(patente),
         }
 
         return Response(public_payload)
