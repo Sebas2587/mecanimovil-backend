@@ -125,6 +125,35 @@ class GananciasTallerResumenTestCase(TestCase):
 
         self.assertEqual(resumen['ganancias_mecanimovil'], 60000)
 
+    def test_serie_ordenes_cuenta_por_fecha_solicitud_si_servicio_futuro(self):
+        """Serie y totales deben coincidir cuando la orden entra por fecha_hora_solicitud."""
+        SolicitudServicio.objects.create(
+            cliente=self.cliente,
+            vehiculo=self.vehiculo,
+            taller=self.taller,
+            mecanico_asignado=self.mecanico,
+            tipo_servicio='taller',
+            fecha_servicio=self.hoy + timedelta(days=45),
+            hora_servicio=time(11, 0),
+            metodo_pago='transferencia',
+            total=Decimal('60000'),
+            estado='completado',
+            fecha_hora_solicitud=timezone.now(),
+        )
+
+        serie = compute_ganancias_taller_serie(
+            self.taller_user,
+            granularidad='dia',
+            metrica='ordenes',
+            dias=30,
+        )
+
+        self.assertEqual(serie['totales_periodo']['ordenes_mecanimovil'], 1)
+        suma_puntos = sum(p['mecanimovil'] for p in serie['puntos'])
+        self.assertEqual(suma_puntos, 1)
+        hoy_punto = next(p for p in serie['puntos'] if p['clave'] == self.hoy.isoformat())
+        self.assertEqual(hoy_punto['mecanimovil'], 1)
+
     def test_serie_diaria_separa_canales(self):
         ayer = self.hoy - timedelta(days=1)
         SolicitudServicio.objects.create(

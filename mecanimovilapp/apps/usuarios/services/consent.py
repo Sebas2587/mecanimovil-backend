@@ -73,3 +73,25 @@ def requiere_consentimiento_legal(usuario: Usuario) -> bool:
     if usuario.deleted_at is not None:
         return False
     return not usuario_tiene_consentimiento_legal(usuario)
+
+
+def usuario_tiene_consentimiento_ubicacion(usuario: Usuario) -> bool:
+    return ConsentimientoUsuario.objects.filter(
+        usuario=usuario,
+        tipo='ubicacion',
+        version_documento=LEGAL_DOCS_VERSION,
+    ).exists()
+
+
+def registrar_consentimiento_ubicacion(
+    usuario: Usuario,
+    *,
+    canal: str = 'app_prov',
+    request=None,
+) -> ConsentimientoUsuario:
+    return registrar_consentimiento(
+        usuario,
+        tipo='ubicacion',
+        canal=canal,
+        request=request,
+    )

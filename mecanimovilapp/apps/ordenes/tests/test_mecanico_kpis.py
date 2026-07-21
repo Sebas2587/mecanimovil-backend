@@ -79,8 +79,9 @@ class MecanicoKpisMetricasTestCase(TestCase):
         kpis = compute_mecanico_kpis(self.mecanico, dias=30)
 
         self.assertEqual(kpis['servicios_completados_totales'], 1)
-        self.assertEqual(kpis['servicios_completados'], 1)
         self.assertEqual(kpis['servicios_completados_con_checklist'], 0)
+        self.assertEqual(kpis['servicios_elegibles_checklist'], 0)
+        self.assertIsNone(kpis['score_checklist'])
         self.assertEqual(kpis['ordenes_mecanimovil'], 1)
 
     def test_rechazada_incrementa_servicios_rechazados(self):
@@ -161,7 +162,8 @@ class MecanicoKpisMetricasTestCase(TestCase):
         self.assertEqual(kpis['total_asignados'], 1)
         self.assertEqual(kpis['servicios_en_proceso'], 1)
 
-    def test_agenda_personal_no_modifica_score_calidad(self):
+    def test_agenda_personal_cuenta_en_flujo_completado(self):
+        """Citas personales cerradas suman al flujo del taller (completadas + productividad)."""
         from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonal, CitaAgendaPersonalDetalle
 
         cita = CitaAgendaPersonal.objects.create(
@@ -184,5 +186,59 @@ class MecanicoKpisMetricasTestCase(TestCase):
         kpis = compute_mecanico_kpis(self.mecanico, dias=30)
 
         self.assertEqual(kpis['ordenes_personales'], 1)
-        self.assertEqual(kpis['servicios_completados_totales'], 0)
-        self.assertIsNone(kpis['score_rendimiento_global'])
+        self.assertEqual(kpis['ordenes_mecanimovil'], 0)
+        self.assertEqual(kpis['servicios_completados_totales'], 1)
+        self.assertEqual(kpis['servicios_completados_con_checklist'], 0)
+        self.assertIsNone(kpis['score_checklist'])
+        self.assertIsNotNone(kpis['score_productividad'])
+        self.assertIsNotNone(kpis['score_rendimiento_global'])
+
+    def test_personal_checklist_operativo_pendiente_supervisor_cuenta(self):
+        from mecanimovilapp.apps.checklists.models import ChecklistInstance, ChecklistTemplate
+        from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonal, CitaAgendaPersonalDetalle
+        from mecanimovilapp.apps.servicios.models import Servicio
+
+        servicio = Servicio.objects.create(nombre='Servicio KPI supervisor test')
+        template = ChecklistTemplate.objects.create(nombre='Tpl KPI', servicio=servicio)
+        cita = CitaAgendaPersonal.objects.create(
+            taller=self.taller,
+            miembro_taller=self.mecanico,
+            estado='cerrada',
+            fecha_servicio=self.hoy,
+            hora_servicio=time(9, 0),
+            duracion_minutos=60,
+            tipo_servicio='taller',
+            creado_por=self.taller.usuario,
+            cerrada_en=timezone.now(),
+        )
+        CitaAgendaPersonalDetalle.objects.create(
+            cita=cita,
+            cliente_nombre='Cliente',
+            servicio_nombre=servicio.nombre,
+        )
+        inicio = timezone.now() - timedelta(minutes=45)
+        fin = timezone.now() - timedelta(minutes=5)
+        ChecklistInstance.objects.create(
+            cita_personal=cita,
+            checklist_template=template,
+            estado='PENDIENTE_FIRMA_SUPERVISOR',
+            fecha_inicio=inicio,
+            fecha_completado_proveedor=fin,
+            firma_tecnico='firma-tecnico',
+            progreso_porcentaje=100,
+        )
+
+        kpis = compute_mecanico_kpis(self.mecanico, dias=30)
+
+        self.assertEqual(kpis['servicios_completados_con_checklist'], 1)
+        self.assertGreaterEqual(kpis['servicios_elegibles_checklist'], 1)
+        self.assertEqual(kpis['score_checklist'], 100)
+        self.assertIsNotNone(kpis['ordenes_dentro_tiempo'])
+
+    def test_comparativo_incluye_ventanas_proporcionales(self):
+        kpis = compute_mecanico_kpis(self.mecanico, dias=30)
+        comp = kpis['comparativo']
+        self.assertIn('ventana_mes_actual', comp)
+        self.assertIn('ventana_mes_anterior', comp)
+        self.assertIn('desde', comp['ventana_mes_actual'])
+        self.assertIn('hasta', comp['ventana_mes_anterior'])

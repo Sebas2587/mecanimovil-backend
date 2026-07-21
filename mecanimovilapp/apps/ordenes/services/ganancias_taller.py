@@ -63,32 +63,44 @@ def _precio_cita_personal(cita) -> float:
     return float(detalle.precio_referencia or Decimal('0'))
 
 
-def _fecha_bucket_orden(orden) -> date | None:
-    if orden.fecha_servicio:
+def _fecha_bucket_orden(orden, fecha_desde: date, fecha_hasta: date) -> date | None:
+    """
+    Día del bucket alineado con _ventana_periodo_q: prioriza fecha_servicio
+    dentro del rango; si no, fecha de solicitud dentro del rango.
+    """
+    if orden.fecha_servicio and fecha_desde <= orden.fecha_servicio <= fecha_hasta:
         return orden.fecha_servicio
     if orden.fecha_hora_solicitud:
-        return timezone.localtime(orden.fecha_hora_solicitud).date()
+        d = timezone.localtime(orden.fecha_hora_solicitud).date()
+        if fecha_desde <= d <= fecha_hasta:
+            return d
     return None
 
 
-def _acumular_ganancias_diarias(
+def _acumular_actividad_diaria(
     user,
     fecha_desde: date,
     fecha_hasta: date,
     *,
     mecanico_id: int | None = None,
-) -> tuple[dict[date, int], dict[date, int]]:
-    """Mapas día → CLP por canal (Mecanimovil / agenda personal)."""
+) -> tuple[dict[date, int], dict[date, int], dict[date, int], dict[date, int]]:
+    """
+    Mapas día → CLP y conteo de cierres por canal (Mecanimovil / agenda personal).
+    Returns: (mkt_clp, agenda_clp, mkt_ordenes, agenda_ordenes)
+    """
     from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonal, SolicitudServicio
 
     taller, mecanico, miembro = _resolve_proveedor_scope(user, mecanico_id)
-    mkt: dict[date, int] = defaultdict(int)
-    agenda: dict[date, int] = defaultdict(int)
+    mkt_clp: dict[date, int] = defaultdict(int)
+    agenda_clp: dict[date, int] = defaultdict(int)
+    mkt_n: dict[date, int] = defaultdict(int)
+    agenda_n: dict[date, int] = defaultdict(int)
 
+    empty = (mkt_clp, agenda_clp, mkt_n, agenda_n)
     if not taller and not mecanico:
-        return mkt, agenda
+        return empty
     if mecanico_id is not None and taller and miembro is None:
-        return mkt, agenda
+        return empty
 
     orden_qs = SolicitudServicio.objects.filter(estado='completado').filter(
         _ventana_periodo_q(fecha_desde, fecha_hasta)
@@ -103,10 +115,11 @@ def _acumular_ganancias_diarias(
     for orden in orden_qs.only('fecha_servicio', 'fecha_hora_solicitud', 'total').iterator(
         chunk_size=500
     ):
-        bucket = _fecha_bucket_orden(orden)
-        if bucket is None or bucket < fecha_desde or bucket > fecha_hasta:
+        bucket = _fecha_bucket_orden(orden, fecha_desde, fecha_hasta)
+        if bucket is None:
             continue
-        mkt[bucket] += int(round(float(orden.total or Decimal('0'))))
+        mkt_clp[bucket] += int(round(float(orden.total or Decimal('0'))))
+        mkt_n[bucket] += 1
 
     personal_qs = CitaAgendaPersonal.objects.filter(
         estado='cerrada',
@@ -124,14 +137,36 @@ def _acumular_ganancias_diarias(
         bucket = cita.fecha_servicio
         if not bucket:
             continue
-        agenda[bucket] += int(round(_precio_cita_personal(cita)))
+        agenda_clp[bucket] += int(round(_precio_cita_personal(cita)))
+        agenda_n[bucket] += 1
 
-    return mkt, agenda
+    return mkt_clp, agenda_clp, mkt_n, agenda_n
 
 
-def _rango_serie(granularidad: str) -> tuple[date, date]:
+def _acumular_ganancias_diarias(
+    user,
+    fecha_desde: date,
+    fecha_hasta: date,
+    *,
+    mecanico_id: int | None = None,
+) -> tuple[dict[date, int], dict[date, int]]:
+    """Compat: solo CLP por canal."""
+    mkt_clp, agenda_clp, _, _ = _acumular_actividad_diaria(
+        user, fecha_desde, fecha_hasta, mecanico_id=mecanico_id
+    )
+    return mkt_clp, agenda_clp
+
+
+def _rango_serie(
+    granularidad: str,
+    *,
+    dias: int | None = None,
+) -> tuple[date, date]:
     hoy = timezone.localdate()
     g = (granularidad or 'dia').lower()
+    if dias is not None:
+        d = max(1, min(int(dias), 365))
+        return hoy - timedelta(days=d - 1), hoy
     if g == 'mes':
         year = hoy.year
         month = hoy.month - 5
@@ -179,23 +214,31 @@ def compute_ganancias_taller_serie(
     *,
     granularidad: str = 'dia',
     mecanico_id: int | None = None,
+    metrica: str = 'ingresos',
+    dias: int | None = None,
 ) -> dict[str, Any]:
     """
-    Serie temporal de ingresos Mecanimovil vs agenda personal.
+    Serie temporal Mecanimovil vs agenda personal.
 
-    granularidad: dia (mes en curso), semana (12 semanas), mes (6 meses).
+    granularidad: dia | semana | mes (ventana por defecto, o `dias` si se indica).
+    metrica: ingresos (CLP) | ordenes (cierres completados/cerradas).
     """
     g = (granularidad or 'dia').lower()
     if g not in ('dia', 'semana', 'mes'):
         g = 'dia'
+    m = (metrica or 'ingresos').lower()
+    if m not in ('ingresos', 'ordenes'):
+        m = 'ingresos'
 
-    fecha_desde, fecha_hasta = _rango_serie(g)
-    mkt_map, agenda_map = _acumular_ganancias_diarias(
+    fecha_desde, fecha_hasta = _rango_serie(g, dias=dias)
+    mkt_clp, agenda_clp, mkt_n, agenda_n = _acumular_actividad_diaria(
         user,
         fecha_desde,
         fecha_hasta,
         mecanico_id=mecanico_id,
     )
+    mkt_map = mkt_n if m == 'ordenes' else mkt_clp
+    agenda_map = agenda_n if m == 'ordenes' else agenda_clp
 
     puntos: list[dict[str, Any]] = []
 
@@ -204,15 +247,15 @@ def compute_ganancias_taller_serie(
         idx = 0
         total_days = (fecha_hasta - fecha_desde).days + 1
         while cursor <= fecha_hasta:
-            m = mkt_map.get(cursor, 0)
-            a = agenda_map.get(cursor, 0)
+            mv = mkt_map.get(cursor, 0)
+            av = agenda_map.get(cursor, 0)
             puntos.append(
                 {
                     'clave': cursor.isoformat(),
                     'etiqueta': _etiqueta_dia(cursor, idx, total_days),
-                    'mecanimovil': m,
-                    'agenda_personal': a,
-                    'total': m + a,
+                    'mecanimovil': mv,
+                    'agenda_personal': av,
+                    'total': mv + av,
                 }
             )
             cursor += timedelta(days=1)
@@ -221,18 +264,16 @@ def compute_ganancias_taller_serie(
         cursor = fecha_desde
         while cursor <= fecha_hasta:
             fin_sem = min(cursor + timedelta(days=6), fecha_hasta)
-            m = sum(mkt_map.get(cursor + timedelta(days=i), 0) for i in range((fin_sem - cursor).days + 1))
-            a = sum(
-                agenda_map.get(cursor + timedelta(days=i), 0)
-                for i in range((fin_sem - cursor).days + 1)
-            )
+            span = (fin_sem - cursor).days + 1
+            mv = sum(mkt_map.get(cursor + timedelta(days=i), 0) for i in range(span))
+            av = sum(agenda_map.get(cursor + timedelta(days=i), 0) for i in range(span))
             puntos.append(
                 {
                     'clave': cursor.isoformat(),
                     'etiqueta': _etiqueta_semana(cursor, fin_sem),
-                    'mecanimovil': m,
-                    'agenda_personal': a,
-                    'total': m + a,
+                    'mecanimovil': mv,
+                    'agenda_personal': av,
+                    'total': mv + av,
                 }
             )
             cursor = fin_sem + timedelta(days=1)
@@ -244,19 +285,15 @@ def compute_ganancias_taller_serie(
             else:
                 next_month = date(cursor.year, cursor.month + 1, 1)
             fin_mes = min(next_month - timedelta(days=1), fecha_hasta)
-            m = sum(
-                v for d, v in mkt_map.items() if cursor <= d <= fin_mes
-            )
-            a = sum(
-                v for d, v in agenda_map.items() if cursor <= d <= fin_mes
-            )
+            mv = sum(v for d, v in mkt_map.items() if cursor <= d <= fin_mes)
+            av = sum(v for d, v in agenda_map.items() if cursor <= d <= fin_mes)
             puntos.append(
                 {
                     'clave': cursor.isoformat(),
                     'etiqueta': _etiqueta_mes(cursor),
-                    'mecanimovil': m,
-                    'agenda_personal': a,
-                    'total': m + a,
+                    'mecanimovil': mv,
+                    'agenda_personal': av,
+                    'total': mv + av,
                 }
             )
             cursor = next_month
@@ -272,6 +309,7 @@ def compute_ganancias_taller_serie(
 
     return {
         'granularidad': g,
+        'metrica': m,
         'desde': fecha_desde.isoformat(),
         'hasta': fecha_hasta.isoformat(),
         'mecanico_id': mecanico_id,

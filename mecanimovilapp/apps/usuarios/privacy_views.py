@@ -129,3 +129,42 @@ def estado_consentimiento_legal(request):
         'requiere_consentimiento': requiere_consentimiento_legal(request.user),
         'version_documento': LEGAL_DOCS_VERSION,
     })
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def registrar_consentimiento_ubicacion_view(request):
+    from mecanimovilapp.apps.usuarios.services.consent import (
+        registrar_consentimiento_ubicacion,
+        usuario_tiene_consentimiento_ubicacion,
+    )
+
+    canal = request.data.get('canal') or 'app_prov'
+    acepta = request.data.get('acepta_ubicacion', False)
+    if not acepta:
+        return Response(
+            {'error': 'Debes aceptar el uso de geolocalización'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if not usuario_tiene_consentimiento_ubicacion(request.user):
+        registrar_consentimiento_ubicacion(request.user, canal=canal, request=request)
+
+    return Response({
+        'message': 'Consentimiento de ubicación registrado',
+        'version_documento': LEGAL_DOCS_VERSION,
+        'tiene_consentimiento_ubicacion': True,
+    })
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def estado_consentimiento_ubicacion_view(request):
+    from mecanimovilapp.apps.usuarios.services.consent import (
+        usuario_tiene_consentimiento_ubicacion,
+    )
+
+    return Response({
+        'tiene_consentimiento_ubicacion': usuario_tiene_consentimiento_ubicacion(request.user),
+        'version_documento': LEGAL_DOCS_VERSION,
+    })

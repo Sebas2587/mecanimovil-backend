@@ -71,6 +71,16 @@ urlpatterns = [
     path('eliminar-cuenta/', privacy_views.eliminar_cuenta, name='eliminar-cuenta'),
     path('consentimiento/registrar/', privacy_views.registrar_consentimiento_legal, name='registrar-consentimiento'),
     path('consentimiento/estado/', privacy_views.estado_consentimiento_legal, name='estado-consentimiento'),
+    path(
+        'consentimiento/ubicacion/registrar/',
+        privacy_views.registrar_consentimiento_ubicacion_view,
+        name='registrar-consentimiento-ubicacion',
+    ),
+    path(
+        'consentimiento/ubicacion/estado/',
+        privacy_views.estado_consentimiento_ubicacion_view,
+        name='estado-consentimiento-ubicacion',
+    ),
     # Router al final
     path('', include(router.urls)),
 ] 

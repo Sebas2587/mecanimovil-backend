@@ -2,6 +2,7 @@
 Tests: citas agenda personal y bloqueo de disponibilidad.
 """
 from datetime import date, time, timedelta
+from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
@@ -114,7 +115,7 @@ class CitaAgendaPersonalAPITestCase(TestCase):
                 'vehiculo_marca': 'Nissan',
                 'vehiculo_modelo': 'Versa',
                 'vehiculo_patente': 'BB5678',
-                'servicio_nombre': 'Frenos',
+                'servicio_nombre': 'Servicio sin catálogo XYZ cerrar test',
             },
         }
         res = self.client.post('/api/ordenes/citas-agenda-personal/', payload, format='json')
@@ -261,3 +262,71 @@ class CitaAgendaPersonalMecanicoEquipoTestCase(TestCase):
         self.assertEqual(res.status_code, 200, res.content)
         self.assertFalse(res.data['disponible'])
         self.assertIsNone(res.data['contenido'])
+
+
+class CitaAgendaPersonalCerrarChecklistTestCase(TestCase):
+    """Cierre manual bloqueado cuando el servicio admite checklist operativo."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username='prov_cerrar', password='test123')
+        self.taller = Taller.objects.create(
+            usuario=self.user,
+            nombre='Taller Cerrar',
+            telefono='900000003',
+            estado_verificacion='aprobado',
+        )
+        self.client.force_authenticate(user=self.user)
+
+    def _crear_cita_activa(self, **detalle_kwargs):
+        cita = CitaAgendaPersonal.objects.create(
+            taller=self.taller,
+            fecha_servicio=date(2030, 7, 10),
+            hora_servicio=time(10, 0),
+            duracion_minutos=60,
+            tipo_servicio='taller',
+            estado='activa',
+            creado_por=self.user,
+        )
+        defaults = {
+            'cliente_nombre': 'Cliente',
+            'cliente_telefono': '+56900000000',
+            'vehiculo_marca': 'Toyota',
+            'vehiculo_modelo': 'Corolla',
+            'servicio_nombre': 'Servicio sin catálogo XYZ',
+        }
+        defaults.update(detalle_kwargs)
+        CitaAgendaPersonalDetalle.objects.create(cita=cita, **defaults)
+        return cita
+
+    def test_cerrar_manual_ok_sin_servicio_resoluble(self):
+        cita = self._crear_cita_activa()
+        res = self.client.post(f'/api/ordenes/citas-agenda-personal/{cita.id}/cerrar/')
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.data['estado'], 'cerrada')
+
+    def test_cerrar_manual_rechazado_si_tiene_oferta_servicio(self):
+        from mecanimovilapp.apps.servicios.models import CategoriaServicio, OfertaServicio, Servicio
+
+        categoria = CategoriaServicio.objects.create(nombre='Cat Cerrar Test')
+        servicio = Servicio.objects.create(nombre='Cambio aceite checklist test')
+        servicio.categorias.add(categoria)
+        oferta = OfertaServicio.objects.create(
+            servicio=servicio,
+            tipo_proveedor='taller',
+            taller=self.taller,
+            marca_vehiculo_seleccionada=None,
+            disponible=True,
+            precio_sin_repuestos=Decimal('50000'),
+            precio_con_repuestos=Decimal('60000'),
+            precio_publicado_cliente=Decimal('60000'),
+            costo_mano_de_obra_sin_iva=Decimal('40000'),
+            costo_repuestos_sin_iva=Decimal('10000'),
+        )
+        cita = self._crear_cita_activa(
+            oferta_servicio=oferta,
+            servicio_nombre=servicio.nombre,
+        )
+        res = self.client.post(f'/api/ordenes/citas-agenda-personal/{cita.id}/cerrar/')
+        self.assertEqual(res.status_code, 409, res.content)
+        self.assertEqual(res.data.get('codigo'), 'requiere_checklist')

@@ -845,6 +845,7 @@ class GananciasPeriodoTotalesSerializer(serializers.Serializer):
 
 class GananciasTallerSerieSerializer(serializers.Serializer):
     granularidad = serializers.CharField()
+    metrica = serializers.CharField(required=False, default='ingresos')
     desde = serializers.CharField()
     hasta = serializers.CharField()
     mecanico_id = serializers.IntegerField(allow_null=True)

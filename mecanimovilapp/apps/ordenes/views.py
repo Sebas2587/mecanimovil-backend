@@ -2700,8 +2700,12 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=False, methods=['get'], url_path='ganancias-serie')
     def ganancias_serie(self, request):
         """
-        Serie temporal de ingresos: Mecanimovil vs agenda personal.
-        Query: granularidad=dia|semana|mes, mecanico_id (opcional, solo taller).
+        Serie temporal Mecanimovil vs agenda personal.
+        Query:
+          - granularidad=dia|semana|mes
+          - metrica=ingresos|ordenes (default ingresos)
+          - dias=N (opcional; alinea ventana con KPIs de rendimiento)
+          - mecanico_id (opcional, solo taller)
         """
         from mecanimovilapp.apps.ordenes.serializers import GananciasTallerSerieSerializer
         from mecanimovilapp.apps.ordenes.services.ganancias_taller import (
@@ -2709,7 +2713,9 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
         )
 
         granularidad = (request.query_params.get('granularidad') or 'dia').lower()
+        metrica = (request.query_params.get('metrica') or 'ingresos').lower()
         mecanico_raw = request.query_params.get('mecanico_id')
+        dias_raw = request.query_params.get('dias')
         mecanico_id = None
         if mecanico_raw not in (None, ''):
             try:
@@ -2719,11 +2725,22 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
                     {'detail': 'mecanico_id inválido'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+        dias = None
+        if dias_raw not in (None, ''):
+            try:
+                dias = max(1, min(int(dias_raw), 365))
+            except (TypeError, ValueError):
+                return Response(
+                    {'detail': 'dias inválido'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         payload = compute_ganancias_taller_serie(
             request.user,
             granularidad=granularidad,
             mecanico_id=mecanico_id,
+            metrica=metrica,
+            dias=dias,
         )
         serializer = GananciasTallerSerieSerializer(data=payload)
         serializer.is_valid(raise_exception=True)

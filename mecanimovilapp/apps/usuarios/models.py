@@ -1645,6 +1645,7 @@ class ConsentimientoUsuario(models.Model):
         ('terminos', 'Términos de uso'),
         ('privacidad', 'Política de privacidad'),
         ('marketing', 'Comunicaciones comerciales'),
+        ('ubicacion', 'Geolocalización'),
     ]
     CANAL_CHOICES = [
         ('app_usuarios', 'App usuarios'),

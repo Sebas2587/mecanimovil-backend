@@ -204,6 +204,28 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
                 },
                 status=status.HTTP_409_CONFLICT,
             )
+
+        from mecanimovilapp.apps.checklists.models import ChecklistInstance
+        from mecanimovilapp.apps.checklists.services import resolver_servicio_desde_cita_personal
+
+        checklist = ChecklistInstance.objects.filter(cita_personal=cita).only('estado').first()
+        if checklist is not None and checklist.estado != 'PENDIENTE':
+            return Response(
+                {
+                    'error': 'Completa el checklist operativo antes de cerrar la cita.',
+                    'codigo': 'checklist_en_curso',
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        if checklist is None and resolver_servicio_desde_cita_personal(cita) is not None:
+            return Response(
+                {
+                    'error': 'Inicia el servicio para generar el checklist operativo.',
+                    'codigo': 'requiere_checklist',
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
         try:
             cita.cerrar()
         except ValueError as exc:

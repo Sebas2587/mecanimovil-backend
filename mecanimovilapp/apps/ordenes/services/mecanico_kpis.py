@@ -1,14 +1,15 @@
 """
 KPIs granulares por mecánico del taller (MiembroTaller).
 
-Métricas:
-  1. Servicios completados (estado completado) y con checklist cerrado
-  2. Órdenes rechazadas por el proveedor
-  3. Cumplimiento de tiempos vs duracion_maxima_minutos de OfertaServicio
-  4. Comparativo mes actual vs mes anterior
-  5. Scores 0–100 por dimensión + score global (basados en checklist)
-  6. Facturación (SolicitudServicio.total en órdenes completadas + citas personales)
-  7. Órdenes vía Mecanimovil vs citas personales (CitaAgendaPersonal)
+Métricas (flujo completo del taller = Mecanimovil + agenda personal):
+  1. Servicios completados: órdenes marketplace completadas + citas personales cerradas
+  2. Checklist cerrado en ambos canales (ChecklistInstance COMPLETADO)
+  3. Órdenes rechazadas por el proveedor (solo marketplace)
+  4. Cumplimiento de tiempos: oferta marketplace o duracion_minutos de la cita
+  5. Comparativo mes actual vs mes anterior
+  6. Scores 0–100 por dimensión + score global
+  7. Facturación (SolicitudServicio.total + precio_referencia citas)
+  8. Desglose por canal (ordenes_mecanimovil / ordenes_personales)
 """
 from __future__ import annotations
 
@@ -30,6 +31,12 @@ _ESTADOS_EN_PROCESO = [
     'en_proceso',
     'pendiente_firma_cliente',
 ]
+
+_ESTADOS_CHECKLIST_OPERATIVO = (
+    'COMPLETADO',
+    'PENDIENTE_FIRMA_CLIENTE',
+    'PENDIENTE_FIRMA_SUPERVISOR',
+)
 
 from mecanimovilapp.apps.ordenes.services.proveedor_kpis import (
     _checklist_minutes_real,
@@ -151,37 +158,83 @@ def _metricas_periodo(
     fecha_desde: date,
     fecha_hasta: date,
 ) -> dict[str, Any]:
+    from mecanimovilapp.apps.checklists.models import ChecklistInstance
     from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonal, SolicitudServicio
 
     dias_periodo = max(1, (fecha_hasta - fecha_desde).days + 1)
 
     base_qs = _ordenes_mecanico_periodo(miembro, fecha_desde, fecha_hasta)
 
-    total_asignados = base_qs.count()
-    servicios_en_proceso = base_qs.filter(estado__in=_ESTADOS_EN_PROCESO).count()
-
     completadas_qs = base_qs.filter(estado='completado')
-    terminadas_qs = _ordenes_servicio_terminado(completadas_qs)
+    terminadas_mkt_qs = _ordenes_servicio_terminado(completadas_qs)
 
-    servicios_completados_totales = completadas_qs.count()
-    servicios_completados_con_checklist = terminadas_qs.count()
+    personal_base = CitaAgendaPersonal.objects.filter(
+        miembro_taller=miembro,
+        fecha_servicio__gte=fecha_desde,
+        fecha_servicio__lte=fecha_hasta,
+    )
+    personal_cerradas_qs = personal_base.filter(estado='cerrada')
+    personal_activas_qs = personal_base.filter(estado='activa')
+
+    ordenes_mecanimovil = completadas_qs.count()
+    ordenes_personales = personal_cerradas_qs.count()
+    # Completadas del flujo del taller = ambos canales
+    servicios_completados_totales = ordenes_mecanimovil + ordenes_personales
+
+    personal_con_checklist_ids = set(
+        ChecklistInstance.objects.filter(
+            cita_personal__in=personal_cerradas_qs,
+            estado__in=_ESTADOS_CHECKLIST_OPERATIVO,
+            fecha_inicio__isnull=False,
+            fecha_completado_proveedor__isnull=False,
+        ).values_list('cita_personal_id', flat=True)
+    )
+    servicios_completados_con_checklist = (
+        terminadas_mkt_qs.count() + len(personal_con_checklist_ids)
+    )
+
+    from mecanimovilapp.apps.checklists.services import resolver_servicio_desde_cita_personal
+
+    mkt_elegibles_ids = set(
+        completadas_qs.filter(checklist_instance__isnull=False).values_list('id', flat=True)
+    ) | set(terminadas_mkt_qs.values_list('id', flat=True))
+    personal_elegibles_ids = set(
+        ChecklistInstance.objects.filter(
+            cita_personal__in=personal_cerradas_qs,
+        ).values_list('cita_personal_id', flat=True)
+    )
+    for cita in personal_cerradas_qs.select_related(
+        'detalle__oferta_servicio__servicio',
+    ).iterator(chunk_size=200):
+        if cita.id in personal_elegibles_ids:
+            continue
+        if resolver_servicio_desde_cita_personal(cita) is not None:
+            personal_elegibles_ids.add(cita.id)
+    servicios_elegibles_checklist = len(mkt_elegibles_ids) + len(personal_elegibles_ids)
     servicios_rechazados = base_qs.filter(estado='rechazada_por_proveedor').count()
 
-    # Checklist cumplimiento: % de completadas totales que cerraron checklist
+    total_asignados = (
+        base_qs.count() + personal_activas_qs.count() + personal_cerradas_qs.count()
+    )
+    servicios_en_proceso = (
+        base_qs.filter(estado__in=_ESTADOS_EN_PROCESO).count() + personal_activas_qs.count()
+    )
+
+    # Checklist cumplimiento: % sobre servicios elegibles (no penaliza cierres sin checklist)
     pct_checklist = (
-        100.0 * servicios_completados_con_checklist / servicios_completados_totales
-        if servicios_completados_totales
+        100.0 * servicios_completados_con_checklist / servicios_elegibles_checklist
+        if servicios_elegibles_checklist > 0
         else None
     )
 
-    # Tiempos reales vs estimados (solo órdenes con checklist cerrado)
+    # Tiempos reales vs estimados (marketplace + citas personales con checklist)
     ratios: list[float] = []
     tiempos_reales: list[float] = []
     dentro_tiempo = 0
     n_tiempo = 0
 
     for orden in (
-        terminadas_qs.select_related('checklist_instance', 'oferta_proveedor')
+        terminadas_mkt_qs.select_related('checklist_instance', 'oferta_proveedor')
         .prefetch_related('lineas__oferta_servicio')
         .iterator(chunk_size=200)
     ):
@@ -200,6 +253,29 @@ def _metricas_periodo(
             if real_min <= est_min:
                 dentro_tiempo += 1
 
+    personal_checklist_operativo = ChecklistInstance.objects.filter(
+        cita_personal__in=personal_cerradas_qs,
+        estado__in=_ESTADOS_CHECKLIST_OPERATIVO,
+        fecha_inicio__isnull=False,
+        fecha_completado_proveedor__isnull=False,
+    ).select_related('cita_personal')
+
+    for inst in personal_checklist_operativo.iterator(chunk_size=200):
+        cita = inst.cita_personal
+        if cita is None:
+            continue
+        real_min = _checklist_minutes_real(inst)
+        if real_min is None or real_min <= 0:
+            continue
+        tiempos_reales.append(real_min)
+        est_min = float(cita.duracion_minutos or 0)
+        if est_min > 0:
+            ratio = real_min / est_min
+            ratios.append(ratio)
+            n_tiempo += 1
+            if real_min <= est_min:
+                dentro_tiempo += 1
+
     ordenes_demoradas = n_tiempo - dentro_tiempo
     ordenes_dentro_tiempo = dentro_tiempo
 
@@ -207,27 +283,17 @@ def _metricas_periodo(
     tiempo_promedio = round(sum(tiempos_reales) / len(tiempos_reales), 2) if tiempos_reales else None
     pct_dentro_tiempo = round(100.0 * dentro_tiempo / n_tiempo, 1) if n_tiempo > 0 else None
 
-    # Facturación: todas las órdenes completadas + precio referencia citas personales
+    # Facturación: órdenes completadas + precio referencia citas personales
     fact_agg = completadas_qs.aggregate(s=Sum('total'))
     facturacion_mkt = float(fact_agg['s'] or Decimal('0'))
-    personal_qs = CitaAgendaPersonal.objects.filter(
-        miembro_taller=miembro,
-        estado='cerrada',
-        fecha_servicio__gte=fecha_desde,
-        fecha_servicio__lte=fecha_hasta,
-    )
-    personal_fact_agg = personal_qs.aggregate(s=Sum('detalle__precio_referencia'))
+    personal_fact_agg = personal_cerradas_qs.aggregate(s=Sum('detalle__precio_referencia'))
     facturacion = facturacion_mkt + float(personal_fact_agg['s'] or Decimal('0'))
 
-    # Órdenes por canal (periodo)
-    ordenes_mecanimovil = servicios_completados_totales
-    ordenes_personales = personal_qs.count()
-
-    # Scores de calidad: solo órdenes con checklist cerrado
-    _, score_inicio = _score_velocidad_inicio_checklist(terminadas_qs)
+    # Scores: productividad por volumen total; checklist/tiempo sobre cierres con checklist
+    _, score_inicio = _score_velocidad_inicio_checklist(terminadas_mkt_qs)
     score_checklist = _score_checklist_cumplimiento(pct_checklist)
     score_tiempo = _score_tiempo_ejecucion(ratio_promedio)
-    score_productividad = _score_productividad(servicios_completados_con_checklist, dias_periodo)
+    score_productividad = _score_productividad(servicios_completados_totales, dias_periodo)
 
     # Aceptación 24h, confiabilidad y calificación por órdenes asignadas
     from mecanimovilapp.apps.ordenes.services.kpi_scoring import (
@@ -283,6 +349,7 @@ def _metricas_periodo(
         'servicios_completados': servicios_completados_totales,
         'servicios_completados_totales': servicios_completados_totales,
         'servicios_completados_con_checklist': servicios_completados_con_checklist,
+        'servicios_elegibles_checklist': servicios_elegibles_checklist,
         'servicios_rechazados': servicios_rechazados,
         'ordenes_demoradas': ordenes_demoradas,
         'ordenes_dentro_tiempo': ordenes_dentro_tiempo,
@@ -325,6 +392,19 @@ def _rango_mes(offset: int = 0) -> tuple[date, date]:
     return inicio, fin
 
 
+def _rango_mes_anterior_proporcional() -> tuple[date, date]:
+    """Mismos N días calendario que el mes en curso (1 → hoy), en el mes anterior."""
+    hoy = timezone.localdate()
+    mes_actual_ini, _ = _rango_mes(0)
+    dias_transcurridos = (hoy - mes_actual_ini).days + 1
+    mes_anterior_ini, mes_anterior_fin_completo = _rango_mes(1)
+    fin = min(
+        mes_anterior_ini + timedelta(days=dias_transcurridos - 1),
+        mes_anterior_fin_completo,
+    )
+    return mes_anterior_ini, fin
+
+
 def _mecanico_base_info(miembro, request=None) -> dict[str, Any]:
     from mecanimovilapp.storage.utils import get_image_url
 
@@ -365,7 +445,7 @@ def compute_mecanico_kpis(
     periodo = _metricas_periodo(miembro, fecha_desde, fecha_hasta)
 
     mes_actual_ini, mes_actual_fin = _rango_mes(0)
-    mes_anterior_ini, mes_anterior_fin = _rango_mes(1)
+    mes_anterior_ini, mes_anterior_fin = _rango_mes_anterior_proporcional()
 
     mes_actual = _metricas_periodo(miembro, mes_actual_ini, mes_actual_fin)
     mes_anterior = _metricas_periodo(miembro, mes_anterior_ini, mes_anterior_fin)
@@ -380,6 +460,14 @@ def compute_mecanico_kpis(
             'completados': mes_anterior['servicios_completados_totales'],
             'tiempo_prom': mes_anterior['tiempo_promedio_minutos'],
             'facturacion': mes_anterior['facturacion_periodo'],
+        },
+        'ventana_mes_actual': {
+            'desde': mes_actual_ini.isoformat(),
+            'hasta': mes_actual_fin.isoformat(),
+        },
+        'ventana_mes_anterior': {
+            'desde': mes_anterior_ini.isoformat(),
+            'hasta': mes_anterior_fin.isoformat(),
         },
         'delta_completados_pct': _delta_pct(
             mes_actual['servicios_completados_totales'],
@@ -474,6 +562,8 @@ def compute_rendimiento_taller(
             'comparativo': {
                 'mes_actual': {'completados': 0, 'tiempo_prom': None, 'facturacion': 0},
                 'mes_anterior': {'completados': 0, 'tiempo_prom': None, 'facturacion': 0},
+                'ventana_mes_actual': {'desde': fecha_desde.isoformat(), 'hasta': fecha_hasta.isoformat()},
+                'ventana_mes_anterior': {'desde': fecha_desde.isoformat(), 'hasta': fecha_hasta.isoformat()},
                 'delta_completados_pct': None,
                 'delta_tiempo_pct': None,
                 'delta_facturacion_pct': None,
