@@ -79,20 +79,13 @@ def reclamar_informe_por_token(token: str, cliente) -> dict:
 
     checklist = informe.checklist_instance
     checklist_id = checklist.id
-    vehicle_id = vehiculo.id
 
     with transaction.atomic():
-        from mecanimovilapp.apps.vehiculos.tasks import actualizar_salud_desde_checklist
-
-        try:
-            actualizar_salud_desde_checklist(checklist_id, vehicle_id)
-        except Exception as exc:
-            logger.error('Error aplicando salud desde reclamo informe %s: %s', token, exc, exc_info=True)
-            raise ValueError('No se pudo registrar el impacto del servicio en tu vehículo') from exc
-
-        _dedupe_eventos_ml_declarados(vehiculo.id, checklist_id)
-        _tag_eventos_claim_retroactivo(vehiculo.id, checklist_id)
-
+        # El informe externo se vincula al historial del vehículo, pero NO altera
+        # ComponenteSaludVehiculo / HealthEngine. Un servicio hecho a un km antiguo
+        # (p.ej. 63.000) sobre un auto registrado hoy a 148.000 km corrompería el
+        # algoritmo de degradación Weibull. La salud sigue el checklist manual del
+        # registro y los servicios realizados dentro de la app.
         informe.reclamado_por_vehiculo = vehiculo
         informe.reclamado_por_cliente = cliente
         informe.reclamado_en = timezone.now()
@@ -110,8 +103,9 @@ def reclamar_informe_por_token(token: str, cliente) -> dict:
         'success': True,
         'vehiculo_id': vehiculo.id,
         'checklist_id': checklist_id,
-        'message': 'Servicio vinculado correctamente a tu vehículo.',
+        'message': 'Servicio vinculado al historial de tu vehículo.',
         'componentes_oficiales': _componentes_desde_checklist(checklist),
+        'salud_actualizada': False,
     }
 
 

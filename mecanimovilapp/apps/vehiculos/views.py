@@ -809,8 +809,9 @@ class VehiculoViewSet(viewsets.ModelViewSet):
             if sol.taller:
                 provider_name = sol.taller.nombre
                 provider_type = 'taller'
-                if sol.taller.logo:
-                    provider_avatar = get_image_url(sol.taller.logo, request)
+                taller_foto = getattr(sol.taller, 'foto_perfil', None) or getattr(sol.taller, 'logo', None)
+                if taller_foto:
+                    provider_avatar = get_image_url(taller_foto, request)
             elif sol.mecanico:
                 provider_name = f"{sol.mecanico.usuario.first_name} {sol.mecanico.usuario.last_name}".strip()
                 provider_type = 'mecanico'
@@ -844,17 +845,29 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         informes_reclamados = InformeServicioPublico.objects.filter(
             reclamado_por_vehiculo=vehiculo,
         ).select_related(
+            'checklist_instance__checklist_template',
             'checklist_instance__cita_personal__taller',
+            'checklist_instance__cita_personal__detalle',
         ).order_by('-reclamado_en')
 
         for informe in informes_reclamados:
-            cita = getattr(informe.checklist_instance, 'cita_personal', None)
+            checklist = getattr(informe, 'checklist_instance', None)
+            cita = getattr(checklist, 'cita_personal', None) if checklist else None
             taller_nombre = 'Taller externo'
             provider_avatar = None
             if cita and cita.taller_id:
-                taller_nombre = cita.taller.nombre or taller_nombre
-                if cita.taller.logo:
-                    provider_avatar = get_image_url(cita.taller.logo, request)
+                taller = cita.taller
+                taller_nombre = getattr(taller, 'nombre', None) or taller_nombre
+                taller_foto = getattr(taller, 'foto_perfil', None)
+                if taller_foto:
+                    provider_avatar = get_image_url(taller_foto, request)
+
+            detalle = getattr(cita, 'detalle', None) if cita else None
+            servicio_nombre = (
+                (getattr(detalle, 'descripcion', None) or '').strip()
+                or getattr(getattr(checklist, 'checklist_template', None), 'nombre', None)
+                or 'Servicio de taller (checklist)'
+            )
 
             fecha = informe.fecha_firma_cliente or informe.generado_en
             history.append({
@@ -862,7 +875,7 @@ class VehiculoViewSet(viewsets.ModelViewSet):
                 'tipo': 'informe_taller',
                 'informe_token': informe.token,
                 'fecha_servicio': fecha.isoformat() if fecha else None,
-                'servicio_nombre': 'Checklist de mantención',
+                'servicio_nombre': servicio_nombre,
                 'nombre_proveedor': taller_nombre,
                 'proveedor_foto': provider_avatar,
                 'tipo_proveedor': 'taller',
