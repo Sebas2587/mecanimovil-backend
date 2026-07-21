@@ -242,3 +242,45 @@ class MecanicoKpisMetricasTestCase(TestCase):
         self.assertIn('ventana_mes_anterior', comp)
         self.assertIn('desde', comp['ventana_mes_actual'])
         self.assertIn('hasta', comp['ventana_mes_anterior'])
+
+    def test_facturacion_personal_usa_precio_oferta_si_falta_referencia(self):
+        from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonal, CitaAgendaPersonalDetalle
+        from mecanimovilapp.apps.servicios.models import CategoriaServicio, OfertaServicio, Servicio
+
+        categoria = CategoriaServicio.objects.create(nombre='Cat KPI Fallback')
+        servicio = Servicio.objects.create(nombre='Servicio KPI fallback')
+        servicio.categorias.add(categoria)
+        oferta = OfertaServicio.objects.create(
+            servicio=servicio,
+            tipo_proveedor='taller',
+            taller=self.taller,
+            marca_vehiculo_seleccionada=None,
+            disponible=True,
+            precio_sin_repuestos=Decimal('40000'),
+            precio_con_repuestos=Decimal('55000'),
+            precio_publicado_cliente=Decimal('55000'),
+            costo_mano_de_obra_sin_iva=Decimal('35000'),
+            costo_repuestos_sin_iva=Decimal('8000'),
+        )
+        cita = CitaAgendaPersonal.objects.create(
+            taller=self.taller,
+            miembro_taller=self.mecanico,
+            estado='cerrada',
+            fecha_servicio=self.hoy,
+            hora_servicio=time(16, 0),
+            duracion_minutos=60,
+            tipo_servicio='taller',
+            creado_por=self.taller.usuario,
+            cerrada_en=timezone.now(),
+        )
+        CitaAgendaPersonalDetalle.objects.create(
+            cita=cita,
+            cliente_nombre='Cliente',
+            servicio_nombre=servicio.nombre,
+            oferta_servicio=oferta,
+        )
+
+        kpis = compute_mecanico_kpis(self.mecanico, dias=30)
+
+        self.assertEqual(kpis['facturacion_periodo'], 55000)
+        self.assertEqual(kpis['comparativo']['mes_actual']['facturacion'], 55000)

@@ -70,6 +70,70 @@ def _ventana_periodo_q(fecha_desde: date, fecha_hasta: date) -> Q:
     )
 
 
+def _ventana_cita_personal_q(fecha_desde: date, fecha_hasta: date) -> Q:
+    """Citas cerradas contadas por fecha de servicio o por fecha de cierre."""
+    inicio_dt = timezone.make_aware(datetime.combine(fecha_desde, datetime.min.time()))
+    fin_dt = timezone.make_aware(
+        datetime.combine(fecha_hasta, datetime.max.time().replace(microsecond=0))
+    )
+    return (
+        Q(fecha_servicio__gte=fecha_desde, fecha_servicio__lte=fecha_hasta)
+        | Q(cerrada_en__gte=inicio_dt, cerrada_en__lte=fin_dt)
+    )
+
+
+def _precio_oferta_servicio(oferta) -> float:
+    if oferta is None:
+        return 0.0
+    for attr in ('precio_publicado_cliente', 'precio_sin_repuestos', 'precio_con_repuestos'):
+        val = getattr(oferta, attr, None)
+        if val is None:
+            continue
+        try:
+            n = float(val)
+        except (TypeError, ValueError):
+            continue
+        if n > 0:
+            return n
+    return 0.0
+
+
+def _precio_cita_personal(cita) -> float:
+    """Precio referencia explícito o fallback al catálogo (OfertaServicio)."""
+    from django.core.exceptions import ObjectDoesNotExist
+
+    try:
+        detalle = cita.detalle
+    except ObjectDoesNotExist:
+        return 0.0
+    if detalle.precio_referencia is not None:
+        try:
+            ref = float(detalle.precio_referencia)
+            if ref > 0:
+                return ref
+        except (TypeError, ValueError):
+            pass
+    return _precio_oferta_servicio(getattr(detalle, 'oferta_servicio', None))
+
+
+def _sumar_facturacion_citas_personales(qs) -> float:
+    total = 0.0
+    for cita in qs.select_related('detalle__oferta_servicio').iterator(chunk_size=500):
+        total += _precio_cita_personal(cita)
+    return total
+
+
+def _fecha_bucket_cita_personal(cita, fecha_desde: date, fecha_hasta: date) -> date | None:
+    """Día de la cita cerrada: fecha_servicio o fecha de cierre dentro del rango."""
+    if cita.fecha_servicio and fecha_desde <= cita.fecha_servicio <= fecha_hasta:
+        return cita.fecha_servicio
+    if cita.cerrada_en:
+        d = timezone.localtime(cita.cerrada_en).date()
+        if fecha_desde <= d <= fecha_hasta:
+            return d
+    return None
+
+
 def _ordenes_mecanico_periodo(miembro, fecha_desde: date, fecha_hasta: date):
     from mecanimovilapp.apps.ordenes.models import SolicitudServicio
 
@@ -170,9 +234,7 @@ def _metricas_periodo(
 
     personal_base = CitaAgendaPersonal.objects.filter(
         miembro_taller=miembro,
-        fecha_servicio__gte=fecha_desde,
-        fecha_servicio__lte=fecha_hasta,
-    )
+    ).filter(_ventana_cita_personal_q(fecha_desde, fecha_hasta))
     personal_cerradas_qs = personal_base.filter(estado='cerrada')
     personal_activas_qs = personal_base.filter(estado='activa')
 
@@ -283,11 +345,10 @@ def _metricas_periodo(
     tiempo_promedio = round(sum(tiempos_reales) / len(tiempos_reales), 2) if tiempos_reales else None
     pct_dentro_tiempo = round(100.0 * dentro_tiempo / n_tiempo, 1) if n_tiempo > 0 else None
 
-    # Facturación: órdenes completadas + precio referencia citas personales
+    # Facturación: órdenes completadas + precio citas personales (referencia o catálogo)
     fact_agg = completadas_qs.aggregate(s=Sum('total'))
     facturacion_mkt = float(fact_agg['s'] or Decimal('0'))
-    personal_fact_agg = personal_cerradas_qs.aggregate(s=Sum('detalle__precio_referencia'))
-    facturacion = facturacion_mkt + float(personal_fact_agg['s'] or Decimal('0'))
+    facturacion = facturacion_mkt + _sumar_facturacion_citas_personales(personal_cerradas_qs)
 
     # Scores: productividad por volumen total; checklist/tiempo sobre cierres con checklist
     _, score_inicio = _score_velocidad_inicio_checklist(terminadas_mkt_qs)

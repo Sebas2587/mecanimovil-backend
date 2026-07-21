@@ -258,3 +258,70 @@ class GananciasTallerResumenTestCase(TestCase):
 
         serializer = GananciasTallerSerieSerializer(data=serie)
         self.assertTrue(serializer.is_valid(), serializer.errors)
+
+    def test_agenda_personal_usa_precio_oferta_si_falta_referencia(self):
+        from mecanimovilapp.apps.servicios.models import CategoriaServicio, OfertaServicio, Servicio
+
+        categoria = CategoriaServicio.objects.create(nombre='Cat Gan Fallback')
+        servicio = Servicio.objects.create(nombre='Servicio fallback ganancias')
+        servicio.categorias.add(categoria)
+        oferta = OfertaServicio.objects.create(
+            servicio=servicio,
+            tipo_proveedor='taller',
+            taller=self.taller,
+            marca_vehiculo_seleccionada=None,
+            disponible=True,
+            precio_sin_repuestos=Decimal('35000'),
+            precio_con_repuestos=Decimal('42000'),
+            precio_publicado_cliente=Decimal('42000'),
+            costo_mano_de_obra_sin_iva=Decimal('30000'),
+            costo_repuestos_sin_iva=Decimal('5000'),
+        )
+        cita = CitaAgendaPersonal.objects.create(
+            taller=self.taller,
+            miembro_taller=self.mecanico,
+            estado='cerrada',
+            fecha_servicio=self.hoy,
+            hora_servicio=time(15, 0),
+            duracion_minutos=60,
+            tipo_servicio='taller',
+            creado_por=self.taller_user,
+            cerrada_en=timezone.now(),
+        )
+        CitaAgendaPersonalDetalle.objects.create(
+            cita=cita,
+            cliente_nombre='Particular',
+            servicio_nombre=servicio.nombre,
+            oferta_servicio=oferta,
+            precio_referencia=None,
+        )
+
+        resumen = compute_ganancias_taller_resumen(self.taller_user)
+
+        self.assertEqual(resumen['ganancias_agenda_personal'], 42000)
+        self.assertEqual(resumen['ordenes_agenda_personal'], 1)
+
+    def test_cita_cerrada_hoy_cuenta_aunque_fecha_servicio_anterior(self):
+        mes_pasado = self.hoy.replace(day=1) - timedelta(days=1)
+        cita = CitaAgendaPersonal.objects.create(
+            taller=self.taller,
+            miembro_taller=self.mecanico,
+            estado='cerrada',
+            fecha_servicio=mes_pasado,
+            hora_servicio=time(11, 0),
+            duracion_minutos=60,
+            tipo_servicio='taller',
+            creado_por=self.taller_user,
+            cerrada_en=timezone.now(),
+        )
+        CitaAgendaPersonalDetalle.objects.create(
+            cita=cita,
+            cliente_nombre='Particular',
+            servicio_nombre='Alineación',
+            precio_referencia=Decimal('28000'),
+        )
+
+        resumen = compute_ganancias_taller_resumen(self.taller_user)
+
+        self.assertEqual(resumen['ganancias_agenda_personal'], 28000)
+        self.assertEqual(resumen['ordenes_agenda_personal'], 1)

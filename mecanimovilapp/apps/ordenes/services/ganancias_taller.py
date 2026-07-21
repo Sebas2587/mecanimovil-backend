@@ -15,7 +15,11 @@ from django.db.models import Sum
 from django.utils import timezone
 
 from mecanimovilapp.apps.ordenes.services.mecanico_kpis import (
+    _fecha_bucket_cita_personal,
+    _precio_cita_personal,
     _rango_mes,
+    _sumar_facturacion_citas_personales,
+    _ventana_cita_personal_q,
     _ventana_periodo_q,
 )
 
@@ -54,13 +58,10 @@ def _resolve_proveedor_scope(user, mecanico_id: int | None = None):
 
 
 def _precio_cita_personal(cita) -> float:
-    from django.core.exceptions import ObjectDoesNotExist
+    """Re-export: ver mecanimovilapp.apps.ordenes.services.mecanico_kpis."""
+    from mecanimovilapp.apps.ordenes.services import mecanico_kpis as mk
 
-    try:
-        detalle = cita.detalle
-    except ObjectDoesNotExist:
-        return 0.0
-    return float(detalle.precio_referencia or Decimal('0'))
+    return mk._precio_cita_personal(cita)
 
 
 def _fecha_bucket_orden(orden, fecha_desde: date, fecha_hasta: date) -> date | None:
@@ -123,9 +124,7 @@ def _acumular_actividad_diaria(
 
     personal_qs = CitaAgendaPersonal.objects.filter(
         estado='cerrada',
-        fecha_servicio__gte=fecha_desde,
-        fecha_servicio__lte=fecha_hasta,
-    )
+    ).filter(_ventana_cita_personal_q(fecha_desde, fecha_hasta))
     if miembro:
         personal_qs = personal_qs.filter(miembro_taller=miembro)
     elif taller:
@@ -133,9 +132,9 @@ def _acumular_actividad_diaria(
     else:
         personal_qs = personal_qs.filter(mecanico=mecanico)
 
-    for cita in personal_qs.select_related('detalle').iterator(chunk_size=500):
-        bucket = cita.fecha_servicio
-        if not bucket:
+    for cita in personal_qs.select_related('detalle__oferta_servicio').iterator(chunk_size=500):
+        bucket = _fecha_bucket_cita_personal(cita, fecha_desde, fecha_hasta)
+        if bucket is None:
             continue
         agenda_clp[bucket] += int(round(_precio_cita_personal(cita)))
         agenda_n[bucket] += 1
@@ -363,9 +362,7 @@ def _ganancias_en_rango(
 
     personal_qs = CitaAgendaPersonal.objects.filter(
         estado='cerrada',
-        fecha_servicio__gte=fecha_desde,
-        fecha_servicio__lte=fecha_hasta,
-    )
+    ).filter(_ventana_cita_personal_q(fecha_desde, fecha_hasta))
     if miembro:
         personal_qs = personal_qs.filter(miembro_taller=miembro)
     elif taller:
@@ -373,9 +370,7 @@ def _ganancias_en_rango(
     else:
         personal_qs = personal_qs.filter(mecanico=mecanico)
 
-    agenda = float(
-        personal_qs.aggregate(s=Sum('detalle__precio_referencia'))['s'] or Decimal('0')
-    )
+    agenda = _sumar_facturacion_citas_personales(personal_qs)
     n_personal = personal_qs.count()
 
     total = mecanimovil + agenda
