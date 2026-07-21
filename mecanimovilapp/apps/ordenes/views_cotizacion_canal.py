@@ -34,6 +34,7 @@ from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
 from mecanimovilapp.apps.ordenes.services.cotizacion_publica import enviar_cotizacion_libre
 from mecanimovilapp.apps.ordenes.services.plantilla_vehiculo import filtrar_plantillas_por_vehiculo
 from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
+from mecanimovilapp.apps.vehiculos.cilindraje_texto import cilindraje_efectivo
 
 
 class CotizacionCanalViewSet(viewsets.ModelViewSet):
@@ -91,6 +92,9 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             CotizacionCanalPlantilla.objects.filter(pk=plantilla.pk).update(
                 uso_count=F('uso_count') + 1,
             )
+            veh_plant = data.get('vehiculo') or {}
+            marca_p = snap.get('vehiculo_marca') or veh_plant.get('marca', '')
+            modelo_p = snap.get('vehiculo_modelo') or veh_plant.get('modelo', '')
             cotizacion = CotizacionCanal.objects.create(
                 conversation=conversation,
                 es_libre=es_libre,
@@ -100,11 +104,20 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
                 creado_por=request.user,
                 estado='borrador',
                 modalidad=snap.get('modalidad') or data.get('modalidad') or 'taller',
-                vehiculo_marca=snap.get('vehiculo_marca') or data.get('vehiculo', {}).get('marca', ''),
-                vehiculo_modelo=snap.get('vehiculo_modelo') or data.get('vehiculo', {}).get('modelo', ''),
-                vehiculo_anio=snap.get('vehiculo_anio') or data.get('vehiculo', {}).get('anio'),
-                vehiculo_patente=snap.get('vehiculo_patente') or data.get('vehiculo', {}).get('patente', ''),
-                vehiculo_cilindraje=snap.get('vehiculo_cilindraje') or data.get('vehiculo', {}).get('cilindraje', ''),
+                direccion_servicio=(
+                    data.get('direccion_servicio')
+                    or snap.get('direccion_servicio')
+                    or ''
+                )[:500],
+                vehiculo_marca=marca_p,
+                vehiculo_modelo=modelo_p,
+                vehiculo_anio=snap.get('vehiculo_anio') or veh_plant.get('anio'),
+                vehiculo_patente=snap.get('vehiculo_patente') or veh_plant.get('patente', ''),
+                vehiculo_cilindraje=cilindraje_efectivo(
+                    snap.get('vehiculo_cilindraje') or veh_plant.get('cilindraje', ''),
+                    marca_p,
+                    modelo_p,
+                ),
                 tipo_motor=snap.get('tipo_motor', ''),
                 tipo_motor_label=snap.get('tipo_motor_label', ''),
                 servicio_nombre=snap.get('servicio_nombre') or data.get('servicio_nombre', ''),
@@ -142,6 +155,14 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
         except (TypeError, ValueError):
             anio_int = None
 
+        marca = ctx.get('vehiculo_marca') or veh.get('marca', '')
+        modelo = ctx.get('vehiculo_modelo') or veh.get('modelo', '')
+        cilindraje = cilindraje_efectivo(
+            ctx.get('vehiculo_cilindraje') or veh.get('cilindraje', ''),
+            marca,
+            modelo,
+        )
+
         cotizacion = CotizacionCanal.objects.create(
             conversation=conversation,
             es_libre=es_libre,
@@ -151,11 +172,12 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             creado_por=request.user,
             estado='borrador',
             modalidad=data.get('modalidad', 'taller'),
-            vehiculo_marca=ctx.get('vehiculo_marca') or veh.get('marca', ''),
-            vehiculo_modelo=ctx.get('vehiculo_modelo') or veh.get('modelo', ''),
+            direccion_servicio=str(data.get('direccion_servicio') or '')[:500],
+            vehiculo_marca=marca,
+            vehiculo_modelo=modelo,
             vehiculo_anio=anio_int,
             vehiculo_patente=ctx.get('vehiculo_patente') or veh.get('patente', ''),
-            vehiculo_cilindraje=ctx.get('vehiculo_cilindraje') or veh.get('cilindraje', ''),
+            vehiculo_cilindraje=cilindraje,
             vehiculo_vin=str(veh.get('vin') or '')[:50],
             tipo_motor=contenido.get('tipo_motor') or ctx.get('tipo_motor', ''),
             tipo_motor_label=contenido.get('tipo_motor_label') or ctx.get('tipo_motor_label', ''),

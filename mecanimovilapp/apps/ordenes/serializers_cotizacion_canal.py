@@ -94,6 +94,7 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             'visto_en',
             'estado',
             'modalidad',
+            'direccion_servicio',
             'vehiculo_marca',
             'vehiculo_modelo',
             'vehiculo_anio',
@@ -148,6 +149,12 @@ class GenerarCotizacionIaSerializer(serializers.Serializer):
     servicio_nombre = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
     descripcion_problema = serializers.CharField(required=False, allow_blank=True, default='')
     modalidad = serializers.ChoiceField(choices=('taller', 'domicilio'), default='taller')
+    direccion_servicio = serializers.CharField(
+        max_length=500,
+        required=False,
+        allow_blank=True,
+        default='',
+    )
     vehiculo = serializers.DictField(required=False, default=dict)
     plantilla_id = serializers.IntegerField(required=False, allow_null=True)
 
@@ -159,6 +166,10 @@ class GenerarCotizacionIaSerializer(serializers.Serializer):
                 raise serializers.ValidationError(
                     {'cliente_nombre': 'Indica el nombre del cliente para cotización libre.'},
                 )
+        if attrs.get('modalidad') == 'domicilio' and not (attrs.get('direccion_servicio') or '').strip():
+            raise serializers.ValidationError(
+                {'direccion_servicio': 'Indica la dirección para servicio a domicilio.'},
+            )
         if attrs.get('plantilla_id'):
             return attrs
         if not (attrs.get('servicio_nombre') or '').strip():

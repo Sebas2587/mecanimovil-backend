@@ -14,6 +14,7 @@ from mecanimovilapp.apps.ordenes.models import (
     CitaAgendaPersonalDetalle,
     CotizacionCanal,
 )
+from mecanimovilapp.apps.vehiculos.cilindraje_texto import cilindraje_efectivo
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,7 @@ def serializar_cotizacion_publica(cotizacion: CotizacionCanal) -> dict:
         'id': cotizacion.id,
         'estado': cotizacion.estado,
         'modalidad': cotizacion.modalidad,
+        'direccion_servicio': cotizacion.direccion_servicio or '',
         'servicio_nombre': cotizacion.servicio_nombre,
         'descripcion_problema': cotizacion.descripcion_problema,
         'vehiculo_marca': cotizacion.vehiculo_marca,
@@ -167,12 +169,17 @@ def aceptar_cotizacion_publica(cotizacion: CotizacionCanal) -> tuple[CotizacionC
         cita=cita,
         cliente_nombre=cotizacion.cliente_nombre or 'Cliente',
         cliente_telefono=cotizacion.cliente_telefono or '',
+        direccion=(cotizacion.direccion_servicio or '').strip()[:500],
         vehiculo_marca=cotizacion.vehiculo_marca,
         vehiculo_modelo=cotizacion.vehiculo_modelo,
         vehiculo_patente=cotizacion.vehiculo_patente,
         vehiculo_vin=cotizacion.vehiculo_vin,
         vehiculo_anio=cotizacion.vehiculo_anio,
-        vehiculo_cilindraje=cotizacion.vehiculo_cilindraje,
+        vehiculo_cilindraje=cilindraje_efectivo(
+            cotizacion.vehiculo_cilindraje,
+            cotizacion.vehiculo_marca,
+            cotizacion.vehiculo_modelo,
+        ),
         servicio_nombre=cotizacion.servicio_nombre,
         descripcion=cotizacion.descripcion_problema,
         precio_referencia=cotizacion.total_clp,

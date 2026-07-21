@@ -8,6 +8,7 @@ import requests
 from decouple import config
 
 from .catalogo_resolver import normalizar_tipo_motor_vehiculo
+from .cilindraje_texto import cilindraje_efectivo
 from .kilometraje_validation import mileage_from_getapi_payload
 
 logger = logging.getLogger(__name__)
@@ -48,12 +49,16 @@ def fetch_plate_basic_info(patente: str) -> dict:
         fuel_raw = data.get("fuel") or data.get("tipo_motor") or ""
         tipo_motor = normalizar_tipo_motor_vehiculo(fuel_raw) if str(fuel_raw).strip() else None
 
+        marca = data.get("model", {}).get("brand", {}).get("name", "") or ""
+        modelo = data.get("model", {}).get("name", "") or ""
+        cilindraje = cilindraje_efectivo(data.get("engine"), marca, modelo)
+
         return {
             "patente": data.get("licensePlate", patente_norm),
-            "marca_nombre": data.get("model", {}).get("brand", {}).get("name", ""),
-            "modelo_nombre": data.get("model", {}).get("name", ""),
+            "marca_nombre": marca,
+            "modelo_nombre": modelo,
             "year": data.get("year", ""),
-            "cilindraje": data.get("engine", ""),
+            "cilindraje": cilindraje,
             "tipo_motor": tipo_motor,
             "vin": data.get("vinNumber", ""),
         }

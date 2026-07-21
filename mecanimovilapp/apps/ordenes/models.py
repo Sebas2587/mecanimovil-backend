@@ -2330,6 +2330,12 @@ class CotizacionCanal(models.Model):
     )
     estado = models.CharField(max_length=20, choices=ESTADO_CHOICES, default='borrador', db_index=True)
     modalidad = models.CharField(max_length=20, choices=MODALIDAD_CHOICES, default='taller')
+    direccion_servicio = models.CharField(
+        max_length=500,
+        blank=True,
+        default='',
+        help_text='Dirección del cliente cuando modalidad es a domicilio.',
+    )
 
     vehiculo_marca = models.CharField(max_length=100, blank=True, default='')
     vehiculo_modelo = models.CharField(max_length=100, blank=True, default='')

@@ -4,6 +4,18 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from mecanimovilapp.apps.vehiculos.cilindraje_texto import (
+    cilindraje_efectivo,
+    extraer_cilindraje_desde_texto,
+)
+
+__all__ = [
+    'plantilla_coincide_vehiculo',
+    'filtrar_plantillas_por_vehiculo',
+    'cilindraje_efectivo',
+    'extraer_cilindraje_desde_texto',
+]
+
 
 def _norm_texto(valor: Any) -> str:
     return ' '.join(str(valor or '').upper().split())

@@ -58,8 +58,11 @@ def fetch_patente_normalized(patente: str, *, include_private_fields: bool = Tru
         return None, 404, 'patente_no_encontrada'
 
     data = json_response.get('data', json_response)
+    from mecanimovilapp.apps.vehiculos.cilindraje_texto import cilindraje_efectivo
+
     marca_nombre = data.get('model', {}).get('brand', {}).get('name', '')
     modelo_nombre = data.get('model', {}).get('name', '')
+    cilindraje = cilindraje_efectivo(data.get('engine'), marca_nombre, modelo_nombre)
 
     normalized_data = {
         'patente': data.get('licensePlate', patente_norm),
@@ -67,9 +70,9 @@ def fetch_patente_normalized(patente: str, *, include_private_fields: bool = Tru
         'modelo_nombre': modelo_nombre,
         'year': data.get('year', ''),
         'color': data.get('color', ''),
-        'motor': data.get('engine', ''),
+        'motor': data.get('engine', '') or cilindraje,
         'tipo_motor': data.get('fuel', 'GASOLINA'),
-        'cilindraje': data.get('engine', ''),
+        'cilindraje': cilindraje,
     }
 
     if include_private_fields:

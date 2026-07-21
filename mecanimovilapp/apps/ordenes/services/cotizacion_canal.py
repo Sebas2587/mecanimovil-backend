@@ -140,6 +140,8 @@ def aplicar_edicion_cotizacion(cotizacion: CotizacionCanal, data: dict) -> Cotiz
         cotizacion.descripcion_problema = str(data['descripcion_problema'] or '')
     if 'modalidad' in data and data['modalidad'] in ('taller', 'domicilio'):
         cotizacion.modalidad = data['modalidad']
+    if 'direccion_servicio' in data:
+        cotizacion.direccion_servicio = str(data.get('direccion_servicio') or '')[:500]
     if 'repuestos' in data and isinstance(data['repuestos'], list):
         cotizacion.repuestos = data['repuestos']
     if 'mano_obra_clp' in data:
