@@ -2371,6 +2371,12 @@ class CotizacionCanal(models.Model):
     enviada_en = models.DateTimeField(null=True, blank=True)
     aceptada_en = models.DateTimeField(null=True, blank=True)
     rechazada_en = models.DateTimeField(null=True, blank=True)
+    fecha_expiracion_publica = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text='Vencimiento del enlace público de cotización libre.',
+    )
     creado_en = models.DateTimeField(auto_now_add=True)
     actualizado_en = models.DateTimeField(auto_now=True)
 

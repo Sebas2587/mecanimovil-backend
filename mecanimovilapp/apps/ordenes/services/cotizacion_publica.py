@@ -16,6 +16,8 @@ from mecanimovilapp.apps.ordenes.models import (
 )
 from mecanimovilapp.apps.vehiculos.cilindraje_texto import cilindraje_efectivo
 
+from mecanimovilapp.apps.usuarios.legal_constants import COTIZACION_PUBLICA_TTL_DAYS
+
 logger = logging.getLogger(__name__)
 
 
@@ -31,7 +33,7 @@ def construir_url_publica_cotizacion(token: str) -> str:
 
 
 def asegurar_token_cotizacion(cotizacion: CotizacionCanal) -> CotizacionCanal:
-    """Genera token y URL pública si aún no existen."""
+    """Genera token, URL pública y fecha de expiración si aún no existen."""
     update_fields: list[str] = []
     if not cotizacion.token:
         cotizacion.token = secrets.token_urlsafe(24)
@@ -39,9 +41,29 @@ def asegurar_token_cotizacion(cotizacion: CotizacionCanal) -> CotizacionCanal:
     if not cotizacion.url_publica and cotizacion.token:
         cotizacion.url_publica = construir_url_publica_cotizacion(cotizacion.token)
         update_fields.append('url_publica')
+    if not cotizacion.fecha_expiracion_publica:
+        cotizacion.fecha_expiracion_publica = timezone.now() + timezone.timedelta(
+            days=COTIZACION_PUBLICA_TTL_DAYS,
+        )
+        update_fields.append('fecha_expiracion_publica')
     if update_fields:
         update_fields.append('actualizado_en')
         cotizacion.save(update_fields=update_fields)
+    return cotizacion
+
+
+def cotizacion_publica_expirada(cotizacion: CotizacionCanal) -> bool:
+    if cotizacion.estado == 'expirada':
+        return True
+    if cotizacion.fecha_expiracion_publica and timezone.now() > cotizacion.fecha_expiracion_publica:
+        return True
+    return False
+
+
+def marcar_cotizacion_expirada_si_corresponde(cotizacion: CotizacionCanal) -> CotizacionCanal:
+    if cotizacion_publica_expirada(cotizacion) and cotizacion.estado == 'enviada':
+        cotizacion.estado = 'expirada'
+        cotizacion.save(update_fields=['estado', 'actualizado_en'])
     return cotizacion
 
 
@@ -80,6 +102,11 @@ def serializar_cotizacion_publica(cotizacion: CotizacionCanal) -> dict:
         'aceptada_en': cotizacion.aceptada_en.isoformat() if cotizacion.aceptada_en else None,
         'rechazada_en': cotizacion.rechazada_en.isoformat() if cotizacion.rechazada_en else None,
         'visto_en': cotizacion.visto_en.isoformat() if cotizacion.visto_en else None,
+        'fecha_expiracion_publica': (
+            cotizacion.fecha_expiracion_publica.isoformat()
+            if cotizacion.fecha_expiracion_publica else None
+        ),
+        'expirado': cotizacion_publica_expirada(cotizacion),
         'cliente_nombre': cotizacion.cliente_nombre,
         'taller': {
             'nombre': (getattr(taller, 'nombre', None) or '') if taller else '',
@@ -128,6 +155,7 @@ def enviar_cotizacion_libre(cotizacion: CotizacionCanal) -> CotizacionCanal:
             'enviada_en',
             'token',
             'url_publica',
+            'fecha_expiracion_publica',
             'actualizado_en',
         ],
     )

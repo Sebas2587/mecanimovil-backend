@@ -138,6 +138,18 @@ class Vehiculo(models.Model):
         verbose_name=_('descripción de venta'),
         help_text=_('Descripción libre del vehículo para el marketplace'),
     )
+    # Ficha pública compartible (opt-in + token opaco)
+    ficha_publica_habilitada = models.BooleanField(
+        default=False,
+        verbose_name=_('ficha pública habilitada'),
+    )
+    ficha_publica_token = models.CharField(
+        max_length=64,
+        unique=True,
+        null=True,
+        blank=True,
+        db_index=True,
+    )
 
     class Meta:
         verbose_name = _('vehículo')

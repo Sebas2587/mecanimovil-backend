@@ -55,6 +55,9 @@ class Usuario(AbstractUser):
     password_reset_token_expires = models.DateTimeField(blank=True, null=True)
     # NUEVO: Token para notificaciones push de Expo
     expo_push_token = models.CharField(max_length=255, blank=True, null=True, db_index=True)
+    # Ley 21.719 — baja de cuenta (soft-delete + anonimización)
+    deleted_at = models.DateTimeField(blank=True, null=True, db_index=True)
+    anonymized_at = models.DateTimeField(blank=True, null=True)
     
     class Meta:
         verbose_name = _('usuario')
@@ -1633,6 +1636,75 @@ class TallerDireccion(models.Model):
         """Retorna la dirección completa formateada"""
         partes = [self.calle, self.numero, self.comuna, self.ciudad, self.region]
         return ", ".join(filter(None, partes))
+
+
+class ConsentimientoUsuario(models.Model):
+    """Registro acreditado de consentimiento (Ley 21.719 art. 12)."""
+
+    TIPO_CHOICES = [
+        ('terminos', 'Términos de uso'),
+        ('privacidad', 'Política de privacidad'),
+        ('marketing', 'Comunicaciones comerciales'),
+    ]
+    CANAL_CHOICES = [
+        ('app_usuarios', 'App usuarios'),
+        ('app_prov', 'App proveedores'),
+        ('google', 'Google Sign-In'),
+        ('web', 'Web'),
+    ]
+
+    usuario = models.ForeignKey(
+        Usuario,
+        on_delete=models.CASCADE,
+        related_name='consentimientos',
+    )
+    tipo = models.CharField(max_length=20, choices=TIPO_CHOICES, db_index=True)
+    version_documento = models.CharField(max_length=32)
+    fecha_aceptacion = models.DateTimeField(auto_now_add=True)
+    canal = models.CharField(max_length=20, choices=CANAL_CHOICES, db_index=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.CharField(max_length=500, blank=True, default='')
+
+    class Meta:
+        verbose_name = _('consentimiento de usuario')
+        verbose_name_plural = _('consentimientos de usuario')
+        ordering = ['-fecha_aceptacion']
+        indexes = [
+            models.Index(fields=['usuario', 'tipo', '-fecha_aceptacion']),
+        ]
+
+    def __str__(self):
+        return f'{self.usuario_id} · {self.tipo} · v{self.version_documento}'
+
+
+class PreferenciasNotificacion(models.Model):
+    """Preferencias de comunicación del titular (oposición marketing / push operativo)."""
+
+    usuario = models.OneToOneField(
+        Usuario,
+        on_delete=models.CASCADE,
+        related_name='preferencias_notificacion',
+    )
+    push_operativo = models.BooleanField(
+        default=True,
+        help_text='Alertas de órdenes, citas y mensajes operativos.',
+    )
+    push_marketing = models.BooleanField(
+        default=False,
+        help_text='Promociones y novedades comerciales.',
+    )
+    email_marketing = models.BooleanField(
+        default=False,
+        help_text='Correos comerciales.',
+    )
+    actualizado_en = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _('preferencias de notificación')
+        verbose_name_plural = _('preferencias de notificación')
+
+    def __str__(self):
+        return f'Preferencias #{self.usuario_id}'
 
 
 class PushToken(models.Model):

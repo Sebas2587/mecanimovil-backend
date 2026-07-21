@@ -24,6 +24,15 @@ from mecanimovilapp.storage.utils import get_image_url
 logger = logging.getLogger(__name__)
 
 
+def _enmascarar_vin(vin: str) -> str:
+    valor = (vin or '').strip()
+    if not valor:
+        return ''
+    if len(valor) <= 4:
+        return '****'
+    return f"{'*' * (len(valor) - 4)}{valor[-4:]}"
+
+
 def _serializar_informe_publico(informe: InformeServicioPublico, request) -> dict:
     checklist = informe.checklist_instance
     cita = checklist.cita_personal
@@ -121,12 +130,14 @@ def _serializar_informe_publico(informe: InformeServicioPublico, request) -> dic
         'url_publica': informe.url_publica or construir_url_publica(informe.token),
         'resumen_ia': informe.resumen_ia,
         'generado_en': informe.generado_en.isoformat() if informe.generado_en else None,
+        'fecha_expiracion': informe.fecha_expiracion.isoformat() if informe.fecha_expiracion else None,
+        'expirado': informe.is_expired,
         'vehiculo': {
             'patente': informe.vehiculo_patente,
             'marca': informe.vehiculo_marca,
             'modelo': informe.vehiculo_modelo,
             'anio': informe.vehiculo_anio,
-            'vin': informe.vehiculo_vin,
+            'vin': _enmascarar_vin(informe.vehiculo_vin),
             'kilometraje_servicio': informe.kilometraje_servicio,
             'kilometraje_api': informe.kilometraje_api,
         },
@@ -177,6 +188,16 @@ class InformePublicoDetailView(views.APIView):
         # Informes antiguos pegaban todo el checklist en el resumen: reescribir una vez.
         informe = regenerar_resumen_si_es_dump(informe)
 
+        if informe.is_expired:
+            return Response(
+                {
+                    'error': 'Este enlace de informe ha expirado',
+                    'codigo': 'enlace_expirado',
+                    'expirado': True,
+                },
+                status=status.HTTP_410_GONE,
+            )
+
         return Response(_serializar_informe_publico(informe, request))
 
 
@@ -191,6 +212,12 @@ class InformePublicoFirmarClienteView(views.APIView):
             ).get(token=token)
         except InformeServicioPublico.DoesNotExist:
             return Response({'error': 'Informe no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+
+        if informe.is_expired:
+            return Response(
+                {'error': 'Este enlace de informe ha expirado', 'codigo': 'enlace_expirado'},
+                status=status.HTTP_410_GONE,
+            )
 
         if informe.estado in ('FIRMADO', 'VEHICULO_RECLAMADO'):
             return Response(

@@ -196,6 +196,13 @@ def custom_login(request):
                 autenticacion_exitosa = True
         
         if autenticacion_exitosa:
+            if user.deleted_at is not None or not user.is_active:
+                logger.warning(f"❌ Login rechazado: cuenta eliminada o inactiva: {username}")
+                return Response(
+                    {'non_field_errors': ['Esta cuenta fue eliminada o está inactiva.']},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
             # CRÍTICO: Validar que el usuario NO sea un proveedor antes de permitir login
             # Los proveedores solo pueden iniciar sesión en la app de proveedores, no en la app de usuarios
             # Verificar si el usuario es proveedor usando múltiples indicadores
@@ -247,10 +254,15 @@ def custom_login(request):
             user_data = UsuarioSerializer(user).data
             
             logger.info(f"✅ Login exitoso para cliente: {username}")
-            
+
+            from mecanimovilapp.apps.usuarios.services.consent import requiere_consentimiento_legal
+            from mecanimovilapp.apps.usuarios.legal_constants import LEGAL_DOCS_VERSION
+
             return Response({
                 'token': token.key,
-                'user': user_data
+                'user': user_data,
+                'requiere_consentimiento': requiere_consentimiento_legal(user),
+                'version_documento_legal': LEGAL_DOCS_VERSION,
             })
         else:
             logger.warning(f"🔐 Contraseña incorrecta para usuario: {username}")
@@ -348,6 +360,11 @@ def google_login(request):
                 {"non_field_errors": ["Esta cuenta es de proveedor. Por favor, utiliza la aplicación de proveedores para iniciar sesión."]},
                 status=status.HTTP_403_FORBIDDEN,
             )
+        if user.deleted_at is not None or not user.is_active:
+            return Response(
+                {'non_field_errors': ['Esta cuenta fue eliminada o está inactiva.']},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         if dirty:
             user.save()
 
@@ -366,11 +383,23 @@ def google_login(request):
         except Exception as e:
             logger.warning(f"No se pudo asegurar perfil Cliente en google_login: {str(e)}")
 
+        acepta_terminos = raw.get('acepta_terminos') in (True, 'true', 'True', 1, '1')
+        if created and acepta_terminos:
+            from mecanimovilapp.apps.usuarios.services.consent import registrar_consentimiento_registro
+            registrar_consentimiento_registro(user, canal='google', request=request)
+
         # Rotar token igual que login normal
         Token.objects.filter(user=user).delete()
         token = Token.objects.create(user=user)
         user_data = UsuarioSerializer(user).data
-        return Response({"token": token.key, "user": user_data}, status=status.HTTP_200_OK)
+        from mecanimovilapp.apps.usuarios.services.consent import requiere_consentimiento_legal
+        from mecanimovilapp.apps.usuarios.legal_constants import LEGAL_DOCS_VERSION
+        return Response({
+            "token": token.key,
+            "user": user_data,
+            "requiere_consentimiento": requiere_consentimiento_legal(user),
+            "version_documento_legal": LEGAL_DOCS_VERSION,
+        }, status=status.HTTP_200_OK)
 
     except ValueError as e:
         # token inválido / expirado / firma incorrecta
@@ -541,6 +570,12 @@ def login_proveedor(request):
                     status=status.HTTP_403_FORBIDDEN
                 )
             
+            if user.deleted_at is not None or not user.is_active:
+                return Response(
+                    {'non_field_errors': ['Esta cuenta fue eliminada o está inactiva.']},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
             # Si llegamos aquí, el usuario ES proveedor, continuar con el login
             # Rotar token: eliminar el anterior y crear uno nuevo para invalidar sesiones previas
             Token.objects.filter(user=user).delete()
@@ -565,10 +600,20 @@ def login_proveedor(request):
             }
             
             logger.info(f"✅ Login exitoso para proveedor: {username} (email: {user.email})")
-            
+
+            acepta_terminos = request.data.get('acepta_terminos') in (True, 'true', 'True', 1, '1')
+            if acepta_terminos:
+                from mecanimovilapp.apps.usuarios.services.consent import registrar_consentimiento_registro
+                registrar_consentimiento_registro(user, canal='app_prov', request=request)
+
+            from mecanimovilapp.apps.usuarios.services.consent import requiere_consentimiento_legal
+            from mecanimovilapp.apps.usuarios.legal_constants import LEGAL_DOCS_VERSION
+
             return Response({
                 'token': token.key,
-                'user': user_data
+                'user': user_data,
+                'requiere_consentimiento': requiere_consentimiento_legal(user),
+                'version_documento_legal': LEGAL_DOCS_VERSION,
             })
         else:
             logger.warning(f"🔐 Contraseña incorrecta para usuario: {username}")
@@ -705,6 +750,7 @@ def google_login_proveedor(request):
         given_name = (claims.get('given_name') or '').strip()
         family_name = (claims.get('family_name') or '').strip()
 
+        created = False
         try:
             user = Usuario.objects.get(email=email)
         except Usuario.DoesNotExist:
@@ -717,6 +763,7 @@ def google_login_proveedor(request):
             )
             user.set_unusable_password()
             user.save()
+            created = True
             logger.info(f'google_login_proveedor: nuevo usuario creado ({email})')
             nombre_display = f"{given_name} {family_name}".strip() or email
             enviar_email_bienvenida_proveedor(email, nombre_display)
@@ -751,10 +798,28 @@ def google_login_proveedor(request):
         if dirty:
             user.save()
 
+        if user.deleted_at is not None or not user.is_active:
+            return Response(
+                {'non_field_errors': ['Esta cuenta fue eliminada o está inactiva.']},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        acepta_terminos = raw.get('acepta_terminos') in (True, 'true', 'True', 1, '1')
+        if (created or acepta_terminos) and acepta_terminos:
+            from mecanimovilapp.apps.usuarios.services.consent import registrar_consentimiento_registro
+            registrar_consentimiento_registro(user, canal='google' if created else 'app_prov', request=request)
+
         Token.objects.filter(user=user).delete()
         token = Token.objects.create(user=user)
         user_data = _build_proveedor_login_user_data(user, tipo_proveedor)
-        return Response({'token': token.key, 'user': user_data}, status=status.HTTP_200_OK)
+        from mecanimovilapp.apps.usuarios.services.consent import requiere_consentimiento_legal
+        from mecanimovilapp.apps.usuarios.legal_constants import LEGAL_DOCS_VERSION
+        return Response({
+            'token': token.key,
+            'user': user_data,
+            'requiere_consentimiento': requiere_consentimiento_legal(user),
+            'version_documento_legal': LEGAL_DOCS_VERSION,
+        }, status=status.HTTP_200_OK)
 
     except ValueError as e:
         logger.warning(f'google_login_proveedor token inválido: {str(e)}')
@@ -801,6 +866,13 @@ class UsuarioViewSet(viewsets.ModelViewSet):
                     {"error": "La contraseña es requerida"},
                     status=status.HTTP_400_BAD_REQUEST
                 )
+
+            acepta_terminos = request.data.get('acepta_terminos')
+            if acepta_terminos not in (True, 'true', 'True', 1, '1'):
+                return Response(
+                    {"error": "Debes aceptar los términos y la política de privacidad"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             
             # Verificar si el usuario ya existe
             username = user_data.get('username')
@@ -838,6 +910,8 @@ class UsuarioViewSet(viewsets.ModelViewSet):
             try:
                 user.save()
                 logger.info(f"✅ Usuario creado exitosamente: {user.username} (ID: {user.id})")
+                from mecanimovilapp.apps.usuarios.services.consent import registrar_consentimiento_registro
+                registrar_consentimiento_registro(user, canal='app_usuarios', request=request)
                 nombre_display = f"{user.first_name} {user.last_name}".strip() or user.username
                 if user.email:
                     if user.es_mecanico:

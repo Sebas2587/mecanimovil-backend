@@ -1,6 +1,7 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from . import views
+from . import privacy_views
 
 router = DefaultRouter()
 router.register(r'usuarios', views.UsuarioViewSet)
@@ -63,6 +64,13 @@ urlpatterns = [
     path('vapid-public-key/', views.vapid_public_key, name='vapid-public-key'),
     path('registrar-web-push/', views.registrar_web_push, name='registrar-web-push'),
     path('desactivar-web-push/', views.desactivar_web_push, name='desactivar-web-push'),
+    # Ley 21.719 — privacidad / ARCOP
+    path('mis-datos/export/', privacy_views.exportar_mis_datos, name='exportar-mis-datos'),
+    path('preferencias-notificacion/', privacy_views.preferencias_notificacion, name='preferencias-notificacion'),
+    path('eliminar-cuenta/estado/', privacy_views.estado_eliminacion_cuenta, name='estado-eliminacion-cuenta'),
+    path('eliminar-cuenta/', privacy_views.eliminar_cuenta, name='eliminar-cuenta'),
+    path('consentimiento/registrar/', privacy_views.registrar_consentimiento_legal, name='registrar-consentimiento'),
+    path('consentimiento/estado/', privacy_views.estado_consentimiento_legal, name='estado-consentimiento'),
     # Router al final
     path('', include(router.urls)),
 ] 

@@ -379,6 +379,9 @@ def generar_informe(checklist_instance: ChecklistInstance) -> InformeServicioPub
     informe.datos_patente_json = vehiculo_snap['datos_patente_json']
     if informe.estado not in ('FIRMADO', 'VEHICULO_RECLAMADO'):
         informe.estado = 'PENDIENTE_FIRMA_CLIENTE'
+    if not informe.fecha_expiracion:
+        from mecanimovilapp.apps.checklists.models_informe import _default_fecha_expiracion_informe
+        informe.fecha_expiracion = _default_fecha_expiracion_informe()
     informe.url_publica = construir_url_publica(informe.token)
     informe.save()
 

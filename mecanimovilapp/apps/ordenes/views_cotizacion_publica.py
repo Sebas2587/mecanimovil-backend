@@ -7,6 +7,8 @@ from rest_framework.response import Response
 from mecanimovilapp.apps.ordenes.models import CotizacionCanal
 from mecanimovilapp.apps.ordenes.services.cotizacion_publica import (
     aceptar_cotizacion_publica,
+    cotizacion_publica_expirada,
+    marcar_cotizacion_expirada_si_corresponde,
     marcar_visto,
     rechazar_cotizacion_publica,
     serializar_cotizacion_publica,
@@ -26,6 +28,17 @@ class CotizacionPublicaDetailView(views.APIView):
         )
         if cotizacion is None:
             return Response({'error': 'Cotización no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+        marcar_cotizacion_expirada_si_corresponde(cotizacion)
+        if cotizacion_publica_expirada(cotizacion):
+            return Response(
+                {
+                    'error': 'Este enlace de cotización ha expirado',
+                    'codigo': 'enlace_expirado',
+                    'expirado': True,
+                    'cotizacion': serializar_cotizacion_publica(cotizacion),
+                },
+                status=status.HTTP_410_GONE,
+            )
         marcar_visto(cotizacion)
         return Response(serializar_cotizacion_publica(cotizacion))
 
@@ -42,6 +55,12 @@ class CotizacionPublicaAceptarView(views.APIView):
         )
         if cotizacion is None:
             return Response({'error': 'Cotización no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+        marcar_cotizacion_expirada_si_corresponde(cotizacion)
+        if cotizacion_publica_expirada(cotizacion):
+            return Response(
+                {'error': 'Este enlace de cotización ha expirado', 'codigo': 'enlace_expirado'},
+                status=status.HTTP_410_GONE,
+            )
         if cotizacion.estado != 'enviada':
             return Response(
                 {
@@ -73,6 +92,12 @@ class CotizacionPublicaRechazarView(views.APIView):
         )
         if cotizacion is None:
             return Response({'error': 'Cotización no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+        marcar_cotizacion_expirada_si_corresponde(cotizacion)
+        if cotizacion_publica_expirada(cotizacion):
+            return Response(
+                {'error': 'Este enlace de cotización ha expirado', 'codigo': 'enlace_expirado'},
+                status=status.HTTP_410_GONE,
+            )
         if cotizacion.estado != 'enviada':
             return Response(
                 {

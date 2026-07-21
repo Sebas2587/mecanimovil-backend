@@ -69,7 +69,7 @@ class ModeloViewSet(viewsets.ReadOnlyModelViewSet):
 from mecanimovilapp.apps.ordenes.models import SolicitudServicio, SolicitudServicioPublica
 from .kilometraje_validation import validar_kilometraje_usuario
 from .services.guest_patente_lookup import fetch_patente_normalized, get_guest_patente_public
-from .throttling import GuestPatenteThrottle
+from .throttling import GuestPatenteThrottle, FichaPublicaThrottle
 
 class VehiculoViewSet(viewsets.ModelViewSet):
     """
@@ -125,7 +125,7 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         """
         if self.action == 'get_marcas':
             return [permissions.AllowAny()]
-        if self.action in ('marketplace_listings', 'marketplace_public_detail', 'ficha_publica'):
+        if self.action in ('marketplace_listings', 'marketplace_public_detail', 'ficha_publica', 'ficha_publica_por_token'):
             return [permissions.AllowAny()]
         if self.action == 'consultar_patente_publica':
             return [permissions.AllowAny()]
@@ -767,8 +767,8 @@ class VehiculoViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['get'], url_path='ficha-publica', permission_classes=[permissions.AllowAny])
     def ficha_publica(self, request, pk=None):
         """
-        Ficha compartible: marca/modelo/año/cilindraje, salud y servicios con talleres.
-        Sin patente, VIN, dueño, precios ni otros datos sensibles.
+        Ficha compartible (grace period por pk): requiere ficha_publica_habilitada.
+        Preferir ficha-publica-token/<token>/ para nuevos enlaces.
         """
         from mecanimovilapp.apps.vehiculos.services.ficha_publica import (
             serializar_ficha_publica_vehiculo,
@@ -783,7 +783,72 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         except Vehiculo.DoesNotExist:
             return Response({"error": "Vehículo no disponible"}, status=status.HTTP_404_NOT_FOUND)
 
+        if not vehiculo.ficha_publica_habilitada:
+            return Response(
+                {"error": "Esta ficha no está disponible públicamente"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        token_query = (request.query_params.get('token') or '').strip()
+        if vehiculo.ficha_publica_token and token_query:
+            if token_query != vehiculo.ficha_publica_token:
+                return Response({"error": "Token inválido"}, status=status.HTTP_403_FORBIDDEN)
+
         return Response(serializar_ficha_publica_vehiculo(vehiculo, request))
+
+    @action(
+        detail=False,
+        methods=['get'],
+        url_path=r'ficha-publica-token/(?P<token>[^/.]+)',
+        permission_classes=[permissions.AllowAny],
+        throttle_classes=[FichaPublicaThrottle],
+    )
+    def ficha_publica_por_token(self, request, token=None):
+        """Ficha pública por token opaco (recomendado)."""
+        from mecanimovilapp.apps.vehiculos.services.ficha_publica import (
+            serializar_ficha_publica_vehiculo,
+        )
+
+        vehiculo = (
+            Vehiculo.objects
+            .select_related('marca', 'modelo')
+            .filter(ficha_publica_token=token, ficha_publica_habilitada=True)
+            .first()
+        )
+        if vehiculo is None:
+            return Response({"error": "Ficha no encontrada"}, status=status.HTTP_404_NOT_FOUND)
+        return Response(serializar_ficha_publica_vehiculo(vehiculo, request))
+
+    @action(detail=True, methods=['post'], url_path='habilitar-ficha-publica')
+    def habilitar_ficha_publica(self, request, pk=None):
+        """Activa compartir ficha y devuelve token + URL."""
+        from mecanimovilapp.apps.vehiculos.services.ficha_publica_share import (
+            construir_url_ficha_publica,
+            habilitar_ficha_publica,
+        )
+
+        vehiculo = self.get_object()
+        if vehiculo.cliente.usuario != request.user:
+            return Response({"error": "No eres el dueño de este vehículo"}, status=status.HTTP_403_FORBIDDEN)
+
+        vehiculo = habilitar_ficha_publica(vehiculo)
+        url = construir_url_ficha_publica(vehiculo.ficha_publica_token)
+        return Response({
+            'ficha_publica_habilitada': True,
+            'ficha_publica_token': vehiculo.ficha_publica_token,
+            'url_publica': url,
+        })
+
+    @action(detail=True, methods=['post'], url_path='deshabilitar-ficha-publica')
+    def deshabilitar_ficha_publica(self, request, pk=None):
+        from mecanimovilapp.apps.vehiculos.services.ficha_publica_share import deshabilitar_ficha_publica
+
+        vehiculo = self.get_object()
+        if vehiculo.cliente.usuario != request.user:
+            return Response({"error": "No eres el dueño de este vehículo"}, status=status.HTTP_403_FORBIDDEN)
+
+        deshabilitar_ficha_publica(vehiculo)
+        return Response({'ficha_publica_habilitada': False})
 
     @action(detail=True, methods=['get'], url_path='historial-servicios')
     def historial_servicios(self, request, pk=None):

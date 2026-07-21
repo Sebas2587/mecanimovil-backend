@@ -1,11 +1,18 @@
 import secrets
 
 from django.db import models
+from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
 
 def _generar_token_informe() -> str:
     return secrets.token_urlsafe(24)
+
+
+def _default_fecha_expiracion_informe():
+    from django.conf import settings
+    dias = getattr(settings, 'INFORME_PUBLICO_TTL_DAYS', 30)
+    return timezone.now() + timezone.timedelta(days=dias)
 
 
 class InformeServicioPublico(models.Model):
@@ -37,6 +44,11 @@ class InformeServicioPublico(models.Model):
     )
     resumen_ia = models.TextField(blank=True, default='')
     generado_en = models.DateTimeField(auto_now_add=True)
+    fecha_expiracion = models.DateTimeField(
+        default=_default_fecha_expiracion_informe,
+        db_index=True,
+        help_text='Vencimiento del enlace público del informe.',
+    )
 
     # Snapshot de vehículo (texto + datos API patente al generar)
     vehiculo_patente = models.CharField(max_length=20, blank=True, default='')
@@ -88,3 +100,9 @@ class InformeServicioPublico(models.Model):
 
     def __str__(self):
         return f'Informe {self.token[:8]}… (checklist #{self.checklist_instance_id})'
+
+    @property
+    def is_expired(self) -> bool:
+        if self.fecha_expiracion is None:
+            return False
+        return timezone.now() > self.fecha_expiracion
