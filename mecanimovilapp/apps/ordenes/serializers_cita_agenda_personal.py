@@ -74,6 +74,7 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
             'duracion_minutos',
             'tipo_servicio',
             'estado',
+            'horario_por_confirmar',
             'cerrada_en',
             'cancelada_en',
             'fecha_creacion',
@@ -105,6 +106,7 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
         read_only_fields = [
             'id',
             'estado',
+            'horario_por_confirmar',
             'cerrada_en',
             'cancelada_en',
             'fecha_creacion',
@@ -230,6 +232,8 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
             return 'cancelado'
         if obj.estado == 'cerrada':
             return 'cerrado'
+        if obj.horario_por_confirmar:
+            return 'nuevo'
 
         inst = self._checklist_instance(obj)
         if inst is None:

@@ -20,6 +20,7 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
     share_url = serializers.SerializerMethodField()
     canal = serializers.SerializerMethodField()
     cliente_display = serializers.SerializerMethodField()
+    cita_personal_id = serializers.SerializerMethodField()
 
     def get_share_url(self, obj) -> str | None:
         if obj.url_publica:
@@ -50,6 +51,19 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
         joined = ' '.join(p for p in parts if p).strip()
         return joined or 'Cliente'
 
+    def get_cita_personal_id(self, obj) -> int | None:
+        cache = self.context.setdefault('_cita_id_by_cotizacion', {})
+        if obj.pk in cache:
+            return cache[obj.pk]
+        cita = (
+            obj.citas_generadas.filter(estado='activa')
+            .order_by('-fecha_creacion')
+            .values_list('id', flat=True)
+            .first()
+        )
+        cache[obj.pk] = cita
+        return cita
+
     def to_representation(self, instance):
         data = super().to_representation(instance)
         for key in ('mano_obra_clp', 'costo_repuestos_clp', 'total_clp'):
@@ -73,6 +87,7 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             'cliente_telefono',
             'cliente_display',
             'canal',
+            'cita_personal_id',
             'token',
             'url_publica',
             'share_url',
@@ -109,6 +124,7 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             'es_libre',
             'cliente_display',
             'canal',
+            'cita_personal_id',
             'token',
             'url_publica',
             'share_url',

@@ -177,7 +177,18 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
                 {'error': 'Solo se pueden cerrar citas activas.'},
                 status=status.HTTP_409_CONFLICT,
             )
-        cita.cerrar()
+        if cita.horario_por_confirmar:
+            return Response(
+                {
+                    'error': 'Confirma día, hora y técnico antes de completar la cita.',
+                    'codigo': 'horario_por_confirmar',
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        try:
+            cita.cerrar()
+        except ValueError as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_409_CONFLICT)
         cita.save(update_fields=['estado', 'cerrada_en', 'fecha_actualizacion'])
         return Response(CitaAgendaPersonalSerializer(cita).data)
 
@@ -337,6 +348,14 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
         if cita.estado != 'activa':
             return Response(
                 {'error': 'Solo se puede iniciar servicio en citas activas.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        if cita.horario_por_confirmar:
+            return Response(
+                {
+                    'error': 'Confirma día, hora y técnico antes de iniciar el servicio.',
+                    'codigo': 'horario_por_confirmar',
+                },
                 status=status.HTTP_409_CONFLICT,
             )
         # Taller/supervisor o el mecánico asignado pueden iniciar el servicio.

@@ -490,6 +490,11 @@ def actualizar_cita_personal(
             setattr(cita, field, value if field != 'duracion_minutos' else duracion)
     cita.duracion_minutos = duracion
     cita.miembro_taller = miembro
+    # Confirmar slot real: deja de ser placeholder de cotización aceptada.
+    if cita.horario_por_confirmar and (
+        'fecha_servicio' in cabecera or 'hora_servicio' in cabecera
+    ):
+        cita.horario_por_confirmar = False
     cita.full_clean()
     cita.save()
 

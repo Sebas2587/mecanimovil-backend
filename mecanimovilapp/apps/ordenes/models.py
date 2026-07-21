@@ -2065,6 +2065,10 @@ class CitaAgendaPersonal(models.Model):
     def cerrar(self):
         if self.estado != 'activa':
             raise ValueError('Solo se puede cerrar una cita activa.')
+        if self.horario_por_confirmar:
+            raise ValueError(
+                'Confirma día, hora y técnico antes de completar la cita.'
+            )
         self.estado = 'cerrada'
         self.cerrada_en = timezone.now()
 

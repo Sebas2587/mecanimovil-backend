@@ -51,7 +51,8 @@ OFERTA_ESTADO_MAP = {
 COTIZACION_CANAL_MAP = {
     'borrador': 'nuevo',
     'enviada': 'cotizacion_enviada',
-    'aceptada': 'aceptado_agendado',
+    # Aceptada ≠ agendada: falta confirmar día/hora/técnico.
+    'aceptada': 'en_negociacion',
     'rechazada': 'rechazado_perdido',
     'expirada': 'rechazado_perdido',
     'cancelada': 'rechazado_perdido',
@@ -178,6 +179,7 @@ def _fila_base(
     template_generado_por_ia: bool = False,
     visto_sin_respuesta: bool = False,
     demorado_48h: bool = False,
+    horario_por_confirmar: bool = False,
 ) -> dict[str, Any]:
     return {
         'tipo_entidad': tipo_entidad,
@@ -207,6 +209,7 @@ def _fila_base(
         'template_generado_por_ia': template_generado_por_ia,
         'visto_sin_respuesta': visto_sin_respuesta,
         'demorado_48h': demorado_48h,
+        'horario_por_confirmar': horario_por_confirmar,
     }
 
 
@@ -222,6 +225,8 @@ def _estado_normalizado_cita_personal(cita) -> str:
         return 'rechazado_perdido'
     if cita.estado == 'cerrada':
         return 'completado'
+    if getattr(cita, 'horario_por_confirmar', False):
+        return 'en_negociacion'
 
     inst = getattr(cita, 'checklist_instance', None)
     if inst is None:
@@ -386,6 +391,7 @@ def _filas_citas_personales(taller: Taller, miembro_id: int | None = None) -> li
                     cita.miembro_taller.nombre if cita.miembro_taller_id else None
                 ),
                 template_generado_por_ia=_template_generado_por_ia_desde_instancia(inst),
+                horario_por_confirmar=bool(getattr(cita, 'horario_por_confirmar', False)),
             )
         )
     return filas

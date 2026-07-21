@@ -140,6 +140,11 @@ def _intervalos_citas_personales_dia(
 
     intervalos: list[tuple[datetime, datetime]] = []
     for cita in qs:
+        # Placeholders de cotización aceptada no ocupan agenda hasta confirmar horario.
+        if getattr(cita, 'horario_por_confirmar', False):
+            continue
+        if hasattr(cita, 'bloquea_agenda') and not cita.bloquea_agenda:
+            continue
         inicio = datetime.combine(fecha, cita.hora_servicio)
         fin = inicio + timedelta(minutes=cita.duracion_minutos + tiempo_descanso)
         intervalos.append((inicio, fin))
