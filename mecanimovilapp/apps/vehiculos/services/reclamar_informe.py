@@ -79,13 +79,29 @@ def reclamar_informe_por_token(token: str, cliente) -> dict:
 
     checklist = informe.checklist_instance
     checklist_id = checklist.id
+    vehicle_id = vehiculo.id
+    # Anclar al odómetro ACTUAL del vehículo (no al km del taller). Así el %
+    # declarado en el checklist se refleja en salud sin degradar por la diferencia
+    # entre km del servicio (p.ej. 63.000) y km al registrar (p.ej. 148.000).
+    km_ancla = int(vehiculo.kilometraje or 0) or None
 
     with transaction.atomic():
-        # El informe externo se vincula al historial del vehículo, pero NO altera
-        # ComponenteSaludVehiculo / HealthEngine. Un servicio hecho a un km antiguo
-        # (p.ej. 63.000) sobre un auto registrado hoy a 148.000 km corrompería el
-        # algoritmo de degradación Weibull. La salud sigue el checklist manual del
-        # registro y los servicios realizados dentro de la app.
+        from mecanimovilapp.apps.vehiculos.tasks import actualizar_salud_desde_checklist
+
+        try:
+            actualizar_salud_desde_checklist(
+                checklist_id,
+                vehicle_id,
+                km_servicio_override=km_ancla,
+                actualizar_odometro=False,
+            )
+        except Exception as exc:
+            logger.error('Error aplicando salud desde reclamo informe %s: %s', token, exc, exc_info=True)
+            raise ValueError('No se pudo registrar el impacto del servicio en tu vehículo') from exc
+
+        _dedupe_eventos_ml_declarados(vehiculo.id, checklist_id)
+        _tag_eventos_claim_retroactivo(vehiculo.id, checklist_id)
+
         informe.reclamado_por_vehiculo = vehiculo
         informe.reclamado_por_cliente = cliente
         informe.reclamado_en = timezone.now()
@@ -103,9 +119,9 @@ def reclamar_informe_por_token(token: str, cliente) -> dict:
         'success': True,
         'vehiculo_id': vehiculo.id,
         'checklist_id': checklist_id,
-        'message': 'Servicio vinculado al historial de tu vehículo.',
+        'message': 'Servicio vinculado. La salud se actualizó con lo inspeccionado en el taller.',
         'componentes_oficiales': _componentes_desde_checklist(checklist),
-        'salud_actualizada': False,
+        'salud_actualizada': True,
     }
 
 

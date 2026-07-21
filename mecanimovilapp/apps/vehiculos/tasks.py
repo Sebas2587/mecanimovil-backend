@@ -42,23 +42,28 @@ SALUD_DESDE_SELECT = {
     # Escala estándar de calidad
     'Excelente':                    95.0,
     'Bueno':                        80.0,
+    'Bien':                         80.0,
     'Regular':                      60.0,
     'Malo':                         35.0,
     'Crítico':                      15.0,
     'Critico':                      15.0,
-    # Variantes de "óptimo" encontradas en populate_checklists_por_servicio
+    # Variantes de "óptimo" / nivel
     'Óptimo':                       95.0,
     'Optimo':                       95.0,
     'Nivel óptimo':                 100.0,
     'Nivel optimo':                 100.0,
+    'A nivel':                      85.0,
+    'Al nivel':                     85.0,
     'Sin desgaste visible':         90.0,
     # Variantes de desgaste
     'Desgaste leve':                70.0,
     'Desgaste moderado':            50.0,
     'Desgaste severo':              20.0,
     'Desgastadas':                  30.0,
-    # Variantes de nivel bajo
+    # Variantes de nivel bajo (checklists reales usan ambas formas)
     'Nivel bajo':                   40.0,
+    'Bajo nivel':                   35.0,
+    'Bajo':                         35.0,
     'Muy bajo':                     15.0,
     # Variantes de "requiere acción"
     'Requiere atención':            25.0,
@@ -68,6 +73,13 @@ SALUD_DESDE_SELECT = {
     'Requiere cambio urgente':      10.0,
     'Requiere Cambio':              25.0,
     'Requiere Cambio Urgente':      10.0,
+    'Con detalles':                 55.0,
+}
+
+# Lookup case-insensitive / sin acentos para SELECT y FLUID_LEVEL
+_SALUD_DESDE_SELECT_NORM = {
+    ''.join(ch for ch in k.lower() if ch.isalnum() or ch.isspace()).strip(): v
+    for k, v in SALUD_DESDE_SELECT.items()
 }
 
 # ── Tablas de prioridad para resolver conflictos multi-item por componente ──
@@ -81,6 +93,7 @@ _PRIO_TIPO_ACTUALIZACION = {
 _PRIO_TIPO_PREGUNTA = {
     'COMPONENT_HEALTH': 0,
     'SELECT':           1,
+    'FLUID_LEVEL':      1,
     'RATING':           2,
     'NUMBER':           3,
     'BOOLEAN':          4,
@@ -131,7 +144,7 @@ def _porcentaje_inspeccion_desde_respuesta(respuesta):
             return None
         return max(0.0, min(100.0, valor))
 
-    if tipo_pregunta == 'SELECT':
+    if tipo_pregunta in ('SELECT', 'FLUID_LEVEL'):
         seleccion = respuesta.respuesta_seleccion
         if seleccion is None:
             return None
@@ -140,7 +153,13 @@ def _porcentaje_inspeccion_desde_respuesta(respuesta):
         )
         if not isinstance(valor_str, str):
             return None
-        return SALUD_DESDE_SELECT.get(valor_str.strip())
+        raw = valor_str.strip()
+        if not raw or raw.upper() in ('N/A', 'NA', 'NO APLICA', '-'):
+            return None
+        if raw in SALUD_DESDE_SELECT:
+            return SALUD_DESDE_SELECT[raw]
+        norm = ''.join(ch for ch in raw.lower() if ch.isalnum() or ch.isspace()).strip()
+        return _SALUD_DESDE_SELECT_NORM.get(norm)
 
     if tipo_pregunta in ('NUMBER', 'RATING') and respuesta.respuesta_numero is not None:
         try:
@@ -607,7 +626,12 @@ def generar_recomendaciones_checklist(checklist_id):
 
 
 @shared_task
-def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
+def actualizar_salud_desde_checklist(
+    checklist_id,
+    vehicle_id,
+    km_servicio_override=None,
+    actualizar_odometro=True,
+):
     """
     Actualiza salud cuando se completa un checklist
     Se ejecuta automáticamente vía signal
@@ -622,6 +646,11 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
     Args:
         checklist_id: ID del checklist completado
         vehicle_id: ID del vehículo
+        km_servicio_override: Si se indica, ancla componentes a este km (p.ej. odómetro
+            actual al reclamar un informe antiguo) en lugar del km del checklist.
+            Evita degradar por la diferencia entre km del taller y km actual.
+        actualizar_odometro: Si False, no escribe el km del checklist en el vehículo
+            (usar en reclamos retroactivos).
     """
     try:
         from .models_health import ComponenteSaludVehiculo
@@ -661,7 +690,7 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
             )
 
         # Si se encontró kilometraje en el checklist, actualizar el vehículo
-        if kilometraje_checklist is not None:
+        if actualizar_odometro and kilometraje_checklist is not None:
             kilometraje_anterior = int(vehiculo.kilometraje or 0)
             diferencia_km = abs(kilometraje_checklist - kilometraje_anterior)
 
@@ -738,17 +767,24 @@ def actualizar_salud_desde_checklist(checklist_id, vehicle_id):
         componentes_inspeccionados = []
         componentes_reemplazados = []
 
+        # Km de ancla para componentes: override (claim) > checklist > odómetro actual
+        if km_servicio_override is not None:
+            try:
+                km_ancla_default = int(km_servicio_override)
+            except (TypeError, ValueError):
+                km_ancla_default = int(vehiculo.kilometraje or 0)
+        elif kilometraje_checklist is not None:
+            km_ancla_default = int(kilometraje_checklist)
+        else:
+            km_ancla_default = int(vehiculo.kilometraje or 0)
+
         for componente_maestro_id, respuesta in candidatos.items():
             item_template = respuesta.item_template
             componente_maestro = item_template.componente_salud_asociado
             tipo_actualizacion = item_template.tipo_actualizacion_efectivo
 
             try:
-                km_para_servicio = (
-                    kilometraje_checklist
-                    if kilometraje_checklist
-                    else vehiculo.kilometraje
-                )
+                km_para_servicio = km_ancla_default
                 fecha_servicio = checklist.fecha_finalizacion or timezone.now()
 
                 comp_salud, created = ComponenteSaludVehiculo.objects.get_or_create(
