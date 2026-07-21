@@ -6,7 +6,14 @@ from django.utils import timezone
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
+
+
+class CotizacionCanalPagination(PageNumberPagination):
+    page_size = 50
+    page_size_query_param = 'page_size'
+    max_page_size = 200
 
 from mecanimovilapp.apps.chat.models import Conversation
 from mecanimovilapp.apps.ordenes.models import CotizacionCanal, CotizacionCanalPlantilla
@@ -32,6 +39,7 @@ from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_conte
 class CotizacionCanalViewSet(viewsets.ModelViewSet):
     serializer_class = CotizacionCanalSerializer
     permission_classes = [permissions.IsAuthenticated, IsProveedor]
+    pagination_class = CotizacionCanalPagination
     http_method_names = ['get', 'post', 'patch', 'delete', 'head', 'options']
 
     def _taller_contexto(self):
@@ -53,7 +61,10 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             taller, _rol = self._taller_contexto()
         except PermissionDenied:
             return CotizacionCanal.objects.none()
-        return CotizacionCanal.objects.filter(taller=taller).select_related('conversation')
+        return CotizacionCanal.objects.filter(taller=taller).select_related(
+            'conversation',
+            'conversation__external_contact',
+        )
 
     @action(detail=False, methods=['post'], url_path='generar-ia')
     def generar_ia(self, request):
@@ -228,6 +239,16 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
         cotizacion.estado = 'aceptada'
         cotizacion.aceptada_en = timezone.now()
         cotizacion.save(update_fields=['estado', 'aceptada_en', 'actualizado_en'])
+        return Response(CotizacionCanalSerializer(cotizacion).data)
+
+    @action(detail=True, methods=['post'], url_path='marcar-perdida')
+    def marcar_perdida(self, request, pk=None):
+        """Cierra el lead comercial desde la bandeja (taller)."""
+        cotizacion = self.get_object()
+        if cotizacion.estado in ('aceptada', 'cancelada', 'rechazada'):
+            raise ValidationError({'estado': 'Esta cotización ya está cerrada.'})
+        cotizacion.estado = 'cancelada'
+        cotizacion.save(update_fields=['estado', 'actualizado_en'])
         return Response(CotizacionCanalSerializer(cotizacion).data)
 
     @action(detail=False, methods=['get'], url_path=r'por-conversacion/(?P<conversation_id>[^/.]+)')

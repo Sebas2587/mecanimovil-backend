@@ -18,6 +18,8 @@ class RepuestoCotizacionSerializer(serializers.Serializer):
 class CotizacionCanalSerializer(serializers.ModelSerializer):
     repuestos = RepuestoCotizacionSerializer(many=True, required=False)
     share_url = serializers.SerializerMethodField()
+    canal = serializers.SerializerMethodField()
+    cliente_display = serializers.SerializerMethodField()
 
     def get_share_url(self, obj) -> str | None:
         if obj.url_publica:
@@ -26,6 +28,27 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             from mecanimovilapp.apps.ordenes.services.cotizacion_publica import construir_url_publica_cotizacion
             return construir_url_publica_cotizacion(obj.token)
         return None
+
+    def get_canal(self, obj) -> str:
+        if obj.es_libre or obj.conversation_id is None:
+            return 'directo'
+        channel = (getattr(obj.conversation, 'source_channel', None) or 'APP').lower()
+        if channel in ('whatsapp', 'instagram', 'messenger'):
+            return channel
+        return 'canal'
+
+    def get_cliente_display(self, obj) -> str:
+        if (obj.cliente_nombre or '').strip():
+            return obj.cliente_nombre.strip()
+        conv = obj.conversation
+        if conv is not None:
+            ext = getattr(conv, 'external_contact', None)
+            name = getattr(ext, 'display_name', None) if ext else None
+            if name:
+                return str(name)
+        parts = [obj.vehiculo_marca, obj.vehiculo_modelo]
+        joined = ' '.join(p for p in parts if p).strip()
+        return joined or 'Cliente'
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -48,6 +71,8 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             'es_libre',
             'cliente_nombre',
             'cliente_telefono',
+            'cliente_display',
+            'canal',
             'token',
             'url_publica',
             'share_url',
@@ -82,6 +107,8 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             'id',
             'conversation',
             'es_libre',
+            'cliente_display',
+            'canal',
             'token',
             'url_publica',
             'share_url',
