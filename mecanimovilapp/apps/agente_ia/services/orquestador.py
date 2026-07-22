@@ -52,7 +52,7 @@ def _parse_json(text: str) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-def _mensajes_recientes(conversation: Conversation, limite: int = 12) -> str:
+def _mensajes_recientes(conversation: Conversation, limite: int = 16) -> str:
     lineas: list[str] = []
     qs = conversation.messages.order_by('-timestamp')[:limite]
     for msg in reversed(list(qs)):
@@ -61,9 +61,47 @@ def _mensajes_recientes(conversation: Conversation, limite: int = 12) -> str:
         if meta.get('from_agente_ia'):
             quien = 'Asistente IA'
         texto = (msg.content or '').strip()
+        analisis = meta.get('media_analisis') if isinstance(meta.get('media_analisis'), dict) else None
+        if analisis and analisis.get('resumen_para_chat'):
+            resumen = str(analisis['resumen_para_chat']).strip()
+            if resumen and resumen not in texto:
+                kind = analisis.get('tipo_medio') or 'media'
+                texto = f'{texto} [{kind}: {resumen}]'.strip() if texto else f'[{kind}: {resumen}]'
+        elif meta.get('media') and not texto:
+            kind = (meta.get('media') or {}).get('kind') or 'adjunto'
+            texto = f'[{kind}]'
         if texto:
-            lineas.append(f'{quien}: {texto[:500]}')
+            lineas.append(f'{quien}: {texto[:700]}')
     return '\n'.join(lineas) or 'Sin mensajes.'
+
+
+def _mensaje_cliente_superado(message: Message) -> bool:
+    """True si llegó otro mensaje del cliente después (debounce / pensar con contexto completo)."""
+    from mecanimovilapp.apps.agente_ia.hooks import es_mensaje_de_cliente
+
+    for newer in Message.objects.filter(
+        conversation_id=message.conversation_id,
+        id__gt=message.id,
+    ).order_by('id')[:20]:
+        if es_mensaje_de_cliente(newer):
+            return True
+    return False
+
+
+def _contexto_minimo_para_cotizar(datos: dict) -> bool:
+    vehiculo = datos.get('vehiculo') or {}
+    tiene_vehiculo = bool(
+        (vehiculo.get('patente') or '').strip()
+        or (
+            (vehiculo.get('marca') or '').strip()
+            and (vehiculo.get('modelo') or '').strip()
+        )
+    )
+    problema = (
+        (datos.get('descripcion_problema') or '').strip()
+        or (datos.get('servicio_nombre') or '').strip()
+    )
+    return tiene_vehiculo and len(problema) >= 12
 
 
 def _llamar_gemini_agente(prompt: str) -> tuple[dict[str, Any] | None, str | None]:
@@ -85,8 +123,8 @@ def _llamar_gemini_agente(prompt: str) -> tuple[dict[str, Any] | None, str | Non
     payload = {
         'contents': [{'parts': [{'text': prompt}]}],
         'generationConfig': {
-            'temperature': 0.4,
-            'maxOutputTokens': 1200,
+            'temperature': 0.55,
+            'maxOutputTokens': 1600,
             'responseMimeType': 'application/json',
         },
     }
@@ -116,51 +154,71 @@ def _construir_prompt_agente(
     mensaje_cliente: str,
     mensaje_bienvenida: str,
     contexto_patente: str = '',
+    contexto_media: str = '',
 ) -> str:
     datos_json = json.dumps(datos_capturados or {}, ensure_ascii=False)
     tiene_contexto = bool((chunks_texto or '').strip())
-    return f"""Eres el asistente virtual de un taller mecánico en Chile. Tu rol es conversar con clientes por chat, capturar información del vehículo y del problema, y preparar una cotización referencial que el cliente podrá aceptar o rechazar.
+    return f"""Eres el asesor virtual de un taller mecánico en Chile. NO eres un bot de ventas rígido: eres un mecánico que escucha, orienta y recién después cotiza cuando tiene sentido.
+
+Tu prioridad en este orden:
+1) Entender qué le pasa al auto (asesoría experta).
+2) Hacer preguntas cortas para completar el diagnóstico.
+3) Cotizar SOLO cuando el cliente quiera precio/presupuesto Y ya haya contexto suficiente.
 
 Instrucciones del taller:
-{instrucciones or 'Sé cordial, profesional y conciso. Pide patente y descripción del problema antes de cotizar.'}
+{instrucciones or 'Sé cordial, profesional y humano. Primero asesora; cotiza cuando el cliente lo pida o cuando el problema ya esté claro.'}
 
-Mensaje de bienvenida sugerido (úsalo solo si es el primer contacto y no hay historial):
-{mensaje_bienvenida or 'Hola, soy el asistente del taller. ¿En qué puedo ayudarte con tu vehículo?'}
+Mensaje de bienvenida sugerido (solo primer contacto sin historial):
+{mensaje_bienvenida or 'Hola, soy el asistente del taller. Cuéntame qué le pasa a tu auto y te oriento.'}
 
-Contexto automático de la patente (API + registro interno + historial + salud + catálogo del taller). Úsalo como fuente de verdad del vehículo; NO pidas de nuevo marca/modelo/año si ya aparecen aquí:
+Contexto automático de la patente (API + registro + historial + salud + catálogo). Fuente de verdad del vehículo; NO repitas marca/modelo/año si ya están:
 ---
 {contexto_patente or 'Sin consulta de patente en este turno.'}
 ---
 
-Conocimiento del taller recuperado para ESTA consulta (catálogo, historial, documentos):
+Análisis del adjunto de ESTE turno (audio/imagen/video; puede estar vacío):
+---
+{contexto_media or 'Sin adjunto analizado en este turno.'}
+---
+
+Conocimiento del taller (catálogo, historial, documentos) para ESTA consulta:
 ---
 {chunks_texto if tiene_contexto else 'Sin contexto indexado todavía para esta consulta.'}
 ---
 
-Datos ya capturados de este cliente (JSON; no los repreguntes si ya están):
+Datos ya capturados (JSON; no los repreguntes si ya están):
 {datos_json}
 
 Historial reciente del chat:
 {chat_reciente}
 
-Último mensaje del cliente:
+Último mensaje del cliente (ya puede incluir transcripción o descripción de media):
 {mensaje_cliente}
 
-REGLAS:
-1. Responde en español chileno, tono profesional, cálido y CONCRETO. Cero relleno genérico.
-2. Si el cliente envió una patente y el contexto automático la identificó, confirma marca/modelo/año al cliente y avanza a preguntar el problema o el servicio (no vuelvas a pedir la patente).
-3. Lee el historial: no repitas preguntas ya respondidas.
-4. Haz UNA sola pregunta de captura por turno.
-5. Usa el catálogo del taller (contexto patente + RAG) para proponer servicios reales con/sin repuestos cuando aplique. No inventes precios si no hay datos.
-6. NO prometas fechas exactas de agenda; la cotización es referencial hasta que el cliente la acepte y el taller agenda.
-7. Captura pendiente en orden: patente → (si falta) marca/modelo/año → problema/servicio → urgencia → modalidad.
-8. Fuera de servicio automotriz / muy enojado → necesita_humano=true.
-9. Si ya tienes vehículo identificado (por patente o datos) + problema/servicio claro → listo_para_cotizar=true. En ese caso el sistema enviará la cotización con botones de aceptar/rechazar.
-10. respuesta_cliente breve (1-2 párrafos), específica al mensaje.
+REGLAS DE CONVERSACIÓN:
+1. Español chileno, cálido, concreto. Nada de frases robot ("¡Claro! Con gusto te ayudo a cotizar…") ni empujar cotización en cada turno.
+2. Si el cliente saluda o habla en genérico, responde humano y pregunta qué le ocurre al vehículo (síntoma), no saltes a cotizar.
+3. Muchos clientes NO saben qué servicio necesitan: primero asesora (posibles causas, qué revisar, urgencia) y pide 1 dato faltante clave.
+4. UNA sola pregunta de clarificación por turno (ej: cuándo ocurre el ruido, si hay luz en tablero, si pierde potencia, modalidad taller/domicilio).
+5. Usa adjuntos: si hay audio, responde a la transcripción/ruido; si hay foto de tablero/vano/pieza, comenta lo visto y pide confirmación.
+6. Si hay patente identificada, confírmala y avanza al síntoma (no vuelvas a pedir la patente).
+7. Lee el historial: no repitas preguntas ya respondidas.
+8. Usa el catálogo del taller cuando ayude; no inventes precios sin datos.
+9. NO prometas fechas exactas de agenda.
+10. Fuera de automotriz / cliente muy enojado → necesita_humano=true.
+11. listo_para_cotizar=true SOLO si:
+    - hay vehículo (patente o marca+modelo) Y
+    - hay problema/servicio suficientemente claro Y
+    - el cliente pide cotización/presupuesto/precio O ya confirmó que quiere que le armes el presupuesto.
+    Si falta contexto o solo busca consejo → listo_para_cotizar=false y sigue asesorando.
+12. cliente_pide_cotizacion=true únicamente si en este turno (o el historial reciente) el cliente pidió precio/cotización/presupuesto de forma explícita o claramente implícita.
+13. respuesta_cliente: 1-3 frases naturales; puede incluir un mini consejo + 1 pregunta. Evita listados largos.
 
 Responde SOLO JSON válido:
 {{
   "respuesta_cliente": "...",
+  "intencion": "saludo|asesoria|cotizacion|agenda|otro",
+  "cliente_pide_cotizacion": false,
   "datos_actualizados": {{
     "cliente_nombre": "",
     "cliente_telefono": "",
@@ -410,11 +468,26 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
     ):
         return {'skipped': True, 'reason': 'sesion_pausada'}
 
-    texto_cliente = (message.content or '').strip()
-    if not texto_cliente:
-        return {'skipped': True, 'reason': 'empty_message'}
+    # Debounce: si el cliente siguió escribiendo, este turno queda obsoleto.
+    if _mensaje_cliente_superado(message):
+        return {'skipped': True, 'reason': 'superseded_by_newer_message'}
 
-    # ── Lookup automático de patente ──────────────────────────────────────
+    # Espera breve si Meta aún está bajando el adjunto.
+    media_meta = (message.channel_metadata or {}).get('media')
+    if media_meta and not message.attachment:
+        for _ in range(6):
+            time.sleep(1.0)
+            message.refresh_from_db(fields=['attachment', 'content', 'channel_metadata'])
+            if message.attachment:
+                break
+        # Revisa de nuevo: durante la espera pudo llegar otro mensaje del cliente.
+        if _mensaje_cliente_superado(message):
+            return {'skipped': True, 'reason': 'superseded_by_newer_message'}
+
+    from mecanimovilapp.apps.agente_ia.services.media_analisis import (
+        analizar_adjunto_mensaje,
+        texto_cliente_enriquecido,
+    )
     from mecanimovilapp.apps.agente_ia.services.contexto_patente import (
         detectar_patente_en_texto,
         enriquecer_contexto_patente,
@@ -427,6 +500,25 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
 
     datos_previos = dict(sesion.datos_capturados or {})
     vehiculo_previo = dict(datos_previos.get('vehiculo') or {})
+
+    analisis_media: dict[str, Any] = {}
+    if message.attachment or (message.channel_metadata or {}).get('media'):
+        analisis_media = analizar_adjunto_mensaje(message, vehiculo=vehiculo_previo) or {}
+        message.refresh_from_db(fields=['content', 'channel_metadata', 'attachment'])
+
+    texto_cliente = texto_cliente_enriquecido(message, analisis_media)
+    if not texto_cliente:
+        return {'skipped': True, 'reason': 'empty_message'}
+
+    contexto_media_txt = ''
+    if analisis_media and not analisis_media.get('pendiente') and not analisis_media.get('error'):
+        contexto_media_txt = json.dumps(analisis_media, ensure_ascii=False)
+        if analisis_media.get('sintoma_sintetizado') and not datos_previos.get('descripcion_problema'):
+            datos_previos['descripcion_problema'] = analisis_media['sintoma_sintetizado']
+            sesion.datos_capturados = datos_previos
+            sesion.save(update_fields=['datos_capturados', 'actualizado_en'])
+
+    # ── Lookup automático de patente ──────────────────────────────────────
     patente_detectada = detectar_patente_en_texto(texto_cliente) or normalizar_patente(
         vehiculo_previo.get('patente') or ''
     )
@@ -491,6 +583,7 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         mensaje_cliente=texto_cliente,
         mensaje_bienvenida=config.mensaje_bienvenida,
         contexto_patente=contexto_patente_txt,
+        contexto_media=contexto_media_txt,
     )
 
     decision, error = _llamar_gemini_agente(prompt)
@@ -524,6 +617,15 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
     necesita_humano = bool(decision.get('necesita_humano'))
     listo_cotizar = bool(decision.get('listo_para_cotizar'))
     respuesta = (decision.get('respuesta_cliente') or '').strip()
+    cliente_pide_cotizacion = bool(decision.get('cliente_pide_cotizacion'))
+    intencion = (decision.get('intencion') or '').strip().lower()
+
+    # Válvula de seguridad: no cotizar “de oficio” sin contexto ni pedido del cliente.
+    if listo_cotizar:
+        if not _contexto_minimo_para_cotizar(datos):
+            listo_cotizar = False
+        elif not cliente_pide_cotizacion and intencion not in ('cotizacion', 'cotizar', 'presupuesto'):
+            listo_cotizar = False
 
     if necesita_humano:
         from datetime import timedelta
@@ -549,7 +651,11 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             chunks_usados=chunk_ids,
             respuesta_generada=respuesta,
             accion=AgenteMensajeLog.ACCION_ESCALAR,
-            metadata={'motivo': decision.get('motivo_escalamiento', '')},
+            metadata={
+                'motivo': decision.get('motivo_escalamiento', ''),
+                'intencion': intencion,
+                'media': bool(analisis_media),
+            },
         )
         return {'ok': True, 'accion': 'escalar'}
 
@@ -617,6 +723,9 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             metadata={
                 'cotizacion_id': cotizacion.id if cotizacion else None,
                 'enviada_auto': enviada,
+                'intencion': intencion,
+                'cliente_pide_cotizacion': cliente_pide_cotizacion,
+                'media': bool(analisis_media and not analisis_media.get('error')),
             },
         )
         return {
@@ -638,5 +747,11 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         chunks_usados=chunk_ids,
         respuesta_generada=respuesta,
         accion=AgenteMensajeLog.ACCION_RESPONDER,
+        metadata={
+            'intencion': intencion,
+            'cliente_pide_cotizacion': cliente_pide_cotizacion,
+            'media': bool(analisis_media and not analisis_media.get('error')),
+            'media_kind': (analisis_media or {}).get('tipo_medio'),
+        },
     )
     return {'ok': True, 'accion': 'responder'}

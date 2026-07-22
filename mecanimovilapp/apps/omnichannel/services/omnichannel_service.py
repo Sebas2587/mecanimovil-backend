@@ -182,11 +182,13 @@ class OmnichannelService:
         )
         media = (metadata or {}).get('media')
         if media:
+            # Primero baja el adjunto; el agente se encola al terminar (evita
+            # responder "Audio"/"Imagen" sin haber analizado el archivo).
             from mecanimovilapp.apps.omnichannel.tasks import fetch_inbound_meta_media
             fetch_inbound_meta_media.delay(message.id)
-
-        from mecanimovilapp.apps.agente_ia.hooks import encolar_agente_para_mensaje
-        encolar_agente_para_mensaje(message)
+        else:
+            from mecanimovilapp.apps.agente_ia.hooks import encolar_agente_para_mensaje
+            encolar_agente_para_mensaje(message)
 
         return message
 

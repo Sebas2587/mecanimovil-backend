@@ -90,6 +90,12 @@ services:
         value: "gemini-3.1-flash-lite"
       - key: AGENTE_IA_EMBEDDING_MODEL
         value: "text-embedding-004"
+      - key: AGENTE_IA_THINK_DELAY_SECONDS
+        value: "6"
+      - key: AGENTE_IA_MULTIMODAL_MODEL
+        value: "gemini-2.5-flash"
+      - key: AGENTE_IA_MULTIMODAL_TIMEOUT
+        value: "45"
       # Opcional tier gratuito (elegir uno): GEMINI_API_KEY o HUGGINGFACE_API_TOKEN
       # y AGENDAMIENTO_IA_SEMANTICO_PROVEEDOR=auto
       # Variables que debes configurar manualmente en Render Dashboard:
@@ -158,6 +164,12 @@ services:
         value: "gemini-3.1-flash-lite"
       - key: AGENTE_IA_EMBEDDING_MODEL
         value: "text-embedding-004"
+      - key: AGENTE_IA_THINK_DELAY_SECONDS
+        value: "6"
+      - key: AGENTE_IA_MULTIMODAL_MODEL
+        value: "gemini-2.5-flash"
+      - key: AGENTE_IA_MULTIMODAL_TIMEOUT
+        value: "45"
       - key: ASISTENTE_COTIZACION_IA_ENABLED
         value: "True"
       - key: ASISTENTE_COTIZACION_GEMINI_MODEL

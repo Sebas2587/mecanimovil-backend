@@ -695,6 +695,11 @@ AGENTE_IA_TIMEOUT = config('AGENTE_IA_TIMEOUT', default=20, cast=int)
 AGENTE_IA_EMBEDDING_TIMEOUT = config('AGENTE_IA_EMBEDDING_TIMEOUT', default=15, cast=int)
 # Tras intervención manual del taller, la IA se reanuda sola en este chat (minutos).
 AGENTE_IA_PAUSA_MANUAL_MINUTOS = config('AGENTE_IA_PAUSA_MANUAL_MINUTOS', default=120, cast=int)
+# Pausa de “pensamiento” antes de responder (debounce + más contexto). Segundos.
+AGENTE_IA_THINK_DELAY_SECONDS = config('AGENTE_IA_THINK_DELAY_SECONDS', default=6, cast=int)
+# Modelo multimodal para audio/imagen/video del chat (visión + STT).
+AGENTE_IA_MULTIMODAL_MODEL = config('AGENTE_IA_MULTIMODAL_MODEL', default='gemini-2.5-flash')
+AGENTE_IA_MULTIMODAL_TIMEOUT = config('AGENTE_IA_MULTIMODAL_TIMEOUT', default=45, cast=int)
 GEMINI_RETRY_MAX = config('GEMINI_RETRY_MAX', default=2, cast=int)
 # Cuota mensual de referencia para alertas de uso Gemini (Google AI Studio renueva cada mes calendario)
 GEMINI_LIMITE_TOKENS_MENSUAL = config('GEMINI_LIMITE_TOKENS_MENSUAL', default=1_000_000, cast=int)
