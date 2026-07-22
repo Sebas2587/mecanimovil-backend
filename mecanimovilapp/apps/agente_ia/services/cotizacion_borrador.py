@@ -9,7 +9,7 @@ from mecanimovilapp.apps.agente_ia.models import AgenteConversacionSesion
 from mecanimovilapp.apps.agente_ia.services.notificaciones import notificar_cotizacion_borrador_agente
 from mecanimovilapp.apps.chat.models import Conversation
 from mecanimovilapp.apps.ordenes.models import CotizacionCanal
-from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.contexto_motor import cilindraje_efectivo
+from mecanimovilapp.apps.vehiculos.cilindraje_texto import cilindraje_efectivo
 from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador import generar_cotizacion_ia
 from mecanimovilapp.apps.suscripciones.cuotas_services import CuotaAgotadaError, SinSuscripcionError, verificar_y_consumir_cuota
 from mecanimovilapp.apps.suscripciones.models import ConsumoFeatureMensual
