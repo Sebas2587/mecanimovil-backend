@@ -92,12 +92,21 @@ class AgenteIaViewSet(viewsets.ViewSet):
     def sesion(self, request):
         """Estado de sesión IA para una conversación. Nunca 400 por falta de contexto."""
         raw_id = (request.query_params.get('conversation_id') or '').strip()
+        plan_ok = agente_ia_incluido_en_plan(request.user)
         if not raw_id.isdigit():
-            return Response({'activa': False, 'habilitado_en_chat': False})
+            return Response({
+                'activa': False,
+                'habilitado_en_chat': False,
+                'agente_ia_disponible_en_plan': plan_ok,
+            })
 
         taller, _, _ = resolver_contexto_taller(request.user)
         if not taller:
-            return Response({'activa': False, 'habilitado_en_chat': False})
+            return Response({
+                'activa': False,
+                'habilitado_en_chat': False,
+                'agente_ia_disponible_en_plan': plan_ok,
+            })
 
         sesion = AgenteConversacionSesion.objects.filter(
             conversation_id=int(raw_id),
@@ -107,8 +116,14 @@ class AgenteIaViewSet(viewsets.ViewSet):
             return Response({
                 'activa': False,
                 'habilitado_en_chat': False,
-                'agente_ia_disponible_en_plan': agente_ia_incluido_en_plan(request.user),
+                'agente_ia_disponible_en_plan': plan_ok,
             })
+
+        # Auto-reanuda si la pausa manual ya expiró, para que el toggle/banner
+        # reflejen el estado real sin esperar al próximo mensaje entrante.
+        from mecanimovilapp.apps.agente_ia.services.orquestador import _reanudar_si_pausa_expiro
+
+        sesion = _reanudar_si_pausa_expiro(sesion)
         data = AgenteSesionSerializer(sesion).data
         data['activa'] = bool(
             sesion.habilitado_en_chat
@@ -118,7 +133,7 @@ class AgenteIaViewSet(viewsets.ViewSet):
                 AgenteConversacionSesion.ESTADO_CERRADO,
             )
         )
-        data['agente_ia_disponible_en_plan'] = agente_ia_incluido_en_plan(request.user)
+        data['agente_ia_disponible_en_plan'] = plan_ok
         return Response(data)
 
     @action(detail=False, methods=['post'], url_path='activar-chat')
