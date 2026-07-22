@@ -631,6 +631,8 @@ def _plan_to_dict(plan):
         'overage_diagnosticos_por_credito': plan.overage_diagnosticos_por_credito,
         'overage_patentes_por_credito': plan.overage_patentes_por_credito,
         'acceso_endpoints_patente_pro': plan.acceso_endpoints_patente_pro,
+        'agente_ia_incluido': plan.agente_ia_incluido,
+        'conversaciones_agente_ia_max': plan.conversaciones_agente_ia_max,
         'destacado': plan.destacado,
     }
 

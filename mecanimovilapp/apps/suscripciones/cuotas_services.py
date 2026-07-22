@@ -187,12 +187,19 @@ def obtener_uso_features_mes(user, *, periodo: Optional[str] = None) -> dict:
     }
 
     features = []
+    features_sin_overage = (
+        ConsumoFeatureMensual.FEATURE_CONVERSACION_SALIENTE,
+        ConsumoFeatureMensual.FEATURE_CONVERSACION_AGENTE_IA,
+    )
     for feature in (
         ConsumoFeatureMensual.FEATURE_COTIZACION_IA,
         ConsumoFeatureMensual.FEATURE_DIAGNOSTICO_IA,
         ConsumoFeatureMensual.FEATURE_CONSULTA_PATENTE,
         ConsumoFeatureMensual.FEATURE_CONVERSACION_SALIENTE,
+        ConsumoFeatureMensual.FEATURE_CONVERSACION_AGENTE_IA,
     ):
+        if feature == ConsumoFeatureMensual.FEATURE_CONVERSACION_AGENTE_IA and not plan.agente_ia_incluido:
+            continue
         limite = _limite_plan(plan, feature)
         registro = consumos.get(feature)
         usados = registro.usados if registro else 0
@@ -204,9 +211,7 @@ def obtener_uso_features_mes(user, *, periodo: Optional[str] = None) -> dict:
                 usados=usados,
                 restantes=max(0, limite - usados),
                 creditos_overage_gastados=registro.creditos_overage_gastados if registro else 0,
-                overage_por_credito=_overage_rate(plan, feature)
-                if feature != ConsumoFeatureMensual.FEATURE_CONVERSACION_SALIENTE
-                else 0,
+                overage_por_credito=0 if feature in features_sin_overage else _overage_rate(plan, feature),
             ).to_dict()
         )
 
@@ -219,6 +224,7 @@ def obtener_uso_features_mes(user, *, periodo: Optional[str] = None) -> dict:
             'nombre': plan.nombre,
             'canales_mensajeria_max': plan.canales_mensajeria_max,
             'acceso_endpoints_patente_pro': plan.acceso_endpoints_patente_pro,
+            'agente_ia_incluido': plan.agente_ia_incluido,
         },
         'features': features,
         'canales_mensajeria_max': plan.canales_mensajeria_max,

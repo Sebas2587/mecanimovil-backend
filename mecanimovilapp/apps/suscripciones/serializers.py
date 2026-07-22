@@ -222,6 +222,8 @@ class PlanSuscripcionSerializer(serializers.ModelSerializer):
             'overage_diagnosticos_por_credito',
             'overage_patentes_por_credito',
             'acceso_endpoints_patente_pro',
+            'agente_ia_incluido',
+            'conversaciones_agente_ia_max',
             'destacado',
             'orden',
             'fecha_creacion',
