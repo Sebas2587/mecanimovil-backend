@@ -20,6 +20,7 @@ from mecanimovilapp.apps.agente_ia.serializers import (
 from mecanimovilapp.apps.agente_ia.services.orquestador import pausar_sesion_por_mensaje_taller
 from mecanimovilapp.apps.agente_ia.services.rag import reindexar_conocimiento_taller
 from mecanimovilapp.apps.agente_ia.tasks import procesar_documento_conocimiento_task
+from mecanimovilapp.apps.suscripciones.cuotas_services import agente_ia_incluido_en_plan
 from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
 
 
@@ -37,11 +38,25 @@ class AgenteIaViewSet(viewsets.ViewSet):
         taller = self._taller(request)
         config, _ = TallerAgenteConfig.objects.get_or_create(taller=taller)
         if request.method == 'GET':
-            return Response(TallerAgenteConfigSerializer(config).data)
+            data = TallerAgenteConfigSerializer(config).data
+            data['agente_ia_disponible_en_plan'] = agente_ia_incluido_en_plan(request.user)
+            return Response(data)
+
+        if request.data.get('habilitado') and not agente_ia_incluido_en_plan(request.user):
+            raise ValidationError(
+                {
+                    'error': 'El Agente IA no está incluido en tu plan actual. '
+                    'Sube al Plan Profesional o Premium para activarlo.',
+                    'code': 'agente_ia_no_incluido',
+                }
+            )
+
         ser = TallerAgenteConfigSerializer(config, data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
         ser.save()
-        return Response(TallerAgenteConfigSerializer(config).data)
+        data = TallerAgenteConfigSerializer(config).data
+        data['agente_ia_disponible_en_plan'] = agente_ia_incluido_en_plan(request.user)
+        return Response(data)
 
     @action(detail=False, methods=['get', 'post'], url_path='documentos')
     def documentos(self, request):

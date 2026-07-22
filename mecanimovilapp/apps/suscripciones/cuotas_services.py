@@ -117,8 +117,17 @@ def _limite_plan(plan: PlanSuscripcion, feature: str) -> int:
         ConsumoFeatureMensual.FEATURE_DIAGNOSTICO_IA: plan.diagnosticos_ia_mensuales,
         ConsumoFeatureMensual.FEATURE_CONSULTA_PATENTE: plan.consultas_patente_mensuales,
         ConsumoFeatureMensual.FEATURE_CONVERSACION_SALIENTE: plan.conversaciones_salientes_max,
+        ConsumoFeatureMensual.FEATURE_CONVERSACION_AGENTE_IA: plan.conversaciones_agente_ia_max,
     }
     return int(mapping.get(feature, 0))
+
+
+def agente_ia_incluido_en_plan(user) -> bool:
+    """True si el plan activo del proveedor incluye el Agente IA conversacional."""
+    if not cuotas_enforcement_habilitado():
+        return True
+    plan = obtener_plan_activo(user)
+    return bool(plan and plan.agente_ia_incluido)
 
 
 def _overage_rate(plan: PlanSuscripcion, feature: str) -> int:
@@ -319,11 +328,23 @@ def verificar_y_consumir_cuota(user, feature: str) -> None:
         registro.taller = taller
         registro.save(update_fields=['taller'])
 
-    # Conversaciones salientes: solo tope duro, sin overage en créditos
-    if feature == ConsumoFeatureMensual.FEATURE_CONVERSACION_SALIENTE:
+    # Conversaciones salientes (manuales o del Agente IA): solo tope duro, sin overage en créditos
+    if feature in (
+        ConsumoFeatureMensual.FEATURE_CONVERSACION_SALIENTE,
+        ConsumoFeatureMensual.FEATURE_CONVERSACION_AGENTE_IA,
+    ):
+        if feature == ConsumoFeatureMensual.FEATURE_CONVERSACION_AGENTE_IA and not plan.agente_ia_incluido:
+            raise SinSuscripcionError(
+                'El Agente IA no está incluido en tu plan actual. Sube de plan para activarlo.'
+            )
+        etiqueta = (
+            'conversaciones del Agente IA'
+            if feature == ConsumoFeatureMensual.FEATURE_CONVERSACION_AGENTE_IA
+            else 'conversaciones salientes'
+        )
         if registro.usados >= limite:
             raise CuotaAgotadaError(
-                f'Agotaste las {limite} conversaciones salientes incluidas en tu plan este mes.',
+                f'Agotaste las {limite} {etiqueta} incluidas en tu plan este mes.',
                 feature=feature,
                 limite=limite,
                 usados=registro.usados,

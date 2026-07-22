@@ -129,11 +129,15 @@ def send_meta_message(message_id: int):
         )
         from mecanimovilapp.apps.suscripciones.models import ConsumoFeatureMensual
 
+        es_mensaje_agente_ia = bool((message.channel_metadata or {}).get('from_agente_ia'))
+        feature_cuota = (
+            ConsumoFeatureMensual.FEATURE_CONVERSACION_AGENTE_IA
+            if es_mensaje_agente_ia
+            else ConsumoFeatureMensual.FEATURE_CONVERSACION_SALIENTE
+        )
+
         try:
-            verificar_y_consumir_cuota(
-                connection.usuario,
-                ConsumoFeatureMensual.FEATURE_CONVERSACION_SALIENTE,
-            )
+            verificar_y_consumir_cuota(connection.usuario, feature_cuota)
         except (CuotaAgotadaError, SinSuscripcionError) as exc:
             logger.warning(
                 'Outbound blocked by quota: message=%s user=%s %s',

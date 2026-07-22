@@ -324,6 +324,12 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
     if not config.habilitado or not config.canal_habilitado(canal):
         return {'skipped': True, 'reason': 'agente_disabled'}
 
+    if taller.usuario_id:
+        from mecanimovilapp.apps.suscripciones.cuotas_services import agente_ia_incluido_en_plan
+
+        if not agente_ia_incluido_en_plan(taller.usuario):
+            return {'skipped': True, 'reason': 'plan_sin_agente_ia'}
+
     sesion = _obtener_o_crear_sesion(conversation, taller.id)
     if sesion.pausado_por_taller or sesion.estado in (
         AgenteConversacionSesion.ESTADO_PAUSADO,

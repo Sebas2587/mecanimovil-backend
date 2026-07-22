@@ -648,6 +648,18 @@ class PlanSuscripcion(models.Model):
         default=False,
         verbose_name='Acceso endpoints patente PRO (VIN, robo, PRT)',
     )
+    agente_ia_incluido = models.BooleanField(
+        default=False,
+        verbose_name='Agente IA conversacional incluido',
+        help_text='Habilita la auto-respuesta del Agente IA en los chats del taller.',
+    )
+    conversaciones_agente_ia_max = models.IntegerField(
+        default=0,
+        validators=[MinValueValidator(0)],
+        verbose_name='Tope conversaciones del Agente IA/mes',
+        help_text='Cupo mensual dedicado para mensajes enviados por el Agente IA, '
+        'independiente del tope de conversaciones salientes manuales.',
+    )
 
     # Timestamps
     fecha_creacion = models.DateTimeField(auto_now_add=True)
@@ -674,12 +686,14 @@ class ConsumoFeatureMensual(models.Model):
     FEATURE_DIAGNOSTICO_IA = 'DIAGNOSTICO_IA'
     FEATURE_CONSULTA_PATENTE = 'CONSULTA_PATENTE'
     FEATURE_CONVERSACION_SALIENTE = 'CONVERSACION_SALIENTE'
+    FEATURE_CONVERSACION_AGENTE_IA = 'CONVERSACION_AGENTE_IA'
 
     FEATURE_CHOICES = [
         (FEATURE_COTIZACION_IA, 'Cotización IA'),
         (FEATURE_DIAGNOSTICO_IA, 'Diagnóstico IA'),
         (FEATURE_CONSULTA_PATENTE, 'Consulta patente'),
         (FEATURE_CONVERSACION_SALIENTE, 'Conversación saliente'),
+        (FEATURE_CONVERSACION_AGENTE_IA, 'Conversación Agente IA'),
     ]
 
     proveedor = models.ForeignKey(
