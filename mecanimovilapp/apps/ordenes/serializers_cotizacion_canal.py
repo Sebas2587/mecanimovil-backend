@@ -112,6 +112,7 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             'total_clp',
             'duracion_minutos_estimada',
             'advertencias',
+            'metadata',
             'message_envio',
             'enviada_en',
             'aceptada_en',

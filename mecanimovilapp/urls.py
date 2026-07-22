@@ -90,6 +90,7 @@ urlpatterns = [
     path('api/vehiculos/', include('mecanimovilapp.apps.vehiculos.urls')),
     path('api/chat/', include('mecanimovilapp.apps.chat.urls')),
     path('api/omnichannel/', include('mecanimovilapp.apps.omnichannel.urls')),
+    path('api/agente-ia/', include('mecanimovilapp.apps.agente_ia.urls')),
     path('api/ordenes/', include('mecanimovilapp.apps.ordenes.urls')),
     path('api/personalizacion/', include('mecanimovilapp.apps.personalizacion.urls')),  # URLs de personalización
     path('api/checklists/', include('mecanimovilapp.apps.checklists.urls')),  # URLs de checklist correctamente ubicadas

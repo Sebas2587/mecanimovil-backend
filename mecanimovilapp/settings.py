@@ -76,6 +76,7 @@ INSTALLED_APPS = [
     'mecanimovilapp.apps.suscripciones',  # App de suscripciones freemium + planes
     'mecanimovilapp.apps.chat', # Sistema de mensajería contextual
     'mecanimovilapp.apps.omnichannel', # WhatsApp, Messenger, Instagram
+    'mecanimovilapp.apps.agente_ia.apps.AgenteIaConfig', # Agente IA conversacional en chats
     'mecanimovilapp.apps.marketplace', # Marketplace de vehículos y transferencias
     'mecanimovilapp.apps.valoracion_mercado', # Valor real, liquidez y proyección
 ]
@@ -686,6 +687,12 @@ ASISTENTE_COTIZACION_IA_ENABLED = config('ASISTENTE_COTIZACION_IA_ENABLED', defa
 ASISTENTE_COTIZACION_IA_TIMEOUT = config('ASISTENTE_COTIZACION_IA_TIMEOUT', default=15, cast=int)
 # Cuotas mensuales por plan (IA, patente, mensajería). Default False hasta activar en prod.
 PLAN_CUOTAS_ENFORCEMENT_ENABLED = config('PLAN_CUOTAS_ENFORCEMENT_ENABLED', default=False, cast=bool)
+# Agente IA conversacional en chats (captura + cotización borrador). Default False hasta activar.
+AGENTE_IA_CHAT_ENABLED = config('AGENTE_IA_CHAT_ENABLED', default=False, cast=bool)
+AGENTE_IA_GEMINI_MODEL = config('AGENTE_IA_GEMINI_MODEL', default='')
+AGENTE_IA_EMBEDDING_MODEL = config('AGENTE_IA_EMBEDDING_MODEL', default='text-embedding-004')
+AGENTE_IA_TIMEOUT = config('AGENTE_IA_TIMEOUT', default=20, cast=int)
+AGENTE_IA_EMBEDDING_TIMEOUT = config('AGENTE_IA_EMBEDDING_TIMEOUT', default=15, cast=int)
 GEMINI_RETRY_MAX = config('GEMINI_RETRY_MAX', default=2, cast=int)
 # Cuota mensual de referencia para alertas de uso Gemini (Google AI Studio renueva cada mes calendario)
 GEMINI_LIMITE_TOKENS_MENSUAL = config('GEMINI_LIMITE_TOKENS_MENSUAL', default=1_000_000, cast=int)

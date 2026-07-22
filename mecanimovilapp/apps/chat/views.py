@@ -202,6 +202,9 @@ class ConversationViewSet(DestroyModelMixin, viewsets.ReadOnlyModelViewSet):
             attachment=attachment,
             direction='outbound',
         )
+
+        from mecanimovilapp.apps.agente_ia.hooks import encolar_agente_para_mensaje
+        encolar_agente_para_mensaje(message)
         
         is_omnichannel = conversation.source_channel != 'APP'
         if is_omnichannel:

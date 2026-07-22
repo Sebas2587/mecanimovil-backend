@@ -42,6 +42,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # Save to DB
         message = await self.save_message(self.conversation_id, message_content, self.user)
 
+        await self.encolar_agente(message.id)
+
         # Broadcast to all room members via WebSocket
         await self.channel_layer.group_send(
             self.room_group_name,
@@ -105,6 +107,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
             sender=user,
             content=content
         )
+
+    @database_sync_to_async
+    def encolar_agente(self, message_id: int) -> None:
+        from mecanimovilapp.apps.agente_ia.hooks import encolar_agente_para_mensaje
+        from mecanimovilapp.apps.chat.models import Message as ChatMessage
+
+        message = ChatMessage.objects.filter(pk=message_id).first()
+        if message:
+            encolar_agente_para_mensaje(message)
 
     @database_sync_to_async
     def send_push_to_other_participants(self, conversation_id, sender, message_content):

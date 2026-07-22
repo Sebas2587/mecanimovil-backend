@@ -184,6 +184,10 @@ class OmnichannelService:
         if media:
             from mecanimovilapp.apps.omnichannel.tasks import fetch_inbound_meta_media
             fetch_inbound_meta_media.delay(message.id)
+
+        from mecanimovilapp.apps.agente_ia.hooks import encolar_agente_para_mensaje
+        encolar_agente_para_mensaje(message)
+
         return message
 
     @staticmethod

@@ -6677,12 +6677,14 @@ class ChatSolicitudViewSet(viewsets.ModelViewSet):
                     conversation.participants.add(oferta.proveedor)
             
             # Create message in Message table
-            Message.objects.create(
+            chat_message = Message.objects.create(
                 conversation=conversation,
                 sender=user,
                 content=mensaje.mensaje,
                 attachment=mensaje.archivo_adjunto
             )
+            from mecanimovilapp.apps.agente_ia.hooks import encolar_agente_para_mensaje
+            encolar_agente_para_mensaje(chat_message)
             print(f"✅ [CHAT BACKEND OLD API] Message also saved to Message table for new API compatibility")
             
         except Exception as e:

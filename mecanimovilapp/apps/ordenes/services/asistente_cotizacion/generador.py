@@ -19,7 +19,9 @@ _JSON_FENCE = re.compile(r'```(?:json)?\s*([\s\S]*?)\s*```', re.IGNORECASE)
 
 
 def asistente_cotizacion_habilitado() -> bool:
-    return bool(getattr(settings, 'ASISTENTE_COTIZACION_IA_ENABLED', False))
+    return bool(getattr(settings, 'ASISTENTE_COTIZACION_IA_ENABLED', False)) or bool(
+        getattr(settings, 'AGENTE_IA_CHAT_ENABLED', False)
+    )
 
 
 def _parse_json(text: str) -> dict[str, Any] | None:
@@ -115,6 +117,8 @@ def _construir_prompt(ctx: dict[str, Any]) -> str:
         f"- Aviso motor: {ctx.get('aviso_motor') or ctx.get('tipo_motor_conflicto_detalle') or 'Ninguno'}"
     )
     chat = ctx.get('chat_reciente') or 'Sin mensajes previos.'
+    rag = (ctx.get('contexto_rag') or '').strip()
+    rag_bloque = f'\nConocimiento del taller (catálogo e historial):\n{rag}\n' if rag else ''
     return f"""Eres un asesor de taller mecánico en Chile. Genera una cotización referencial en pesos chilenos (CLP enteros, sin decimales).
 
 Vehículo:
@@ -132,7 +136,7 @@ Descripción del problema: {ctx.get('descripcion_problema', '')}
 
 Contexto del chat reciente:
 {chat}
-
+{rag_bloque}
 REGLAS:
 1. Precios referenciales mercado Chile (CLP). Usa valores realistas para el servicio y repuestos típicos.
 2. El motor efectivo de la cotización es {efectivo}. No mezcles repuestos diésel/bencina.
@@ -162,6 +166,7 @@ def generar_cotizacion_ia(
     descripcion_problema: str = '',
     modalidad: str = 'taller',
     vehiculo: dict[str, Any] | None = None,
+    contexto_rag_extra: str = '',
 ) -> dict[str, Any]:
     if not asistente_cotizacion_habilitado():
         return {
@@ -178,6 +183,8 @@ def generar_cotizacion_ia(
         modalidad=modalidad,
         vehiculo=vehiculo,
     )
+    if contexto_rag_extra:
+        ctx['contexto_rag'] = contexto_rag_extra
     prompt = _construir_prompt(ctx)
     inicio = time.monotonic()
     crudo, uso, error = _llamar_gemini(prompt)

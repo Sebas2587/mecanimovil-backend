@@ -29,6 +29,13 @@ GEMINI_LIMITE_TOKENS_MENSUAL = int(os.environ.get('GEMINI_LIMITE_TOKENS_MENSUAL'
 PLAN_CUOTAS_ENFORCEMENT_ENABLED = os.environ.get('PLAN_CUOTAS_ENFORCEMENT_ENABLED', 'False').lower() in (
     'true', '1', 'yes',
 )
+AGENTE_IA_CHAT_ENABLED = os.environ.get('AGENTE_IA_CHAT_ENABLED', 'False').lower() in (
+    'true', '1', 'yes',
+)
+AGENTE_IA_GEMINI_MODEL = os.environ.get('AGENTE_IA_GEMINI_MODEL', '')
+AGENTE_IA_EMBEDDING_MODEL = os.environ.get('AGENTE_IA_EMBEDDING_MODEL', 'text-embedding-004')
+AGENTE_IA_TIMEOUT = int(os.environ.get('AGENTE_IA_TIMEOUT', '20'))
+AGENTE_IA_EMBEDDING_TIMEOUT = int(os.environ.get('AGENTE_IA_EMBEDDING_TIMEOUT', '15'))
 ASISTENTE_DIAGNOSTICO_IA_ENABLED = os.environ.get(
     'ASISTENTE_DIAGNOSTICO_IA_ENABLED', 'False'
 ).lower() in ('true', '1', 'yes')
