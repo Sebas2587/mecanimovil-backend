@@ -677,17 +677,36 @@ def webhook_notification(request):
                     logger.info("✅ Firma del webhook verificada correctamente")
         
         # Registrar la notificación
-        notification_type = (
+        # MP puede mandar type en body, o topic/type en query (IPN legacy).
+        # Ojo: action suele ser "updated"/"created" — no usarlo como tipo.
+        raw_type = (
             request.data.get('type')
-            or request.data.get('action')
             or request.query_params.get('type')
+            or request.query_params.get('topic')
             or 'payment'
         )
+        notification_type = str(raw_type).strip().lower()
+
+        data_payload = request.data.get('data') if isinstance(request.data.get('data'), dict) else {}
+        resource_id_raw = (
+            data_payload.get('id')
+            or request.query_params.get('data.id')
+            or request.query_params.get('id')
+        )
+
+        # payment_id_mp es BigInteger: solo IDs numéricos de pagos.
+        # Los preapproval_id son hex (ej. b7a5e2d3...) y no caben ahí.
+        payment_id_mp = None
+        if resource_id_raw is not None and str(resource_id_raw).strip() != '':
+            try:
+                payment_id_mp = int(str(resource_id_raw).strip())
+            except (TypeError, ValueError):
+                payment_id_mp = None
 
         webhook = WebhookNotificacion.objects.create(
-            notification_type=notification_type,
-            payment_id_mp=request.data.get('data', {}).get('id'),
-            data=request.data,
+            notification_type=notification_type[:50],
+            payment_id_mp=payment_id_mp,
+            data=request.data if isinstance(request.data, dict) else {'raw': str(request.data)},
         )
 
         # Suscripciones: delegar a su propio handler y retornar temprano
