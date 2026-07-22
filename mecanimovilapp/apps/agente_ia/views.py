@@ -17,7 +17,10 @@ from mecanimovilapp.apps.agente_ia.serializers import (
     TallerAgenteConfigSerializer,
     TallerConocimientoDocumentoSerializer,
 )
-from mecanimovilapp.apps.agente_ia.services.orquestador import pausar_sesion_por_mensaje_taller
+from mecanimovilapp.apps.agente_ia.services.orquestador import (
+    activar_agente_en_conversacion,
+    pausar_sesion_por_mensaje_taller,
+)
 from mecanimovilapp.apps.agente_ia.services.rag import reindexar_conocimiento_taller
 from mecanimovilapp.apps.agente_ia.tasks import procesar_documento_conocimiento_task
 from mecanimovilapp.apps.suscripciones.cuotas_services import agente_ia_incluido_en_plan
@@ -90,26 +93,61 @@ class AgenteIaViewSet(viewsets.ViewSet):
         """Estado de sesión IA para una conversación. Nunca 400 por falta de contexto."""
         raw_id = (request.query_params.get('conversation_id') or '').strip()
         if not raw_id.isdigit():
-            return Response({'activa': False})
+            return Response({'activa': False, 'habilitado_en_chat': False})
 
         taller, _, _ = resolver_contexto_taller(request.user)
         if not taller:
-            return Response({'activa': False})
+            return Response({'activa': False, 'habilitado_en_chat': False})
 
         sesion = AgenteConversacionSesion.objects.filter(
             conversation_id=int(raw_id),
             taller=taller,
         ).first()
         if not sesion:
-            return Response({'activa': False})
+            return Response({
+                'activa': False,
+                'habilitado_en_chat': False,
+                'agente_ia_disponible_en_plan': agente_ia_incluido_en_plan(request.user),
+            })
         data = AgenteSesionSerializer(sesion).data
-        data['activa'] = (
-            not sesion.pausado_por_taller
+        data['activa'] = bool(
+            sesion.habilitado_en_chat
+            and not sesion.pausado_por_taller
             and sesion.estado not in (
                 AgenteConversacionSesion.ESTADO_PAUSADO,
                 AgenteConversacionSesion.ESTADO_CERRADO,
             )
         )
+        data['agente_ia_disponible_en_plan'] = agente_ia_incluido_en_plan(request.user)
+        return Response(data)
+
+    @action(detail=False, methods=['post'], url_path='activar-chat')
+    def activar_chat(self, request):
+        """
+        Habilita o deshabilita el Agente IA SOLO en esta conversación.
+        No afecta otros chats del taller.
+        """
+        conversation_id = request.data.get('conversation_id')
+        if not conversation_id:
+            raise ValidationError({'conversation_id': 'Requerido.'})
+        activo = bool(request.data.get('activo', True))
+        if activo and not agente_ia_incluido_en_plan(request.user):
+            raise ValidationError(
+                {
+                    'error': 'El Agente IA no está incluido en tu plan actual. '
+                    'Sube al Plan Profesional o Premium para activarlo.',
+                    'code': 'agente_ia_no_incluido',
+                }
+            )
+        taller = self._taller(request)
+        sesion = activar_agente_en_conversacion(
+            conversation_id=int(conversation_id),
+            taller_id=taller.id,
+            activo=activo,
+        )
+        data = AgenteSesionSerializer(sesion).data
+        data['activa'] = bool(sesion.habilitado_en_chat and not sesion.pausado_por_taller)
+        data['agente_ia_disponible_en_plan'] = True
         return Response(data)
 
     @action(detail=False, methods=['post'], url_path='pausar')
@@ -140,6 +178,8 @@ class AgenteIaViewSet(viewsets.ViewSet):
             taller=taller,
         ).update(
             pausado_por_taller=False,
+            pausado_hasta=None,
+            habilitado_en_chat=True,
             estado=AgenteConversacionSesion.ESTADO_CAPTURANDO,
         )
         return Response({'reanudado': True})

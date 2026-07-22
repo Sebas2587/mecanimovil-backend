@@ -109,6 +109,9 @@ def formatear_resumen_cotizacion(cotizacion: CotizacionCanal) -> str:
     else:
         lineas.extend(['', '*Condiciones:*', '• Precios referenciales. Confirme con el taller antes de agendar.'])
 
+    if cotizacion.url_publica:
+        lineas.extend(['', f'Revisar cotización: {cotizacion.url_publica}'])
+
     return '\n'.join(lineas)
 
 
@@ -255,12 +258,27 @@ def procesar_respuesta_interactive_cotizacion(
     if cotizacion.estado != 'enviada':
         return cotizacion
 
-    ahora = timezone.now()
+    cita_id = None
     if accion == 'aceptar':
-        cotizacion.estado = 'aceptada'
-        cotizacion.aceptada_en = ahora
-        cotizacion.save(update_fields=['estado', 'aceptada_en', 'actualizado_en'])
+        # Reutiliza el flujo de cotización pública: acepta + crea cita en bandeja
+        from mecanimovilapp.apps.ordenes.services.cotizacion_publica import aceptar_cotizacion_publica
+
+        cotizacion, cita = aceptar_cotizacion_publica(cotizacion)
+        cita_id = cita.id if cita else None
+        proveedor_id = cotizacion.creado_por_id or getattr(cotizacion.taller, 'usuario_id', None)
+        if proveedor_id:
+            from mecanimovilapp.apps.agente_ia.services.notificaciones import (
+                notificar_cotizacion_aceptada_agente,
+            )
+
+            notificar_cotizacion_aceptada_agente(
+                proveedor_user_id=proveedor_id,
+                cotizacion=cotizacion,
+                conversation_id=conversation.id,
+                cita_id=cita_id,
+            )
     else:
+        ahora = timezone.now()
         cotizacion.estado = 'rechazada'
         cotizacion.rechazada_en = ahora
         cotizacion.save(update_fields=['estado', 'rechazada_en', 'actualizado_en'])
@@ -274,7 +292,7 @@ def procesar_respuesta_interactive_cotizacion(
         conversation=conversation,
         sender=None,
         content=(
-            '✅ Cotización aceptada. El taller coordinará el agendamiento.'
+            '✅ Cotización aceptada. El taller la recibió y la agendará contigo.'
             if accion == 'aceptar'
             else '❌ Cotización rechazada.'
         ),
@@ -283,6 +301,7 @@ def procesar_respuesta_interactive_cotizacion(
             'tipo': 'cotizacion_canal_respuesta',
             'cotizacion_id': cotizacion.id,
             'estado': cotizacion.estado,
+            'cita_id': cita_id,
         },
     )
     return cotizacion

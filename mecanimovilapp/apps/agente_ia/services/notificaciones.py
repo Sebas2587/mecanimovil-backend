@@ -8,6 +8,88 @@ from mecanimovilapp.apps.ordenes.models import CotizacionCanal
 logger = logging.getLogger(__name__)
 
 
+def notificar_cotizacion_enviada_agente(
+    *,
+    proveedor_user_id: int,
+    cotizacion: CotizacionCanal,
+    conversation_id: int,
+) -> None:
+    from mecanimovilapp.apps.usuarios.models import Notificacion
+    from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
+    from django.contrib.auth import get_user_model
+
+    User = get_user_model()
+    usuario = User.objects.filter(pk=proveedor_user_id).first()
+    if not usuario:
+        return
+
+    titulo = 'Cotización enviada por Agente IA'
+    mensaje = (
+        f'Se envió al cliente la cotización de "{cotizacion.servicio_nombre or "servicio"}" '
+        f'por {int(cotizacion.total_clp or 0):,} CLP. Esperando aceptación.'.replace(',', '.')
+    )
+    data = {
+        'type': 'agente_ia_cotizacion_enviada',
+        'cotizacion_id': cotizacion.id,
+        'conversation_id': conversation_id,
+    }
+    Notificacion.crear_unica(
+        usuario,
+        tipo='system',
+        titulo=titulo,
+        mensaje=mensaje,
+        data=data,
+        ventana_horas=2,
+        dedup_key={'type': 'agente_ia_cotizacion_enviada', 'cotizacion_id': cotizacion.id},
+    )
+    try:
+        send_expo_push_notification.delay(proveedor_user_id, titulo, mensaje, data)
+    except Exception as exc:
+        logger.warning('No se pudo encolar push cotización enviada: %s', exc)
+
+
+def notificar_cotizacion_aceptada_agente(
+    *,
+    proveedor_user_id: int,
+    cotizacion: CotizacionCanal,
+    conversation_id: int,
+    cita_id: int | None = None,
+) -> None:
+    from mecanimovilapp.apps.usuarios.models import Notificacion
+    from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
+    from django.contrib.auth import get_user_model
+
+    User = get_user_model()
+    usuario = User.objects.filter(pk=proveedor_user_id).first()
+    if not usuario:
+        return
+
+    titulo = 'Cliente aceptó cotización'
+    mensaje = (
+        f'{cotizacion.cliente_nombre or "Un cliente"} aceptó '
+        f'"{cotizacion.servicio_nombre or "servicio"}". Está en tu bandeja para agendar.'
+    )
+    data = {
+        'type': 'agente_ia_cotizacion_aceptada',
+        'cotizacion_id': cotizacion.id,
+        'conversation_id': conversation_id,
+        'cita_id': cita_id,
+    }
+    Notificacion.crear_unica(
+        usuario,
+        tipo='system',
+        titulo=titulo,
+        mensaje=mensaje,
+        data=data,
+        ventana_horas=6,
+        dedup_key={'type': 'agente_ia_cotizacion_aceptada', 'cotizacion_id': cotizacion.id},
+    )
+    try:
+        send_expo_push_notification.delay(proveedor_user_id, titulo, mensaje, data)
+    except Exception as exc:
+        logger.warning('No se pudo encolar push cotización aceptada: %s', exc)
+
+
 def notificar_cotizacion_borrador_agente(
     *,
     proveedor_user_id: int,

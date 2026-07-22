@@ -693,6 +693,8 @@ AGENTE_IA_GEMINI_MODEL = config('AGENTE_IA_GEMINI_MODEL', default='')
 AGENTE_IA_EMBEDDING_MODEL = config('AGENTE_IA_EMBEDDING_MODEL', default='text-embedding-004')
 AGENTE_IA_TIMEOUT = config('AGENTE_IA_TIMEOUT', default=20, cast=int)
 AGENTE_IA_EMBEDDING_TIMEOUT = config('AGENTE_IA_EMBEDDING_TIMEOUT', default=15, cast=int)
+# Tras intervención manual del taller, la IA se reanuda sola en este chat (minutos).
+AGENTE_IA_PAUSA_MANUAL_MINUTOS = config('AGENTE_IA_PAUSA_MANUAL_MINUTOS', default=120, cast=int)
 GEMINI_RETRY_MAX = config('GEMINI_RETRY_MAX', default=2, cast=int)
 # Cuota mensual de referencia para alertas de uso Gemini (Google AI Studio renueva cada mes calendario)
 GEMINI_LIMITE_TOKENS_MENSUAL = config('GEMINI_LIMITE_TOKENS_MENSUAL', default=1_000_000, cast=int)

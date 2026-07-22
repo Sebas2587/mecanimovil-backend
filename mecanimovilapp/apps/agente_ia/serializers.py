@@ -51,7 +51,9 @@ class AgenteSesionSerializer(serializers.ModelSerializer):
             'conversation_id',
             'estado',
             'datos_capturados',
+            'habilitado_en_chat',
             'pausado_por_taller',
+            'pausado_hasta',
             'cotizacion_borrador',
             'ultima_interaccion_ia',
         ]

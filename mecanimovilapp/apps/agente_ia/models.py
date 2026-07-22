@@ -198,7 +198,17 @@ class AgenteConversacionSesion(models.Model):
         blank=True,
         related_name='agente_sesiones',
     )
+    # Opt-in por conversación (ManyChat-style). No hereda de otros chats.
+    habilitado_en_chat = models.BooleanField(
+        default=False,
+        help_text='Si True, el agente responde en ESTA conversación. Independiente de otros chats.',
+    )
     pausado_por_taller = models.BooleanField(default=False)
+    pausado_hasta = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='Si el taller intervino, la IA se reanuda automáticamente después de esta fecha.',
+    )
     ultima_interaccion_ia = models.DateTimeField(null=True, blank=True)
     creado_en = models.DateTimeField(auto_now_add=True)
     actualizado_en = models.DateTimeField(auto_now=True)

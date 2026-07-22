@@ -115,41 +115,48 @@ def _construir_prompt_agente(
     chat_reciente: str,
     mensaje_cliente: str,
     mensaje_bienvenida: str,
+    contexto_patente: str = '',
 ) -> str:
     datos_json = json.dumps(datos_capturados or {}, ensure_ascii=False)
     tiene_contexto = bool((chunks_texto or '').strip())
-    return f"""Eres el asistente virtual de un taller mecánico en Chile. Tu rol es conversar con clientes por chat, capturar información del vehículo y del problema, y preparar datos para una cotización que revisará el taller humano.
+    return f"""Eres el asistente virtual de un taller mecánico en Chile. Tu rol es conversar con clientes por chat, capturar información del vehículo y del problema, y preparar una cotización referencial que el cliente podrá aceptar o rechazar.
 
 Instrucciones del taller:
-{instrucciones or 'Sé cordial, profesional y conciso. Pide patente, marca, modelo y descripción del problema antes de cotizar.'}
+{instrucciones or 'Sé cordial, profesional y conciso. Pide patente y descripción del problema antes de cotizar.'}
 
 Mensaje de bienvenida sugerido (úsalo solo si es el primer contacto y no hay historial):
 {mensaje_bienvenida or 'Hola, soy el asistente del taller. ¿En qué puedo ayudarte con tu vehículo?'}
 
-Conocimiento del taller recuperado para ESTA consulta (catálogo de servicios, historial de trabajos, documentos e instrucciones). Es tu ÚNICA fuente de verdad sobre qué servicios ofrece el taller y sus precios/duraciones:
+Contexto automático de la patente (API + registro interno + historial + salud + catálogo del taller). Úsalo como fuente de verdad del vehículo; NO pidas de nuevo marca/modelo/año si ya aparecen aquí:
+---
+{contexto_patente or 'Sin consulta de patente en este turno.'}
+---
+
+Conocimiento del taller recuperado para ESTA consulta (catálogo, historial, documentos):
 ---
 {chunks_texto if tiene_contexto else 'Sin contexto indexado todavía para esta consulta.'}
 ---
 
-Datos ya capturados de este cliente en la conversación (JSON, no los repreguntes si ya están):
+Datos ya capturados de este cliente (JSON; no los repreguntes si ya están):
 {datos_json}
 
-Historial reciente del chat (respétalo: no repitas preguntas ya respondidas ni ignores lo que el cliente ya contó):
+Historial reciente del chat:
 {chat_reciente}
 
 Último mensaje del cliente:
 {mensaje_cliente}
 
 REGLAS:
-1. Responde en español chileno, tono profesional, cálido y CONCRETO (nunca genérico ni de relleno). Evita frases vacías como "te puedo ayudar con eso" sin aportar nada específico.
-2. Lee el historial reciente completo antes de responder. Si el cliente ya dio un dato (vehículo, problema, dirección, etc.), NO lo vuelvas a pedir; avanza a la siguiente pregunta pendiente.
-3. Haz UNA sola pregunta de captura por turno (la más relevante que falte), no varias preguntas juntas en un solo mensaje.
-4. Si hay conocimiento del taller recuperado arriba, básate en él para nombrar servicios, precios de referencia o duraciones reales del taller; si el contexto está vacío, dilo con naturalidad (ej. "dejo esto para que el taller te confirme el precio") en vez de inventar cifras.
-5. NO confirmes precios finales ni prometas fechas exactas; indica que el taller revisará la cotización.
-6. Captura, en este orden si falta: patente, marca, modelo, año (si aplica), síntoma/problema concreto, urgencia, modalidad (taller o domicilio).
-7. Si el cliente pide algo fuera de servicio automotriz, reclamos legales, o está muy enojado → necesita_humano=true.
-8. Si ya tienes patente o vehículo identificado + problema claro + servicio inferible del catálogo → listo_para_cotizar=true.
-9. respuesta_cliente debe ser breve (1-2 párrafos cortos, máx 3), específica al mensaje del cliente y sin relleno genérico.
+1. Responde en español chileno, tono profesional, cálido y CONCRETO. Cero relleno genérico.
+2. Si el cliente envió una patente y el contexto automático la identificó, confirma marca/modelo/año al cliente y avanza a preguntar el problema o el servicio (no vuelvas a pedir la patente).
+3. Lee el historial: no repitas preguntas ya respondidas.
+4. Haz UNA sola pregunta de captura por turno.
+5. Usa el catálogo del taller (contexto patente + RAG) para proponer servicios reales con/sin repuestos cuando aplique. No inventes precios si no hay datos.
+6. NO prometas fechas exactas de agenda; la cotización es referencial hasta que el cliente la acepte y el taller agenda.
+7. Captura pendiente en orden: patente → (si falta) marca/modelo/año → problema/servicio → urgencia → modalidad.
+8. Fuera de servicio automotriz / muy enojado → necesita_humano=true.
+9. Si ya tienes vehículo identificado (por patente o datos) + problema/servicio claro → listo_para_cotizar=true. En ese caso el sistema enviará la cotización con botones de aceptar/rechazar.
+10. respuesta_cliente breve (1-2 párrafos), específica al mensaje.
 
 Responde SOLO JSON válido:
 {{
@@ -204,12 +211,71 @@ def _obtener_o_crear_sesion(conversation: Conversation, taller_id: int) -> Agent
     return sesion
 
 
+def minutos_pausa_manual() -> int:
+    return max(5, int(getattr(settings, 'AGENTE_IA_PAUSA_MANUAL_MINUTOS', 120) or 120))
+
+
 def pausar_sesion_por_mensaje_taller(conversation_id: int) -> None:
-    """Marca la sesión como pausada cuando el taller responde manualmente."""
-    AgenteConversacionSesion.objects.filter(conversation_id=conversation_id).update(
+    """
+    Pausa el agente SOLO en esta conversación cuando el taller responde manualmente.
+    Se reanuda automáticamente después de AGENTE_IA_PAUSA_MANUAL_MINUTOS (o a mano).
+    """
+    from datetime import timedelta
+
+    hasta = timezone.now() + timedelta(minutes=minutos_pausa_manual())
+    AgenteConversacionSesion.objects.filter(
+        conversation_id=conversation_id,
+        habilitado_en_chat=True,
+    ).update(
         pausado_por_taller=True,
+        pausado_hasta=hasta,
         estado=AgenteConversacionSesion.ESTADO_PAUSADO,
     )
+
+
+def _reanudar_si_pausa_expiro(sesion: AgenteConversacionSesion) -> AgenteConversacionSesion:
+    if not sesion.pausado_por_taller:
+        return sesion
+    if sesion.pausado_hasta and timezone.now() >= sesion.pausado_hasta:
+        sesion.pausado_por_taller = False
+        sesion.pausado_hasta = None
+        sesion.estado = AgenteConversacionSesion.ESTADO_CAPTURANDO
+        sesion.save(update_fields=['pausado_por_taller', 'pausado_hasta', 'estado', 'actualizado_en'])
+    return sesion
+
+
+def activar_agente_en_conversacion(
+    *,
+    conversation_id: int,
+    taller_id: int,
+    activo: bool,
+) -> AgenteConversacionSesion:
+    """Opt-in / opt-out del agente en una sola conversación."""
+    conversation = Conversation.objects.get(pk=conversation_id)
+    sesion = _obtener_o_crear_sesion(conversation, taller_id)
+    sesion.habilitado_en_chat = bool(activo)
+    if activo:
+        sesion.pausado_por_taller = False
+        sesion.pausado_hasta = None
+        if sesion.estado in (
+            AgenteConversacionSesion.ESTADO_PAUSADO,
+            AgenteConversacionSesion.ESTADO_CERRADO,
+        ):
+            sesion.estado = AgenteConversacionSesion.ESTADO_CAPTURANDO
+    else:
+        sesion.pausado_por_taller = True
+        sesion.pausado_hasta = None
+        sesion.estado = AgenteConversacionSesion.ESTADO_PAUSADO
+    sesion.save(
+        update_fields=[
+            'habilitado_en_chat',
+            'pausado_por_taller',
+            'pausado_hasta',
+            'estado',
+            'actualizado_en',
+        ]
+    )
+    return sesion
 
 
 def enviar_respuesta_agente(
@@ -321,8 +387,10 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
 
     config = _obtener_o_crear_config(taller.id)
     canal = canal_conversacion(conversation)
-    if not config.habilitado or not config.canal_habilitado(canal):
-        return {'skipped': True, 'reason': 'agente_disabled'}
+    # Canal permitido a nivel taller (lista vacía = todos). El opt-in real es por chat.
+    canales = config.canales_habilitados or []
+    if canales and canal not in canales:
+        return {'skipped': True, 'reason': 'canal_disabled'}
 
     if taller.usuario_id:
         from mecanimovilapp.apps.suscripciones.cuotas_services import agente_ia_incluido_en_plan
@@ -331,19 +399,73 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             return {'skipped': True, 'reason': 'plan_sin_agente_ia'}
 
     sesion = _obtener_o_crear_sesion(conversation, taller.id)
+    # Opt-in estricto por conversación (estilo ManyChat / WhatsApp bots).
+    if not sesion.habilitado_en_chat:
+        return {'skipped': True, 'reason': 'chat_agente_off'}
+
+    sesion = _reanudar_si_pausa_expiro(sesion)
     if sesion.pausado_por_taller or sesion.estado in (
         AgenteConversacionSesion.ESTADO_PAUSADO,
         AgenteConversacionSesion.ESTADO_CERRADO,
-        AgenteConversacionSesion.ESTADO_ESPERANDO_REVISION,
     ):
-        return {'skipped': True, 'reason': 'sesion_pausada_o_esperando'}
+        return {'skipped': True, 'reason': 'sesion_pausada'}
 
     texto_cliente = (message.content or '').strip()
     if not texto_cliente:
         return {'skipped': True, 'reason': 'empty_message'}
 
-    datos_previos = sesion.datos_capturados or {}
-    vehiculo_previo = datos_previos.get('vehiculo') or {}
+    # ── Lookup automático de patente ──────────────────────────────────────
+    from mecanimovilapp.apps.agente_ia.services.contexto_patente import (
+        detectar_patente_en_texto,
+        enriquecer_contexto_patente,
+        normalizar_patente,
+    )
+    from django.contrib.auth import get_user_model
+
+    User = get_user_model()
+    proveedor = User.objects.filter(pk=proveedor_user_id).first()
+
+    datos_previos = dict(sesion.datos_capturados or {})
+    vehiculo_previo = dict(datos_previos.get('vehiculo') or {})
+    patente_detectada = detectar_patente_en_texto(texto_cliente) or normalizar_patente(
+        vehiculo_previo.get('patente') or ''
+    )
+    contexto_patente_txt = ''
+    if patente_detectada and not datos_previos.get('patente_enriquecida'):
+        enriq = enriquecer_contexto_patente(
+            patente=patente_detectada,
+            taller_id=taller.id,
+            proveedor_user=proveedor,
+        )
+        contexto_patente_txt = enriq.get('texto_contexto') or ''
+        if enriq.get('vehiculo'):
+            vehiculo_previo = _merge_datos(vehiculo_previo, enriq['vehiculo'])
+            datos_previos['vehiculo'] = vehiculo_previo
+            datos_previos['patente_enriquecida'] = patente_detectada
+            datos_previos['vehiculo_registrado'] = bool(enriq.get('registrado_en_sistema'))
+            if enriq.get('vehiculo_id'):
+                datos_previos['vehiculo_id'] = enriq['vehiculo_id']
+            if enriq.get('ofertas'):
+                datos_previos['ofertas_catalogo'] = enriq['ofertas']
+            if enriq.get('historial'):
+                datos_previos['historial_servicios'] = enriq['historial']
+            if enriq.get('salud'):
+                datos_previos['salud_vehiculo'] = enriq['salud']
+            sesion.datos_capturados = datos_previos
+            sesion.save(update_fields=['datos_capturados', 'actualizado_en'])
+    elif datos_previos.get('patente_enriquecida'):
+        # Reinyecta resumen corto para el prompt en turnos siguientes
+        v = vehiculo_previo
+        contexto_patente_txt = (
+            f"Patente {datos_previos.get('patente_enriquecida')}: "
+            f"{v.get('marca', '')} {v.get('modelo', '')} {v.get('anio', '')}. "
+            f"Registrado: {'sí' if datos_previos.get('vehiculo_registrado') else 'no'}."
+        )
+        if datos_previos.get('ofertas_catalogo'):
+            contexto_patente_txt += '\nOfertas:\n' + '\n'.join(datos_previos['ofertas_catalogo'][:8])
+        if datos_previos.get('salud_vehiculo'):
+            contexto_patente_txt += '\n' + str(datos_previos['salud_vehiculo'])
+
     query_rag = '\n'.join(
         filter(
             None,
@@ -352,7 +474,7 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
                 datos_previos.get('descripcion_problema', ''),
                 datos_previos.get('servicio_nombre', ''),
                 ' '.join(
-                    str(vehiculo_previo.get(k, '')) for k in ('marca', 'modelo', 'anio')
+                    str(vehiculo_previo.get(k, '')) for k in ('marca', 'modelo', 'anio', 'patente')
                 ).strip(),
             ],
         )
@@ -368,6 +490,7 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         chat_reciente=_mensajes_recientes(conversation),
         mensaje_cliente=texto_cliente,
         mensaje_bienvenida=config.mensaje_bienvenida,
+        contexto_patente=contexto_patente_txt,
     )
 
     decision, error = _llamar_gemini_agente(prompt)
@@ -383,6 +506,17 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         return {'ok': False, 'error': error}
 
     datos = _merge_datos(sesion.datos_capturados, decision.get('datos_actualizados') or {})
+    # Preserva flags de enriquecimiento de patente
+    for key in (
+        'patente_enriquecida',
+        'vehiculo_registrado',
+        'vehiculo_id',
+        'ofertas_catalogo',
+        'historial_servicios',
+        'salud_vehiculo',
+    ):
+        if key in (sesion.datos_capturados or {}) and key not in datos:
+            datos[key] = sesion.datos_capturados[key]
     sesion.datos_capturados = datos
     sesion.ultima_interaccion_ia = timezone.now()
     sesion.save(update_fields=['datos_capturados', 'ultima_interaccion_ia', 'actualizado_en'])
@@ -392,9 +526,12 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
     respuesta = (decision.get('respuesta_cliente') or '').strip()
 
     if necesita_humano:
+        from datetime import timedelta
+
         sesion.pausado_por_taller = True
+        sesion.pausado_hasta = timezone.now() + timedelta(minutes=minutos_pausa_manual())
         sesion.estado = AgenteConversacionSesion.ESTADO_PAUSADO
-        sesion.save(update_fields=['pausado_por_taller', 'estado', 'actualizado_en'])
+        sesion.save(update_fields=['pausado_por_taller', 'pausado_hasta', 'estado', 'actualizado_en'])
         if respuesta:
             enviar_respuesta_agente(
                 conversation=conversation,
@@ -418,7 +555,9 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
 
     if listo_cotizar:
         datos_cot = dict(datos)
-        datos_cot['contexto_rag'] = chunks_texto
+        datos_cot['contexto_rag'] = '\n'.join(
+            filter(None, [chunks_texto, contexto_patente_txt])
+        )
         cotizacion = crear_cotizacion_borrador_desde_agente(
             sesion=sesion,
             conversation=conversation,
@@ -426,25 +565,66 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             proveedor_user_id=proveedor_user_id,
             datos=datos_cot,
         )
-        msg_cot = (
-            respuesta
-            or 'Gracias por la información. Estoy preparando una cotización referencial; '
-            'el taller la revisará y te enviará los precios finales en breve.'
-        )
-        enviar_respuesta_agente(
-            conversation=conversation,
-            proveedor_user_id=proveedor_user_id,
-            texto=msg_cot,
-        )
+        enviada = False
+        if cotizacion and proveedor:
+            try:
+                from mecanimovilapp.apps.ordenes.services.cotizacion_canal import enviar_cotizacion_canal
+                from mecanimovilapp.apps.ordenes.services.cotizacion_publica import asegurar_token_cotizacion
+                from mecanimovilapp.apps.omnichannel.tasks import send_meta_message
+                from mecanimovilapp.apps.agente_ia.services.notificaciones import (
+                    notificar_cotizacion_enviada_agente,
+                )
+
+                asegurar_token_cotizacion(cotizacion)
+                if cotizacion.url_publica:
+                    meta_extra = dict(cotizacion.metadata or {})
+                    meta_extra['url_publica'] = cotizacion.url_publica
+                    cotizacion.metadata = meta_extra
+                    cotizacion.save(update_fields=['metadata', 'actualizado_en'])
+
+                message = enviar_cotizacion_canal(cotizacion, proveedor)
+                if conversation.source_channel != 'APP':
+                    send_meta_message.delay(message.id)
+
+                sesion.estado = AgenteConversacionSesion.ESTADO_CAPTURANDO
+                sesion.save(update_fields=['estado', 'actualizado_en'])
+                notificar_cotizacion_enviada_agente(
+                    proveedor_user_id=proveedor_user_id,
+                    cotizacion=cotizacion,
+                    conversation_id=conversation.id,
+                )
+                enviada = True
+            except Exception as exc:
+                logger.exception('No se pudo enviar cotización automática del agente: %s', exc)
+
+        if respuesta and not enviada:
+            enviar_respuesta_agente(
+                conversation=conversation,
+                proveedor_user_id=proveedor_user_id,
+                texto=respuesta
+                or 'Estoy preparando tu cotización referencial; te la envío en un momento.',
+            )
+        elif enviada and respuesta:
+            # Mensaje corto previo opcional; la cotización interactive ya va en el canal
+            pass
+
         AgenteMensajeLog.objects.create(
             sesion=sesion,
             mensaje_entrante=texto_cliente,
             chunks_usados=chunk_ids,
-            respuesta_generada=msg_cot,
+            respuesta_generada=respuesta,
             accion=AgenteMensajeLog.ACCION_COTIZAR,
-            metadata={'cotizacion_id': cotizacion.id if cotizacion else None},
+            metadata={
+                'cotizacion_id': cotizacion.id if cotizacion else None,
+                'enviada_auto': enviada,
+            },
         )
-        return {'ok': True, 'accion': 'cotizar', 'cotizacion_id': cotizacion.id if cotizacion else None}
+        return {
+            'ok': True,
+            'accion': 'cotizar',
+            'cotizacion_id': cotizacion.id if cotizacion else None,
+            'enviada': enviada,
+        }
 
     if respuesta:
         enviar_respuesta_agente(
