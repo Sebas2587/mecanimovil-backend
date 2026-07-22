@@ -71,12 +71,17 @@ class AgenteIaViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=['get'], url_path='sesion')
     def sesion(self, request):
-        conversation_id = request.query_params.get('conversation_id')
-        if not conversation_id:
-            raise ValidationError({'conversation_id': 'Requerido.'})
-        taller = self._taller(request)
+        """Estado de sesión IA para una conversación. Nunca 400 por falta de contexto."""
+        raw_id = (request.query_params.get('conversation_id') or '').strip()
+        if not raw_id.isdigit():
+            return Response({'activa': False})
+
+        taller, _, _ = resolver_contexto_taller(request.user)
+        if not taller:
+            return Response({'activa': False})
+
         sesion = AgenteConversacionSesion.objects.filter(
-            conversation_id=conversation_id,
+            conversation_id=int(raw_id),
             taller=taller,
         ).first()
         if not sesion:
