@@ -85,7 +85,7 @@ services:
         value: "gemini-3.1-flash-lite"
       # Agente IA conversacional en chats (captura + cotización borrador). Activar tras migración pgvector.
       - key: AGENTE_IA_CHAT_ENABLED
-        value: "False"
+        value: "True"
       - key: AGENTE_IA_GEMINI_MODEL
         value: "gemini-3.1-flash-lite"
       - key: AGENTE_IA_EMBEDDING_MODEL
@@ -93,7 +93,7 @@ services:
       # Opcional tier gratuito (elegir uno): GEMINI_API_KEY o HUGGINGFACE_API_TOKEN
       # y AGENDAMIENTO_IA_SEMANTICO_PROVEEDOR=auto
       # Variables que debes configurar manualmente en Render Dashboard:
-      # - GEMINI_API_KEY (requerido para asistente de diagnóstico IA)
+      # - GEMINI_API_KEY (requerido en API y en mecanimovil-celery-worker)
       # - GEMINI_LIMITE_TOKENS_MENSUAL (opcional, default 1000000 para alertas)
       # - PLAN_CUOTAS_ENFORCEMENT_ENABLED (default False; activar tras migración planes v2)
       # - AGENTE_IA_CHAT_ENABLED (default False; requiere extensión pgvector en Postgres)
@@ -153,15 +153,20 @@ services:
           property: connectionString
       # Debe coincidir con la API: el orquestador del agente IA corre en este worker
       - key: AGENTE_IA_CHAT_ENABLED
-        value: "False"
+        value: "True"
       - key: AGENTE_IA_GEMINI_MODEL
         value: "gemini-3.1-flash-lite"
       - key: AGENTE_IA_EMBEDDING_MODEL
         value: "text-embedding-004"
       - key: ASISTENTE_COTIZACION_IA_ENABLED
         value: "True"
+      - key: ASISTENTE_COTIZACION_GEMINI_MODEL
+        value: "gemini-3.1-flash-lite"
       - key: GEMINI_MODEL
         value: "gemini-3.1-flash-lite"
+      # Misma clave que mecanimovil-api — sin esto el worker no genera respuestas del agente
+      - key: GEMINI_API_KEY
+        sync: false
 
   # ============================================
   # WORKER SCRAPER (Valoración mercado — Playwright)

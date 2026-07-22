@@ -117,6 +117,7 @@ def _construir_prompt_agente(
     mensaje_bienvenida: str,
 ) -> str:
     datos_json = json.dumps(datos_capturados or {}, ensure_ascii=False)
+    tiene_contexto = bool((chunks_texto or '').strip())
     return f"""Eres el asistente virtual de un taller mecánico en Chile. Tu rol es conversar con clientes por chat, capturar información del vehículo y del problema, y preparar datos para una cotización que revisará el taller humano.
 
 Instrucciones del taller:
@@ -125,25 +126,30 @@ Instrucciones del taller:
 Mensaje de bienvenida sugerido (úsalo solo si es el primer contacto y no hay historial):
 {mensaje_bienvenida or 'Hola, soy el asistente del taller. ¿En qué puedo ayudarte con tu vehículo?'}
 
-Conocimiento del taller (catálogo, historial, documentos):
-{chunks_texto or 'Sin contexto adicional indexado.'}
+Conocimiento del taller recuperado para ESTA consulta (catálogo de servicios, historial de trabajos, documentos e instrucciones). Es tu ÚNICA fuente de verdad sobre qué servicios ofrece el taller y sus precios/duraciones:
+---
+{chunks_texto if tiene_contexto else 'Sin contexto indexado todavía para esta consulta.'}
+---
 
-Datos ya capturados (JSON):
+Datos ya capturados de este cliente en la conversación (JSON, no los repreguntes si ya están):
 {datos_json}
 
-Historial reciente del chat:
+Historial reciente del chat (respétalo: no repitas preguntas ya respondidas ni ignores lo que el cliente ya contó):
 {chat_reciente}
 
 Último mensaje del cliente:
 {mensaje_cliente}
 
 REGLAS:
-1. Responde en español chileno, tono profesional y amable.
-2. NO confirmes precios finales ni prometas fechas exactas; indica que el taller revisará la cotización.
-3. Captura: patente, marca, modelo, año (si aplica), síntoma/problema, urgencia, modalidad (taller o domicilio).
-4. Si el cliente pide algo fuera de servicio automotriz, reclamos legales, o está muy enojado → necesita_humano=true.
-5. Si ya tienes patente o vehículo identificado + problema claro + servicio inferible → listo_para_cotizar=true.
-6. respuesta_cliente debe ser breve (máx 3 párrafos cortos).
+1. Responde en español chileno, tono profesional, cálido y CONCRETO (nunca genérico ni de relleno). Evita frases vacías como "te puedo ayudar con eso" sin aportar nada específico.
+2. Lee el historial reciente completo antes de responder. Si el cliente ya dio un dato (vehículo, problema, dirección, etc.), NO lo vuelvas a pedir; avanza a la siguiente pregunta pendiente.
+3. Haz UNA sola pregunta de captura por turno (la más relevante que falte), no varias preguntas juntas en un solo mensaje.
+4. Si hay conocimiento del taller recuperado arriba, básate en él para nombrar servicios, precios de referencia o duraciones reales del taller; si el contexto está vacío, dilo con naturalidad (ej. "dejo esto para que el taller te confirme el precio") en vez de inventar cifras.
+5. NO confirmes precios finales ni prometas fechas exactas; indica que el taller revisará la cotización.
+6. Captura, en este orden si falta: patente, marca, modelo, año (si aplica), síntoma/problema concreto, urgencia, modalidad (taller o domicilio).
+7. Si el cliente pide algo fuera de servicio automotriz, reclamos legales, o está muy enojado → necesita_humano=true.
+8. Si ya tienes patente o vehículo identificado + problema claro + servicio inferible del catálogo → listo_para_cotizar=true.
+9. respuesta_cliente debe ser breve (1-2 párrafos cortos, máx 3), específica al mensaje del cliente y sin relleno genérico.
 
 Responde SOLO JSON válido:
 {{
@@ -330,8 +336,22 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
     if not texto_cliente:
         return {'skipped': True, 'reason': 'empty_message'}
 
-    query_rag = f'{texto_cliente}\n{sesion.datos_capturados.get("descripcion_problema", "")}'
-    chunks = buscar_contexto_taller(taller.id, query_rag, top_k=8)
+    datos_previos = sesion.datos_capturados or {}
+    vehiculo_previo = datos_previos.get('vehiculo') or {}
+    query_rag = '\n'.join(
+        filter(
+            None,
+            [
+                texto_cliente,
+                datos_previos.get('descripcion_problema', ''),
+                datos_previos.get('servicio_nombre', ''),
+                ' '.join(
+                    str(vehiculo_previo.get(k, '')) for k in ('marca', 'modelo', 'anio')
+                ).strip(),
+            ],
+        )
+    )
+    chunks = buscar_contexto_taller(taller.id, query_rag, top_k=10)
     chunks_texto = '\n---\n'.join(c.contenido for c in chunks if c.contenido)
     chunk_ids = [c.id for c in chunks]
 

@@ -176,6 +176,52 @@ def sincronizar_chunk_historico_solicitud(solicitud_id: int) -> None:
     )
 
 
+def reindexar_conocimiento_taller(taller_id: int) -> dict[str, int]:
+    """
+    Re-encola la indexación de TODO el conocimiento de un taller: catálogo de
+    servicios disponibles, historial de servicios completados, instrucciones
+    personalizadas y documentos ya cargados.
+
+    Necesario para talleres cuyos datos existían antes de que el worker de
+    Celery tuviera configurada `GEMINI_API_KEY` (los chunks quedaron sin
+    `embedding` y por lo tanto invisibles para la búsqueda semántica).
+    """
+    from mecanimovilapp.apps.agente_ia.tasks import (
+        procesar_documento_conocimiento_task,
+        sincronizar_chunk_historico_task,
+        sincronizar_chunk_servicio_task,
+        sincronizar_instrucciones_task,
+    )
+    from mecanimovilapp.apps.ordenes.models import SolicitudServicio
+    from mecanimovilapp.apps.servicios.models import OfertaServicio
+
+    ofertas_ids = list(
+        OfertaServicio.objects.filter(taller_id=taller_id, disponible=True).values_list('id', flat=True)
+    )
+    for oferta_id in ofertas_ids:
+        sincronizar_chunk_servicio_task.delay(oferta_id)
+
+    solicitudes_ids = list(
+        SolicitudServicio.objects.filter(taller_id=taller_id, estado='completado').values_list('id', flat=True)
+    )
+    for solicitud_id in solicitudes_ids:
+        sincronizar_chunk_historico_task.delay(solicitud_id)
+
+    documentos_ids = list(
+        TallerConocimientoDocumento.objects.filter(taller_id=taller_id).values_list('id', flat=True)
+    )
+    for documento_id in documentos_ids:
+        procesar_documento_conocimiento_task.delay(documento_id)
+
+    sincronizar_instrucciones_task.delay(taller_id)
+
+    return {
+        'ofertas': len(ofertas_ids),
+        'solicitudes': len(solicitudes_ids),
+        'documentos': len(documentos_ids),
+    }
+
+
 @transaction.atomic
 def procesar_documento_conocimiento(documento_id: int) -> None:
     """Extrae, fragmenta e indexa un documento del taller."""

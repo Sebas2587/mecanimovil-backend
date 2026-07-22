@@ -18,6 +18,7 @@ from mecanimovilapp.apps.agente_ia.serializers import (
     TallerConocimientoDocumentoSerializer,
 )
 from mecanimovilapp.apps.agente_ia.services.orquestador import pausar_sesion_por_mensaje_taller
+from mecanimovilapp.apps.agente_ia.services.rag import reindexar_conocimiento_taller
 from mecanimovilapp.apps.agente_ia.tasks import procesar_documento_conocimiento_task
 from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
 
@@ -127,6 +128,17 @@ class AgenteIaViewSet(viewsets.ViewSet):
             estado=AgenteConversacionSesion.ESTADO_CAPTURANDO,
         )
         return Response({'reanudado': True})
+
+    @action(detail=False, methods=['post'], url_path='reindexar')
+    def reindexar(self, request):
+        """
+        Re-encola la indexación de catálogo, historial, documentos e
+        instrucciones del taller autenticado. Úsalo tras cargar servicios o
+        si las respuestas de la IA se ven genéricas / sin contexto del taller.
+        """
+        taller = self._taller(request)
+        resumen = reindexar_conocimiento_taller(taller.id)
+        return Response({'encolado': True, **resumen})
 
     @action(detail=False, methods=['get'], url_path='borradores-pendientes')
     def borradores_pendientes(self, request):
