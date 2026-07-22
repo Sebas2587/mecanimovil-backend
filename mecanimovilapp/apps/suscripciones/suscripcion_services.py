@@ -395,7 +395,7 @@ def cancelar_suscripcion(proveedor):
     suscripcion = (
         SuscripcionProveedor.objects
         .filter(proveedor=proveedor, estado__in=['activa', 'pendiente', 'pausada'])
-        .order_by('-fecha_creacion')
+        .order_by('-fecha_inicio', '-id')
         .first()
     )
     if not suscripcion:
