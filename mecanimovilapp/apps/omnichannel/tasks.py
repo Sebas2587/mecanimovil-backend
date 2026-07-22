@@ -121,6 +121,36 @@ def send_meta_message(message_id: int):
         logger.error('No connection for outbound message %s', message_id)
         return {'error': 'no_connection'}
 
+    if connection.usuario_id:
+        from mecanimovilapp.apps.suscripciones.cuotas_services import (
+            CuotaAgotadaError,
+            SinSuscripcionError,
+            verificar_y_consumir_cuota,
+        )
+        from mecanimovilapp.apps.suscripciones.models import ConsumoFeatureMensual
+
+        try:
+            verificar_y_consumir_cuota(
+                connection.usuario,
+                ConsumoFeatureMensual.FEATURE_CONVERSACION_SALIENTE,
+            )
+        except (CuotaAgotadaError, SinSuscripcionError) as exc:
+            logger.warning(
+                'Outbound blocked by quota: message=%s user=%s %s',
+                message_id,
+                connection.usuario_id,
+                exc.message,
+            )
+            Message.objects.filter(pk=message_id).update(
+                channel_metadata={
+                    **(message.channel_metadata or {}),
+                    'send_error': exc.message,
+                    'quota_blocked': True,
+                    'code': exc.code,
+                },
+            )
+            return {'error': 'quota_exceeded', 'code': exc.code}
+
     client = MetaGraphClient(connection.access_token)
     text = (message.content or '').strip()
     meta = message.channel_metadata or {}

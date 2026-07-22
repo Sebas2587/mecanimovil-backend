@@ -991,6 +991,17 @@ class SuscripcionProveedorViewSet(viewsets.GenericViewSet):
         serializer = self.get_serializer(suscripcion)
         return Response({'suscripcion': serializer.data}, status=status.HTTP_200_OK)
 
+    @action(detail=False, methods=['get'], url_path='uso-features')
+    def uso_features(self, request):
+        """
+        GET /api/suscripciones/mi-suscripcion/uso-features/
+
+        Retorna el consumo mensual de features incluidas en el plan activo.
+        """
+        from .cuotas_services import obtener_uso_features_mes
+
+        return Response(obtener_uso_features_mes(request.user), status=status.HTTP_200_OK)
+
     @action(detail=False, methods=['post'])
     def cancelar(self, request):
         """

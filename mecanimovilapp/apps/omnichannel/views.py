@@ -113,6 +113,25 @@ class ProviderChannelConnectionViewSet(viewsets.GenericViewSet):
         if not proveedor:
             return Response({'error': 'No eres un proveedor registrado'}, status=400)
 
+        conn_existente = ProviderChannelConnection.objects.filter(
+            content_type=content_type,
+            object_id=proveedor.id,
+            channel=channel,
+        ).first()
+        ya_conectado = bool(conn_existente and conn_existente.status == 'conectada')
+
+        from mecanimovilapp.apps.suscripciones.cuotas_services import (
+            CuotaAgotadaError,
+            LimiteCanalesError,
+            SinSuscripcionError,
+            verificar_puede_conectar_canal,
+        )
+
+        try:
+            verificar_puede_conectar_canal(request.user, ya_conectado=ya_conectado)
+        except (CuotaAgotadaError, SinSuscripcionError, LimiteCanalesError) as exc:
+            return Response(exc.to_dict(), status=status.HTTP_403_FORBIDDEN)
+
         conn, _ = ProviderChannelConnection.objects.get_or_create(
             content_type=content_type,
             object_id=proveedor.id,

@@ -367,6 +367,22 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
 
         _taller, miembro, rol = resolver_contexto_taller(request.user)
         generado_por = miembro if rol == 'mecanico' else None
+
+        from mecanimovilapp.apps.suscripciones.cuotas_services import (
+            CuotaAgotadaError,
+            SinSuscripcionError,
+            verificar_y_consumir_cuota,
+        )
+        from mecanimovilapp.apps.suscripciones.models import ConsumoFeatureMensual
+
+        try:
+            verificar_y_consumir_cuota(
+                request.user,
+                ConsumoFeatureMensual.FEATURE_DIAGNOSTICO_IA,
+            )
+        except (CuotaAgotadaError, SinSuscripcionError) as exc:
+            return Response(exc.to_dict(), status=status.HTTP_403_FORBIDDEN)
+
         resultado = generar_guia_reparacion_cita_personal(cita)
         estado = 'completado' if resultado.get('disponible') else 'error'
         diagnostico = DiagnosticoAsistidoCitaPersonal.objects.create(

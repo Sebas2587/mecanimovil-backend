@@ -136,6 +136,21 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
                 'desde_plantilla': True,
             }, status=status.HTTP_201_CREATED)
 
+        from mecanimovilapp.apps.suscripciones.cuotas_services import (
+            CuotaAgotadaError,
+            SinSuscripcionError,
+            verificar_y_consumir_cuota,
+        )
+        from mecanimovilapp.apps.suscripciones.models import ConsumoFeatureMensual
+
+        try:
+            verificar_y_consumir_cuota(
+                request.user,
+                ConsumoFeatureMensual.FEATURE_COTIZACION_IA,
+            )
+        except (CuotaAgotadaError, SinSuscripcionError) as exc:
+            return Response(exc.to_dict(), status=status.HTTP_403_FORBIDDEN)
+
         resultado = generar_cotizacion_ia(
             conversation=conversation,
             servicio_nombre=data.get('servicio_nombre', ''),

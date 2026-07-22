@@ -8,6 +8,7 @@ from .models import (
     PaqueteCreditos,
     CompraCreditos,
     ConsumoCredito,
+    ConsumoFeatureMensual,
     ConfiguracionCreditos,
     ConfiguracionCreditosServicio,
     ProveedorCancelaciones,
@@ -294,7 +295,10 @@ class ProveedorCancelacionesAdmin(admin.ModelAdmin):
 @admin.register(PlanSuscripcion)
 class PlanSuscripcionAdmin(admin.ModelAdmin):
     """Admin para PlanSuscripcion — gestión de planes disponibles."""
-    list_display = ['nombre', 'precio', 'creditos_mensuales', 'activo', 'destacado', 'orden']
+    list_display = [
+        'nombre', 'precio', 'creditos_mensuales',
+        'cotizaciones_ia_mensuales', 'canales_mensajeria_max', 'activo', 'destacado', 'orden',
+    ]
     list_filter = ['activo', 'destacado']
     search_fields = ['nombre']
     ordering = ['orden', 'precio']
@@ -306,6 +310,23 @@ class PlanSuscripcionAdmin(admin.ModelAdmin):
         }),
         ('Precios y Créditos', {
             'fields': ('precio', 'creditos_mensuales')
+        }),
+        ('Cuotas mensuales de features', {
+            'fields': (
+                'cotizaciones_ia_mensuales',
+                'diagnosticos_ia_mensuales',
+                'consultas_patente_mensuales',
+                'canales_mensajeria_max',
+                'conversaciones_salientes_max',
+                'acceso_endpoints_patente_pro',
+            ),
+        }),
+        ('Overage (créditos por unidad extra)', {
+            'fields': (
+                'overage_cotizaciones_por_credito',
+                'overage_diagnosticos_por_credito',
+                'overage_patentes_por_credito',
+            ),
         }),
         ('MercadoPago (opcional)', {
             'fields': ('mp_preapproval_plan_id',),
@@ -344,3 +365,11 @@ class SuscripcionProveedorAdmin(admin.ModelAdmin):
             'fields': ('fecha_inicio', 'fecha_proximo_cobro', 'fecha_cancelacion', 'fecha_actualizacion'),
         }),
     )
+
+
+@admin.register(ConsumoFeatureMensual)
+class ConsumoFeatureMensualAdmin(admin.ModelAdmin):
+    list_display = ['proveedor', 'taller', 'feature', 'periodo', 'usados', 'creditos_overage_gastados']
+    list_filter = ['feature', 'periodo']
+    search_fields = ['proveedor__username', 'proveedor__email']
+    ordering = ['-periodo', 'proveedor']

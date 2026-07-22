@@ -88,6 +88,7 @@ services:
       # Variables que debes configurar manualmente en Render Dashboard:
       # - GEMINI_API_KEY (requerido para asistente de diagnóstico IA)
       # - GEMINI_LIMITE_TOKENS_MENSUAL (opcional, default 1000000 para alertas)
+      # - PLAN_CUOTAS_ENFORCEMENT_ENABLED (default False; activar tras migración planes v2)
       # - MERCADOPAGO_ACCESS_TOKEN
       # - MERCADOPAGO_MODE (production o test)
       # - MERCADOPAGO_WEBHOOK_SECRET

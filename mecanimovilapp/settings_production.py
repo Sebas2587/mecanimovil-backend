@@ -26,6 +26,9 @@ AGENDAMIENTO_IA_SEMANTICO_TIMEOUT = int(os.environ.get('AGENDAMIENTO_IA_SEMANTIC
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
 GEMINI_MODEL = os.environ.get('GEMINI_MODEL', 'gemini-3.1-flash-lite')
 GEMINI_LIMITE_TOKENS_MENSUAL = int(os.environ.get('GEMINI_LIMITE_TOKENS_MENSUAL', '1000000'))
+PLAN_CUOTAS_ENFORCEMENT_ENABLED = os.environ.get('PLAN_CUOTAS_ENFORCEMENT_ENABLED', 'False').lower() in (
+    'true', '1', 'yes',
+)
 ASISTENTE_DIAGNOSTICO_IA_ENABLED = os.environ.get(
     'ASISTENTE_DIAGNOSTICO_IA_ENABLED', 'False'
 ).lower() in ('true', '1', 'yes')

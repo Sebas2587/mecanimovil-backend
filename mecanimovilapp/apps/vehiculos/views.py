@@ -527,6 +527,24 @@ class VehiculoViewSet(viewsets.ModelViewSet):
         if not patente:
             return Response({"error": "Debe proporcionar una patente"}, status=status.HTTP_400_BAD_REQUEST)
 
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
+        from mecanimovilapp.apps.suscripciones.cuotas_services import (
+            CuotaAgotadaError,
+            SinSuscripcionError,
+            verificar_y_consumir_cuota,
+        )
+        from mecanimovilapp.apps.suscripciones.models import ConsumoFeatureMensual
+
+        taller, _, _ = resolver_contexto_taller(request.user)
+        if taller is not None:
+            try:
+                verificar_y_consumir_cuota(
+                    request.user,
+                    ConsumoFeatureMensual.FEATURE_CONSULTA_PATENTE,
+                )
+            except (CuotaAgotadaError, SinSuscripcionError) as exc:
+                return Response(exc.to_dict(), status=status.HTTP_403_FORBIDDEN)
+
         normalized_data, http_status, error_code = fetch_patente_normalized(
             patente,
             include_private_fields=True,

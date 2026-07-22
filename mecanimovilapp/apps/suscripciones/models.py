@@ -604,6 +604,50 @@ class PlanSuscripcion(models.Model):
         verbose_name='Orden',
         help_text='Orden de visualización (menor = primero)'
     )
+    cotizaciones_ia_mensuales = models.IntegerField(
+        default=0,
+        validators=[MinValueValidator(0)],
+        verbose_name='Cotizaciones IA mensuales incluidas',
+    )
+    diagnosticos_ia_mensuales = models.IntegerField(
+        default=0,
+        validators=[MinValueValidator(0)],
+        verbose_name='Diagnósticos IA mensuales incluidos',
+    )
+    consultas_patente_mensuales = models.IntegerField(
+        default=0,
+        validators=[MinValueValidator(0)],
+        verbose_name='Consultas de patente mensuales incluidas',
+    )
+    canales_mensajeria_max = models.IntegerField(
+        default=0,
+        validators=[MinValueValidator(0)],
+        verbose_name='Canales de mensajería incluidos',
+    )
+    conversaciones_salientes_max = models.IntegerField(
+        default=0,
+        validators=[MinValueValidator(0)],
+        verbose_name='Tope conversaciones salientes/mes',
+    )
+    overage_cotizaciones_por_credito = models.IntegerField(
+        default=3,
+        validators=[MinValueValidator(1)],
+        verbose_name='Cotizaciones extra por 1 crédito (overage)',
+    )
+    overage_diagnosticos_por_credito = models.IntegerField(
+        default=4,
+        validators=[MinValueValidator(1)],
+        verbose_name='Diagnósticos extra por 1 crédito (overage)',
+    )
+    overage_patentes_por_credito = models.IntegerField(
+        default=3,
+        validators=[MinValueValidator(1)],
+        verbose_name='Consultas patente extra por 1 crédito (overage)',
+    )
+    acceso_endpoints_patente_pro = models.BooleanField(
+        default=False,
+        verbose_name='Acceso endpoints patente PRO (VIN, robo, PRT)',
+    )
 
     # Timestamps
     fecha_creacion = models.DateTimeField(auto_now_add=True)
@@ -619,6 +663,78 @@ class PlanSuscripcion(models.Model):
 
     def __str__(self):
         return f"{self.nombre} — {self.creditos_mensuales} créditos/mes — ${self.precio:,.0f}/mes"
+
+
+class ConsumoFeatureMensual(models.Model):
+    """
+    Contador mensual de uso de features incluidas en el plan (IA, patente, mensajería).
+    El periodo se alinea al ciclo calendario YYYY-MM.
+    """
+    FEATURE_COTIZACION_IA = 'COTIZACION_IA'
+    FEATURE_DIAGNOSTICO_IA = 'DIAGNOSTICO_IA'
+    FEATURE_CONSULTA_PATENTE = 'CONSULTA_PATENTE'
+    FEATURE_CONVERSACION_SALIENTE = 'CONVERSACION_SALIENTE'
+
+    FEATURE_CHOICES = [
+        (FEATURE_COTIZACION_IA, 'Cotización IA'),
+        (FEATURE_DIAGNOSTICO_IA, 'Diagnóstico IA'),
+        (FEATURE_CONSULTA_PATENTE, 'Consulta patente'),
+        (FEATURE_CONVERSACION_SALIENTE, 'Conversación saliente'),
+    ]
+
+    proveedor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='consumos_feature_mensual',
+        verbose_name='Proveedor (dueño suscripción)',
+    )
+    taller = models.ForeignKey(
+        'usuarios.Taller',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='consumos_feature_mensual',
+        verbose_name='Taller',
+    )
+    feature = models.CharField(max_length=40, choices=FEATURE_CHOICES)
+    periodo = models.CharField(
+        max_length=7,
+        verbose_name='Periodo (YYYY-MM)',
+        help_text='Mes calendario del consumo',
+    )
+    usados = models.IntegerField(
+        default=0,
+        validators=[MinValueValidator(0)],
+        verbose_name='Usos del mes',
+    )
+    creditos_overage_gastados = models.IntegerField(
+        default=0,
+        validators=[MinValueValidator(0)],
+        verbose_name='Créditos gastados en overage',
+    )
+    unidades_overage_pendientes = models.IntegerField(
+        default=0,
+        validators=[MinValueValidator(0)],
+        verbose_name='Unidades acumuladas hacia próximo crédito overage',
+    )
+    fecha_actualizacion = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _('Consumo feature mensual')
+        verbose_name_plural = _('Consumos feature mensual')
+        constraints = [
+            models.UniqueConstraint(
+                fields=['proveedor', 'feature', 'periodo'],
+                name='uniq_consumo_feature_mensual_proveedor',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['proveedor', 'periodo']),
+            models.Index(fields=['taller', 'periodo']),
+        ]
+
+    def __str__(self):
+        return f"{self.proveedor_id} — {self.feature} — {self.periodo}: {self.usados}"
 
 
 class SuscripcionProveedor(models.Model):

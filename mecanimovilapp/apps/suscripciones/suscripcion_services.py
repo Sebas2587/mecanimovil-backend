@@ -521,6 +521,15 @@ def _plan_to_dict(plan):
         'descripcion': plan.descripcion,
         'precio': float(plan.precio),
         'creditos_mensuales': plan.creditos_mensuales,
+        'cotizaciones_ia_mensuales': plan.cotizaciones_ia_mensuales,
+        'diagnosticos_ia_mensuales': plan.diagnosticos_ia_mensuales,
+        'consultas_patente_mensuales': plan.consultas_patente_mensuales,
+        'canales_mensajeria_max': plan.canales_mensajeria_max,
+        'conversaciones_salientes_max': plan.conversaciones_salientes_max,
+        'overage_cotizaciones_por_credito': plan.overage_cotizaciones_por_credito,
+        'overage_diagnosticos_por_credito': plan.overage_diagnosticos_por_credito,
+        'overage_patentes_por_credito': plan.overage_patentes_por_credito,
+        'acceso_endpoints_patente_pro': plan.acceso_endpoints_patente_pro,
         'destacado': plan.destacado,
     }
 
