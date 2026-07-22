@@ -386,44 +386,85 @@ def cancelar_suscripcion(proveedor):
     """
     Cancela la suscripción activa del proveedor en MP y en la BD.
 
-    Args:
-        proveedor: Usuario proveedor.
+    Si existe preapproval en Mercado Pago, la cancelación en MP es obligatoria
+    (salvo que ya esté cancelled). Evita “cancelar” solo en BD y que el cobro siga.
 
     Returns:
-        dict: { 'cancelada': bool, 'mensaje': str }
+        dict: { 'cancelada': bool, 'mensaje': str, 'error'?: str }
     """
-    try:
-        suscripcion = SuscripcionProveedor.objects.get(
-            proveedor=proveedor,
-            estado__in=['activa', 'pendiente', 'pausada']
-        )
-    except SuscripcionProveedor.DoesNotExist:
-        return {'cancelada': False, 'mensaje': 'No tienes una suscripción activa para cancelar'}
+    suscripcion = (
+        SuscripcionProveedor.objects
+        .filter(proveedor=proveedor, estado__in=['activa', 'pendiente', 'pausada'])
+        .order_by('-fecha_creacion')
+        .first()
+    )
+    if not suscripcion:
+        return {
+            'cancelada': False,
+            'mensaje': 'No tienes una suscripción activa para cancelar',
+            'error': 'No tienes una suscripción activa para cancelar',
+        }
 
-    # Cancelar en MercadoPago via SDK
+    # Cancelar en MercadoPago via SDK (requerido si hay preapproval_id)
     if suscripcion.mp_preapproval_id:
         try:
             sdk = _get_mp_sdk()
-            result = sdk.preapproval().update(
-                suscripcion.mp_preapproval_id,
-                {"status": "cancelled"}
-            )
-            if result.get('status') not in (200, 201):
-                logger.warning(
-                    f"⚠️ MP devolvió {result.get('status')} al cancelar "
-                    f"preapproval {suscripcion.mp_preapproval_id}: {result.get('response')}"
+            current = sdk.preapproval().get(suscripcion.mp_preapproval_id)
+            current_status = ''
+            if current.get('status') == 200:
+                current_status = (current.get('response') or {}).get('status') or ''
+
+            if current_status != 'cancelled':
+                result = sdk.preapproval().update(
+                    suscripcion.mp_preapproval_id,
+                    {"status": "cancelled"},
+                )
+                http_status = result.get('status')
+                resp = result.get('response') or {}
+                resp_status = resp.get('status') if isinstance(resp, dict) else None
+                if http_status not in (200, 201) and resp_status != 'cancelled':
+                    logger.error(
+                        "❌ MP rechazó cancelar preapproval %s (HTTP %s): %s",
+                        suscripcion.mp_preapproval_id,
+                        http_status,
+                        resp,
+                    )
+                    return {
+                        'cancelada': False,
+                        'mensaje': 'Mercado Pago no pudo cancelar el plan. Intentá de nuevo en unos minutos.',
+                        'error': 'Mercado Pago no pudo cancelar el plan. Intentá de nuevo en unos minutos.',
+                    }
+                logger.info(
+                    "✅ Preapproval %s cancelado en MP",
+                    suscripcion.mp_preapproval_id,
                 )
             else:
-                logger.info(f"✅ Preapproval {suscripcion.mp_preapproval_id} cancelado en MP")
+                logger.info(
+                    "ℹ️ Preapproval %s ya estaba cancelled en MP",
+                    suscripcion.mp_preapproval_id,
+                )
         except Exception as e:
-            logger.error(f"❌ Error cancelando preapproval en MP: {e}")
-            # No bloqueamos la cancelación local si MP falla
+            logger.error(
+                "❌ Error cancelando preapproval %s en MP: %s",
+                suscripcion.mp_preapproval_id,
+                e,
+                exc_info=True,
+            )
+            return {
+                'cancelada': False,
+                'mensaje': 'No se pudo contactar a Mercado Pago para cancelar. Intentá de nuevo.',
+                'error': 'No se pudo contactar a Mercado Pago para cancelar. Intentá de nuevo.',
+            }
 
-    suscripcion.estado = 'cancelada'
-    suscripcion.fecha_cancelacion = timezone.now()
-    suscripcion.save(update_fields=['estado', 'fecha_cancelacion', 'fecha_actualizacion'])
+    ahora = timezone.now()
+    # Cerrar todas las suscripciones abiertas del proveedor (evita huérfanas)
+    (
+        SuscripcionProveedor.objects
+        .filter(proveedor=proveedor, estado__in=['activa', 'pendiente', 'pausada'])
+        .update(estado='cancelada', fecha_cancelacion=ahora, fecha_actualizacion=ahora)
+    )
 
-    logger.info(f"✅ Suscripción {suscripcion.id} cancelada para proveedor {proveedor.id}")
+    logger.info("✅ Suscripción(es) cancelada(s) para proveedor %s", proveedor.id)
     return {'cancelada': True, 'mensaje': 'Suscripción cancelada exitosamente'}
 
 
