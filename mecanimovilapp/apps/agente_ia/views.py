@@ -145,7 +145,11 @@ class AgenteIaViewSet(viewsets.ViewSet):
         conversation_id = request.data.get('conversation_id')
         if not conversation_id:
             raise ValidationError({'conversation_id': 'Requerido.'})
-        activo = bool(request.data.get('activo', True))
+        raw_activo = request.data.get('activo', True)
+        if isinstance(raw_activo, str):
+            activo = raw_activo.strip().lower() in ('1', 'true', 'yes', 'si', 'sí')
+        else:
+            activo = bool(raw_activo)
         if activo and not agente_ia_incluido_en_plan(request.user):
             raise ValidationError(
                 {
