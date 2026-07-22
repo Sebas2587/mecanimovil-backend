@@ -28,6 +28,53 @@ def _get_mp_sdk():
     return mercadopago.SDK(token)
 
 
+def _mp_access_token():
+    token = config('MERCADOPAGO_ACCESS_TOKEN', default='')
+    if not token:
+        raise ValueError("MERCADOPAGO_ACCESS_TOKEN no está configurado")
+    return token
+
+
+def _actualizar_preapproval_mp(preapproval_id, payload):
+    """
+    PUT /preapproval/{id} directo a la API de MP.
+
+    El SDK mercadopago==2.2.0 tiene un bug en update(): arma
+    `/preapproval{id}` sin barra y MP responde 404
+    (path: /preapprovalb7a5e2d3...).
+    """
+    url = f"https://api.mercadopago.com/preapproval/{preapproval_id}"
+    resp = http_requests.put(
+        url,
+        json=payload,
+        headers={
+            "Authorization": f"Bearer {_mp_access_token()}",
+            "Content-Type": "application/json",
+        },
+        timeout=20,
+    )
+    try:
+        body = resp.json()
+    except Exception:
+        body = {"raw": (resp.text or "")[:500]}
+    return {"status": resp.status_code, "response": body}
+
+
+def _obtener_preapproval_mp(preapproval_id):
+    """GET /preapproval/{id} directo (misma forma que el SDK get, sin bug)."""
+    url = f"https://api.mercadopago.com/preapproval/{preapproval_id}"
+    resp = http_requests.get(
+        url,
+        headers={"Authorization": f"Bearer {_mp_access_token()}"},
+        timeout=20,
+    )
+    try:
+        body = resp.json()
+    except Exception:
+        body = {"raw": (resp.text or "")[:500]}
+    return {"status": resp.status_code, "response": body}
+
+
 def obtener_detalle_pago_autorizado(authorized_payment_id):
     """
     Consulta GET /authorized_payments/{id} en MercadoPago y retorna
@@ -143,10 +190,9 @@ def crear_suscripcion_mp(proveedor, plan_id):
         # Intentar cancelar en MP (sin bloquear si falla)
         if suscripcion_pendiente.mp_preapproval_id:
             try:
-                sdk = _get_mp_sdk()
-                sdk.preapproval().update(
+                _actualizar_preapproval_mp(
                     suscripcion_pendiente.mp_preapproval_id,
-                    {"status": "cancelled"}
+                    {"status": "cancelled"},
                 )
             except Exception as e:
                 logger.warning(f"⚠️ No se pudo cancelar preapproval pendiente en MP: {e}")
@@ -405,17 +451,23 @@ def cancelar_suscripcion(proveedor):
             'error': 'No tienes una suscripción activa para cancelar',
         }
 
-    # Cancelar en MercadoPago via SDK (requerido si hay preapproval_id)
+    # Cancelar en MercadoPago (API directa: el SDK 2.2.0 rompe el path en update)
     if suscripcion.mp_preapproval_id:
         try:
-            sdk = _get_mp_sdk()
-            current = sdk.preapproval().get(suscripcion.mp_preapproval_id)
+            current = _obtener_preapproval_mp(suscripcion.mp_preapproval_id)
             current_status = ''
             if current.get('status') == 200:
                 current_status = (current.get('response') or {}).get('status') or ''
+            elif current.get('status') == 404:
+                # Ya no existe en MP → cerramos solo en BD
+                logger.warning(
+                    "ℹ️ Preapproval %s no existe en MP (404); cancelando solo en BD",
+                    suscripcion.mp_preapproval_id,
+                )
+                current_status = 'cancelled'
 
             if current_status != 'cancelled':
-                result = sdk.preapproval().update(
+                result = _actualizar_preapproval_mp(
                     suscripcion.mp_preapproval_id,
                     {"status": "cancelled"},
                 )
@@ -423,24 +475,32 @@ def cancelar_suscripcion(proveedor):
                 resp = result.get('response') or {}
                 resp_status = resp.get('status') if isinstance(resp, dict) else None
                 if http_status not in (200, 201) and resp_status != 'cancelled':
-                    logger.error(
-                        "❌ MP rechazó cancelar preapproval %s (HTTP %s): %s",
+                    # 404 en update: trata como ya inexistente
+                    if http_status == 404:
+                        logger.warning(
+                            "ℹ️ Preapproval %s no encontrado al cancelar (404); cerrando en BD",
+                            suscripcion.mp_preapproval_id,
+                        )
+                    else:
+                        logger.error(
+                            "❌ MP rechazó cancelar preapproval %s (HTTP %s): %s",
+                            suscripcion.mp_preapproval_id,
+                            http_status,
+                            resp,
+                        )
+                        return {
+                            'cancelada': False,
+                            'mensaje': 'Mercado Pago no pudo cancelar el plan. Intentá de nuevo en unos minutos.',
+                            'error': 'Mercado Pago no pudo cancelar el plan. Intentá de nuevo en unos minutos.',
+                        }
+                else:
+                    logger.info(
+                        "✅ Preapproval %s cancelado en MP",
                         suscripcion.mp_preapproval_id,
-                        http_status,
-                        resp,
                     )
-                    return {
-                        'cancelada': False,
-                        'mensaje': 'Mercado Pago no pudo cancelar el plan. Intentá de nuevo en unos minutos.',
-                        'error': 'Mercado Pago no pudo cancelar el plan. Intentá de nuevo en unos minutos.',
-                    }
-                logger.info(
-                    "✅ Preapproval %s cancelado en MP",
-                    suscripcion.mp_preapproval_id,
-                )
             else:
                 logger.info(
-                    "ℹ️ Preapproval %s ya estaba cancelled en MP",
+                    "ℹ️ Preapproval %s ya estaba cancelled / inexistente en MP",
                     suscripcion.mp_preapproval_id,
                 )
         except Exception as e:
