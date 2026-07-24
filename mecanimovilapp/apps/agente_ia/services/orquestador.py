@@ -230,7 +230,11 @@ REGLAS DE CONVERSACIÓN:
     - el cliente pide cotización/presupuesto/precio O ya confirmó que quiere que le armes el presupuesto.
     Sin patente → listo_para_cotizar=false aunque el cliente haya dicho marca/modelo. La cotización y el agendamiento requieren patente para llenar los datos reales del auto.
 13. cliente_pide_cotizacion=true únicamente si en este turno (o el historial reciente) el cliente pidió precio/cotización/presupuesto de forma explícita o claramente implícita.
-14. respuesta_cliente: para asesoría normal, 1-3 frases naturales con un mini consejo + 1 pregunta. Si el cliente pidió explícitamente el listado de servicios, puedes extenderte lo necesario para nombrarlos todos.
+14. UNA SOLA COTIZACIÓN por conversación/vehículo: si el cliente pide otro servicio para el MISMO auto, agrégalo a la misma cotización (lista "servicios") — NO trates cada servicio como cotización aparte. El sistema edita un único borrador hasta que el taller lo cierre/envíe.
+15. PRECIOS: NUNCA digas al cliente un precio inventado ni un total en pesos si no está en la FICHA OPERATIVA / catálogo. Puedes decir que el taller te enviará la cotización revisada. Si un servicio no está publicado para ese auto, indícalo con naturalidad ("ese valor lo confirma el taller") sin inventar cifras.
+16. ENVÍO: TÚ NO envías la cotización por WhatsApp ni confirmas precios finales. Solo preparas el borrador; un humano del taller la revisa en "Cotizar con IA" y la envía. Dile al cliente que el taller le enviará la cotización.
+17. Si el cliente menciona preferencia de día/hora/técnico para la visita, guárdalo en preferencias_agenda (fecha ISO si puedes, hora HH:MM, tecnico_nombre). Eso se usa al aceptar para agendar sin perder el acuerdo.
+18. respuesta_cliente: para asesoría normal, 1-3 frases naturales con un mini consejo + 1 pregunta. Si el cliente pidió explícitamente el listado de servicios, puedes extenderte lo necesario para nombrarlos todos. NUNCA dejes respuesta_cliente vacío (sobre todo si hubo audio/foto).
 
 Responde SOLO JSON válido:
 {{
@@ -242,9 +246,11 @@ Responde SOLO JSON válido:
     "cliente_telefono": "",
     "vehiculo": {{"marca": "", "modelo": "", "anio": "", "patente": "", "cilindraje": ""}},
     "servicio_nombre": "",
+    "servicios": [],
     "descripcion_problema": "",
     "modalidad": "taller",
-    "urgencia": ""
+    "urgencia": "",
+    "preferencias_agenda": {{"fecha": "", "hora": "", "tecnico_nombre": "", "nota": ""}}
   }},
   "listo_para_cotizar": false,
   "necesita_humano": false,
@@ -263,8 +269,27 @@ def _merge_datos(previos: dict, nuevos: dict) -> dict:
                 if sv not in (None, '', []):
                     base[sk] = sv
             resultado[key] = base
+        elif key in ('servicios', 'servicios_solicitados') and isinstance(val, list):
+            prev = list(resultado.get(key) or [])
+            vistos = {str(x).strip().lower() for x in prev if x}
+            for item in val:
+                nombre = item if isinstance(item, str) else (item or {}).get('nombre') if isinstance(item, dict) else ''
+                nombre = (nombre or '').strip()
+                if nombre and nombre.lower() not in vistos:
+                    prev.append(nombre)
+                    vistos.add(nombre.lower())
+            if prev:
+                resultado[key] = prev
         elif val not in ('', []):
             resultado[key] = val
+    # Si llegó un servicio_nombre nuevo, también lo suma a la lista de servicios.
+    sn = (resultado.get('servicio_nombre') or '').strip()
+    if sn:
+        lista = list(resultado.get('servicios') or [])
+        keys = {str(x).strip().lower() for x in lista}
+        if sn.lower() not in keys and ' + ' not in sn:
+            lista.append(sn)
+            resultado['servicios'] = lista
     return resultado
 
 
@@ -836,8 +861,9 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             datos=datos_cot,
         )
         mensaje_cliente = respuesta or (
-            'Ya tengo todo lo que necesito, estoy preparando tu cotización — '
-            'en breve el taller te la envía.'
+            'Ya tengo lo necesario: estoy armando tu cotización para que el taller la revise '
+            'y te la envíe por este chat. Si necesitas agregar otro servicio al mismo auto, '
+            'dímelo y lo sumo a la misma cotización.'
         )
         if cotizacion:
             enviar_respuesta_agente(
@@ -873,6 +899,28 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             'enviada': False,
         }
 
+    hubo_media = bool(
+        message.attachment
+        or (message.channel_metadata or {}).get('media')
+        or analisis_media
+    )
+    if not respuesta and hubo_media:
+        kind_media = (
+            (analisis_media or {}).get('tipo_medio')
+            or (analisis_media or {}).get('kind')
+            or 'audio'
+        )
+        if analisis_media and (analisis_media.get('error') or analisis_media.get('pendiente')):
+            respuesta = (
+                f'Recibí tu {kind_media}, pero no pude procesarlo bien. '
+                '¿Me lo reenvías o me describes con palabras qué se oye/ve?'
+            )
+        else:
+            respuesta = (
+                f'Recibí tu {kind_media}. ¿Me confirmas qué le pasa al auto '
+                'o me das la patente para orientarte mejor?'
+            )
+
     if respuesta:
         enviar_respuesta_agente(
             conversation=conversation,
@@ -889,7 +937,8 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             'intencion': intencion,
             'cliente_pide_cotizacion': cliente_pide_cotizacion,
             'media': bool(analisis_media and not analisis_media.get('error')),
-            'media_kind': (analisis_media or {}).get('tipo_medio'),
+            'media_kind': (analisis_media or {}).get('tipo_medio') or (analisis_media or {}).get('kind'),
+            'fallback_respuesta_vacia': hubo_media and not (decision.get('respuesta_cliente') or '').strip(),
         },
     )
     return {'ok': True, 'accion': 'responder'}

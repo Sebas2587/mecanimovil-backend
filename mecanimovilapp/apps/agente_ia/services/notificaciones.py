@@ -109,16 +109,16 @@ def notificar_cotizacion_borrador_agente(
     titulo = 'Cotización IA lista para revisar'
     if precio_desde_catalogo:
         mensaje = (
-            f'El agente generó un borrador para "{cotizacion.servicio_nombre or "servicio"}" '
+            f'El agente actualizó el borrador de "{cotizacion.servicio_nombre or "servicio"}" '
             f'con precio desde tu catálogo (${int(cotizacion.total_clp or 0):,} CLP). '
-            f'Revisa antes de enviar al cliente.'
+            f'Revisa en Cotizar con IA y envíala tú al cliente.'
         ).replace(',', '.')
     else:
         mensaje = (
-            f'El agente generó un borrador para "{cotizacion.servicio_nombre or "servicio"}" '
-            f'con precio estimado por IA (${int(cotizacion.total_clp or 0):,} CLP). '
-            f'No hay match exacto en catálogo — revisa y ajusta antes de enviar.'
-        ).replace(',', '.')
+            f'El agente actualizó el borrador de "{cotizacion.servicio_nombre or "servicio"}". '
+            f'Sin precio publicado en catálogo: completa el valor real en Cotizar con IA '
+            f'(la referencia IA es solo orientación) y envíala tú al cliente.'
+        )
     data = {
         'type': 'agente_ia_cotizacion_borrador',
         'cotizacion_id': cotizacion.id,

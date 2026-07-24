@@ -249,21 +249,53 @@ def analizar_adjunto_mensaje(
 
     try:
         body = resp.json()
-        text = body['candidates'][0]['content']['parts'][0]['text']
+        candidates = body.get('candidates') or []
+        if not candidates:
+            # Bloqueo de seguridad / prompt vacío: mismo efecto que análisis vacío.
+            block = (body.get('promptFeedback') or {}).get('blockReason')
+            return {
+                'error': f'gemini_sin_candidatos:{block}' if block else 'gemini_sin_candidatos',
+                'kind': kind or 'adjunto',
+            }
+        parts = candidates[0].get('content', {}).get('parts') or []
+        text = ''
+        for part in parts:
+            if isinstance(part, dict) and part.get('text'):
+                text += part['text']
+        if not (text or '').strip():
+            return {'error': 'respuesta_inesperada', 'kind': kind or 'adjunto'}
     except (KeyError, IndexError, TypeError, ValueError):
-        return {'error': 'respuesta_inesperada'}
+        return {'error': 'respuesta_inesperada', 'kind': kind or 'adjunto'}
 
     data = _parse_json(text) or {}
     resumen = (data.get('resumen_para_chat') or data.get('sintoma_sintetizado') or '').strip()
     transcripcion = (data.get('transcripcion_voz') or '').strip()
+    analisis_acustico = (data.get('analisis_acustico_ruidos') or '').strip()
     if not resumen and transcripcion:
         resumen = transcripcion
+    if not resumen and analisis_acustico:
+        resumen = analisis_acustico
+
+    # Análisis "exitoso" pero vacío (común en notas de voz): tratar como error degradado
+    # para que el orquestador pida reenvío/descripción en vez de responder en silencio.
+    kind_final = kind or data.get('tipo_medio') or 'adjunto'
+    if not resumen and not transcripcion and not analisis_acustico:
+        logger.warning(
+            'Gemini multimodal sin contenido útil msg=%s kind=%s',
+            message.id,
+            kind_final,
+        )
+        return {
+            'error': 'analisis_vacio',
+            'kind': kind_final,
+            'tipo_medio': kind_final,
+        }
 
     resultado = {
-        'tipo_medio': kind or data.get('tipo_medio') or 'adjunto',
+        'tipo_medio': kind_final,
         'tipo_imagen_detectada': data.get('tipo_imagen_detectada'),
         'transcripcion_voz': transcripcion or None,
-        'analisis_acustico_ruidos': data.get('analisis_acustico_ruidos'),
+        'analisis_acustico_ruidos': analisis_acustico or data.get('analisis_acustico_ruidos'),
         'hallazgos_visuales': data.get('hallazgos_visuales') or [],
         'luces_tablero': data.get('luces_tablero') or [],
         'sintoma_sintetizado': (data.get('sintoma_sintetizado') or '').strip() or None,
