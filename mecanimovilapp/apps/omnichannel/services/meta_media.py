@@ -119,7 +119,26 @@ def fetch_url_media_bytes(
 
 
 def save_message_attachment(message, content: bytes, filename: str) -> None:
-    message.attachment.save(filename, ContentFile(content), save=True)
+    """Persiste el adjunto en el storage por defecto (R2 en prod).
+
+    Importante: el Celery worker debe tener las mismas vars R2 que la API;
+    si no, el archivo queda en disco efímero del worker y las URLs firmadas
+    de la API responden 404 (imagen/audio eternamente cargando en el chat).
+    """
+    cf = ContentFile(content)
+    mime = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
+    lower = (filename or '').lower()
+    if lower.endswith(('.oga', '.ogg', '.opus')):
+        mime = 'audio/ogg'
+    elif lower.endswith(('.jpg', '.jpeg')):
+        mime = 'image/jpeg'
+    elif lower.endswith('.png'):
+        mime = 'image/png'
+    elif lower.endswith('.webp'):
+        mime = 'image/webp'
+    # django-storages lee content_type al subir a S3/R2
+    cf.content_type = mime
+    message.attachment.save(filename, cf, save=True)
 
 
 def parse_whatsapp_media(msg: dict[str, Any]) -> dict[str, Any] | None:

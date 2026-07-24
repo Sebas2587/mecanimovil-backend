@@ -9,7 +9,7 @@ from .models import Conversation, Message
 from .serializers import ConversationSerializer, MessageSerializer
 from .purge import purge_conversation
 from .inbox import build_unified_inbox
-from mecanimovilapp.storage.utils import get_cpanel_file_url
+from mecanimovilapp.apps.chat.media_signing import build_message_attachment_url
 from mecanimovilapp.apps.omnichannel.utils import channel_to_api_slug
 
 logger = logging.getLogger(__name__)
@@ -339,10 +339,14 @@ class ConversationViewSet(DestroyModelMixin, viewsets.ReadOnlyModelViewSet):
             'external_contact_name': external_contact.display_name if external_contact else None,
             'external_contact_phone': external_contact.phone if external_contact else None,
             'archivo_adjunto': (
-                get_cpanel_file_url(message.attachment, request) if message.attachment else None
+                build_message_attachment_url(message.id, request=request)
+                if message.attachment
+                else None
             ),
             'attachment': (
-                get_cpanel_file_url(message.attachment, request) if message.attachment else None
+                build_message_attachment_url(message.id, request=request)
+                if message.attachment
+                else None
             ),
         }
         

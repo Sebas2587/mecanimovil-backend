@@ -111,6 +111,7 @@ services:
       # - AWS_ACCESS_KEY_ID (para S3 si usas almacenamiento)
       # - AWS_SECRET_ACCESS_KEY
       # - AWS_STORAGE_BUCKET_NAME
+      # - R2_* (storage) + MEDIA_SIGNING_SECRET (misma en API y celery-worker)
       # Meta Omnichannel (WhatsApp / Messenger / Instagram):
       # - OMNICHANNEL_ENABLED=True
       # - META_APP_ID
@@ -178,6 +179,20 @@ services:
         value: "gemini-3.1-flash-lite"
       # Misma clave que mecanimovil-api — sin esto el worker no genera respuestas del agente
       - key: GEMINI_API_KEY
+        sync: false
+      # CRÍTICO: mismas vars R2 que mecanimovil-api. Sin esto, fetch_inbound_meta_media
+      # guarda adjuntos en disco efímero del worker y el chat recibe URLs R2 404
+      # (imágenes eternamente cargando / audios en 0:00).
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET_NAME
+        sync: false
+      - key: R2_ENDPOINT_URL
+        sync: false
+      # Misma clave que la API — firma URLs de adjuntos del chat (proxy /attachment/)
+      - key: MEDIA_SIGNING_SECRET
         sync: false
 
   # ============================================

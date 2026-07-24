@@ -1,8 +1,7 @@
 from rest_framework import serializers
 from .models import Conversation, Message
 from django.contrib.auth import get_user_model
-from mecanimovilapp.storage.utils import get_cpanel_file_url
-
+from mecanimovilapp.apps.chat.media_signing import build_message_attachment_url
 from mecanimovilapp.apps.omnichannel.serializers import ExternalContactMiniSerializer
 from mecanimovilapp.apps.omnichannel.utils import channel_to_api_slug
 
@@ -59,7 +58,8 @@ class MessageSerializer(serializers.ModelSerializer):
         data = super().to_representation(instance)
         request = self.context.get('request')
         if instance.attachment:
-            url = get_cpanel_file_url(instance.attachment, request)
+            # Proxy firmado vía API (evita 404/CORS del bucket R2 en el browser).
+            url = build_message_attachment_url(instance.id, request=request)
             data['attachment'] = url
             data['archivo_adjunto'] = url
         else:

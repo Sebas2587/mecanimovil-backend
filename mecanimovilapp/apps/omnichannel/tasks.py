@@ -5,6 +5,7 @@ from celery import shared_task
 
 from mecanimovilapp.apps.chat.models import Conversation, Message
 from mecanimovilapp.apps.omnichannel.services import MetaGraphClient, OmnichannelService
+from mecanimovilapp.apps.chat.media_signing import build_message_attachment_url
 from mecanimovilapp.apps.omnichannel.services.broadcast import (
     broadcast_to_participants,
     build_chat_payload,
@@ -108,7 +109,9 @@ def fetch_inbound_meta_media(self, message_id: int):
         save_message_attachment(message, content, filename)
         message.refresh_from_db(fields=['attachment'])
 
-        attachment_url = get_cpanel_file_url(message.attachment)
+        # URL proxy firmada (API) para el cliente web/app — no la URL cruda de R2
+        # (CORS del bucket suele faltar y el browser deja imagen/audio colgados).
+        attachment_url = build_message_attachment_url(message.id)
         channel_slug = channel_to_api_slug(connection.channel)
         sender_name = contact.display_name or contact.phone or 'Contacto'
         payload = build_chat_payload(
