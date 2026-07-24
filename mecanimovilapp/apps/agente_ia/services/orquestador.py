@@ -155,6 +155,7 @@ def _construir_prompt_agente(
     mensaje_bienvenida: str,
     contexto_patente: str = '',
     contexto_media: str = '',
+    contexto_operativo_taller: str = '',
 ) -> str:
     datos_json = json.dumps(datos_capturados or {}, ensure_ascii=False)
     tiene_contexto = bool((chunks_texto or '').strip())
@@ -171,6 +172,11 @@ Instrucciones del taller:
 Mensaje de bienvenida sugerido (solo primer contacto sin historial):
 {mensaje_bienvenida or 'Hola, soy el asistente del taller. Cuéntame qué le pasa a tu auto y te oriento.'}
 
+FICHA OPERATIVA DEL TALLER (verdad absoluta, calculada en vivo desde el sistema del taller — no la contradigas, no inventes datos que no estén aquí, y NO ofrezcas nada que esta ficha no respalde):
+---
+{contexto_operativo_taller or 'Sin datos operativos configurados todavía.'}
+---
+
 Contexto automático de la patente (API + registro + historial + salud + catálogo). Fuente de verdad del vehículo; NO repitas marca/modelo/año si ya están:
 ---
 {contexto_patente or 'Sin consulta de patente en este turno.'}
@@ -181,9 +187,9 @@ Análisis del adjunto de ESTE turno (audio/imagen/video; puede estar vacío):
 {contexto_media or 'Sin adjunto analizado en este turno.'}
 ---
 
-Conocimiento del taller (catálogo, historial, documentos) para ESTA consulta:
+Conocimiento adicional del taller (historial de trabajos, documentos, notas) recuperado para ESTA consulta puntual:
 ---
-{chunks_texto if tiene_contexto else 'Sin contexto indexado todavía para esta consulta.'}
+{chunks_texto if tiene_contexto else 'Sin contexto adicional indexado para esta consulta.'}
 ---
 
 Datos ya capturados (JSON; no los repreguntes si ya están):
@@ -199,20 +205,21 @@ REGLAS DE CONVERSACIÓN:
 1. Español chileno, cálido, concreto. Nada de frases robot ("¡Claro! Con gusto te ayudo a cotizar…") ni empujar cotización en cada turno.
 2. Si el cliente saluda o habla en genérico, responde humano y pregunta qué le ocurre al vehículo (síntoma), no saltes a cotizar.
 3. Muchos clientes NO saben qué servicio necesitan: primero asesora (posibles causas, qué revisar, urgencia) y pide 1 dato faltante clave.
-4. UNA sola pregunta de clarificación por turno (ej: cuándo ocurre el ruido, si hay luz en tablero, si pierde potencia, modalidad taller/domicilio).
+4. UNA sola pregunta de clarificación por turno (ej: cuándo ocurre el ruido, si hay luz en tablero, si pierde potencia). Si el taller solo atiende en una modalidad según la FICHA OPERATIVA, no la preguntes: infórmasela directamente.
 5. Usa adjuntos: si hay audio, responde a la transcripción/ruido; si hay foto de tablero/vano/pieza, comenta lo visto y pide confirmación.
 6. Si hay patente identificada, confírmala y avanza al síntoma (no vuelvas a pedir la patente).
 7. Lee el historial: no repitas preguntas ya respondidas.
-8. Usa el catálogo del taller cuando ayude; no inventes precios sin datos.
-9. NO prometas fechas exactas de agenda.
-10. Fuera de automotriz / cliente muy enojado → necesita_humano=true.
-11. listo_para_cotizar=true SOLO si:
+8. La FICHA OPERATIVA manda sobre cualquier otra fuente para: qué servicios existen, marcas/modelos que atienden, modalidad (taller/domicilio/ambas), equipo de mecánicos y horario. Si el cliente pide algo fuera de esa ficha (marca no cubierta, modalidad no ofrecida), dilo con claridad en vez de asumir que sí se puede.
+9. Si el cliente pregunta qué servicios ofrece el taller, responde citando los nombres reales del catálogo de la FICHA OPERATIVA (puedes listar varios, no es "listado largo" prohibido si el cliente lo pidió explícitamente).
+10. NO prometas fechas exactas de agenda.
+11. Fuera de automotriz / cliente muy enojado → necesita_humano=true.
+12. listo_para_cotizar=true SOLO si:
     - hay vehículo (patente o marca+modelo) Y
     - hay problema/servicio suficientemente claro Y
     - el cliente pide cotización/presupuesto/precio O ya confirmó que quiere que le armes el presupuesto.
     Si falta contexto o solo busca consejo → listo_para_cotizar=false y sigue asesorando.
-12. cliente_pide_cotizacion=true únicamente si en este turno (o el historial reciente) el cliente pidió precio/cotización/presupuesto de forma explícita o claramente implícita.
-13. respuesta_cliente: 1-3 frases naturales; puede incluir un mini consejo + 1 pregunta. Evita listados largos.
+13. cliente_pide_cotizacion=true únicamente si en este turno (o el historial reciente) el cliente pidió precio/cotización/presupuesto de forma explícita o claramente implícita.
+14. respuesta_cliente: para asesoría normal, 1-3 frases naturales con un mini consejo + 1 pregunta. Si el cliente pidió explícitamente el listado de servicios, puedes extenderte lo necesario para nombrarlos todos.
 
 Responde SOLO JSON válido:
 {{
@@ -589,6 +596,12 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
     chunks_texto = '\n---\n'.join(c.contenido for c in chunks if c.contenido)
     chunk_ids = [c.id for c in chunks]
 
+    from mecanimovilapp.apps.agente_ia.services.ficha_taller import (
+        construir_ficha_operativa_taller,
+    )
+
+    contexto_operativo_txt = construir_ficha_operativa_taller(taller)
+
     prompt = _construir_prompt_agente(
         instrucciones=config.instrucciones_personalizadas,
         chunks_texto=chunks_texto,
@@ -598,6 +611,7 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         mensaje_bienvenida=config.mensaje_bienvenida,
         contexto_patente=contexto_patente_txt,
         contexto_media=contexto_media_txt,
+        contexto_operativo_taller=contexto_operativo_txt,
     )
 
     decision, error = _llamar_gemini_agente(prompt)
