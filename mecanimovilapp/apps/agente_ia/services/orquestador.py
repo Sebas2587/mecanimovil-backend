@@ -356,6 +356,49 @@ def activar_agente_en_conversacion(
     return sesion
 
 
+_CANALES_TODOS = ('WHATSAPP', 'MESSENGER', 'INSTAGRAM', 'APP')
+
+
+def desactivar_agente_en_todos_los_chats(taller_id: int) -> int:
+    """Apaga el agente en todas las sesiones del taller (master switch OFF)."""
+    return AgenteConversacionSesion.objects.filter(
+        taller_id=taller_id,
+        habilitado_en_chat=True,
+    ).update(
+        habilitado_en_chat=False,
+        pausado_por_taller=True,
+        pausado_hasta=None,
+        estado=AgenteConversacionSesion.ESTADO_PAUSADO,
+    )
+
+
+def desactivar_agente_en_chats_de_canal(taller_id: int, canal: str) -> int:
+    """Apaga el agente en chats del canal indicado (WHATSAPP/MESSENGER/INSTAGRAM/APP)."""
+    from django.db.models import Q
+
+    canal_norm = (canal or '').strip().upper()
+    if canal_norm not in _CANALES_TODOS:
+        return 0
+    qs = AgenteConversacionSesion.objects.filter(
+        taller_id=taller_id,
+        habilitado_en_chat=True,
+    )
+    if canal_norm == 'APP':
+        qs = qs.filter(
+            Q(conversation__source_channel='APP')
+            | Q(conversation__source_channel__isnull=True)
+            | Q(conversation__source_channel='')
+        )
+    else:
+        qs = qs.filter(conversation__source_channel=canal_norm)
+    return qs.update(
+        habilitado_en_chat=False,
+        pausado_por_taller=True,
+        pausado_hasta=None,
+        estado=AgenteConversacionSesion.ESTADO_PAUSADO,
+    )
+
+
 def enviar_respuesta_agente(
     *,
     conversation: Conversation,
@@ -464,10 +507,13 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             return {'skipped': True, 'reason': 'taller_message'}
 
     config = _obtener_o_crear_config(taller.id)
+    # Master switch del taller: si está apagado, no responde en ningún chat.
+    if not config.habilitado:
+        return {'skipped': True, 'reason': 'taller_agente_off'}
+
     canal = canal_conversacion(conversation)
-    # Canal permitido a nivel taller (lista vacía = todos). El opt-in real es por chat.
-    canales = config.canales_habilitados or []
-    if canales and canal not in canales:
+    # Canal permitido a nivel taller (lista vacía = todos).
+    if not config.canal_habilitado(canal):
         return {'skipped': True, 'reason': 'canal_disabled'}
 
     if taller.usuario_id:
@@ -477,7 +523,7 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             return {'skipped': True, 'reason': 'plan_sin_agente_ia'}
 
     sesion = _obtener_o_crear_sesion(conversation, taller.id)
-    # Opt-out por conversación: activo por defecto; el taller debe apagarlo.
+    # Opt-out por conversación: si el taller lo apagó en este chat, no contesta nada.
     if not sesion.habilitado_en_chat:
         return {'skipped': True, 'reason': 'chat_agente_off'}
 

@@ -19,6 +19,8 @@ from mecanimovilapp.apps.agente_ia.serializers import (
 )
 from mecanimovilapp.apps.agente_ia.services.orquestador import (
     activar_agente_en_conversacion,
+    desactivar_agente_en_chats_de_canal,
+    desactivar_agente_en_todos_los_chats,
     pausar_sesion_por_mensaje_taller,
 )
 from mecanimovilapp.apps.agente_ia.services.rag import reindexar_conocimiento_taller
@@ -54,11 +56,29 @@ class AgenteIaViewSet(viewsets.ViewSet):
                 }
             )
 
+        prev_habilitado = bool(config.habilitado)
+        prev_canales = list(config.canales_habilitados or [])
         ser = TallerAgenteConfigSerializer(config, data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
         ser.save()
+        config.refresh_from_db()
+
+        # Master OFF → apaga el agente en todos los chats del taller.
+        chats_apagados = 0
+        if prev_habilitado and not config.habilitado:
+            chats_apagados = desactivar_agente_en_todos_los_chats(taller.id)
+        else:
+            # Canal(es) deshabilitado(s) → apaga solo los chats de esos canales.
+            todos = {'WHATSAPP', 'MESSENGER', 'INSTAGRAM', 'APP'}
+            prev_set = set(prev_canales) if prev_canales else set(todos)
+            new_canales = list(config.canales_habilitados or [])
+            new_set = set(new_canales) if new_canales else set(todos)
+            for canal in prev_set - new_set:
+                chats_apagados += desactivar_agente_en_chats_de_canal(taller.id, canal)
+
         data = TallerAgenteConfigSerializer(config).data
         data['agente_ia_disponible_en_plan'] = agente_ia_incluido_en_plan(request.user)
+        data['chats_desactivados'] = chats_apagados
         return Response(data)
 
     @action(detail=False, methods=['get', 'post'], url_path='documentos')
@@ -114,8 +134,8 @@ class AgenteIaViewSet(viewsets.ViewSet):
             taller=taller,
         ).first()
 
-        # Si aún no hay sesión y el plan incluye Agente IA, créala activa
-        # (opt-out: chats nuevos responden solos hasta que el taller apague).
+        # Si aún no hay sesión y el plan incluye Agente IA, créala.
+        # Activa solo si el master switch del taller está ON (opt-out por chat).
         if not sesion and plan_ok:
             from mecanimovilapp.apps.chat.models import Conversation
             from mecanimovilapp.apps.agente_ia.services.orquestador import (
@@ -127,7 +147,20 @@ class AgenteIaViewSet(viewsets.ViewSet):
                 participants=request.user,
             ).first()
             if conversation:
+                config_taller, _ = TallerAgenteConfig.objects.get_or_create(taller=taller)
                 sesion = _obtener_o_crear_sesion(conversation, taller.id)
+                if not config_taller.habilitado and sesion.habilitado_en_chat:
+                    sesion.habilitado_en_chat = False
+                    sesion.pausado_por_taller = True
+                    sesion.estado = AgenteConversacionSesion.ESTADO_PAUSADO
+                    sesion.save(
+                        update_fields=[
+                            'habilitado_en_chat',
+                            'pausado_por_taller',
+                            'estado',
+                            'actualizado_en',
+                        ]
+                    )
 
         if not sesion:
             return Response({
@@ -176,6 +209,16 @@ class AgenteIaViewSet(viewsets.ViewSet):
                 }
             )
         taller = self._taller(request)
+        if activo:
+            config_taller, _ = TallerAgenteConfig.objects.get_or_create(taller=taller)
+            if not config_taller.habilitado:
+                raise ValidationError(
+                    {
+                        'error': 'Las respuestas automáticas están apagadas a nivel taller. '
+                        'Actívalas en Configuración → Agente IA antes de habilitar un chat.',
+                        'code': 'taller_agente_off',
+                    }
+                )
         sesion = activar_agente_en_conversacion(
             conversation_id=int(conversation_id),
             taller_id=taller.id,
