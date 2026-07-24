@@ -124,7 +124,9 @@ def construir_ficha_operativa_taller(taller: Taller) -> str:
     del taller se refleja de inmediato sin depender de un proceso de
     sincronización aparte.
     """
+    nombre = (taller.nombre or '').strip() or f'Taller #{taller.id}'
     bloques = [
+        f'Nombre comercial del taller: {nombre}',
         _bloque_modalidad(taller),
         _bloque_cobertura_marcas(taller),
         _bloque_especialidades(taller),

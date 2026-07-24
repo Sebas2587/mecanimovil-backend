@@ -108,10 +108,27 @@ class AgenteIaViewSet(viewsets.ViewSet):
                 'agente_ia_disponible_en_plan': plan_ok,
             })
 
+        conversation_id = int(raw_id)
         sesion = AgenteConversacionSesion.objects.filter(
-            conversation_id=int(raw_id),
+            conversation_id=conversation_id,
             taller=taller,
         ).first()
+
+        # Si aún no hay sesión y el plan incluye Agente IA, créala activa
+        # (opt-out: chats nuevos responden solos hasta que el taller apague).
+        if not sesion and plan_ok:
+            from mecanimovilapp.apps.chat.models import Conversation
+            from mecanimovilapp.apps.agente_ia.services.orquestador import (
+                _obtener_o_crear_sesion,
+            )
+
+            conversation = Conversation.objects.filter(
+                pk=conversation_id,
+                participants=request.user,
+            ).first()
+            if conversation:
+                sesion = _obtener_o_crear_sesion(conversation, taller.id)
+
         if not sesion:
             return Response({
                 'activa': False,

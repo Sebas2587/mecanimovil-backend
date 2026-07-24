@@ -147,6 +147,7 @@ def _llamar_gemini_agente(prompt: str) -> tuple[dict[str, Any] | None, str | Non
 
 def _construir_prompt_agente(
     *,
+    nombre_taller: str,
     instrucciones: str,
     chunks_texto: str,
     datos_capturados: dict,
@@ -159,18 +160,25 @@ def _construir_prompt_agente(
 ) -> str:
     datos_json = json.dumps(datos_capturados or {}, ensure_ascii=False)
     tiene_contexto = bool((chunks_texto or '').strip())
-    return f"""Eres el asesor virtual de un taller mecánico en Chile. NO eres un bot de ventas rígido: eres un mecánico que escucha, orienta y recién después cotiza cuando tiene sentido.
+    nombre = (nombre_taller or '').strip() or 'el taller'
+    bienvenida_default = (
+        f'Hola, soy el asistente de {nombre}. Cuéntame qué le pasa a tu auto y te oriento.'
+    )
+    return f"""Eres el asesor virtual de "{nombre}", un taller mecánico en Chile. Habla SIEMPRE en nombre de {nombre} (nunca digas solo "el taller" genérico si conoces el nombre). NO eres un bot de ventas rígido: eres un mecánico que escucha, orienta y recién después cotiza cuando tiene sentido.
 
 Tu prioridad en este orden:
 1) Entender qué le pasa al auto (asesoría experta).
 2) Hacer preguntas cortas para completar el diagnóstico.
 3) Cotizar SOLO cuando el cliente quiera precio/presupuesto Y ya haya contexto suficiente.
 
+Nombre real del taller (úsarlo en saludos y cuando te presentes):
+{nombre}
+
 Instrucciones del taller:
 {instrucciones or 'Sé cordial, profesional y humano. Primero asesora; cotiza cuando el cliente lo pida o cuando el problema ya esté claro.'}
 
-Mensaje de bienvenida sugerido (solo primer contacto sin historial):
-{mensaje_bienvenida or 'Hola, soy el asistente del taller. Cuéntame qué le pasa a tu auto y te oriento.'}
+Mensaje de bienvenida sugerido (solo primer contacto sin historial; si está vacío, usa el default con el nombre real):
+{mensaje_bienvenida or bienvenida_default}
 
 FICHA OPERATIVA DEL TALLER (verdad absoluta, calculada en vivo desde el sistema del taller — no la contradigas, no inventes datos que no estén aquí, y NO ofrezcas nada que esta ficha no respalde):
 ---
@@ -203,7 +211,8 @@ Historial reciente del chat:
 
 REGLAS DE CONVERSACIÓN:
 1. Español chileno, cálido, concreto. Nada de frases robot ("¡Claro! Con gusto te ayudo a cotizar…") ni empujar cotización en cada turno.
-2. Si el cliente saluda o habla en genérico, responde humano y pregunta qué le ocurre al vehículo (síntoma), no saltes a cotizar.
+1b. En el primer saludo o cuando te presentes, usa el nombre real del taller ("{nombre}"). No digas "asistente del taller" sin nombrarlo.
+2. Si el cliente saluda o habla en genérico, responde humano (presentándote por {nombre} si es el primer contacto) y pregunta qué le ocurre al vehículo (síntoma), no saltes a cotizar.
 3. Muchos clientes NO saben qué servicio necesitan: primero asesora (posibles causas, qué revisar, urgencia) y pide 1 dato faltante clave.
 4. UNA sola pregunta de clarificación por turno (ej: cuándo ocurre el ruido, si hay luz en tablero, si pierde potencia). Si el taller solo atiende en una modalidad según la FICHA OPERATIVA, no la preguntes: infórmasela directamente.
 5. Usa adjuntos: si hay audio, responde a la transcripción/ruido; si hay foto de tablero/vano/pieza, comenta lo visto y pide confirmación.
@@ -269,6 +278,9 @@ def _obtener_o_crear_sesion(conversation: Conversation, taller_id: int) -> Agent
         defaults={
             'taller_id': taller_id,
             'estado': AgenteConversacionSesion.ESTADO_CAPTURANDO,
+            # Chats nuevos: agente activo por defecto (opt-out).
+            'habilitado_en_chat': True,
+            'pausado_por_taller': False,
         },
     )
     if not created and sesion.taller_id != taller_id:
@@ -316,7 +328,7 @@ def activar_agente_en_conversacion(
     taller_id: int,
     activo: bool,
 ) -> AgenteConversacionSesion:
-    """Opt-in / opt-out del agente en una sola conversación."""
+    """Activa o desactiva el agente en una sola conversación (opt-out por chat)."""
     conversation = Conversation.objects.get(pk=conversation_id)
     sesion = _obtener_o_crear_sesion(conversation, taller_id)
     sesion.habilitado_en_chat = bool(activo)
@@ -465,7 +477,7 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             return {'skipped': True, 'reason': 'plan_sin_agente_ia'}
 
     sesion = _obtener_o_crear_sesion(conversation, taller.id)
-    # Opt-in estricto por conversación (estilo ManyChat / WhatsApp bots).
+    # Opt-out por conversación: activo por defecto; el taller debe apagarlo.
     if not sesion.habilitado_en_chat:
         return {'skipped': True, 'reason': 'chat_agente_off'}
 
@@ -609,6 +621,7 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
     contexto_operativo_txt = construir_ficha_operativa_taller(taller)
 
     prompt = _construir_prompt_agente(
+        nombre_taller=(taller.nombre or '').strip(),
         instrucciones=config.instrucciones_personalizadas,
         chunks_texto=chunks_texto,
         datos_capturados=sesion.datos_capturados,

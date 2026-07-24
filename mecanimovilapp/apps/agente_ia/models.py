@@ -211,10 +211,14 @@ class AgenteConversacionSesion(models.Model):
         on_delete=models.SET_NULL,
         related_name='agente_sesiones_negociacion',
     )
-    # Opt-in por conversación (ManyChat-style). No hereda de otros chats.
+    # Opt-out por conversación: en chats nuevos el agente arranca activo.
+    # El taller lo apaga solo si quiere intervenir a mano en ese chat.
     habilitado_en_chat = models.BooleanField(
-        default=False,
-        help_text='Si True, el agente responde en ESTA conversación. Independiente de otros chats.',
+        default=True,
+        help_text=(
+            'Si True, el agente responde en ESTA conversación. '
+            'Por defecto activo en chats nuevos; el taller debe desactivarlo para intervenir.'
+        ),
     )
     pausado_por_taller = models.BooleanField(default=False)
     pausado_hasta = models.DateTimeField(
