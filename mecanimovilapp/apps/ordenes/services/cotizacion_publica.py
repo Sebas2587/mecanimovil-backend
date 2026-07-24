@@ -163,6 +163,20 @@ def enviar_cotizacion_libre(cotizacion: CotizacionCanal) -> CotizacionCanal:
 
 
 @transaction.atomic
+def _telefono_desde_cotizacion(cotizacion: CotizacionCanal) -> str:
+    """Teléfono de cotización o, si falta, del contacto WhatsApp de la conversación."""
+    tel = (cotizacion.cliente_telefono or '').strip()
+    if tel:
+        return tel[:20]
+    conv = getattr(cotizacion, 'conversation', None)
+    contact = getattr(conv, 'external_contact', None) if conv else None
+    if contact is not None and hasattr(contact, 'telefono_efectivo'):
+        return (contact.telefono_efectivo() or '')[:20]
+    if contact is not None:
+        return ((contact.phone or '') or '')[:20]
+    return ''
+
+
 def aceptar_cotizacion_publica(cotizacion: CotizacionCanal) -> tuple[CotizacionCanal, CitaAgendaPersonal]:
     if cotizacion.estado != 'enviada':
         raise ValueError('Esta cotización ya fue respondida.')
@@ -170,14 +184,23 @@ def aceptar_cotizacion_publica(cotizacion: CotizacionCanal) -> tuple[CotizacionC
     ahora = timezone.now()
     cotizacion.estado = 'aceptada'
     cotizacion.aceptada_en = ahora
-    cotizacion.save(update_fields=['estado', 'aceptada_en', 'actualizado_en'])
+
+    # Rellena teléfono/VIN en la cotización si el borrador los dejó vacíos.
+    tel_efectivo = _telefono_desde_cotizacion(cotizacion)
+    update_cot = ['estado', 'aceptada_en', 'actualizado_en']
+    if tel_efectivo and not (cotizacion.cliente_telefono or '').strip():
+        cotizacion.cliente_telefono = tel_efectivo
+        update_cot.append('cliente_telefono')
+    cotizacion.save(update_fields=update_cot)
 
     duracion = cotizacion.duracion_minutos_estimada or 60
     tipo_servicio = 'domicilio' if cotizacion.modalidad == 'domicilio' else 'taller'
+    direccion = (cotizacion.direccion_servicio or '').strip()[:500]
 
     cita = CitaAgendaPersonal(
         taller=cotizacion.taller,
         cotizacion_canal_origen=cotizacion,
+        conversation_origen=cotizacion.conversation,
         fecha_servicio=ahora.date(),
         hora_servicio=time(8, 0),
         duracion_minutos=duracion,
@@ -196,12 +219,12 @@ def aceptar_cotizacion_publica(cotizacion: CotizacionCanal) -> tuple[CotizacionC
     det = CitaAgendaPersonalDetalle(
         cita=cita,
         cliente_nombre=cotizacion.cliente_nombre or 'Cliente',
-        cliente_telefono=cotizacion.cliente_telefono or '',
-        direccion=(cotizacion.direccion_servicio or '').strip()[:500],
+        cliente_telefono=tel_efectivo or (cotizacion.cliente_telefono or ''),
+        direccion=direccion,
         vehiculo_marca=cotizacion.vehiculo_marca,
         vehiculo_modelo=cotizacion.vehiculo_modelo,
         vehiculo_patente=cotizacion.vehiculo_patente,
-        vehiculo_vin=cotizacion.vehiculo_vin,
+        vehiculo_vin=(cotizacion.vehiculo_vin or '').strip().upper()[:30],
         vehiculo_anio=cotizacion.vehiculo_anio,
         vehiculo_cilindraje=cilindraje_efectivo(
             cotizacion.vehiculo_cilindraje,
@@ -216,9 +239,10 @@ def aceptar_cotizacion_publica(cotizacion: CotizacionCanal) -> tuple[CotizacionC
     det.save()
 
     logger.info(
-        'Cotización pública %s aceptada → cita personal %s (horario por confirmar)',
+        'Cotización pública %s aceptada → cita personal %s (horario por confirmar, tipo=%s)',
         cotizacion.id,
         cita.id,
+        tipo_servicio,
     )
     return cotizacion, cita
 

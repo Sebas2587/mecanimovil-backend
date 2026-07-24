@@ -174,6 +174,7 @@ def enriquecer_contexto_patente(
                 'anio': str(veh.year or ''),
                 'cilindraje': veh.cilindraje or '',
                 'tipo_motor': veh.tipo_motor or '',
+                'vin': (veh.vin or '').strip().upper(),
                 'kilometraje': veh.kilometraje,
             }
             resultado['historial'] = _resumen_historial(veh.id)
@@ -204,9 +205,10 @@ def enriquecer_contexto_patente(
         try:
             from mecanimovilapp.apps.vehiculos.services.guest_patente_lookup import fetch_patente_normalized
 
+            # Agente del taller: incluir VIN (campo privado) para llenar la cita.
             payload, status_code, error_code = fetch_patente_normalized(
                 patente_norm,
-                include_private_fields=False,
+                include_private_fields=True,
             )
             if payload and (payload.get('marca_nombre') or payload.get('modelo_nombre')):
                 resultado['vehiculo_fuente'] = 'getapi'
@@ -217,6 +219,7 @@ def enriquecer_contexto_patente(
                     'anio': str(payload.get('year') or ''),
                     'cilindraje': payload.get('cilindraje') or '',
                     'tipo_motor': payload.get('tipo_motor') or '',
+                    'vin': (payload.get('vin') or '').strip().upper(),
                     'color': payload.get('color') or '',
                     'marca_id': payload.get('marca_id'),
                     'modelo_id': payload.get('modelo_id'),
@@ -252,13 +255,23 @@ def _finalizar_contexto(resultado: dict[str, Any], taller_id: int) -> dict[str, 
         bloques.append(
             f"Vehículo identificado ({fuente_txt}): {v.get('marca', '')} {v.get('modelo', '')} "
             f"{v.get('anio', '')} — cilindraje {v.get('cilindraje') or 'n/d'} "
-            f"— motor {v.get('tipo_motor') or 'n/d'}".strip()
+            f"— motor {v.get('tipo_motor') or 'n/d'} "
+            f"— VIN {v.get('vin') or 'n/d'}".strip()
         )
     else:
         bloques.append(
             'NO se pudo identificar marca/modelo real para esta patente (ni en registro propio ni en API '
             'externa). NO inventes marca/modelo: dile al cliente que no pudiste verificar el vehículo y '
             'pídele que confirme marca y modelo directamente.'
+        )
+
+    km = v.get('kilometraje')
+    if km not in (None, '', 0, '0'):
+        bloques.append(
+            f'Kilometraje en registro: {km} km — SOLO referencia aproximada / último dato conocido. '
+            'El vehículo pudo seguir circulando después de ese registro. '
+            'NO lo presentes como km actual exacto; pregunta al cliente el kilometraje actual si lo necesitas '
+            'para mantención o diagnóstico.'
         )
 
     if resultado['registrado_en_sistema']:

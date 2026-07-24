@@ -135,3 +135,22 @@ class ExternalContact(models.Model):
 
     def __str__(self):
         return self.display_name or self.external_id
+
+    def telefono_efectivo(self) -> str:
+        """Teléfono usable para citas/cotizaciones.
+
+        En WhatsApp el número suele vivir en `phone` o, si falta, en `external_id`
+        (a veces con sufijo @s.whatsapp.net).
+        """
+        for raw in ((self.phone or '').strip(), (self.external_id or '').strip()):
+            if not raw:
+                continue
+            if '@' in raw:
+                raw = raw.split('@', 1)[0]
+            digits = ''.join(c for c in raw if c.isdigit())
+            if len(digits) >= 8:
+                # Prefijo + si el original lo traía; cabecera de cita tolera max 20.
+                if raw.startswith('+'):
+                    return ('+' + digits)[:20]
+                return digits[:20]
+        return ''

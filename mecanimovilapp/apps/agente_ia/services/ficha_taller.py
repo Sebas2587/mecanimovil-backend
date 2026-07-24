@@ -88,25 +88,64 @@ def _bloque_modalidad(taller: Taller) -> str:
 
 
 def _bloque_cobertura_marcas(taller: Taller) -> str:
+    """Estrategia de captura de leads: NUNCA espantar por marca fuera de especialidad."""
     if taller.tipo_cobertura_marca == 'multimarca':
-        return 'Cobertura de marcas: MULTIMARCA — atiende vehículos de cualquier marca.'
+        return (
+            'Cobertura de marcas: MULTIMARCA — atienden cualquier marca. '
+            'Trata todas las marcas con la misma confianza comercial.'
+        )
     marcas = list(taller.marcas_atendidas.values_list('nombre', flat=True))
     if marcas:
         return (
-            f'Cobertura de marcas: ESPECIALISTA en {", ".join(marcas)}. '
-            'No ofrezcas el servicio para otras marcas sin confirmar antes con el taller.'
+            f'Cobertura de marcas: ESPECIALISTA destacado en {", ".join(marcas)}. '
+            'Si el vehículo ES de esas marcas, resalta con naturalidad la especialidad '
+            '(experiencia, catálogo, confianza). '
+            'Si el vehículo NO es de esas marcas: NO digas que no lo atienden ni cierres el lead. '
+            'Acepta el requerimiento con normalidad ("igual podemos revisar tu caso"), '
+            'sigue el flujo de patente → diagnóstico → cotización. '
+            'El humano del taller decide al revisar/enviar la cotización.'
         )
     return (
-        'Cobertura de marcas: especialista, pero el taller aún no configuró marcas específicas. '
-        'No asumas que atienden cualquier marca.'
+        'Cobertura de marcas: el taller aún no configuró marcas específicas. '
+        'Atiende el lead con normalidad sin rechazar por marca.'
     )
+
+
+def _especialidades_desde_catalogo(taller: Taller) -> list[str]:
+    """Categorías de servicio presentes en ofertas publicadas (fallback/refuerzo)."""
+    from mecanimovilapp.apps.servicios.models import OfertaServicio
+
+    nombres = (
+        OfertaServicio.objects.filter(taller=taller, disponible=True)
+        .values_list('servicio__categorias__nombre', flat=True)
+        .distinct()
+    )
+    return sorted({n for n in nombres if n})
 
 
 def _bloque_especialidades(taller: Taller) -> str | None:
     especialidades = list(taller.especialidades.values_list('nombre', flat=True))
-    if not especialidades:
+    desde_catalogo = _especialidades_desde_catalogo(taller)
+    # Unión preservando orden: primero las configuradas en el perfil del taller.
+    vistos: set[str] = set()
+    unidas: list[str] = []
+    for n in especialidades + desde_catalogo:
+        key = n.strip().lower()
+        if key and key not in vistos:
+            vistos.add(key)
+            unidas.append(n.strip())
+    if not unidas:
         return None
-    return f'Especialidades del taller: {", ".join(especialidades)}.'
+    return (
+        f'Especialidades / categorías de servicio del taller: {", ".join(unidas)}. '
+        'Estas categorías definen QUÉ TIPO de trabajo puede ofrecer el taller '
+        '(ej. si solo hay Diagnóstico mecánico, NO ofrezcas Diagnóstico electrónico). '
+        'Antes de concluir que algo está fuera de especialidad: (1) pregunta y junta '
+        'síntomas concretos del auto (sin especular), (2) orienta con lo que sí cubren, '
+        '(3) si el caso queda fuera, explícalo con sutileza y no armes cotización de ese servicio. '
+        'Esto es independiente de la cobertura de MARCAS: una marca fuera de lista se cotiza; '
+        'una categoría de servicio fuera de especialidad no se ofrece.'
+    )
 
 
 def _bloque_equipo(taller: Taller) -> str:
@@ -117,18 +156,34 @@ def _bloque_equipo(taller: Taller) -> str:
     if not miembros:
         return (
             'Equipo: el taller no tiene mecánicos de equipo cargados en el sistema; '
-            'la atención depende directamente del taller.'
+            'la atención depende directamente del taller. '
+            'Para agenda usa el horario general del taller.'
         )
-    lineas = ['Equipo de mecánicos activos (usa esto para saber si hay atención a domicilio real):']
+    lineas = [
+        'Equipo de mecánicos activos '
+        '(especialidades por técnico + modalidad; útil para asignar y para domicilio real):'
+    ]
     hay_domicilio = False
     for m in miembros:
         especialidades_m = ', '.join(m.especialidades.values_list('nombre', flat=True)) or 'general'
         modalidad_m = m.get_modalidad_tecnico_display()
         if m.modalidad_tecnico in ('a_domicilio', 'ambas'):
             hay_domicilio = True
-        lineas.append(f'- {m.nombre}: especialidad {especialidades_m}; atiende {modalidad_m}.')
+        lineas.append(
+            f'- {m.nombre}: especialidades [{especialidades_m}]; modalidad {modalidad_m}.'
+        )
     if hay_domicilio:
-        lineas.append('SÍ hay al menos un mecánico que atiende a domicilio: no derives a domicilio como "no disponible".')
+        lineas.append(
+            'SÍ hay al menos un mecánico que atiende a domicilio: '
+            'si el cliente pide domicilio y la FICHA lo permite, captura la dirección '
+            'y deja modalidad=domicilio.'
+        )
+    else:
+        lineas.append(
+            'Ningún mecánico del equipo tiene modalidad a domicilio; '
+            'si el cliente pide domicilio y la modalidad del taller no lo cubre, '
+            'explica con amabilidad que la atención es en taller.'
+        )
     return '\n'.join(lineas)
 
 
@@ -201,6 +256,7 @@ def _bloque_catalogo(taller: Taller) -> str:
     ofertas = list(
         OfertaServicio.objects.filter(taller=taller, disponible=True)
         .select_related('servicio', 'marca_vehiculo_seleccionada', 'modelo_vehiculo_seleccionado')
+        .prefetch_related('servicio__categorias')
         .order_by('servicio__nombre')[:40]
     )
     if not ofertas:
@@ -222,6 +278,9 @@ def _bloque_catalogo(taller: Taller) -> str:
         else:
             cobertura_txt = 'todas las marcas/modelos'
 
+        cats = list(oferta.servicio.categorias.values_list('nombre', flat=True))
+        cats_txt = f'categoría {", ".join(cats)}' if cats else 'sin categoría'
+
         motor_txt = _etiqueta_tipo_motor(oferta.tipo_motor)
         precio_con = int(oferta.precio_con_repuestos or 0)
         precio_sin = int(oferta.precio_sin_repuestos or 0)
@@ -240,7 +299,8 @@ def _bloque_catalogo(taller: Taller) -> str:
         precios_txt = ' · '.join(precios_partes) if precios_partes else 'precio no configurado'
 
         lineas.append(
-            f'- {oferta.servicio.nombre} · {cobertura_txt} · motor {motor_txt} · {precios_txt}'
+            f'- {oferta.servicio.nombre} · {cats_txt} · {cobertura_txt} · '
+            f'motor {motor_txt} · {precios_txt}'
         )
     return '\n'.join(lineas)
 

@@ -3,7 +3,39 @@ from django.contrib.contenttypes.models import ContentType
 
 from mecanimovilapp.apps.chat.models import Conversation, Message
 from mecanimovilapp.apps.omnichannel.utils import channel_to_api_slug
-from mecanimovilapp.apps.ordenes.models import ChatSolicitud, OfertaProveedor
+from mecanimovilapp.apps.ordenes.models import ChatSolicitud, CotizacionCanal, OfertaProveedor
+
+
+def _cotizaciones_por_conversacion(conversation_ids: list[int]) -> dict[int, CotizacionCanal]:
+    """Última cotización relevante por conversación (enviada/aceptada/borrador/rechazada)."""
+    if not conversation_ids:
+        return {}
+    qs = (
+        CotizacionCanal.objects.filter(
+            conversation_id__in=conversation_ids,
+            estado__in=('borrador', 'enviada', 'aceptada', 'rechazada'),
+        )
+        .order_by('conversation_id', '-actualizado_en', '-id')
+    )
+    out: dict[int, CotizacionCanal] = {}
+    for cot in qs:
+        cid = cot.conversation_id
+        if cid not in out:
+            out[cid] = cot
+    return out
+
+
+def _vehiculo_desde_cotizacion(cot: CotizacionCanal | None) -> dict | None:
+    if cot is None:
+        return None
+    if not (cot.vehiculo_marca or cot.vehiculo_modelo or cot.vehiculo_patente):
+        return None
+    return {
+        'marca': cot.vehiculo_marca or None,
+        'modelo': cot.vehiculo_modelo or None,
+        'year': cot.vehiculo_anio,
+        'patente': cot.vehiculo_patente or None,
+    }
 
 
 def build_legacy_provider_chats(user, request=None):
@@ -77,16 +109,23 @@ def build_legacy_provider_chats(user, request=None):
             },
             'mensajes_no_leidos': oferta.mensajes_no_leidos,
             'estado_oferta': oferta.estado,
+            'cotizacion_estado': None,
+            'cotizacion_id': None,
+            'cotizacion_servicio': None,
+            'cliente_sin_responder': not ultimo.es_proveedor or oferta.mensajes_no_leidos > 0,
             'sort_at': ultimo.fecha_envio,
         })
     return chats_list
 
 
 def build_omnichannel_chats(user):
-    conversations = Conversation.objects.filter(
-        participants=user,
-        source_channel__in=['WHATSAPP', 'MESSENGER', 'INSTAGRAM'],
-    ).select_related('external_contact').prefetch_related('messages').order_by('-updated_at')
+    conversations = list(
+        Conversation.objects.filter(
+            participants=user,
+            source_channel__in=['WHATSAPP', 'MESSENGER', 'INSTAGRAM'],
+        ).select_related('external_contact').prefetch_related('messages').order_by('-updated_at')
+    )
+    cot_map = _cotizaciones_por_conversacion([c.id for c in conversations])
 
     items = []
     for conv in conversations:
@@ -101,6 +140,7 @@ def build_omnichannel_chats(user):
             if model and 'solicitud' in model.__name__.lower():
                 solicitud_id = conv.object_id
 
+        cot = cot_map.get(conv.id)
         items.append({
             'kind': 'omnichannel',
             'channel': channel_to_api_slug(conv.source_channel),
@@ -113,7 +153,7 @@ def build_omnichannel_chats(user):
                 'foto': contact.profile_picture_url if contact else None,
                 'telefono': contact.phone if contact else None,
             },
-            'vehiculo': None,
+            'vehiculo': _vehiculo_desde_cotizacion(cot),
             'ultimo_mensaje': {
                 'id': str(last_msg.id),
                 'mensaje': last_msg.content or '',
@@ -123,6 +163,12 @@ def build_omnichannel_chats(user):
             },
             'mensajes_no_leidos': unread,
             'estado_oferta': None,
+            'cotizacion_estado': cot.estado if cot else None,
+            'cotizacion_id': cot.id if cot else None,
+            'cotizacion_servicio': (cot.servicio_nombre or '') if cot else None,
+            'cliente_sin_responder': (
+                last_msg.direction == 'inbound' or unread > 0
+            ),
             'sort_at': last_msg.timestamp,
         })
     return items

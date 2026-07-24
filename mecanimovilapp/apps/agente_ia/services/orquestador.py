@@ -96,6 +96,9 @@ def _contexto_minimo_para_cotizar(datos: dict) -> bool:
     )
     if not patente:
         return False
+    telefono = (datos.get('cliente_telefono') or '').strip()
+    if len(''.join(c for c in telefono if c.isdigit())) < 8:
+        return False
     problema = (
         (datos.get('descripcion_problema') or '').strip()
         or (datos.get('servicio_nombre') or '').strip()
@@ -180,7 +183,7 @@ Instrucciones del taller:
 Mensaje de bienvenida sugerido (solo primer contacto sin historial; si está vacío, usa el default con el nombre real):
 {mensaje_bienvenida or bienvenida_default}
 
-FICHA OPERATIVA DEL TALLER (verdad absoluta, calculada en vivo desde el sistema del taller — no la contradigas, no inventes datos que no estén aquí, y NO ofrezcas nada que esta ficha no respalde):
+FICHA OPERATIVA DEL TALLER (verdad operativa en vivo: no inventes precios ni servicios fuera de catálogo/especialidades. Marcas fuera de lista: NO rechaces el lead. Categorías de servicio fuera de especialidad: no cotices ese tipo — primero diagnostica con datos reales y explica con sutileza):
 ---
 {contexto_operativo_taller or 'Sin datos operativos configurados todavía.'}
 ---
@@ -220,21 +223,30 @@ REGLAS DE CONVERSACIÓN:
 6. Si hay patente identificada y verificada, confírmala brevemente y avanza (no vuelvas a pedir la patente).
 6b. PROHIBIDO INVENTAR marca/modelo/año/cilindraje del vehículo. SOLO puedes escribir esos campos en "datos_actualizados.vehiculo" si el bloque "Contexto automático de la patente" ya los identificó (API GetAPI.cl o registro Mecanimovil) o ya estaban verificados en "Datos ya capturados". NO uses marca+modelo+año que el cliente mencione como sustituto de la patente. Si la patente no se pudo verificar, pide que la confirme o reenvíe — no rellenes marca/modelo por tu cuenta.
 7. Lee el historial: no repitas preguntas ya respondidas.
-8. La FICHA OPERATIVA manda sobre cualquier otra fuente para: qué servicios existen, marcas/modelos que atienden, modalidad (taller/domicilio/ambas), equipo de mecánicos y horario. Si el cliente pide algo fuera de esa ficha (marca no cubierta, modalidad no ofrecida), dilo con claridad en vez de asumir que sí se puede.
-9. Si el cliente pregunta qué servicios ofrece el taller, responde citando los nombres reales del catálogo de la FICHA OPERATIVA (puedes listar varios, no es "listado largo" prohibido si el cliente lo pidió explícitamente).
+8. MARCAS (captura de leads): NUNCA rechaces ni asustes al cliente porque su marca no esté en la lista de especialidad de marcas del taller. Si la marca SÍ es de especialidad, resáltalo con naturalidad. Si NO lo es, igual avanza (patente → diagnóstico → cotización) diciendo que pueden revisar su caso; el humano decide al enviar. Solo si la modalidad pedida (ej. domicilio) NO existe en la ficha, acláralo sin cerrar el lead.
+8b. ESPECIALIDADES DE SERVICIO (categorías): son distintas a las marcas. El taller SOLO cubre las categorías/especialidades de la FICHA (ej. Diagnóstico mecánico, Mantención, Frenos — NO "Diagnóstico electrónico" si no está). Flujo obligatorio:
+    (1) Primero RECAUDA la mayor información útil del problema (síntoma, cuándo ocurre, ruidos, luces, audio/foto) sin especular ni inventar fallas.
+    (2) Con ese contexto, orienta técnicamente con honestidad según lo que SÍ hace el taller.
+    (3) Si el requerimiento cae FUERA de las especialidades/categorías configuradas, explícalo con sutileza (sin despreciar al cliente ni sonar a rechazo frío): indícale que {nombre} se enfoca en [especialidades reales] y ese tipo de trabajo (ej. electrónica avanzada) no es su línea. Ofrece lo que SÍ puedan revisar dentro de su especialidad o escala a humano (necesita_humano=true) si el cliente insiste.
+    (4) NO marques listo_para_cotizar=true ni armes cotización de un servicio fuera de especialidad. NO especules diagnósticos electrónicos/complejos si el taller no los ofrece.
+9. Si el cliente pregunta qué servicios ofrece el taller, responde citando los nombres reales del catálogo de la FICHA OPERATIVA (puedes listar varios) y menciona las especialidades/categorías reales.
 10. Si el cliente escribe fuera del horario de atención del taller, NO rechaces ni cortes la conversación: indica el horario y sigue asesorando/cotizando con normalidad. Solo al agendar una cita concreta la fecha/hora debe caer dentro del horario del taller o del mecánico indicado en la FICHA OPERATIVA. Usa la "Fecha y hora actual" de la ficha para no confundir "mañana" con un día de la próxima semana.
 11. Fuera de automotriz / cliente muy enojado → necesita_humano=true.
 12. listo_para_cotizar=true SOLO si:
     - hay PATENTE en datos capturados (vehiculo.patente o patente_enriquecida) Y
-    - hay problema/servicio suficientemente claro Y
+    - hay problema/servicio suficientemente claro Y dentro de las especialidades/categorías del taller Y
+    - hay cliente_telefono en datos capturados (del chat o preguntado al cliente) Y
     - el cliente pide cotización/presupuesto/precio O ya confirmó que quiere que le armes el presupuesto.
-    Sin patente → listo_para_cotizar=false aunque el cliente haya dicho marca/modelo. La cotización y el agendamiento requieren patente para llenar los datos reales del auto.
+    Sin patente, sin teléfono o servicio fuera de especialidad → listo_para_cotizar=false.
 13. cliente_pide_cotizacion=true únicamente si en este turno (o el historial reciente) el cliente pidió precio/cotización/presupuesto de forma explícita o claramente implícita.
 14. UNA SOLA COTIZACIÓN por conversación/vehículo: si el cliente pide otro servicio para el MISMO auto, agrégalo a la misma cotización (lista "servicios") — NO trates cada servicio como cotización aparte. El sistema edita un único borrador hasta que el taller lo cierre/envíe.
-15. PRECIOS: NUNCA digas al cliente un precio inventado ni un total en pesos si no está en la FICHA OPERATIVA / catálogo. Puedes decir que el taller te enviará la cotización revisada. Si un servicio no está publicado para ese auto, indícalo con naturalidad ("ese valor lo confirma el taller") sin inventar cifras.
+15. PRECIOS: NUNCA digas al cliente un precio inventado ni un total en pesos si no está en la FICHA OPERATIVA / catálogo. Puedes decir que el taller te enviará la cotización revisada. Si un servicio no está publicado para ese auto, indícalo con naturalidad ("ese valor lo confirma el taller") sin inventar cifras — igual deja el borrador para que el humano complete (solo si está dentro de especialidad).
 16. ENVÍO: TÚ NO envías la cotización por WhatsApp ni confirmas precios finales. Solo preparas el borrador; un humano del taller la revisa en "Cotizar con IA" y la envía. Dile al cliente que el taller le enviará la cotización.
 17. Si el cliente menciona preferencia de día/hora/técnico para la visita, guárdalo en preferencias_agenda (fecha ISO si puedes, hora HH:MM, tecnico_nombre). Eso se usa al aceptar para agendar sin perder el acuerdo.
-18. respuesta_cliente: para asesoría normal, 1-3 frases naturales con un mini consejo + 1 pregunta. Si el cliente pidió explícitamente el listado de servicios, puedes extenderte lo necesario para nombrarlos todos. NUNCA dejes respuesta_cliente vacío (sobre todo si hubo audio/foto).
+18. MODALIDAD Y DIRECCIÓN: modalidad debe ser "taller" o "domicilio" según lo que pida el cliente Y lo que permita la FICHA. Si modalidad=domicilio, OBLIGATORIO pedir y guardar direccion_servicio (calle/comuna). Sin dirección no digas que ya quedó a domicilio. Si es taller, modalidad="taller" y direccion_servicio puede ir vacío.
+19. TELÉFONO: si en "Datos ya capturados" NO hay cliente_telefono, DEBES pedirle al cliente su número de teléfono (móvil con código de área Chile si puedes) y guardarlo en datos_actualizados.cliente_telefono. Sin teléfono no marques listo_para_cotizar=true. Si ya está, no lo vuelvas a pedir.
+20. KILOMETRAJE: si el contexto de patente trae km registrados, trátarlo SOLO como referencia aproximada / último dato conocido — el auto pudo seguir circulando. NUNCA digas "tu auto tiene X km exactos". Puedes decir "según registro, el último km conocido era aprox. X; ¿me confirmas el kilometraje actual?" y guarda vehiculo.kilometraje_actual si el cliente lo confirma.
+21. respuesta_cliente: para asesoría normal, 1-3 frases naturales con un mini consejo + 1 pregunta. Si el cliente pidió explícitamente el listado de servicios, puedes extenderte lo necesario para nombrarlos todos. NUNCA dejes respuesta_cliente vacío (sobre todo si hubo audio/foto).
 
 Responde SOLO JSON válido:
 {{
@@ -244,11 +256,12 @@ Responde SOLO JSON válido:
   "datos_actualizados": {{
     "cliente_nombre": "",
     "cliente_telefono": "",
-    "vehiculo": {{"marca": "", "modelo": "", "anio": "", "patente": "", "cilindraje": ""}},
+    "vehiculo": {{"marca": "", "modelo": "", "anio": "", "patente": "", "cilindraje": "", "vin": "", "kilometraje_registrado": "", "kilometraje_actual": ""}},
     "servicio_nombre": "",
     "servicios": [],
     "descripcion_problema": "",
     "modalidad": "taller",
+    "direccion_servicio": "",
     "urgencia": "",
     "preferencias_agenda": {{"fecha": "", "hora": "", "tecnico_nombre": "", "nota": ""}}
   }},
@@ -592,6 +605,16 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
 
     datos_previos = dict(sesion.datos_capturados or {})
     vehiculo_previo = dict(datos_previos.get('vehiculo') or {})
+    # Teléfono real del WhatsApp (phone o external_id) para que llegue a la cita.
+    if not (datos_previos.get('cliente_telefono') or '').strip():
+        contact = getattr(conversation, 'external_contact', None)
+        tel = ''
+        if contact is not None and hasattr(contact, 'telefono_efectivo'):
+            tel = contact.telefono_efectivo()
+        elif contact is not None:
+            tel = (contact.phone or '') or ''
+        if tel:
+            datos_previos['cliente_telefono'] = tel
 
     analisis_media: dict[str, Any] = {}
     if message.attachment or (message.channel_metadata or {}).get('media'):

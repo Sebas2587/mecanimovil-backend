@@ -206,14 +206,19 @@ def send_expo_push_notification(self, user_id, title, body, data=None):
                     f"ℹ️ [push] Usuario {user_id} usando token PushToken fallback"
                 )
 
+        data = _normalize_expo_push_data(data)
+
         if not token:
+            # Sin Expo/native: igual intentar Web Push (navegador).
             logger.warning(
-                f"⚠️ [push] Usuario {user_id} sin token push registrado "
-                f"(ni expo_push_token ni PushToken activo)"
+                f"⚠️ [push] Usuario {user_id} sin token Expo; intentando solo web push"
             )
+            try:
+                _send_web_push_to_user(user, title, body, data)
+            except Exception as web_exc:
+                logger.error(f"❌ Error en web push para usuario {user_id}: {web_exc}")
             return
 
-        data = _normalize_expo_push_data(data)
         notif_type = data.get('type', 'generic')
         channel_id = 'default'
         if notif_type in ('health_alert', 'global_health_alert', 'salud_actualizada'):

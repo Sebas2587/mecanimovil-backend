@@ -23,10 +23,11 @@ def notificar_cotizacion_enviada_agente(
     if not usuario:
         return
 
-    titulo = 'Cotización enviada por Agente IA'
+    titulo = 'Cotización enviada al cliente'
     mensaje = (
-        f'Se envió al cliente la cotización de "{cotizacion.servicio_nombre or "servicio"}" '
-        f'por {int(cotizacion.total_clp or 0):,} CLP. Esperando aceptación.'.replace(',', '.')
+        f'Se envió la cotización de "{cotizacion.servicio_nombre or "servicio"}" '
+        f'(${int(cotizacion.total_clp or 0):,} CLP). El cliente puede aceptar o rechazar '
+        f'en el enlace de la cotización.'.replace(',', '.')
     )
     data = {
         'type': 'agente_ia_cotizacion_enviada',

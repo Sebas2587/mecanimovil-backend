@@ -96,9 +96,20 @@ def _obtener_slots_dia(
         modalidad=modalidad_tecnico,
         requiere_especialidad=False,
     )
-    if not data.get('proveedor_disponible'):
-        return []
     slots = data.get('slots_disponibles') or []
+    # Fallback: si el filtro por modalidad dejó sin cupos, usa horario global del
+    # taller / unión de mecánicos sin filtrar modalidad (evita "horario pendiente"
+    # eterno cuando el equipo no tiene modalidad alineada pero el taller sí atiende).
+    if not slots:
+        data = disponibilidad_con_duracion(
+            taller=taller,
+            fecha=fecha,
+            modalidad=None,
+            requiere_especialidad=False,
+        )
+        slots = data.get('slots_disponibles') or []
+    if not data.get('proveedor_disponible') and not slots:
+        return []
     return [
         {
             'fecha': fecha_iso,
@@ -333,6 +344,50 @@ def _interpretar_slot_cliente(texto_cliente: str, slots_ctx: dict[str, Any]) -> 
     return decision
 
 
+def _enriquecer_detalle_cita_desde_origen(cita: CitaAgendaPersonal) -> None:
+    """Rellena teléfono/VIN/cilindraje/dirección vacíos desde la cotización u origen."""
+    det = getattr(cita, 'detalle', None)
+    if det is None:
+        return
+    cot = getattr(cita, 'cotizacion_canal_origen', None)
+    update_fields: list[str] = []
+
+    if not (det.cliente_telefono or '').strip():
+        tel = ''
+        if cot and (cot.cliente_telefono or '').strip():
+            tel = cot.cliente_telefono.strip()
+        else:
+            conv = getattr(cita, 'conversation_origen', None) or (
+                getattr(cot, 'conversation', None) if cot else None
+            )
+            contact = getattr(conv, 'external_contact', None) if conv else None
+            if contact is not None and hasattr(contact, 'telefono_efectivo'):
+                tel = contact.telefono_efectivo()
+            elif contact is not None:
+                tel = (contact.phone or '') or ''
+        if tel:
+            det.cliente_telefono = tel[:20]
+            update_fields.append('cliente_telefono')
+
+    if cot:
+        if not (det.vehiculo_vin or '').strip() and (cot.vehiculo_vin or '').strip():
+            det.vehiculo_vin = cot.vehiculo_vin.strip().upper()[:30]
+            update_fields.append('vehiculo_vin')
+        if not (det.vehiculo_cilindraje or '').strip() and (cot.vehiculo_cilindraje or '').strip():
+            det.vehiculo_cilindraje = (cot.vehiculo_cilindraje or '')[:30]
+            update_fields.append('vehiculo_cilindraje')
+        if (
+            cita.tipo_servicio == 'domicilio'
+            and not (det.direccion or '').strip()
+            and (cot.direccion_servicio or '').strip()
+        ):
+            det.direccion = cot.direccion_servicio.strip()[:500]
+            update_fields.append('direccion')
+
+    if update_fields:
+        det.save(update_fields=update_fields)
+
+
 def _confirmar_slot(
     *,
     cita: CitaAgendaPersonal,
@@ -342,19 +397,54 @@ def _confirmar_slot(
 ) -> tuple[CitaAgendaPersonal, Any]:
     fecha = date.fromisoformat(fecha_iso)
     hora = datetime.strptime(hora_str, '%H:%M').time()
+    # Preferencia de técnico capturada en la conversación (si aplica).
+    pref_tecnico = ''
+    cot = getattr(cita, 'cotizacion_canal_origen', None)
+    if cot and isinstance(getattr(cot, 'metadata', None), dict):
+        pref_tecnico = (
+            ((cot.metadata.get('preferencias_agenda') or {}).get('tecnico_nombre') or '')
+            .strip()
+            .lower()
+        )
+
+    miembro_id = None
+    if pref_tecnico:
+        from mecanimovilapp.apps.usuarios.models import MiembroTaller
+
+        candidato = (
+            MiembroTaller.objects.filter(
+                taller=taller, rol='mecanico', activo=True, nombre__icontains=pref_tecnico
+            )
+            .order_by('id')
+            .first()
+        )
+        if candidato:
+            miembro_id = candidato.id
+
     miembro = resolver_miembro_cita_personal(
         taller=taller,
-        miembro_id=None,
+        miembro_id=miembro_id,
         tipo_servicio=cita.tipo_servicio,
         fecha=fecha,
         hora=hora,
         duracion_minutos=cita.duracion_minutos or 60,
         excluir_cita_id=cita.pk,
     )
-    cita = actualizar_cita_personal(
-        cita,
-        cabecera={'fecha_servicio': fecha, 'hora_servicio': hora},
-    )
+    cabecera: dict[str, Any] = {
+        'fecha_servicio': fecha,
+        'hora_servicio': hora,
+    }
+    if miembro is not None:
+        cabecera['miembro_taller'] = miembro.id
+
+    cita = actualizar_cita_personal(cita, cabecera=cabecera)
+
+    # Cinturón de seguridad: el flag debe quedar false tras confirmar slot real.
+    if cita.horario_por_confirmar:
+        cita.horario_por_confirmar = False
+        cita.save(update_fields=['horario_por_confirmar', 'fecha_actualizacion'])
+
+    _enriquecer_detalle_cita_desde_origen(cita)
     return cita, miembro
 
 

@@ -242,7 +242,16 @@ def crear_cotizacion_borrador_desde_agente(
     if not servicios_turno:
         servicios_turno = ['Servicio por definir']
     descripcion = (datos.get('descripcion_problema') or datos.get('sintoma') or '').strip()
-    modalidad = datos.get('modalidad') or 'taller'
+    modalidad_raw = (datos.get('modalidad') or '').strip().lower()
+    if modalidad_raw in ('domicilio', 'a_domicilio'):
+        modalidad = 'domicilio'
+    elif modalidad_raw in ('taller', 'en_taller'):
+        modalidad = 'taller'
+    else:
+        modalidad = (
+            cotizacion_existente.modalidad if cotizacion_existente and cotizacion_existente.modalidad
+            else 'taller'
+        )
     marca = (vehiculo.get('marca') or '').strip()
     modelo = (vehiculo.get('modelo') or '').strip()
     tipo_motor = (vehiculo.get('tipo_motor') or '').strip()
@@ -257,7 +266,7 @@ def crear_cotizacion_borrador_desde_agente(
         conversation=conversation,
         servicio_nombre=servicio_prompt,
         descripcion_problema=descripcion,
-        modalidad='taller',
+        modalidad=modalidad if modalidad in ('taller', 'domicilio') else 'taller',
         vehiculo=vehiculo,
         contexto_rag_extra=datos.get('contexto_rag') or '',
     )
@@ -369,7 +378,11 @@ def crear_cotizacion_borrador_desde_agente(
     cliente_telefono = (datos.get('cliente_telefono') or '').strip()
     if contact:
         cliente_nombre = cliente_nombre or (contact.display_name or '')
-        cliente_telefono = cliente_telefono or (contact.phone or '')
+        # WhatsApp: phone puede venir vacío; external_id suele ser el número real.
+        if hasattr(contact, 'telefono_efectivo'):
+            cliente_telefono = cliente_telefono or contact.telefono_efectivo()
+        else:
+            cliente_telefono = cliente_telefono or (contact.phone or '')
 
     preferencias_agenda = datos.get('preferencias_agenda') or meta_prev.get('preferencias_agenda') or {}
     if isinstance(preferencias_agenda, dict):
@@ -411,6 +424,10 @@ def crear_cotizacion_borrador_desde_agente(
         'vehiculo_patente': ctx.get('vehiculo_patente') or vehiculo.get('patente', '') or (
             cotizacion_existente.vehiculo_patente if cotizacion_existente else ''
         ),
+        'vehiculo_vin': (
+            (vehiculo.get('vin') or ctx.get('vehiculo_vin') or '').strip().upper()
+            or (cotizacion_existente.vehiculo_vin if cotizacion_existente else '')
+        )[:50],
         'vehiculo_cilindraje': cilindraje_efectivo(
             ctx.get('vehiculo_cilindraje') or vehiculo.get('cilindraje', ''),
             marca,

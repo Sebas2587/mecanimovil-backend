@@ -66,7 +66,9 @@ def metadata_cotizacion_mensaje(cotizacion: CotizacionCanal, *, estado: str = 'e
         'duracion_minutos_estimada': cotizacion.duracion_minutos_estimada,
         'repuestos': repuestos_meta,
         'advertencias': advertencias,
-        'interactive': True,
+        # Aceptar/rechazar vive en la página pública de la cotización (url_publica),
+        # no en botones interactivos de WhatsApp.
+        'interactive': False,
     }
 
 
@@ -79,7 +81,7 @@ def formatear_teaser_cotizacion(cotizacion: CotizacionCanal) -> str:
     if url:
         return (
             f'¡Tu cotización para {servicio} ({vehiculo}) está lista! '
-            f'Revísala y respóndela aquí: {url}'
+            f'Revísala y responde (aceptar o rechazar) en este enlace: {url}'
         )
     return (
         f'¡Tu cotización para {servicio} ({vehiculo}) está lista! '
@@ -253,6 +255,19 @@ def enviar_cotizacion_canal(cotizacion: CotizacionCanal, user) -> Message:
         external_contact=getattr(conversation, 'external_contact', None),
     )
     broadcast_to_participants(conversation, payload)
+
+    try:
+        from mecanimovilapp.apps.agente_ia.services.notificaciones import (
+            notificar_cotizacion_enviada_agente,
+        )
+
+        notificar_cotizacion_enviada_agente(
+            proveedor_user_id=user.id,
+            cotizacion=cotizacion,
+            conversation_id=conversation.id,
+        )
+    except Exception:
+        logger.warning('No se pudo notificar cotización enviada cot=%s', cotizacion.id, exc_info=True)
 
     return message
 

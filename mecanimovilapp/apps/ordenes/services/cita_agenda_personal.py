@@ -293,6 +293,20 @@ def resolver_miembro_cita_personal(
         modalidad=modalidad,
         excluir_cita_personal_id=excluir_cita_id,
     )
+    # Fallback: si nadie calza con la modalidad del servicio, intenta cualquier
+    # mecánico libre en el horario (usa jornada propia o heredada del taller).
+    # Evita dejar citas eternamente en horario_por_confirmar cuando el equipo
+    # no tiene modalidad alineada pero sí atiende en ese cupo.
+    if miembro is None and modalidad:
+        miembro = seleccionar_mecanico(
+            taller=taller,
+            fecha=fecha,
+            hora=hora,
+            duracion_minutos=duracion_minutos,
+            categorias_requeridas=None,
+            modalidad=None,
+            excluir_cita_personal_id=excluir_cita_id,
+        )
     if miembro is None:
         raise ValidationError(
             'No hay mecánico disponible compatible con el tipo de servicio en el horario seleccionado.',
