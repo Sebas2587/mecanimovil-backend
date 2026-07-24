@@ -74,8 +74,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
             or ''
         )
         msg_id = event.get('id') or event.get('mensaje_id')
+        archivo = event.get('archivo_adjunto') or event.get('attachment')
         await self.send(text_data=json.dumps({
             'type': 'chat_message',
+            # Necesario para que el cliente omnicanal acepte el evento
+            # (sobre todo el 2.º broadcast con attachment ya descargado).
+            'conversation_id': event.get('conversation_id') or str(self.conversation_id),
             'id': msg_id,
             'mensaje_id': msg_id,
             'message': text,
@@ -85,8 +89,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'sender_name': event.get('sender_name') or event.get('enviado_por'),
             'timestamp': event.get('timestamp'),
             'es_proveedor': event.get('es_proveedor', False),
-            'archivo_adjunto': event.get('archivo_adjunto') or event.get('attachment'),
-            'attachment': event.get('attachment') or event.get('archivo_adjunto'),
+            'archivo_adjunto': archivo,
+            'attachment': archivo,
+            'attachment_mime': event.get('attachment_mime'),
+            'attachment_name': event.get('attachment_name'),
+            'channel_metadata': event.get('channel_metadata') or {},
         }))
 
     @database_sync_to_async

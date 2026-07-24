@@ -14,6 +14,23 @@ CHANNEL_LABELS = {
 }
 
 
+def _attachment_meta_from_message(message, attachment_url=None):
+    """mime/nombre para que el cliente detecte imagen/audio sin adivinar por extensión."""
+    meta = message.channel_metadata or {}
+    media = meta.get('media') if isinstance(meta.get('media'), dict) else {}
+    mime = (media.get('mime_type') or media.get('mime') or '').strip() or None
+    name = (media.get('filename') or media.get('name') or '').strip() or None
+    if not name and attachment_url:
+        path = str(attachment_url).split('?', 1)[0]
+        name = path.rsplit('/', 1)[-1] or None
+    if not name and getattr(message, 'attachment', None):
+        try:
+            name = (message.attachment.name or '').rsplit('/', 1)[-1] or None
+        except Exception:
+            name = None
+    return mime, name
+
+
 def build_chat_payload(
     *,
     conversation,
@@ -27,6 +44,7 @@ def build_chat_payload(
     attachment_url=None,
 ):
     ext = external_contact
+    mime, name = _attachment_meta_from_message(message, attachment_url)
     return {
         'type': 'nuevo_mensaje_chat',
         'conversation_id': str(conversation.id),
@@ -44,6 +62,8 @@ def build_chat_payload(
         'timestamp': message.timestamp.isoformat(),
         'archivo_adjunto': attachment_url,
         'attachment': attachment_url,
+        'attachment_mime': mime,
+        'attachment_name': name,
         'channel': channel_slug,
         'external_contact_name': ext.display_name if ext else None,
         'external_contact_phone': ext.phone if ext else None,

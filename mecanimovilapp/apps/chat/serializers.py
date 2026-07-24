@@ -64,6 +64,15 @@ class MessageSerializer(serializers.ModelSerializer):
             data['archivo_adjunto'] = url
         else:
             data['archivo_adjunto'] = None
+        meta = instance.channel_metadata or {}
+        media = meta.get('media') if isinstance(meta.get('media'), dict) else {}
+        data['attachment_mime'] = media.get('mime_type') or media.get('mime') or None
+        data['attachment_name'] = media.get('filename') or media.get('name') or None
+        if not data['attachment_name'] and instance.attachment:
+            try:
+                data['attachment_name'] = (instance.attachment.name or '').rsplit('/', 1)[-1] or None
+            except Exception:
+                pass
         data['es_propio'] = False
         req_user = getattr(request, 'user', None) if request else None
         if req_user and req_user.is_authenticated and instance.sender_id == req_user.id:
