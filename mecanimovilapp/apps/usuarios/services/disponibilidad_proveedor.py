@@ -299,6 +299,9 @@ def _intervalos_ocupados_miembro(
     if excluir_cita_personal_id:
         citas = citas.exclude(pk=excluir_cita_personal_id)
     for cita in citas:
+        # Placeholders con horario aún por confirmar no bloquean la agenda.
+        if not cita.bloquea_agenda:
+            continue
         inicio = datetime.combine(fecha, cita.hora_servicio)
         fin = inicio + timedelta(minutes=cita.duracion_minutos + tiempo_descanso)
         intervalos.append((inicio, fin))

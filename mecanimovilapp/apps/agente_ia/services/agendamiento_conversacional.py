@@ -15,6 +15,7 @@ from mecanimovilapp.apps.agente_ia.services.notificaciones import notificar_cita
 from mecanimovilapp.apps.agente_ia.services.orquestador import _llamar_gemini_agente, enviar_respuesta_agente
 from mecanimovilapp.apps.chat.models import Conversation, Message
 from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonal, CotizacionCanal
+from mecanimovilapp.apps.ordenes.services.asignacion_mecanico import _modalidad_desde_tipo_servicio
 from mecanimovilapp.apps.ordenes.services.cita_agenda_personal import (
     actualizar_cita_personal,
     resolver_miembro_cita_personal,
@@ -85,10 +86,14 @@ def _obtener_slots_dia(
         fecha = date.fromisoformat(fecha_iso)
     except ValueError:
         return []
+    # tipo_servicio ('taller'/'domicilio') ≠ modalidad_tecnico ('en_taller'/'a_domicilio').
+    # Mapear antes de llamar a disponibilidad_con_duracion para que el filtro
+    # mecanicos_aptos_taller compare valores compatibles y no devuelva siempre vacío.
+    modalidad_tecnico = _modalidad_desde_tipo_servicio(modalidad)
     data = disponibilidad_con_duracion(
         taller=taller,
         fecha=fecha,
-        modalidad=modalidad,
+        modalidad=modalidad_tecnico,
         requiere_especialidad=False,
     )
     if not data.get('proveedor_disponible'):
@@ -140,6 +145,19 @@ def _recopilar_slots_ofrecidos(
     }
 
 
+def _preferencias_agenda_desde_sesion(sesion: AgenteConversacionSesion, cita: CitaAgendaPersonal) -> dict[str, Any]:
+    datos = dict(sesion.datos_capturados or {})
+    pref = dict(datos.get('preferencias_agenda') or {})
+    # También desde metadata de la cotización origen (sobrevive al envío).
+    cot = getattr(cita, 'cotizacion_canal_origen', None) or getattr(sesion, 'cotizacion_borrador', None)
+    if cot and isinstance(getattr(cot, 'metadata', None), dict):
+        pref_meta = cot.metadata.get('preferencias_agenda') or {}
+        for k, v in pref_meta.items():
+            if v not in (None, '', []) and not pref.get(k):
+                pref[k] = v
+    return pref
+
+
 def iniciar_agendamiento(
     *,
     cita: CitaAgendaPersonal,
@@ -148,7 +166,11 @@ def iniciar_agendamiento(
     proveedor_user_id: int,
     sesion: AgenteConversacionSesion | None = None,
 ) -> dict[str, Any]:
-    """Ofrece días disponibles y entra en modo agendamiento."""
+    """Ofrece días disponibles y entra en modo agendamiento.
+
+    Si en la captura ya se acordó día/hora (preferencias_agenda) y ese slot sigue
+    libre (sin solape con otras citas del técnico/taller), lo confirma de una.
+    """
     if sesion is None:
         sesion = AgenteConversacionSesion.objects.filter(conversation=conversation).first()
     if sesion is None:
@@ -164,16 +186,85 @@ def iniciar_agendamiento(
 
     datos = dict(sesion.datos_capturados or {})
     datos['slots_ofrecidos'] = oferta
+    preferencias = _preferencias_agenda_desde_sesion(sesion, cita)
+    if preferencias:
+        datos['preferencias_agenda'] = preferencias
     sesion.datos_capturados = datos
     sesion.estado = AgenteConversacionSesion.ESTADO_AGENDANDO
     sesion.cita_en_negociacion = cita
     sesion.save(update_fields=['datos_capturados', 'estado', 'cita_en_negociacion', 'actualizado_en'])
 
+    # Intento de confirmar slot ya pactado en la conversación (si sigue libre).
+    fecha_pref = (preferencias.get('fecha') or '').strip()
+    hora_pref = (preferencias.get('hora') or '').strip()
+    if fecha_pref and hora_pref:
+        slots_dia = (oferta.get('slots_por_dia') or {}).get(fecha_pref) or []
+        horas_libres = {s.get('hora') for s in slots_dia if s.get('hora')}
+        if hora_pref in horas_libres:
+            try:
+                cita_ok, miembro = _confirmar_slot(
+                    cita=cita,
+                    taller=taller,
+                    fecha_iso=fecha_pref,
+                    hora_str=hora_pref,
+                )
+                tecnico = getattr(miembro, 'nombre', None) or preferencias.get('tecnico_nombre') or 'nuestro equipo'
+                texto_ok = (
+                    f'¡Tu cotización fue aprobada! Confirmé la cita para '
+                    f'{_formatear_fecha_legible(fecha_pref)} a las {hora_pref} con {tecnico}. '
+                    'Te esperamos.'
+                )
+                enviar_respuesta_agente(
+                    conversation=conversation,
+                    proveedor_user_id=proveedor_user_id,
+                    texto=texto_ok,
+                )
+                notificar_cita_confirmada_por_agente(
+                    proveedor_user_id=proveedor_user_id,
+                    cita=cita_ok,
+                    conversation_id=conversation.id,
+                )
+                sesion.estado = AgenteConversacionSesion.ESTADO_CERRADO
+                sesion.save(update_fields=['estado', 'actualizado_en'])
+                AgenteMensajeLog.objects.create(
+                    sesion=sesion,
+                    mensaje_entrante='[auto] preferencias_agenda',
+                    respuesta_generada=texto_ok,
+                    accion=AgenteMensajeLog.ACCION_RESPONDER,
+                    metadata={
+                        'fecha': fecha_pref,
+                        'hora': hora_pref,
+                        'miembro_id': getattr(miembro, 'id', None),
+                        'confirmado_desde_preferencias': True,
+                    },
+                )
+                return {
+                    'ok': True,
+                    'accion': 'cita_confirmada_desde_preferencias',
+                    'fecha': fecha_pref,
+                    'hora': hora_pref,
+                }
+            except ValidationError:
+                # Slot ya no está libre: cae al flujo de ofrecer alternativas.
+                logger.info(
+                    'Preferencia agenda %s %s ya no disponible; ofreciendo slots',
+                    fecha_pref,
+                    hora_pref,
+                )
+
     resumen = _construir_resumen_dias(oferta.get('fechas') or [])
+    pref_txt = ''
+    if preferencias.get('fecha') or preferencias.get('hora') or preferencias.get('tecnico_nombre'):
+        pref_txt = (
+            f' Habías mencionado {preferencias.get("fecha") or "un día"} '
+            f'{("a las " + preferencias["hora"]) if preferencias.get("hora") else ""}'
+            f'{(" con " + preferencias["tecnico_nombre"]) if preferencias.get("tecnico_nombre") else ""}. '
+            'Si ese horario ya no está libre, elige otro de la lista.'
+        )
     texto = (
-        f'¡Tu cotización fue aprobada! Tengo estos días disponibles: {resumen}. '
+        f'¡Tu cotización fue aprobada! Tengo estos días disponibles: {resumen}.{pref_txt} '
         '¿Cuál te acomoda y a qué hora?'
-    )
+    ).replace('  ', ' ')
     if not oferta.get('fechas'):
         texto = (
             '¡Tu cotización fue aprobada! Por ahora no veo cupos en los próximos días. '
