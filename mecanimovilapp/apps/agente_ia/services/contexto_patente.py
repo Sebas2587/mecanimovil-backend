@@ -126,13 +126,22 @@ def enriquecer_contexto_patente(
     proveedor_user=None,
 ) -> dict[str, Any]:
     """
-    Consulta GetAPI + vehículo registrado + historial + salud + catálogo del taller.
-    No falla el flujo si alguna fuente no está disponible.
+    Determina el vehículo real de la patente con dos fuentes verificables, en orden
+    de prioridad:
+    1) Vehículo YA registrado por un cliente en Mecanimovil (fuente propia; incluye
+       historial de servicios y salud calculada). Si existe, es la verdad absoluta
+       y NO se consulta la API externa (ahorra cuota y evita datos contradictorios).
+    2) API externa de patentes chilenas (GetAPI.cl), solo si no está registrado.
+
+    Si ninguna fuente entrega marca/modelo, el resultado queda vacío explícitamente
+    ('vehiculo_fuente' = 'ninguna') para que el LLM NUNCA rellene ese dato por su
+    cuenta (ver regla anti-alucinación en el prompt del agente).
     """
     patente_norm = normalizar_patente(patente)
     resultado: dict[str, Any] = {
         'patente': patente_norm,
         'vehiculo': {},
+        'vehiculo_fuente': 'ninguna',
         'registrado_en_sistema': False,
         'vehiculo_id': None,
         'texto_contexto': '',
@@ -145,50 +154,7 @@ def enriquecer_contexto_patente(
         resultado['error'] = 'patente_vacia'
         return resultado
 
-    # Cuota de consulta patente (si hay usuario y enforcement activo)
-    if proveedor_user is not None:
-        try:
-            from mecanimovilapp.apps.suscripciones.cuotas_services import (
-                CuotaAgotadaError,
-                SinSuscripcionError,
-                verificar_y_consumir_cuota,
-            )
-            from mecanimovilapp.apps.suscripciones.models import ConsumoFeatureMensual
-
-            verificar_y_consumir_cuota(proveedor_user, ConsumoFeatureMensual.FEATURE_CONSULTA_PATENTE)
-        except (CuotaAgotadaError, SinSuscripcionError) as exc:
-            logger.info('Cuota patente agotada en agente IA: %s', getattr(exc, 'message', exc))
-            # Seguimos con lookup interno (sin GetAPI) si hay vehículo en BD
-        except Exception as exc:
-            logger.warning('Error consumiendo cuota patente agente: %s', exc)
-
-    # 1) GetAPI
-    try:
-        from mecanimovilapp.apps.vehiculos.services.guest_patente_lookup import fetch_patente_normalized
-
-        payload, status_code, error_code = fetch_patente_normalized(
-            patente_norm,
-            include_private_fields=False,
-        )
-        if payload:
-            resultado['vehiculo'] = {
-                'patente': payload.get('patente') or patente_norm,
-                'marca': payload.get('marca_nombre') or '',
-                'modelo': payload.get('modelo_nombre') or '',
-                'anio': str(payload.get('year') or ''),
-                'cilindraje': payload.get('cilindraje') or '',
-                'tipo_motor': payload.get('tipo_motor') or '',
-                'color': payload.get('color') or '',
-                'marca_id': payload.get('marca_id'),
-                'modelo_id': payload.get('modelo_id'),
-            }
-        else:
-            resultado['error'] = error_code or f'http_{status_code}'
-    except Exception as exc:
-        logger.warning('Error GetAPI patente en agente: %s', exc)
-        resultado['error'] = 'servicio_externo'
-
-    # 2) Vehículo registrado en Mecanimovil
+    # 1) Vehículo YA registrado por un cliente en Mecanimovil (fuente propia y prioritaria).
     try:
         from mecanimovilapp.apps.vehiculos.models import Vehiculo
 
@@ -200,16 +166,14 @@ def enriquecer_contexto_patente(
         if veh:
             resultado['registrado_en_sistema'] = True
             resultado['vehiculo_id'] = veh.id
-            marca = getattr(veh.marca, 'nombre', '') or resultado['vehiculo'].get('marca', '')
-            modelo = getattr(veh.modelo, 'nombre', '') or resultado['vehiculo'].get('modelo', '')
+            resultado['vehiculo_fuente'] = 'registro_mecanimovil'
             resultado['vehiculo'] = {
-                **(resultado['vehiculo'] or {}),
                 'patente': veh.patente or patente_norm,
-                'marca': marca,
-                'modelo': modelo,
-                'anio': str(veh.anio or resultado['vehiculo'].get('anio') or ''),
-                'cilindraje': veh.cilindraje or resultado['vehiculo'].get('cilindraje') or '',
-                'tipo_motor': veh.tipo_motor or resultado['vehiculo'].get('tipo_motor') or '',
+                'marca': getattr(veh.marca, 'nombre', '') or '',
+                'modelo': getattr(veh.modelo, 'nombre', '') or '',
+                'anio': str(veh.year or ''),
+                'cilindraje': veh.cilindraje or '',
+                'tipo_motor': veh.tipo_motor or '',
                 'kilometraje': veh.kilometraje,
             }
             resultado['historial'] = _resumen_historial(veh.id)
@@ -217,6 +181,57 @@ def enriquecer_contexto_patente(
     except Exception as exc:
         logger.warning('Error buscando vehículo registrado por patente: %s', exc)
 
+    # 2) API externa de patentes (GetAPI.cl), solo si no estaba registrado localmente.
+    if resultado['vehiculo_fuente'] == 'ninguna':
+        # Cuota de consulta patente (solo se consume cuando de verdad se llama a la API externa).
+        if proveedor_user is not None:
+            try:
+                from mecanimovilapp.apps.suscripciones.cuotas_services import (
+                    CuotaAgotadaError,
+                    SinSuscripcionError,
+                    verificar_y_consumir_cuota,
+                )
+                from mecanimovilapp.apps.suscripciones.models import ConsumoFeatureMensual
+
+                verificar_y_consumir_cuota(proveedor_user, ConsumoFeatureMensual.FEATURE_CONSULTA_PATENTE)
+            except (CuotaAgotadaError, SinSuscripcionError) as exc:
+                logger.info('Cuota patente agotada en agente IA: %s', getattr(exc, 'message', exc))
+                resultado['error'] = 'cuota_agotada'
+                return _finalizar_contexto(resultado, taller_id)
+            except Exception as exc:
+                logger.warning('Error consumiendo cuota patente agente: %s', exc)
+
+        try:
+            from mecanimovilapp.apps.vehiculos.services.guest_patente_lookup import fetch_patente_normalized
+
+            payload, status_code, error_code = fetch_patente_normalized(
+                patente_norm,
+                include_private_fields=False,
+            )
+            if payload and (payload.get('marca_nombre') or payload.get('modelo_nombre')):
+                resultado['vehiculo_fuente'] = 'getapi'
+                resultado['vehiculo'] = {
+                    'patente': payload.get('patente') or patente_norm,
+                    'marca': payload.get('marca_nombre') or '',
+                    'modelo': payload.get('modelo_nombre') or '',
+                    'anio': str(payload.get('year') or ''),
+                    'cilindraje': payload.get('cilindraje') or '',
+                    'tipo_motor': payload.get('tipo_motor') or '',
+                    'color': payload.get('color') or '',
+                    'marca_id': payload.get('marca_id'),
+                    'modelo_id': payload.get('modelo_id'),
+                }
+            else:
+                resultado['error'] = error_code or (f'http_{status_code}' if status_code else 'sin_datos')
+        except Exception as exc:
+            logger.warning('Error GetAPI patente en agente: %s', exc)
+            resultado['error'] = 'servicio_externo'
+
+    return _finalizar_contexto(resultado, taller_id)
+
+
+def _finalizar_contexto(resultado: dict[str, Any], taller_id: int) -> dict[str, Any]:
+    """Arma ofertas de catálogo + texto final para el prompt, a partir del resultado ya resuelto."""
     marca = (resultado['vehiculo'] or {}).get('marca') or ''
     modelo = (resultado['vehiculo'] or {}).get('modelo') or ''
     resultado['ofertas'] = _ofertas_catalogo_taller(
@@ -225,20 +240,29 @@ def enriquecer_contexto_patente(
         modelo_nombre=modelo,
     )
 
-    # Texto para el prompt
+    patente_norm = resultado['patente']
     v = resultado['vehiculo'] or {}
     bloques = [f'Patente consultada: {patente_norm}']
     if v.get('marca') or v.get('modelo'):
+        fuente_txt = (
+            'registro propio del cliente en Mecanimovil'
+            if resultado['vehiculo_fuente'] == 'registro_mecanimovil'
+            else 'API externa de patentes (GetAPI.cl)'
+        )
         bloques.append(
-            f"Vehículo identificado: {v.get('marca', '')} {v.get('modelo', '')} "
+            f"Vehículo identificado ({fuente_txt}): {v.get('marca', '')} {v.get('modelo', '')} "
             f"{v.get('anio', '')} — cilindraje {v.get('cilindraje') or 'n/d'} "
             f"— motor {v.get('tipo_motor') or 'n/d'}".strip()
         )
     else:
-        bloques.append('No se pudo identificar marca/modelo vía API de patente.')
+        bloques.append(
+            'NO se pudo identificar marca/modelo real para esta patente (ni en registro propio ni en API '
+            'externa). NO inventes marca/modelo: dile al cliente que no pudiste verificar el vehículo y '
+            'pídele que confirme marca y modelo directamente.'
+        )
 
     if resultado['registrado_en_sistema']:
-        bloques.append('Esta patente ESTÁ registrada en Mecanimovil.')
+        bloques.append('Esta patente ESTÁ registrada por un cliente en Mecanimovil.')
         if resultado['historial']:
             bloques.append('Historial de servicios completados:\n' + '\n'.join(resultado['historial']))
         else:

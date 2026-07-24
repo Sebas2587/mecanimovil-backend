@@ -208,6 +208,7 @@ REGLAS DE CONVERSACIÓN:
 4. UNA sola pregunta de clarificación por turno (ej: cuándo ocurre el ruido, si hay luz en tablero, si pierde potencia). Si el taller solo atiende en una modalidad según la FICHA OPERATIVA, no la preguntes: infórmasela directamente.
 5. Usa adjuntos: si hay audio, responde a la transcripción/ruido; si hay foto de tablero/vano/pieza, comenta lo visto y pide confirmación.
 6. Si hay patente identificada, confírmala y avanza al síntoma (no vuelvas a pedir la patente).
+6b. PROHIBIDO INVENTAR marca/modelo/año del vehículo. SOLO puedes escribir marca/modelo/año en "datos_actualizados.vehiculo" si: (a) el bloque "Contexto automático de la patente" ya los identificó, (b) el cliente los escribió él mismo en este chat, o (c) ya estaban en "Datos ya capturados". Si el contexto de patente dice que NO se pudo identificar, deja esos campos vacíos y pide al cliente que confirme marca y modelo — nunca completes con una marca "típica" o que "suene probable".
 7. Lee el historial: no repitas preguntas ya respondidas.
 8. La FICHA OPERATIVA manda sobre cualquier otra fuente para: qué servicios existen, marcas/modelos que atienden, modalidad (taller/domicilio/ambas), equipo de mecánicos y horario. Si el cliente pide algo fuera de esa ficha (marca no cubierta, modalidad no ofrecida), dilo con claridad en vez de asumir que sí se puede.
 9. Si el cliente pregunta qué servicios ofrece el taller, responde citando los nombres reales del catálogo de la FICHA OPERATIVA (puedes listar varios, no es "listado largo" prohibido si el cliente lo pidió explícitamente).
@@ -564,6 +565,11 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
                 datos_previos['historial_servicios'] = enriq['historial']
             if enriq.get('salud'):
                 datos_previos['salud_vehiculo'] = enriq['salud']
+            # Dato verificado por fuente real (registro propio o API de patentes).
+            # El LLM NUNCA debe pisar esto (ver merge post-Gemini más abajo).
+            if enriq.get('vehiculo_fuente') in ('registro_mecanimovil', 'getapi'):
+                datos_previos['vehiculo_verificado'] = dict(enriq['vehiculo'])
+                datos_previos['vehiculo_fuente'] = enriq['vehiculo_fuente']
             sesion.datos_capturados = datos_previos
             sesion.save(update_fields=['datos_capturados', 'actualizado_en'])
     elif datos_previos.get('patente_enriquecida'):
@@ -635,9 +641,18 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         'ofertas_catalogo',
         'historial_servicios',
         'salud_vehiculo',
+        'vehiculo_verificado',
+        'vehiculo_fuente',
     ):
         if key in (sesion.datos_capturados or {}) and key not in datos:
             datos[key] = sesion.datos_capturados[key]
+    # Anti-alucinación: si ya tenemos marca/modelo/año verificados por una fuente real
+    # (registro del cliente o API de patentes), el LLM NO puede reemplazarlos por su
+    # cuenta. Esto evita casos como responder "Kia Morning" para una patente real de
+    # un Honda Civic solo porque el modelo lo "completó" en el JSON de salida.
+    vehiculo_verificado = datos.get('vehiculo_verificado')
+    if vehiculo_verificado:
+        datos['vehiculo'] = {**(datos.get('vehiculo') or {}), **vehiculo_verificado}
     sesion.datos_capturados = datos
     sesion.ultima_interaccion_ia = timezone.now()
     sesion.save(update_fields=['datos_capturados', 'ultima_interaccion_ia', 'actualizado_en'])
