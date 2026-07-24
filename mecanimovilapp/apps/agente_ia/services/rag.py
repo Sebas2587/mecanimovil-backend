@@ -33,6 +33,45 @@ def buscar_contexto_taller(taller_id: int, query_text: str, *, top_k: int = 8) -
     )
 
 
+def buscar_contexto_taller_por_fuente(
+    taller_id: int,
+    query_text: str,
+    *,
+    fuente: str,
+    top_k: int = 3,
+) -> list[TallerConocimientoChunk]:
+    """Búsqueda semántica acotada a una fuente (ej. histórico cross-cliente)."""
+    query_vec = generar_embedding(query_text)
+    qs = TallerConocimientoChunk.objects.filter(taller_id=taller_id, fuente=fuente)
+    if not query_vec:
+        return list(qs.order_by('-fecha_actualizacion')[:top_k])
+    return list(
+        qs.filter(embedding__isnull=False).order_by(CosineDistance('embedding', query_vec))[:top_k]
+    )
+
+
+def buscar_contexto_taller_combinado(
+    taller_id: int,
+    query_text: str,
+    *,
+    top_k_general: int = 7,
+    top_k_historico: int = 3,
+) -> tuple[list[TallerConocimientoChunk], list[TallerConocimientoChunk]]:
+    """General (catálogo/docs/instrucciones) + histórico dedicado, sin competir por top_k."""
+    general = [
+        c
+        for c in buscar_contexto_taller(taller_id, query_text, top_k=top_k_general + top_k_historico)
+        if c.fuente != TallerConocimientoChunk.FUENTE_HISTORICO
+    ][:top_k_general]
+    historico = buscar_contexto_taller_por_fuente(
+        taller_id,
+        query_text,
+        fuente=TallerConocimientoChunk.FUENTE_HISTORICO,
+        top_k=top_k_historico,
+    )
+    return general, historico
+
+
 def _upsert_chunk(
     *,
     taller_id: int,

@@ -207,9 +207,12 @@ def _cliente_pide_otro_rango(texto: str) -> bool:
 
 
 def _prompt_match_slot(texto_cliente: str, slots_ctx: dict[str, Any]) -> str:
+    hoy = timezone.localdate().isoformat()
     slots_json = json.dumps(slots_ctx, ensure_ascii=False)
     return f"""Eres un asistente de agendamiento de taller mecánico en Chile.
 El cliente debe elegir un horario REAL de la lista. NO inventes fechas ni horas fuera de la lista.
+
+Fecha de HOY (referencia para "mañana", "el miércoles", etc.): {hoy}
 
 Slots disponibles (JSON):
 {slots_json}

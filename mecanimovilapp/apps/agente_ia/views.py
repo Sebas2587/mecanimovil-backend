@@ -23,6 +23,7 @@ from mecanimovilapp.apps.agente_ia.services.orquestador import (
     desactivar_agente_en_todos_los_chats,
     pausar_sesion_por_mensaje_taller,
 )
+from mecanimovilapp.apps.agente_ia.services.aprendizaje_score import calcular_aprendizaje_taller
 from mecanimovilapp.apps.agente_ia.services.rag import reindexar_conocimiento_taller
 from mecanimovilapp.apps.agente_ia.tasks import procesar_documento_conocimiento_task
 from mecanimovilapp.apps.suscripciones.cuotas_services import agente_ia_incluido_en_plan
@@ -262,6 +263,12 @@ class AgenteIaViewSet(viewsets.ViewSet):
             estado=AgenteConversacionSesion.ESTADO_CAPTURANDO,
         )
         return Response({'reanudado': True})
+
+    @action(detail=False, methods=['get'], url_path='aprendizaje-score')
+    def aprendizaje_score(self, request):
+        """Score combinado de completitud de config + actividad del agente."""
+        taller = self._taller(request)
+        return Response(calcular_aprendizaje_taller(taller))
 
     @action(detail=False, methods=['post'], url_path='reindexar')
     def reindexar(self, request):

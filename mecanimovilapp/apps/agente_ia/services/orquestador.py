@@ -18,7 +18,7 @@ from mecanimovilapp.apps.agente_ia.models import (
 )
 from mecanimovilapp.apps.agente_ia.services.cotizacion_borrador import crear_cotizacion_borrador_desde_agente
 from mecanimovilapp.apps.agente_ia.services.notificaciones import notificar_escalamiento_humano
-from mecanimovilapp.apps.agente_ia.services.rag import buscar_contexto_taller
+from mecanimovilapp.apps.agente_ia.services.rag import buscar_contexto_taller_combinado
 from mecanimovilapp.apps.agente_ia.services.taller_resolver import canal_conversacion, resolver_taller_desde_conversation
 from mecanimovilapp.apps.chat.models import Conversation, Message
 
@@ -90,18 +90,17 @@ def _mensaje_cliente_superado(message: Message) -> bool:
 
 def _contexto_minimo_para_cotizar(datos: dict) -> bool:
     vehiculo = datos.get('vehiculo') or {}
-    tiene_vehiculo = bool(
+    patente = (
         (vehiculo.get('patente') or '').strip()
-        or (
-            (vehiculo.get('marca') or '').strip()
-            and (vehiculo.get('modelo') or '').strip()
-        )
+        or (datos.get('patente_enriquecida') or '').strip()
     )
+    if not patente:
+        return False
     problema = (
         (datos.get('descripcion_problema') or '').strip()
         or (datos.get('servicio_nombre') or '').strip()
     )
-    return tiene_vehiculo and len(problema) >= 12
+    return len(problema) >= 12
 
 
 def _llamar_gemini_agente(prompt: str) -> tuple[dict[str, Any] | None, str | None]:
@@ -168,8 +167,9 @@ def _construir_prompt_agente(
 
 Tu prioridad en este orden:
 1) Entender qué le pasa al auto (asesoría experta).
-2) Hacer preguntas cortas para completar el diagnóstico.
-3) Cotizar SOLO cuando el cliente quiera precio/presupuesto Y ya haya contexto suficiente.
+2) Obtener la PATENTE del vehículo (dato obligatorio antes de cotizar o agendar).
+3) Hacer preguntas cortas para completar el diagnóstico.
+4) Cotizar SOLO cuando el cliente quiera precio/presupuesto Y ya haya patente + contexto suficiente.
 
 Nombre real del taller (úsarlo en saludos y cuando te presentes):
 {nombre}
@@ -215,19 +215,20 @@ REGLAS DE CONVERSACIÓN:
 2. Si el cliente saluda o habla en genérico, responde humano (presentándote por {nombre} si es el primer contacto) y pregunta qué le ocurre al vehículo (síntoma), no saltes a cotizar.
 3. Muchos clientes NO saben qué servicio necesitan: primero asesora (posibles causas, qué revisar, urgencia) y pide 1 dato faltante clave.
 4. UNA sola pregunta de clarificación por turno (ej: cuándo ocurre el ruido, si hay luz en tablero, si pierde potencia). Si el taller solo atiende en una modalidad según la FICHA OPERATIVA, no la preguntes: infórmasela directamente.
-5. Usa adjuntos: si hay audio, responde a la transcripción/ruido; si hay foto de tablero/vano/pieza, comenta lo visto y pide confirmación.
-6. Si hay patente identificada, confírmala y avanza al síntoma (no vuelvas a pedir la patente).
-6b. PROHIBIDO INVENTAR marca/modelo/año del vehículo. SOLO puedes escribir marca/modelo/año en "datos_actualizados.vehiculo" si: (a) el bloque "Contexto automático de la patente" ya los identificó, (b) el cliente los escribió él mismo en este chat, o (c) ya estaban en "Datos ya capturados". Si el contexto de patente dice que NO se pudo identificar, deja esos campos vacíos y pide al cliente que confirme marca y modelo — nunca completes con una marca "típica" o que "suene probable".
+4b. PATENTE OBLIGATORIA: la patente es el dato maestro del vehículo (marca, modelo, año, cilindraje, motor, historial). SIEMPRE debes pedirla antes de cotizar o agendar. Puedes asesorar el síntoma sin patente, pero NO marques listo_para_cotizar=true ni prometas presupuesto definitivo ni agendamiento sin patente en "Datos ya capturados". Marca/modelo/año que diga el cliente NO reemplazan la patente: esos datos los completa el sistema al consultar la patente (bloque "Contexto automático de la patente").
+5. Usa adjuntos: si hay audio, responde a la transcripción/ruido; si hay foto de tablero/vano/pieza, comenta lo visto y pide confirmación. Si el análisis del adjunto falló o está pendiente, dile al cliente que no pudiste procesar el archivo y pídele que lo reenvíe o lo describa con palabras — nunca ignores el adjunto en silencio.
+6. Si hay patente identificada y verificada, confírmala brevemente y avanza (no vuelvas a pedir la patente).
+6b. PROHIBIDO INVENTAR marca/modelo/año/cilindraje del vehículo. SOLO puedes escribir esos campos en "datos_actualizados.vehiculo" si el bloque "Contexto automático de la patente" ya los identificó (API GetAPI.cl o registro Mecanimovil) o ya estaban verificados en "Datos ya capturados". NO uses marca+modelo+año que el cliente mencione como sustituto de la patente. Si la patente no se pudo verificar, pide que la confirme o reenvíe — no rellenes marca/modelo por tu cuenta.
 7. Lee el historial: no repitas preguntas ya respondidas.
 8. La FICHA OPERATIVA manda sobre cualquier otra fuente para: qué servicios existen, marcas/modelos que atienden, modalidad (taller/domicilio/ambas), equipo de mecánicos y horario. Si el cliente pide algo fuera de esa ficha (marca no cubierta, modalidad no ofrecida), dilo con claridad en vez de asumir que sí se puede.
 9. Si el cliente pregunta qué servicios ofrece el taller, responde citando los nombres reales del catálogo de la FICHA OPERATIVA (puedes listar varios, no es "listado largo" prohibido si el cliente lo pidió explícitamente).
-10. NO prometas fechas exactas de agenda.
+10. Si el cliente escribe fuera del horario de atención del taller, NO rechaces ni cortes la conversación: indica el horario y sigue asesorando/cotizando con normalidad. Solo al agendar una cita concreta la fecha/hora debe caer dentro del horario del taller o del mecánico indicado en la FICHA OPERATIVA. Usa la "Fecha y hora actual" de la ficha para no confundir "mañana" con un día de la próxima semana.
 11. Fuera de automotriz / cliente muy enojado → necesita_humano=true.
 12. listo_para_cotizar=true SOLO si:
-    - hay vehículo (patente o marca+modelo) Y
+    - hay PATENTE en datos capturados (vehiculo.patente o patente_enriquecida) Y
     - hay problema/servicio suficientemente claro Y
     - el cliente pide cotización/presupuesto/precio O ya confirmó que quiere que le armes el presupuesto.
-    Si falta contexto o solo busca consejo → listo_para_cotizar=false y sigue asesorando.
+    Sin patente → listo_para_cotizar=false aunque el cliente haya dicho marca/modelo. La cotización y el agendamiento requieren patente para llenar los datos reales del auto.
 13. cliente_pide_cotizacion=true únicamente si en este turno (o el historial reciente) el cliente pidió precio/cotización/presupuesto de forma explícita o claramente implícita.
 14. respuesta_cliente: para asesoría normal, 1-3 frases naturales con un mini consejo + 1 pregunta. Si el cliente pidió explícitamente el listado de servicios, puedes extenderte lo necesario para nombrarlos todos.
 
@@ -572,6 +573,17 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         analisis_media = analizar_adjunto_mensaje(message, vehiculo=vehiculo_previo) or {}
         message.refresh_from_db(fields=['content', 'channel_metadata', 'attachment'])
 
+        if analisis_media.get('pendiente') and not message.attachment:
+            meta = dict(message.channel_metadata or {})
+            if not meta.get('media_reintento_agente'):
+                meta['media_reintento_agente'] = True
+                message.channel_metadata = meta
+                message.save(update_fields=['channel_metadata'])
+                from mecanimovilapp.apps.agente_ia.tasks import procesar_mensaje_entrante_task
+
+                procesar_mensaje_entrante_task.apply_async(args=[message.id], countdown=8)
+                return {'skipped': True, 'reason': 'media_pendiente_reintento'}
+
     texto_cliente = texto_cliente_enriquecido(message, analisis_media)
     if not texto_cliente:
         return {'skipped': True, 'reason': 'empty_message'}
@@ -597,13 +609,29 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             datos_previos['descripcion_problema'] = analisis_media['sintoma_sintetizado']
             sesion.datos_capturados = datos_previos
             sesion.save(update_fields=['datos_capturados', 'actualizado_en'])
+    elif analisis_media.get('pendiente') or analisis_media.get('error'):
+        from mecanimovilapp.apps.agente_ia.services.media_analisis import _nota_adjunto_degradado
+
+        contexto_media_txt = _nota_adjunto_degradado(analisis_media)
 
     # ── Lookup automático de patente ──────────────────────────────────────
-    patente_detectada = detectar_patente_en_texto(texto_cliente) or normalizar_patente(
-        vehiculo_previo.get('patente') or ''
+    patente_prev_enriquecida = normalizar_patente(datos_previos.get('patente_enriquecida') or '')
+    patente_nueva_en_mensaje = detectar_patente_en_texto(texto_cliente)
+    patente_detectada = patente_nueva_en_mensaje or normalizar_patente(
+        vehiculo_previo.get('patente') or patente_prev_enriquecida or ''
+    )
+    debe_enriquecer_patente = bool(
+        patente_detectada
+        and (
+            not patente_prev_enriquecida
+            or (
+                patente_nueva_en_mensaje
+                and patente_nueva_en_mensaje != patente_prev_enriquecida
+            )
+        )
     )
     contexto_patente_txt = ''
-    if patente_detectada and not datos_previos.get('patente_enriquecida'):
+    if debe_enriquecer_patente:
         enriq = enriquecer_contexto_patente(
             patente=patente_detectada,
             taller_id=taller.id,
@@ -628,6 +656,9 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             if enriq.get('vehiculo_fuente') in ('registro_mecanimovil', 'getapi'):
                 datos_previos['vehiculo_verificado'] = dict(enriq['vehiculo'])
                 datos_previos['vehiculo_fuente'] = enriq['vehiculo_fuente']
+            elif patente_nueva_en_mensaje and patente_nueva_en_mensaje != patente_prev_enriquecida:
+                datos_previos.pop('vehiculo_verificado', None)
+                datos_previos.pop('vehiculo_fuente', None)
             sesion.datos_capturados = datos_previos
             sesion.save(update_fields=['datos_capturados', 'actualizado_en'])
     elif datos_previos.get('patente_enriquecida'):
@@ -656,8 +687,26 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             ],
         )
     )
-    chunks = buscar_contexto_taller(taller.id, query_rag, top_k=10)
-    chunks_texto = '\n---\n'.join(c.contenido for c in chunks if c.contenido)
+    chunks_general, chunks_historico = buscar_contexto_taller_combinado(
+        taller.id,
+        query_rag,
+        top_k_general=7,
+        top_k_historico=3,
+    )
+    chunks = chunks_general + [c for c in chunks_historico if c.id not in {g.id for g in chunks_general}]
+    partes_rag: list[str] = []
+    if chunks_general:
+        partes_rag.append(
+            'Conocimiento del taller (catálogo, documentos, instrucciones):\n'
+            + '\n---\n'.join(c.contenido for c in chunks_general if c.contenido)
+        )
+    if chunks_historico:
+        partes_rag.append(
+            'Casos anteriores similares atendidos por el taller (otros clientes; referencia diagnóstico/precio, '
+            'NO confundir con el historial del vehículo actual):\n'
+            + '\n---\n'.join(c.contenido for c in chunks_historico if c.contenido)
+        )
+    chunks_texto = '\n\n'.join(partes_rag)
     chunk_ids = [c.id for c in chunks]
 
     from mecanimovilapp.apps.agente_ia.services.ficha_taller import (
@@ -712,6 +761,19 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
     vehiculo_verificado = datos.get('vehiculo_verificado')
     if vehiculo_verificado:
         datos['vehiculo'] = {**(datos.get('vehiculo') or {}), **vehiculo_verificado}
+    else:
+        # Sin verificación por patente: conservar solo la patente; no aceptar marca/modelo
+        # que el LLM haya tomado del chat como sustituto.
+        veh = dict(datos.get('vehiculo') or {})
+        patente_ok = (
+            (veh.get('patente') or '').strip()
+            or (datos.get('patente_enriquecida') or '').strip()
+        )
+        veh = {'patente': patente_ok} if patente_ok else {}
+        datos['vehiculo'] = veh
+    patente_enriquecida = (datos.get('patente_enriquecida') or '').strip()
+    if patente_enriquecida:
+        datos['vehiculo'] = {**(datos.get('vehiculo') or {}), 'patente': patente_enriquecida}
     sesion.datos_capturados = datos
     sesion.ultima_interaccion_ia = timezone.now()
     sesion.save(update_fields=['datos_capturados', 'ultima_interaccion_ia', 'actualizado_en'])

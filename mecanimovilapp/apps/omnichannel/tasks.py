@@ -21,6 +21,22 @@ from mecanimovilapp.storage.utils import get_cpanel_file_url
 logger = logging.getLogger(__name__)
 
 
+def _encolar_agente_tras_media(message_id: int) -> None:
+    """Encola el agente una sola vez por mensaje (idempotente)."""
+    from mecanimovilapp.apps.agente_ia.hooks import encolar_agente_para_mensaje
+
+    message = Message.objects.filter(pk=message_id).first()
+    if not message:
+        return
+    cur_meta = dict(message.channel_metadata or {})
+    if cur_meta.get('agente_ia_encolado'):
+        return
+    cur_meta['agente_ia_encolado'] = True
+    Message.objects.filter(pk=message_id).update(channel_metadata=cur_meta)
+    message.refresh_from_db()
+    encolar_agente_para_mensaje(message)
+
+
 @shared_task(name='omnichannel.process_meta_webhook', queue='default')
 def process_meta_webhook(raw_body: str):
     try:
@@ -33,92 +49,93 @@ def process_meta_webhook(raw_body: str):
         raise
 
 
-@shared_task(name='omnichannel.fetch_inbound_meta_media', queue='default')
-def fetch_inbound_meta_media(message_id: int):
+@shared_task(
+    name='omnichannel.fetch_inbound_meta_media',
+    queue='default',
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_kwargs={'max_retries': 3},
+)
+def fetch_inbound_meta_media(self, message_id: int):
     message = Message.objects.select_related(
         'conversation',
         'conversation__external_contact',
         'conversation__external_contact__connection',
     ).get(pk=message_id)
-    meta = message.channel_metadata or {}
+    meta = dict(message.channel_metadata or {})
     result = {'skipped': True}
+
+    if message.attachment:
+        _encolar_agente_tras_media(message_id)
+        return {'skipped': True, 'reason': 'already_attached'}
+
+    media = meta.get('media')
+    if not media:
+        _encolar_agente_tras_media(message_id)
+        return {'skipped': True, 'reason': 'no_media'}
+
+    conversation = message.conversation
+    contact = conversation.external_contact
+    connection = contact.connection if contact else None
+    if not connection or not connection.access_token:
+        logger.error('fetch_inbound_meta_media: no connection for message %s', message_id)
+        meta['media_error'] = 'no_connection'
+        Message.objects.filter(pk=message_id).update(channel_metadata=meta)
+        _encolar_agente_tras_media(message_id)
+        return {'error': 'no_connection'}
+
+    token = connection.access_token
     try:
-        if message.attachment:
-            result = {'skipped': True, 'reason': 'already_attached'}
-            return result
-
-        media = meta.get('media')
-        if not media:
-            result = {'skipped': True, 'reason': 'no_media'}
-            return result
-
-        conversation = message.conversation
-        contact = conversation.external_contact
-        connection = contact.connection if contact else None
-        if not connection or not connection.access_token:
-            logger.error('fetch_inbound_meta_media: no connection for message %s', message_id)
-            result = {'error': 'no_connection'}
-            return result
-
-        token = connection.access_token
-        try:
-            if media.get('media_id'):
-                content, filename, kind = fetch_whatsapp_media_bytes(media['media_id'], token)
-            elif media.get('url'):
-                content, filename, kind = fetch_url_media_bytes(
-                    media['url'],
-                    token,
-                    kind_hint=media.get('kind'),
-                )
-            else:
-                result = {'error': 'unsupported_media_meta'}
-                return result
-
-            save_message_attachment(message, content, filename)
-            message.refresh_from_db(fields=['attachment'])
-
-            attachment_url = get_cpanel_file_url(message.attachment)
-            channel_slug = channel_to_api_slug(connection.channel)
-            sender_name = contact.display_name or contact.phone or 'Contacto'
-            payload = build_chat_payload(
-                conversation=conversation,
-                message=message,
-                channel_slug=channel_slug,
-                es_proveedor=False,
-                sender_name=sender_name,
-                external_contact=contact,
-                attachment_url=attachment_url,
+        if media.get('media_id'):
+            content, filename, kind = fetch_whatsapp_media_bytes(media['media_id'], token)
+        elif media.get('url'):
+            content, filename, kind = fetch_url_media_bytes(
+                media['url'],
+                token,
+                kind_hint=media.get('kind'),
             )
-            broadcast_to_participants(conversation, payload)
-            result = {'ok': True, 'kind': kind}
-            return result
-        except Exception as exc:
-            logger.exception('fetch_inbound_meta_media failed for %s: %s', message_id, exc)
-            Message.objects.filter(pk=message_id).update(
-                channel_metadata={
-                    **meta,
-                    'media_error': str(exc)[:500],
-                },
-            )
-            result = {'error': str(exc)[:200]}
-            raise
-    finally:
-        # Aunque falle la descarga, encola el agente (caption / etiqueta).
-        # Idempotente ante retries de Celery.
-        try:
-            from mecanimovilapp.apps.agente_ia.hooks import encolar_agente_para_mensaje
+        else:
+            meta['media_error'] = 'unsupported_media_meta'
+            Message.objects.filter(pk=message_id).update(channel_metadata=meta)
+            _encolar_agente_tras_media(message_id)
+            return {'error': 'unsupported_media_meta'}
 
-            message.refresh_from_db()
-            cur_meta = dict(message.channel_metadata or {})
-            if not cur_meta.get('agente_ia_encolado'):
-                cur_meta['agente_ia_encolado'] = True
-                Message.objects.filter(pk=message_id).update(channel_metadata=cur_meta)
-                encolar_agente_para_mensaje(message)
-        except Exception:
-            logger.exception(
-                'No se pudo encolar agente tras fetch media message=%s',
+        # WhatsApp voice notes: guardar extensión coherente con OGG/Opus.
+        if kind == 'audio' and filename.endswith('.m4a') and media.get('mime_type', '').startswith('audio/ogg'):
+            filename = filename.rsplit('.', 1)[0] + '.ogg'
+
+        save_message_attachment(message, content, filename)
+        message.refresh_from_db(fields=['attachment'])
+
+        attachment_url = get_cpanel_file_url(message.attachment)
+        channel_slug = channel_to_api_slug(connection.channel)
+        sender_name = contact.display_name or contact.phone or 'Contacto'
+        payload = build_chat_payload(
+            conversation=conversation,
+            message=message,
+            channel_slug=channel_slug,
+            es_proveedor=False,
+            sender_name=sender_name,
+            external_contact=contact,
+            attachment_url=attachment_url,
+        )
+        broadcast_to_participants(conversation, payload)
+        _encolar_agente_tras_media(message_id)
+        return {'ok': True, 'kind': kind}
+    except Exception as exc:
+        logger.exception('fetch_inbound_meta_media failed for %s: %s', message_id, exc)
+        meta['media_error'] = str(exc)[:500]
+        Message.objects.filter(pk=message_id).update(channel_metadata=meta)
+        retries = getattr(self.request, 'retries', 0)
+        max_retries = getattr(self, 'max_retries', 3) or 3
+        if retries >= max_retries:
+            logger.warning(
+                'fetch_inbound_meta_media agotó reintentos msg=%s; agente en modo degradado',
                 message_id,
             )
+            _encolar_agente_tras_media(message_id)
+        raise
 
 
 def _meta_attachment_type(kind: str) -> str:

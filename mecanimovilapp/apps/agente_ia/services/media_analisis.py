@@ -54,6 +54,16 @@ def _parse_json(text: str) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+def _normalizar_mime(mime: str) -> str:
+    """Gemini rechaza MIME con parámetros (ej. audio/ogg; codecs=opus)."""
+    base = (mime or '').split(';')[0].strip().lower()
+    if base.startswith('audio/ogg') or base == 'application/ogg':
+        return 'audio/ogg'
+    if base.startswith('audio/'):
+        return base
+    return base or 'application/octet-stream'
+
+
 def _mime_from_message(message, kind: str | None) -> str:
     name = ''
     if getattr(message, 'attachment', None):
@@ -109,7 +119,7 @@ def _leer_adjunto_bytes(message) -> tuple[bytes | None, str, str]:
                 message.attachment.close()
             except Exception:
                 pass
-        mime = media.get('mime_type') or _mime_from_message(message, kind)
+        mime = _normalizar_mime(media.get('mime_type') or _mime_from_message(message, kind))
         if not kind:
             from mecanimovilapp.apps.omnichannel.services.meta_media import infer_media_kind
 
@@ -200,6 +210,7 @@ def analizar_adjunto_mensaje(
     caption = (message.content or '').strip()
     prompt = _prompt_analisis(vehiculo=vehiculo or {}, caption=caption, kind=kind or 'adjunto')
 
+    mime = _normalizar_mime(mime)
     b64 = base64.b64encode(raw).decode('ascii')
     url = (
         f'https://generativelanguage.googleapis.com/v1beta/models/{model}:'
@@ -271,10 +282,26 @@ def analizar_adjunto_mensaje(
     return resultado
 
 
+def _nota_adjunto_degradado(analisis: dict[str, Any]) -> str:
+    kind = (analisis.get('kind') or analisis.get('tipo_medio') or 'media').strip()
+    if analisis.get('pendiente'):
+        return f'[Adjunto de {kind} recibido; aún no se pudo analizar — pide al cliente que lo reenvíe o lo describa]'
+    if analisis.get('error'):
+        return f'[Adjunto de {kind} recibido; el análisis falló ({analisis.get("error")}) — pide descripción o reenvío]'
+    return ''
+
+
 def texto_cliente_enriquecido(message, analisis: dict[str, Any] | None) -> str:
     """Texto efectivo del turno: caption + análisis multimodal."""
     base = (message.content or '').strip()
-    if not analisis or analisis.get('pendiente') or analisis.get('error'):
+    if not analisis:
+        return base
+    if analisis.get('pendiente') or analisis.get('error'):
+        nota = _nota_adjunto_degradado(analisis)
+        if nota and (not base or es_solo_etiqueta_media(base)):
+            return nota
+        if nota:
+            return f'{base}\n{nota}'.strip()
         return base
 
     partes: list[str] = []

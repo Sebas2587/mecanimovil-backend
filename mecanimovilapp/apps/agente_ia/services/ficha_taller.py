@@ -14,11 +14,73 @@ equipo de mecánicos y su modalidad, y horario general del taller.
 """
 from __future__ import annotations
 
+from datetime import date, timedelta
+
+from django.utils import timezone
+
 from mecanimovilapp.apps.usuarios.models import HorarioProveedor, MiembroTaller, Taller
+
+_DIAS_ES = {
+    0: 'lun',
+    1: 'mar',
+    2: 'mié',
+    3: 'jue',
+    4: 'vie',
+    5: 'sáb',
+    6: 'dom',
+}
+
+_DIAS_ES_LARGO = {
+    0: 'Lunes',
+    1: 'Martes',
+    2: 'Miércoles',
+    3: 'Jueves',
+    4: 'Viernes',
+    5: 'Sábado',
+    6: 'Domingo',
+}
 
 
 def _formatear_clp(valor) -> str:
     return f'${int(valor or 0):,}'.replace(',', '.')
+
+
+def _formatear_fecha_corta(f: date) -> str:
+    return f'{_DIAS_ES.get(f.weekday(), "")} {f.day}/{f.month:02d}'
+
+
+def _proxima_fecha_para_dia_semana(dia_semana: int, *, desde: date | None = None) -> date:
+    """Próxima ocurrencia calendario del día de semana (0=lunes … 6=domingo)."""
+    hoy = desde or timezone.localdate()
+    delta = (dia_semana - hoy.weekday()) % 7
+    if delta == 0:
+        return hoy
+    return hoy + timedelta(days=delta)
+
+
+def _taller_abierto_ahora(taller: Taller) -> bool:
+    ahora = timezone.localtime()
+    dia = ahora.weekday()
+    hora = ahora.time()
+    horarios = HorarioProveedor.objects.filter(
+        taller=taller,
+        miembro_taller__isnull=True,
+        activo=True,
+        dia_semana=dia,
+    )
+    return any(h.hora_inicio <= hora <= h.hora_fin for h in horarios)
+
+
+def _bloque_fecha_actual(taller: Taller) -> str:
+    ahora = timezone.localtime()
+    hoy = ahora.date()
+    dia_nombre = _DIAS_ES_LARGO.get(hoy.weekday(), '')
+    estado = 'ABIERTO ahora' if _taller_abierto_ahora(taller) else 'CERRADO ahora (fuera de horario)'
+    return (
+        f'Fecha y hora actual en Chile: {dia_nombre} {hoy.strftime("%d/%m/%Y")} '
+        f'{ahora.strftime("%H:%M")}. El taller está {estado}. '
+        f'Usa esta fecha para razonar "hoy", "mañana" y próximos días de agenda.'
+    )
 
 
 def _bloque_modalidad(taller: Taller) -> str:
@@ -70,6 +132,13 @@ def _bloque_equipo(taller: Taller) -> str:
     return '\n'.join(lineas)
 
 
+def _formatear_horario_con_proxima_fecha(horario: HorarioProveedor) -> str:
+    prox = _proxima_fecha_para_dia_semana(horario.dia_semana)
+    dia = horario.get_dia_semana_display()
+    rango = f'{horario.hora_inicio.strftime("%H:%M")}-{horario.hora_fin.strftime("%H:%M")}'
+    return f'{dia} {rango} (próxima fecha: {_formatear_fecha_corta(prox)})'
+
+
 def _bloque_horarios(taller: Taller) -> str:
     horarios = list(
         HorarioProveedor.objects.filter(taller=taller, miembro_taller__isnull=True, activo=True)
@@ -77,11 +146,53 @@ def _bloque_horarios(taller: Taller) -> str:
     )
     if not horarios:
         return 'Horario general del taller: no configurado todavía.'
-    dias = ', '.join(
-        f'{h.get_dia_semana_display()} {h.hora_inicio.strftime("%H:%M")}-{h.hora_fin.strftime("%H:%M")}'
-        for h in horarios
+    dias = ', '.join(_formatear_horario_con_proxima_fecha(h) for h in horarios)
+    return (
+        f'Horario general del taller: {dias}. '
+        'Si el cliente escribe fuera de este horario, igual puedes asesorar y cotizar; '
+        'solo al agendar una cita la fecha/hora debe caer dentro de estos rangos.'
     )
-    return f'Horario general del taller: {dias}.'
+
+
+def _bloque_horarios_mecanicos(taller: Taller) -> str | None:
+    miembros = list(
+        MiembroTaller.objects.filter(taller=taller, rol='mecanico', activo=True)
+    )
+    if not miembros:
+        return None
+
+    lineas = [
+        'Horarios por mecánico (usa esto si un técnico atiende solo ciertos días; '
+        'NO confundas "miércoles" con mañana si hoy no es martes):'
+    ]
+    hay_propios = False
+    for m in miembros:
+        horarios = list(
+            HorarioProveedor.objects.filter(miembro_taller=m, activo=True).order_by('dia_semana')
+        )
+        if not horarios:
+            continue
+        hay_propios = True
+        partes = ', '.join(_formatear_horario_con_proxima_fecha(h) for h in horarios)
+        lineas.append(f'- {m.nombre}: {partes}')
+
+    if not hay_propios:
+        return None
+    return '\n'.join(lineas)
+
+
+def _etiqueta_tipo_motor(tipo_motor: str) -> str:
+    tm = (tipo_motor or '').strip().lower()
+    if not tm:
+        return 'todos los motores'
+    mapping = {
+        'bencina': 'bencina/gasolina',
+        'gasolina': 'bencina/gasolina',
+        'diesel': 'diésel',
+        'electrico': 'eléctrico',
+        'hibrido': 'híbrido',
+    }
+    return mapping.get(tm, tm)
 
 
 def _bloque_catalogo(taller: Taller) -> str:
@@ -98,20 +209,38 @@ def _bloque_catalogo(taller: Taller) -> str:
     lineas = [
         'Catálogo de servicios publicados por el taller '
         '(usa EXACTAMENTE estos nombres si el cliente pregunta qué servicios ofrecen; '
-        'no inventes servicios que no estén en esta lista):'
+        'NO inventes servicios ni precios que no estén en esta lista; '
+        'precios al público incluyen IVA 19%):'
     ]
     for oferta in ofertas:
         marca = oferta.marca_vehiculo_seleccionada.nombre if oferta.marca_vehiculo_seleccionada_id else None
         modelo = oferta.modelo_vehiculo_seleccionado.nombre if oferta.modelo_vehiculo_seleccionado_id else None
         if marca and modelo:
-            cobertura_txt = f'{marca} {modelo}'
+            cobertura_txt = f'{marca} · {modelo}'
         elif marca:
             cobertura_txt = f'{marca} (todos los modelos)'
         else:
             cobertura_txt = 'todas las marcas/modelos'
-        precio = oferta.precio_con_repuestos or oferta.precio_sin_repuestos or 0
+
+        motor_txt = _etiqueta_tipo_motor(oferta.tipo_motor)
+        precio_con = int(oferta.precio_con_repuestos or 0)
+        precio_sin = int(oferta.precio_sin_repuestos or 0)
+        mano_obra = int(oferta.costo_mano_de_obra_sin_iva or 0)
+        repuestos = int(oferta.costo_repuestos_sin_iva or 0)
+
+        precios_partes: list[str] = []
+        if precio_con:
+            precios_partes.append(f'con repuestos {_formatear_clp(precio_con)} (IVA incl.)')
+        if precio_sin:
+            precios_partes.append(f'sin repuestos {_formatear_clp(precio_sin)} (IVA incl.)')
+        if mano_obra:
+            precios_partes.append(f'mano de obra sin IVA {_formatear_clp(mano_obra)}')
+        if repuestos:
+            precios_partes.append(f'repuestos sin IVA {_formatear_clp(repuestos)}')
+        precios_txt = ' · '.join(precios_partes) if precios_partes else 'precio no configurado'
+
         lineas.append(
-            f'- {oferta.servicio.nombre} · {cobertura_txt} · desde {_formatear_clp(precio)} CLP'
+            f'- {oferta.servicio.nombre} · {cobertura_txt} · motor {motor_txt} · {precios_txt}'
         )
     return '\n'.join(lineas)
 
@@ -127,11 +256,13 @@ def construir_ficha_operativa_taller(taller: Taller) -> str:
     nombre = (taller.nombre or '').strip() or f'Taller #{taller.id}'
     bloques = [
         f'Nombre comercial del taller: {nombre}',
+        _bloque_fecha_actual(taller),
         _bloque_modalidad(taller),
         _bloque_cobertura_marcas(taller),
         _bloque_especialidades(taller),
         _bloque_equipo(taller),
         _bloque_horarios(taller),
+        _bloque_horarios_mecanicos(taller),
         _bloque_catalogo(taller),
     ]
     return '\n\n'.join(b for b in bloques if b)

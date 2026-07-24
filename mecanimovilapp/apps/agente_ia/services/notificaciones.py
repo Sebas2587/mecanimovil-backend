@@ -95,6 +95,7 @@ def notificar_cotizacion_borrador_agente(
     proveedor_user_id: int,
     cotizacion: CotizacionCanal,
     conversation_id: int,
+    precio_desde_catalogo: bool = False,
 ) -> None:
     from mecanimovilapp.apps.usuarios.models import Notificacion
     from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
@@ -106,10 +107,18 @@ def notificar_cotizacion_borrador_agente(
         return
 
     titulo = 'Cotización IA lista para revisar'
-    mensaje = (
-        f'El agente generó un borrador para "{cotizacion.servicio_nombre or "servicio"}". '
-        f'Revisa y ajusta los precios antes de enviar al cliente.'
-    )
+    if precio_desde_catalogo:
+        mensaje = (
+            f'El agente generó un borrador para "{cotizacion.servicio_nombre or "servicio"}" '
+            f'con precio desde tu catálogo (${int(cotizacion.total_clp or 0):,} CLP). '
+            f'Revisa antes de enviar al cliente.'
+        ).replace(',', '.')
+    else:
+        mensaje = (
+            f'El agente generó un borrador para "{cotizacion.servicio_nombre or "servicio"}" '
+            f'con precio estimado por IA (${int(cotizacion.total_clp or 0):,} CLP). '
+            f'No hay match exacto en catálogo — revisa y ajusta antes de enviar.'
+        ).replace(',', '.')
     data = {
         'type': 'agente_ia_cotizacion_borrador',
         'cotizacion_id': cotizacion.id,
