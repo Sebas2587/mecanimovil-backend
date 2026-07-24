@@ -510,6 +510,20 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
     if not texto_cliente:
         return {'skipped': True, 'reason': 'empty_message'}
 
+    if sesion.estado == AgenteConversacionSesion.ESTADO_AGENDANDO:
+        from mecanimovilapp.apps.agente_ia.services.agendamiento_conversacional import (
+            procesar_turno_agendamiento,
+        )
+
+        return procesar_turno_agendamiento(
+            sesion=sesion,
+            message=message,
+            texto_cliente=texto_cliente,
+            conversation=conversation,
+            taller=taller,
+            proveedor_user_id=proveedor_user_id,
+        )
+
     contexto_media_txt = ''
     if analisis_media and not analisis_media.get('pendiente') and not analisis_media.get('error'):
         contexto_media_txt = json.dumps(analisis_media, ensure_ascii=False)
@@ -671,58 +685,32 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             proveedor_user_id=proveedor_user_id,
             datos=datos_cot,
         )
-        enviada = False
-        if cotizacion and proveedor:
-            try:
-                from mecanimovilapp.apps.ordenes.services.cotizacion_canal import enviar_cotizacion_canal
-                from mecanimovilapp.apps.ordenes.services.cotizacion_publica import asegurar_token_cotizacion
-                from mecanimovilapp.apps.omnichannel.tasks import send_meta_message
-                from mecanimovilapp.apps.agente_ia.services.notificaciones import (
-                    notificar_cotizacion_enviada_agente,
-                )
-
-                asegurar_token_cotizacion(cotizacion)
-                if cotizacion.url_publica:
-                    meta_extra = dict(cotizacion.metadata or {})
-                    meta_extra['url_publica'] = cotizacion.url_publica
-                    cotizacion.metadata = meta_extra
-                    cotizacion.save(update_fields=['metadata', 'actualizado_en'])
-
-                message = enviar_cotizacion_canal(cotizacion, proveedor)
-                if conversation.source_channel != 'APP':
-                    send_meta_message.delay(message.id)
-
-                sesion.estado = AgenteConversacionSesion.ESTADO_CAPTURANDO
-                sesion.save(update_fields=['estado', 'actualizado_en'])
-                notificar_cotizacion_enviada_agente(
-                    proveedor_user_id=proveedor_user_id,
-                    cotizacion=cotizacion,
-                    conversation_id=conversation.id,
-                )
-                enviada = True
-            except Exception as exc:
-                logger.exception('No se pudo enviar cotización automática del agente: %s', exc)
-
-        if respuesta and not enviada:
+        mensaje_cliente = respuesta or (
+            'Ya tengo todo lo que necesito, estoy preparando tu cotización — '
+            'en breve el taller te la envía.'
+        )
+        if cotizacion:
             enviar_respuesta_agente(
                 conversation=conversation,
                 proveedor_user_id=proveedor_user_id,
-                texto=respuesta
-                or 'Estoy preparando tu cotización referencial; te la envío en un momento.',
+                texto=mensaje_cliente,
             )
-        elif enviada and respuesta:
-            # Mensaje corto previo opcional; la cotización interactive ya va en el canal
-            pass
+        elif respuesta:
+            enviar_respuesta_agente(
+                conversation=conversation,
+                proveedor_user_id=proveedor_user_id,
+                texto=respuesta,
+            )
 
         AgenteMensajeLog.objects.create(
             sesion=sesion,
             mensaje_entrante=texto_cliente,
             chunks_usados=chunk_ids,
-            respuesta_generada=respuesta,
+            respuesta_generada=mensaje_cliente if cotizacion else respuesta,
             accion=AgenteMensajeLog.ACCION_COTIZAR,
             metadata={
                 'cotizacion_id': cotizacion.id if cotizacion else None,
-                'enviada_auto': enviada,
+                'enviada_auto': False,
                 'intencion': intencion,
                 'cliente_pide_cotizacion': cliente_pide_cotizacion,
                 'media': bool(analisis_media and not analisis_media.get('error')),
@@ -732,7 +720,7 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             'ok': True,
             'accion': 'cotizar',
             'cotizacion_id': cotizacion.id if cotizacion else None,
-            'enviada': enviada,
+            'enviada': False,
         }
 
     if respuesta:

@@ -27,6 +27,10 @@ class TallerAgenteConfig(models.Model):
         help_text='Lista de canales donde el agente puede responder (WHATSAPP, MESSENGER, INSTAGRAM, APP).',
     )
     mensaje_bienvenida = models.TextField(blank=True, default='')
+    recargo_domicilio_clp = models.PositiveIntegerField(
+        default=5000,
+        help_text='Recargo fijo (CLP) que se suma a la mano de obra cuando la modalidad es a domicilio.',
+    )
     creado_en = models.DateTimeField(auto_now_add=True)
     actualizado_en = models.DateTimeField(auto_now=True)
 
@@ -163,6 +167,7 @@ class AgenteConversacionSesion(models.Model):
     ESTADO_CAPTURANDO = 'capturando'
     ESTADO_LISTO_COTIZAR = 'listo_para_cotizar'
     ESTADO_ESPERANDO_REVISION = 'esperando_revision_taller'
+    ESTADO_AGENDANDO = 'agendando'
     ESTADO_PAUSADO = 'pausado_por_taller'
     ESTADO_CERRADO = 'cerrado'
 
@@ -170,6 +175,7 @@ class AgenteConversacionSesion(models.Model):
         (ESTADO_CAPTURANDO, 'Capturando información'),
         (ESTADO_LISTO_COTIZAR, 'Listo para cotizar'),
         (ESTADO_ESPERANDO_REVISION, 'Esperando revisión del taller'),
+        (ESTADO_AGENDANDO, 'Agendando cita'),
         (ESTADO_PAUSADO, 'Pausado por taller'),
         (ESTADO_CERRADO, 'Cerrado'),
     ]
@@ -197,6 +203,13 @@ class AgenteConversacionSesion(models.Model):
         null=True,
         blank=True,
         related_name='agente_sesiones',
+    )
+    cita_en_negociacion = models.ForeignKey(
+        'ordenes.CitaAgendaPersonal',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='agente_sesiones_negociacion',
     )
     # Opt-in por conversación (ManyChat-style). No hereda de otros chats.
     habilitado_en_chat = models.BooleanField(

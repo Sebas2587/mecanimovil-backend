@@ -127,8 +127,6 @@ Vehículo:
 - Año: {ctx.get('anio', '')}
 - Patente: {ctx.get('patente', '')}
 - Cilindraje: {ctx.get('cilindraje', '')}
-- Modalidad: {ctx.get('modalidad', 'taller')}
-
 {motor_bloque}
 
 Servicio solicitado: {ctx.get('servicio_nombre', '')}
@@ -138,7 +136,7 @@ Contexto del chat reciente:
 {chat}
 {rag_bloque}
 REGLAS:
-1. Precios referenciales mercado Chile (CLP). Usa valores realistas para el servicio y repuestos típicos.
+1. Precios referenciales mercado Chile (CLP) para servicio en taller (sin recargo a domicilio). Usa valores realistas para el servicio y repuestos típicos.
 2. El motor efectivo de la cotización es {efectivo}. No mezcles repuestos diésel/bencina.
 3. Incluye mano de obra separada de repuestos.
 4. Lista repuestos probables con cantidad y precio unitario estimado.

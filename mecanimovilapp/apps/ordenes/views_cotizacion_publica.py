@@ -10,6 +10,7 @@ from mecanimovilapp.apps.ordenes.services.cotizacion_publica import (
     cotizacion_publica_expirada,
     marcar_cotizacion_expirada_si_corresponde,
     marcar_visto,
+    on_cotizacion_respondida,
     rechazar_cotizacion_publica,
     serializar_cotizacion_publica,
 )
@@ -23,7 +24,7 @@ class CotizacionPublicaDetailView(views.APIView):
     def get(self, request, token=None):
         cotizacion = (
             CotizacionCanal.objects.select_related('taller', 'taller__direccion_fisica')
-            .filter(token=token, es_libre=True)
+            .filter(token=token)
             .first()
         )
         if cotizacion is None:
@@ -50,7 +51,7 @@ class CotizacionPublicaAceptarView(views.APIView):
     def post(self, request, token=None):
         cotizacion = (
             CotizacionCanal.objects.select_related('taller', 'taller__direccion_fisica', 'creado_por')
-            .filter(token=token, es_libre=True)
+            .filter(token=token)
             .first()
         )
         if cotizacion is None:
@@ -74,6 +75,7 @@ class CotizacionPublicaAceptarView(views.APIView):
             cotizacion, cita = aceptar_cotizacion_publica(cotizacion)
         except ValueError as exc:
             return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        on_cotizacion_respondida(cotizacion, 'aceptar', cita_id=cita.id)
         data = serializar_cotizacion_publica(cotizacion)
         data['cita_id'] = cita.id
         data['horario_por_confirmar'] = True
@@ -87,7 +89,7 @@ class CotizacionPublicaRechazarView(views.APIView):
     def post(self, request, token=None):
         cotizacion = (
             CotizacionCanal.objects.select_related('taller', 'taller__direccion_fisica')
-            .filter(token=token, es_libre=True)
+            .filter(token=token)
             .first()
         )
         if cotizacion is None:
@@ -111,4 +113,5 @@ class CotizacionPublicaRechazarView(views.APIView):
             cotizacion = rechazar_cotizacion_publica(cotizacion)
         except ValueError as exc:
             return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        on_cotizacion_respondida(cotizacion, 'rechazar')
         return Response(serializar_cotizacion_publica(cotizacion))

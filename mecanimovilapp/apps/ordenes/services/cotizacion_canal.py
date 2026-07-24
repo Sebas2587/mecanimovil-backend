@@ -70,6 +70,23 @@ def metadata_cotizacion_mensaje(cotizacion: CotizacionCanal, *, estado: str = 'e
     }
 
 
+def formatear_teaser_cotizacion(cotizacion: CotizacionCanal) -> str:
+    servicio = cotizacion.servicio_nombre or 'tu servicio'
+    vehiculo = ' '.join(
+        filter(None, [cotizacion.vehiculo_marca, cotizacion.vehiculo_modelo])
+    ).strip() or 'tu vehículo'
+    url = cotizacion.url_publica or ''
+    if url:
+        return (
+            f'¡Tu cotización para {servicio} ({vehiculo}) está lista! '
+            f'Revísala y respóndela aquí: {url}'
+        )
+    return (
+        f'¡Tu cotización para {servicio} ({vehiculo}) está lista! '
+        'Revisa los detalles y respóndenos cuando puedas.'
+    )
+
+
 def formatear_resumen_cotizacion(cotizacion: CotizacionCanal) -> str:
     modalidad_label = 'Servicio a domicilio' if cotizacion.modalidad == 'domicilio' else 'Servicio en taller'
     lineas = [
@@ -181,12 +198,21 @@ def enviar_cotizacion_canal(cotizacion: CotizacionCanal, user) -> Message:
         update_fields=['costo_repuestos_clp', 'mano_obra_clp', 'total_clp', 'actualizado_en'],
     )
 
-    resumen = formatear_resumen_cotizacion(cotizacion)
+    from mecanimovilapp.apps.ordenes.services.cotizacion_publica import asegurar_token_cotizacion
+
+    asegurar_token_cotizacion(cotizacion)
+    if cotizacion.url_publica:
+        meta_extra = dict(cotizacion.metadata or {})
+        meta_extra['url_publica'] = cotizacion.url_publica
+        cotizacion.metadata = meta_extra
+        cotizacion.save(update_fields=['metadata', 'actualizado_en'])
+
+    teaser = formatear_teaser_cotizacion(cotizacion)
     meta = metadata_cotizacion_mensaje(cotizacion, estado='enviada')
     message = Message.objects.create(
         conversation=conversation,
         sender=user,
-        content=resumen,
+        content=teaser,
         direction='outbound',
         channel_metadata=meta,
     )
@@ -194,7 +220,16 @@ def enviar_cotizacion_canal(cotizacion: CotizacionCanal, user) -> Message:
     cotizacion.estado = 'enviada'
     cotizacion.enviada_en = timezone.now()
     cotizacion.save(
-        update_fields=['message_envio', 'estado', 'enviada_en', 'actualizado_en'],
+        update_fields=[
+            'message_envio',
+            'estado',
+            'enviada_en',
+            'token',
+            'url_publica',
+            'fecha_expiracion_publica',
+            'metadata',
+            'actualizado_en',
+        ],
     )
 
     from mecanimovilapp.apps.omnichannel.services.broadcast import (
@@ -260,28 +295,31 @@ def procesar_respuesta_interactive_cotizacion(
 
     cita_id = None
     if accion == 'aceptar':
-        # Reutiliza el flujo de cotización pública: acepta + crea cita en bandeja
-        from mecanimovilapp.apps.ordenes.services.cotizacion_publica import aceptar_cotizacion_publica
+        from mecanimovilapp.apps.ordenes.services.cotizacion_publica import (
+            aceptar_cotizacion_publica,
+            on_cotizacion_respondida,
+        )
 
         cotizacion, cita = aceptar_cotizacion_publica(cotizacion)
         cita_id = cita.id if cita else None
-        proveedor_id = cotizacion.creado_por_id or getattr(cotizacion.taller, 'usuario_id', None)
-        if proveedor_id:
-            from mecanimovilapp.apps.agente_ia.services.notificaciones import (
-                notificar_cotizacion_aceptada_agente,
-            )
-
-            notificar_cotizacion_aceptada_agente(
-                proveedor_user_id=proveedor_id,
-                cotizacion=cotizacion,
-                conversation_id=conversation.id,
-                cita_id=cita_id,
-            )
+        on_cotizacion_respondida(
+            cotizacion,
+            'aceptar',
+            conversation=conversation,
+            cita_id=cita_id,
+        )
     else:
-        ahora = timezone.now()
-        cotizacion.estado = 'rechazada'
-        cotizacion.rechazada_en = ahora
-        cotizacion.save(update_fields=['estado', 'rechazada_en', 'actualizado_en'])
+        from mecanimovilapp.apps.ordenes.services.cotizacion_publica import (
+            on_cotizacion_respondida,
+            rechazar_cotizacion_publica,
+        )
+
+        cotizacion = rechazar_cotizacion_publica(cotizacion)
+        on_cotizacion_respondida(
+            cotizacion,
+            'rechazar',
+            conversation=conversation,
+        )
 
     if cotizacion.message_envio_id:
         meta = dict(cotizacion.message_envio.channel_metadata or {})

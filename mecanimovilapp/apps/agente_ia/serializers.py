@@ -16,6 +16,7 @@ class TallerAgenteConfigSerializer(serializers.ModelSerializer):
             'instrucciones_personalizadas',
             'canales_habilitados',
             'mensaje_bienvenida',
+            'recargo_domicilio_clp',
             'actualizado_en',
         ]
         read_only_fields = ['actualizado_en']
@@ -55,6 +56,7 @@ class AgenteSesionSerializer(serializers.ModelSerializer):
             'pausado_por_taller',
             'pausado_hasta',
             'cotizacion_borrador',
+            'cita_en_negociacion',
             'ultima_interaccion_ia',
         ]
         read_only_fields = fields

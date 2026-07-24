@@ -231,3 +231,54 @@ def rechazar_cotizacion_publica(cotizacion: CotizacionCanal) -> CotizacionCanal:
     cotizacion.rechazada_en = timezone.now()
     cotizacion.save(update_fields=['estado', 'rechazada_en', 'actualizado_en'])
     return cotizacion
+
+
+def on_cotizacion_respondida(
+    cotizacion: CotizacionCanal,
+    accion: str,
+    *,
+    conversation=None,
+    cita_id: int | None = None,
+) -> None:
+    """Notifica al taller y encola tareas del agente tras aceptar/rechazar."""
+    from mecanimovilapp.apps.chat.models import Conversation
+
+    conv = conversation or cotizacion.conversation
+    proveedor_id = cotizacion.creado_por_id
+    if not proveedor_id and cotizacion.taller_id:
+        proveedor_id = getattr(cotizacion.taller, 'usuario_id', None)
+
+    if not proveedor_id:
+        return
+
+    conversation_id = conv.id if conv else cotizacion.conversation_id
+
+    if accion == 'aceptar':
+        from mecanimovilapp.apps.agente_ia.services.notificaciones import (
+            notificar_cotizacion_aceptada_agente,
+        )
+
+        notificar_cotizacion_aceptada_agente(
+            proveedor_user_id=proveedor_id,
+            cotizacion=cotizacion,
+            conversation_id=conversation_id or 0,
+            cita_id=cita_id,
+        )
+        if conv and isinstance(conv, Conversation):
+            from mecanimovilapp.apps.agente_ia.tasks import iniciar_agendamiento_task
+
+            iniciar_agendamiento_task.delay(cotizacion.id)
+    elif accion == 'rechazar':
+        from mecanimovilapp.apps.agente_ia.services.notificaciones import (
+            notificar_cotizacion_rechazada_agente,
+        )
+
+        notificar_cotizacion_rechazada_agente(
+            proveedor_user_id=proveedor_id,
+            cotizacion=cotizacion,
+            conversation_id=conversation_id or 0,
+        )
+        if conv and isinstance(conv, Conversation):
+            from mecanimovilapp.apps.agente_ia.tasks import reaccionar_rechazo_task
+
+            reaccionar_rechazo_task.delay(cotizacion.id)
