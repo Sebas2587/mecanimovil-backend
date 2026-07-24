@@ -231,7 +231,8 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
         if obj.estado == 'cancelada':
             return 'cancelado'
         if obj.estado == 'cerrada':
-            return 'cerrado'
+            # Cita cerrada = servicio completado (mismo semántica UI que marketplace).
+            return 'completado'
         if obj.horario_por_confirmar:
             return 'por_agendar'
 
