@@ -72,12 +72,14 @@ def _read_limited_response(resp: requests.Response, max_bytes: int) -> bytes:
 
 
 def download_bytes(url: str, token: str | None = None, max_bytes: int = MAX_MEDIA_BYTES) -> bytes:
-    download_url = url
-    if token and 'access_token=' not in url:
-        sep = '&' if '?' in url else '?'
-        download_url = f'{url}{sep}access_token={token}'
-    headers = {'Authorization': f'Bearer {token}'} if token else {}
-    resp = requests.get(download_url, headers=headers, stream=True, timeout=90)
+    # El CDN de Meta (lookaside.fbsbx.com) responde 401 si el User-Agent no
+    # parece un cliente "real" (python-requests es rechazado). El access_token
+    # va SOLO en el header Authorization; agregarlo también como query param
+    # puede hacer que el CDN lo rechace.
+    headers = {'User-Agent': 'curl/7.64.1'}
+    if token:
+        headers['Authorization'] = f'Bearer {token}'
+    resp = requests.get(url, headers=headers, stream=True, timeout=90)
     if resp.status_code >= 400:
         raise RuntimeError(f'Media download failed: {resp.status_code} {resp.text[:200]}')
     return _read_limited_response(resp, max_bytes)
