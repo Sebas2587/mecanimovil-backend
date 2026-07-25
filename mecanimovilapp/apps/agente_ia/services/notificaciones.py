@@ -97,6 +97,8 @@ def notificar_cotizacion_borrador_agente(
     cotizacion: CotizacionCanal,
     conversation_id: int,
     precio_desde_catalogo: bool = False,
+    listo_para_enviar: bool = False,
+    pendientes_revision: list[str] | None = None,
 ) -> None:
     from mecanimovilapp.apps.usuarios.models import Notificacion
     from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
@@ -107,19 +109,29 @@ def notificar_cotizacion_borrador_agente(
     if not usuario:
         return
 
-    titulo = 'Cotización IA lista para revisar'
-    if precio_desde_catalogo:
+    pendientes = [p for p in (pendientes_revision or []) if p]
+    servicio = cotizacion.servicio_nombre or 'servicio'
+    total_txt = f'${int(cotizacion.total_clp or 0):,} CLP'.replace(',', '.')
+
+    if listo_para_enviar:
+        titulo = 'Cotización lista para enviar'
         mensaje = (
-            f'El agente actualizó el borrador de "{cotizacion.servicio_nombre or "servicio"}" '
-            f'con precio desde tu catálogo (${int(cotizacion.total_clp or 0):,} CLP). '
-            f'Revisa en Cotizar con IA y envíala tú al cliente.'
-        ).replace(',', '.')
-    else:
-        mensaje = (
-            f'El agente actualizó el borrador de "{cotizacion.servicio_nombre or "servicio"}". '
-            f'Sin precio publicado en catálogo: completa el valor real en Cotizar con IA '
-            f'(la referencia IA es solo orientación) y envíala tú al cliente.'
+            f'El borrador de "{servicio}" está completo ({total_txt}). '
+            f'Revisa en Cotizar con IA y envíala al cliente con un clic.'
         )
+    else:
+        titulo = 'Cotización con pendientes'
+        pendientes_txt = '; '.join(pendientes[:4])
+        if precio_desde_catalogo:
+            mensaje = (
+                f'El agente actualizó el borrador de "{servicio}" ({total_txt}). '
+                f'Pendiente: {pendientes_txt}. Revisa en Cotizar con IA antes de enviar.'
+            )
+        else:
+            mensaje = (
+                f'El agente actualizó el borrador de "{servicio}". '
+                f'Pendiente: {pendientes_txt}. Completa el valor en Cotizar con IA y envíala tú.'
+            )
     data = {
         'type': 'agente_ia_cotizacion_borrador',
         'cotizacion_id': cotizacion.id,

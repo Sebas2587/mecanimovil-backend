@@ -177,25 +177,14 @@ def _telefono_desde_cotizacion(cotizacion: CotizacionCanal) -> str:
     return ''
 
 
-def aceptar_cotizacion_publica(cotizacion: CotizacionCanal) -> tuple[CotizacionCanal, CitaAgendaPersonal]:
-    if cotizacion.estado != 'enviada':
-        raise ValueError('Esta cotización ya fue respondida.')
-
-    ahora = timezone.now()
-    cotizacion.estado = 'aceptada'
-    cotizacion.aceptada_en = ahora
-
-    # Rellena teléfono/VIN en la cotización si el borrador los dejó vacíos.
-    tel_efectivo = _telefono_desde_cotizacion(cotizacion)
-    update_cot = ['estado', 'aceptada_en', 'actualizado_en']
-    if tel_efectivo and not (cotizacion.cliente_telefono or '').strip():
-        cotizacion.cliente_telefono = tel_efectivo
-        update_cot.append('cliente_telefono')
-    cotizacion.save(update_fields=update_cot)
-
+@transaction.atomic
+def crear_cita_desde_cotizacion_aceptada(cotizacion: CotizacionCanal) -> CitaAgendaPersonal:
+    """Crea cita personal placeholder tras aceptación (horario por confirmar vía agente IA)."""
     duracion = cotizacion.duracion_minutos_estimada or 60
     tipo_servicio = 'domicilio' if cotizacion.modalidad == 'domicilio' else 'taller'
     direccion = (cotizacion.direccion_servicio or '').strip()[:500]
+    tel_efectivo = _telefono_desde_cotizacion(cotizacion)
+    ahora = timezone.now()
 
     cita = CitaAgendaPersonal(
         taller=cotizacion.taller,
@@ -239,11 +228,32 @@ def aceptar_cotizacion_publica(cotizacion: CotizacionCanal) -> tuple[CotizacionC
     det.save()
 
     logger.info(
-        'Cotización pública %s aceptada → cita personal %s (horario por confirmar, tipo=%s)',
+        'Cotización %s aceptada → cita personal %s (horario por confirmar, tipo=%s)',
         cotizacion.id,
         cita.id,
         tipo_servicio,
     )
+    return cita
+
+
+@transaction.atomic
+def aceptar_cotizacion_publica(cotizacion: CotizacionCanal) -> tuple[CotizacionCanal, CitaAgendaPersonal]:
+    if cotizacion.estado != 'enviada':
+        raise ValueError('Esta cotización ya fue respondida.')
+
+    ahora = timezone.now()
+    cotizacion.estado = 'aceptada'
+    cotizacion.aceptada_en = ahora
+
+    # Rellena teléfono/VIN en la cotización si el borrador los dejó vacíos.
+    tel_efectivo = _telefono_desde_cotizacion(cotizacion)
+    update_cot = ['estado', 'aceptada_en', 'actualizado_en']
+    if tel_efectivo and not (cotizacion.cliente_telefono or '').strip():
+        cotizacion.cliente_telefono = tel_efectivo
+        update_cot.append('cliente_telefono')
+    cotizacion.save(update_fields=update_cot)
+
+    cita = crear_cita_desde_cotizacion_aceptada(cotizacion)
     return cotizacion, cita
 
 

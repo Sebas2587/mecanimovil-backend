@@ -270,13 +270,32 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='marcar-aceptada')
     def marcar_aceptada(self, request, pk=None):
         """Fallback mandante cuando cliente acepta por teléfono (Messenger/IG)."""
+        from django.db import transaction
+        from mecanimovilapp.apps.ordenes.services.cotizacion_publica import (
+            crear_cita_desde_cotizacion_aceptada,
+            on_cotizacion_respondida,
+        )
+
         cotizacion = self.get_object()
         if cotizacion.estado != 'enviada':
             raise ValidationError({'estado': 'Solo cotizaciones enviadas pueden marcarse como aceptadas.'})
-        cotizacion.estado = 'aceptada'
-        cotizacion.aceptada_en = timezone.now()
-        cotizacion.save(update_fields=['estado', 'aceptada_en', 'actualizado_en'])
-        return Response(CotizacionCanalSerializer(cotizacion).data)
+        with transaction.atomic():
+            cotizacion.estado = 'aceptada'
+            cotizacion.aceptada_en = timezone.now()
+            cotizacion.save(update_fields=['estado', 'aceptada_en', 'actualizado_en'])
+
+            cita = crear_cita_desde_cotizacion_aceptada(cotizacion)
+            on_cotizacion_respondida(
+                cotizacion,
+                'aceptar',
+                conversation=cotizacion.conversation,
+                cita_id=cita.id,
+            )
+
+        data = CotizacionCanalSerializer(cotizacion).data
+        data['cita_id'] = cita.id
+        data['horario_por_confirmar'] = True
+        return Response(data)
 
     @action(detail=True, methods=['post'], url_path='marcar-perdida')
     def marcar_perdida(self, request, pk=None):

@@ -39,6 +39,36 @@ ADVERTENCIA_DESDE_CATALOGO = 'Precio tomado del catálogo publicado del taller'
 ADVERTENCIA_MULTI_SERVICIO = 'Cotización unificada: varios servicios del mismo vehículo en un solo borrador'
 
 
+def evaluar_listo_para_enviar(
+    *,
+    lineas: list[dict[str, Any]],
+    modalidad: str,
+    direccion_servicio: str,
+    cliente_telefono: str,
+    vehiculo_patente: str,
+    patente_verificada: bool = False,
+) -> tuple[bool, list[str]]:
+    """Checklist determinístico antes de que el taller envíe la cotización al cliente."""
+    pendientes: list[str] = []
+
+    patente_ok = bool((vehiculo_patente or '').strip()) or patente_verificada
+    if not patente_ok:
+        pendientes.append('Falta patente del vehículo verificada')
+
+    if not (cliente_telefono or '').strip():
+        pendientes.append('Falta teléfono del cliente')
+
+    if modalidad == 'domicilio' and not (direccion_servicio or '').strip():
+        pendientes.append('Falta dirección para servicio a domicilio')
+
+    for linea in lineas or []:
+        nombre = (linea.get('nombre') or 'Servicio').strip()
+        if not linea.get('precio_desde_catalogo'):
+            pendientes.append(f'Falta precio de catálogo para {nombre}')
+
+    return (len(pendientes) == 0, pendientes)
+
+
 def _normalizar_nombre_servicio(texto: str) -> str:
     t = unicodedata.normalize('NFKD', (texto or '').strip().lower())
     return ''.join(c for c in t if not unicodedata.combining(c))
@@ -393,6 +423,24 @@ def crear_cotizacion_borrador_desde_agente(
                 prev_pref[k] = v
         preferencias_agenda = prev_pref
 
+    patente_verificada = bool(
+        (datos.get('patente_enriquecida') or '').strip()
+        or datos.get('vehiculo_verificado')
+        or datos.get('vehiculo_fuente') in ('registro_mecanimovil', 'getapi')
+    )
+    listo_para_enviar, pendientes_revision = evaluar_listo_para_enviar(
+        lineas=lineas,
+        modalidad=modalidad,
+        direccion_servicio=str(datos.get('direccion_servicio') or (
+            cotizacion_existente.direccion_servicio if cotizacion_existente else ''
+        )),
+        cliente_telefono=cliente_telefono,
+        vehiculo_patente=ctx.get('vehiculo_patente') or vehiculo.get('patente', '') or (
+            cotizacion_existente.vehiculo_patente if cotizacion_existente else ''
+        ),
+        patente_verificada=patente_verificada,
+    )
+
     metadata_cot = {
         **meta_prev,
         'origen': 'agente_ia',
@@ -404,6 +452,8 @@ def crear_cotizacion_borrador_desde_agente(
         'preferencias_agenda': preferencias_agenda,
         'requiere_revision_humana': True,
         'enviada_por_agente': False,
+        'listo_para_enviar': listo_para_enviar,
+        'pendientes_revision': pendientes_revision,
     }
 
     desc_prev = (cotizacion_existente.descripcion_problema if cotizacion_existente else '') or ''
@@ -498,5 +548,7 @@ def crear_cotizacion_borrador_desde_agente(
         cotizacion=cotizacion,
         conversation_id=conversation.id,
         precio_desde_catalogo=bool(hay_algun_catalogo and not faltan_precios_catalogo),
+        listo_para_enviar=listo_para_enviar,
+        pendientes_revision=pendientes_revision,
     )
     return cotizacion

@@ -180,6 +180,8 @@ def _fila_base(
     visto_sin_respuesta: bool = False,
     demorado_48h: bool = False,
     horario_por_confirmar: bool = False,
+    listo_para_enviar: bool = False,
+    pendientes_revision: list[str] | None = None,
 ) -> dict[str, Any]:
     return {
         'tipo_entidad': tipo_entidad,
@@ -210,6 +212,8 @@ def _fila_base(
         'visto_sin_respuesta': visto_sin_respuesta,
         'demorado_48h': demorado_48h,
         'horario_por_confirmar': horario_por_confirmar,
+        'listo_para_enviar': listo_para_enviar,
+        'pendientes_revision': list(pendientes_revision or []),
     }
 
 
@@ -349,6 +353,55 @@ def _filas_cotizaciones_canal(taller: Taller) -> list[dict[str, Any]]:
                 cotizacion_id=cot.id,
                 visto_sin_respuesta=_visto_sin_respuesta(estado_norm, cot.visto_en),
                 demorado_48h=_demorado_48h(fecha_ref, estado_norm),
+            )
+        )
+    return filas
+
+
+def _filas_cotizaciones_borrador_agente(taller: Taller) -> list[dict[str, Any]]:
+    """Borradores del agente IA pendientes de revisión/envío por el taller."""
+    qs = (
+        CotizacionCanal.objects.filter(
+            taller=taller,
+            estado='borrador',
+            metadata__origen='agente_ia',
+        )
+        .select_related('conversation', 'conversation__external_contact')
+        .order_by('-actualizado_en')[:50]
+    )
+    filas: list[dict[str, Any]] = []
+    for cot in qs:
+        meta = cot.metadata if isinstance(cot.metadata, dict) else {}
+        conv = cot.conversation
+        ext = getattr(conv, 'external_contact', None) if conv else None
+        cliente_nombre = (
+            (cot.cliente_nombre or '').strip()
+            or getattr(ext, 'display_name', None)
+            or 'Contacto'
+        )
+        cliente_telefono = (cot.cliente_telefono or '').strip() or getattr(ext, 'phone', '') or ''
+        origen = _canal_origen(conv) if conv else 'canal'
+        vehiculo_txt = ' '.join(
+            p for p in [cot.vehiculo_marca, cot.vehiculo_modelo] if p
+        ).strip()
+        fecha_ref = cot.actualizado_en or cot.creado_en
+        filas.append(
+            _fila_base(
+                tipo_entidad='cotizacion_canal',
+                entidad_id=str(cot.id),
+                origen=origen,
+                estado_normalizado='nuevo',
+                estado_raw='borrador',
+                cliente_nombre=str(cliente_nombre),
+                cliente_telefono=cliente_telefono,
+                vehiculo_resumen=vehiculo_txt,
+                servicio_resumen=(cot.servicio_nombre or cot.descripcion_problema or '')[:120],
+                monto_clp=_monto_a_float(cot.total_clp),
+                fecha_referencia=fecha_ref,
+                conversation_id=conv.id if conv else None,
+                cotizacion_id=cot.id,
+                listo_para_enviar=bool(meta.get('listo_para_enviar')),
+                pendientes_revision=list(meta.get('pendientes_revision') or []),
             )
         )
     return filas
@@ -607,6 +660,7 @@ def construir_pipeline_comercial(
     filas: list[dict[str, Any]] = []
     filas.extend(_filas_solicitudes_publicas_sin_oferta(user, taller))
     filas.extend(_filas_ofertas(user, taller))
+    filas.extend(_filas_cotizaciones_borrador_agente(taller))
     filas.extend(_filas_cotizaciones_canal(taller))
     filas.extend(_filas_citas_personales(taller, miembro_taller_id))
     filas.extend(_filas_solicitudes_directas(taller, user))
@@ -623,7 +677,13 @@ def construir_pipeline_comercial(
             if f.get('miembro_taller_id') in (None, miembro_taller_id)
         ]
 
-    filas.sort(key=lambda f: f.get('fecha_referencia') or '', reverse=True)
+    filas.sort(
+        key=lambda f: (
+            bool(f.get('listo_para_enviar')),
+            f.get('fecha_referencia') or '',
+        ),
+        reverse=True,
+    )
     # Una fila por conversación/cotización de canal: evita repetir el mismo
     # contacto varias veces cuando hay cotizaciones sucesivas en el mismo hilo.
     filas = _dedupe_pipeline_filas(filas)

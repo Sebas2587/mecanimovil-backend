@@ -21,6 +21,19 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
     canal = serializers.SerializerMethodField()
     cliente_display = serializers.SerializerMethodField()
     cita_personal_id = serializers.SerializerMethodField()
+    listo_para_enviar = serializers.SerializerMethodField()
+    pendientes_revision = serializers.SerializerMethodField()
+
+    def _metadata_agente(self, obj) -> dict:
+        meta = obj.metadata if isinstance(getattr(obj, 'metadata', None), dict) else {}
+        return meta
+
+    def get_listo_para_enviar(self, obj) -> bool:
+        return bool(self._metadata_agente(obj).get('listo_para_enviar'))
+
+    def get_pendientes_revision(self, obj) -> list[str]:
+        raw = self._metadata_agente(obj).get('pendientes_revision') or []
+        return [str(p) for p in raw if p]
 
     def get_share_url(self, obj) -> str | None:
         if obj.url_publica:
@@ -113,6 +126,8 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             'duracion_minutos_estimada',
             'advertencias',
             'metadata',
+            'listo_para_enviar',
+            'pendientes_revision',
             'message_envio',
             'enviada_en',
             'aceptada_en',
@@ -132,6 +147,8 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             'share_url',
             'visto_en',
             'estado',
+            'listo_para_enviar',
+            'pendientes_revision',
             'costo_repuestos_clp',
             'total_clp',
             'message_envio',

@@ -75,12 +75,68 @@ def _construir_resumen_dias(fechas: list[str]) -> str:
     return ', '.join(partes)
 
 
+def _categorias_desde_cotizacion(cotizacion: CotizacionCanal | None) -> list[int]:
+    """Categorías de servicio requeridas según las ofertas del borrador/cotización."""
+    if cotizacion is None:
+        return []
+    meta = cotizacion.metadata if isinstance(getattr(cotizacion, 'metadata', None), dict) else {}
+    lineas = meta.get('servicios_lineas') or []
+    ids_oferta = [
+        int(l['oferta_servicio_id'])
+        for l in lineas
+        if l.get('oferta_servicio_id')
+    ]
+    if not ids_oferta:
+        return []
+    from mecanimovilapp.apps.servicios.models import OfertaServicio
+
+    cat_ids: set[int] = set()
+    for oferta in OfertaServicio.objects.filter(pk__in=ids_oferta).select_related('servicio'):
+        cat_ids.update(oferta.servicio.categorias.values_list('id', flat=True))
+    return sorted(cat_ids)
+
+
+def _oferta_servicio_id_desde_cotizacion(cotizacion: CotizacionCanal | None) -> int | None:
+    if cotizacion is None:
+        return None
+    meta = cotizacion.metadata if isinstance(getattr(cotizacion, 'metadata', None), dict) else {}
+    for linea in meta.get('servicios_lineas') or []:
+        oid = linea.get('oferta_servicio_id')
+        if oid:
+            return int(oid)
+    return None
+
+
+def _mejor_slot_proximo(
+    slots_ctx: dict[str, Any],
+    preferencias: dict[str, Any],
+) -> tuple[str, str] | None:
+    """Slot más próximo: preferencia del cliente si sigue libre, si no el primero disponible."""
+    slots_por_dia = slots_ctx.get('slots_por_dia') or {}
+    fecha_pref = (preferencias.get('fecha') or '').strip()
+    hora_pref = (preferencias.get('hora') or '').strip()
+    if fecha_pref and hora_pref:
+        slots_dia = slots_por_dia.get(fecha_pref) or []
+        horas_libres = {s.get('hora') for s in slots_dia if s.get('hora')}
+        if hora_pref in horas_libres:
+            return fecha_pref, hora_pref
+    for fecha in sorted(slots_por_dia.keys()):
+        slots = slots_por_dia.get(fecha) or []
+        for slot in slots:
+            hora = (slot.get('hora') or '').strip()
+            if hora:
+                return fecha, hora
+    return None
+
+
 def _obtener_slots_dia(
     *,
     taller: Taller,
     fecha_iso: str,
     modalidad: str,
     duracion_minutos: int,
+    oferta_servicio_id: int | None = None,
+    requiere_especialidad: bool = True,
 ) -> list[dict[str, Any]]:
     try:
         fecha = date.fromisoformat(fecha_iso)
@@ -90,13 +146,20 @@ def _obtener_slots_dia(
     # Mapear antes de llamar a disponibilidad_con_duracion para que el filtro
     # mecanicos_aptos_taller compare valores compatibles y no devuelva siempre vacío.
     modalidad_tecnico = _modalidad_desde_tipo_servicio(modalidad)
+    kwargs_base = {
+        'taller': taller,
+        'fecha': fecha,
+        'oferta_servicio_id': oferta_servicio_id,
+        'modalidad': modalidad_tecnico,
+    }
     data = disponibilidad_con_duracion(
-        taller=taller,
-        fecha=fecha,
-        modalidad=modalidad_tecnico,
-        requiere_especialidad=False,
+        **kwargs_base,
+        requiere_especialidad=requiere_especialidad and bool(oferta_servicio_id),
     )
     slots = data.get('slots_disponibles') or []
+    if not slots and requiere_especialidad and oferta_servicio_id:
+        data = disponibilidad_con_duracion(**kwargs_base, requiere_especialidad=False)
+        slots = data.get('slots_disponibles') or []
     # Fallback: si el filtro por modalidad dejó sin cupos, usa horario global del
     # taller / unión de mecánicos sin filtrar modalidad (evita "horario pendiente"
     # eterno cuando el equipo no tiene modalidad alineada pero el taller sí atiende).
@@ -104,6 +167,7 @@ def _obtener_slots_dia(
         data = disponibilidad_con_duracion(
             taller=taller,
             fecha=fecha,
+            oferta_servicio_id=oferta_servicio_id,
             modalidad=None,
             requiere_especialidad=False,
         )
@@ -128,6 +192,8 @@ def _recopilar_slots_ofrecidos(
     duracion_minutos: int,
     dias_adelante: int = 10,
     offset_dias: int = 0,
+    oferta_servicio_id: int | None = None,
+    requiere_especialidad: bool = True,
 ) -> dict[str, Any]:
     hoy = timezone.localdate()
     inicio = hoy + timedelta(days=offset_dias)
@@ -142,6 +208,8 @@ def _recopilar_slots_ofrecidos(
             fecha_iso=fecha_iso,
             modalidad=modalidad,
             duracion_minutos=duracion_minutos,
+            oferta_servicio_id=oferta_servicio_id,
+            requiere_especialidad=requiere_especialidad,
         )
         if slots:
             fechas.append(fecha_iso)
@@ -189,14 +257,21 @@ def iniciar_agendamiento(
 
     modalidad = cita.tipo_servicio or 'taller'
     duracion = cita.duracion_minutos or 60
+    cotizacion = getattr(cita, 'cotizacion_canal_origen', None)
+    oferta_servicio_id = _oferta_servicio_id_desde_cotizacion(cotizacion)
+    categorias_req = _categorias_desde_cotizacion(cotizacion)
     oferta = _recopilar_slots_ofrecidos(
         taller=taller,
         modalidad=modalidad,
         duracion_minutos=duracion,
+        oferta_servicio_id=oferta_servicio_id,
+        requiere_especialidad=bool(categorias_req or oferta_servicio_id),
     )
 
     datos = dict(sesion.datos_capturados or {})
     datos['slots_ofrecidos'] = oferta
+    if categorias_req:
+        datos['categorias_requeridas'] = categorias_req
     preferencias = _preferencias_agenda_desde_sesion(sesion, cita)
     if preferencias:
         datos['preferencias_agenda'] = preferencias
@@ -218,6 +293,7 @@ def iniciar_agendamiento(
                     taller=taller,
                     fecha_iso=fecha_pref,
                     hora_str=hora_pref,
+                    categorias_requeridas=categorias_req or None,
                 )
                 tecnico = getattr(miembro, 'nombre', None) or preferencias.get('tecnico_nombre') or 'nuestro equipo'
                 texto_ok = (
@@ -272,15 +348,24 @@ def iniciar_agendamiento(
             f'{(" con " + preferencias["tecnico_nombre"]) if preferencias.get("tecnico_nombre") else ""}. '
             'Si ese horario ya no está libre, elige otro de la lista.'
         )
-    texto = (
-        f'¡Tu cotización fue aprobada! Tengo estos días disponibles: {resumen}.{pref_txt} '
-        '¿Cuál te acomoda y a qué hora?'
-    ).replace('  ', ' ')
+    mejor = _mejor_slot_proximo(oferta, preferencias)
     if not oferta.get('fechas'):
         texto = (
             '¡Tu cotización fue aprobada! Por ahora no veo cupos en los próximos días. '
             '¿Qué día u horario te acomodaría? Te busco alternativas.'
         )
+    elif mejor:
+        fecha_prop, hora_prop = mejor
+        fecha_legible = _formatear_fecha_legible(fecha_prop)
+        texto = (
+            f'¡Tu cotización fue aprobada! Te propongo el {fecha_legible} a las {hora_prop}. '
+            f'¿Te acomoda? Si prefieres otro día u hora, dímelo.{pref_txt}'
+        ).replace('  ', ' ')
+    else:
+        texto = (
+            f'¡Tu cotización fue aprobada! Tengo estos días disponibles: {resumen}.{pref_txt} '
+            '¿Cuál te acomoda y a qué hora?'
+        ).replace('  ', ' ')
 
     enviar_respuesta_agente(
         conversation=conversation,
@@ -394,6 +479,7 @@ def _confirmar_slot(
     taller: Taller,
     fecha_iso: str,
     hora_str: str,
+    categorias_requeridas: list[int] | None = None,
 ) -> tuple[CitaAgendaPersonal, Any]:
     fecha = date.fromisoformat(fecha_iso)
     hora = datetime.strptime(hora_str, '%H:%M').time()
@@ -421,15 +507,33 @@ def _confirmar_slot(
         if candidato:
             miembro_id = candidato.id
 
-    miembro = resolver_miembro_cita_personal(
-        taller=taller,
-        miembro_id=miembro_id,
-        tipo_servicio=cita.tipo_servicio,
-        fecha=fecha,
-        hora=hora,
-        duracion_minutos=cita.duracion_minutos or 60,
-        excluir_cita_id=cita.pk,
-    )
+    miembro = None
+    cats = categorias_requeridas or None
+    try:
+        miembro = resolver_miembro_cita_personal(
+            taller=taller,
+            miembro_id=miembro_id,
+            tipo_servicio=cita.tipo_servicio,
+            fecha=fecha,
+            hora=hora,
+            duracion_minutos=cita.duracion_minutos or 60,
+            categorias_requeridas=cats,
+            excluir_cita_id=cita.pk,
+        )
+    except ValidationError:
+        if cats:
+            miembro = resolver_miembro_cita_personal(
+                taller=taller,
+                miembro_id=miembro_id,
+                tipo_servicio=cita.tipo_servicio,
+                fecha=fecha,
+                hora=hora,
+                duracion_minutos=cita.duracion_minutos or 60,
+                categorias_requeridas=None,
+                excluir_cita_id=cita.pk,
+            )
+        else:
+            raise
     cabecera: dict[str, Any] = {
         'fecha_servicio': fecha,
         'hora_servicio': hora,
@@ -474,14 +578,22 @@ def procesar_turno_agendamiento(
     slots_ctx = datos.get('slots_ofrecidos') or {}
     modalidad = cita.tipo_servicio or 'taller'
     duracion = cita.duracion_minutos or 60
+    cotizacion = getattr(cita, 'cotizacion_canal_origen', None)
+    oferta_servicio_id = _oferta_servicio_id_desde_cotizacion(cotizacion)
+    categorias_req = datos.get('categorias_requeridas') or _categorias_desde_cotizacion(cotizacion)
+    slot_kwargs = {
+        'taller': taller,
+        'modalidad': modalidad,
+        'duracion_minutos': duracion,
+        'oferta_servicio_id': oferta_servicio_id,
+        'requiere_especialidad': bool(categorias_req or oferta_servicio_id),
+    }
 
     if _cliente_pide_otro_rango(texto_cliente):
         offset = int(slots_ctx.get('offset_dias') or 0) + 7
         slots_ctx = _recopilar_slots_ofrecidos(
-            taller=taller,
-            modalidad=modalidad,
-            duracion_minutos=duracion,
             offset_dias=offset,
+            **slot_kwargs,
         )
         datos['slots_ofrecidos'] = slots_ctx
         sesion.datos_capturados = datos
@@ -511,10 +623,8 @@ def procesar_turno_agendamiento(
     if resultado == 'pedir_mas_fechas':
         offset = int(slots_ctx.get('offset_dias') or 0) + 7
         slots_ctx = _recopilar_slots_ofrecidos(
-            taller=taller,
-            modalidad=modalidad,
-            duracion_minutos=duracion,
             offset_dias=offset,
+            **slot_kwargs,
         )
         datos['slots_ofrecidos'] = slots_ctx
         sesion.datos_capturados = datos
@@ -559,14 +669,11 @@ def procesar_turno_agendamiento(
             taller=taller,
             fecha_iso=fecha_iso,
             hora_str=hora_str,
+            categorias_requeridas=categorias_req or None,
         )
     except (ValidationError, ValueError) as exc:
         logger.info('Slot tomado o inválido en agendamiento IA: %s', exc)
-        slots_ctx = _recopilar_slots_ofrecidos(
-            taller=taller,
-            modalidad=modalidad,
-            duracion_minutos=duracion,
-        )
+        slots_ctx = _recopilar_slots_ofrecidos(**slot_kwargs)
         datos['slots_ofrecidos'] = slots_ctx
         sesion.datos_capturados = datos
         sesion.save(update_fields=['datos_capturados', 'actualizado_en'])
