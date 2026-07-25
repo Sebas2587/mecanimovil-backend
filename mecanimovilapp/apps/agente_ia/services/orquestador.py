@@ -106,6 +106,77 @@ def _contexto_minimo_para_cotizar(datos: dict) -> bool:
     return len(problema) >= 12
 
 
+_MONTO_CLP_RE = re.compile(
+    r'(?:\$\s*[\d]{1,3}(?:[.\s]\d{3})+(?:,\d+)?|\$\s*\d+(?:[.,]\d+)?|\b\d{1,3}(?:[.\s]\d{3})+\s*(?:CLP|pesos)?\b)',
+    re.IGNORECASE,
+)
+
+
+def _respuesta_contiene_monto(texto: str) -> bool:
+    return bool(_MONTO_CLP_RE.search(texto or ''))
+
+
+def _servicios_candidato_precio(datos: dict) -> list[str]:
+    from mecanimovilapp.apps.agente_ia.services.cotizacion_borrador import _parse_servicios_solicitados
+
+    servicios = _parse_servicios_solicitados(datos)
+    if servicios:
+        return servicios
+    sn = (datos.get('servicio_nombre') or '').strip()
+    if sn:
+        return [sn]
+    problema = (datos.get('descripcion_problema') or '').strip()
+    if problema:
+        return [problema[:80]]
+    return ['diagnóstico']
+
+
+def _tiene_precio_catalogo_mencionable(taller, datos: dict) -> bool:
+    """True solo si hay oferta publicada con precio > 0 para el servicio del turno."""
+    from mecanimovilapp.apps.agente_ia.services.cotizacion_borrador import (
+        _buscar_oferta_exacta,
+        _precio_publico_oferta,
+    )
+
+    vehiculo = datos.get('vehiculo') or {}
+    marca = (vehiculo.get('marca') or '').strip()
+    modelo = (vehiculo.get('modelo') or '').strip()
+    tipo_motor = (vehiculo.get('tipo_motor') or '').strip()
+    for nombre in _servicios_candidato_precio(datos):
+        oferta = _buscar_oferta_exacta(
+            taller=taller,
+            servicio_nombre=nombre,
+            marca=marca,
+            modelo=modelo,
+            tipo_motor=tipo_motor,
+        )
+        if not oferta:
+            continue
+        precio, _ = _precio_publico_oferta(oferta, con_repuestos=True)
+        if precio > 0:
+            return True
+    return False
+
+
+def _sanitizar_respuesta_sin_precio_catalogo(respuesta: str) -> str:
+    """Quita montos inventados cuando no hay precio de catálogo publicable."""
+    texto = (respuesta or '').strip()
+    if not texto or not _respuesta_contiene_monto(texto):
+        return texto
+    limpio = _MONTO_CLP_RE.sub('', texto)
+    limpio = re.sub(r'\s{2,}', ' ', limpio)
+    limpio = re.sub(r'\s+([,.;:])', r'\1', limpio).strip()
+    frase_segura = (
+        'Ese valor lo confirma el taller en la cotización (no tengo un precio '
+        'publicado de catálogo para inventarlo).'
+    )
+    if frase_segura.lower()[:40] not in limpio.lower():
+        if limpio and not limpio.endswith(('.', '!', '?')):
+            limpio = f'{limpio}.'
+        limpio = f'{limpio} {frase_segura}'.strip()
+    return limpio
+
+
 def _llamar_gemini_agente(prompt: str) -> tuple[dict[str, Any] | None, str | None]:
     api_key = (getattr(settings, 'GEMINI_API_KEY', '') or '').strip()
     model = (
@@ -240,7 +311,11 @@ REGLAS DE CONVERSACIÓN:
     Sin patente, sin teléfono o servicio fuera de especialidad → listo_para_cotizar=false.
 13. cliente_pide_cotizacion=true únicamente si en este turno (o el historial reciente) el cliente pidió precio/cotización/presupuesto de forma explícita o claramente implícita.
 14. UNA SOLA COTIZACIÓN por conversación/vehículo: si el cliente pide otro servicio para el MISMO auto, agrégalo a la misma cotización (lista "servicios") — NO trates cada servicio como cotización aparte. El sistema edita un único borrador hasta que el taller lo cierre/envíe.
-15. PRECIOS: NUNCA digas al cliente un precio inventado ni un total en pesos si no está en la FICHA OPERATIVA / catálogo. Puedes decir que el taller te enviará la cotización revisada. Si un servicio no está publicado para ese auto, indícalo con naturalidad ("ese valor lo confirma el taller") sin inventar cifras — igual deja el borrador para que el humano complete (solo si está dentro de especialidad).
+15. PRECIOS (ANTI-ALUCINACIÓN, CRÍTICO): Solo puedes mencionar un monto en pesos ($, CLP) si ese EXACTO valor aparece en la FICHA OPERATIVA / catálogo publicado para ese servicio y vehículo. Si el cliente pregunta "cuánto sale" y NO hay precio publicado (ej. diagnóstico a domicilio sin tarifa en catálogo):
+    - PROHIBIDO inventar cifras (ej. $25.000, "unos treinta lucas", etc.).
+    - Di que el taller confirmará el valor en la cotización revisada.
+    - Igual puedes marcar listo_para_cotizar=true para armar borrador en $0 (el humano completa el precio).
+    - Nunca digas "se descuenta del total" ni tarifas de visita inventadas.
 16. ENVÍO: TÚ NO envías la cotización por WhatsApp ni confirmas precios finales. Solo preparas el borrador; un humano del taller la revisa en "Cotizar con IA" y la envía. Dile al cliente que el taller le enviará la cotización.
 17. Si el cliente menciona preferencia de día/hora/técnico para la visita, guárdalo en preferencias_agenda (fecha ISO si puedes, hora HH:MM, tecnico_nombre). Eso se usa al aceptar para agendar sin perder el acuerdo.
 18. MODALIDAD Y DIRECCIÓN: modalidad debe ser "taller" o "domicilio" según lo que pida el cliente Y lo que permita la FICHA. Si modalidad=domicilio, OBLIGATORIO pedir y guardar direccion_servicio (calle/comuna). Sin dirección no digas que ya quedó a domicilio. Si es taller, modalidad="taller" y direccion_servicio puede ir vacío.
@@ -831,6 +906,16 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
     respuesta = (decision.get('respuesta_cliente') or '').strip()
     cliente_pide_cotizacion = bool(decision.get('cliente_pide_cotizacion'))
     intencion = (decision.get('intencion') or '').strip().lower()
+
+    # Anti-alucinación de precios: sin tarifa de catálogo, NUNCA enviar montos al cliente.
+    puede_mencionar_precio = _tiene_precio_catalogo_mencionable(taller, datos)
+    if respuesta and _respuesta_contiene_monto(respuesta) and not puede_mencionar_precio:
+        respuesta = _sanitizar_respuesta_sin_precio_catalogo(respuesta)
+        logger.info(
+            'Sanitizado monto inventado en respuesta agente (conv=%s taller=%s)',
+            conversation.id,
+            taller.id,
+        )
 
     # Válvula de seguridad: no cotizar “de oficio” sin contexto ni pedido del cliente.
     if listo_cotizar:

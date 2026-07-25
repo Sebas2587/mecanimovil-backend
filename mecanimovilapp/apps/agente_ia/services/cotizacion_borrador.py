@@ -441,6 +441,17 @@ def crear_cotizacion_borrador_desde_agente(
         patente_verificada=patente_verificada,
     )
 
+    km_actual = (
+        vehiculo.get('kilometraje_actual')
+        or vehiculo.get('kilometraje')
+        or (datos.get('vehiculo') or {}).get('kilometraje_actual')
+        or ''
+    )
+    try:
+        km_actual_int = int(str(km_actual).replace('.', '').replace(',', '').strip()) if km_actual not in ('', None) else None
+    except (TypeError, ValueError):
+        km_actual_int = None
+
     metadata_cot = {
         **meta_prev,
         'origen': 'agente_ia',
@@ -454,6 +465,13 @@ def crear_cotizacion_borrador_desde_agente(
         'enviada_por_agente': False,
         'listo_para_enviar': listo_para_enviar,
         'pendientes_revision': pendientes_revision,
+        'vehiculo_kilometraje_actual': km_actual_int,
+        'vehiculo_fuente': datos.get('vehiculo_fuente') or meta_prev.get('vehiculo_fuente') or '',
+        'patente_enriquecida': (
+            (datos.get('patente_enriquecida') or '').strip()
+            or meta_prev.get('patente_enriquecida')
+            or ''
+        ),
     }
 
     desc_prev = (cotizacion_existente.descripcion_problema if cotizacion_existente else '') or ''
@@ -483,8 +501,17 @@ def crear_cotizacion_borrador_desde_agente(
             marca,
             modelo,
         ),
-        'tipo_motor': contenido.get('tipo_motor') or ctx.get('tipo_motor', '') or tipo_motor,
-        'tipo_motor_label': contenido.get('tipo_motor_label') or ctx.get('tipo_motor_label', ''),
+        'tipo_motor': (
+            tipo_motor
+            or contenido.get('tipo_motor')
+            or ctx.get('tipo_motor', '')
+            or (vehiculo.get('tipo_motor') or '')
+        ),
+        'tipo_motor_label': (
+            contenido.get('tipo_motor_label')
+            or ctx.get('tipo_motor_label', '')
+            or (tipo_motor or vehiculo.get('tipo_motor') or '')
+        ),
         'aviso_motor': contenido.get('aviso_motor') or ctx.get('aviso_motor', ''),
         'servicio_nombre': _titulo_servicios(lineas),
         'descripcion_problema': descripcion_final,

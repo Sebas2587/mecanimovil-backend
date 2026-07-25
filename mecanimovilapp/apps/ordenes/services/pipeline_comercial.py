@@ -293,6 +293,20 @@ def _filas_ofertas(proveedor_user, taller: Taller | None) -> list[dict[str, Any]
     return filas
 
 
+def _vehiculo_resumen_cotizacion(cot: CotizacionCanal) -> str:
+    """Patente · marca modelo · año — para Bandeja y detalle rápido."""
+    partes: list[str] = []
+    patente = (cot.vehiculo_patente or '').strip().upper()
+    if patente:
+        partes.append(patente)
+    mm = ' '.join(p for p in [cot.vehiculo_marca, cot.vehiculo_modelo] if p).strip()
+    if mm:
+        partes.append(mm)
+    if cot.vehiculo_anio:
+        partes.append(str(cot.vehiculo_anio))
+    return ' · '.join(partes)
+
+
 def _estado_normalizado_cotizacion_canal(cot: CotizacionCanal) -> str:
     """
     Aceptada solo es «negociando» si aún hay cita activa por confirmar/agendar.
@@ -326,16 +340,19 @@ def _filas_cotizaciones_canal(taller: Taller) -> list[dict[str, Any]]:
             origen = 'directo'
         else:
             cliente_nombre = (
-                getattr(ext, 'display_name', None)
+                (cot.cliente_nombre or '').strip()
+                or getattr(ext, 'display_name', None)
                 or cot.vehiculo_marca
                 or 'Contacto'
             )
-            cliente_telefono = getattr(ext, 'phone', '') or ''
+            cliente_telefono = (
+                (cot.cliente_telefono or '').strip()
+                or getattr(ext, 'phone', '')
+                or ''
+            )
             origen = _canal_origen(conv)
         fecha_ref = cot.enviada_en or cot.actualizado_en or cot.creado_en
-        vehiculo_txt = ' '.join(
-            p for p in [cot.vehiculo_marca, cot.vehiculo_modelo] if p
-        ).strip()
+        vehiculo_txt = _vehiculo_resumen_cotizacion(cot)
         filas.append(
             _fila_base(
                 tipo_entidad='cotizacion_canal',
@@ -381,9 +398,7 @@ def _filas_cotizaciones_borrador_agente(taller: Taller) -> list[dict[str, Any]]:
         )
         cliente_telefono = (cot.cliente_telefono or '').strip() or getattr(ext, 'phone', '') or ''
         origen = _canal_origen(conv) if conv else 'canal'
-        vehiculo_txt = ' '.join(
-            p for p in [cot.vehiculo_marca, cot.vehiculo_modelo] if p
-        ).strip()
+        vehiculo_txt = _vehiculo_resumen_cotizacion(cot)
         fecha_ref = cot.actualizado_en or cot.creado_en
         filas.append(
             _fila_base(
