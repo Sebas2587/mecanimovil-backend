@@ -19,6 +19,11 @@ class PipelineComercialViewSet(viewsets.ViewSet):
         estado = request.query_params.get('estado_normalizado')
         origen = request.query_params.get('origen')
         solo_24h = request.query_params.get('esperando_24h', '').lower() in ('1', 'true', 'yes')
+        incluir_borradores = request.query_params.get('incluir_borradores', '').lower() in (
+            '1',
+            'true',
+            'yes',
+        )
         limite_raw = request.query_params.get('limite', '100')
         try:
             limite = min(int(limite_raw), 200)
@@ -43,5 +48,6 @@ class PipelineComercialViewSet(viewsets.ViewSet):
             solo_esperando_24h=solo_24h,
             miembro_taller_id=miembro_id,
             limite=limite,
+            incluir_borradores=incluir_borradores,
         )
         return Response(payload)

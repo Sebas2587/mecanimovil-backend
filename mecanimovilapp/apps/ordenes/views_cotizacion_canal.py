@@ -21,6 +21,7 @@ from mecanimovilapp.apps.ordenes.permissions import IsProveedor
 from mecanimovilapp.apps.ordenes.serializers_cotizacion_canal import (
     CotizacionCanalPlantillaSerializer,
     CotizacionCanalSerializer,
+    CrearCotizacionAdicionalSerializer,
     GenerarCotizacionIaSerializer,
     GuardarPlantillaCotizacionSerializer,
 )
@@ -214,6 +215,74 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             **resultado,
             'cotizacion': CotizacionCanalSerializer(cotizacion).data,
         }, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=['post'], url_path='crear-adicional')
+    def crear_adicional(self, request):
+        """Cotización adicional sobre un trabajo de canal agendado o en ejecución."""
+        from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonal
+        from mecanimovilapp.apps.ordenes.services.cotizacion_adicional import (
+            crear_cotizacion_adicional_con_ia,
+            crear_cotizacion_adicional_desde_catalogo,
+        )
+
+        taller, _rol = self._taller_contexto()
+        ser = CrearCotizacionAdicionalSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        data = ser.validated_data
+
+        cita = (
+            CitaAgendaPersonal.objects.select_related(
+                'cotizacion_canal_origen',
+                'checklist_instance',
+            )
+            .filter(pk=data['cita_id'], taller=taller)
+            .first()
+        )
+        if cita is None:
+            raise ValidationError({'cita_id': 'Cita no encontrada.'})
+
+        cot_original = (
+            CotizacionCanal.objects.filter(
+                pk=data['cotizacion_original_id'],
+                taller=taller,
+            )
+            .select_related('conversation')
+            .first()
+        )
+        if cot_original is None:
+            raise ValidationError({'cotizacion_original_id': 'Cotización original no encontrada.'})
+        if cita.cotizacion_canal_origen_id and cita.cotizacion_canal_origen_id != cot_original.id:
+            raise ValidationError({
+                'cotizacion_original_id': 'No coincide con la cotización de origen de la cita.',
+            })
+
+        try:
+            if data.get('modo') == 'ia':
+                cotizacion = crear_cotizacion_adicional_con_ia(
+                    cotizacion_original=cot_original,
+                    cita=cita,
+                    taller=taller,
+                    creado_por=request.user,
+                    motivo_servicio_adicional=data['motivo_servicio_adicional'],
+                    servicio_nombre=data.get('servicio_nombre') or '',
+                    descripcion_problema=data.get('descripcion_problema') or '',
+                )
+            else:
+                cotizacion = crear_cotizacion_adicional_desde_catalogo(
+                    cotizacion_original=cot_original,
+                    cita=cita,
+                    taller=taller,
+                    creado_por=request.user,
+                    motivo_servicio_adicional=data['motivo_servicio_adicional'],
+                    servicios_catalogo=data.get('servicios_catalogo') or [],
+                )
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+
+        return Response(
+            {'cotizacion': CotizacionCanalSerializer(cotizacion).data},
+            status=status.HTTP_201_CREATED,
+        )
 
     def partial_update(self, request, *args, **kwargs):
         cotizacion = self.get_object()

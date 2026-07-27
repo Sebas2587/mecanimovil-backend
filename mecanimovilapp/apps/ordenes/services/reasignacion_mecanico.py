@@ -109,6 +109,9 @@ def reasignar_mecanico_cita_personal(
     det = getattr(cita, 'detalle', None)
     oferta = getattr(det, 'oferta_servicio', None) if det else None
     categorias = _categorias_de_oferta(oferta)
+    # Con horario por confirmar el cupo es placeholder: solo guardamos preferencia
+    # de técnico; la disponibilidad real se valida al confirmar día/hora.
+    omitir_slot = bool(getattr(cita, 'horario_por_confirmar', False))
 
     miembro = resolver_miembro_cita_personal(
         taller=cita.taller,
@@ -119,6 +122,7 @@ def reasignar_mecanico_cita_personal(
         duracion_minutos=cita.duracion_minutos or DURACION_DEFAULT_MINUTOS,
         categorias_requeridas=categorias,
         excluir_cita_id=cita.id,
+        omitir_disponibilidad_slot=omitir_slot,
     )
 
     cita.miembro_taller = miembro

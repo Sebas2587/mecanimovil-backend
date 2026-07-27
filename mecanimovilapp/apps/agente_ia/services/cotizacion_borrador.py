@@ -9,7 +9,6 @@ Reglas de producto:
 from __future__ import annotations
 
 import logging
-import unicodedata
 from typing import Any
 
 from django.contrib.auth import get_user_model
@@ -22,7 +21,11 @@ from mecanimovilapp.apps.ordenes.models import CotizacionCanal
 from mecanimovilapp.apps.vehiculos.cilindraje_texto import cilindraje_efectivo
 from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador import generar_cotizacion_ia
 from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import recalcular_totales
-from mecanimovilapp.apps.servicios.models import OfertaServicio
+from mecanimovilapp.apps.ordenes.services.catalogo_pricing import (
+    buscar_oferta_exacta,
+    normalizar_nombre_servicio,
+    precio_publico_oferta,
+)
 from mecanimovilapp.apps.suscripciones.cuotas_services import CuotaAgotadaError, SinSuscripcionError, verificar_y_consumir_cuota
 from mecanimovilapp.apps.suscripciones.models import ConsumoFeatureMensual
 from mecanimovilapp.apps.usuarios.models import Taller
@@ -69,94 +72,11 @@ def evaluar_listo_para_enviar(
     return (len(pendientes) == 0, pendientes)
 
 
-def _normalizar_nombre_servicio(texto: str) -> str:
-    t = unicodedata.normalize('NFKD', (texto or '').strip().lower())
-    return ''.join(c for c in t if not unicodedata.combining(c))
-
-
 def _recargo_domicilio_taller(taller: Taller) -> int:
     config = TallerAgenteConfig.objects.filter(taller=taller).first()
     if config and config.recargo_domicilio_clp is not None:
         return max(0, int(config.recargo_domicilio_clp))
     return RECARGO_DOMICILIO_DEFAULT_CLP
-
-
-def _buscar_oferta_exacta(
-    *,
-    taller: Taller,
-    servicio_nombre: str,
-    marca: str,
-    modelo: str,
-    tipo_motor: str = '',
-) -> OfertaServicio | None:
-    """Match determinístico taller + servicio + marca/modelo + motor."""
-    nombre_norm = _normalizar_nombre_servicio(servicio_nombre)
-    if not nombre_norm:
-        return None
-
-    qs = (
-        OfertaServicio.objects.filter(taller=taller, disponible=True)
-        .select_related('servicio', 'marca_vehiculo_seleccionada', 'modelo_vehiculo_seleccionado')
-    )
-
-    candidatas: list[OfertaServicio] = []
-    for oferta in qs:
-        serv_norm = _normalizar_nombre_servicio(getattr(oferta.servicio, 'nombre', '') or '')
-        if not serv_norm:
-            continue
-        if nombre_norm not in serv_norm and serv_norm not in nombre_norm:
-            continue
-        candidatas.append(oferta)
-
-    if not candidatas:
-        return None
-
-    def _score(oferta: OfertaServicio) -> int:
-        s = 0
-        om = getattr(oferta.marca_vehiculo_seleccionada, 'nombre', '') or ''
-        omod = getattr(oferta.modelo_vehiculo_seleccionado, 'nombre', '') or ''
-        if marca and om and om.lower() == marca.lower():
-            s += 4
-        elif not om:
-            s += 1
-        if modelo and omod and omod.lower() == modelo.lower():
-            s += 4
-        elif not omod:
-            s += 1
-        tm = (oferta.tipo_motor or '').strip().lower()
-        tm_req = (tipo_motor or '').strip().lower()
-        if tm_req and tm and tm == tm_req:
-            s += 2
-        elif not tm:
-            s += 1
-        serv_norm = _normalizar_nombre_servicio(oferta.servicio.nombre)
-        if serv_norm == nombre_norm:
-            s += 3
-        if int(oferta.precio_con_repuestos or 0) or int(oferta.precio_sin_repuestos or 0):
-            s += 2
-        return s
-
-    candidatas.sort(key=_score, reverse=True)
-    mejor = candidatas[0]
-    if _score(mejor) < 3:
-        return None
-    return mejor
-
-
-def _precio_publico_oferta(oferta: OfertaServicio, *, con_repuestos: bool = True) -> tuple[int, bool]:
-    """Devuelve (precio al público con IVA, usó_con_repuestos)."""
-    if con_repuestos and int(oferta.precio_con_repuestos or 0):
-        return int(oferta.precio_con_repuestos), True
-    if int(oferta.precio_sin_repuestos or 0):
-        return int(oferta.precio_sin_repuestos), False
-    if int(oferta.precio_con_repuestos or 0):
-        return int(oferta.precio_con_repuestos), True
-    mano = int(oferta.costo_mano_de_obra_sin_iva or 0)
-    rep = int(oferta.costo_repuestos_sin_iva or 0)
-    if mano or rep:
-        base = mano + (rep if con_repuestos else 0)
-        return int(round(base * 1.19)), con_repuestos and rep > 0
-    return 0, con_repuestos
 
 
 def _parse_servicios_solicitados(datos: dict) -> list[str]:
@@ -182,7 +102,7 @@ def _parse_servicios_solicitados(datos: dict) -> list[str]:
     vistos: set[str] = set()
     out: list[str] = []
     for n in nombres:
-        key = _normalizar_nombre_servicio(n)
+        key = normalizar_nombre_servicio(n)
         if key and key not in vistos:
             vistos.add(key)
             out.append(n)
@@ -205,12 +125,12 @@ def _merge_linea_servicio(
     existentes: list[dict[str, Any]],
     nueva: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    key = _normalizar_nombre_servicio(nueva.get('nombre') or '')
+    key = normalizar_nombre_servicio(nueva.get('nombre') or '')
     if not key:
         return existentes
     out = list(existentes or [])
     for i, lin in enumerate(out):
-        if _normalizar_nombre_servicio(lin.get('nombre') or '') == key:
+        if normalizar_nombre_servicio(lin.get('nombre') or '') == key:
             out[i] = {**lin, **nueva}
             return out
     out.append(nueva)
@@ -320,7 +240,7 @@ def crear_cotizacion_borrador_desde_agente(
     faltan_precios_catalogo = False
 
     for nombre_serv in servicios_turno:
-        oferta = _buscar_oferta_exacta(
+        oferta = buscar_oferta_exacta(
             taller=taller,
             servicio_nombre=nombre_serv,
             marca=marca,
@@ -331,7 +251,7 @@ def crear_cotizacion_borrador_desde_agente(
         oferta_id = None
         nombre_final = nombre_serv
         if oferta:
-            precio_cat, _ = _precio_publico_oferta(oferta, con_repuestos=True)
+            precio_cat, _ = precio_publico_oferta(oferta, con_repuestos=True)
             oferta_id = oferta.id
             nombre_final = oferta.servicio.nombre
             if precio_cat > 0:

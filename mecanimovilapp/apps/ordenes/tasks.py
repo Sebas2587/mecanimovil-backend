@@ -358,3 +358,65 @@ def recordar_solicitudes_por_vencer_proveedor_task():
     except Exception as e:
         logger.error('❌ recordar_solicitudes_por_vencer_proveedor: %s', e, exc_info=True)
         return {'error': str(e)}
+
+
+@shared_task
+def revisar_seguimiento_pipeline_comercial_task():
+    """Barrido periódico: recordatorios al taller por cotizaciones/agenda estancadas."""
+    try:
+        from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonal, CotizacionCanal
+        from mecanimovilapp.apps.ordenes.services.notificaciones_pipeline import (
+            HORAS_BORRADOR_LISTO_RECORDATORIO,
+            notificar_agenda_pendiente_confirmacion,
+            notificar_borrador_listo_sin_enviar,
+            notificar_cotizacion_demorada_48h,
+            notificar_cotizacion_sin_respuesta_24h,
+        )
+        from mecanimovilapp.apps.ordenes.services.pipeline_comercial import (
+            _demorado_48h,
+            _esperando_respuesta_24h,
+        )
+
+        now = timezone.now()
+        umbral_borrador = now - timedelta(hours=HORAS_BORRADOR_LISTO_RECORDATORIO)
+        umbral_agenda = now - timedelta(hours=24)
+
+        stats = {
+            'borradores': 0,
+            'sin_respuesta_24h': 0,
+            'demoradas_48h': 0,
+            'agenda_pendiente': 0,
+        }
+
+        for cot in CotizacionCanal.objects.filter(
+            estado='borrador',
+            actualizado_en__lte=umbral_borrador,
+        ).iterator(chunk_size=100):
+            meta = cot.metadata if isinstance(cot.metadata, dict) else {}
+            if meta.get('listo_para_enviar'):
+                notificar_borrador_listo_sin_enviar(cotizacion=cot)
+                stats['borradores'] += 1
+
+        for cot in CotizacionCanal.objects.filter(estado='enviada').iterator(chunk_size=100):
+            fecha_ref = cot.enviada_en or cot.actualizado_en or cot.creado_en
+            estado_norm = 'cotizacion_enviada'
+            if _demorado_48h(fecha_ref, estado_norm):
+                notificar_cotizacion_demorada_48h(cotizacion=cot)
+                stats['demoradas_48h'] += 1
+            elif _esperando_respuesta_24h(fecha_ref, estado_norm):
+                notificar_cotizacion_sin_respuesta_24h(cotizacion=cot)
+                stats['sin_respuesta_24h'] += 1
+
+        for cita in CitaAgendaPersonal.objects.filter(
+            estado='activa',
+            horario_por_confirmar=True,
+            fecha_actualizacion__lte=umbral_agenda,
+        ).iterator(chunk_size=100):
+            notificar_agenda_pendiente_confirmacion(cita=cita)
+            stats['agenda_pendiente'] += 1
+
+        logger.info('✅ revisar_seguimiento_pipeline_comercial: %s', stats)
+        return stats
+    except Exception as e:
+        logger.error('❌ revisar_seguimiento_pipeline_comercial: %s', e, exc_info=True)
+        return {'error': str(e)}

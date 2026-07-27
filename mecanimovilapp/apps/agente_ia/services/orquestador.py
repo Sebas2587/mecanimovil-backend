@@ -133,9 +133,9 @@ def _servicios_candidato_precio(datos: dict) -> list[str]:
 
 def _tiene_precio_catalogo_mencionable(taller, datos: dict) -> bool:
     """True solo si hay oferta publicada con precio > 0 para el servicio del turno."""
-    from mecanimovilapp.apps.agente_ia.services.cotizacion_borrador import (
-        _buscar_oferta_exacta,
-        _precio_publico_oferta,
+    from mecanimovilapp.apps.ordenes.services.catalogo_pricing import (
+        buscar_oferta_exacta,
+        precio_publico_oferta,
     )
 
     vehiculo = datos.get('vehiculo') or {}
@@ -143,7 +143,7 @@ def _tiene_precio_catalogo_mencionable(taller, datos: dict) -> bool:
     modelo = (vehiculo.get('modelo') or '').strip()
     tipo_motor = (vehiculo.get('tipo_motor') or '').strip()
     for nombre in _servicios_candidato_precio(datos):
-        oferta = _buscar_oferta_exacta(
+        oferta = buscar_oferta_exacta(
             taller=taller,
             servicio_nombre=nombre,
             marca=marca,
@@ -152,7 +152,7 @@ def _tiene_precio_catalogo_mencionable(taller, datos: dict) -> bool:
         )
         if not oferta:
             continue
-        precio, _ = _precio_publico_oferta(oferta, con_repuestos=True)
+        precio, _ = precio_publico_oferta(oferta, con_repuestos=True)
         if precio > 0:
             return True
     return False

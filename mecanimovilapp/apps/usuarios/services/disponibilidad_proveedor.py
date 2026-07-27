@@ -626,13 +626,43 @@ def disponibilidad_con_duracion(
             taller=taller, rol='mecanico', activo=True
         ).exists()
         if tiene_equipo:
-            return _disponibilidad_union_equipo(
+            result = _disponibilidad_union_equipo(
                 taller=taller,
                 fecha=fecha,
                 dia_semana=dia_semana,
                 oferta=oferta,
                 aptos=aptos,
             )
+            if result.get('proveedor_disponible') and result.get('slots_disponibles'):
+                return result
+            # Relajar especialidad/modalidad: muchos talleres configuran jornada
+            # a nivel taller y los mecánicos heredan ese horario.
+            if requiere_especialidad or modalidad:
+                aptos_relajados = mecanicos_aptos_taller(
+                    taller,
+                    categorias_requeridas=[],
+                    modalidad=None,
+                )
+                if aptos_relajados and (
+                    len(aptos_relajados) != len(aptos)
+                    or (requiere_especialidad and categorias_req)
+                    or modalidad
+                ):
+                    result_relajado = _disponibilidad_union_equipo(
+                        taller=taller,
+                        fecha=fecha,
+                        dia_semana=dia_semana,
+                        oferta=oferta,
+                        aptos=aptos_relajados,
+                    )
+                    if (
+                        result_relajado.get('proveedor_disponible')
+                        and result_relajado.get('slots_disponibles')
+                    ):
+                        return result_relajado
+            # Último recurso Automático: agenda general del taller (sin filtrar
+            # por mecánico). Visible aunque el equipo no tenga jornada propia.
+            # (cae al bloque HorarioProveedor del taller más abajo)
 
     horario_qs = HorarioProveedor.objects.filter(dia_semana=dia_semana, activo=True)
     if taller:

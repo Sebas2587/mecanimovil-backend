@@ -23,6 +23,7 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
     cita_personal_id = serializers.SerializerMethodField()
     listo_para_enviar = serializers.SerializerMethodField()
     pendientes_revision = serializers.SerializerMethodField()
+    cotizacion_original_id = serializers.IntegerField(read_only=True, allow_null=True)
 
     def _metadata_agente(self, obj) -> dict:
         meta = obj.metadata if isinstance(getattr(obj, 'metadata', None), dict) else {}
@@ -128,6 +129,9 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             'metadata',
             'listo_para_enviar',
             'pendientes_revision',
+            'cotizacion_original_id',
+            'es_cotizacion_adicional',
+            'motivo_servicio_adicional',
             'message_envio',
             'enviada_en',
             'aceptada_en',
@@ -149,6 +153,9 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             'estado',
             'listo_para_enviar',
             'pendientes_revision',
+            'cotizacion_original_id',
+            'es_cotizacion_adicional',
+            'motivo_servicio_adicional',
             'costo_repuestos_clp',
             'total_clp',
             'message_envio',
@@ -206,6 +213,41 @@ class GenerarCotizacionIaSerializer(serializers.Serializer):
             raise serializers.ValidationError(
                 {'vehiculo': 'Marca y modelo son necesarios para estimar repuestos.'},
             )
+        return attrs
+
+
+class ServicioCatalogoAdicionalSerializer(serializers.Serializer):
+    oferta_servicio_id = serializers.IntegerField(min_value=1)
+    cantidad = serializers.IntegerField(min_value=1, default=1, required=False)
+
+
+class CrearCotizacionAdicionalSerializer(serializers.Serializer):
+    cita_id = serializers.IntegerField(min_value=1)
+    cotizacion_original_id = serializers.IntegerField(min_value=1)
+    motivo_servicio_adicional = serializers.CharField(max_length=2000)
+    modo = serializers.ChoiceField(choices=('catalogo', 'ia'), default='catalogo')
+    servicios_catalogo = ServicioCatalogoAdicionalSerializer(many=True, required=False)
+    servicio_nombre = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
+    descripcion_problema = serializers.CharField(required=False, allow_blank=True, default='')
+
+    def validate(self, attrs):
+        modo = attrs.get('modo') or 'catalogo'
+        motivo = (attrs.get('motivo_servicio_adicional') or '').strip()
+        if not motivo:
+            raise serializers.ValidationError(
+                {'motivo_servicio_adicional': 'Indica el motivo del servicio adicional.'},
+            )
+        if modo == 'catalogo':
+            servicios = attrs.get('servicios_catalogo') or []
+            if not servicios:
+                raise serializers.ValidationError(
+                    {'servicios_catalogo': 'Selecciona al menos un servicio del catálogo.'},
+                )
+        else:
+            if not (attrs.get('servicio_nombre') or '').strip():
+                raise serializers.ValidationError(
+                    {'servicio_nombre': 'Indica el servicio a cotizar con IA.'},
+                )
         return attrs
 
 

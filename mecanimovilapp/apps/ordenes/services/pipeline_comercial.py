@@ -182,6 +182,7 @@ def _fila_base(
     horario_por_confirmar: bool = False,
     listo_para_enviar: bool = False,
     pendientes_revision: list[str] | None = None,
+    es_cotizacion_adicional: bool = False,
 ) -> dict[str, Any]:
     return {
         'tipo_entidad': tipo_entidad,
@@ -214,6 +215,7 @@ def _fila_base(
         'horario_por_confirmar': horario_por_confirmar,
         'listo_para_enviar': listo_para_enviar,
         'pendientes_revision': list(pendientes_revision or []),
+        'es_cotizacion_adicional': es_cotizacion_adicional,
     }
 
 
@@ -370,6 +372,7 @@ def _filas_cotizaciones_canal(taller: Taller) -> list[dict[str, Any]]:
                 cotizacion_id=cot.id,
                 visto_sin_respuesta=_visto_sin_respuesta(estado_norm, cot.visto_en),
                 demorado_48h=_demorado_48h(fecha_ref, estado_norm),
+                es_cotizacion_adicional=bool(getattr(cot, 'es_cotizacion_adicional', False)),
             )
         )
     return filas
@@ -612,6 +615,8 @@ _DEDUPE_TIPO_PRIORITY = {
 
 
 def _pipeline_dedupe_key(fila: dict[str, Any]) -> str:
+    if fila.get('es_cotizacion_adicional') and fila.get('cotizacion_id'):
+        return f'cot_adicional:{fila["cotizacion_id"]}'
     conv_id = fila.get('conversation_id')
     if conv_id:
         return f'conv:{conv_id}'
@@ -667,18 +672,25 @@ def construir_pipeline_comercial(
     solo_esperando_24h: bool = False,
     miembro_taller_id: int | None = None,
     limite: int = 100,
+    incluir_borradores: bool = False,
 ) -> dict[str, Any]:
     """Construye la lista agregada del pipeline comercial del proveedor."""
     if taller is None:
-        return {'count': 0, 'results': [], 'resumen': {}}
+        return {'count': 0, 'results': [], 'resumen': {}, 'borradores_pendientes_count': 0}
 
     filas: list[dict[str, Any]] = []
     filas.extend(_filas_solicitudes_publicas_sin_oferta(user, taller))
     filas.extend(_filas_ofertas(user, taller))
-    filas.extend(_filas_cotizaciones_borrador_agente(taller))
+    if incluir_borradores:
+        filas.extend(_filas_cotizaciones_borrador_agente(taller))
     filas.extend(_filas_cotizaciones_canal(taller))
     filas.extend(_filas_citas_personales(taller, miembro_taller_id))
     filas.extend(_filas_solicitudes_directas(taller, user))
+
+    borradores_pendientes_count = CotizacionCanal.objects.filter(
+        taller=taller,
+        estado='borrador',
+    ).count()
 
     if estado_normalizado:
         filas = [f for f in filas if f['estado_normalizado'] == estado_normalizado]
@@ -717,4 +729,5 @@ def construir_pipeline_comercial(
         'esperando_respuesta_24h_count': sum(
             1 for f in filas if f.get('esperando_respuesta_24h')
         ),
+        'borradores_pendientes_count': borradores_pendientes_count,
     }

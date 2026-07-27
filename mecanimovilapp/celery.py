@@ -125,6 +125,11 @@ app.conf.beat_schedule = {
         'schedule': crontab(minute='*/30'),
         'options': {'queue': 'default'},
     },
+    'revisar-seguimiento-pipeline-comercial': {
+        'task': 'mecanimovilapp.apps.ordenes.tasks.revisar_seguimiento_pipeline_comercial_task',
+        'schedule': crontab(minute='*/30'),
+        'options': {'queue': 'default'},
+    },
     'verificar-suscripciones-activas': {
         'task': 'suscripciones.verificar_suscripciones_activas',
         'schedule': crontab(hour=4, minute=0),  # Diariamente a las 04:00 AM

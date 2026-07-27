@@ -64,6 +64,8 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
     mecanico_modalidad_tecnico = serializers.SerializerMethodField()
     mecanico_modalidad_display = serializers.SerializerMethodField()
     conversation_id = serializers.IntegerField(source='conversation_origen_id', read_only=True)
+    cotizacion_canal_origen_id = serializers.IntegerField(read_only=True, allow_null=True)
+    permite_cotizacion_adicional = serializers.SerializerMethodField()
 
     class Meta:
         model = CitaAgendaPersonal
@@ -102,6 +104,8 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
             'mecanico_modalidad_tecnico',
             'mecanico_modalidad_display',
             'conversation_id',
+            'cotizacion_canal_origen_id',
+            'permite_cotizacion_adicional',
         ]
         read_only_fields = [
             'id',
@@ -131,6 +135,13 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
 
     def get_origen(self, obj) -> str:
         return 'personal'
+
+    def get_permite_cotizacion_adicional(self, obj) -> bool:
+        from mecanimovilapp.apps.ordenes.services.cotizacion_adicional import (
+            cita_permite_cotizacion_adicional,
+        )
+
+        return cita_permite_cotizacion_adicional(obj)
 
     def get_etiqueta(self, obj) -> str:
         return 'Personal'

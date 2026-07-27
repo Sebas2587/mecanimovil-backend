@@ -2357,6 +2357,15 @@ class CotizacionCanal(models.Model):
     advertencias = models.JSONField(default=list, blank=True)
     contenido_ia = models.JSONField(default=dict, blank=True)
     metadata = models.JSONField(default=dict, blank=True)
+    cotizacion_original = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='cotizaciones_adicionales',
+    )
+    es_cotizacion_adicional = models.BooleanField(default=False)
+    motivo_servicio_adicional = models.TextField(blank=True, default='')
     tokens_entrada = models.PositiveIntegerField(default=0)
     tokens_salida = models.PositiveIntegerField(default=0)
     modelo_ia = models.CharField(max_length=80, blank=True, default='')

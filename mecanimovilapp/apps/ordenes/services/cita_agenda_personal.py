@@ -212,6 +212,7 @@ def _validar_miembro_manual(
     hora,
     duracion_minutos: int,
     excluir_cita_id: int | None = None,
+    omitir_disponibilidad_slot: bool = False,
 ) -> None:
     if miembro.rol != 'mecanico' or not miembro.activo:
         raise ValidationError({'miembro_taller': 'Debe seleccionar un mecánico activo del equipo.'})
@@ -220,6 +221,8 @@ def _validar_miembro_manual(
         raise ValidationError(
             {'miembro_taller': 'El mecánico seleccionado no atiende este tipo de servicio.'},
         )
+    if omitir_disponibilidad_slot:
+        return
     if categorias_requeridas and not miembro.especialidades.filter(
         id__in=categorias_requeridas,
     ).exists():
@@ -247,12 +250,15 @@ def resolver_miembro_cita_personal(
     duracion_minutos: int,
     categorias_requeridas: list[int] | None = None,
     excluir_cita_id: int | None = None,
+    omitir_disponibilidad_slot: bool = False,
 ) -> MiembroTaller | None:
     """
     Resuelve el mecánico de una cita personal.
     - ID explícito: valida modalidad, especialidad y disponibilidad.
     - Automático (sin ID) con equipo: asigna al mejor mecánico apto y libre.
     - Taller sin mecánicos: None (agenda a nivel taller).
+    - omitir_disponibilidad_slot: preferencia de técnico sin validar el cupo
+      (p. ej. cita aún en horario_por_confirmar antes de elegir día/hora reales).
     """
     if taller is None:
         if miembro_id:
@@ -277,10 +283,16 @@ def resolver_miembro_cita_personal(
             hora=hora,
             duracion_minutos=duracion_minutos,
             excluir_cita_id=excluir_cita_id,
+            omitir_disponibilidad_slot=omitir_disponibilidad_slot,
         )
         return miembro
 
     if not tiene_equipo:
+        return None
+
+    # Preferencia «Automático» mientras el horario aún no se confirma: no forzar
+    # selección contra el placeholder (hoy 08:00); se resuelve al confirmar día/hora.
+    if omitir_disponibilidad_slot:
         return None
 
     modalidad = _modalidad_desde_tipo_servicio(tipo_servicio)
