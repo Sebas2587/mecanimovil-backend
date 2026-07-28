@@ -229,6 +229,16 @@ _FRASE_SANITIZER_LEGACY = re.compile(
     re.IGNORECASE,
 )
 
+_CLIENTE_PIDE_PRECIO_RE = re.compile(
+    r'\b(?:'
+    r'cu[aá]nto\s+(?:sale|cuesta|vale|cobra|cobran)|'
+    r'precio|tarifa|presupuesto|cotizaci[oó]n|cotizar|'
+    r'vale\s+la\s+pena|'
+    r'cu[aá]nto\s+me\s+(?:sale|cuesta|cobran)'
+    r')\b',
+    re.IGNORECASE,
+)
+
 
 def _respuesta_contiene_monto(texto: str) -> bool:
     return bool(_MONTO_CLP_RE.search(texto or ''))
@@ -242,6 +252,20 @@ def _respuesta_afirma_precio(texto: str) -> bool:
         return True
     low = t.lower()
     return 'se descuent' in low or 'tarifa de visita' in low
+
+
+def _cliente_pide_precio_en_turno(
+    *,
+    texto_cliente: str,
+    cliente_pide_cotizacion: bool,
+    intencion: str,
+) -> bool:
+    """True solo si el cliente pidió precio/cotización en este contexto."""
+    if cliente_pide_cotizacion:
+        return True
+    if (intencion or '').strip().lower() in ('cotizacion', 'cotizar', 'presupuesto'):
+        return True
+    return bool(_CLIENTE_PIDE_PRECIO_RE.search(texto_cliente or ''))
 
 
 def _servicios_candidato_precio(datos: dict) -> list[str]:
@@ -286,10 +310,15 @@ def _tiene_precio_catalogo_mencionable(taller, datos: dict) -> bool:
     return False
 
 
-def _sanitizar_respuesta_sin_precio_catalogo(respuesta: str) -> str:
+def _sanitizar_respuesta_sin_precio_catalogo(
+    respuesta: str,
+    *,
+    cliente_pide_precio: bool = False,
+) -> str:
     """
-    Cuando no hay precio de catálogo, elimina afirmaciones de tarifa/monto
-    (aunque el modelo deje frases rotas tipo "es de,") y responde con claridad.
+    Cuando no hay precio de catálogo, elimina afirmaciones de tarifa/monto.
+    El disclaimer largo SOLO se agrega si el cliente pidió precio/cotización;
+    en turnos de captura (patente/teléfono) solo se limpia el texto inventado.
     """
     texto = (respuesta or '').strip()
     if not texto or not _respuesta_afirma_precio(texto):
@@ -298,21 +327,50 @@ def _sanitizar_respuesta_sin_precio_catalogo(respuesta: str) -> str:
     limpio = _MONTO_CLP_RE.sub('', texto)
     limpio = _PRECIO_CLAIM_RE.sub('', limpio)
     limpio = _FRASE_SANITIZER_LEGACY.sub('', limpio)
+    # Si el modelo ya pegó el disclaimer, quitarlo cuando el cliente no pidió precio.
+    if not cliente_pide_precio:
+        limpio = re.sub(re.escape(_FRASE_SIN_PRECIO_CATALOGO), '', limpio, flags=re.IGNORECASE)
     limpio = re.sub(r'\s{2,}', ' ', limpio)
     limpio = re.sub(r'\s+([,.;:])', r'\1', limpio)
     limpio = re.sub(r',\s*,+', ',', limpio)
     limpio = re.sub(r'\.\s*\.', '.', limpio)
     limpio = limpio.strip(' ,;')
 
-    # Si quedó demasiado corto o solo basura, reemplazar por respuesta natural.
     if len(limpio) < 24 or limpio.lower().startswith(('es de', 'los cuales', 'de,')):
-        return _FRASE_SIN_PRECIO_CATALOGO
+        return _FRASE_SIN_PRECIO_CATALOGO if cliente_pide_precio else ''
 
-    if _FRASE_SIN_PRECIO_CATALOGO[:40].lower() not in limpio.lower():
+    if cliente_pide_precio and _FRASE_SIN_PRECIO_CATALOGO[:40].lower() not in limpio.lower():
         if limpio and not limpio.endswith(('.', '!', '?')):
             limpio = f'{limpio}.'
         limpio = f'{_FRASE_SIN_PRECIO_CATALOGO} {limpio}'.strip()
     return limpio
+
+
+def _extraer_respuestas_cliente(decision: dict[str, Any] | None) -> list[str]:
+    """Normaliza respuestas_cliente[] o respuesta_cliente a lista de burbujas cortas."""
+    if not isinstance(decision, dict):
+        return []
+    multi = decision.get('respuestas_cliente')
+    out: list[str] = []
+    if isinstance(multi, list):
+        for item in multi:
+            texto = str(item or '').strip()
+            if texto:
+                out.append(texto)
+    if not out:
+        single = str(decision.get('respuesta_cliente') or '').strip()
+        if single:
+            # Si el modelo metió párrafos separados, partir en burbujas.
+            partes = [p.strip() for p in re.split(r'\n{2,}', single) if p.strip()]
+            out = partes if len(partes) > 1 else [single]
+    # Máximo 3 burbujas; cada una no demasiado larga.
+    limpios: list[str] = []
+    for texto in out[:3]:
+        t = re.sub(r'\s+', ' ', texto).strip()
+        if t:
+            limpios.append(t[:700])
+    return limpios
+
 
 def _llamar_gemini_agente(prompt: str) -> tuple[dict[str, Any] | None, str | None]:
     api_key = (getattr(settings, 'GEMINI_API_KEY', '') or '').strip()
@@ -334,7 +392,7 @@ def _llamar_gemini_agente(prompt: str) -> tuple[dict[str, Any] | None, str | Non
         'contents': [{'parts': [{'text': prompt}]}],
         'generationConfig': {
             'temperature': 0.55,
-            'maxOutputTokens': 1600,
+            'maxOutputTokens': 2000,
             'responseMimeType': 'application/json',
         },
     }
@@ -530,7 +588,12 @@ REGLAS DE CONVERSACIÓN:
 18. MODALIDAD Y DIRECCIÓN: modalidad debe ser "taller" o "domicilio" según lo que pida el cliente Y lo que permita la FICHA. Pídela solo cuando sea relevante (cliente quiere venir/ir, o vas a cotizar/agendar) — nunca en un saludo vacío. Si modalidad=domicilio, OBLIGATORIO pedir y guardar direccion_servicio (calle/comuna). Sin dirección no digas que ya quedó a domicilio. Si es taller, modalidad="taller" y direccion_servicio puede ir vacío.
 19. TELÉFONO: necesario para cotizar, pero NO lo pidas en el saludo ni en el primer turno si el cliente aún no contó el problema. Pídelo cuando ya haya síntoma/servicio o el cliente pida presupuesto. Guárdalo en datos_actualizados.cliente_telefono. Sin teléfono no marques listo_para_cotizar=true. Si ya está, no lo vuelvas a pedir.
 20. KILOMETRAJE: si el contexto de patente trae km registrados, trátarlo SOLO como referencia aproximada / último dato conocido — el auto pudo seguir circulando. NUNCA digas "tu auto tiene X km exactos". Puedes decir "según registro, el último km conocido era aprox. X; ¿me confirmas el kilometraje actual?" y guarda vehiculo.kilometraje_actual si el cliente lo confirma.
-21. respuesta_cliente: 1-3 frases naturales. En saludo: cálido + 1 pregunta abierta. En asesoría: mini consejo + 1 pregunta. Si el cliente pidió el listado de servicios, puedes extenderte. NUNCA dejes respuesta_cliente vacío (sobre todo si hubo audio/foto).
+21. MENSAJES CORTOS Y SEPARADOS (como WhatsApp humano): responde con "respuestas_cliente" = lista de 1 a 3 burbujas.
+    - Cada burbuja = UNA idea (confirmación, tip técnico, o UNA pregunta).
+    - PROHIBIDO meter en un solo mensaje: disclaimer de precio + diagnóstico + pedido de teléfono.
+    - Ejemplo tras recibir patente: ["Listo, anoté tu patente. Es un Fiat Bravo, ¿cierto?", "El aviso de Hill Holder suele ir ligado al control de estabilidad/frenos; conviene revisarlo.", "Para avanzar, ¿me confirmas tu teléfono de contacto?"]
+    - En saludo: 1 burbuja. En asesoría simple: 1-2. Máximo 3.
+    - También rellena "respuesta_cliente" concatenando las burbujas (fallback). NUNCA dejes ambas vacías (sobre todo con audio/foto).
 22. senal_lead: clasifica la intención REAL del cliente en ESTE turno (no solo lo que dice, sino si avanza hacia contratar):
     - curioso: pregunta genérica, no da datos del vehículo/problema, respuestas cortas, poco compromiso.
     - comparando_precios: pide precio pero evita dar patente/teléfono, o menciona otras opciones/talleres.
@@ -541,10 +604,12 @@ REGLAS DE CONVERSACIÓN:
 23. NO INSISTIR: si el resumen de conversación, la memoria del cliente o el historial indican que el cliente solo quería asesoría, está comparando, dijo que lo pensará, o mostró baja disposición (senal_lead curioso/comparando_precios/sin_presupuesto), NO vuelvas a empujar cotización o agendamiento en cada turno. Deja que el cliente marque el ritmo; solo retoma la propuesta si hay señal clara de avance en ESTE mensaje (pide precio, confirma que quiere cotizar, da patente/teléfono para avanzar).
 24. resumen_turno: una frase breve (máx. 120 caracteres) sobre lo esencial de ESTE turno para memoria futura (tema, disposición del cliente, acuerdos). Ej: "Preguntó por pastillas; quiere pensarlo; no pidió cotizar aún." Si no hay nada nuevo relevante, déjalo vacío "".
 25. APRENDIZAJE DE VENTAS: si el bloque RAG trae "conversaciones que resultaron en venta", aprende el TONO y los ARGUMENTOS que funcionaron (cómo explicaron repuestos, garantía, objeciones). NUNCA copies datos de otro cliente (nombre, patente, teléfono). Úsalo como inspiración de estilo, no como script literal.
+26. NO hables de tarifas ni de "armar borrador" si el cliente solo entregó un dato (patente/teléfono/síntoma) y NO pidió precio. Primero confirma/asesora y pide el siguiente dato.
 
 Responde SOLO JSON válido:
 {{
   "respuesta_cliente": "...",
+  "respuestas_cliente": ["...", "..."],
   "intencion": "saludo|asesoria|cotizacion|agenda|otro",
   "cliente_pide_cotizacion": false,
   "repuestos_incluidos_ultimo_servicio": null,
@@ -813,8 +878,32 @@ def enviar_respuesta_agente(
                     'from_agente_ia': True,
                 },
             )
-
     return message
+
+
+def enviar_respuestas_agente(
+    *,
+    conversation: Conversation,
+    proveedor_user_id: int,
+    textos: list[str],
+    pausa_segundos: float = 0.85,
+) -> list[Message]:
+    """Envía 1-N burbujas como mensajes separados (ritmo conversacional tipo WhatsApp)."""
+    import time
+
+    enviados: list[Message] = []
+    limpios = [t.strip() for t in (textos or []) if (t or '').strip()]
+    for i, texto in enumerate(limpios):
+        if i > 0 and pausa_segundos > 0:
+            time.sleep(pausa_segundos)
+        msg = enviar_respuesta_agente(
+            conversation=conversation,
+            proveedor_user_id=proveedor_user_id,
+            texto=texto,
+        )
+        if msg is not None:
+            enviados.append(msg)
+    return enviados
 
 
 def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
@@ -1187,10 +1276,16 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
 
     necesita_humano = bool(decision.get('necesita_humano'))
     listo_cotizar = bool(decision.get('listo_para_cotizar'))
-    respuesta = (decision.get('respuesta_cliente') or '').strip()
+    respuestas = _extraer_respuestas_cliente(decision)
+    respuesta = ' '.join(respuestas).strip()
     cliente_pide_cotizacion = bool(decision.get('cliente_pide_cotizacion'))
     intencion = (decision.get('intencion') or '').strip().lower()
     senal_lead = (decision.get('senal_lead') or '').strip().lower()
+    cliente_pide_precio = _cliente_pide_precio_en_turno(
+        texto_cliente=texto_cliente,
+        cliente_pide_cotizacion=cliente_pide_cotizacion,
+        intencion=intencion,
+    )
 
     def _persistir_calificacion_lead() -> None:
         try:
@@ -1227,15 +1322,30 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
                 taller.id,
             )
 
-    # Anti-alucinación de precios: sin tarifa de catálogo, no enviar montos ni afirmaciones de tarifa.
+    # Anti-alucinación de precios: sin tarifa de catálogo, limpia montos/afirmaciones.
+    # El disclaimer largo solo si el cliente pidió precio; no en captura de patente/teléfono.
     puede_mencionar_precio = _tiene_precio_catalogo_mencionable(taller, datos)
-    if respuesta and not puede_mencionar_precio and _respuesta_afirma_precio(respuesta):
-        respuesta = _sanitizar_respuesta_sin_precio_catalogo(respuesta)
-        logger.info(
-            'Sanitizado precio/tarifa sin catálogo en respuesta agente (conv=%s taller=%s)',
-            conversation.id,
-            taller.id,
-        )
+    if respuestas and not puede_mencionar_precio:
+        sanitizadas: list[str] = []
+        for burbuja in respuestas:
+            if _respuesta_afirma_precio(burbuja):
+                limpia = _sanitizar_respuesta_sin_precio_catalogo(
+                    burbuja,
+                    cliente_pide_precio=cliente_pide_precio,
+                )
+                if limpia:
+                    sanitizadas.append(limpia)
+            else:
+                sanitizadas.append(burbuja)
+        if sanitizadas != respuestas:
+            logger.info(
+                'Sanitizado precio/tarifa sin catálogo en respuesta agente (conv=%s taller=%s pide_precio=%s)',
+                conversation.id,
+                taller.id,
+                cliente_pide_precio,
+            )
+        respuestas = sanitizadas
+        respuesta = ' '.join(respuestas).strip()
 
     # Válvula de seguridad: no cotizar “de oficio” sin contexto ni pedido del cliente.
     if listo_cotizar:
@@ -1255,11 +1365,11 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         sesion.pausado_hasta = timezone.now() + timedelta(minutes=minutos_pausa_manual())
         sesion.estado = AgenteConversacionSesion.ESTADO_PAUSADO
         sesion.save(update_fields=['pausado_por_taller', 'pausado_hasta', 'estado', 'actualizado_en'])
-        if respuesta:
-            enviar_respuesta_agente(
+        if respuestas:
+            enviar_respuestas_agente(
                 conversation=conversation,
                 proveedor_user_id=proveedor_user_id,
-                texto=respuesta,
+                textos=respuestas,
             )
         notificar_escalamiento_humano(
             proveedor_user_id=proveedor_user_id,
@@ -1295,22 +1405,23 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             proveedor_user_id=proveedor_user_id,
             datos=datos_cot,
         )
-        mensaje_cliente = respuesta or (
+        mensaje_cliente_parts = respuestas or [
             'Ya tengo lo necesario: estoy armando tu cotización para que el taller la revise '
             'y te la envíe por este chat. Si necesitas agregar otro servicio al mismo auto, '
             'dímelo y lo sumo a la misma cotización.'
-        )
+        ]
+        mensaje_cliente = ' '.join(mensaje_cliente_parts).strip()
         if cotizacion:
-            enviar_respuesta_agente(
+            enviar_respuestas_agente(
                 conversation=conversation,
                 proveedor_user_id=proveedor_user_id,
-                texto=mensaje_cliente,
+                textos=mensaje_cliente_parts,
             )
-        elif respuesta:
-            enviar_respuesta_agente(
+        elif respuestas:
+            enviar_respuestas_agente(
                 conversation=conversation,
                 proveedor_user_id=proveedor_user_id,
-                texto=respuesta,
+                textos=respuestas,
             )
 
         AgenteMensajeLog.objects.create(
@@ -1342,28 +1453,29 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         or (message.channel_metadata or {}).get('media')
         or analisis_media
     )
-    if not respuesta and hubo_media:
+    if not respuestas and hubo_media:
         kind_media = (
             (analisis_media or {}).get('tipo_medio')
             or (analisis_media or {}).get('kind')
             or 'audio'
         )
         if analisis_media and (analisis_media.get('error') or analisis_media.get('pendiente')):
-            respuesta = (
+            respuestas = [
                 f'Recibí tu {kind_media}, pero no pude procesarlo bien. '
                 '¿Me lo reenvías o me describes con palabras qué se oye/ve?'
-            )
+            ]
         else:
-            respuesta = (
+            respuestas = [
                 f'Recibí tu {kind_media}. ¿Me confirmas qué le pasa al auto '
                 'o me das la patente para orientarte mejor?'
-            )
+            ]
+        respuesta = ' '.join(respuestas)
 
-    if respuesta:
-        enviar_respuesta_agente(
+    if respuestas:
+        enviar_respuestas_agente(
             conversation=conversation,
             proveedor_user_id=proveedor_user_id,
-            texto=respuesta,
+            textos=respuestas,
         )
     AgenteMensajeLog.objects.create(
         sesion=sesion,
@@ -1377,7 +1489,8 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             'senal_lead': senal_lead,
             'media': bool(analisis_media and not analisis_media.get('error')),
             'media_kind': (analisis_media or {}).get('tipo_medio') or (analisis_media or {}).get('kind'),
-            'fallback_respuesta_vacia': hubo_media and not (decision.get('respuesta_cliente') or '').strip(),
+            'fallback_respuesta_vacia': hubo_media and not respuestas,
+            'burbujas': len(respuestas),
         },
     )
     _persistir_calificacion_lead()
