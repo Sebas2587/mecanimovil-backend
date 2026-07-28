@@ -113,6 +113,8 @@ def build_legacy_provider_chats(user, request=None):
             'cotizacion_id': None,
             'cotizacion_servicio': None,
             'cliente_sin_responder': not ultimo.es_proveedor or oferta.mensajes_no_leidos > 0,
+            'lead_categoria': 'sin_calificar',
+            'lead_score': 0,
             'sort_at': ultimo.fecha_envio,
         })
     return chats_list
@@ -123,7 +125,7 @@ def build_omnichannel_chats(user):
         Conversation.objects.filter(
             participants=user,
             source_channel__in=['WHATSAPP', 'MESSENGER', 'INSTAGRAM'],
-        ).select_related('external_contact').prefetch_related('messages').order_by('-updated_at')
+        ).select_related('external_contact', 'lead_calificacion').prefetch_related('messages').order_by('-updated_at')
     )
     cot_map = _cotizaciones_por_conversacion([c.id for c in conversations])
 
@@ -141,6 +143,7 @@ def build_omnichannel_chats(user):
                 solicitud_id = conv.object_id
 
         cot = cot_map.get(conv.id)
+        lead = getattr(conv, 'lead_calificacion', None)
         items.append({
             'kind': 'omnichannel',
             'channel': channel_to_api_slug(conv.source_channel),
@@ -169,6 +172,8 @@ def build_omnichannel_chats(user):
             'cliente_sin_responder': (
                 last_msg.direction == 'inbound' or unread > 0
             ),
+            'lead_categoria': lead.categoria if lead else 'sin_calificar',
+            'lead_score': lead.score if lead else 0,
             'sort_at': last_msg.timestamp,
         })
     return items
