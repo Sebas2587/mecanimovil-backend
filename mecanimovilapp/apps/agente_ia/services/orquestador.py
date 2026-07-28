@@ -1265,8 +1265,9 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         construir_ficha_operativa_taller,
     )
 
-    vehiculo_ficha = (sesion.datos_capturados or {}).get('vehiculo') or {}
-    verificado_ficha = (sesion.datos_capturados or {}).get('vehiculo_verificado') or {}
+    datos_prev = sesion.datos_capturados or {}
+    vehiculo_ficha = datos_prev.get('vehiculo') or {}
+    verificado_ficha = datos_prev.get('vehiculo_verificado') or {}
     if not isinstance(vehiculo_ficha, dict):
         vehiculo_ficha = {}
     if not isinstance(verificado_ficha, dict):
@@ -1275,7 +1276,8 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
     modelo_ficha = str(vehiculo_ficha.get('modelo') or verificado_ficha.get('modelo') or '').strip()
     tipo_motor_ficha = str(vehiculo_ficha.get('tipo_motor') or verificado_ficha.get('tipo_motor') or '').strip()
     servicios_ficha = _servicios_candidato_precio(datos_prev)
-    permite_hist = config.permite_estimados_historicos
+    # getattr: si la migración 0010 aún no corrió en el entorno, no tumbar el agente.
+    permite_hist = bool(getattr(config, 'permite_estimados_historicos', True))
 
     contexto_operativo_txt = construir_ficha_operativa_taller(
         taller,
@@ -1295,7 +1297,6 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         bloque_diagnostico_relevante,
     )
 
-    datos_prev = sesion.datos_capturados or {}
     contexto_diagnostico_txt = bloque_diagnostico_relevante(
         texto_cliente=texto_cliente,
         descripcion_problema=str(datos_prev.get('descripcion_problema') or ''),
@@ -1476,7 +1477,7 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
     puede_mencionar_precio = _tiene_precio_mencionable(
         taller,
         datos,
-        permite_estimados_historicos=config.permite_estimados_historicos,
+        permite_estimados_historicos=bool(getattr(config, 'permite_estimados_historicos', True)),
     )
     if respuestas and not puede_mencionar_precio:
         sanitizadas: list[str] = []
@@ -1504,7 +1505,9 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
     if listo_cotizar:
         if not _contexto_minimo_para_cotizar(
             datos,
-            requiere_direccion_antes_de_cotizar=config.requiere_direccion_antes_de_cotizar,
+            requiere_direccion_antes_de_cotizar=bool(
+                getattr(config, 'requiere_direccion_antes_de_cotizar', False)
+            ),
         ):
             listo_cotizar = False
         elif (
