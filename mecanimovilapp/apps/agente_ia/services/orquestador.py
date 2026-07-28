@@ -111,9 +111,43 @@ _MONTO_CLP_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Frases donde el modelo afirma un precio / tarifa aunque el monto ya se haya borrado.
+_PRECIO_CLAIM_RE = re.compile(
+    r'(?:'
+    r'(?:el\s+)?valor\s+(?:de\s+)?(?:la\s+)?(?:visita|diagn[oó]stico|inspecci[oó]n|servicio|revisi[oó]n)[^.!?\n]*[.!?]?'
+    r'|(?:cuesta|sale|vale)\s+(?:alrededor\s+de\s+|unos?\s+|aprox\.?\s+)?(?:\$|[^.!?\n])*[.!?]?'
+    r'|tarifas?\s+(?:de\s+)?(?:visita|diagn[oó]stico)[^.!?\n]*[.!?]?'
+    r'|se\s+descuentan?\s+del\s+total[^.!?\n]*[.!?]?'
+    r'|es\s+de\s*,?\s*(?:los\s+cuales)?[^.!?\n]*[.!?]?'
+    r'|los\s+cuales\s+se\s+descuentan?[^.!?\n]*[.!?]?'
+    r')',
+    re.IGNORECASE,
+)
+
+_FRASE_SIN_PRECIO_CATALOGO = (
+    'Ese servicio no tiene una tarifa publicada en nuestro catálogo, '
+    'así que el valor exacto te lo confirma el taller en la cotización. '
+    'Si quieres, dejamos armado el borrador para que lo revisen y te lo envíen.'
+)
+
+_FRASE_SANITIZER_LEGACY = re.compile(
+    r'Ese valor lo confirma el taller en la cotización[^.]*\.',
+    re.IGNORECASE,
+)
+
 
 def _respuesta_contiene_monto(texto: str) -> bool:
     return bool(_MONTO_CLP_RE.search(texto or ''))
+
+
+def _respuesta_afirma_precio(texto: str) -> bool:
+    t = texto or ''
+    if _respuesta_contiene_monto(t):
+        return True
+    if _PRECIO_CLAIM_RE.search(t):
+        return True
+    low = t.lower()
+    return 'se descuent' in low or 'tarifa de visita' in low
 
 
 def _servicios_candidato_precio(datos: dict) -> list[str]:
@@ -159,23 +193,32 @@ def _tiene_precio_catalogo_mencionable(taller, datos: dict) -> bool:
 
 
 def _sanitizar_respuesta_sin_precio_catalogo(respuesta: str) -> str:
-    """Quita montos inventados cuando no hay precio de catálogo publicable."""
+    """
+    Cuando no hay precio de catálogo, elimina afirmaciones de tarifa/monto
+    (aunque el modelo deje frases rotas tipo "es de,") y responde con claridad.
+    """
     texto = (respuesta or '').strip()
-    if not texto or not _respuesta_contiene_monto(texto):
+    if not texto or not _respuesta_afirma_precio(texto):
         return texto
+
     limpio = _MONTO_CLP_RE.sub('', texto)
+    limpio = _PRECIO_CLAIM_RE.sub('', limpio)
+    limpio = _FRASE_SANITIZER_LEGACY.sub('', limpio)
     limpio = re.sub(r'\s{2,}', ' ', limpio)
-    limpio = re.sub(r'\s+([,.;:])', r'\1', limpio).strip()
-    frase_segura = (
-        'Ese valor lo confirma el taller en la cotización (no tengo un precio '
-        'publicado de catálogo para inventarlo).'
-    )
-    if frase_segura.lower()[:40] not in limpio.lower():
+    limpio = re.sub(r'\s+([,.;:])', r'\1', limpio)
+    limpio = re.sub(r',\s*,+', ',', limpio)
+    limpio = re.sub(r'\.\s*\.', '.', limpio)
+    limpio = limpio.strip(' ,;')
+
+    # Si quedó demasiado corto o solo basura, reemplazar por respuesta natural.
+    if len(limpio) < 24 or limpio.lower().startswith(('es de', 'los cuales', 'de,')):
+        return _FRASE_SIN_PRECIO_CATALOGO
+
+    if _FRASE_SIN_PRECIO_CATALOGO[:40].lower() not in limpio.lower():
         if limpio and not limpio.endswith(('.', '!', '?')):
             limpio = f'{limpio}.'
-        limpio = f'{limpio} {frase_segura}'.strip()
+        limpio = f'{_FRASE_SIN_PRECIO_CATALOGO} {limpio}'.strip()
     return limpio
-
 
 def _llamar_gemini_agente(prompt: str) -> tuple[dict[str, Any] | None, str | None]:
     api_key = (getattr(settings, 'GEMINI_API_KEY', '') or '').strip()
@@ -324,11 +367,12 @@ REGLAS DE CONVERSACIÓN:
     Sin patente, sin teléfono o servicio fuera de especialidad → listo_para_cotizar=false.
 13. cliente_pide_cotizacion=true únicamente si en este turno (o el historial reciente) el cliente pidió precio/cotización/presupuesto de forma explícita o claramente implícita.
 14. UNA SOLA COTIZACIÓN por conversación/vehículo: si el cliente pide otro servicio para el MISMO auto, agrégalo a la misma cotización (lista "servicios") — NO trates cada servicio como cotización aparte. El sistema edita un único borrador hasta que el taller lo cierre/envíe.
-15. PRECIOS (ANTI-ALUCINACIÓN, CRÍTICO): Solo puedes mencionar un monto en pesos ($, CLP) si ese EXACTO valor aparece en la FICHA OPERATIVA / catálogo publicado para ese servicio y vehículo. Si el cliente pregunta "cuánto sale" y NO hay precio publicado (ej. diagnóstico a domicilio sin tarifa en catálogo):
-    - PROHIBIDO inventar cifras (ej. $25.000, "unos treinta lucas", etc.).
-    - Di que el taller confirmará el valor en la cotización revisada.
-    - Igual puedes marcar listo_para_cotizar=true para armar borrador en $0 (el humano completa el precio).
-    - Nunca digas "se descuenta del total" ni tarifas de visita inventadas.
+15. PRECIOS (ANTI-ALUCINACIÓN, CRÍTICO): Solo puedes mencionar un monto en pesos ($, CLP) si ese EXACTO valor aparece en la FICHA OPERATIVA / catálogo publicado para ese servicio y vehículo. Si el cliente pregunta "cuánto sale / cuánto cuesta" y NO hay precio publicado (ej. inspección/diagnóstico a domicilio sin tarifa en catálogo):
+    - PROHIBIDO inventar cifras, rangos ("entre X e Y"), "unos treinta lucas", o dejar huecos tipo "el valor es de,".
+    - PROHIBIDO inventar políticas de descuento ("se descuenta del total", "se abona a la reparación").
+    - Responde con esta idea (puedes parafrasear, mismo sentido): "Ese servicio no tiene una tarifa publicada en catálogo; el valor exacto te lo confirma el taller en la cotización. Si quieres, dejamos armado el borrador para que lo revisen y te lo envíen."
+    - Luego pide SOLO el dato que falte (teléfono o dirección), una pregunta.
+    - Si ya tienes patente + teléfono + problema, marca listo_para_cotizar=true (borrador en $0; el humano completa el precio).
 16. ENVÍO: TÚ NO envías la cotización por WhatsApp ni confirmas precios finales. Solo preparas el borrador; un humano del taller la revisa en "Cotizar con IA" y la envía. Dile al cliente que el taller le enviará la cotización.
 17. Si el cliente menciona preferencia de día/hora/técnico para la visita, guárdalo en preferencias_agenda (fecha ISO si puedes, hora HH:MM, tecnico_nombre). Eso se usa al aceptar para agendar sin perder el acuerdo.
 18. MODALIDAD Y DIRECCIÓN: modalidad debe ser "taller" o "domicilio" según lo que pida el cliente Y lo que permita la FICHA. Pídela solo cuando sea relevante (cliente quiere venir/ir, o vas a cotizar/agendar) — nunca en un saludo vacío. Si modalidad=domicilio, OBLIGATORIO pedir y guardar direccion_servicio (calle/comuna). Sin dirección no digas que ya quedó a domicilio. Si es taller, modalidad="taller" y direccion_servicio puede ir vacío.
@@ -947,12 +991,12 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
                 taller.id,
             )
 
-    # Anti-alucinación de precios: sin tarifa de catálogo, NUNCA enviar montos al cliente.
+    # Anti-alucinación de precios: sin tarifa de catálogo, no enviar montos ni afirmaciones de tarifa.
     puede_mencionar_precio = _tiene_precio_catalogo_mencionable(taller, datos)
-    if respuesta and _respuesta_contiene_monto(respuesta) and not puede_mencionar_precio:
+    if respuesta and not puede_mencionar_precio and _respuesta_afirma_precio(respuesta):
         respuesta = _sanitizar_respuesta_sin_precio_catalogo(respuesta)
         logger.info(
-            'Sanitizado monto inventado en respuesta agente (conv=%s taller=%s)',
+            'Sanitizado precio/tarifa sin catálogo en respuesta agente (conv=%s taller=%s)',
             conversation.id,
             taller.id,
         )
