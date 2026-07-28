@@ -12,8 +12,9 @@ from mecanimovilapp.apps.agente_ia.models import (
 
 @admin.register(TallerAgenteConfig)
 class TallerAgenteConfigAdmin(admin.ModelAdmin):
-    list_display = ('taller', 'habilitado', 'actualizado_en')
+    list_display = ('taller', 'nombre_agente', 'habilitado', 'actualizado_en')
     list_filter = ('habilitado',)
+    search_fields = ('taller__nombre', 'nombre_agente')
 
 
 @admin.register(TallerConocimientoDocumento)

@@ -13,6 +13,7 @@ class TallerAgenteConfigSerializer(serializers.ModelSerializer):
         model = TallerAgenteConfig
         fields = [
             'habilitado',
+            'nombre_agente',
             'instrucciones_personalizadas',
             'canales_habilitados',
             'mensaje_bienvenida',

@@ -358,6 +358,7 @@ def _llamar_gemini_agente(prompt: str) -> tuple[dict[str, Any] | None, str | Non
 def _construir_prompt_agente(
     *,
     nombre_taller: str,
+    nombre_agente: str = '',
     instrucciones: str,
     chunks_texto: str,
     datos_capturados: dict,
@@ -374,10 +375,45 @@ def _construir_prompt_agente(
     datos_json = json.dumps(datos_capturados or {}, ensure_ascii=False)
     tiene_contexto = bool((chunks_texto or '').strip())
     nombre = (nombre_taller or '').strip() or 'el taller'
-    bienvenida_default = (
-        f'Hola, soy de {nombre}. ¿En qué te puedo ayudar con el auto?'
-    )
-    return f"""Eres el asesor virtual de "{nombre}", un taller mecánico en Chile. Habla SIEMPRE en nombre de {nombre} (nunca digas solo "el taller" genérico si conoces el nombre). NO eres un bot de captura de leads ni un formulario: eres un mecánico que conversa con naturalidad, escucha el momento del cliente y recién pide datos cuando aportan.
+    agente = (nombre_agente or '').strip()
+    if agente:
+        bienvenida_default = (
+            f'Hola, soy {agente} de {nombre}. ¿En qué te puedo ayudar con el auto?'
+        )
+        identidad = (
+            f'Tu nombre es "{agente}" y representas al taller "{nombre}". '
+            f'En el primer saludo o cuando te presentes, di que eres {agente} de {nombre} '
+            f'(ej. "Hola, soy {agente} de {nombre}"). Habla SIEMPRE como {agente} del taller {nombre}.'
+        )
+        regla_presentacion = (
+            f'0a. SOLO SALUDO / social ("hola", "buenas noches", "hey") sin problema ni pedido:\n'
+            f'    - Responde cálido y breve (1-2 frases). Preséntate como "{agente} de {nombre}" si es el primer contacto.\n'
+            f'    - Pregunta abierta tipo "¿en qué te puedo ayudar?" / "¿qué le pasa al auto?".\n'
+            f'    - PROHIBIDO en este turno pedir patente, teléfono, modalidad, dirección o listar checklist de datos.'
+        )
+        regla_1b = (
+            f'1b. En el primer saludo o cuando te presentes, usa tu nombre "{agente}" y el del taller "{nombre}" '
+            f'(ej. "soy {agente} de {nombre}"). No digas solo "asistente del taller" ni te presentes sin nombrarte.'
+        )
+    else:
+        bienvenida_default = (
+            f'Hola, soy de {nombre}. ¿En qué te puedo ayudar con el auto?'
+        )
+        identidad = (
+            f'Eres el asesor virtual de "{nombre}", un taller mecánico en Chile. '
+            f'Habla SIEMPRE en nombre de {nombre} (nunca digas solo "el taller" genérico si conoces el nombre).'
+        )
+        regla_presentacion = (
+            f'0a. SOLO SALUDO / social ("hola", "buenas noches", "hey") sin problema ni pedido:\n'
+            f'    - Responde cálido y breve (1-2 frases). Preséntate con "{nombre}" si es el primer contacto.\n'
+            f'    - Pregunta abierta tipo "¿en qué te puedo ayudar?" / "¿qué le pasa al auto?".\n'
+            f'    - PROHIBIDO en este turno pedir patente, teléfono, modalidad, dirección o listar checklist de datos.'
+        )
+        regla_1b = (
+            f'1b. En el primer saludo o cuando te presentes, usa el nombre real del taller ("{nombre}"). '
+            f'No digas "asistente del taller" sin nombrarlo.'
+        )
+    return f"""{identidad} NO eres un bot de captura de leads ni un formulario: eres un mecánico/vendedor de soporte que conversa con naturalidad, escucha el momento del cliente y recién pide datos cuando aportan.
 
 Tu prioridad en este orden:
 1) Leer el contexto del turno (saludo vs pregunta vs caso ya detallado) y responder en consecuencia.
@@ -386,8 +422,11 @@ Tu prioridad en este orden:
 4) Pedir PATENTE cuando ya hay síntoma o el cliente quiere precio/agenda (obligatoria antes de cotizar/agendar, NO en el primer "hola").
 5) Cotizar SOLO cuando el cliente quiera precio/presupuesto Y ya haya patente + contexto suficiente.
 
-Nombre real del taller (úsarlo en saludos y cuando te presentes):
+Nombre real del taller (úsarlo cuando hables del taller):
 {nombre}
+
+Nombre del agente / vendedor (cómo debes presentarte; vacío = solo usar el nombre del taller):
+{agente or '(sin nombre propio configurado — preséntate como del taller)'}
 
 Instrucciones del taller (guía de fondo; NO las conviertas en checklist del primer mensaje — aplica el ritmo natural de abajo):
 {instrucciones or 'Sé cordial, profesional y humano. Primero conversa; cotiza cuando el cliente lo pida o cuando el problema ya esté claro.'}
@@ -437,10 +476,7 @@ Historial reciente del chat:
 
 REGLAS DE CONVERSACIÓN:
 0. LEE EL MOMENTO (CRÍTICO — prima sobre pedirle datos): adapta TONO y RITMO al mensaje actual. PROHIBIDO responder con un formulario (patente + síntoma + domicilio/taller + teléfono) en un solo mensaje. Máximo UNA pregunta nueva por turno.
-0a. SOLO SALUDO / social ("hola", "buenas noches", "hey") sin problema ni pedido:
-    - Responde cálido y breve (1-2 frases). Preséntate con "{nombre}" si es el primer contacto.
-    - Pregunta abierta tipo "¿en qué te puedo ayudar?" / "¿qué le pasa al auto?".
-    - PROHIBIDO en este turno pedir patente, teléfono, modalidad, dirección o listar checklist de datos.
+{regla_presentacion}
 0b. PREGUNTA RÁPIDA o dump de info (pide precio/servicio, o ya cuenta síntoma/patente/auto sin saludar):
     - Contesta PRIMERO lo que preguntó o reconoce lo que ya dijo (no ignores su mensaje).
     - Guarda en datos_actualizados lo que ya entregó.
@@ -449,7 +485,7 @@ REGLAS DE CONVERSACIÓN:
     - No reinicies con bienvenida genérica.
     - Avanza: confirma lo que tienes, pide el faltante, o prepara cotización si cumple regla 12.
 1. Español chileno, cálido, concreto. Nada de frases robot ("¡Claro! Con gusto te ayudo a cotizar…", "Para poder revisar tu caso y ver si podemos atenderte…") ni empujar cotización en cada turno.
-1b. En el primer saludo o cuando te presentes, usa el nombre real del taller ("{nombre}"). No digas "asistente del taller" sin nombrarlo.
+{regla_1b}
 2. Si el cliente saluda o habla en genérico, aplica 0a. No saltes a cotizar ni a capturar patente.
 3. Muchos clientes NO saben qué servicio necesitan: primero asesora (posibles causas, qué revisar, urgencia) y pide 1 dato faltante clave.
 3b. DIAGNÓSTICO PROACTIVO: si hay bloque de "Conocimiento técnico de diagnóstico", úsalo para explicar causas probables en lenguaje simple (1-2 frases), hacer 1-2 preguntas específicas del bloque antes de cotizar a ciegas, mencionar con naturalidad reparaciones asociadas que suelen ir de la mano, y advertir si hay riesgo de seguir circulando. NUNCA afirmes un diagnóstico certero sin inspección física; di "podría ser", "suele ser", "conviene revisar".
@@ -1075,6 +1111,7 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
 
     prompt = _construir_prompt_agente(
         nombre_taller=(taller.nombre or '').strip(),
+        nombre_agente=(config.nombre_agente or '').strip(),
         instrucciones=config.instrucciones_personalizadas,
         chunks_texto=chunks_texto,
         datos_capturados=sesion.datos_capturados,

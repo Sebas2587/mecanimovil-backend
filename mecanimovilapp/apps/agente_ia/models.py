@@ -20,6 +20,12 @@ class TallerAgenteConfig(models.Model):
         related_name='agente_config',
     )
     habilitado = models.BooleanField(default=False)
+    nombre_agente = models.CharField(
+        max_length=80,
+        blank=True,
+        default='',
+        help_text='Nombre con el que el agente se presenta a los clientes (ej. Carlos, Sofía).',
+    )
     instrucciones_personalizadas = models.TextField(blank=True, default='')
     canales_habilitados = models.JSONField(
         default=list,
