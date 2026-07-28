@@ -136,23 +136,28 @@ def _upsert_chunk(
             referencia_externa=referencia_externa,
         ).first()
         if existing is None:
-            return TallerConocimientoChunk.objects.create(
-                taller_id=taller_id,
-                referencia_externa=referencia_externa,
-                embedding=embedding,
+            create_kwargs = {
+                'taller_id': taller_id,
+                'referencia_externa': referencia_externa,
                 **defaults,
-            )
+            }
+            # Si Gemini falló, crear igual con embedding=None (backfill después).
+            if 'embedding' not in create_kwargs:
+                create_kwargs['embedding'] = embedding
+            return TallerConocimientoChunk.objects.create(**create_kwargs)
         for key, value in defaults.items():
             setattr(existing, key, value)
         existing.save()
         return existing
 
-    return TallerConocimientoChunk.objects.create(
-        taller_id=taller_id,
-        referencia_externa='',
-        embedding=embedding,
+    create_kwargs = {
+        'taller_id': taller_id,
+        'referencia_externa': '',
         **defaults,
-    )
+    }
+    if 'embedding' not in create_kwargs:
+        create_kwargs['embedding'] = embedding
+    return TallerConocimientoChunk.objects.create(**create_kwargs)
 
 
 def backfill_embeddings_faltantes(taller_id: int | None = None, limite: int = 200) -> int:
