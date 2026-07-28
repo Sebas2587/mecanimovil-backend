@@ -316,26 +316,30 @@ class AgenteIaViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=['get'], url_path='borradores-pendientes')
     def borradores_pendientes(self, request):
-        """Sesiones con cotización IA esperando revisión del taller."""
+        """Cotizaciones en borrador del taller (fuente de verdad para badge Hoy/Mensajes).
+
+        Antes se contaban sesiones en `esperando_revision_taller` aunque la cotización
+        ya estuviera enviada → el badge quedaba en "1" para siempre.
+        """
+        from mecanimovilapp.apps.ordenes.models import CotizacionCanal
+
         taller = self._taller(request)
-        sesiones = (
-            AgenteConversacionSesion.objects.filter(
-                taller=taller,
-                estado=AgenteConversacionSesion.ESTADO_ESPERANDO_REVISION,
-                cotizacion_borrador__isnull=False,
-            )
-            .select_related('cotizacion_borrador')
-            .order_by('-actualizado_en')[:20]
-        )
+        qs = CotizacionCanal.objects.filter(taller=taller, estado='borrador')
+        count = qs.count()
         items = [
             {
-                'sesion_id': s.id,
-                'conversation_id': s.conversation_id,
-                'cotizacion_id': s.cotizacion_borrador_id,
-                'servicio_nombre': (
-                    s.cotizacion_borrador.servicio_nombre if s.cotizacion_borrador else ''
-                ),
+                'sesion_id': None,
+                'conversation_id': c.conversation_id,
+                'cotizacion_id': c.id,
+                'servicio_nombre': c.servicio_nombre or '',
             }
-            for s in sesiones
+            for c in qs.order_by('-actualizado_en', '-id')[:20]
         ]
-        return Response({'count': len(items), 'results': items})
+        # Limpia sesiones huérfanas que siguen en "esperando revisión" sin borrador real.
+        AgenteConversacionSesion.objects.filter(
+            taller=taller,
+            estado=AgenteConversacionSesion.ESTADO_ESPERANDO_REVISION,
+        ).exclude(
+            cotizacion_borrador__estado='borrador',
+        ).update(estado=AgenteConversacionSesion.ESTADO_CAPTURANDO)
+        return Response({'count': count, 'results': items})

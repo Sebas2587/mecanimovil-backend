@@ -163,6 +163,11 @@ def enviar_cotizacion_libre(cotizacion: CotizacionCanal) -> CotizacionCanal:
             'actualizado_en',
         ],
     )
+    from mecanimovilapp.apps.agente_ia.services.sesion_cotizacion import (
+        liberar_sesiones_tras_cerrar_borrador,
+    )
+
+    liberar_sesiones_tras_cerrar_borrador(cotizacion)
     return cotizacion
 
 

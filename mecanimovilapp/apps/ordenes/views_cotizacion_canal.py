@@ -347,6 +347,11 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
         from mecanimovilapp.apps.agente_ia.services.lead_scoring import (
             actualizar_calificacion_desde_cotizacion,
         )
+        from mecanimovilapp.apps.agente_ia.services.sesion_cotizacion import (
+            liberar_sesiones_tras_cerrar_borrador,
+        )
+
+        liberar_sesiones_tras_cerrar_borrador(cotizacion)
         actualizar_calificacion_desde_cotizacion(cotizacion, evento='cancelada')
         return Response(CotizacionCanalSerializer(cotizacion).data)
 

@@ -359,6 +359,12 @@ def enviar_cotizacion_canal(cotizacion: CotizacionCanal, user) -> Message:
         ],
     )
 
+    from mecanimovilapp.apps.agente_ia.services.sesion_cotizacion import (
+        liberar_sesiones_tras_cerrar_borrador,
+    )
+
+    liberar_sesiones_tras_cerrar_borrador(cotizacion)
+
     from mecanimovilapp.apps.omnichannel.services.broadcast import (
         broadcast_to_participants,
         build_chat_payload,
