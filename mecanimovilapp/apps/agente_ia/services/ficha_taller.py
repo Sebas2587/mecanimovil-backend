@@ -250,24 +250,48 @@ def _etiqueta_tipo_motor(tipo_motor: str) -> str:
     return mapping.get(tm, tm)
 
 
-def _bloque_catalogo(taller: Taller) -> str:
+def _bloque_catalogo(
+    taller: Taller,
+    *,
+    marca_vehiculo: str = '',
+    modelo_vehiculo: str = '',
+) -> str:
+    from mecanimovilapp.apps.ordenes.services.catalogo_pricing import oferta_compatible_con_vehiculo
     from mecanimovilapp.apps.servicios.models import OfertaServicio
 
     ofertas = list(
         OfertaServicio.objects.filter(taller=taller, disponible=True)
         .select_related('servicio', 'marca_vehiculo_seleccionada', 'modelo_vehiculo_seleccionado')
         .prefetch_related('servicio__categorias')
-        .order_by('servicio__nombre')[:40]
+        .order_by('servicio__nombre')[:80]
     )
     if not ofertas:
         return 'Catálogo: el taller no tiene servicios publicados todavía en el sistema.'
+
+    marca_v = (marca_vehiculo or '').strip()
+    modelo_v = (modelo_vehiculo or '').strip()
+    vehiculo_conocido = bool(marca_v or modelo_v)
 
     lineas = [
         'Catálogo de servicios publicados por el taller '
         '(usa EXACTAMENTE estos nombres si el cliente pregunta qué servicios ofrecen; '
         'NO inventes servicios ni precios que no estén en esta lista; '
-        'precios al público incluyen IVA 19%):'
+        'precios al público incluyen IVA 19%). '
+        'CRÍTICO sobre cobertura: un precio SOLO aplica al vehículo del cliente si la '
+        'cobertura es "todas las marcas/modelos" O coincide con la marca/modelo del auto. '
+        'PROHIBIDO citar el precio de otra marca/modelo (ej. precio Toyota para un Honda).'
     ]
+    if vehiculo_conocido:
+        veh_txt = ' '.join(p for p in (marca_v, modelo_v) if p)
+        lineas.append(
+            f'Vehículo del cliente en este turno: {veh_txt}. '
+            'Los ítems marcados [APLICA A ESTE AUTO] son los únicos cuyos precios puedes citar. '
+            'Los marcados [OTRA COBERTURA — NO CITAR PRECIO] solo indican que el taller '
+            'ofrece ese servicio para OTRA marca/modelo; di que el valor para ESTE auto '
+            'lo confirma el taller en la cotización.'
+        )
+
+    aplican = 0
     for oferta in ofertas:
         marca = oferta.marca_vehiculo_seleccionada.nombre if oferta.marca_vehiculo_seleccionada_id else None
         modelo = oferta.modelo_vehiculo_seleccionado.nombre if oferta.modelo_vehiculo_seleccionado_id else None
@@ -287,6 +311,24 @@ def _bloque_catalogo(taller: Taller) -> str:
         mano_obra = int(oferta.costo_mano_de_obra_sin_iva or 0)
         repuestos = int(oferta.costo_repuestos_sin_iva or 0)
 
+        compatible = (
+            oferta_compatible_con_vehiculo(
+                oferta,
+                marca=marca_v,
+                modelo=modelo_v,
+            )
+            if vehiculo_conocido
+            else True
+        )
+
+        if vehiculo_conocido and not compatible:
+            # Muestra el servicio sin precio para no sesgar al modelo.
+            lineas.append(
+                f'- {oferta.servicio.nombre} · {cats_txt} · {cobertura_txt} · '
+                f'motor {motor_txt} · [OTRA COBERTURA — NO CITAR PRECIO]'
+            )
+            continue
+
         precios_partes: list[str] = []
         if precio_con:
             precios_partes.append(f'con repuestos {_formatear_clp(precio_con)} (IVA incl.)')
@@ -297,21 +339,37 @@ def _bloque_catalogo(taller: Taller) -> str:
         if repuestos:
             precios_partes.append(f'repuestos sin IVA {_formatear_clp(repuestos)}')
         precios_txt = ' · '.join(precios_partes) if precios_partes else 'precio no configurado'
-
+        tag = ' · [APLICA A ESTE AUTO]' if vehiculo_conocido else ''
         lineas.append(
             f'- {oferta.servicio.nombre} · {cats_txt} · {cobertura_txt} · '
-            f'motor {motor_txt} · {precios_txt}'
+            f'motor {motor_txt} · {precios_txt}{tag}'
         )
+        aplican += 1
+
+    if vehiculo_conocido and aplican == 0:
+        lineas.append(
+            'Ninguna tarifa publicada aplica a este vehículo concreto. '
+            'Trata cualquier precio de otra cobertura como inexistente para este auto.'
+        )
+
     return '\n'.join(lineas)
 
 
-def construir_ficha_operativa_taller(taller: Taller) -> str:
+def construir_ficha_operativa_taller(
+    taller: Taller,
+    *,
+    marca_vehiculo: str = '',
+    modelo_vehiculo: str = '',
+) -> str:
     """Bloque determinístico con la verdad operativa del taller para el prompt del agente.
 
     Se recalcula en cada turno (no se cachea): las queries son baratas e
     indexadas por taller_id/activo, así que cualquier cambio de configuración
     del taller se refleja de inmediato sin depender de un proceso de
     sincronización aparte.
+
+    Si se conoce marca/modelo del vehículo del cliente, el catálogo marca qué
+    precios aplican a ese auto y oculta montos de otras coberturas.
     """
     nombre = (taller.nombre or '').strip() or f'Taller #{taller.id}'
     bloques = [
@@ -323,6 +381,10 @@ def construir_ficha_operativa_taller(taller: Taller) -> str:
         _bloque_equipo(taller),
         _bloque_horarios(taller),
         _bloque_horarios_mecanicos(taller),
-        _bloque_catalogo(taller),
+        _bloque_catalogo(
+            taller,
+            marca_vehiculo=marca_vehiculo,
+            modelo_vehiculo=modelo_vehiculo,
+        ),
     ]
     return '\n\n'.join(b for b in bloques if b)

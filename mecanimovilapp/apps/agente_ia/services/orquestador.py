@@ -477,6 +477,10 @@ REGLAS DE CONVERSACIÓN:
     - Luego pide SOLO el dato que falte (teléfono o dirección), una pregunta.
     - Si ya tienes patente + teléfono + problema, marca listo_para_cotizar=true (borrador en $0; el humano completa el precio).
 15b. COTIZACIÓN MIXTA (catálogo + sin catálogo): si agregas un servicio SIN precio publicado a una cotización que ya tiene otros servicios, NO digas que "ya quedó todo con precio" ni que "ya sumé X servicio con su valor". Aclara que ESE servicio específico lo confirma el taller al revisar el borrador; los que sí tienen catálogo pueden mencionarse solo si el monto está en la FICHA.
+15c. COBERTURA MARCA/MODELO (CRÍTICO): el catálogo puede tener el mismo servicio con precios distintos por marca/modelo (ej. "Cambio de aceite" para Toyota ≠ Honda).
+    - Solo puedes citar un precio si la cobertura de esa línea es "todas las marcas/modelos" O coincide con la marca/modelo del vehículo del cliente (datos capturados / contexto patente / tag [APLICA A ESTE AUTO]).
+    - PROHIBIDO tomar el precio de otra marca/modelo aunque el nombre del servicio sea idéntico. Trátalo como "sin tarifa publicada para ESTE auto".
+    - Respuesta estratégica (parafraseable): reconoce que sí hacen el servicio, aclara que para su marca/modelo el valor exacto lo confirma el taller en la cotización, y ofrece armar el borrador. NO inventes un "precio aproximado" a partir de otra cobertura.
 16. ENVÍO: TÚ NO envías la cotización por WhatsApp ni confirmas precios finales. Solo preparas el borrador; un humano del taller la revisa en "Cotizar con IA" y la envía. Dile al cliente que el taller le enviará la cotización.
 17. Si el cliente menciona preferencia de día/hora/técnico para la visita, guárdalo en preferencias_agenda (fecha ISO si puedes, hora HH:MM, tecnico_nombre). Eso se usa al aceptar para agendar sin perder el acuerdo.
 18. MODALIDAD Y DIRECCIÓN: modalidad debe ser "taller" o "domicilio" según lo que pida el cliente Y lo que permita la FICHA. Pídela solo cuando sea relevante (cliente quiere venir/ir, o vas a cotizar/agendar) — nunca en un saludo vacío. Si modalidad=domicilio, OBLIGATORIO pedir y guardar direccion_servicio (calle/comuna). Sin dirección no digas que ya quedó a domicilio. Si es taller, modalidad="taller" y direccion_servicio puede ir vacío.
@@ -1011,7 +1015,20 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         construir_ficha_operativa_taller,
     )
 
-    contexto_operativo_txt = construir_ficha_operativa_taller(taller)
+    vehiculo_ficha = (sesion.datos_capturados or {}).get('vehiculo') or {}
+    verificado_ficha = (sesion.datos_capturados or {}).get('vehiculo_verificado') or {}
+    if not isinstance(vehiculo_ficha, dict):
+        vehiculo_ficha = {}
+    if not isinstance(verificado_ficha, dict):
+        verificado_ficha = {}
+    marca_ficha = str(vehiculo_ficha.get('marca') or verificado_ficha.get('marca') or '').strip()
+    modelo_ficha = str(vehiculo_ficha.get('modelo') or verificado_ficha.get('modelo') or '').strip()
+
+    contexto_operativo_txt = construir_ficha_operativa_taller(
+        taller,
+        marca_vehiculo=marca_ficha,
+        modelo_vehiculo=modelo_ficha,
+    )
 
     total_mensajes = conversation.messages.count()
     resumen_conv = (sesion.datos_capturados or {}).get('resumen_conversacion') or ''

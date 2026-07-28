@@ -12,6 +12,37 @@ def normalizar_nombre_servicio(texto: str) -> str:
     return ''.join(c for c in t if not unicodedata.combining(c))
 
 
+def oferta_compatible_con_vehiculo(
+    oferta: OfertaServicio,
+    *,
+    marca: str = '',
+    modelo: str = '',
+    tipo_motor: str = '',
+) -> bool:
+    """True si la oferta puede aplicarse al vehículo (sin conflicto de cobertura).
+
+    Reglas:
+    - Oferta sin marca/modelo/motor → cobertura general, siempre compatible.
+    - Si la oferta fija marca/modelo/motor y el cliente también los tiene,
+      deben coincidir (case-insensitive). Un mismatch excluye la oferta.
+    - Si el cliente aún no tiene marca/modelo, no se excluye (faltan datos).
+    """
+    om = (getattr(oferta.marca_vehiculo_seleccionada, 'nombre', '') or '').strip()
+    omod = (getattr(oferta.modelo_vehiculo_seleccionado, 'nombre', '') or '').strip()
+    tm = (oferta.tipo_motor or '').strip().lower()
+    marca_req = (marca or '').strip()
+    modelo_req = (modelo or '').strip()
+    tm_req = (tipo_motor or '').strip().lower()
+
+    if marca_req and om and om.lower() != marca_req.lower():
+        return False
+    if modelo_req and omod and omod.lower() != modelo_req.lower():
+        return False
+    if tm_req and tm and tm != tm_req:
+        return False
+    return True
+
+
 def buscar_oferta_exacta(
     *,
     taller: Taller,
@@ -20,7 +51,12 @@ def buscar_oferta_exacta(
     modelo: str,
     tipo_motor: str = '',
 ) -> OfertaServicio | None:
-    """Match determinístico taller + servicio + marca/modelo + motor."""
+    """Match determinístico taller + servicio + marca/modelo + motor.
+
+    Nunca devuelve una oferta de OTRA marca/modelo/motor cuando el vehículo
+    del cliente ya tiene esos datos. Solo acepta coincidencia exacta o
+    cobertura general (campos vacíos en la oferta).
+    """
     nombre_norm = normalizar_nombre_servicio(servicio_nombre)
     if not nombre_norm:
         return None
@@ -37,6 +73,13 @@ def buscar_oferta_exacta(
             continue
         if nombre_norm not in serv_norm and serv_norm not in nombre_norm:
             continue
+        if not oferta_compatible_con_vehiculo(
+            oferta,
+            marca=marca,
+            modelo=modelo,
+            tipo_motor=tipo_motor,
+        ):
+            continue
         candidatas.append(oferta)
 
     if not candidatas:
@@ -46,6 +89,7 @@ def buscar_oferta_exacta(
         s = 0
         om = getattr(oferta.marca_vehiculo_seleccionada, 'nombre', '') or ''
         omod = getattr(oferta.modelo_vehiculo_seleccionado, 'nombre', '') or ''
+        # Preferir match exacto de cobertura sobre ofertas "todas las marcas".
         if marca and om and om.lower() == marca.lower():
             s += 4
         elif not om:
