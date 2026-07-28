@@ -206,14 +206,18 @@ _MONTO_CLP_RE = re.compile(
 )
 
 # Frases donde el modelo afirma un precio / tarifa aunque el monto ya se haya borrado.
+# OJO: todas las alternativas usan \b antes de la palabra clave para NO matchear
+# substrings dentro de otras palabras (ej. "es de" NO debe matchear dentro de
+# "antes de", "después de", "a través de", etc.) — eso causaba truncar frases a
+# la mitad ("...tu auto ant." en vez de "...tu auto antes de cotizar.").
 _PRECIO_CLAIM_RE = re.compile(
     r'(?:'
-    r'(?:el\s+)?valor\s+(?:de\s+)?(?:la\s+)?(?:visita|diagn[oó]stico|inspecci[oó]n|servicio|revisi[oó]n)[^.!?\n]*[.!?]?'
-    r'|(?:cuesta|sale|vale)\s+(?:alrededor\s+de\s+|unos?\s+|aprox\.?\s+)?(?:\$|[^.!?\n])*[.!?]?'
-    r'|tarifas?\s+(?:de\s+)?(?:visita|diagn[oó]stico)[^.!?\n]*[.!?]?'
-    r'|se\s+descuentan?\s+del\s+total[^.!?\n]*[.!?]?'
-    r'|es\s+de\s*,?\s*(?:los\s+cuales)?[^.!?\n]*[.!?]?'
-    r'|los\s+cuales\s+se\s+descuentan?[^.!?\n]*[.!?]?'
+    r'\b(?:el\s+)?valor\s+(?:de\s+)?(?:la\s+)?(?:visita|diagn[oó]stico|inspecci[oó]n|servicio|revisi[oó]n)[^.!?\n]*[.!?]?'
+    r'|\b(?:cuesta|sale|vale)\s+(?:alrededor\s+de\s+|unos?\s+|aprox\.?\s+)?(?:\$|[^.!?\n])*[.!?]?'
+    r'|\btarifas?\s+(?:de\s+)?(?:visita|diagn[oó]stico)[^.!?\n]*[.!?]?'
+    r'|\bse\s+descuentan?\s+del\s+total[^.!?\n]*[.!?]?'
+    r'|\bes\s+de\s*,?\s*(?:los\s+cuales)?[^.!?\n]*[.!?]?'
+    r'|\blos\s+cuales\s+se\s+descuentan?[^.!?\n]*[.!?]?'
     r')',
     re.IGNORECASE,
 )
@@ -239,6 +243,16 @@ _CLIENTE_PIDE_PRECIO_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Si el cliente NIEGA haber pedido precio/cotización ("no he pedido cotización",
+# "todavía no quiero cotizar", "aún no"), NO debe contar como una petición —
+# aunque la palabra "cotización"/"precio" aparezca literalmente en su frase.
+_NEGACION_PRECIO_RE = re.compile(
+    r'\b(?:no|nunca|jam[aá]s|todav[ií]a\s+no|a[uú]n\s+no)\b'
+    r'(?:\s+\S+){0,4}?\s+'
+    r'(?:cotizaci[oó]n|cotizar|presupuesto|precio|tarifa)\b',
+    re.IGNORECASE,
+)
+
 
 def _respuesta_contiene_monto(texto: str) -> bool:
     return bool(_MONTO_CLP_RE.search(texto or ''))
@@ -254,6 +268,11 @@ def _respuesta_afirma_precio(texto: str) -> bool:
     return 'se descuent' in low or 'tarifa de visita' in low
 
 
+def _cliente_niega_pedir_precio(texto_cliente: str) -> bool:
+    """True si el cliente está aclarando que NO pidió precio/cotización (negación)."""
+    return bool(_NEGACION_PRECIO_RE.search(texto_cliente or ''))
+
+
 def _cliente_pide_precio_en_turno(
     *,
     texto_cliente: str,
@@ -261,6 +280,8 @@ def _cliente_pide_precio_en_turno(
     intencion: str,
 ) -> bool:
     """True solo si el cliente pidió precio/cotización en este contexto."""
+    if _cliente_niega_pedir_precio(texto_cliente):
+        return False
     if cliente_pide_cotizacion:
         return True
     if (intencion or '').strip().lower() in ('cotizacion', 'cotizar', 'presupuesto'):
@@ -548,6 +569,8 @@ REGLAS DE CONVERSACIÓN:
 2. Si el cliente saluda o habla en genérico, aplica 0a. No saltes a cotizar ni a capturar patente.
 3. Muchos clientes NO saben qué servicio necesitan: primero asesora (posibles causas, qué revisar, urgencia) y pide 1 dato faltante clave.
 3b. DIAGNÓSTICO PROACTIVO (CRÍTICO — suena a mecánico experto, NO a bot genérico): si hay bloque de "Conocimiento técnico de diagnóstico", apóyate en él para dar 2-3 causas CONCRETAS y nombradas (ej. "sensor de velocidad de rueda (ABS)", "sensor de ángulo del volante" — nunca solo "un sensor" a secas ni "problemas eléctricos" en genérico). Menciona con naturalidad las reparaciones asociadas que suelen ir de la mano, y advierte si hay riesgo de seguir circulando. Si el cliente pregunta "¿qué puede estar originando esto?", "¿por qué pasa?" o similar, PROFUNDIZA usando más causas del mismo bloque (no repitas lo que ya dijiste) y responde como un mecánico real conversando, no con una frase de relleno. Puedes cerrar con 1 pregunta específica del bloque para seguir afinando el diagnóstico. NUNCA afirmes un diagnóstico certero sin inspección física; di "podría ser", "suele ser", "conviene revisar". Esta respuesta es 100% asesoría técnica: NO la conviertas en pedido de teléfono/presupuesto en el mismo turno (ver regla 19).
+3c. PROHIBIDO REPETIR LA MISMA HIPÓTESIS (CRÍTICO): revisa el historial reciente antes de responder. Si ya dijiste una hipótesis (ej. "podría ser la pinza de freno o el freno de mano") NO la repitas casi textual en el siguiente turno. Cuando el cliente aporte un dato NUEVO (ej. huele a quemado, se calienta la llanta, pasa solo en frío), usa ESE dato para AVANZAR el razonamiento: confirma o descarta la hipótesis anterior con esa nueva evidencia ("Ese olor a quemado confirma que..."; "Como también se calienta solo esa rueda, ahora apunto más a...") en vez de repetir la misma frase genérica. Cada respuesta debe sumar información nueva, no reciclar la anterior.
+3d. EXPERTISE POR MARCA/MODELO: una vez que conoces la marca y modelo del vehículo (por patente verificada), úsalo para sonar como un especialista — menciónalo por su nombre al hablar del problema (ej. "en el Fiat Bravo..."), y si es un patrón ampliamente conocido para esa marca/modelo (ej. falla común de fábrica, pieza que se desgasta rápido en esos motores) puedes mencionarlo con cautela ("es un problema conocido en algunos..."). PROHIBIDO inventar boletines técnicos, códigos de falla específicos o cifras que no tengas certeza de que existen — si no estás seguro de un dato específico de esa marca, quédate en el diagnóstico general por síntoma sin fingir precisión que no tienes.
 4. UNA sola pregunta de clarificación por turno (ej: cuándo ocurre el ruido, si hay luz en tablero, si pierde potencia). Si el taller solo atiende en una modalidad según la FICHA OPERATIVA, no la preguntes: infórmasela solo cuando sea relevante (no en el saludo).
 4b. PATENTE (cuándo pedirla): es el dato maestro del vehículo y es OBLIGATORIA antes de cotizar o agendar. NO la pidas en un saludo vacío ni como primera pregunta si el cliente aún no contó el problema. Momento correcto: cuando ya hay síntoma/servicio en conversación, o el cliente pide precio/agenda, o ya trae datos del auto. Mientras tanto puedes asesorar el síntoma sin patente. NO marques listo_para_cotizar=true ni prometas presupuesto definitivo ni agendamiento sin patente en "Datos ya capturados". Marca/modelo/año que diga el cliente NO reemplazan la patente.
 5. Usa adjuntos: si hay audio, responde a la transcripción/ruido; si hay foto de tablero/vano/pieza, comenta lo visto y pide confirmación. Si el análisis del adjunto falló o está pendiente, dile al cliente que no pudiste procesar el archivo y pídele que lo reenvíe o lo describa con palabras — nunca ignores el adjunto en silencio.
@@ -569,7 +592,7 @@ REGLAS DE CONVERSACIÓN:
     - hay cliente_telefono en datos capturados (del chat o preguntado al cliente) Y
     - el cliente pide cotización/presupuesto/precio O ya confirmó que quiere que le armes el presupuesto.
     Sin patente, sin teléfono o servicio fuera de especialidad → listo_para_cotizar=false.
-13. cliente_pide_cotizacion=true únicamente si en este turno (o el historial reciente) el cliente pidió precio/cotización/presupuesto de forma explícita o claramente implícita.
+13. cliente_pide_cotizacion=true únicamente si en este turno (o el historial reciente) el cliente pidió precio/cotización/presupuesto de forma explícita o claramente implícita. NUNCA lo marques true solo porque ya tienes patente+teléfono+síntoma completos — la disposición de datos NO es lo mismo que la intención de compra. Si el cliente usa una NEGACIÓN cerca de la palabra ("no he pedido cotización", "todavía no quiero cotizar", "aún no"), es FALSO aunque la palabra "cotización" aparezca en su frase — está aclarando que NO la pidió, no pidiéndola.
 14. UNA SOLA COTIZACIÓN por conversación/vehículo: si el cliente pide otro servicio para el MISMO auto, agrégalo a la misma cotización (lista "servicios") — NO trates cada servicio como cotización aparte. El sistema edita un único borrador hasta que el taller lo cierre/envíe. Si el taller ya envió una cotización y el cliente pide agregar/modificar algo, marca listo_para_cotizar=true para actualizar ESA misma cotización (se reabrirá a borrador); NO prometas una cotización nueva aparte.
 14b. SERVICIOS ESTABLES: usa nombres cortos y consistentes en "servicios" (ej. "Diagnóstico de frenos", "Cambio de pastillas de freno delanteras"). NO repitas ni reformules un servicio ya capturado. NO agregues variantes con paréntesis como "(con repuestos)" en el nombre — usa repuestos_incluidos_ultimo_servicio. NO fusiones dos servicios en una frase ("diagnóstico y pastillas") si ya existen por separado.
 15. PRECIOS (ANTI-ALUCINACIÓN, CRÍTICO): Solo puedes mencionar un monto en pesos ($, CLP) si ese EXACTO valor aparece en la FICHA OPERATIVA / catálogo publicado para ese servicio y vehículo. Si el cliente pregunta "cuánto sale / cuánto cuesta" y NO hay precio publicado (ej. inspección/diagnóstico a domicilio sin tarifa en catálogo):
@@ -577,7 +600,7 @@ REGLAS DE CONVERSACIÓN:
     - PROHIBIDO inventar políticas de descuento ("se descuenta del total", "se abona a la reparación").
     - Responde con esta idea (puedes parafrasear, mismo sentido): "Ese servicio no tiene una tarifa publicada en catálogo; el valor exacto te lo confirma el taller en la cotización. Si quieres, dejamos armado el borrador para que lo revisen y te lo envíen."
     - Luego pide SOLO el dato que falte (teléfono o dirección), una pregunta.
-    - Si ya tienes patente + teléfono + problema, marca listo_para_cotizar=true (borrador en $0; el humano completa el precio).
+    - Si el cliente PIDIÓ precio en este turno (no antes de que lo pidiera) y ya tienes patente + teléfono + problema, marca listo_para_cotizar=true (borrador en $0; el humano completa el precio). Si el cliente NO ha pedido precio/cotización todavía, sigue asesorando con normalidad y NO marques listo_para_cotizar=true ni digas que "vas a armar el borrador" — eso se siente invasivo y genera desconfianza.
 15b. COTIZACIÓN MIXTA (catálogo + sin catálogo): si agregas un servicio SIN precio publicado a una cotización que ya tiene otros servicios, NO digas que "ya quedó todo con precio" ni que "ya sumé X servicio con su valor". Aclara que ESE servicio específico lo confirma el taller al revisar el borrador; los que sí tienen catálogo pueden mencionarse solo si el monto está en la FICHA.
 15c. COBERTURA MARCA/MODELO (CRÍTICO): el catálogo puede tener el mismo servicio con precios distintos por marca/modelo (ej. "Cambio de aceite" para Toyota ≠ Honda).
     - Solo puedes citar un precio si la cobertura de esa línea es "todas las marcas/modelos" O coincide con la marca/modelo del vehículo del cliente (datos capturados / contexto patente / tag [APLICA A ESTE AUTO]).
@@ -1288,6 +1311,13 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
     cliente_pide_cotizacion = bool(decision.get('cliente_pide_cotizacion'))
     intencion = (decision.get('intencion') or '').strip().lower()
     senal_lead = (decision.get('senal_lead') or '').strip().lower()
+    # Válvula anti-falso-positivo: si el cliente literalmente niega haber pedido
+    # precio/cotización en este turno ("no he pedido cotización aún"), el flag del
+    # LLM no manda — respetamos la negación explícita del cliente.
+    if _cliente_niega_pedir_precio(texto_cliente):
+        cliente_pide_cotizacion = False
+        if intencion in ('cotizacion', 'cotizar', 'presupuesto'):
+            intencion = ''
     cliente_pide_precio = _cliente_pide_precio_en_turno(
         texto_cliente=texto_cliente,
         cliente_pide_cotizacion=cliente_pide_cotizacion,
