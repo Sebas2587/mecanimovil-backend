@@ -79,6 +79,70 @@ _BLOQUES: tuple[BloqueDiagnostico, ...] = (
         ),
     ),
     BloqueDiagnostico(
+        sistema='Testigo ESP / control de tracción / ABS',
+        palabras_clave=(
+            'esp', 'control de estabilidad', 'control de traccion', 'control de tracción',
+            'traction control', 'testigo abs', 'luz abs', 'aviso abs', 'aviso esp',
+            'triangulo con auto', 'auto con flechas', 'derrape', 'antideslizante',
+            'vsc', 'dsc', 'dtc apagado',
+        ),
+        causas_probables=(
+            'Sensor de velocidad de rueda (sensor ABS) sucio, dañado o con el anillo dentado dañado '
+            '(causa más común: el ESP/ABS depende de esa señal para funcionar).',
+            'Neumáticos desgastados de forma desigual, con medidas distintas entre ejes, o presión muy dispareja '
+            '(el sistema detecta diferencia de giro entre ruedas y se activa el testigo).',
+            'Sensor de ángulo del volante descalibrado (suele pasar tras cambiar la dirección o alinear sin recalibrar).',
+            'Batería con baja tensión o alternador fallando (varios módulos, incluido ESP, se ponen en modo seguro).',
+            'Interruptor del pedal de freno (luz de freno) fallando, lo que confunde al módulo ESP.',
+            'Fusible o conector del módulo ABS/ESP con falla, o el módulo mismo con una falla interna.',
+        ),
+        preguntas=(
+            '¿El aviso está siempre encendido o aparece solo en ciertas condiciones (frenando, en curvas, con lluvia)?',
+            '¿Se encendió junto con otra luz en el tablero (ABS, freno, motor)?',
+            '¿Cambiaste neumáticos, hiciste alineación o algún trabajo en frenos/dirección hace poco?',
+        ),
+        riesgo_circulacion=(
+            'Con el ESP/ABS desactivado el auto sigue andando, pero pierdes la ayuda de estabilidad y frenado antibloqueo; '
+            'maneja con más precaución en curvas, lluvia o frenadas fuertes hasta escanearlo.'
+        ),
+        reparaciones_asociadas=(
+            'Escaneo computacional para leer el código de falla exacto (paso obligatorio antes de cambiar piezas)',
+            'Cambio de sensor de velocidad de rueda',
+            'Revisión/calibración de sensor de ángulo del volante',
+            'Revisión de batería/alternador',
+        ),
+    ),
+    BloqueDiagnostico(
+        sistema='Hill Holder / asistente de arranque en pendiente',
+        palabras_clave=(
+            'hill holder', 'hillholder', 'hold', 'asistente de pendiente', 'freno de mano automatico',
+            'freno de mano automático', 'auto hold', 'autohold', 'freno electrico', 'freno eléctrico',
+            'freno de estacionamiento electrico', 'freno de estacionamiento eléctrico',
+        ),
+        causas_probables=(
+            'Sensor o interruptor del pedal de freno con falla (el Hill Holder necesita esa señal para saber cuándo activarse).',
+            'Sensor de inclinación/nivel del vehículo descalibrado o dañado (detecta si estás en pendiente).',
+            'Batería con baja tensión o alternador fallando (el módulo se pone en modo seguro y muestra el aviso).',
+            'Freno de mano/estacionamiento electrónico con falla en el motor eléctrico o en el cable del actuador.',
+            'Módulo ABS/ESP con falla, ya que el Hill Holder suele depender del mismo sistema.',
+        ),
+        preguntas=(
+            '¿El aviso aparece siempre o solo al arrancar en pendiente/subida?',
+            '¿Se encendió junto con otra luz (ABS, freno, batería)?',
+            '¿Notaste algo raro con el freno de mano al usarlo?',
+        ),
+        riesgo_circulacion=(
+            'El auto sigue funcionando, pero puedes perder la retención automática en pendientes; '
+            'usa el freno de mano manualmente al detenerte en subida mientras lo revisas.'
+        ),
+        reparaciones_asociadas=(
+            'Escaneo computacional para leer el código de falla exacto',
+            'Revisión de interruptor/sensor del pedal de freno',
+            'Revisión de batería/alternador',
+            'Revisión del sistema de freno de estacionamiento electrónico',
+        ),
+    ),
+    BloqueDiagnostico(
         sistema='Motor / vibraciones',
         palabras_clave=(
             'vibra', 'vibracion', 'vibración', 'tiembla', 'temblor', 'motor suena',

@@ -84,7 +84,49 @@ def _bloque_fecha_actual(taller: Taller) -> str:
 
 
 def _bloque_modalidad(taller: Taller) -> str:
-    return f'Modalidad de atención del taller: {taller.get_modalidad_atencion_display()}.'
+    modalidad = taller.modalidad_atencion
+    partes = [f'Modalidad de atención del taller: {taller.get_modalidad_atencion_display()}.']
+
+    if modalidad == 'a_domicilio':
+        partes.append(
+            'IMPORTANTE: este taller SOLO atiende a domicilio. NO tiene local/sucursal física a la que '
+            'el cliente pueda llevar el vehículo. PROHIBIDO ofrecer, sugerir o inventar una dirección de '
+            'taller/sucursal, o decir que "para casos complejos hay que llevarlo al taller". Si el cliente '
+            'pregunta por una dirección física, aclara que la atención es a domicilio y pide la dirección '
+            'DEL CLIENTE (donde se realizará el servicio).'
+        )
+        return '\n'.join(partes)
+
+    direccion = getattr(taller, 'direccion_fisica', None)
+    if direccion is not None:
+        calle = (direccion.calle or '').strip()
+        numero = (direccion.numero or '').strip()
+        comuna = (direccion.comuna or '').strip()
+        ciudad = (direccion.ciudad or '').strip()
+        detalle = (direccion.detalles_adicionales or '').strip()
+        linea_direccion = ', '.join(
+            filter(None, [f'{calle} {numero}'.strip(), comuna, ciudad])
+        )
+        if linea_direccion:
+            partes.append(
+                f'Dirección física EXACTA y verificada del taller (única fuente válida, cópiala tal cual): '
+                f'{linea_direccion}.' + (f' Referencia adicional: {detalle}.' if detalle else '')
+            )
+    else:
+        partes.append(
+            'No hay una dirección física registrada en el sistema para este taller. '
+            'PROHIBIDO inventar calle, número o comuna. Si el cliente pide la dirección exacta y no la '
+            'tienes aquí, dile que te confirman la ubicación exacta al coordinar la visita (o deriva a '
+            'humano si insiste), pero nunca inventes datos.'
+        )
+
+    if modalidad == 'ambas':
+        partes.append(
+            'Este taller también atiende a domicilio cuando corresponde: si el cliente lo prefiere, '
+            'puedes ofrecer esa opción y pedir su dirección (del cliente), sin inventar nada.'
+        )
+
+    return '\n'.join(partes)
 
 
 def _bloque_cobertura_marcas(taller: Taller) -> str:
