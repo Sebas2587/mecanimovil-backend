@@ -121,6 +121,21 @@ def formatear_resumen_cotizacion(cotizacion: CotizacionCanal) -> str:
     if cotizacion.duracion_minutos_estimada:
         lineas.append(f'Duración estimada: {cotizacion.duracion_minutos_estimada} min')
 
+    meta = cotizacion.metadata or {}
+    pref = meta.get('preferencias_agenda') or {}
+    if isinstance(pref, dict) and pref.get('confirmado_verbal'):
+        fecha = (pref.get('fecha') or '').strip()
+        hora = (pref.get('hora') or '').strip()
+        nota = (pref.get('nota') or '').strip()
+        partes_fecha = [p for p in (fecha, hora) if p]
+        detalle = ' '.join(partes_fecha) if partes_fecha else nota
+        if detalle:
+            lineas.extend([
+                '',
+                f'*Recepción acordada con el cliente:* {detalle}',
+                '(Pendiente de agendamiento formal al aceptar la cotización.)',
+            ])
+
     lineas.extend(['', '*Condiciones:*', '• Precios referenciales. Confirme con el taller antes de agendar.'])
 
     if cotizacion.url_publica:

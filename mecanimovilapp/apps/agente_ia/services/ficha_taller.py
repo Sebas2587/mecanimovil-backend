@@ -339,6 +339,13 @@ def _bloque_catalogo(
         if repuestos:
             precios_partes.append(f'repuestos sin IVA {_formatear_clp(repuestos)}')
         precios_txt = ' · '.join(precios_partes) if precios_partes else 'precio no configurado'
+        from mecanimovilapp.apps.agente_ia.services.catalogo_oferta_texto import (
+            resumen_repuestos_garantia_oferta,
+        )
+
+        extra_rep_gar = resumen_repuestos_garantia_oferta(oferta)
+        if extra_rep_gar:
+            precios_txt = f'{precios_txt} · {extra_rep_gar}'
         tag = ' · [APLICA A ESTE AUTO]' if vehiculo_conocido else ''
         lineas.append(
             f'- {oferta.servicio.nombre} · {cats_txt} · {cobertura_txt} · '

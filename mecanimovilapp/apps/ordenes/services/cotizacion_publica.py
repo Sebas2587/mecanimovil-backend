@@ -311,8 +311,12 @@ def on_cotizacion_respondida(
             cita_id=cita_id,
         )
         if conv and isinstance(conv, Conversation):
-            from mecanimovilapp.apps.agente_ia.tasks import iniciar_agendamiento_task
+            from mecanimovilapp.apps.agente_ia.tasks import (
+                aprender_conversacion_exitosa_task,
+                iniciar_agendamiento_task,
+            )
 
+            aprender_conversacion_exitosa_task.delay(cotizacion.id)
             iniciar_agendamiento_task.delay(cotizacion.id)
     elif accion == 'rechazar':
         from mecanimovilapp.apps.agente_ia.services.notificaciones import (

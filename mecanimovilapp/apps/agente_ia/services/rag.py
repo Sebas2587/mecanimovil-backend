@@ -41,8 +41,26 @@ def buscar_contexto_taller_por_fuente(
     top_k: int = 3,
 ) -> list[TallerConocimientoChunk]:
     """Búsqueda semántica acotada a una fuente (ej. histórico cross-cliente)."""
+    return buscar_contexto_taller_por_fuentes(
+        taller_id,
+        query_text,
+        fuentes=[fuente],
+        top_k=top_k,
+    )
+
+
+def buscar_contexto_taller_por_fuentes(
+    taller_id: int,
+    query_text: str,
+    *,
+    fuentes: list[str] | tuple[str, ...],
+    top_k: int = 3,
+) -> list[TallerConocimientoChunk]:
+    """Búsqueda semántica acotada a una o más fuentes."""
+    if not fuentes:
+        return []
     query_vec = generar_embedding(query_text)
-    qs = TallerConocimientoChunk.objects.filter(taller_id=taller_id, fuente=fuente)
+    qs = TallerConocimientoChunk.objects.filter(taller_id=taller_id, fuente__in=list(fuentes))
     if not query_vec:
         return list(qs.order_by('-fecha_actualizacion')[:top_k])
     return list(
@@ -57,16 +75,23 @@ def buscar_contexto_taller_combinado(
     top_k_general: int = 7,
     top_k_historico: int = 3,
 ) -> tuple[list[TallerConocimientoChunk], list[TallerConocimientoChunk]]:
-    """General (catálogo/docs/instrucciones) + histórico dedicado, sin competir por top_k."""
+    """General (catálogo/docs/instrucciones) + histórico/conversaciones exitosas dedicado."""
+    fuentes_referencia = {
+        TallerConocimientoChunk.FUENTE_HISTORICO,
+        TallerConocimientoChunk.FUENTE_CONVERSACION_EXITOSA,
+    }
     general = [
         c
         for c in buscar_contexto_taller(taller_id, query_text, top_k=top_k_general + top_k_historico)
-        if c.fuente != TallerConocimientoChunk.FUENTE_HISTORICO
+        if c.fuente not in fuentes_referencia
     ][:top_k_general]
-    historico = buscar_contexto_taller_por_fuente(
+    historico = buscar_contexto_taller_por_fuentes(
         taller_id,
         query_text,
-        fuente=TallerConocimientoChunk.FUENTE_HISTORICO,
+        fuentes=(
+            TallerConocimientoChunk.FUENTE_HISTORICO,
+            TallerConocimientoChunk.FUENTE_CONVERSACION_EXITOSA,
+        ),
         top_k=top_k_historico,
     )
     return general, historico
@@ -179,9 +204,14 @@ def sincronizar_chunk_oferta_servicio(oferta_servicio_id: int) -> None:
     if not oferta or not oferta.taller_id:
         return
 
+    from mecanimovilapp.apps.agente_ia.services.catalogo_oferta_texto import (
+        resumen_repuestos_garantia_oferta,
+    )
+
     servicio = oferta.servicio
     marca = getattr(oferta.marca_vehiculo_seleccionada, 'nombre', '') or ''
     modelo = getattr(oferta.modelo_vehiculo_seleccionado, 'nombre', '') or ''
+    rep_gar = resumen_repuestos_garantia_oferta(oferta)
     contenido = (
         f'Servicio: {servicio.nombre}\n'
         f'Descripción: {servicio.descripcion or ""}\n'
@@ -194,6 +224,8 @@ def sincronizar_chunk_oferta_servicio(oferta_servicio_id: int) -> None:
         f'Vehículo: {marca} {modelo}\n'
         f'Detalles: {oferta.detalles_adicionales or ""}'
     ).strip()
+    if rep_gar:
+        contenido = f'{contenido}\nRepuestos/garantía: {rep_gar}'
 
     if not oferta.disponible:
         TallerConocimientoChunk.objects.filter(
@@ -252,6 +284,151 @@ def sincronizar_chunk_historico_solicitud(solicitud_id: int) -> None:
         contenido=contenido,
         referencia_externa=f'solicitud:{solicitud.id}',
         metadata={'solicitud_id': solicitud.id},
+    )
+
+
+_TRANSCRIPT_MAX_MENSAJES = 40
+_TRANSCRIPT_MAX_CHARS = 12000
+
+
+def _llamar_gemini_texto(prompt: str) -> str | None:
+    import requests
+    from django.conf import settings
+
+    api_key = (getattr(settings, 'GEMINI_API_KEY', '') or '').strip()
+    model = (
+        getattr(settings, 'AGENTE_IA_GEMINI_MODEL', '')
+        or getattr(settings, 'ASISTENTE_COTIZACION_GEMINI_MODEL', '')
+        or getattr(settings, 'GEMINI_MODEL', 'gemini-3.1-flash-lite')
+        or 'gemini-3.1-flash-lite'
+    ).strip()
+    if not api_key:
+        return None
+
+    timeout = int(getattr(settings, 'AGENTE_IA_TIMEOUT', 20) or 20)
+    url = (
+        f'https://generativelanguage.googleapis.com/v1beta/models/{model}:'
+        f'generateContent?key={api_key}'
+    )
+    payload = {
+        'contents': [{'parts': [{'text': prompt}]}],
+        'generationConfig': {
+            'temperature': 0.4,
+            'maxOutputTokens': 900,
+        },
+    }
+    try:
+        resp = requests.post(url, json=payload, timeout=timeout)
+    except requests.RequestException:
+        logger.exception('Error conexión Gemini resumen conversación')
+        return None
+
+    if resp.status_code != 200:
+        logger.warning('Gemini resumen conversación HTTP %s', resp.status_code)
+        return None
+
+    try:
+        body = resp.json()
+        return (body['candidates'][0]['content']['parts'][0]['text'] or '').strip()
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+
+
+def _armar_transcript_conversacion(conversation, *, limite: int = _TRANSCRIPT_MAX_MENSAJES) -> str:
+    from mecanimovilapp.apps.chat.models import Message
+
+    mensajes = list(
+        Message.objects.filter(conversation=conversation)
+        .order_by('-timestamp')[:limite]
+    )
+    mensajes.reverse()
+    lineas: list[str] = []
+    for msg in mensajes:
+        texto = (msg.content or '').strip()
+        if not texto:
+            meta = msg.channel_metadata or {}
+            if isinstance(meta, dict):
+                texto = (meta.get('transcripcion') or meta.get('caption') or '').strip()
+        if not texto:
+            continue
+        rol = 'Cliente' if msg.direction == 'inbound' else 'Taller'
+        lineas.append(f'{rol}: {texto[:800]}')
+    transcript = '\n'.join(lineas)
+    if len(transcript) > _TRANSCRIPT_MAX_CHARS:
+        transcript = transcript[-_TRANSCRIPT_MAX_CHARS:]
+    return transcript
+
+
+def sincronizar_chunk_conversacion_exitosa(cotizacion_id: int) -> None:
+    """Indexa un resumen de venta a partir de una cotización aceptada."""
+    from mecanimovilapp.apps.ordenes.models import CotizacionCanal
+
+    cotizacion = (
+        CotizacionCanal.objects.select_related('conversation', 'taller')
+        .filter(pk=cotizacion_id, estado='aceptada', taller_id__isnull=False)
+        .first()
+    )
+    if not cotizacion or not cotizacion.taller_id:
+        return
+
+    conversation = cotizacion.conversation
+    transcript = _armar_transcript_conversacion(conversation) if conversation else ''
+    if not transcript:
+        logger.info('Sin transcript para conversación exitosa cotización %s', cotizacion_id)
+        return
+
+    servicio = (cotizacion.servicio_nombre or '').strip()
+    total = int(cotizacion.total_clp or 0)
+    problema = (cotizacion.descripcion_problema or '').strip()[:400]
+
+    prompt = f"""Eres un analista de ventas de talleres mecánicos en Chile.
+Resume esta conversación que TERMINÓ EN VENTA (cotización aceptada) para que otros asesores aprendan el patrón.
+
+TRANSCRIPT (puede contener datos personales — NO los copies al resumen):
+---
+{transcript}
+---
+
+Datos de la venta:
+- Servicio cotizado: {servicio or 'no indicado'}
+- Total aceptado: {total} CLP
+- Problema/diagnóstico inicial: {problema or 'no indicado'}
+
+Escribe un resumen en español (máx. 350 palabras) con estas secciones:
+1) Problema/síntoma inicial del cliente
+2) Objeciones o dudas del cliente y cómo se resolvieron
+3) Argumentos o explicaciones técnicas que funcionaron para cerrar
+4) Servicios/repuestos acordados y rango de precio final
+5) Tono/estilo que ayudó (breve)
+
+PROHIBIDO incluir: nombres, teléfonos, patentes, direcciones, RUT u otros datos personales.
+Usa términos genéricos ("el cliente", "su vehículo")."""
+
+    resumen = _llamar_gemini_texto(prompt)
+    if not resumen:
+        resumen = (
+            f'Venta cerrada: {servicio or "servicio mecánico"}. '
+            f'Total {total} CLP. Problema: {problema or "consulta general"}.'
+        )
+
+    contenido = (
+        f'Conversación que resultó en venta (patrón reutilizable, sin datos personales):\n'
+        f'{resumen}\n'
+        f'Servicio: {servicio or "N/D"}\n'
+        f'Total aceptado: {total} CLP'
+    ).strip()
+
+    _upsert_chunk(
+        taller_id=cotizacion.taller_id,
+        fuente=TallerConocimientoChunk.FUENTE_CONVERSACION_EXITOSA,
+        contenido=contenido,
+        referencia_externa=f'conversacion_exitosa:{cotizacion.id}',
+        metadata={
+            'cotizacion_id': cotizacion.id,
+            'conversation_id': getattr(conversation, 'id', None),
+            'servicio_nombre': servicio,
+            'total_clp': total,
+        },
     )
 
 

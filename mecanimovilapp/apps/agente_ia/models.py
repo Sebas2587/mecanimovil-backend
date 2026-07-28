@@ -110,12 +110,14 @@ class TallerConocimientoChunk(models.Model):
     FUENTE_CATALOGO = 'CATALOGO_SERVICIO'
     FUENTE_HISTORICO = 'HISTORICO_SERVICIO'
     FUENTE_INSTRUCCION = 'INSTRUCCION'
+    FUENTE_CONVERSACION_EXITOSA = 'CONVERSACION_EXITOSA'
 
     FUENTE_CHOICES = [
         (FUENTE_DOCUMENTO, 'Documento del taller'),
         (FUENTE_CATALOGO, 'Catálogo de servicios'),
         (FUENTE_HISTORICO, 'Histórico de servicios'),
         (FUENTE_INSTRUCCION, 'Instrucciones personalizadas'),
+        (FUENTE_CONVERSACION_EXITOSA, 'Conversación exitosa'),
     ]
 
     taller = models.ForeignKey(

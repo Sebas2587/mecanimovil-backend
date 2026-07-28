@@ -40,6 +40,18 @@ def sincronizar_chunk_historico_task(solicitud_id: int) -> None:
     sincronizar_chunk_historico_solicitud(solicitud_id)
 
 
+@shared_task(name='agente_ia.aprender_conversacion_exitosa', queue='default')
+def aprender_conversacion_exitosa_task(cotizacion_id: int) -> dict:
+    from mecanimovilapp.apps.agente_ia.services.rag import sincronizar_chunk_conversacion_exitosa
+
+    try:
+        sincronizar_chunk_conversacion_exitosa(cotizacion_id)
+        return {'ok': True, 'cotizacion_id': cotizacion_id}
+    except Exception:
+        logger.exception('Error aprendiendo conversación exitosa cotización %s', cotizacion_id)
+        return {'ok': False, 'error': 'internal', 'cotizacion_id': cotizacion_id}
+
+
 @shared_task(name='agente_ia.sincronizar_instrucciones', queue='default')
 def sincronizar_instrucciones_task(taller_id: int) -> None:
     from mecanimovilapp.apps.agente_ia.services.rag import sincronizar_instrucciones_taller
