@@ -89,7 +89,7 @@ services:
       - key: AGENTE_IA_GEMINI_MODEL
         value: "gemini-3.1-flash-lite"
       - key: AGENTE_IA_EMBEDDING_MODEL
-        value: "text-embedding-004"
+        value: "gemini-embedding-001"
       - key: AGENTE_IA_THINK_DELAY_SECONDS
         value: "6"
       - key: AGENTE_IA_MULTIMODAL_MODEL
@@ -164,7 +164,7 @@ services:
       - key: AGENTE_IA_GEMINI_MODEL
         value: "gemini-3.1-flash-lite"
       - key: AGENTE_IA_EMBEDDING_MODEL
-        value: "text-embedding-004"
+        value: "gemini-embedding-001"
       - key: AGENTE_IA_THINK_DELAY_SECONDS
         value: "6"
       - key: AGENTE_IA_MULTIMODAL_MODEL

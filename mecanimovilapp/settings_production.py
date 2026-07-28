@@ -33,7 +33,7 @@ AGENTE_IA_CHAT_ENABLED = os.environ.get('AGENTE_IA_CHAT_ENABLED', 'False').lower
     'true', '1', 'yes',
 )
 AGENTE_IA_GEMINI_MODEL = os.environ.get('AGENTE_IA_GEMINI_MODEL', '')
-AGENTE_IA_EMBEDDING_MODEL = os.environ.get('AGENTE_IA_EMBEDDING_MODEL', 'text-embedding-004')
+AGENTE_IA_EMBEDDING_MODEL = os.environ.get('AGENTE_IA_EMBEDDING_MODEL', 'gemini-embedding-001')
 AGENTE_IA_TIMEOUT = int(os.environ.get('AGENTE_IA_TIMEOUT', '20'))
 AGENTE_IA_EMBEDDING_TIMEOUT = int(os.environ.get('AGENTE_IA_EMBEDDING_TIMEOUT', '15'))
 AGENTE_IA_PAUSA_MANUAL_MINUTOS = int(os.environ.get('AGENTE_IA_PAUSA_MANUAL_MINUTOS', '120'))

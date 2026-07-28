@@ -61,13 +61,16 @@ def calcular_aprendizaje_taller(taller: Taller) -> dict[str, Any]:
         or taller.marcas_atendidas.exists()
     )
 
+    instrucciones_txt = ((config.instrucciones_personalizadas if config else '') or '').strip()
+    bienvenida_txt = ((config.mensaje_bienvenida if config else '') or '').strip()
+
     factores = [
         {
             'clave': 'instrucciones',
             'label': 'Instrucciones personalizadas',
             'peso': 12,
-            'pct': _pct(bool((config.instrucciones_personalizadas if config else '') or '').strip()),
-            'ok': bool((config.instrucciones_personalizadas if config else '') or '').strip(),
+            'pct': _pct(bool(instrucciones_txt)),
+            'ok': bool(instrucciones_txt),
         },
         {
             'clave': 'catalogo',
@@ -110,8 +113,8 @@ def calcular_aprendizaje_taller(taller: Taller) -> dict[str, Any]:
             'clave': 'bienvenida',
             'label': 'Mensaje de bienvenida',
             'peso': 5,
-            'pct': _pct(bool((config.mensaje_bienvenida if config else '') or '').strip()),
-            'ok': bool((config.mensaje_bienvenida if config else '') or '').strip(),
+            'pct': _pct(bool(bienvenida_txt)),
+            'ok': bool(bienvenida_txt),
         },
         {
             'clave': 'documentos',
