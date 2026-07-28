@@ -115,8 +115,8 @@ def formatear_resumen_cotizacion(cotizacion: CotizacionCanal) -> str:
 
     lineas.extend([
         '',
-        f'Mano de obra: {formatear_moneda_clp(cotizacion.mano_obra_clp)}',
-        f'*Total estimado: {formatear_moneda_clp(cotizacion.total_clp)}*',
+        f'Mano de obra (IVA incl.): {formatear_moneda_clp(cotizacion.mano_obra_clp)}',
+        f'*Total estimado (IVA incluido): {formatear_moneda_clp(cotizacion.total_clp)}*',
     ])
     if cotizacion.duracion_minutos_estimada:
         lineas.append(f'Duración estimada: {cotizacion.duracion_minutos_estimada} min')

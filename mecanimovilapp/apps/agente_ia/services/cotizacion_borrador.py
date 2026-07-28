@@ -36,6 +36,20 @@ logger = logging.getLogger(__name__)
 User = get_user_model()
 
 RECARGO_DOMICILIO_DEFAULT_CLP = 5000
+IVA_RATE = 1.19  # Precios al cliente siempre con IVA 19% incluido.
+
+
+def _clp_con_iva(monto_sin_iva: int | float) -> int:
+    """Convierte un costo neto a precio público (IVA 19% incluido)."""
+    try:
+        base = max(0, int(round(float(monto_sin_iva or 0))))
+    except (TypeError, ValueError):
+        base = 0
+    if base <= 0:
+        return 0
+    return int(round(base * IVA_RATE))
+
+
 ADVERTENCIA_SIN_CATALOGO = (
     'Valores estimativos precargados (sin tarifa completa en catálogo) — '
     'revisa y edita mano de obra/repuestos antes de enviar'
@@ -320,62 +334,81 @@ def _compactar_lineas_servicio(lineas: list[dict[str, Any]]) -> list[dict[str, A
 
 
 def _desglose_oferta_catalogo(oferta, *, con_repuestos: bool) -> tuple[int, list[dict[str, Any]]]:
-    """Separa mano de obra (CLP público) y líneas de repuesto desde una oferta."""
+    """Separa mano de obra y repuestos en CLP públicos (IVA 19% incluido)."""
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import normalizar_repuesto
 
+    # precio_sin_repuestos / precio_con_repuestos ya son al cliente (con IVA).
     mano = int(oferta.precio_sin_repuestos or 0)
     if not mano:
-        costo_m = int(oferta.costo_mano_de_obra_sin_iva or 0)
-        if costo_m:
-            mano = int(round(costo_m * 1.19))
+        mano = _clp_con_iva(oferta.costo_mano_de_obra_sin_iva or 0)
 
     reps: list[dict[str, Any]] = []
     if con_repuestos:
         items = list(oferta.repuestos_seleccionados or [])
         precio_con = int(oferta.precio_con_repuestos or 0)
         costo_rep_sin = int(oferta.costo_repuestos_sin_iva or 0)
-        costo_rep_pub = int(round(costo_rep_sin * 1.19)) if costo_rep_sin else max(0, precio_con - mano)
+        costo_rep_pub = (
+            _clp_con_iva(costo_rep_sin) if costo_rep_sin else max(0, precio_con - mano)
+        )
 
         if items:
+            precios_raw: list[int] = []
+            for item in items:
+                if not isinstance(item, dict):
+                    precios_raw.append(0)
+                    continue
+                precios_raw.append(
+                    int(item.get('precio_unitario_clp') or item.get('precio') or 0)
+                )
+            suma_raw = sum(max(0, p) for p in precios_raw)
+            # Si la suma de precios unitarios del JSON calza con el costo neto,
+            # esos unitarios vienen sin IVA → convertir.
+            parecen_sin_iva = bool(
+                costo_rep_sin
+                and suma_raw > 0
+                and abs(suma_raw - costo_rep_sin) <= abs(suma_raw - costo_rep_pub)
+            )
             n = len(items)
             base_unit = int(costo_rep_pub / n) if n and costo_rep_pub else 0
             resto = max(0, costo_rep_pub - base_unit * n) if n else 0
             for i, item in enumerate(items):
                 if not isinstance(item, dict):
                     continue
-                precio_item = int(item.get('precio_unitario_clp') or item.get('precio') or 0)
+                precio_item = precios_raw[i] if i < len(precios_raw) else 0
+                if precio_item > 0 and parecen_sin_iva:
+                    precio_item = _clp_con_iva(precio_item)
                 if not precio_item:
                     precio_item = base_unit + (resto if i == 0 else 0)
                 nombre = (item.get('nombre') or item.get('repuesto') or f'Repuesto {i + 1}').strip()
                 serv = getattr(getattr(oferta, 'servicio', None), 'nombre', '') or ''
                 if serv and nombre and serv.lower() not in nombre.lower():
                     nombre = f'{nombre} ({serv})'
-                reps.append(
-                    normalizar_repuesto(
-                        {
-                            'id': item.get('id') or f'cat-rep-{oferta.id}-{i}',
-                            'nombre': nombre,
-                            'cantidad': item.get('cantidad') or 1,
-                            'precio_unitario_clp': precio_item,
-                            'comentario': 'Desde catálogo del taller',
-                        },
-                        i,
-                    )
+                rep = normalizar_repuesto(
+                    {
+                        'id': item.get('id') or f'cat-rep-{oferta.id}-{i}',
+                        'nombre': nombre,
+                        'cantidad': item.get('cantidad') or 1,
+                        'precio_unitario_clp': precio_item,
+                        'comentario': 'Desde catálogo del taller (IVA incl.)',
+                    },
+                    i,
                 )
+                rep['precio_iva_incluido'] = True
+                reps.append(rep)
         elif precio_con > mano > 0 and (precio_con - mano) > 0:
             serv = getattr(getattr(oferta, 'servicio', None), 'nombre', '') or 'servicio'
-            reps.append(
-                normalizar_repuesto(
-                    {
-                        'id': f'cat-rep-bloque-{oferta.id}',
-                        'nombre': f'Repuestos ({serv})',
-                        'cantidad': 1,
-                        'precio_unitario_clp': precio_con - mano,
-                        'comentario': 'Diferencia catálogo con/sin repuestos',
-                    },
-                    0,
-                )
+            rep = normalizar_repuesto(
+                {
+                    'id': f'cat-rep-bloque-{oferta.id}',
+                    'nombre': f'Repuestos ({serv})',
+                    'cantidad': 1,
+                    'precio_unitario_clp': precio_con - mano,
+                    'comentario': 'Diferencia catálogo con/sin repuestos (IVA incl.)',
+                },
+                0,
             )
+            rep['precio_iva_incluido'] = True
+            reps.append(rep)
         elif not mano and precio_con:
             # Sin desglose usable: el total publicado queda en mano de obra.
             mano = precio_con
@@ -865,8 +898,9 @@ def crear_cotizacion_borrador_desde_agente(
         for i, r in enumerate(ref_reps_raw[:12])
     ]
     for r in ref_reps:
-        r['comentario'] = (r.get('comentario') or '') or 'Estimación de mercado (IA)'
+        r['comentario'] = (r.get('comentario') or '') or 'Estimación de mercado (IA, IVA incl.)'
         r['precio_referencia_ia'] = int(r.get('precio_unitario_clp') or 0)
+        r['precio_iva_incluido'] = True
 
     if ref_mano or ref_reps:
         precios_ref_ia.append(
@@ -1055,6 +1089,7 @@ def crear_cotizacion_borrador_desde_agente(
         'precio_desde_catalogo': hay_algun_catalogo and not faltan_precios_catalogo,
         'precio_parcial_catalogo': hay_algun_catalogo and faltan_precios_catalogo,
         'valores_estimativos': usa_estimativo,
+        'precios_iva_incluido': True,
         'servicios_lineas': lineas,
         'precios_referenciales_ia': precios_ref_ia[-5:],  # últimas 5 estimaciones
         'preferencias_agenda': preferencias_agenda,

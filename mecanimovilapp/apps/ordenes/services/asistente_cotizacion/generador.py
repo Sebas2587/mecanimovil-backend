@@ -137,10 +137,11 @@ Contexto del chat reciente:
 {rag_bloque}
 REGLAS:
 1. Precios referenciales mercado Chile (CLP) para servicio en taller (sin recargo a domicilio). Usa valores realistas para el servicio y repuestos típicos.
-2. El motor efectivo de la cotización es {efectivo}. No mezcles repuestos diésel/bencina.
-3. Incluye mano de obra separada de repuestos.
-4. Lista repuestos probables con cantidad y precio unitario estimado.
-5. duracion_minutos_estimada razonable para el servicio.
+2. CRÍTICO — IVA INCLUIDO: todos los montos (mano_obra_clp y precio_unitario_clp de cada repuesto) deben ser precios FINALES al cliente con IVA 19% ya incluido. NO cotices montos netos ni agregues una línea aparte de IVA.
+3. El motor efectivo de la cotización es {efectivo}. No mezcles repuestos diésel/bencina.
+4. Incluye mano de obra separada de repuestos.
+5. Lista repuestos probables con cantidad y precio unitario estimado (IVA incl.).
+6. duracion_minutos_estimada razonable para el servicio.
 
 Responde SOLO JSON válido en español:
 {{
@@ -153,7 +154,7 @@ Responde SOLO JSON válido en español:
   "repuestos": [
     {{"nombre": "...", "cantidad": 1, "precio_unitario_clp": 65000, "comentario": "..."}}
   ],
-  "advertencias": ["Precios referenciales, sujetos a confirmación en taller"]
+  "advertencias": ["Precios referenciales con IVA incluido, sujetos a confirmación en taller"]
 }}"""
 
 

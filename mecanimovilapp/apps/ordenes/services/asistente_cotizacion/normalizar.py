@@ -54,8 +54,10 @@ def normalizar_repuesto(item: Any, idx: int) -> dict[str, Any]:
         'id': str(item.get('id') or f'rep-{idx}'),
         'nombre': nombre,
         'cantidad': cantidad,
+        # Precio final al cliente (IVA 19% incluido), alineado al catálogo Mecanimovil.
         'precio_unitario_clp': precio,
         'precio_referencia_ia': precio,
+        'precio_iva_incluido': True,
         'comentario': str(item.get('comentario') or '')[:500],
     }
 
