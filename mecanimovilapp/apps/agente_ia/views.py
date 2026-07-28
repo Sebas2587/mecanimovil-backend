@@ -66,6 +66,7 @@ class AgenteIaViewSet(viewsets.ViewSet):
 
         # Master OFF → apaga el agente en todos los chats del taller.
         chats_apagados = 0
+        reindex_encolado = False
         if prev_habilitado and not config.habilitado:
             chats_apagados = desactivar_agente_en_todos_los_chats(taller.id)
         else:
@@ -77,7 +78,22 @@ class AgenteIaViewSet(viewsets.ViewSet):
             for canal in prev_set - new_set:
                 chats_apagados += desactivar_agente_en_chats_de_canal(taller.id, canal)
 
+        # Al activar el agente, indexa catálogo/docs/instrucciones para que el RAG
+        # no quede vacío (talleres con ofertas previas al módulo agente_ia).
+        if (not prev_habilitado) and config.habilitado:
+            try:
+                reindexar_conocimiento_taller(taller.id)
+                reindex_encolado = True
+            except Exception:
+                # No bloquear el PATCH si Celery falla; el taller puede reindexar a mano.
+                import logging
+                logging.getLogger(__name__).exception(
+                    'No se pudo encolar reindex al activar agente taller=%s',
+                    taller.id,
+                )
+
         data = TallerAgenteConfigSerializer(config).data
+        data['reindex_encolado'] = reindex_encolado
         data['agente_ia_disponible_en_plan'] = agente_ia_incluido_en_plan(request.user)
         data['chats_desactivados'] = chats_apagados
         return Response(data)

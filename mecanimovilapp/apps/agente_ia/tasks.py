@@ -47,6 +47,18 @@ def sincronizar_instrucciones_task(taller_id: int) -> None:
     sincronizar_instrucciones_taller(taller_id)
 
 
+@shared_task(name='agente_ia.backfill_embeddings_faltantes', queue='default')
+def backfill_embeddings_faltantes_task(taller_id: int | None = None, limite: int = 200) -> dict:
+    from mecanimovilapp.apps.agente_ia.services.rag import backfill_embeddings_faltantes
+
+    try:
+        n = backfill_embeddings_faltantes(taller_id=taller_id, limite=limite)
+        return {'ok': True, 'actualizados': n, 'taller_id': taller_id}
+    except Exception:
+        logger.exception('Error backfill embeddings taller=%s', taller_id)
+        return {'ok': False, 'error': 'internal'}
+
+
 @shared_task(name='agente_ia.iniciar_agendamiento', queue='default')
 def iniciar_agendamiento_task(cotizacion_id: int) -> dict:
     from mecanimovilapp.apps.agente_ia.models import AgenteConversacionSesion

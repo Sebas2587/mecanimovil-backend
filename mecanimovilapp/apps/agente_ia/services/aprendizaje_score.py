@@ -50,7 +50,10 @@ def calcular_aprendizaje_taller(taller: Taller) -> dict[str, Any]:
         taller=taller,
         estado_procesamiento=TallerConocimientoDocumento.ESTADO_LISTO,
     ).count()
-    chunks_total = TallerConocimientoChunk.objects.filter(taller_id=taller.id).count()
+    chunks_qs = TallerConocimientoChunk.objects.filter(taller_id=taller.id)
+    chunks_total = chunks_qs.count()
+    chunks_con_embedding = chunks_qs.filter(embedding__isnull=False).count()
+    chunks_sin_embedding = max(0, chunks_total - chunks_con_embedding)
     logs_agente = AgenteMensajeLog.objects.filter(sesion__taller=taller).count()
 
     marcas_ok = (
@@ -133,14 +136,22 @@ def calcular_aprendizaje_taller(taller: Taller) -> dict[str, Any]:
         1,
     ) if peso_total else 0.0
 
-    # Actividad: mensajes procesados + chunks indexados (cap suave a 100%).
+    # Actividad: mensajes procesados + chunks con embedding usable (cap suave a 100%).
+    # Contar solo chunks con vector evita inflar el % cuando Gemini falló al indexar.
     actividad_msgs = min(100.0, round(logs_agente / 50.0 * 100, 1))
-    actividad_chunks = min(100.0, round(chunks_total / 30.0 * 100, 1))
+    actividad_chunks = min(100.0, round(chunks_con_embedding / 30.0 * 100, 1))
     actividad = round(0.6 * actividad_msgs + 0.4 * actividad_chunks, 1)
 
     score = round(0.7 * completitud + 0.3 * actividad)
 
     pendientes = [f['label'] for f in factores if not f.get('ok')]
+    if chunks_sin_embedding > 0:
+        pendientes.insert(
+            0,
+            f'Reindexar conocimiento ({chunks_sin_embedding} fragmento(s) sin embedding)',
+        )
+    elif chunks_total == 0 and ofertas_con_precio > 0:
+        pendientes.insert(0, 'Reindexar catálogo para que el agente use tus precios')
 
     return {
         'score': score,
@@ -153,6 +164,8 @@ def calcular_aprendizaje_taller(taller: Taller) -> dict[str, Any]:
             'ofertas_con_precio': ofertas_con_precio,
             'mecanicos': mecanicos,
             'chunks_indexados': chunks_total,
+            'chunks_con_embedding': chunks_con_embedding,
+            'chunks_sin_embedding': chunks_sin_embedding,
             'mensajes_procesados': logs_agente,
             'documentos_listos': docs_listos,
         },

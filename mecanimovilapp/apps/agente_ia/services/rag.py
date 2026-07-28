@@ -86,27 +86,67 @@ def _upsert_chunk(
         return None
 
     embedding = generar_embedding(contenido)
+    if embedding is None:
+        logger.warning(
+            'Chunk sin embedding (taller=%s fuente=%s ref=%s). '
+            'Quedará invisible para búsqueda semántica hasta backfill/reindex.',
+            taller_id,
+            fuente,
+            referencia_externa or '(sin_ref)',
+        )
+
     defaults = {
         'fuente': fuente,
         'contenido': contenido,
-        'embedding': embedding,
         'metadata': metadata or {},
         'documento_id': documento_id,
     }
+    # Nunca pisar un embedding válido con None (p. ej. fallo puntual de Gemini).
+    if embedding is not None:
+        defaults['embedding'] = embedding
 
     if referencia_externa:
-        chunk, _ = TallerConocimientoChunk.objects.update_or_create(
+        existing = TallerConocimientoChunk.objects.filter(
             taller_id=taller_id,
             referencia_externa=referencia_externa,
-            defaults=defaults,
-        )
-        return chunk
+        ).first()
+        if existing is None:
+            return TallerConocimientoChunk.objects.create(
+                taller_id=taller_id,
+                referencia_externa=referencia_externa,
+                embedding=embedding,
+                **defaults,
+            )
+        for key, value in defaults.items():
+            setattr(existing, key, value)
+        existing.save()
+        return existing
 
     return TallerConocimientoChunk.objects.create(
         taller_id=taller_id,
         referencia_externa='',
+        embedding=embedding,
         **defaults,
     )
+
+
+def backfill_embeddings_faltantes(taller_id: int | None = None, limite: int = 200) -> int:
+    """
+    Regenera embeddings para chunks que quedaron con embedding=NULL.
+    Retorna cuántos chunks se actualizaron con éxito.
+    """
+    qs = TallerConocimientoChunk.objects.filter(embedding__isnull=True).order_by('id')
+    if taller_id is not None:
+        qs = qs.filter(taller_id=taller_id)
+    actualizados = 0
+    for chunk in qs[: max(1, limite)]:
+        emb = generar_embedding(chunk.contenido or '')
+        if emb is None:
+            continue
+        chunk.embedding = emb
+        chunk.save(update_fields=['embedding', 'fecha_actualizacion'])
+        actualizados += 1
+    return actualizados
 
 
 @transaction.atomic
@@ -226,6 +266,7 @@ def reindexar_conocimiento_taller(taller_id: int) -> dict[str, int]:
     `embedding` y por lo tanto invisibles para la búsqueda semántica).
     """
     from mecanimovilapp.apps.agente_ia.tasks import (
+        backfill_embeddings_faltantes_task,
         procesar_documento_conocimiento_task,
         sincronizar_chunk_historico_task,
         sincronizar_chunk_servicio_task,
@@ -253,11 +294,14 @@ def reindexar_conocimiento_taller(taller_id: int) -> dict[str, int]:
         procesar_documento_conocimiento_task.delay(documento_id)
 
     sincronizar_instrucciones_task.delay(taller_id)
+    # Después del sync de fuentes, intenta recuperar chunks viejos sin vector.
+    backfill_embeddings_faltantes_task.delay(taller_id)
 
     return {
         'ofertas': len(ofertas_ids),
         'solicitudes': len(solicitudes_ids),
         'documentos': len(documentos_ids),
+        'backfill_embeddings': True,
     }
 
 
@@ -289,8 +333,17 @@ def procesar_documento_conocimiento(documento_id: int) -> None:
 
         TallerConocimientoChunk.objects.filter(documento=documento).delete()
         fragmentos = fragmentar_texto(texto)
+        con_embedding = 0
         for idx, frag in enumerate(fragmentos):
             embedding = generar_embedding(frag)
+            if embedding is not None:
+                con_embedding += 1
+            else:
+                logger.warning(
+                    'Documento %s fragmento %s sin embedding',
+                    documento_id,
+                    idx,
+                )
             TallerConocimientoChunk.objects.create(
                 taller=documento.taller,
                 documento=documento,
@@ -299,6 +352,11 @@ def procesar_documento_conocimiento(documento_id: int) -> None:
                 embedding=embedding,
                 referencia_externa=f'doc:{documento.id}:chunk:{idx}',
                 metadata={'documento_id': documento.id, 'chunk_index': idx},
+            )
+
+        if con_embedding == 0 and fragmentos:
+            raise ValueError(
+                'No se pudieron generar embeddings (revisa GEMINI_API_KEY en el worker).'
             )
 
         documento.estado_procesamiento = TallerConocimientoDocumento.ESTADO_LISTO
