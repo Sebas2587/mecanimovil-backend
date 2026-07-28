@@ -3,8 +3,8 @@
 Reglas de producto:
 - Una sola cotización editable por conversación (borrador o enviada; se edita, no se duplica).
 - Si el cliente pide cambios tras un envío, la cotización enviada se reabre a borrador.
-- Precios al cliente/taller: solo del catálogo publicado. Sin match → $0 +
-  referencia IA solo en metadata/advertencias para que el humano revise y complete.
+- Precarga mano de obra y repuestos en los campos editables (catálogo → histórico →
+  estimación IA) para que el taller revise/edite antes de enviar.
 - El agente NUNCA envía la cotización al cliente; solo deja borrador.
 """
 from __future__ import annotations
@@ -37,10 +37,14 @@ User = get_user_model()
 
 RECARGO_DOMICILIO_DEFAULT_CLP = 5000
 ADVERTENCIA_SIN_CATALOGO = (
-    'Sin precio publicado en catálogo para este servicio/vehículo — '
-    'completa el valor real antes de enviar (la referencia IA es solo orientación)'
+    'Valores estimativos precargados (sin tarifa completa en catálogo) — '
+    'revisa y edita mano de obra/repuestos antes de enviar'
 )
 ADVERTENCIA_DESDE_CATALOGO = 'Precio tomado del catálogo publicado del taller'
+ADVERTENCIA_ESTIMATIVO = (
+    'Mano de obra y/o repuestos incluyen estimaciones (histórico o mercado IA); '
+    'el taller puede ajustar los montos antes de enviar'
+)
 ADVERTENCIA_MULTI_SERVICIO = 'Cotización unificada: varios servicios del mismo vehículo en un solo borrador'
 ADVERTENCIA_REABIERTA = (
     'Cliente pidió cambios después del envío — revisa y vuelve a enviar.'
@@ -210,6 +214,21 @@ def _recargo_domicilio_taller(taller: Taller) -> int:
     return RECARGO_DOMICILIO_DEFAULT_CLP
 
 
+def _expandir_nombre_servicio(texto: str) -> list[str]:
+    """Parte nombres compuestos ('A, B', 'A + B') en servicios individuales."""
+    t = (texto or '').strip()
+    if not t:
+        return []
+    if ' + ' in t:
+        partes = [p.strip() for p in t.split(' + ') if p.strip()]
+    elif ',' in t:
+        partes = [p.strip() for p in t.split(',') if p.strip()]
+    else:
+        partes = [t]
+    # Evita basura tipo "(+2 más)" del título compactado.
+    return [p for p in partes if p and not re.match(r'^\(\+\d+', p)]
+
+
 def _parse_servicios_solicitados(datos: dict) -> list[str]:
     """Lista de servicios pedidos en este turno + previos."""
     nombres: list[str] = []
@@ -217,18 +236,14 @@ def _parse_servicios_solicitados(datos: dict) -> list[str]:
     if isinstance(raw_lista, list):
         for item in raw_lista:
             if isinstance(item, str) and item.strip():
-                nombres.append(item.strip())
+                nombres.extend(_expandir_nombre_servicio(item))
             elif isinstance(item, dict):
                 n = (item.get('nombre') or item.get('servicio_nombre') or '').strip()
                 if n:
-                    nombres.append(n)
+                    nombres.extend(_expandir_nombre_servicio(n))
     uno = (datos.get('servicio_nombre') or '').strip()
     if uno:
-        # Puede venir "A + B" o "A y B"
-        if ' + ' in uno:
-            nombres.extend(p.strip() for p in uno.split(' + ') if p.strip())
-        else:
-            nombres.append(uno)
+        nombres.extend(_expandir_nombre_servicio(uno))
     # Dedup case-insensitive preservando orden
     vistos: set[str] = set()
     out: list[str] = []
@@ -267,7 +282,34 @@ def _compactar_lineas_servicio(lineas: list[dict[str, Any]]) -> list[dict[str, A
     por_clave: dict[str, dict[str, Any]] = {}
     orden: list[str] = []
     for lin in lineas or []:
-        clave = _clave_servicio(lin.get('nombre') or '')
+        nombre_raw = (lin.get('nombre') or '').strip()
+        # Expande "A, B" / "A + B" que a veces llegan fusionados del LLM.
+        partes = _expandir_nombre_servicio(nombre_raw)
+        if len(partes) > 1:
+            for parte in partes:
+                sub = {**lin, 'nombre': parte}
+                clave = _clave_servicio(parte)
+                if not clave:
+                    continue
+                if clave not in por_clave:
+                    orden.append(clave)
+                prev = por_clave.get(clave) or {}
+                # Al partir un compuesto, no arrastres precios del bloque fusionado.
+                limpio = {
+                    k: v
+                    for k, v in sub.items()
+                    if k
+                    not in (
+                        'precio_catalogo_clp',
+                        'precio_desde_catalogo',
+                        'precio_estimado_historico_clp',
+                        'precio_estimado_muestras',
+                        'oferta_servicio_id',
+                    )
+                }
+                por_clave[clave] = {**prev, **limpio, 'nombre': parte}
+            continue
+        clave = _clave_servicio(nombre_raw)
         if not clave:
             continue
         if clave not in por_clave:
@@ -275,6 +317,92 @@ def _compactar_lineas_servicio(lineas: list[dict[str, Any]]) -> list[dict[str, A
         prev = por_clave.get(clave) or {}
         por_clave[clave] = {**prev, **lin}
     return [por_clave[k] for k in orden if k in por_clave]
+
+
+def _desglose_oferta_catalogo(oferta, *, con_repuestos: bool) -> tuple[int, list[dict[str, Any]]]:
+    """Separa mano de obra (CLP público) y líneas de repuesto desde una oferta."""
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import normalizar_repuesto
+
+    mano = int(oferta.precio_sin_repuestos or 0)
+    if not mano:
+        costo_m = int(oferta.costo_mano_de_obra_sin_iva or 0)
+        if costo_m:
+            mano = int(round(costo_m * 1.19))
+
+    reps: list[dict[str, Any]] = []
+    if con_repuestos:
+        items = list(oferta.repuestos_seleccionados or [])
+        precio_con = int(oferta.precio_con_repuestos or 0)
+        costo_rep_sin = int(oferta.costo_repuestos_sin_iva or 0)
+        costo_rep_pub = int(round(costo_rep_sin * 1.19)) if costo_rep_sin else max(0, precio_con - mano)
+
+        if items:
+            n = len(items)
+            base_unit = int(costo_rep_pub / n) if n and costo_rep_pub else 0
+            resto = max(0, costo_rep_pub - base_unit * n) if n else 0
+            for i, item in enumerate(items):
+                if not isinstance(item, dict):
+                    continue
+                precio_item = int(item.get('precio_unitario_clp') or item.get('precio') or 0)
+                if not precio_item:
+                    precio_item = base_unit + (resto if i == 0 else 0)
+                nombre = (item.get('nombre') or item.get('repuesto') or f'Repuesto {i + 1}').strip()
+                serv = getattr(getattr(oferta, 'servicio', None), 'nombre', '') or ''
+                if serv and nombre and serv.lower() not in nombre.lower():
+                    nombre = f'{nombre} ({serv})'
+                reps.append(
+                    normalizar_repuesto(
+                        {
+                            'id': item.get('id') or f'cat-rep-{oferta.id}-{i}',
+                            'nombre': nombre,
+                            'cantidad': item.get('cantidad') or 1,
+                            'precio_unitario_clp': precio_item,
+                            'comentario': 'Desde catálogo del taller',
+                        },
+                        i,
+                    )
+                )
+        elif precio_con > mano > 0 and (precio_con - mano) > 0:
+            serv = getattr(getattr(oferta, 'servicio', None), 'nombre', '') or 'servicio'
+            reps.append(
+                normalizar_repuesto(
+                    {
+                        'id': f'cat-rep-bloque-{oferta.id}',
+                        'nombre': f'Repuestos ({serv})',
+                        'cantidad': 1,
+                        'precio_unitario_clp': precio_con - mano,
+                        'comentario': 'Diferencia catálogo con/sin repuestos',
+                    },
+                    0,
+                )
+            )
+        elif not mano and precio_con:
+            # Sin desglose usable: el total publicado queda en mano de obra.
+            mano = precio_con
+    else:
+        if not mano:
+            precio, _ = precio_publico_oferta(oferta, con_repuestos=False)
+            mano = precio
+
+    return max(0, mano), reps
+
+
+def _merge_repuestos_borrador(
+    existentes: list[dict[str, Any]],
+    nuevos: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Une repuestos por nombre; no pisa ítems ya presentes (ediciones del taller)."""
+    out = list(existentes or [])
+    vistos = {normalizar_nombre_servicio(str(r.get('nombre') or '')) for r in out}
+    for rep in nuevos or []:
+        if not isinstance(rep, dict):
+            continue
+        clave = normalizar_nombre_servicio(str(rep.get('nombre') or ''))
+        if not clave or clave in vistos:
+            continue
+        out.append(rep)
+        vistos.add(clave)
+    return out
 
 
 def _titulo_servicios(lineas: list[dict[str, Any]]) -> str:
@@ -499,6 +627,44 @@ def crear_cotizacion_borrador_desde_agente(
 
     lineas = _compactar_lineas_servicio(lineas)
 
+    # Re-matchea catálogo/histórico tras compactar (por si partimos un nombre fusionado).
+    for i, lin in enumerate(lineas):
+        if lin.get('precio_desde_catalogo') and lin.get('oferta_servicio_id'):
+            continue
+        oferta = buscar_oferta_exacta(
+            taller=taller,
+            servicio_nombre=lin.get('nombre') or '',
+            marca=marca,
+            modelo=modelo,
+            tipo_motor=tipo_motor,
+        )
+        if not oferta:
+            if permite_hist and not lin.get('precio_estimado_historico_clp'):
+                est = buscar_estimado_historico(
+                    taller=taller,
+                    servicio_nombre=lin.get('nombre') or '',
+                    marca=marca,
+                    modelo=modelo,
+                    tipo_motor=tipo_motor,
+                )
+                if est:
+                    lineas[i] = {
+                        **lin,
+                        'precio_estimado_historico_clp': est.mediana_clp,
+                        'precio_estimado_muestras': est.muestras,
+                    }
+            continue
+        clave_serv = _clave_servicio(lin.get('nombre') or '')
+        con_repuestos = preferencias_repuestos.get(clave_serv, True)
+        precio_cat, _ = precio_publico_oferta(oferta, con_repuestos=con_repuestos)
+        lineas[i] = {
+            **lin,
+            'nombre': oferta.servicio.nombre or lin.get('nombre'),
+            'oferta_servicio_id': oferta.id,
+            'precio_catalogo_clp': precio_cat or None,
+            'precio_desde_catalogo': bool(precio_cat),
+        }
+
     # Preferencia estructurada de repuestos (no duplicar línea con "(con repuestos)" en el nombre).
     if repuestos_flag is not None and ultimo_servicio_turno:
         clave_ultimo = _clave_servicio(ultimo_servicio_turno)
@@ -510,71 +676,116 @@ def crear_cotizacion_borrador_desde_agente(
                 }
                 break
 
-    # Recalcular catálogo desde TODAS las líneas (no solo el turno), para no perder
-    # precios de catálogo ya guardados al agregar un servicio nuevo sin catálogo.
+    # Precarga editable: catálogo (mano + repuestos) → histórico → estimación IA.
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
+        normalizar_repuesto,
+    )
+    from mecanimovilapp.apps.servicios.models import OfertaServicio
+
     mano_obra_catalogo = 0
+    mano_obra_historico = 0
     hay_algun_catalogo = False
     faltan_precios_catalogo = False
+    usa_estimativo = False
+    reps_catalogo: list[dict[str, Any]] = []
+    ofertas_cache: dict[int, Any] = {}
+
+    oferta_ids = [
+        int(lin['oferta_servicio_id'])
+        for lin in lineas
+        if lin.get('oferta_servicio_id')
+    ]
+    if oferta_ids:
+        for of in OfertaServicio.objects.filter(pk__in=oferta_ids).select_related('servicio'):
+            ofertas_cache[of.id] = of
+
     for lin in lineas:
-        if lin.get('precio_desde_catalogo') and int(lin.get('precio_catalogo_clp') or 0) > 0:
+        oferta_id = lin.get('oferta_servicio_id')
+        oferta = ofertas_cache.get(int(oferta_id)) if oferta_id else None
+        clave_lin = _clave_servicio(lin.get('nombre') or '')
+        quiere_reps = preferencias_repuestos.get(clave_lin, True)
+
+        if oferta and lin.get('precio_desde_catalogo'):
             hay_algun_catalogo = True
-            mano_obra_catalogo += int(lin.get('precio_catalogo_clp') or 0)
+            mano_lin, reps_lin = _desglose_oferta_catalogo(oferta, con_repuestos=quiere_reps)
+            if mano_lin <= 0:
+                precio_pub, _ = precio_publico_oferta(oferta, con_repuestos=quiere_reps)
+                mano_lin = precio_pub
+            lin['precio_catalogo_clp'] = mano_lin or lin.get('precio_catalogo_clp')
+            lin['precio_mano_obra_clp'] = mano_lin
+            mano_obra_catalogo += max(0, mano_lin)
+            reps_catalogo.extend(reps_lin)
         else:
             faltan_precios_catalogo = True
+            est_hist = int(lin.get('precio_estimado_historico_clp') or 0)
+            if est_hist > 0:
+                lin['precio_mano_obra_clp'] = est_hist
+                mano_obra_historico += est_hist
+                usa_estimativo = True
 
-    # Referencia IA: NUNCA como precio final del borrador; solo orientación al taller.
     ref_mano = int(contenido.get('mano_obra_clp') or 0)
-    ref_reps = contenido.get('repuestos') or []
+    ref_reps_raw = contenido.get('repuestos') or []
+    ref_reps = [
+        normalizar_repuesto(r, i) if isinstance(r, dict) else normalizar_repuesto({'nombre': r}, i)
+        for i, r in enumerate(ref_reps_raw[:12])
+    ]
+    for r in ref_reps:
+        r['comentario'] = (r.get('comentario') or '') or 'Estimación de mercado (IA)'
+        r['precio_referencia_ia'] = int(r.get('precio_unitario_clp') or 0)
+
     if ref_mano or ref_reps:
         precios_ref_ia.append(
             {
                 'servicios': servicios_turno,
                 'mano_obra_clp': ref_mano,
                 'repuestos': ref_reps,
-                'nota': 'Estimación orientativa IA (NO publicada; el taller debe confirmar)',
+                'nota': 'Estimación precargada en el borrador para revisión del taller',
                 'generado_en': timezone.now().isoformat(),
             }
         )
 
-    # Mano de obra manual: montos del taller para servicios sin catálogo (persistida en metadata).
-    mano_obra_manual_prev = int(meta_prev.get('mano_obra_manual_clp', 0) or 0)
-    if 'mano_obra_manual_clp' not in meta_prev and es_update and cotizacion_existente:
-        catalogo_previo = sum(
-            int(l.get('precio_catalogo_clp') or 0)
-            for l in (meta_prev.get('servicios_lineas') or [])
-            if l.get('precio_desde_catalogo')
-        )
-        recargo_previo = int(meta_prev.get('recargo_domicilio_aplicado_clp') or 0)
-        mano_obra_manual_prev = max(
-            0,
-            int(cotizacion_existente.mano_obra_clp or 0) - catalogo_previo - recargo_previo,
-        )
+    mano_obra = mano_obra_catalogo + mano_obra_historico
+    # Sin catálogo/histórico suficiente: usa la estimación IA en el campo editable
+    # (como antes del bloqueo anti-alucinación: el taller revisa y edita).
+    if mano_obra <= 0 and ref_mano > 0:
+        mano_obra = ref_mano
+        usa_estimativo = True
+    elif faltan_precios_catalogo and ref_mano > mano_obra:
+        # Completa el hueco de servicios sin precio con la estimación global IA.
+        mano_obra = ref_mano
+        usa_estimativo = True
 
-    mano_obra = mano_obra_catalogo + mano_obra_manual_prev
     repuestos: list = (
         list(cotizacion_existente.repuestos or [])
         if es_update and cotizacion_existente
         else []
     )
+    repuestos = _merge_repuestos_borrador(repuestos, reps_catalogo)
+    # Repuestos estimados IA: si el cliente pidió incluirlos o aún no hay líneas.
+    cliente_quiere_reps = any(
+        preferencias_repuestos.get(_clave_servicio(l.get('nombre') or ''), True) for l in lineas
+    ) or (repuestos_flag is True)
+    if cliente_quiere_reps or not repuestos:
+        repuestos = _merge_repuestos_borrador(repuestos, ref_reps)
+        if ref_reps:
+            usa_estimativo = True
+
+    mano_obra_manual_prev = max(0, mano_obra - mano_obra_catalogo)
 
     advertencias: list[str] = []
-    if hay_algun_catalogo and not faltan_precios_catalogo:
+    if hay_algun_catalogo and not faltan_precios_catalogo and not usa_estimativo:
         advertencias.append(ADVERTENCIA_DESDE_CATALOGO)
     else:
         advertencias.append(ADVERTENCIA_SIN_CATALOGO)
-        if ref_mano:
-            advertencias.append(
-                f'Referencia IA (solo orientación, no enviar así): mano de obra ~${ref_mano:,} CLP'.replace(
-                    ',', '.'
-                )
-            )
+    if usa_estimativo:
+        advertencias.append(ADVERTENCIA_ESTIMATIVO)
     for lin in lineas:
         est_hist = int(lin.get('precio_estimado_historico_clp') or 0)
         if est_hist > 0 and not lin.get('precio_desde_catalogo'):
             n = (lin.get('nombre') or 'servicio').strip()
             muestras = int(lin.get('precio_estimado_muestras') or 0)
             advertencias.append(
-                f"Referencia histórica '{n}': ~${est_hist:,} CLP (n={muestras}; no es tarifa fija)".replace(
+                f"Histórico '{n}': ~${est_hist:,} CLP precargado en mano de obra (n={muestras})".replace(
                     ',', '.'
                 )
             )
@@ -688,6 +899,7 @@ def crear_cotizacion_borrador_desde_agente(
         'recargo_domicilio_aplicado_clp': recargo_aplicado,
         'precio_desde_catalogo': hay_algun_catalogo and not faltan_precios_catalogo,
         'precio_parcial_catalogo': hay_algun_catalogo and faltan_precios_catalogo,
+        'valores_estimativos': usa_estimativo,
         'servicios_lineas': lineas,
         'precios_referenciales_ia': precios_ref_ia[-5:],  # últimas 5 estimaciones
         'preferencias_agenda': preferencias_agenda,
