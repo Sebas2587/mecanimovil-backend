@@ -2358,7 +2358,7 @@ class CotizacionCanal(models.Model):
     notas_internas = models.TextField(
         blank=True,
         default='',
-        help_text='Comentarios internos del taller; no se exponen al cliente.',
+        help_text='Notas de cotización (agente/taller). Editables; no se exponen al cliente por defecto.',
     )
     contenido_ia = models.JSONField(default=dict, blank=True)
     metadata = models.JSONField(default=dict, blank=True)

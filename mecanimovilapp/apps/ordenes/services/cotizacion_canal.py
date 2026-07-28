@@ -188,7 +188,13 @@ def aplicar_edicion_cotizacion(cotizacion: CotizacionCanal, data: dict) -> Cotiz
     if 'cliente_telefono' in data:
         cotizacion.cliente_telefono = str(data.get('cliente_telefono') or '')[:20]
     if 'notas_internas' in data:
-        cotizacion.notas_internas = str(data.get('notas_internas') or '')
+        nuevas = str(data.get('notas_internas') or '')
+        previas = cotizacion.notas_internas or ''
+        cotizacion.notas_internas = nuevas
+        if nuevas.strip() != previas.strip():
+            meta = dict(cotizacion.metadata or {})
+            meta['notas_editadas_por_taller'] = True
+            cotizacion.metadata = meta
     if 'repuestos' in data and isinstance(data['repuestos'], list):
         cotizacion.repuestos = data['repuestos']
     if 'mano_obra_clp' in data:

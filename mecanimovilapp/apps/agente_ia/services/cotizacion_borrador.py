@@ -49,6 +49,123 @@ ADVERTENCIA_REABIERTA = (
 # Estados editables por el agente (no terminales).
 _ESTADOS_COTIZACION_EDITABLE = ('borrador', 'enviada')
 
+
+def _construir_notas_cotizacion_ordenadas(
+    *,
+    descripcion: str,
+    lineas: list[dict[str, Any]],
+    modalidad: str,
+    direccion_servicio: str,
+    faltan_precios_catalogo: bool,
+    hay_algun_catalogo: bool,
+    preferencias_agenda: dict[str, Any] | None,
+    marca: str = '',
+    modelo: str = '',
+    reabierta: bool = False,
+) -> str:
+    """Notas de cotización numeradas que el agente deja para el taller (editables).
+
+    Orden fijo y legible: síntoma → vehículo → servicios → modalidad → precio →
+    repuestos → agenda → reapertura. No son alertas de sistema (esas van en
+    ``advertencias``); son consideraciones del servicio según la conversación.
+    """
+    notas: list[str] = []
+
+    problema = (descripcion or '').strip()
+    if problema:
+        notas.append(f'Síntoma / motivo de la cotización: {problema[:320]}')
+
+    veh = ' '.join(p for p in [(marca or '').strip(), (modelo or '').strip()] if p)
+    if veh:
+        notas.append(f'Vehículo identificado: {veh}.')
+
+    nombres = [
+        (lin.get('nombre') or '').strip()
+        for lin in lineas
+        if (lin.get('nombre') or '').strip()
+    ]
+    if nombres:
+        if len(nombres) == 1:
+            notas.append(f'Servicio propuesto: {nombres[0]}.')
+        else:
+            lista = '; '.join(nombres)
+            notas.append(f'Servicios incluidos en este borrador: {lista}.')
+
+    if modalidad == 'domicilio':
+        dir_txt = (direccion_servicio or '').strip()
+        if dir_txt:
+            notas.append(f'Modalidad a domicilio. Dirección del cliente: {dir_txt}.')
+        else:
+            notas.append(
+                'Modalidad a domicilio. Falta confirmar comuna/dirección del cliente '
+                'antes de coordinar la visita.'
+            )
+    elif modalidad == 'taller':
+        notas.append('Modalidad en taller: el cliente lleva el vehículo al local.')
+
+    if faltan_precios_catalogo or not hay_algun_catalogo:
+        notas.append(
+            'Precio: sin tarifa publicada completa en catálogo para este caso — '
+            'completar valores reales antes de enviar al cliente.'
+        )
+    elif hay_algun_catalogo:
+        notas.append('Precio: tomado del catálogo publicado del taller (revisar que aplique al vehículo).')
+
+    for lin in lineas:
+        if lin.get('incluye_repuestos_solicitado'):
+            nombre_lin = (lin.get('nombre') or 'servicio').strip()
+            notas.append(
+                f"Cliente pidió incluir repuestos en '{nombre_lin}' — "
+                'confirma modelo, marca y costo del repuesto.'
+            )
+
+    pref = preferencias_agenda if isinstance(preferencias_agenda, dict) else {}
+    if pref:
+        fecha = (pref.get('fecha') or '').strip()
+        hora = (pref.get('hora') or '').strip()
+        nota_pref = (pref.get('nota') or '').strip()
+        partes = [p for p in (fecha, hora, nota_pref) if p]
+        if partes or pref.get('confirmado_verbal'):
+            detalle = ' '.join(partes) if partes else 'preferencia verbal'
+            verbal = ' (confirmada verbalmente con el cliente)' if pref.get('confirmado_verbal') else ''
+            notas.append(f'Preferencia de agenda{verbal}: {detalle}.')
+
+    if reabierta:
+        notas.append(
+            'Esta cotización fue reabierta porque el cliente pidió cambios después del envío.'
+        )
+
+    if not notas:
+        return ''
+    return '\n'.join(f'{i}. {texto}' for i, texto in enumerate(notas, 1))
+
+
+def _resolver_notas_cotizacion(
+    *,
+    notas_generadas: str,
+    cotizacion_existente: CotizacionCanal | None,
+    meta_prev: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    """Actualiza notas del agente sin pisar ediciones manuales del taller."""
+    prev_texto = ''
+    if cotizacion_existente is not None:
+        prev_texto = (cotizacion_existente.notas_internas or '').strip()
+    generadas = (notas_generadas or '').strip()
+    ultima_agente = str(meta_prev.get('notas_agente_texto') or '').strip()
+    editadas_por_taller = bool(meta_prev.get('notas_editadas_por_taller'))
+
+    # Si el taller ya editó, o el texto actual difiere de lo que dejó el agente, conservar.
+    if editadas_por_taller or (prev_texto and ultima_agente and prev_texto != ultima_agente):
+        return prev_texto, {
+            'notas_editadas_por_taller': True,
+            'notas_agente_texto': ultima_agente or generadas,
+        }
+
+    return generadas, {
+        'notas_editadas_por_taller': False,
+        'notas_agente_texto': generadas,
+    }
+
 # Sufijos entre paréntesis que no deben crear un servicio distinto.
 _PAREN_MODIFIERS_RE = re.compile(
     r'\s*\([^)]*(?:repuesto|sin repuesto|con repuesto|incluye|no incluye)[^)]*\)\s*',
@@ -468,6 +585,10 @@ def crear_cotizacion_borrador_desde_agente(
                 prev_pref[k] = v
         preferencias_agenda = prev_pref
 
+    direccion_servicio_final = str(datos.get('direccion_servicio') or (
+        cotizacion_existente.direccion_servicio if cotizacion_existente else ''
+    ))
+
     patente_verificada = bool(
         (datos.get('patente_enriquecida') or '').strip()
         or datos.get('vehiculo_verificado')
@@ -476,9 +597,7 @@ def crear_cotizacion_borrador_desde_agente(
     listo_para_enviar, pendientes_revision = evaluar_listo_para_enviar(
         lineas=lineas,
         modalidad=modalidad,
-        direccion_servicio=str(datos.get('direccion_servicio') or (
-            cotizacion_existente.direccion_servicio if cotizacion_existente else ''
-        )),
+        direccion_servicio=direccion_servicio_final,
         cliente_telefono=cliente_telefono,
         vehiculo_patente=ctx.get('vehiculo_patente') or vehiculo.get('patente', '') or (
             cotizacion_existente.vehiculo_patente if cotizacion_existente else ''
@@ -496,6 +615,29 @@ def crear_cotizacion_borrador_desde_agente(
         km_actual_int = int(str(km_actual).replace('.', '').replace(',', '').strip()) if km_actual not in ('', None) else None
     except (TypeError, ValueError):
         km_actual_int = None
+
+    desc_prev = (cotizacion_existente.descripcion_problema if cotizacion_existente else '') or ''
+    descripcion_final = descripcion or desc_prev
+    if descripcion and desc_prev and descripcion not in desc_prev:
+        descripcion_final = f'{desc_prev}\n{descripcion}'.strip()
+
+    notas_generadas = _construir_notas_cotizacion_ordenadas(
+        descripcion=descripcion_final,
+        lineas=lineas,
+        modalidad=modalidad,
+        direccion_servicio=direccion_servicio_final,
+        faltan_precios_catalogo=faltan_precios_catalogo,
+        hay_algun_catalogo=hay_algun_catalogo,
+        preferencias_agenda=preferencias_agenda if isinstance(preferencias_agenda, dict) else {},
+        marca=marca,
+        modelo=modelo,
+        reabierta=reabierta,
+    )
+    notas_finales, meta_notas = _resolver_notas_cotizacion(
+        notas_generadas=notas_generadas,
+        cotizacion_existente=cotizacion_existente,
+        meta_prev=meta_prev,
+    )
 
     metadata_cot = {
         **meta_prev,
@@ -519,6 +661,7 @@ def crear_cotizacion_borrador_desde_agente(
             or meta_prev.get('patente_enriquecida')
             or ''
         ),
+        **meta_notas,
     }
 
     if reabierta:
@@ -535,18 +678,11 @@ def crear_cotizacion_borrador_desde_agente(
         metadata_cot['reabierta_en'] = timezone.now().isoformat()
         metadata_cot['historial_reapertura'] = historial[-10:]
 
-    desc_prev = (cotizacion_existente.descripcion_problema if cotizacion_existente else '') or ''
-    descripcion_final = descripcion or desc_prev
-    if descripcion and desc_prev and descripcion not in desc_prev:
-        descripcion_final = f'{desc_prev}\n{descripcion}'.strip()
-
     campos = {
         'cliente_nombre': (cliente_nombre or (cotizacion_existente.cliente_nombre if cotizacion_existente else ''))[:200],
         'cliente_telefono': (cliente_telefono or (cotizacion_existente.cliente_telefono if cotizacion_existente else ''))[:20],
         'modalidad': modalidad,
-        'direccion_servicio': str(datos.get('direccion_servicio') or (
-            cotizacion_existente.direccion_servicio if cotizacion_existente else ''
-        ))[:500],
+        'direccion_servicio': direccion_servicio_final[:500],
         'vehiculo_marca': marca,
         'vehiculo_modelo': modelo,
         'vehiculo_anio': anio_int,
@@ -584,6 +720,7 @@ def crear_cotizacion_borrador_desde_agente(
             cotizacion_existente.duracion_minutos_estimada if cotizacion_existente else None
         ),
         'advertencias': advertencias,
+        'notas_internas': notas_finales,
         'contenido_ia': resultado.get('contenido_ia') or {},
         'metadata': metadata_cot,
         'tokens_entrada': (cotizacion_existente.tokens_entrada if cotizacion_existente else 0)
