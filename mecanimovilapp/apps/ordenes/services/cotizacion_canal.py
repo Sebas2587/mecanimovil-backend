@@ -121,7 +121,6 @@ def formatear_resumen_cotizacion(cotizacion: CotizacionCanal) -> str:
     if cotizacion.duracion_minutos_estimada:
         lineas.append(f'Duración estimada: {cotizacion.duracion_minutos_estimada} min')
 
-    advertencias = [str(a).strip() for a in (cotizacion.advertencias or []) if str(a).strip()]
     lineas.extend(['', '*Condiciones:*', '• Precios referenciales. Confirme con el taller antes de agendar.'])
 
     if cotizacion.url_publica:

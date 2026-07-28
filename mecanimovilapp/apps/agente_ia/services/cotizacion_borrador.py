@@ -338,13 +338,6 @@ def crear_cotizacion_borrador_desde_agente(
             precio_cat, _ = precio_publico_oferta(oferta, con_repuestos=con_repuestos)
             oferta_id = oferta.id
             nombre_final = oferta.servicio.nombre
-            if precio_cat > 0:
-                hay_algun_catalogo = True
-                mano_obra_catalogo += precio_cat
-            else:
-                faltan_precios_catalogo = True
-        else:
-            faltan_precios_catalogo = True
 
         lineas = _merge_linea_servicio(
             lineas,
@@ -368,6 +361,18 @@ def crear_cotizacion_borrador_desde_agente(
                     'incluye_repuestos_solicitado': bool(repuestos_flag),
                 }
                 break
+
+    # Recalcular catálogo desde TODAS las líneas (no solo el turno), para no perder
+    # precios de catálogo ya guardados al agregar un servicio nuevo sin catálogo.
+    mano_obra_catalogo = 0
+    hay_algun_catalogo = False
+    faltan_precios_catalogo = False
+    for lin in lineas:
+        if lin.get('precio_desde_catalogo') and int(lin.get('precio_catalogo_clp') or 0) > 0:
+            hay_algun_catalogo = True
+            mano_obra_catalogo += int(lin.get('precio_catalogo_clp') or 0)
+        else:
+            faltan_precios_catalogo = True
 
     # Referencia IA: NUNCA como precio final del borrador; solo orientación al taller.
     ref_mano = int(contenido.get('mano_obra_clp') or 0)
