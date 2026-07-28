@@ -21,10 +21,22 @@ from mecanimovilapp.apps.agente_ia.services.notificaciones import notificar_esca
 from mecanimovilapp.apps.agente_ia.services.rag import buscar_contexto_taller_combinado
 from mecanimovilapp.apps.agente_ia.services.taller_resolver import canal_conversacion, resolver_taller_desde_conversation
 from mecanimovilapp.apps.chat.models import Conversation, Message
+from mecanimovilapp.apps.ordenes.services.catalogo_pricing import normalizar_nombre_servicio
 
 logger = logging.getLogger(__name__)
 
 _JSON_FENCE = re.compile(r'```(?:json)?\s*([\s\S]*?)\s*```', re.IGNORECASE)
+_SERVICIO_PAREN_RE = re.compile(
+    r'\s*\([^)]*(?:repuesto|sin repuesto|con repuesto|incluye|no incluye)[^)]*\)\s*',
+    re.IGNORECASE,
+)
+
+
+def _clave_servicio_dedup(nombre: str) -> str:
+    """Clave estable para deduplicar servicios en datos capturados."""
+    base = _SERVICIO_PAREN_RE.sub('', (nombre or '').strip())
+    base = re.sub(r'\s*\([^)]*\)\s*', ' ', base).strip()
+    return normalizar_nombre_servicio(base)
 
 
 def agente_ia_habilitado() -> bool:
@@ -104,6 +116,20 @@ def _contexto_minimo_para_cotizar(datos: dict) -> bool:
         or (datos.get('servicio_nombre') or '').strip()
     )
     return len(problema) >= 12
+
+
+def _cliente_modifica_cotizacion_existente(sesion: AgenteConversacionSesion, datos: dict) -> bool:
+    """True si el cliente pide agregar/modificar una cotización ya iniciada."""
+    cot = getattr(sesion, 'cotizacion_borrador', None)
+    if not cot or cot.estado not in ('borrador', 'enviada'):
+        return False
+    if datos.get('repuestos_incluidos_ultimo_servicio') is not None:
+        return True
+    servicios = datos.get('servicios') or []
+    if isinstance(servicios, list) and servicios:
+        return True
+    sn = (datos.get('servicio_nombre') or '').strip()
+    return bool(sn)
 
 
 _MONTO_CLP_RE = re.compile(
@@ -366,7 +392,8 @@ REGLAS DE CONVERSACIÓN:
     - el cliente pide cotización/presupuesto/precio O ya confirmó que quiere que le armes el presupuesto.
     Sin patente, sin teléfono o servicio fuera de especialidad → listo_para_cotizar=false.
 13. cliente_pide_cotizacion=true únicamente si en este turno (o el historial reciente) el cliente pidió precio/cotización/presupuesto de forma explícita o claramente implícita.
-14. UNA SOLA COTIZACIÓN por conversación/vehículo: si el cliente pide otro servicio para el MISMO auto, agrégalo a la misma cotización (lista "servicios") — NO trates cada servicio como cotización aparte. El sistema edita un único borrador hasta que el taller lo cierre/envíe.
+14. UNA SOLA COTIZACIÓN por conversación/vehículo: si el cliente pide otro servicio para el MISMO auto, agrégalo a la misma cotización (lista "servicios") — NO trates cada servicio como cotización aparte. El sistema edita un único borrador hasta que el taller lo cierre/envíe. Si el taller ya envió una cotización y el cliente pide agregar/modificar algo, marca listo_para_cotizar=true para actualizar ESA misma cotización (se reabrirá a borrador); NO prometas una cotización nueva aparte.
+14b. SERVICIOS ESTABLES: usa nombres cortos y consistentes en "servicios" (ej. "Diagnóstico de frenos", "Cambio de pastillas de freno delanteras"). NO repitas ni reformules un servicio ya capturado. NO agregues variantes con paréntesis como "(con repuestos)" en el nombre — usa repuestos_incluidos_ultimo_servicio. NO fusiones dos servicios en una frase ("diagnóstico y pastillas") si ya existen por separado.
 15. PRECIOS (ANTI-ALUCINACIÓN, CRÍTICO): Solo puedes mencionar un monto en pesos ($, CLP) si ese EXACTO valor aparece en la FICHA OPERATIVA / catálogo publicado para ese servicio y vehículo. Si el cliente pregunta "cuánto sale / cuánto cuesta" y NO hay precio publicado (ej. inspección/diagnóstico a domicilio sin tarifa en catálogo):
     - PROHIBIDO inventar cifras, rangos ("entre X e Y"), "unos treinta lucas", o dejar huecos tipo "el valor es de,".
     - PROHIBIDO inventar políticas de descuento ("se descuenta del total", "se abona a la reparación").
@@ -392,6 +419,7 @@ Responde SOLO JSON válido:
   "respuesta_cliente": "...",
   "intencion": "saludo|asesoria|cotizacion|agenda|otro",
   "cliente_pide_cotizacion": false,
+  "repuestos_incluidos_ultimo_servicio": null,
   "senal_lead": "curioso",
   "datos_actualizados": {{
     "cliente_nombre": "",
@@ -424,13 +452,14 @@ def _merge_datos(previos: dict, nuevos: dict) -> dict:
             resultado[key] = base
         elif key in ('servicios', 'servicios_solicitados') and isinstance(val, list):
             prev = list(resultado.get(key) or [])
-            vistos = {str(x).strip().lower() for x in prev if x}
+            vistos = {_clave_servicio_dedup(str(x)) for x in prev if x}
             for item in val:
                 nombre = item if isinstance(item, str) else (item or {}).get('nombre') if isinstance(item, dict) else ''
                 nombre = (nombre or '').strip()
-                if nombre and nombre.lower() not in vistos:
+                clave = _clave_servicio_dedup(nombre)
+                if nombre and clave and clave not in vistos:
                     prev.append(nombre)
-                    vistos.add(nombre.lower())
+                    vistos.add(clave)
             if prev:
                 resultado[key] = prev
         elif val not in ('', []):
@@ -439,8 +468,9 @@ def _merge_datos(previos: dict, nuevos: dict) -> dict:
     sn = (resultado.get('servicio_nombre') or '').strip()
     if sn:
         lista = list(resultado.get('servicios') or [])
-        keys = {str(x).strip().lower() for x in lista}
-        if sn.lower() not in keys and ' + ' not in sn:
+        keys = {_clave_servicio_dedup(str(x)) for x in lista if x}
+        clave_sn = _clave_servicio_dedup(sn)
+        if clave_sn and clave_sn not in keys and ' + ' not in sn:
             lista.append(sn)
             resultado['servicios'] = lista
     return resultado
@@ -929,6 +959,9 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         return {'ok': False, 'error': error}
 
     datos = _merge_datos(sesion.datos_capturados, decision.get('datos_actualizados') or {})
+    rep_flag = decision.get('repuestos_incluidos_ultimo_servicio')
+    if rep_flag is not None:
+        datos['repuestos_incluidos_ultimo_servicio'] = rep_flag
     # Preserva flags de enriquecimiento de patente
     for key in (
         'patente_enriquecida',
@@ -1005,7 +1038,11 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
     if listo_cotizar:
         if not _contexto_minimo_para_cotizar(datos):
             listo_cotizar = False
-        elif not cliente_pide_cotizacion and intencion not in ('cotizacion', 'cotizar', 'presupuesto'):
+        elif (
+            not cliente_pide_cotizacion
+            and intencion not in ('cotizacion', 'cotizar', 'presupuesto')
+            and not _cliente_modifica_cotizacion_existente(sesion, datos)
+        ):
             listo_cotizar = False
 
     if necesita_humano:

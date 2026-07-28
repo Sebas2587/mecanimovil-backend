@@ -99,6 +99,7 @@ def notificar_cotizacion_borrador_agente(
     precio_desde_catalogo: bool = False,
     listo_para_enviar: bool = False,
     pendientes_revision: list[str] | None = None,
+    reabierta: bool = False,
 ) -> None:
     from mecanimovilapp.apps.usuarios.models import Notificacion
     from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
@@ -113,7 +114,13 @@ def notificar_cotizacion_borrador_agente(
     servicio = cotizacion.servicio_nombre or 'servicio'
     total_txt = f'${int(cotizacion.total_clp or 0):,} CLP'.replace(',', '.')
 
-    if listo_para_enviar:
+    if reabierta:
+        titulo = 'Cotización reabierta por el cliente'
+        mensaje = (
+            f'El cliente pidió agregar o modificar algo en una cotización ya enviada '
+            f'("{servicio}"). Quedó de nuevo en Cotizar con IA para tu revisión.'
+        )
+    elif listo_para_enviar:
         titulo = 'Cotización lista para enviar'
         mensaje = (
             f'El borrador de "{servicio}" está completo ({total_txt}). '

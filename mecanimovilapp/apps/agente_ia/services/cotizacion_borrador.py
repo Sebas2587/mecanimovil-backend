@@ -1,7 +1,8 @@
 """Generación / actualización de borrador de cotización desde el agente IA.
 
 Reglas de producto:
-- Una sola cotización en estado 'borrador' por conversación (se edita, no se duplica).
+- Una sola cotización editable por conversación (borrador o enviada; se edita, no se duplica).
+- Si el cliente pide cambios tras un envío, la cotización enviada se reabre a borrador.
 - Precios al cliente/taller: solo del catálogo publicado. Sin match → $0 +
   referencia IA solo en metadata/advertencias para que el humano revise y complete.
 - El agente NUNCA envía la cotización al cliente; solo deja borrador.
@@ -9,6 +10,7 @@ Reglas de producto:
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from django.contrib.auth import get_user_model
@@ -40,6 +42,18 @@ ADVERTENCIA_SIN_CATALOGO = (
 )
 ADVERTENCIA_DESDE_CATALOGO = 'Precio tomado del catálogo publicado del taller'
 ADVERTENCIA_MULTI_SERVICIO = 'Cotización unificada: varios servicios del mismo vehículo en un solo borrador'
+ADVERTENCIA_REABIERTA = (
+    'Cliente pidió cambios después del envío — revisa y vuelve a enviar.'
+)
+
+# Estados editables por el agente (no terminales).
+_ESTADOS_COTIZACION_EDITABLE = ('borrador', 'enviada')
+
+# Sufijos entre paréntesis que no deben crear un servicio distinto.
+_PAREN_MODIFIERS_RE = re.compile(
+    r'\s*\([^)]*(?:repuesto|sin repuesto|con repuesto|incluye|no incluye)[^)]*\)\s*',
+    re.IGNORECASE,
+)
 
 
 def evaluar_listo_para_enviar(
@@ -109,6 +123,43 @@ def _parse_servicios_solicitados(datos: dict) -> list[str]:
     return out
 
 
+def _clave_servicio(nombre: str) -> str:
+    """Clave estable para deduplicar servicios (ignora paréntesis de repuestos, etc.)."""
+    base = _PAREN_MODIFIERS_RE.sub('', (nombre or '').strip())
+    base = re.sub(r'\s*\([^)]*\)\s*', ' ', base).strip()
+    return normalizar_nombre_servicio(base)
+
+
+def _servicio_es_fusion_redundante(nombre: str, claves_existentes: set[str]) -> bool:
+    """True si el nombre combina servicios que ya existen por separado."""
+    clave = _clave_servicio(nombre)
+    if not clave or clave in claves_existentes:
+        return clave in claves_existentes
+    texto = (nombre or '').strip().lower()
+    for sep in (' y ', ' + ', ' e '):
+        if sep in texto:
+            partes = [_clave_servicio(p.strip()) for p in texto.split(sep) if p.strip()]
+            partes = [p for p in partes if p]
+            if len(partes) >= 2 and all(p in claves_existentes for p in partes):
+                return True
+    return False
+
+
+def _compactar_lineas_servicio(lineas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Una línea por clave de servicio; conserva la más reciente/completa."""
+    por_clave: dict[str, dict[str, Any]] = {}
+    orden: list[str] = []
+    for lin in lineas or []:
+        clave = _clave_servicio(lin.get('nombre') or '')
+        if not clave:
+            continue
+        if clave not in por_clave:
+            orden.append(clave)
+        prev = por_clave.get(clave) or {}
+        por_clave[clave] = {**prev, **lin}
+    return [por_clave[k] for k in orden if k in por_clave]
+
+
 def _titulo_servicios(lineas: list[dict[str, Any]]) -> str:
     nombres = [str(l.get('nombre') or '').strip() for l in lineas if l.get('nombre')]
     nombres = [n for n in nombres if n]
@@ -125,12 +176,12 @@ def _merge_linea_servicio(
     existentes: list[dict[str, Any]],
     nueva: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    key = normalizar_nombre_servicio(nueva.get('nombre') or '')
+    key = _clave_servicio(nueva.get('nombre') or '')
     if not key:
         return existentes
     out = list(existentes or [])
     for i, lin in enumerate(out):
-        if normalizar_nombre_servicio(lin.get('nombre') or '') == key:
+        if _clave_servicio(lin.get('nombre') or '') == key:
             out[i] = {**lin, **nueva}
             return out
     out.append(nueva)
@@ -143,15 +194,15 @@ def _obtener_borrador_abierto(
     conversation: Conversation,
     taller: Taller,
 ) -> CotizacionCanal | None:
-    """Reutiliza el borrador abierto de la misma conversación/vehículo."""
+    """Reutiliza la cotización editable (borrador o enviada) de la misma conversación."""
     cot = getattr(sesion, 'cotizacion_borrador', None)
-    if cot and cot.estado == 'borrador' and cot.taller_id == taller.id:
+    if cot and cot.estado in _ESTADOS_COTIZACION_EDITABLE and cot.taller_id == taller.id:
         return cot
     return (
         CotizacionCanal.objects.filter(
             conversation=conversation,
             taller=taller,
-            estado='borrador',
+            estado__in=_ESTADOS_COTIZACION_EDITABLE,
             metadata__origen='agente_ia',
         )
         .order_by('-actualizado_en', '-id')
@@ -179,6 +230,8 @@ def crear_cotizacion_borrador_desde_agente(
         taller=taller,
     )
     es_update = cotizacion_existente is not None
+    estado_previo = cotizacion_existente.estado if cotizacion_existente else None
+    reabierta = es_update and estado_previo == 'enviada'
 
     if not es_update:
         try:
@@ -207,8 +260,26 @@ def crear_cotizacion_borrador_desde_agente(
     tipo_motor = (vehiculo.get('tipo_motor') or '').strip()
 
     meta_prev = dict((cotizacion_existente.metadata if cotizacion_existente else {}) or {})
-    lineas: list[dict[str, Any]] = list(meta_prev.get('servicios_lineas') or [])
+    lineas: list[dict[str, Any]] = _compactar_lineas_servicio(
+        list(meta_prev.get('servicios_lineas') or [])
+    )
     precios_ref_ia: list[dict[str, Any]] = list(meta_prev.get('precios_referenciales_ia') or [])
+    claves_lineas_previas = {_clave_servicio(l.get('nombre') or '') for l in lineas if l.get('nombre')}
+
+    # Filtra nombres compuestos redundantes ("diagnóstico y pastillas" si ya existen por separado).
+    servicios_filtrados: list[str] = []
+    claves_acum = set(claves_lineas_previas)
+    for nombre_serv in servicios_turno:
+        if _servicio_es_fusion_redundante(nombre_serv, claves_acum):
+            continue
+        clave = _clave_servicio(nombre_serv)
+        if clave and clave not in claves_acum:
+            claves_acum.add(clave)
+        servicios_filtrados.append(nombre_serv)
+    servicios_turno = servicios_filtrados or servicios_turno
+
+    repuestos_flag = datos.get('repuestos_incluidos_ultimo_servicio')
+    ultimo_servicio_turno = servicios_turno[-1] if servicios_turno else ''
 
     # Generar contexto IA una vez con el resumen de servicios del turno (desglose/orientación).
     servicio_prompt = ' + '.join(servicios_turno)
@@ -272,6 +343,19 @@ def crear_cotizacion_borrador_desde_agente(
             },
         )
 
+    lineas = _compactar_lineas_servicio(lineas)
+
+    # Preferencia estructurada de repuestos (no duplicar línea con "(con repuestos)" en el nombre).
+    if repuestos_flag is not None and ultimo_servicio_turno:
+        clave_ultimo = _clave_servicio(ultimo_servicio_turno)
+        for i, lin in enumerate(lineas):
+            if _clave_servicio(lin.get('nombre') or '') == clave_ultimo:
+                lineas[i] = {
+                    **lin,
+                    'incluye_repuestos_solicitado': bool(repuestos_flag),
+                }
+                break
+
     # Referencia IA: NUNCA como precio final del borrador; solo orientación al taller.
     ref_mano = int(contenido.get('mano_obra_clp') or 0)
     ref_reps = contenido.get('repuestos') or []
@@ -298,6 +382,15 @@ def crear_cotizacion_borrador_desde_agente(
         mano_obra = 0
         repuestos = []
 
+    # Al reabrir/editar, conservar montos ya definidos por el taller si el catálogo no los reemplaza.
+    if es_update and cotizacion_existente:
+        mano_obra_prev = int(cotizacion_existente.mano_obra_clp or 0)
+        repuestos_prev = list(cotizacion_existente.repuestos or [])
+        if mano_obra == 0 and mano_obra_prev > 0:
+            mano_obra = mano_obra_prev
+        if not repuestos and repuestos_prev:
+            repuestos = repuestos_prev
+
     advertencias: list[str] = []
     if hay_algun_catalogo and not faltan_precios_catalogo:
         advertencias.append(ADVERTENCIA_DESDE_CATALOGO)
@@ -312,6 +405,16 @@ def crear_cotizacion_borrador_desde_agente(
 
     if len(lineas) > 1:
         advertencias.append(ADVERTENCIA_MULTI_SERVICIO)
+
+    if reabierta:
+        advertencias.append(ADVERTENCIA_REABIERTA)
+
+    for lin in lineas:
+        if lin.get('incluye_repuestos_solicitado'):
+            nombre_lin = (lin.get('nombre') or 'servicio').strip()
+            advertencias.append(
+                f"Cliente pidió incluir repuestos en '{nombre_lin}' — confirma modelo/costo del repuesto."
+            )
 
     if modalidad == 'domicilio' and mano_obra > 0:
         recargo = _recargo_domicilio_taller(taller)
@@ -394,6 +497,20 @@ def crear_cotizacion_borrador_desde_agente(
         ),
     }
 
+    if reabierta:
+        historial = list(meta_prev.get('historial_reapertura') or [])
+        historial.append(
+            {
+                'en': timezone.now().isoformat(),
+                'motivo': descripcion[:300] if descripcion else 'Cliente pidió cambios',
+                'servicios_turno': servicios_turno,
+                'estado_anterior': estado_previo,
+            }
+        )
+        metadata_cot['reabierta_por_cliente'] = True
+        metadata_cot['reabierta_en'] = timezone.now().isoformat()
+        metadata_cot['historial_reapertura'] = historial[-10:]
+
     desc_prev = (cotizacion_existente.descripcion_problema if cotizacion_existente else '') or ''
     descripcion_final = descripcion or desc_prev
     if descripcion and desc_prev and descripcion not in desc_prev:
@@ -455,12 +572,15 @@ def crear_cotizacion_borrador_desde_agente(
     if es_update and cotizacion_existente:
         for k, v in campos.items():
             setattr(cotizacion_existente, k, v)
+        if reabierta:
+            cotizacion_existente.estado = 'borrador'
         cotizacion_existente.save()
         cotizacion = cotizacion_existente
         logger.info(
-            'Cotización borrador %s actualizada (servicios=%s) sesion=%s',
+            'Cotización borrador %s actualizada (servicios=%s, reabierta=%s) sesion=%s',
             cotizacion.id,
             [l.get('nombre') for l in lineas],
+            reabierta,
             sesion.id,
         )
     else:
@@ -497,5 +617,6 @@ def crear_cotizacion_borrador_desde_agente(
         precio_desde_catalogo=bool(hay_algun_catalogo and not faltan_precios_catalogo),
         listo_para_enviar=listo_para_enviar,
         pendientes_revision=pendientes_revision,
+        reabierta=reabierta,
     )
     return cotizacion
