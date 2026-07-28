@@ -387,22 +387,139 @@ def _desglose_oferta_catalogo(oferta, *, con_repuestos: bool) -> tuple[int, list
     return max(0, mano), reps
 
 
+def _clave_repuesto_fuzzy(nombre: str) -> str:
+    """Clave laxa: ignora paréntesis/sufijos de servicio y ruido genérico."""
+    t = normalizar_nombre_servicio(nombre or '')
+    t = re.sub(r'\([^)]*\)', ' ', t)
+    for ruido in (
+        'repuesto',
+        'repuestos',
+        'original',
+        'oem',
+        'alternativo',
+        'alt',
+        'marca',
+        'incluye',
+    ):
+        t = re.sub(rf'\b{ruido}\b', ' ', t)
+    return re.sub(r'\s+', ' ', t).strip()
+
+
+def _repuestos_equivalentes(nombre_a: str, nombre_b: str) -> bool:
+    """True si son el mismo ítem aunque el taller haya renombrado el texto."""
+    a = _clave_repuesto_fuzzy(nombre_a)
+    b = _clave_repuesto_fuzzy(nombre_b)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    if a in b or b in a:
+        return True
+    ta, tb = set(a.split()), set(b.split())
+    stop = {'de', 'del', 'la', 'el', 'los', 'las', 'y', 'para', 'con', 'sin'}
+    ta -= stop
+    tb -= stop
+    if not ta or not tb:
+        return False
+
+    # Calificadores que distinguen piezas homónimas (filtro aceite ≠ filtro aire).
+    qualificadores = {
+        'aceite',
+        'aire',
+        'combustible',
+        'habitaculo',
+        'polen',
+        'cabina',
+        'gasolina',
+        'diesel',
+        'bencina',
+    }
+    qa, qb = ta & qualificadores, tb & qualificadores
+    if qa and qb and qa != qb:
+        return False
+
+    inter = ta & tb
+    if not inter:
+        return False
+
+    # Misma familia de producto aunque cambien marca/viscosidad/nombre comercial.
+    if 'aceite' in ta and 'aceite' in tb and 'filtro' not in ta and 'filtro' not in tb:
+        return True
+    if 'filtro' in ta and 'filtro' in tb and qa == qb:
+        return True
+    if {'pastilla', 'pastillas'} & ta and {'pastilla', 'pastillas'} & tb:
+        return True
+    if {'disco', 'discos'} & ta and {'disco', 'discos'} & tb:
+        return True
+
+    # Overlap general alto (renombres parciales).
+    return len(inter) >= min(len(ta), len(tb)) and (
+        len(inter) / max(len(ta), len(tb))
+    ) >= 0.5
+
+
+def _ids_repuesto(rep: dict[str, Any]) -> set[str]:
+    ids: set[str] = set()
+    for key in ('id', 'repuesto_id', 'oferta_repuesto_id'):
+        val = rep.get(key)
+        if val not in (None, ''):
+            ids.add(str(val))
+    return ids
+
+
 def _merge_repuestos_borrador(
     existentes: list[dict[str, Any]],
     nuevos: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Une repuestos por nombre; no pisa ítems ya presentes (ediciones del taller)."""
+    """Une repuestos sin duplicar: respeta renombres manuales e ids previos."""
     out = list(existentes or [])
-    vistos = {normalizar_nombre_servicio(str(r.get('nombre') or '')) for r in out}
+    ids_vistos: set[str] = set()
+    for r in out:
+        ids_vistos |= _ids_repuesto(r)
+
     for rep in nuevos or []:
         if not isinstance(rep, dict):
             continue
-        clave = normalizar_nombre_servicio(str(rep.get('nombre') or ''))
-        if not clave or clave in vistos:
+        nombre = str(rep.get('nombre') or '').strip()
+        if not nombre:
+            continue
+        ids_nuevos = _ids_repuesto(rep)
+        if ids_nuevos and ids_nuevos & ids_vistos:
+            continue
+        if any(_repuestos_equivalentes(nombre, str(r.get('nombre') or '')) for r in out):
             continue
         out.append(rep)
-        vistos.add(clave)
+        ids_vistos |= ids_nuevos
     return out
+
+
+def _podar_lineas_servicio_redundantes(lineas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Elimina servicios genéricos ya cubiertos por otro más específico.
+
+    Ej: "Cambio de filtro" sobra si ya está "Cambio de filtro de aire" o
+    "Cambio aceite motor y filtro".
+    """
+    stop = {'de', 'del', 'la', 'el', 'los', 'las', 'y', 'para', 'con', 'sin', 'a'}
+    enriched: list[tuple[str, set[str], dict[str, Any]]] = []
+    for lin in lineas or []:
+        clave = _clave_servicio(lin.get('nombre') or '')
+        if not clave:
+            continue
+        tokens = {t for t in clave.split() if t and t not in stop}
+        enriched.append((clave, tokens, lin))
+
+    drop: set[int] = set()
+    for i, (ci, ti, _) in enumerate(enriched):
+        if not ti:
+            continue
+        for j, (cj, tj, _) in enumerate(enriched):
+            if i == j or not tj:
+                continue
+            # i es más genérico / corto y sus tokens están contenidos en j
+            if ti < tj or (ti <= tj and len(ci) < len(cj) and ti.issubset(tj)):
+                drop.add(i)
+                break
+    return [lin for idx, (_, _, lin) in enumerate(enriched) if idx not in drop]
 
 
 def _titulo_servicios(lineas: list[dict[str, Any]]) -> str:
@@ -625,7 +742,15 @@ def crear_cotizacion_borrador_desde_agente(
 
         lineas = _merge_linea_servicio(lineas, linea_nueva)
 
-    lineas = _compactar_lineas_servicio(lineas)
+    lineas = _podar_lineas_servicio_redundantes(_compactar_lineas_servicio(lineas))
+
+    # Servicios que YA estaban en el borrador (no reinyectar sus repuestos).
+    claves_lineas_previas = {
+        _clave_servicio(str(l.get('nombre') or ''))
+        for l in (meta_prev.get('servicios_lineas') or [])
+        if isinstance(l, dict) and l.get('nombre')
+    }
+    claves_lineas_previas.discard('')
 
     # Re-matchea catálogo/histórico tras compactar (por si partimos un nombre fusionado).
     for i, lin in enumerate(lineas):
@@ -665,6 +790,8 @@ def crear_cotizacion_borrador_desde_agente(
             'precio_desde_catalogo': bool(precio_cat),
         }
 
+    lineas = _podar_lineas_servicio_redundantes(lineas)
+
     # Preferencia estructurada de repuestos (no duplicar línea con "(con repuestos)" en el nombre).
     if repuestos_flag is not None and ultimo_servicio_turno:
         clave_ultimo = _clave_servicio(ultimo_servicio_turno)
@@ -684,10 +811,11 @@ def crear_cotizacion_borrador_desde_agente(
 
     mano_obra_catalogo = 0
     mano_obra_historico = 0
+    mano_obra_nueva = 0  # solo servicios agregados en este update
     hay_algun_catalogo = False
     faltan_precios_catalogo = False
     usa_estimativo = False
-    reps_catalogo: list[dict[str, Any]] = []
+    reps_para_agregar: list[dict[str, Any]] = []
     ofertas_cache: dict[int, Any] = {}
 
     oferta_ids = [
@@ -704,6 +832,7 @@ def crear_cotizacion_borrador_desde_agente(
         oferta = ofertas_cache.get(int(oferta_id)) if oferta_id else None
         clave_lin = _clave_servicio(lin.get('nombre') or '')
         quiere_reps = preferencias_repuestos.get(clave_lin, True)
+        es_servicio_nuevo = (not es_update) or (clave_lin not in claves_lineas_previas)
 
         if oferta and lin.get('precio_desde_catalogo'):
             hay_algun_catalogo = True
@@ -714,7 +843,11 @@ def crear_cotizacion_borrador_desde_agente(
             lin['precio_catalogo_clp'] = mano_lin or lin.get('precio_catalogo_clp')
             lin['precio_mano_obra_clp'] = mano_lin
             mano_obra_catalogo += max(0, mano_lin)
-            reps_catalogo.extend(reps_lin)
+            if es_servicio_nuevo:
+                mano_obra_nueva += max(0, mano_lin)
+                # Solo inyecta repuestos de servicios NUEVOS (no reabrir el original).
+                if quiere_reps:
+                    reps_para_agregar.extend(reps_lin)
         else:
             faltan_precios_catalogo = True
             est_hist = int(lin.get('precio_estimado_historico_clp') or 0)
@@ -722,6 +855,8 @@ def crear_cotizacion_borrador_desde_agente(
                 lin['precio_mano_obra_clp'] = est_hist
                 mano_obra_historico += est_hist
                 usa_estimativo = True
+                if es_servicio_nuevo:
+                    mano_obra_nueva += est_hist
 
     ref_mano = int(contenido.get('mano_obra_clp') or 0)
     ref_reps_raw = contenido.get('repuestos') or []
@@ -744,31 +879,51 @@ def crear_cotizacion_borrador_desde_agente(
             }
         )
 
-    mano_obra = mano_obra_catalogo + mano_obra_historico
-    # Sin catálogo/histórico suficiente: usa la estimación IA en el campo editable
-    # (como antes del bloqueo anti-alucinación: el taller revisa y edita).
-    if mano_obra <= 0 and ref_mano > 0:
-        mano_obra = ref_mano
-        usa_estimativo = True
-    elif faltan_precios_catalogo and ref_mano > mano_obra:
-        # Completa el hueco de servicios sin precio con la estimación global IA.
-        mano_obra = ref_mano
-        usa_estimativo = True
-
     repuestos: list = (
         list(cotizacion_existente.repuestos or [])
         if es_update and cotizacion_existente
         else []
     )
-    repuestos = _merge_repuestos_borrador(repuestos, reps_catalogo)
-    # Repuestos estimados IA: si el cliente pidió incluirlos o aún no hay líneas.
-    cliente_quiere_reps = any(
-        preferencias_repuestos.get(_clave_servicio(l.get('nombre') or ''), True) for l in lineas
-    ) or (repuestos_flag is True)
-    if cliente_quiere_reps or not repuestos:
-        repuestos = _merge_repuestos_borrador(repuestos, ref_reps)
-        if ref_reps:
+
+    if es_update and cotizacion_existente:
+        # Conserva mano de obra ya editada y solo SUMA lo nuevo.
+        mano_prev = int(cotizacion_existente.mano_obra_clp or 0)
+        recargo_prev = int(meta_prev.get('recargo_domicilio_aplicado_clp') or 0)
+        base_prev = max(0, mano_prev - recargo_prev)
+        if mano_obra_nueva > 0:
+            mano_obra = base_prev + mano_obra_nueva
+        elif faltan_precios_catalogo and ref_mano > 0 and claves_lineas_previas:
+            # IA devolvió total global: suma solo el delta positivo estimado.
+            delta = max(0, ref_mano - base_prev)
+            mano_obra = base_prev + delta if delta else base_prev
+            if delta:
+                usa_estimativo = True
+        else:
+            mano_obra = base_prev if base_prev > 0 else (mano_obra_catalogo + mano_obra_historico)
+        # Repuestos: nunca reinyectar los del servicio original; solo candidatos nuevos.
+        reps_ia_nuevos = ref_reps if (repuestos_flag is not False) else []
+        repuestos = _merge_repuestos_borrador(repuestos, reps_para_agregar)
+        repuestos = _merge_repuestos_borrador(repuestos, reps_ia_nuevos)
+        if reps_para_agregar or reps_ia_nuevos:
+            # Aunque la IA regenera piezas viejas, el merge fuzzy las descarta.
+            if reps_ia_nuevos:
+                usa_estimativo = True
+    else:
+        mano_obra = mano_obra_catalogo + mano_obra_historico
+        if mano_obra <= 0 and ref_mano > 0:
+            mano_obra = ref_mano
             usa_estimativo = True
+        elif faltan_precios_catalogo and ref_mano > mano_obra:
+            mano_obra = ref_mano
+            usa_estimativo = True
+        repuestos = _merge_repuestos_borrador(repuestos, reps_para_agregar)
+        cliente_quiere_reps = any(
+            preferencias_repuestos.get(_clave_servicio(l.get('nombre') or ''), True) for l in lineas
+        ) or (repuestos_flag is True)
+        if cliente_quiere_reps or not repuestos:
+            repuestos = _merge_repuestos_borrador(repuestos, ref_reps)
+            if ref_reps:
+                usa_estimativo = True
 
     mano_obra_manual_prev = max(0, mano_obra - mano_obra_catalogo)
 
