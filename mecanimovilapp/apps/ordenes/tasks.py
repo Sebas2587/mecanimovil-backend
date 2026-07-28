@@ -364,6 +364,12 @@ def recordar_solicitudes_por_vencer_proveedor_task():
 def revisar_seguimiento_pipeline_comercial_task():
     """Barrido periódico: recordatorios al taller por cotizaciones/agenda estancadas."""
     try:
+        from django.db.models import F
+
+        from mecanimovilapp.apps.agente_ia.services.lead_scoring import (
+            recalcular_leads_pipeline_periodico,
+            umbrales_seguimiento_por_lead,
+        )
         from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonal, CotizacionCanal
         from mecanimovilapp.apps.ordenes.services.notificaciones_pipeline import (
             HORAS_BORRADOR_LISTO_RECORDATORIO,
@@ -372,16 +378,13 @@ def revisar_seguimiento_pipeline_comercial_task():
             notificar_cotizacion_demorada_48h,
             notificar_cotizacion_sin_respuesta_24h,
         )
-        from mecanimovilapp.apps.ordenes.services.pipeline_comercial import (
-            _demorado_48h,
-            _esperando_respuesta_24h,
-        )
 
         now = timezone.now()
         umbral_borrador = now - timedelta(hours=HORAS_BORRADOR_LISTO_RECORDATORIO)
         umbral_agenda = now - timedelta(hours=24)
 
         stats = {
+            'leads_recalculados': recalcular_leads_pipeline_periodico(),
             'borradores': 0,
             'sin_respuesta_24h': 0,
             'demoradas_48h': 0,
@@ -397,21 +400,38 @@ def revisar_seguimiento_pipeline_comercial_task():
                 notificar_borrador_listo_sin_enviar(cotizacion=cot)
                 stats['borradores'] += 1
 
-        for cot in CotizacionCanal.objects.filter(estado='enviada').iterator(chunk_size=100):
+        enviadas_qs = (
+            CotizacionCanal.objects.filter(estado='enviada')
+            .select_related('conversation__lead_calificacion')
+            .order_by(F('conversation__lead_calificacion__score').desc(nulls_last=True))
+        )
+        for cot in enviadas_qs.iterator(chunk_size=100):
             fecha_ref = cot.enviada_en or cot.actualizado_en or cot.creado_en
-            estado_norm = 'cotizacion_enviada'
-            if _demorado_48h(fecha_ref, estado_norm):
+            if not fecha_ref:
+                continue
+            horas = max(0, (now - fecha_ref).total_seconds() / 3600)
+            lead = None
+            if cot.conversation_id:
+                lead = getattr(cot.conversation, 'lead_calificacion', None)
+            categoria = lead.categoria if lead else None
+            horas_sin, horas_dem = umbrales_seguimiento_por_lead(categoria)
+            if horas >= horas_dem and horas_dem < 900:
                 notificar_cotizacion_demorada_48h(cotizacion=cot)
                 stats['demoradas_48h'] += 1
-            elif _esperando_respuesta_24h(fecha_ref, estado_norm):
+            elif horas >= horas_sin:
                 notificar_cotizacion_sin_respuesta_24h(cotizacion=cot)
                 stats['sin_respuesta_24h'] += 1
 
-        for cita in CitaAgendaPersonal.objects.filter(
-            estado='activa',
-            horario_por_confirmar=True,
-            fecha_actualizacion__lte=umbral_agenda,
-        ).iterator(chunk_size=100):
+        for cita in (
+            CitaAgendaPersonal.objects.filter(
+                estado='activa',
+                horario_por_confirmar=True,
+                fecha_actualizacion__lte=umbral_agenda,
+            )
+            .select_related('conversation_origen__lead_calificacion')
+            .order_by(F('conversation_origen__lead_calificacion__score').desc(nulls_last=True))
+            .iterator(chunk_size=100)
+        ):
             notificar_agenda_pendiente_confirmacion(cita=cita)
             stats['agenda_pendiente'] += 1
 

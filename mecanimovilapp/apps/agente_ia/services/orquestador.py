@@ -322,12 +322,20 @@ REGLAS DE CONVERSACIÓN:
 19. TELÉFONO: si en "Datos ya capturados" NO hay cliente_telefono, DEBES pedirle al cliente su número de teléfono (móvil con código de área Chile si puedes) y guardarlo en datos_actualizados.cliente_telefono. Sin teléfono no marques listo_para_cotizar=true. Si ya está, no lo vuelvas a pedir.
 20. KILOMETRAJE: si el contexto de patente trae km registrados, trátarlo SOLO como referencia aproximada / último dato conocido — el auto pudo seguir circulando. NUNCA digas "tu auto tiene X km exactos". Puedes decir "según registro, el último km conocido era aprox. X; ¿me confirmas el kilometraje actual?" y guarda vehiculo.kilometraje_actual si el cliente lo confirma.
 21. respuesta_cliente: para asesoría normal, 1-3 frases naturales con un mini consejo + 1 pregunta. Si el cliente pidió explícitamente el listado de servicios, puedes extenderte lo necesario para nombrarlos todos. NUNCA dejes respuesta_cliente vacío (sobre todo si hubo audio/foto).
+22. senal_lead: clasifica la intención REAL del cliente en ESTE turno (no solo lo que dice, sino si avanza hacia contratar):
+    - curioso: pregunta genérica, no da datos del vehículo/problema, respuestas cortas, poco compromiso.
+    - comparando_precios: pide precio pero evita dar patente/teléfono, o menciona otras opciones/talleres.
+    - sin_presupuesto: objeta el precio mencionado o pide descuento repetido sin avanzar.
+    - interesado: entrega datos reales (patente/problema/teléfono) y pide cotización formalmente.
+    - listo_agendar: acepta cotización o pide agendar/coordinar día y hora directamente.
+    - no_automotriz: fuera de tema o spam.
 
 Responde SOLO JSON válido:
 {{
   "respuesta_cliente": "...",
   "intencion": "saludo|asesoria|cotizacion|agenda|otro",
   "cliente_pide_cotizacion": false,
+  "senal_lead": "curioso",
   "datos_actualizados": {{
     "cliente_nombre": "",
     "cliente_telefono": "",
@@ -906,6 +914,25 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
     respuesta = (decision.get('respuesta_cliente') or '').strip()
     cliente_pide_cotizacion = bool(decision.get('cliente_pide_cotizacion'))
     intencion = (decision.get('intencion') or '').strip().lower()
+    senal_lead = (decision.get('senal_lead') or '').strip().lower()
+
+    def _persistir_calificacion_lead() -> None:
+        try:
+            from mecanimovilapp.apps.agente_ia.services.lead_scoring import actualizar_calificacion_lead
+
+            actualizar_calificacion_lead(
+                conversation_id=conversation.id,
+                taller_id=taller.id,
+                datos=datos,
+                decision=decision,
+                sesion=sesion,
+            )
+        except Exception:
+            logger.exception(
+                'Error actualizando calificación lead conv=%s taller=%s',
+                conversation.id,
+                taller.id,
+            )
 
     # Anti-alucinación de precios: sin tarifa de catálogo, NUNCA enviar montos al cliente.
     puede_mencionar_precio = _tiene_precio_catalogo_mencionable(taller, datos)
@@ -951,9 +978,11 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             metadata={
                 'motivo': decision.get('motivo_escalamiento', ''),
                 'intencion': intencion,
+                'senal_lead': senal_lead,
                 'media': bool(analisis_media),
             },
         )
+        _persistir_calificacion_lead()
         return {'ok': True, 'accion': 'escalar'}
 
     if listo_cotizar:
@@ -997,9 +1026,11 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
                 'enviada_auto': False,
                 'intencion': intencion,
                 'cliente_pide_cotizacion': cliente_pide_cotizacion,
+                'senal_lead': senal_lead,
                 'media': bool(analisis_media and not analisis_media.get('error')),
             },
         )
+        _persistir_calificacion_lead()
         return {
             'ok': True,
             'accion': 'cotizar',
@@ -1044,9 +1075,11 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         metadata={
             'intencion': intencion,
             'cliente_pide_cotizacion': cliente_pide_cotizacion,
+            'senal_lead': senal_lead,
             'media': bool(analisis_media and not analisis_media.get('error')),
             'media_kind': (analisis_media or {}).get('tipo_medio') or (analisis_media or {}).get('kind'),
             'fallback_respuesta_vacia': hubo_media and not (decision.get('respuesta_cliente') or '').strip(),
         },
     )
+    _persistir_calificacion_lead()
     return {'ok': True, 'accion': 'responder'}

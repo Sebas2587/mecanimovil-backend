@@ -3,6 +3,7 @@ from django.contrib import admin
 from mecanimovilapp.apps.agente_ia.models import (
     AgenteConversacionSesion,
     AgenteMensajeLog,
+    LeadCalificacion,
     TallerAgenteConfig,
     TallerConocimientoChunk,
     TallerConocimientoDocumento,
@@ -37,3 +38,10 @@ class AgenteConversacionSesionAdmin(admin.ModelAdmin):
 class AgenteMensajeLogAdmin(admin.ModelAdmin):
     list_display = ('id', 'sesion', 'accion', 'fecha')
     list_filter = ('accion',)
+
+
+@admin.register(LeadCalificacion)
+class LeadCalificacionAdmin(admin.ModelAdmin):
+    list_display = ('id', 'conversation', 'taller', 'categoria', 'score', 'actualizado_en')
+    list_filter = ('categoria', 'taller')
+    search_fields = ('conversation_id',)

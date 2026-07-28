@@ -305,6 +305,11 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
                 cotizacion = enviar_cotizacion_libre(cotizacion)
             except ValueError as exc:
                 raise ValidationError(str(exc)) from exc
+            if cotizacion.conversation_id:
+                from mecanimovilapp.apps.agente_ia.services.lead_scoring import (
+                    actualizar_calificacion_desde_cotizacion,
+                )
+                actualizar_calificacion_desde_cotizacion(cotizacion, evento='enviada')
             return Response({
                 'cotizacion': CotizacionCanalSerializer(cotizacion).data,
                 'message_id': None,
@@ -321,6 +326,11 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
         if cotizacion.conversation.source_channel != 'APP':
             send_meta_message.delay(message.id)
 
+        from mecanimovilapp.apps.agente_ia.services.lead_scoring import (
+            actualizar_calificacion_desde_cotizacion,
+        )
+        actualizar_calificacion_desde_cotizacion(cotizacion, evento='enviada')
+
         return Response({
             'cotizacion': CotizacionCanalSerializer(cotizacion).data,
             'message_id': message.id,
@@ -334,6 +344,10 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             raise ValidationError({'estado': 'No se puede cancelar esta cotización.'})
         cotizacion.estado = 'cancelada'
         cotizacion.save(update_fields=['estado', 'actualizado_en'])
+        from mecanimovilapp.apps.agente_ia.services.lead_scoring import (
+            actualizar_calificacion_desde_cotizacion,
+        )
+        actualizar_calificacion_desde_cotizacion(cotizacion, evento='cancelada')
         return Response(CotizacionCanalSerializer(cotizacion).data)
 
     @action(detail=True, methods=['post'], url_path='marcar-aceptada')
@@ -361,6 +375,11 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
                 cita_id=cita.id,
             )
 
+        from mecanimovilapp.apps.agente_ia.services.lead_scoring import (
+            actualizar_calificacion_desde_cotizacion,
+        )
+        actualizar_calificacion_desde_cotizacion(cotizacion, evento='aceptada')
+
         data = CotizacionCanalSerializer(cotizacion).data
         data['cita_id'] = cita.id
         data['horario_por_confirmar'] = True
@@ -383,6 +402,10 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
                 })
         cotizacion.estado = 'cancelada'
         cotizacion.save(update_fields=['estado', 'actualizado_en'])
+        from mecanimovilapp.apps.agente_ia.services.lead_scoring import (
+            actualizar_calificacion_desde_cotizacion,
+        )
+        actualizar_calificacion_desde_cotizacion(cotizacion, evento='cancelada')
         return Response(CotizacionCanalSerializer(cotizacion).data)
 
     @action(detail=False, methods=['get'], url_path=r'por-conversacion/(?P<conversation_id>[^/.]+)')

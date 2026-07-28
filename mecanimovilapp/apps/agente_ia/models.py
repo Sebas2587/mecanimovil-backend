@@ -272,3 +272,67 @@ class AgenteMensajeLog(models.Model):
 
     def __str__(self):
         return f'Log {self.pk} — {self.accion}'
+
+
+class LeadCalificacion(models.Model):
+    """Score de intención comercial por conversación (embudo + priorización)."""
+
+    CATEGORIA_SIN_CALIFICAR = 'sin_calificar'
+    CATEGORIA_CURIOSO = 'curioso'
+    CATEGORIA_COMPARANDO = 'comparando'
+    CATEGORIA_SIN_PRESUPUESTO = 'sin_presupuesto'
+    CATEGORIA_INTERESADO = 'interesado_calificado'
+    CATEGORIA_LISTO_AGENDAR = 'listo_agendar'
+    CATEGORIA_NO_AUTOMOTRIZ = 'no_automotriz'
+
+    CATEGORIA_CHOICES = [
+        (CATEGORIA_SIN_CALIFICAR, 'Sin calificar'),
+        (CATEGORIA_CURIOSO, 'Curioso'),
+        (CATEGORIA_COMPARANDO, 'Comparando'),
+        (CATEGORIA_SIN_PRESUPUESTO, 'Sin presupuesto'),
+        (CATEGORIA_INTERESADO, 'Interesado calificado'),
+        (CATEGORIA_LISTO_AGENDAR, 'Listo para agendar'),
+        (CATEGORIA_NO_AUTOMOTRIZ, 'No automotriz'),
+    ]
+
+    SENAL_LLM_MAP = {
+        'curioso': CATEGORIA_CURIOSO,
+        'comparando_precios': CATEGORIA_COMPARANDO,
+        'sin_presupuesto': CATEGORIA_SIN_PRESUPUESTO,
+        'interesado': CATEGORIA_INTERESADO,
+        'listo_agendar': CATEGORIA_LISTO_AGENDAR,
+        'no_automotriz': CATEGORIA_NO_AUTOMOTRIZ,
+    }
+
+    conversation = models.OneToOneField(
+        'chat.Conversation',
+        on_delete=models.CASCADE,
+        related_name='lead_calificacion',
+    )
+    taller = models.ForeignKey(
+        'usuarios.Taller',
+        on_delete=models.CASCADE,
+        related_name='leads_calificados',
+    )
+    categoria = models.CharField(
+        max_length=30,
+        choices=CATEGORIA_CHOICES,
+        default=CATEGORIA_SIN_CALIFICAR,
+        db_index=True,
+    )
+    score = models.PositiveSmallIntegerField(default=0)
+    senal_llm = models.CharField(max_length=30, blank=True, default='')
+    senales = models.JSONField(default=dict, blank=True)
+    actualizado_en = models.DateTimeField(auto_now=True)
+    creado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Calificación de lead'
+        verbose_name_plural = 'Calificaciones de leads'
+        indexes = [
+            models.Index(fields=['taller', 'categoria'], name='agente_ia_lead_taller_cat'),
+            models.Index(fields=['taller', '-score'], name='agente_ia_lead_taller_score'),
+        ]
+
+    def __str__(self):
+        return f'Lead conv={self.conversation_id} score={self.score} ({self.categoria})'

@@ -83,6 +83,7 @@ def notificar_borrador_listo_sin_enviar(*, cotizacion: CotizacionCanal) -> None:
 
 def notificar_cotizacion_sin_respuesta_24h(*, cotizacion: CotizacionCanal) -> None:
     from mecanimovilapp.apps.usuarios.models import Notificacion
+    from mecanimovilapp.apps.agente_ia.services.lead_scoring import es_lead_alta_intencion
 
     user_id = _proveedor_user_id_desde_cotizacion(cotizacion)
     if not user_id:
@@ -93,7 +94,11 @@ def notificar_cotizacion_sin_respuesta_24h(*, cotizacion: CotizacionCanal) -> No
 
     servicio = cotizacion.servicio_nombre or 'servicio'
     cliente = cotizacion.cliente_nombre or 'El cliente'
-    titulo = 'Cotización sin respuesta (+24h)'
+    lead = None
+    if cotizacion.conversation_id:
+        lead = getattr(cotizacion.conversation, 'lead_calificacion', None)
+    prefijo = 'Lead calificado · ' if lead and es_lead_alta_intencion(lead.categoria) else ''
+    titulo = f'{prefijo}Cotización sin respuesta (+24h)'
     mensaje = (
         f'{cliente} aún no responde a la cotización de "{servicio}". '
         f'Puedes hacer seguimiento desde la bandeja o el chat.'
@@ -117,6 +122,7 @@ def notificar_cotizacion_sin_respuesta_24h(*, cotizacion: CotizacionCanal) -> No
 
 def notificar_cotizacion_demorada_48h(*, cotizacion: CotizacionCanal) -> None:
     from mecanimovilapp.apps.usuarios.models import Notificacion
+    from mecanimovilapp.apps.agente_ia.services.lead_scoring import es_lead_alta_intencion
 
     user_id = _proveedor_user_id_desde_cotizacion(cotizacion)
     if not user_id:
@@ -127,7 +133,11 @@ def notificar_cotizacion_demorada_48h(*, cotizacion: CotizacionCanal) -> None:
 
     servicio = cotizacion.servicio_nombre or 'servicio'
     cliente = cotizacion.cliente_nombre or 'El cliente'
-    titulo = 'Seguimiento urgente (+48h)'
+    lead = None
+    if cotizacion.conversation_id:
+        lead = getattr(cotizacion.conversation, 'lead_calificacion', None)
+    prefijo = 'Lead calificado · ' if lead and es_lead_alta_intencion(lead.categoria) else ''
+    titulo = f'{prefijo}Seguimiento urgente (+48h)'
     mensaje = (
         f'{cliente} lleva más de 48 h sin responder la cotización de "{servicio}". '
         f'Considera contactarlo o cerrar el caso desde la bandeja.'

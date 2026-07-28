@@ -68,9 +68,14 @@ def marcar_cotizacion_expirada_si_corresponde(cotizacion: CotizacionCanal) -> Co
 
 
 def marcar_visto(cotizacion: CotizacionCanal) -> CotizacionCanal:
-    if cotizacion.visto_en is None and cotizacion.estado == 'enviada':
+    era_nueva_vista = cotizacion.visto_en is None and cotizacion.estado == 'enviada'
+    if era_nueva_vista:
         cotizacion.visto_en = timezone.now()
         cotizacion.save(update_fields=['visto_en', 'actualizado_en'])
+        from mecanimovilapp.apps.agente_ia.services.lead_scoring import (
+            actualizar_calificacion_desde_cotizacion,
+        )
+        actualizar_calificacion_desde_cotizacion(cotizacion, evento='vista')
     return cotizacion
 
 
@@ -254,6 +259,10 @@ def aceptar_cotizacion_publica(cotizacion: CotizacionCanal) -> tuple[CotizacionC
     cotizacion.save(update_fields=update_cot)
 
     cita = crear_cita_desde_cotizacion_aceptada(cotizacion)
+    from mecanimovilapp.apps.agente_ia.services.lead_scoring import (
+        actualizar_calificacion_desde_cotizacion,
+    )
+    actualizar_calificacion_desde_cotizacion(cotizacion, evento='aceptada')
     return cotizacion, cita
 
 
@@ -264,6 +273,10 @@ def rechazar_cotizacion_publica(cotizacion: CotizacionCanal) -> CotizacionCanal:
     cotizacion.estado = 'rechazada'
     cotizacion.rechazada_en = timezone.now()
     cotizacion.save(update_fields=['estado', 'rechazada_en', 'actualizado_en'])
+    from mecanimovilapp.apps.agente_ia.services.lead_scoring import (
+        actualizar_calificacion_desde_cotizacion,
+    )
+    actualizar_calificacion_desde_cotizacion(cotizacion, evento='rechazada')
     return cotizacion
 
 

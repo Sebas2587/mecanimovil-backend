@@ -183,6 +183,8 @@ def _fila_base(
     listo_para_enviar: bool = False,
     pendientes_revision: list[str] | None = None,
     es_cotizacion_adicional: bool = False,
+    lead_categoria: str | None = None,
+    lead_score: int | None = None,
 ) -> dict[str, Any]:
     return {
         'tipo_entidad': tipo_entidad,
@@ -216,6 +218,8 @@ def _fila_base(
         'listo_para_enviar': listo_para_enviar,
         'pendientes_revision': list(pendientes_revision or []),
         'es_cotizacion_adicional': es_cotizacion_adicional,
+        'lead_categoria': lead_categoria or 'sin_calificar',
+        'lead_score': lead_score if lead_score is not None else 0,
     }
 
 
@@ -324,7 +328,19 @@ def _estado_normalizado_cotizacion_canal(cot: CotizacionCanal) -> str:
     return COTIZACION_CANAL_MAP.get(cot.estado, 'nuevo')
 
 
-def _filas_cotizaciones_canal(taller: Taller) -> list[dict[str, Any]]:
+def _lead_fields(conversation_id: int | None, leads_map: dict) -> dict[str, Any]:
+    if not conversation_id:
+        return {'lead_categoria': 'sin_calificar', 'lead_score': 0}
+    lead = leads_map.get(conversation_id)
+    if lead is None:
+        return {'lead_categoria': 'sin_calificar', 'lead_score': 0}
+    return {
+        'lead_categoria': lead.categoria,
+        'lead_score': lead.score,
+    }
+
+
+def _filas_cotizaciones_canal(taller: Taller, leads_map: dict | None = None) -> list[dict[str, Any]]:
     qs = (
         CotizacionCanal.objects.filter(taller=taller)
         .exclude(estado='borrador')
@@ -332,6 +348,7 @@ def _filas_cotizaciones_canal(taller: Taller) -> list[dict[str, Any]]:
         .order_by('-actualizado_en')[:200]
     )
     filas: list[dict[str, Any]] = []
+    leads_map = leads_map or {}
     for cot in qs:
         estado_norm = _estado_normalizado_cotizacion_canal(cot)
         conv = cot.conversation
@@ -373,12 +390,13 @@ def _filas_cotizaciones_canal(taller: Taller) -> list[dict[str, Any]]:
                 visto_sin_respuesta=_visto_sin_respuesta(estado_norm, cot.visto_en),
                 demorado_48h=_demorado_48h(fecha_ref, estado_norm),
                 es_cotizacion_adicional=bool(getattr(cot, 'es_cotizacion_adicional', False)),
+                **_lead_fields(conv.id if conv else None, leads_map),
             )
         )
     return filas
 
 
-def _filas_cotizaciones_borrador_agente(taller: Taller) -> list[dict[str, Any]]:
+def _filas_cotizaciones_borrador_agente(taller: Taller, leads_map: dict | None = None) -> list[dict[str, Any]]:
     """Borradores del agente IA pendientes de revisión/envío por el taller."""
     qs = (
         CotizacionCanal.objects.filter(
@@ -390,6 +408,7 @@ def _filas_cotizaciones_borrador_agente(taller: Taller) -> list[dict[str, Any]]:
         .order_by('-actualizado_en')[:50]
     )
     filas: list[dict[str, Any]] = []
+    leads_map = leads_map or {}
     for cot in qs:
         meta = cot.metadata if isinstance(cot.metadata, dict) else {}
         conv = cot.conversation
@@ -420,12 +439,17 @@ def _filas_cotizaciones_borrador_agente(taller: Taller) -> list[dict[str, Any]]:
                 cotizacion_id=cot.id,
                 listo_para_enviar=bool(meta.get('listo_para_enviar')),
                 pendientes_revision=list(meta.get('pendientes_revision') or []),
+                **_lead_fields(conv.id if conv else None, leads_map),
             )
         )
     return filas
 
 
-def _filas_citas_personales(taller: Taller, miembro_id: int | None = None) -> list[dict[str, Any]]:
+def _filas_citas_personales(
+    taller: Taller,
+    miembro_id: int | None = None,
+    leads_map: dict | None = None,
+) -> list[dict[str, Any]]:
     qs = (
         CitaAgendaPersonal.objects.filter(taller=taller)
         .select_related(
@@ -440,6 +464,7 @@ def _filas_citas_personales(taller: Taller, miembro_id: int | None = None) -> li
     if miembro_id:
         qs = qs.filter(miembro_taller_id=miembro_id)
     filas: list[dict[str, Any]] = []
+    leads_map = leads_map or {}
     for cita in qs:
         det = cita.detalle
         estado_norm = _estado_normalizado_cita_personal(cita)
@@ -478,6 +503,7 @@ def _filas_citas_personales(taller: Taller, miembro_id: int | None = None) -> li
                 ),
                 template_generado_por_ia=_template_generado_por_ia_desde_instancia(inst),
                 horario_por_confirmar=bool(getattr(cita, 'horario_por_confirmar', False)),
+                **_lead_fields(cita.conversation_origen_id, leads_map),
             )
         )
     return filas
@@ -678,13 +704,20 @@ def construir_pipeline_comercial(
     if taller is None:
         return {'count': 0, 'results': [], 'resumen': {}, 'borradores_pendientes_count': 0}
 
+    from mecanimovilapp.apps.agente_ia.models import LeadCalificacion
+
+    leads_map = {
+        lc.conversation_id: lc
+        for lc in LeadCalificacion.objects.filter(taller=taller)
+    }
+
     filas: list[dict[str, Any]] = []
     filas.extend(_filas_solicitudes_publicas_sin_oferta(user, taller))
     filas.extend(_filas_ofertas(user, taller))
     if incluir_borradores:
-        filas.extend(_filas_cotizaciones_borrador_agente(taller))
-    filas.extend(_filas_cotizaciones_canal(taller))
-    filas.extend(_filas_citas_personales(taller, miembro_taller_id))
+        filas.extend(_filas_cotizaciones_borrador_agente(taller, leads_map))
+    filas.extend(_filas_cotizaciones_canal(taller, leads_map))
+    filas.extend(_filas_citas_personales(taller, miembro_taller_id, leads_map))
     filas.extend(_filas_solicitudes_directas(taller, user))
 
     borradores_pendientes_count = CotizacionCanal.objects.filter(
@@ -707,6 +740,7 @@ def construir_pipeline_comercial(
     filas.sort(
         key=lambda f: (
             bool(f.get('listo_para_enviar')),
+            int(f.get('lead_score') or 0),
             f.get('fecha_referencia') or '',
         ),
         reverse=True,
