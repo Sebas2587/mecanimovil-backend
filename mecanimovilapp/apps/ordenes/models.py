@@ -2355,6 +2355,11 @@ class CotizacionCanal(models.Model):
     total_clp = models.DecimalField(max_digits=12, decimal_places=0, default=0)
     duracion_minutos_estimada = models.PositiveIntegerField(null=True, blank=True)
     advertencias = models.JSONField(default=list, blank=True)
+    notas_internas = models.TextField(
+        blank=True,
+        default='',
+        help_text='Comentarios internos del taller; no se exponen al cliente.',
+    )
     contenido_ia = models.JSONField(default=dict, blank=True)
     metadata = models.JSONField(default=dict, blank=True)
     cotizacion_original = models.ForeignKey(

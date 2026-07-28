@@ -126,6 +126,7 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             'total_clp',
             'duracion_minutos_estimada',
             'advertencias',
+            'notas_internas',
             'metadata',
             'listo_para_enviar',
             'pendientes_revision',

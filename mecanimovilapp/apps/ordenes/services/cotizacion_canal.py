@@ -122,11 +122,7 @@ def formatear_resumen_cotizacion(cotizacion: CotizacionCanal) -> str:
         lineas.append(f'Duración estimada: {cotizacion.duracion_minutos_estimada} min')
 
     advertencias = [str(a).strip() for a in (cotizacion.advertencias or []) if str(a).strip()]
-    if advertencias:
-        lineas.extend(['', '*Condiciones:*'])
-        lineas.extend(f'• {adv}' for adv in advertencias)
-    else:
-        lineas.extend(['', '*Condiciones:*', '• Precios referenciales. Confirme con el taller antes de agendar.'])
+    lineas.extend(['', '*Condiciones:*', '• Precios referenciales. Confirme con el taller antes de agendar.'])
 
     if cotizacion.url_publica:
         lineas.extend(['', f'Revisar cotización: {cotizacion.url_publica}'])
@@ -155,6 +151,15 @@ def snapshot_desde_cotizacion(cotizacion: CotizacionCanal) -> dict:
     }
 
 
+def _suma_catalogo_metadata(cotizacion: CotizacionCanal) -> int:
+    meta = cotizacion.metadata or {}
+    return sum(
+        int(l.get('precio_catalogo_clp') or 0)
+        for l in (meta.get('servicios_lineas') or [])
+        if l.get('precio_desde_catalogo')
+    )
+
+
 def aplicar_edicion_cotizacion(cotizacion: CotizacionCanal, data: dict) -> CotizacionCanal:
     if 'servicio_nombre' in data:
         cotizacion.servicio_nombre = str(data['servicio_nombre'] or '')[:255]
@@ -164,6 +169,12 @@ def aplicar_edicion_cotizacion(cotizacion: CotizacionCanal, data: dict) -> Cotiz
         cotizacion.modalidad = data['modalidad']
     if 'direccion_servicio' in data:
         cotizacion.direccion_servicio = str(data.get('direccion_servicio') or '')[:500]
+    if 'cliente_nombre' in data:
+        cotizacion.cliente_nombre = str(data.get('cliente_nombre') or '')[:200]
+    if 'cliente_telefono' in data:
+        cotizacion.cliente_telefono = str(data.get('cliente_telefono') or '')[:20]
+    if 'notas_internas' in data:
+        cotizacion.notas_internas = str(data.get('notas_internas') or '')
     if 'repuestos' in data and isinstance(data['repuestos'], list):
         cotizacion.repuestos = data['repuestos']
     if 'mano_obra_clp' in data:
@@ -178,6 +189,14 @@ def aplicar_edicion_cotizacion(cotizacion: CotizacionCanal, data: dict) -> Cotiz
     cotizacion.costo_repuestos_clp = costo_rep
     cotizacion.mano_obra_clp = mo
     cotizacion.total_clp = total
+
+    if 'mano_obra_clp' in data:
+        meta = dict(cotizacion.metadata or {})
+        recargo = int(meta.get('recargo_domicilio_aplicado_clp') or 0)
+        catalogo = _suma_catalogo_metadata(cotizacion)
+        meta['mano_obra_manual_clp'] = max(0, mo - catalogo - recargo)
+        cotizacion.metadata = meta
+
     return cotizacion
 
 

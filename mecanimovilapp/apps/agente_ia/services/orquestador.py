@@ -12,6 +12,7 @@ from django.conf import settings
 from django.utils import timezone
 
 from mecanimovilapp.apps.agente_ia.models import (
+    AgenteClienteMemoria,
     AgenteConversacionSesion,
     AgenteMensajeLog,
     TallerAgenteConfig,
@@ -24,6 +25,9 @@ from mecanimovilapp.apps.chat.models import Conversation, Message
 from mecanimovilapp.apps.ordenes.services.catalogo_pricing import normalizar_nombre_servicio
 
 logger = logging.getLogger(__name__)
+
+_MENSAJES_RECIENTES_LIMITE = 16
+_RESUMEN_CONVERSACION_MAX = 500
 
 _JSON_FENCE = re.compile(r'```(?:json)?\s*([\s\S]*?)\s*```', re.IGNORECASE)
 _SERVICIO_PAREN_RE = re.compile(
@@ -64,7 +68,7 @@ def _parse_json(text: str) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-def _mensajes_recientes(conversation: Conversation, limite: int = 16) -> str:
+def _mensajes_recientes(conversation: Conversation, limite: int = _MENSAJES_RECIENTES_LIMITE) -> str:
     lineas: list[str] = []
     qs = conversation.messages.order_by('-timestamp')[:limite]
     for msg in reversed(list(qs)):
@@ -85,6 +89,70 @@ def _mensajes_recientes(conversation: Conversation, limite: int = 16) -> str:
         if texto:
             lineas.append(f'{quien}: {texto[:700]}')
     return '\n'.join(lineas) or 'Sin mensajes.'
+
+
+def _fusionar_resumen_conversacion(previo: str, turno: str) -> str:
+    """Acumula resumen de conversación larga sin crecer indefinidamente."""
+    turno = (turno or '').strip()
+    if not turno:
+        return (previo or '').strip()
+    base = (previo or '').strip()
+    if base and turno.lower() in base.lower():
+        return base[:_RESUMEN_CONVERSACION_MAX]
+    merged = f'{base} {turno}'.strip() if base else turno
+    if len(merged) <= _RESUMEN_CONVERSACION_MAX:
+        return merged
+    return merged[-_RESUMEN_CONVERSACION_MAX:].lstrip(' ,.;')
+
+
+def _disposicion_desde_senal(senal: str) -> str:
+    s = (senal or '').strip().lower()
+    if s in ('listo_agendar',):
+        return AgenteClienteMemoria.DISPOSICION_LISTO_AGENDAR
+    if s in ('interesado',):
+        return AgenteClienteMemoria.DISPOSICION_INTERESADO
+    if s in ('sin_presupuesto', 'comparando_precios'):
+        return AgenteClienteMemoria.DISPOSICION_NO_LISTO
+    if s in ('curioso', 'no_automotriz'):
+        return AgenteClienteMemoria.DISPOSICION_CURIOSO
+    return ''
+
+
+def _obtener_memoria_cliente(taller_id: int, external_contact_id: int | None) -> AgenteClienteMemoria | None:
+    if not external_contact_id:
+        return None
+    return AgenteClienteMemoria.objects.filter(
+        taller_id=taller_id,
+        external_contact_id=external_contact_id,
+    ).first()
+
+
+def _upsert_memoria_cliente(
+    *,
+    taller_id: int,
+    external_contact_id: int | None,
+    conversation_id: int,
+    resumen: str,
+    senal_lead: str,
+) -> None:
+    if not external_contact_id:
+        return
+    disposicion = _disposicion_desde_senal(senal_lead)
+    resumen_txt = (resumen or '').strip()[:2000]
+    if not resumen_txt and not disposicion:
+        return
+    defaults: dict[str, Any] = {
+        'ultima_conversacion_id': conversation_id,
+    }
+    if resumen_txt:
+        defaults['resumen'] = resumen_txt
+    if disposicion:
+        defaults['disposicion_reciente'] = disposicion
+    AgenteClienteMemoria.objects.update_or_create(
+        taller_id=taller_id,
+        external_contact_id=external_contact_id,
+        defaults=defaults,
+    )
 
 
 def _mensaje_cliente_superado(message: Message) -> bool:
@@ -299,6 +367,8 @@ def _construir_prompt_agente(
     contexto_patente: str = '',
     contexto_media: str = '',
     contexto_operativo_taller: str = '',
+    resumen_conversacion: str = '',
+    memoria_cliente: str = '',
 ) -> str:
     datos_json = json.dumps(datos_capturados or {}, ensure_ascii=False)
     tiene_contexto = bool((chunks_texto or '').strip())
@@ -346,6 +416,12 @@ Conocimiento adicional del taller (historial de trabajos, documentos, notas) rec
 
 Datos ya capturados (JSON; no los repreguntes si ya están):
 {datos_json}
+
+Resumen de conversación previa (mensajes antiguos ya no visibles en el historial reciente):
+{resumen_conversacion or 'Sin resumen acumulado todavía.'}
+
+Historial con este cliente en conversaciones anteriores (otros hilos; NO confundir con el chat actual):
+{memoria_cliente or 'Sin historial previo con este cliente.'}
 
 Historial reciente del chat:
 {chat_reciente}
@@ -400,6 +476,7 @@ REGLAS DE CONVERSACIÓN:
     - Responde con esta idea (puedes parafrasear, mismo sentido): "Ese servicio no tiene una tarifa publicada en catálogo; el valor exacto te lo confirma el taller en la cotización. Si quieres, dejamos armado el borrador para que lo revisen y te lo envíen."
     - Luego pide SOLO el dato que falte (teléfono o dirección), una pregunta.
     - Si ya tienes patente + teléfono + problema, marca listo_para_cotizar=true (borrador en $0; el humano completa el precio).
+15b. COTIZACIÓN MIXTA (catálogo + sin catálogo): si agregas un servicio SIN precio publicado a una cotización que ya tiene otros servicios, NO digas que "ya quedó todo con precio" ni que "ya sumé X servicio con su valor". Aclara que ESE servicio específico lo confirma el taller al revisar el borrador; los que sí tienen catálogo pueden mencionarse solo si el monto está en la FICHA.
 16. ENVÍO: TÚ NO envías la cotización por WhatsApp ni confirmas precios finales. Solo preparas el borrador; un humano del taller la revisa en "Cotizar con IA" y la envía. Dile al cliente que el taller le enviará la cotización.
 17. Si el cliente menciona preferencia de día/hora/técnico para la visita, guárdalo en preferencias_agenda (fecha ISO si puedes, hora HH:MM, tecnico_nombre). Eso se usa al aceptar para agendar sin perder el acuerdo.
 18. MODALIDAD Y DIRECCIÓN: modalidad debe ser "taller" o "domicilio" según lo que pida el cliente Y lo que permita la FICHA. Pídela solo cuando sea relevante (cliente quiere venir/ir, o vas a cotizar/agendar) — nunca en un saludo vacío. Si modalidad=domicilio, OBLIGATORIO pedir y guardar direccion_servicio (calle/comuna). Sin dirección no digas que ya quedó a domicilio. Si es taller, modalidad="taller" y direccion_servicio puede ir vacío.
@@ -413,6 +490,8 @@ REGLAS DE CONVERSACIÓN:
     - interesado: entrega datos reales (patente/problema/teléfono) y pide cotización formalmente.
     - listo_agendar: acepta cotización o pide agendar/coordinar día y hora directamente.
     - no_automotriz: fuera de tema o spam.
+23. NO INSISTIR: si el resumen de conversación, la memoria del cliente o el historial indican que el cliente solo quería asesoría, está comparando, dijo que lo pensará, o mostró baja disposición (senal_lead curioso/comparando_precios/sin_presupuesto), NO vuelvas a empujar cotización o agendamiento en cada turno. Deja que el cliente marque el ritmo; solo retoma la propuesta si hay señal clara de avance en ESTE mensaje (pide precio, confirma que quiere cotizar, da patente/teléfono para avanzar).
+24. resumen_turno: una frase breve (máx. 120 caracteres) sobre lo esencial de ESTE turno para memoria futura (tema, disposición del cliente, acuerdos). Ej: "Preguntó por pastillas; quiere pensarlo; no pidió cotizar aún." Si no hay nada nuevo relevante, déjalo vacío "".
 
 Responde SOLO JSON válido:
 {{
@@ -421,6 +500,7 @@ Responde SOLO JSON válido:
   "cliente_pide_cotizacion": false,
   "repuestos_incluidos_ultimo_servicio": null,
   "senal_lead": "curioso",
+  "resumen_turno": "",
   "datos_actualizados": {{
     "cliente_nombre": "",
     "cliente_telefono": "",
@@ -933,6 +1013,29 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
 
     contexto_operativo_txt = construir_ficha_operativa_taller(taller)
 
+    total_mensajes = conversation.messages.count()
+    resumen_conv = (sesion.datos_capturados or {}).get('resumen_conversacion') or ''
+    if total_mensajes > _MENSAJES_RECIENTES_LIMITE and not resumen_conv:
+        resumen_conv = (
+            'Conversación larga: los mensajes más antiguos no están en el historial reciente. '
+            'Usa los datos capturados y el contexto del turno actual.'
+        )
+
+    memoria_txt = ''
+    external_contact = getattr(conversation, 'external_contact', None)
+    external_contact_id = getattr(external_contact, 'id', None) if external_contact else None
+    memoria = _obtener_memoria_cliente(taller.id, external_contact_id)
+    if memoria:
+        partes_mem: list[str] = []
+        if (memoria.resumen or '').strip():
+            partes_mem.append(memoria.resumen.strip())
+        if memoria.disposicion_reciente:
+            disp_labels = dict(AgenteClienteMemoria.DISPOSICION_CHOICES)
+            partes_mem.append(
+                f'Última disposición: {disp_labels.get(memoria.disposicion_reciente, memoria.disposicion_reciente)}.'
+            )
+        memoria_txt = ' '.join(partes_mem)
+
     prompt = _construir_prompt_agente(
         nombre_taller=(taller.nombre or '').strip(),
         instrucciones=config.instrucciones_personalizadas,
@@ -944,6 +1047,8 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         contexto_patente=contexto_patente_txt,
         contexto_media=contexto_media_txt,
         contexto_operativo_taller=contexto_operativo_txt,
+        resumen_conversacion=resumen_conv,
+        memoria_cliente=memoria_txt,
     )
 
     decision, error = _llamar_gemini_agente(prompt)
@@ -962,6 +1067,12 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
     rep_flag = decision.get('repuestos_incluidos_ultimo_servicio')
     if rep_flag is not None:
         datos['repuestos_incluidos_ultimo_servicio'] = rep_flag
+    resumen_turno = (decision.get('resumen_turno') or '').strip()
+    if resumen_turno:
+        datos['resumen_conversacion'] = _fusionar_resumen_conversacion(
+            (sesion.datos_capturados or {}).get('resumen_conversacion') or '',
+            resumen_turno,
+        )
     # Preserva flags de enriquecimiento de patente
     for key in (
         'patente_enriquecida',
@@ -1024,6 +1135,23 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
                 taller.id,
             )
 
+    def _persistir_memoria_cliente() -> None:
+        try:
+            resumen_mem = (datos.get('resumen_conversacion') or '').strip()
+            _upsert_memoria_cliente(
+                taller_id=taller.id,
+                external_contact_id=external_contact_id,
+                conversation_id=conversation.id,
+                resumen=resumen_mem,
+                senal_lead=senal_lead,
+            )
+        except Exception:
+            logger.exception(
+                'Error actualizando memoria cliente conv=%s taller=%s',
+                conversation.id,
+                taller.id,
+            )
+
     # Anti-alucinación de precios: sin tarifa de catálogo, no enviar montos ni afirmaciones de tarifa.
     puede_mencionar_precio = _tiene_precio_catalogo_mencionable(taller, datos)
     if respuesta and not puede_mencionar_precio and _respuesta_afirma_precio(respuesta):
@@ -1077,6 +1205,7 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             },
         )
         _persistir_calificacion_lead()
+        _persistir_memoria_cliente()
         return {'ok': True, 'accion': 'escalar'}
 
     if listo_cotizar:
@@ -1125,6 +1254,7 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             },
         )
         _persistir_calificacion_lead()
+        _persistir_memoria_cliente()
         return {
             'ok': True,
             'accion': 'cotizar',
@@ -1176,4 +1306,5 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         },
     )
     _persistir_calificacion_lead()
+    _persistir_memoria_cliente()
     return {'ok': True, 'accion': 'responder'}

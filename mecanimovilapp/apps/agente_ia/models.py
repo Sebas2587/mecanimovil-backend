@@ -336,3 +336,62 @@ class LeadCalificacion(models.Model):
 
     def __str__(self):
         return f'Lead conv={self.conversation_id} score={self.score} ({self.categoria})'
+
+
+class AgenteClienteMemoria(models.Model):
+    """Memoria persistente del taller sobre un cliente (entre conversaciones distintas)."""
+
+    DISPOSICION_CURIOSO = 'curioso'
+    DISPOSICION_NO_LISTO = 'no_listo'
+    DISPOSICION_INTERESADO = 'interesado'
+    DISPOSICION_LISTO_AGENDAR = 'listo_agendar'
+
+    DISPOSICION_CHOICES = [
+        (DISPOSICION_CURIOSO, 'Curioso / asesoría'),
+        (DISPOSICION_NO_LISTO, 'No listo para cotizar'),
+        (DISPOSICION_INTERESADO, 'Interesado'),
+        (DISPOSICION_LISTO_AGENDAR, 'Listo para agendar'),
+    ]
+
+    taller = models.ForeignKey(
+        'usuarios.Taller',
+        on_delete=models.CASCADE,
+        related_name='memorias_clientes_agente',
+    )
+    external_contact = models.ForeignKey(
+        'omnichannel.ExternalContact',
+        on_delete=models.CASCADE,
+        related_name='memorias_agente',
+    )
+    resumen = models.TextField(blank=True, default='')
+    disposicion_reciente = models.CharField(
+        max_length=30,
+        choices=DISPOSICION_CHOICES,
+        blank=True,
+        default='',
+    )
+    ultima_conversacion = models.ForeignKey(
+        'chat.Conversation',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='+',
+    )
+    actualizado_en = models.DateTimeField(auto_now=True)
+    creado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Memoria cliente agente IA'
+        verbose_name_plural = 'Memorias clientes agente IA'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['taller', 'external_contact'],
+                name='agente_ia_memoria_taller_contacto_unique',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['taller', '-actualizado_en'], name='agente_ia_mem_taller_idx'),
+        ]
+
+    def __str__(self):
+        return f'Memoria taller={self.taller_id} contact={self.external_contact_id}'

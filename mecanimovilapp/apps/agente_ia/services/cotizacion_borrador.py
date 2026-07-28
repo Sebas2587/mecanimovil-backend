@@ -306,6 +306,17 @@ def crear_cotizacion_borrador_desde_agente(
     marca = ctx.get('vehiculo_marca') or vehiculo.get('marca', '') or marca
     modelo = ctx.get('vehiculo_modelo') or vehiculo.get('modelo', '') or modelo
 
+    # Preferencias de repuestos por clave de servicio (líneas previas + turno actual).
+    preferencias_repuestos: dict[str, bool] = {}
+    for lin in lineas:
+        clave_lin = _clave_servicio(lin.get('nombre') or '')
+        if clave_lin and lin.get('incluye_repuestos_solicitado') is not None:
+            preferencias_repuestos[clave_lin] = bool(lin.get('incluye_repuestos_solicitado'))
+    if repuestos_flag is not None and ultimo_servicio_turno:
+        clave_ult = _clave_servicio(ultimo_servicio_turno)
+        if clave_ult:
+            preferencias_repuestos[clave_ult] = bool(repuestos_flag)
+
     mano_obra_catalogo = 0
     hay_algun_catalogo = False
     faltan_precios_catalogo = False
@@ -321,8 +332,10 @@ def crear_cotizacion_borrador_desde_agente(
         precio_cat = 0
         oferta_id = None
         nombre_final = nombre_serv
+        clave_serv = _clave_servicio(nombre_serv)
+        con_repuestos = preferencias_repuestos.get(clave_serv, True)
         if oferta:
-            precio_cat, _ = precio_publico_oferta(oferta, con_repuestos=True)
+            precio_cat, _ = precio_publico_oferta(oferta, con_repuestos=con_repuestos)
             oferta_id = oferta.id
             nombre_final = oferta.servicio.nombre
             if precio_cat > 0:
@@ -370,26 +383,26 @@ def crear_cotizacion_borrador_desde_agente(
             }
         )
 
-    if hay_algun_catalogo and not faltan_precios_catalogo:
-        mano_obra = mano_obra_catalogo
-        repuestos: list = []
-    elif hay_algun_catalogo and faltan_precios_catalogo:
-        # Solo suma lo publicado; el resto queda en $0 hasta que el humano complete.
-        mano_obra = mano_obra_catalogo
-        repuestos = []
-    else:
-        # Sin catálogo: precio 0 — el humano completa en Cotizar con IA antes de enviar.
-        mano_obra = 0
-        repuestos = []
+    # Mano de obra manual: montos del taller para servicios sin catálogo (persistida en metadata).
+    mano_obra_manual_prev = int(meta_prev.get('mano_obra_manual_clp', 0) or 0)
+    if 'mano_obra_manual_clp' not in meta_prev and es_update and cotizacion_existente:
+        catalogo_previo = sum(
+            int(l.get('precio_catalogo_clp') or 0)
+            for l in (meta_prev.get('servicios_lineas') or [])
+            if l.get('precio_desde_catalogo')
+        )
+        recargo_previo = int(meta_prev.get('recargo_domicilio_aplicado_clp') or 0)
+        mano_obra_manual_prev = max(
+            0,
+            int(cotizacion_existente.mano_obra_clp or 0) - catalogo_previo - recargo_previo,
+        )
 
-    # Al reabrir/editar, conservar montos ya definidos por el taller si el catálogo no los reemplaza.
-    if es_update and cotizacion_existente:
-        mano_obra_prev = int(cotizacion_existente.mano_obra_clp or 0)
-        repuestos_prev = list(cotizacion_existente.repuestos or [])
-        if mano_obra == 0 and mano_obra_prev > 0:
-            mano_obra = mano_obra_prev
-        if not repuestos and repuestos_prev:
-            repuestos = repuestos_prev
+    mano_obra = mano_obra_catalogo + mano_obra_manual_prev
+    repuestos: list = (
+        list(cotizacion_existente.repuestos or [])
+        if es_update and cotizacion_existente
+        else []
+    )
 
     advertencias: list[str] = []
     if hay_algun_catalogo and not faltan_precios_catalogo:
@@ -416,13 +429,17 @@ def crear_cotizacion_borrador_desde_agente(
                 f"Cliente pidió incluir repuestos en '{nombre_lin}' — confirma modelo/costo del repuesto."
             )
 
+    recargo_aplicado = int(meta_prev.get('recargo_domicilio_aplicado_clp') or 0)
     if modalidad == 'domicilio' and mano_obra > 0:
         recargo = _recargo_domicilio_taller(taller)
-        if recargo > 0:
+        if recargo > 0 and recargo_aplicado == 0:
             mano_obra += recargo
+            recargo_aplicado = recargo
             advertencias.append(
                 f'Incluye recargo a domicilio de ${recargo:,} CLP en mano de obra.'.replace(',', '.')
             )
+        elif recargo_aplicado > 0:
+            mano_obra += recargo_aplicado
 
     costo_rep, mano_obra, total = recalcular_totales(repuestos, mano_obra)
 
@@ -479,6 +496,8 @@ def crear_cotizacion_borrador_desde_agente(
         **meta_prev,
         'origen': 'agente_ia',
         'sesion_id': sesion.id,
+        'mano_obra_manual_clp': mano_obra_manual_prev,
+        'recargo_domicilio_aplicado_clp': recargo_aplicado,
         'precio_desde_catalogo': hay_algun_catalogo and not faltan_precios_catalogo,
         'precio_parcial_catalogo': hay_algun_catalogo and faltan_precios_catalogo,
         'servicios_lineas': lineas,

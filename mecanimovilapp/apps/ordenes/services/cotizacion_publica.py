@@ -102,7 +102,6 @@ def serializar_cotizacion_publica(cotizacion: CotizacionCanal) -> dict:
         'costo_repuestos_clp': int(cotizacion.costo_repuestos_clp or 0),
         'total_clp': int(cotizacion.total_clp or 0),
         'duracion_minutos_estimada': cotizacion.duracion_minutos_estimada,
-        'advertencias': cotizacion.advertencias or [],
         'enviada_en': cotizacion.enviada_en.isoformat() if cotizacion.enviada_en else None,
         'aceptada_en': cotizacion.aceptada_en.isoformat() if cotizacion.aceptada_en else None,
         'rechazada_en': cotizacion.rechazada_en.isoformat() if cotizacion.rechazada_en else None,
