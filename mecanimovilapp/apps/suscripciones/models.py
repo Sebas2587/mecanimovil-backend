@@ -743,8 +743,14 @@ class ConsumoFeatureMensual(models.Model):
             ),
         ]
         indexes = [
-            models.Index(fields=['proveedor', 'periodo']),
-            models.Index(fields=['taller', 'periodo']),
+            models.Index(
+                fields=['proveedor', 'periodo'],
+                name='suscripcion_proveed_a41041_idx',
+            ),
+            models.Index(
+                fields=['taller', 'periodo'],
+                name='suscripcion_taller__24d913_idx',
+            ),
         ]
 
     def __str__(self):

@@ -7,6 +7,7 @@ from django.db import connection
 GHOST_PATTERNS = (
     ('pagos', '0004_rename_%'),
     ('valoracion_mercado', '0005_rename_%'),
+    ('suscripciones', '0011_rename_%'),
 )
 
 
