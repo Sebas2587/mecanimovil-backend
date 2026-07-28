@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 
 from celery import shared_task
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
@@ -143,3 +144,33 @@ def reaccionar_rechazo_task(cotizacion_id: int) -> dict:
     except Exception:
         logger.exception('Error reaccionando rechazo IA cotización %s', cotizacion_id)
         return {'ok': False, 'error': 'internal'}
+
+
+@shared_task(name='agente_ia.aprendizaje_diario_taller', queue='default')
+def aprendizaje_diario_taller_task(taller_id: int) -> dict:
+    from datetime import timedelta
+
+    from mecanimovilapp.apps.agente_ia.services.aprendizaje_diario import (
+        ejecutar_aprendizaje_diario_taller,
+    )
+
+    try:
+        ayer = timezone.localdate() - timedelta(days=1)
+        return ejecutar_aprendizaje_diario_taller(taller_id, fecha=ayer)
+    except Exception:
+        logger.exception('Error aprendizaje diario taller=%s', taller_id)
+        return {'ok': False, 'error': 'internal', 'taller_id': taller_id}
+
+
+@shared_task(name='agente_ia.aprendizaje_diario_talleres', queue='default')
+def aprendizaje_diario_talleres_task() -> dict:
+    from mecanimovilapp.apps.agente_ia.models import TallerAgenteConfig
+
+    taller_ids = list(
+        TallerAgenteConfig.objects.filter(habilitado=True).values_list('taller_id', flat=True)
+    )
+    encolados = 0
+    for tid in taller_ids:
+        aprendizaje_diario_taller_task.delay(tid)
+        encolados += 1
+    return {'ok': True, 'talleres': encolados}

@@ -1,15 +1,31 @@
 """Helpers compartidos de match y precio desde catálogo publicado del taller."""
 from __future__ import annotations
 
+import re
 import unicodedata
 
 from mecanimovilapp.apps.servicios.models import OfertaServicio
 from mecanimovilapp.apps.usuarios.models import Taller
 
+# El agente a veces mete la modalidad dentro del nombre del servicio
+# (ej. "cambio de aceite a domicilio") aunque la modalidad se guarda aparte.
+# Sin esto, el match por substring falla contra el nombre real del catálogo
+# ("Cambio de aceite") y el sistema cree que NO hay precio publicado.
+_MODALIDAD_SUFIJO_RE = re.compile(
+    r'\s*\b(?:a|en)\s+(?:el\s+)?(?:domicilio|taller|casa|local)\b.*$',
+    re.IGNORECASE,
+)
+
 
 def normalizar_nombre_servicio(texto: str) -> str:
     t = unicodedata.normalize('NFKD', (texto or '').strip().lower())
     return ''.join(c for c in t if not unicodedata.combining(c))
+
+
+def _sin_sufijo_modalidad(texto: str) -> str:
+    """Quita coletillas de modalidad ("a domicilio", "en taller") del nombre de servicio."""
+    limpio = _MODALIDAD_SUFIJO_RE.sub('', (texto or '').strip()).strip()
+    return limpio or (texto or '').strip()
 
 
 def oferta_compatible_con_vehiculo(
@@ -57,7 +73,7 @@ def buscar_oferta_exacta(
     del cliente ya tiene esos datos. Solo acepta coincidencia exacta o
     cobertura general (campos vacíos en la oferta).
     """
-    nombre_norm = normalizar_nombre_servicio(servicio_nombre)
+    nombre_norm = normalizar_nombre_servicio(_sin_sufijo_modalidad(servicio_nombre))
     if not nombre_norm:
         return None
 

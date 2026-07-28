@@ -1,6 +1,7 @@
 from django.contrib import admin
 
 from mecanimovilapp.apps.agente_ia.models import (
+    AgenteAprendizajeDiario,
     AgenteConversacionSesion,
     AgenteMensajeLog,
     LeadCalificacion,
@@ -46,3 +47,10 @@ class LeadCalificacionAdmin(admin.ModelAdmin):
     list_display = ('id', 'conversation', 'taller', 'categoria', 'score', 'actualizado_en')
     list_filter = ('categoria', 'taller')
     search_fields = ('conversation_id',)
+
+
+@admin.register(AgenteAprendizajeDiario)
+class AgenteAprendizajeDiarioAdmin(admin.ModelAdmin):
+    list_display = ('id', 'taller', 'fecha', 'tipo_hallazgo', 'creado_en')
+    list_filter = ('tipo_hallazgo', 'fecha', 'taller')
+    date_hierarchy = 'fecha'

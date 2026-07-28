@@ -407,11 +407,42 @@ def _bloque_catalogo(
     return '\n'.join(lineas)
 
 
+def _bloque_historial_precios(
+    taller: Taller,
+    *,
+    servicios: list[str],
+    marca_vehiculo: str = '',
+    modelo_vehiculo: str = '',
+    tipo_motor: str = '',
+    permite_estimados: bool = True,
+) -> str:
+    """Referencia histórica solo cuando el catálogo no tiene tarifa para ese servicio."""
+    from mecanimovilapp.apps.agente_ia.services.historial_pricing import (
+        estimados_historicos_para_datos,
+        formatear_bloque_historial_precios,
+    )
+
+    if not servicios or not permite_estimados:
+        return ''
+    estimados = estimados_historicos_para_datos(
+        taller=taller,
+        servicios=servicios,
+        marca=marca_vehiculo,
+        modelo=modelo_vehiculo,
+        tipo_motor=tipo_motor,
+        permite_estimados=permite_estimados,
+    )
+    return formatear_bloque_historial_precios(estimados)
+
+
 def construir_ficha_operativa_taller(
     taller: Taller,
     *,
     marca_vehiculo: str = '',
     modelo_vehiculo: str = '',
+    servicios_consulta: list[str] | None = None,
+    tipo_motor: str = '',
+    permite_estimados_historicos: bool = True,
 ) -> str:
     """Bloque determinístico con la verdad operativa del taller para el prompt del agente.
 
@@ -439,4 +470,14 @@ def construir_ficha_operativa_taller(
             modelo_vehiculo=modelo_vehiculo,
         ),
     ]
+    bloque_hist = _bloque_historial_precios(
+        taller,
+        servicios=list(servicios_consulta or []),
+        marca_vehiculo=marca_vehiculo,
+        modelo_vehiculo=modelo_vehiculo,
+        tipo_motor=tipo_motor,
+        permite_estimados=permite_estimados_historicos,
+    )
+    if bloque_hist:
+        bloques.append(bloque_hist)
     return '\n\n'.join(b for b in bloques if b)

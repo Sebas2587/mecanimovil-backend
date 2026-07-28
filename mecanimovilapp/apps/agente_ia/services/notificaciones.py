@@ -255,7 +255,9 @@ def notificar_escalamiento_humano(
     proveedor_user_id: int,
     conversation_id: int,
     preview: str = '',
+    lead_categoria: str = '',
 ) -> None:
+    from mecanimovilapp.apps.agente_ia.services.reglas_lead import prioridad_escalamiento_por_lead
     from mecanimovilapp.apps.usuarios.models import Notificacion
     from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
     from django.contrib.auth import get_user_model
@@ -265,11 +267,18 @@ def notificar_escalamiento_humano(
     if not usuario:
         return
 
-    titulo = 'Cliente necesita atención'
-    mensaje = preview[:140] or 'Un cliente requiere que respondas personalmente en el chat.'
+    prioridad = prioridad_escalamiento_por_lead(lead_categoria)
+    if prioridad == 'alta':
+        titulo = 'Lead calificado — atención urgente'
+        mensaje = preview[:140] or 'Un lead listo para cerrar necesita que respondas personalmente.'
+    else:
+        titulo = 'Cliente necesita atención'
+        mensaje = preview[:140] or 'Un cliente requiere que respondas personalmente en el chat.'
     data = {
         'type': 'agente_ia_escalamiento',
         'conversation_id': conversation_id,
+        'prioridad': prioridad,
+        'lead_categoria': (lead_categoria or '').strip(),
     }
 
     Notificacion.crear_unica(

@@ -79,6 +79,7 @@ def buscar_contexto_taller_combinado(
     fuentes_referencia = {
         TallerConocimientoChunk.FUENTE_HISTORICO,
         TallerConocimientoChunk.FUENTE_CONVERSACION_EXITOSA,
+        TallerConocimientoChunk.FUENTE_LECCION_DIARIA,
     }
     general = [
         c
@@ -91,6 +92,7 @@ def buscar_contexto_taller_combinado(
         fuentes=(
             TallerConocimientoChunk.FUENTE_HISTORICO,
             TallerConocimientoChunk.FUENTE_CONVERSACION_EXITOSA,
+            TallerConocimientoChunk.FUENTE_LECCION_DIARIA,
         ),
         top_k=top_k_historico,
     )

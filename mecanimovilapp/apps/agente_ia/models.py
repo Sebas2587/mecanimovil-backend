@@ -37,6 +37,42 @@ class TallerAgenteConfig(models.Model):
         default=5000,
         help_text='Recargo fijo (CLP) que se suma a la mano de obra cuando la modalidad es a domicilio.',
     )
+    NIVEL_INSISTENCIA_BAJO = 'bajo'
+    NIVEL_INSISTENCIA_MEDIO = 'medio'
+    NIVEL_INSISTENCIA_ALTO = 'alto'
+    NIVEL_INSISTENCIA_CHOICES = [
+        (NIVEL_INSISTENCIA_BAJO, 'Bajo'),
+        (NIVEL_INSISTENCIA_MEDIO, 'Medio'),
+        (NIVEL_INSISTENCIA_ALTO, 'Alto'),
+    ]
+    nivel_insistencia = models.CharField(
+        max_length=10,
+        choices=NIVEL_INSISTENCIA_CHOICES,
+        default=NIVEL_INSISTENCIA_MEDIO,
+        help_text='Qué tan insistente es el agente al empujar cotización/agenda.',
+    )
+    permite_estimados_historicos = models.BooleanField(
+        default=True,
+        help_text='Si está activo, el agente puede citar referencias históricas cuando no hay tarifa de catálogo.',
+    )
+    TONO_CONSERVADOR = 'conservador'
+    TONO_BALANCEADO = 'balanceado'
+    TONO_PROACTIVO = 'proactivo'
+    TONO_VENTAS_CHOICES = [
+        (TONO_CONSERVADOR, 'Conservador'),
+        (TONO_BALANCEADO, 'Balanceado'),
+        (TONO_PROACTIVO, 'Proactivo'),
+    ]
+    tono_ventas = models.CharField(
+        max_length=15,
+        choices=TONO_VENTAS_CHOICES,
+        default=TONO_BALANCEADO,
+        help_text='Estilo comercial del agente (asesoría vs cierre).',
+    )
+    requiere_direccion_antes_de_cotizar = models.BooleanField(
+        default=False,
+        help_text='Si está activo, el agente debe pedir dirección del cliente antes de armar borrador.',
+    )
     creado_en = models.DateTimeField(auto_now_add=True)
     actualizado_en = models.DateTimeField(auto_now=True)
 
@@ -117,6 +153,7 @@ class TallerConocimientoChunk(models.Model):
     FUENTE_HISTORICO = 'HISTORICO_SERVICIO'
     FUENTE_INSTRUCCION = 'INSTRUCCION'
     FUENTE_CONVERSACION_EXITOSA = 'CONVERSACION_EXITOSA'
+    FUENTE_LECCION_DIARIA = 'LECCION_DIARIA'
 
     FUENTE_CHOICES = [
         (FUENTE_DOCUMENTO, 'Documento del taller'),
@@ -124,6 +161,7 @@ class TallerConocimientoChunk(models.Model):
         (FUENTE_HISTORICO, 'Histórico de servicios'),
         (FUENTE_INSTRUCCION, 'Instrucciones personalizadas'),
         (FUENTE_CONVERSACION_EXITOSA, 'Conversación exitosa'),
+        (FUENTE_LECCION_DIARIA, 'Lección diaria'),
     ]
 
     taller = models.ForeignKey(
@@ -403,3 +441,39 @@ class AgenteClienteMemoria(models.Model):
 
     def __str__(self):
         return f'Memoria taller={self.taller_id} contact={self.external_contact_id}'
+
+
+class AgenteAprendizajeDiario(models.Model):
+    """Hallazgos estructurados del job diario de aprendizaje por taller."""
+
+    TIPO_LEAD_PERDIDO = 'lead_perdido'
+    TIPO_RESPUESTA_INSUFICIENTE = 'respuesta_insuficiente'
+    TIPO_CORRECCION_SISTEMATICA = 'correccion_sistematica'
+    TIPO_PATRON_ALTA_CONFIANZA = 'patron_alta_confianza'
+
+    TIPO_HALLAZGO_CHOICES = [
+        (TIPO_LEAD_PERDIDO, 'Lead perdido'),
+        (TIPO_RESPUESTA_INSUFICIENTE, 'Respuesta insuficiente'),
+        (TIPO_CORRECCION_SISTEMATICA, 'Corrección sistemática'),
+        (TIPO_PATRON_ALTA_CONFIANZA, 'Patrón alta confianza'),
+    ]
+
+    taller = models.ForeignKey(
+        'usuarios.Taller',
+        on_delete=models.CASCADE,
+        related_name='aprendizajes_diarios',
+    )
+    fecha = models.DateField(db_index=True)
+    tipo_hallazgo = models.CharField(max_length=40, choices=TIPO_HALLAZGO_CHOICES, db_index=True)
+    detalle_json = models.JSONField(default=dict, blank=True)
+    creado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Aprendizaje diario agente IA'
+        verbose_name_plural = 'Aprendizajes diarios agente IA'
+        indexes = [
+            models.Index(fields=['taller', '-fecha'], name='agente_ia_aprend_taller_fecha'),
+        ]
+
+    def __str__(self):
+        return f'Aprendizaje {self.taller_id} {self.fecha} ({self.tipo_hallazgo})'

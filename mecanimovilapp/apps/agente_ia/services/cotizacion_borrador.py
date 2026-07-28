@@ -664,6 +664,30 @@ def crear_cotizacion_borrador_desde_agente(
         **meta_notas,
     }
 
+    if not es_update and not meta_prev.get('propuesta_agente_original'):
+        metadata_cot['propuesta_agente_original'] = {
+            'servicios_lineas': [
+                {
+                    'nombre': (l.get('nombre') or '').strip(),
+                    'precio_clp': int(l.get('precio_clp') or 0),
+                    'precio_desde_catalogo': bool(l.get('precio_desde_catalogo')),
+                    'oferta_servicio_id': l.get('oferta_servicio_id'),
+                }
+                for l in lineas
+            ],
+            'servicio_nombre': _titulo_servicios(lineas),
+            'descripcion_problema': descripcion_final,
+            'modalidad': modalidad,
+            'direccion_servicio': direccion_servicio_final[:500],
+            'mano_obra_clp': mano_obra,
+            'total_clp': total,
+            'notas_internas': notas_finales,
+            'repuestos': repuestos,
+            'congelado_en': timezone.now().isoformat(),
+        }
+    elif meta_prev.get('propuesta_agente_original'):
+        metadata_cot['propuesta_agente_original'] = meta_prev['propuesta_agente_original']
+
     if reabierta:
         historial = list(meta_prev.get('historial_reapertura') or [])
         historial.append(

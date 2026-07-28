@@ -15,6 +15,7 @@ from mecanimovilapp.apps.agente_ia.models import (
     AgenteClienteMemoria,
     AgenteConversacionSesion,
     AgenteMensajeLog,
+    LeadCalificacion,
     TallerAgenteConfig,
 )
 from mecanimovilapp.apps.agente_ia.services.cotizacion_borrador import crear_cotizacion_borrador_desde_agente
@@ -168,7 +169,11 @@ def _mensaje_cliente_superado(message: Message) -> bool:
     return False
 
 
-def _contexto_minimo_para_cotizar(datos: dict) -> bool:
+def _contexto_minimo_para_cotizar(
+    datos: dict,
+    *,
+    requiere_direccion_antes_de_cotizar: bool = False,
+) -> bool:
     vehiculo = datos.get('vehiculo') or {}
     patente = (
         (vehiculo.get('patente') or '').strip()
@@ -183,7 +188,15 @@ def _contexto_minimo_para_cotizar(datos: dict) -> bool:
         (datos.get('descripcion_problema') or '').strip()
         or (datos.get('servicio_nombre') or '').strip()
     )
-    return len(problema) >= 12
+    if len(problema) < 12:
+        return False
+    if requiere_direccion_antes_de_cotizar:
+        modalidad = (datos.get('modalidad') or '').strip().lower()
+        if modalidad != 'taller':
+            direccion = (datos.get('direccion_servicio') or '').strip()
+            if len(direccion) < 5:
+                return False
+    return True
 
 
 def _cliente_modifica_cotizacion_existente(sesion: AgenteConversacionSesion, datos: dict) -> bool:
@@ -331,13 +344,60 @@ def _tiene_precio_catalogo_mencionable(taller, datos: dict) -> bool:
     return False
 
 
+def _tiene_precio_mencionable(
+    taller,
+    datos: dict,
+    *,
+    permite_estimados_historicos: bool = True,
+) -> bool:
+    """Catálogo publicado o referencia histórica válida (mediana con n≥3)."""
+    if _tiene_precio_catalogo_mencionable(taller, datos):
+        return True
+    from mecanimovilapp.apps.agente_ia.services.historial_pricing import (
+        tiene_estimado_historico_mencionable,
+    )
+
+    vehiculo = datos.get('vehiculo') or {}
+    return tiene_estimado_historico_mencionable(
+        taller=taller,
+        servicios=_servicios_candidato_precio(datos),
+        marca=(vehiculo.get('marca') or '').strip(),
+        modelo=(vehiculo.get('modelo') or '').strip(),
+        tipo_motor=(vehiculo.get('tipo_motor') or '').strip(),
+        permite_estimados=permite_estimados_historicos,
+    )
+
+
+def _tiene_solo_estimado_historico(
+    taller,
+    datos: dict,
+    *,
+    permite_estimados_historicos: bool = True,
+) -> bool:
+    """True si NO hay catálogo pero sí histórico válido para mencionar."""
+    if _tiene_precio_catalogo_mencionable(taller, datos):
+        return False
+    return _tiene_precio_mencionable(
+        taller,
+        datos,
+        permite_estimados_historicos=permite_estimados_historicos,
+    )
+
+
+# Corta oraciones completas (no solo el monto) para nunca dejar fragmentos
+# colgando a mitad de frase (ej. "El valor del servicio... " sin terminar).
+_SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?])\s+(?=[A-ZÁÉÍÓÚÑÜ¡¿])')
+
+
 def _sanitizar_respuesta_sin_precio_catalogo(
     respuesta: str,
     *,
     cliente_pide_precio: bool = False,
 ) -> str:
     """
-    Cuando no hay precio de catálogo, elimina afirmaciones de tarifa/monto.
+    Cuando no hay precio de catálogo, elimina la ORACIÓN COMPLETA que afirma
+    tarifa/monto (no solo el número), para no dejar frases a medias como
+    "El valor del servicio de cambio de aceite para tu [auto]." sin terminar.
     El disclaimer largo SOLO se agrega si el cliente pidió precio/cotización;
     en turnos de captura (patente/teléfono) solo se limpia el texto inventado.
     """
@@ -345,12 +405,21 @@ def _sanitizar_respuesta_sin_precio_catalogo(
     if not texto or not _respuesta_afirma_precio(texto):
         return texto
 
-    limpio = _MONTO_CLP_RE.sub('', texto)
-    limpio = _PRECIO_CLAIM_RE.sub('', limpio)
-    limpio = _FRASE_SANITIZER_LEGACY.sub('', limpio)
-    # Si el modelo ya pegó el disclaimer, quitarlo cuando el cliente no pidió precio.
-    if not cliente_pide_precio:
-        limpio = re.sub(re.escape(_FRASE_SIN_PRECIO_CATALOGO), '', limpio, flags=re.IGNORECASE)
+    texto = _FRASE_SANITIZER_LEGACY.sub('', texto)
+    oraciones = _SENTENCE_SPLIT_RE.split(texto)
+    conservadas: list[str] = []
+    for oracion in oraciones:
+        o = oracion.strip()
+        if not o:
+            continue
+        if _respuesta_afirma_precio(o):
+            # Descarta la oración entera (no solo el monto) para no dejar fragmentos.
+            continue
+        if not cliente_pide_precio and _FRASE_SIN_PRECIO_CATALOGO.lower() in o.lower():
+            continue
+        conservadas.append(o)
+
+    limpio = ' '.join(conservadas).strip()
     limpio = re.sub(r'\s{2,}', ' ', limpio)
     limpio = re.sub(r'\s+([,.;:])', r'\1', limpio)
     limpio = re.sub(r',\s*,+', ',', limpio)
@@ -450,6 +519,9 @@ def _construir_prompt_agente(
     contexto_diagnostico: str = '',
     resumen_conversacion: str = '',
     memoria_cliente: str = '',
+    tiene_estimado_historico: bool = False,
+    reglas_comerciales: str = '',
+    calificacion_lead: str = '',
 ) -> str:
     datos_json = json.dumps(datos_capturados or {}, ensure_ascii=False)
     tiene_contexto = bool((chunks_texto or '').strip())
@@ -492,6 +564,14 @@ def _construir_prompt_agente(
             f'1b. En el primer saludo o cuando te presentes, usa el nombre real del taller ("{nombre}"). '
             f'No digas "asistente del taller" sin nombrarlo.'
         )
+    regla_15e = ''
+    if tiene_estimado_historico:
+        regla_15e = """
+15e. REFERENCIA HISTÓRICA (cuando NO hay tarifa de catálogo pero SÍ aparece bloque "Referencia histórica de precios" en la FICHA):
+    - Puedes mencionar la MEDIANA indicada como orientación ("por casos similares completados suele rondar…", "como referencia, trabajos parecidos han quedado alrededor de…").
+    - OBLIGATORIO aclarar que NO es precio fijo ni cotización final: el taller lo confirma al revisar el borrador.
+    - PROHIBIDO presentarlo como tarifa publicada de catálogo ni prometer ese monto exacto.
+    - Usa el número EXACTO de la mediana del bloque histórico (no inventes otro monto ni rango distinto al indicado)."""
     return f"""{identidad} NO eres un bot de captura de leads ni un formulario: eres un mecánico/vendedor de soporte que conversa con naturalidad, escucha el momento del cliente y recién pide datos cuando aportan.
 
 Tu prioridad en este orden:
@@ -553,6 +633,10 @@ Historial reciente del chat:
 Último mensaje del cliente (ya puede incluir transcripción o descripción de media):
 {mensaje_cliente}
 
+{reglas_comerciales or 'REGLAS COMERCIALES DEL TALLER: configuración por defecto (tono balanceado, insistencia media).'}
+
+{calificacion_lead}
+
 REGLAS DE CONVERSACIÓN:
 0. LEE EL MOMENTO (CRÍTICO — prima sobre pedirle datos): adapta TONO y RITMO al mensaje actual. PROHIBIDO responder con un formulario (patente + síntoma + domicilio/taller + teléfono) en un solo mensaje. Máximo UNA pregunta nueva por turno — esto incluye preguntas compuestas unidas con "y" (ej. "¿en qué sector estás Y qué le pasa al auto?" cuenta como DOS preguntas, prohibido). Si dudas entre dos datos por pedir, prioriza SIEMPRE el síntoma/problema del auto antes que sector/dirección/teléfono.
 {regla_presentacion}
@@ -563,6 +647,7 @@ REGLAS DE CONVERSACIÓN:
 0c. CASO YA AVANZADO (historial con datos o cliente insistiendo en cotizar/agendar):
     - No reinicies con bienvenida genérica.
     - Avanza: confirma lo que tienes, pide el faltante, o prepara cotización si cumple regla 12.
+0d. NO SIGAS UN CHECKLIST RÍGIDO (CRÍTICO — así responde un vendedor humano, no un formulario): el orden patente→teléfono→dirección es una GUÍA, no una secuencia obligatoria. Si el cliente te interrumpe ese flujo para preguntar algo puntual (ej. "pero espera, ¿cuánto cuesta?"), RESPONDE ESO PRIMERO con la info real que tengas (si el servicio SÍ tiene precio de catálogo, dilo directo — no sigas pidiendo el siguiente dato del checklist como si no te hubiera preguntado nada). Solo vuelve a pedir el dato pendiente en la burbuja siguiente, y solo si tiene sentido en ese momento.
 1. Español chileno, cálido, concreto. Nada de frases robot ("¡Claro! Con gusto te ayudo a cotizar…", "Para poder revisar tu caso y ver si podemos atenderte…") ni empujar cotización en cada turno.
 {regla_1b}
 1c. PROHIBIDO FALSA CONTINUIDAD (CRÍTICO — rompe la naturalidad): nunca digas "como te comentaba", "como te mencioné", "como te decía", "como habíamos hablado" o equivalentes SALVO que tú literalmente ya hayas dicho eso mismo antes en ESTE chat (revisa el historial reciente). Si es la primera vez que explicas algo (ej. modalidad a domicilio, dirección, horario), dilo directo y natural, sin fingir que ya se había hablado del tema. Tampoco repitas la MISMA frase textual del bloque de FICHA OPERATIVA palabra por palabra — parafraséala como lo diría una persona, no como un párrafo copiado de una configuración.
@@ -594,7 +679,7 @@ REGLAS DE CONVERSACIÓN:
     Sin patente, sin teléfono o servicio fuera de especialidad → listo_para_cotizar=false.
 13. cliente_pide_cotizacion=true únicamente si en este turno (o el historial reciente) el cliente pidió precio/cotización/presupuesto de forma explícita o claramente implícita. NUNCA lo marques true solo porque ya tienes patente+teléfono+síntoma completos — la disposición de datos NO es lo mismo que la intención de compra. Si el cliente usa una NEGACIÓN cerca de la palabra ("no he pedido cotización", "todavía no quiero cotizar", "aún no"), es FALSO aunque la palabra "cotización" aparezca en su frase — está aclarando que NO la pidió, no pidiéndola.
 14. UNA SOLA COTIZACIÓN por conversación/vehículo: si el cliente pide otro servicio para el MISMO auto, agrégalo a la misma cotización (lista "servicios") — NO trates cada servicio como cotización aparte. El sistema edita un único borrador hasta que el taller lo cierre/envíe. Si el taller ya envió una cotización y el cliente pide agregar/modificar algo, marca listo_para_cotizar=true para actualizar ESA misma cotización (se reabrirá a borrador); NO prometas una cotización nueva aparte.
-14b. SERVICIOS ESTABLES: usa nombres cortos y consistentes en "servicios" (ej. "Diagnóstico de frenos", "Cambio de pastillas de freno delanteras"). NO repitas ni reformules un servicio ya capturado. NO agregues variantes con paréntesis como "(con repuestos)" en el nombre — usa repuestos_incluidos_ultimo_servicio. NO fusiones dos servicios en una frase ("diagnóstico y pastillas") si ya existen por separado.
+14b. SERVICIOS ESTABLES: usa nombres cortos y consistentes en "servicios" (ej. "Diagnóstico de frenos", "Cambio de pastillas de freno delanteras"). NO repitas ni reformules un servicio ya capturado. NO agregues variantes con paréntesis como "(con repuestos)" en el nombre — usa repuestos_incluidos_ultimo_servicio. NO fusiones dos servicios en una frase ("diagnóstico y pastillas") si ya existen por separado. CRÍTICO: NUNCA metas la modalidad dentro del nombre del servicio (mal: "Cambio de aceite a domicilio", "Diagnóstico en taller") — la modalidad va SOLO en el campo "modalidad". Si mezclas modalidad en el nombre, el sistema no puede encontrar el precio real del catálogo y termina diciendo que no hay tarifa aunque sí exista. Usa solo el nombre del servicio en sí (ej. "Cambio de aceite").
 15. PRECIOS (ANTI-ALUCINACIÓN, CRÍTICO): Solo puedes mencionar un monto en pesos ($, CLP) si ese EXACTO valor aparece en la FICHA OPERATIVA / catálogo publicado para ese servicio y vehículo. Si el cliente pregunta "cuánto sale / cuánto cuesta" y NO hay precio publicado (ej. inspección/diagnóstico a domicilio sin tarifa en catálogo):
     - PROHIBIDO inventar cifras, rangos ("entre X e Y"), "unos treinta lucas", o dejar huecos tipo "el valor es de,".
     - PROHIBIDO inventar políticas de descuento ("se descuenta del total", "se abona a la reparación").
@@ -606,7 +691,7 @@ REGLAS DE CONVERSACIÓN:
     - Solo puedes citar un precio si la cobertura de esa línea es "todas las marcas/modelos" O coincide con la marca/modelo del vehículo del cliente (datos capturados / contexto patente / tag [APLICA A ESTE AUTO]).
     - PROHIBIDO tomar el precio de otra marca/modelo aunque el nombre del servicio sea idéntico. Trátalo como "sin tarifa publicada para ESTE auto".
     - Respuesta estratégica (parafraseable): reconoce que sí hacen el servicio, aclara que para su marca/modelo el valor exacto lo confirma el taller en la cotización, y ofrece armar el borrador. NO inventes un "precio aproximado" a partir de otra cobertura.
-15d. REPUESTOS Y GARANTÍA (proactivo): si la FICHA OPERATIVA indica repuestos con marca/calidad (Original, OEM, Alternativo) y/o días de garantía para un servicio, menciónalo al explicar ese servicio o cuando el cliente pregunte por repuestos ("¿con qué pieza queda?", "¿es original?"). Ofrece la opción configurada en catálogo con naturalidad (ej. "trabajamos con disco marca X, calidad OEM, con garantía de N días"). PROHIBIDO inventar marcas, calidades o plazos de garantía que no figuren en la ficha.
+15d. REPUESTOS Y GARANTÍA (proactivo): si la FICHA OPERATIVA indica repuestos con marca/calidad (Original, OEM, Alternativo) y/o días de garantía para un servicio, menciónalo al explicar ese servicio o cuando el cliente pregunte por repuestos ("¿con qué pieza queda?", "¿es original?"). Ofrece la opción configurada en catálogo con naturalidad (ej. "trabajamos con disco marca X, calidad OEM, con garantía de N días"). PROHIBIDO inventar marcas, calidades o plazos de garantía que no figuren en la ficha.{regla_15e}
 16. ENVÍO: TÚ NO envías la cotización por WhatsApp ni confirmas precios finales. Solo preparas el borrador; un humano del taller la revisa en "Cotizar con IA" y la envía. Dile al cliente que el taller le enviará la cotización.
 17. Si el cliente menciona preferencia de día/hora/técnico para la visita, guárdalo en preferencias_agenda (fecha ISO si puedes, hora HH:MM, tecnico_nombre, nota). Si el día/hora propuesto cae dentro del horario del taller en la FICHA OPERATIVA, confirma verbalmente de forma proactiva (ej. "perfecto, tráelo el jueves a primera hora") y marca confirmado_verbal=true. Esto NO reserva un cupo formal; el agendamiento real ocurre al aceptar la cotización. Si el día cae fuera de horario, indícalo con amabilidad y sugiere el horario más cercano disponible.
 18. MODALIDAD Y DIRECCIÓN (CRÍTICO — CERO INVENCIÓN): modalidad debe ser "taller" o "domicilio" según lo que pida el cliente Y lo que permita la FICHA OPERATIVA (bloque "Modalidad de atención del taller"). Pídela solo cuando sea relevante (cliente quiere venir/ir, o vas a cotizar/agendar) — nunca en un saludo vacío.
@@ -1188,11 +1273,22 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         verificado_ficha = {}
     marca_ficha = str(vehiculo_ficha.get('marca') or verificado_ficha.get('marca') or '').strip()
     modelo_ficha = str(vehiculo_ficha.get('modelo') or verificado_ficha.get('modelo') or '').strip()
+    tipo_motor_ficha = str(vehiculo_ficha.get('tipo_motor') or verificado_ficha.get('tipo_motor') or '').strip()
+    servicios_ficha = _servicios_candidato_precio(datos_prev)
+    permite_hist = config.permite_estimados_historicos
 
     contexto_operativo_txt = construir_ficha_operativa_taller(
         taller,
         marca_vehiculo=marca_ficha,
         modelo_vehiculo=modelo_ficha,
+        servicios_consulta=servicios_ficha,
+        tipo_motor=tipo_motor_ficha,
+        permite_estimados_historicos=permite_hist,
+    )
+    tiene_estimado_historico = _tiene_solo_estimado_historico(
+        taller,
+        datos_prev,
+        permite_estimados_historicos=permite_hist,
     )
 
     from mecanimovilapp.apps.agente_ia.services.conocimiento_diagnostico import (
@@ -1228,6 +1324,19 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             )
         memoria_txt = ' '.join(partes_mem)
 
+    from mecanimovilapp.apps.agente_ia.services.reglas_comerciales import (
+        construir_reglas_comerciales,
+    )
+    from mecanimovilapp.apps.agente_ia.services.reglas_lead import (
+        construir_bloque_calificacion_lead,
+    )
+
+    lead_prev = LeadCalificacion.objects.filter(conversation_id=conversation.id).first()
+    bloque_lead = construir_bloque_calificacion_lead(
+        categoria=getattr(lead_prev, 'categoria', '') or '',
+        score=int(getattr(lead_prev, 'score', 0) or 0),
+    )
+
     prompt = _construir_prompt_agente(
         nombre_taller=(taller.nombre or '').strip(),
         nombre_agente=(config.nombre_agente or '').strip(),
@@ -1243,6 +1352,9 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         contexto_diagnostico=contexto_diagnostico_txt,
         resumen_conversacion=resumen_conv,
         memoria_cliente=memoria_txt,
+        tiene_estimado_historico=tiene_estimado_historico,
+        reglas_comerciales=construir_reglas_comerciales(config),
+        calificacion_lead=bloque_lead,
     )
 
     decision, error = _llamar_gemini_agente(prompt)
@@ -1361,7 +1473,11 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
 
     # Anti-alucinación de precios: sin tarifa de catálogo, limpia montos/afirmaciones.
     # El disclaimer largo solo si el cliente pidió precio; no en captura de patente/teléfono.
-    puede_mencionar_precio = _tiene_precio_catalogo_mencionable(taller, datos)
+    puede_mencionar_precio = _tiene_precio_mencionable(
+        taller,
+        datos,
+        permite_estimados_historicos=config.permite_estimados_historicos,
+    )
     if respuestas and not puede_mencionar_precio:
         sanitizadas: list[str] = []
         for burbuja in respuestas:
@@ -1386,7 +1502,10 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
 
     # Válvula de seguridad: no cotizar “de oficio” sin contexto ni pedido del cliente.
     if listo_cotizar:
-        if not _contexto_minimo_para_cotizar(datos):
+        if not _contexto_minimo_para_cotizar(
+            datos,
+            requiere_direccion_antes_de_cotizar=config.requiere_direccion_antes_de_cotizar,
+        ):
             listo_cotizar = False
         elif (
             not cliente_pide_cotizacion
@@ -1408,10 +1527,12 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
                 proveedor_user_id=proveedor_user_id,
                 textos=respuestas,
             )
+        lead_esc = LeadCalificacion.objects.filter(conversation_id=conversation.id).first()
         notificar_escalamiento_humano(
             proveedor_user_id=proveedor_user_id,
             conversation_id=conversation.id,
             preview=texto_cliente,
+            lead_categoria=getattr(lead_esc, 'categoria', '') or '',
         )
         AgenteMensajeLog.objects.create(
             sesion=sesion,

@@ -174,6 +174,91 @@ def _suma_catalogo_metadata(cotizacion: CotizacionCanal) -> int:
     )
 
 
+def _estado_actual_para_correcciones(cotizacion: CotizacionCanal) -> dict:
+    meta = cotizacion.metadata or {}
+    return {
+        'servicios_lineas': meta.get('servicios_lineas') or [],
+        'servicio_nombre': (cotizacion.servicio_nombre or '').strip(),
+        'descripcion_problema': (cotizacion.descripcion_problema or '').strip(),
+        'modalidad': cotizacion.modalidad or '',
+        'direccion_servicio': (cotizacion.direccion_servicio or '').strip(),
+        'mano_obra_clp': int(cotizacion.mano_obra_clp or 0),
+        'total_clp': int(cotizacion.total_clp or 0),
+        'notas_internas': (cotizacion.notas_internas or '').strip(),
+        'repuestos': cotizacion.repuestos or [],
+    }
+
+
+def _calcular_correcciones_taller(
+    original: dict | None,
+    final: dict,
+) -> list[dict]:
+    """Diff simple agente → humano al enviar cotización."""
+    if not original:
+        return []
+
+    correcciones: list[dict] = []
+    campos_simples = (
+        'servicio_nombre',
+        'descripcion_problema',
+        'modalidad',
+        'direccion_servicio',
+        'mano_obra_clp',
+        'total_clp',
+        'notas_internas',
+    )
+    for campo in campos_simples:
+        val_agente = original.get(campo)
+        val_humano = final.get(campo)
+        if val_agente != val_humano:
+            correcciones.append(
+                {
+                    'campo': campo,
+                    'valor_agente': val_agente,
+                    'valor_humano': val_humano,
+                }
+            )
+
+    lineas_agente = original.get('servicios_lineas') or []
+    lineas_humano = final.get('servicios_lineas') or []
+    if lineas_agente != lineas_humano:
+        correcciones.append(
+            {
+                'campo': 'servicios_lineas',
+                'valor_agente': lineas_agente,
+                'valor_humano': lineas_humano,
+            }
+        )
+
+    rep_agente = original.get('repuestos') or []
+    rep_humano = final.get('repuestos') or []
+    if rep_agente != rep_humano:
+        correcciones.append(
+            {
+                'campo': 'repuestos',
+                'valor_agente': rep_agente,
+                'valor_humano': rep_humano,
+            }
+        )
+
+    return correcciones
+
+
+def _persistir_correcciones_taller_al_enviar(cotizacion: CotizacionCanal) -> None:
+    meta = dict(cotizacion.metadata or {})
+    original = meta.get('propuesta_agente_original')
+    if not original:
+        return
+    final = _estado_actual_para_correcciones(cotizacion)
+    diff = _calcular_correcciones_taller(original, final)
+    if diff:
+        meta['correcciones_taller'] = {
+            'enviado_en': timezone.now().isoformat(),
+            'cambios': diff,
+        }
+        cotizacion.metadata = meta
+
+
 def aplicar_edicion_cotizacion(cotizacion: CotizacionCanal, data: dict) -> CotizacionCanal:
     if 'servicio_nombre' in data:
         cotizacion.servicio_nombre = str(data['servicio_nombre'] or '')[:255]
@@ -242,6 +327,7 @@ def enviar_cotizacion_canal(cotizacion: CotizacionCanal, user) -> Message:
     from mecanimovilapp.apps.ordenes.services.cotizacion_publica import asegurar_token_cotizacion
 
     asegurar_token_cotizacion(cotizacion)
+    _persistir_correcciones_taller_al_enviar(cotizacion)
     if cotizacion.url_publica:
         meta_extra = dict(cotizacion.metadata or {})
         meta_extra['url_publica'] = cotizacion.url_publica

@@ -21,6 +21,10 @@ class TallerAgenteConfigSerializer(serializers.ModelSerializer):
             'canales_habilitados',
             'mensaje_bienvenida',
             'recargo_domicilio_clp',
+            'nivel_insistencia',
+            'permite_estimados_historicos',
+            'tono_ventas',
+            'requiere_direccion_antes_de_cotizar',
             'actualizado_en',
         ]
         read_only_fields = ['actualizado_en']
