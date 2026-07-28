@@ -199,18 +199,155 @@ def _contexto_minimo_para_cotizar(
     return True
 
 
-def _cliente_modifica_cotizacion_existente(sesion: AgenteConversacionSesion, datos: dict) -> bool:
-    """True si el cliente pide agregar/modificar una cotización ya iniciada."""
+_AGREGAR_A_COTIZACION_RE = re.compile(
+    r'\b(?:'
+    r'agrega(?:r|me|lo|la|s)?|'
+    r'suma(?:r|me|le)?|'
+    r'a[nñ]ade(?:r|me)?|'
+    r'incluye(?:me)?|'
+    r'tambi[eé]n\s+(?:quiero|necesito|pido|el|la|un|una)|'
+    r'adem[aá]s\s+(?:quiero|necesito|el|la|un|una)|'
+    r'actualiza(?:r)?\s+(?:la\s+)?cotizaci[oó]n|'
+    r'agregar\s+a\s+(?:la\s+)?cotizaci[oó]n|'
+    r'suma(?:r)?\s+(?:a\s+)?(?:la\s+)?cotizaci[oó]n|'
+    r'cambio\s+de\s+aceite|'
+    r'aceite\s+y\s+filtro'
+    r')\b',
+    re.IGNORECASE,
+)
+
+# Captura nombres de servicio frecuentes cuando el LLM olvida ponerlos en JSON.
+_SERVICIO_MENCION_RE = re.compile(
+    r'\b('
+    r'cambio\s+de\s+aceite(?:\s+y\s+filtro)?|'
+    r'cambio\s+de\s+filtro(?:\s+de\s+aceite)?|'
+    r'cambio\s+de\s+pastillas(?:\s+de\s+freno)?(?:\s+delanteras|\s+traseras)?|'
+    r'cambio\s+de\s+discos?(?:\s+de\s+freno)?|'
+    r'diagn[oó]stico(?:\s+(?:de\s+)?(?:frenos|motor|electr[oó]nico))?|'
+    r'alineaci[oó]n(?:\s+y\s+balanceo)?|'
+    r'balanceo|'
+    r'revisi[oó]n\s+(?:t[eé]cnica|pre\-?compra|general)|'
+    r'scanne?r|'
+    r'carga\s+de\s+aire\s+acondicionado|'
+    r'cambio\s+de\s+buj[ií]as|'
+    r'cambio\s+de\s+correa(?:\s+de\s+distribuci[oó]n)?'
+    r')\b',
+    re.IGNORECASE,
+)
+
+
+def _cotizacion_editable_sesion(sesion: AgenteConversacionSesion):
     cot = getattr(sesion, 'cotizacion_borrador', None)
-    if not cot or cot.estado not in ('borrador', 'enviada'):
+    if cot and cot.estado in ('borrador', 'enviada'):
+        return cot
+    return None
+
+
+def _cliente_pide_agregar_a_cotizacion(texto_cliente: str) -> bool:
+    return bool(_AGREGAR_A_COTIZACION_RE.search(texto_cliente or ''))
+
+
+def _extraer_servicios_mencionados_en_texto(texto: str) -> list[str]:
+    """Heurística: servicios explícitos en el mensaje del cliente."""
+    out: list[str] = []
+    vistos: set[str] = set()
+    for m in _SERVICIO_MENCION_RE.finditer(texto or ''):
+        nombre = re.sub(r'\s+', ' ', (m.group(1) or '').strip())
+        if not nombre:
+            continue
+        # Normaliza capitalización simple
+        nombre = nombre[0].upper() + nombre[1:]
+        clave = _clave_servicio_dedup(nombre)
+        if clave and clave not in vistos:
+            vistos.add(clave)
+            out.append(nombre)
+    return out
+
+
+def _claves_servicios_en_cotizacion(cot) -> set[str]:
+    if not cot:
+        return set()
+    meta = cot.metadata or {}
+    claves: set[str] = set()
+    for lin in meta.get('servicios_lineas') or []:
+        if isinstance(lin, dict):
+            c = _clave_servicio_dedup(str(lin.get('nombre') or ''))
+            if c:
+                claves.add(c)
+    titulo = (cot.servicio_nombre or '').strip()
+    if titulo:
+        if ' + ' in titulo:
+            for parte in titulo.split(' + '):
+                c = _clave_servicio_dedup(parte.strip())
+                if c:
+                    claves.add(c)
+        else:
+            c = _clave_servicio_dedup(titulo)
+            if c:
+                claves.add(c)
+    return claves
+
+
+def _cliente_modifica_cotizacion_existente(
+    sesion: AgenteConversacionSesion,
+    datos: dict,
+    *,
+    texto_cliente: str = '',
+) -> bool:
+    """True si el cliente pide agregar/modificar una cotización ya iniciada."""
+    cot = _cotizacion_editable_sesion(sesion)
+    if not cot:
         return False
     if datos.get('repuestos_incluidos_ultimo_servicio') is not None:
         return True
-    servicios = datos.get('servicios') or []
-    if isinstance(servicios, list) and servicios:
+    if _cliente_pide_agregar_a_cotizacion(texto_cliente):
         return True
-    sn = (datos.get('servicio_nombre') or '').strip()
-    return bool(sn)
+    claves_cot = _claves_servicios_en_cotizacion(cot)
+    from mecanimovilapp.apps.agente_ia.services.cotizacion_borrador import _parse_servicios_solicitados
+
+    for nombre in _parse_servicios_solicitados(datos):
+        clave = _clave_servicio_dedup(nombre)
+        if clave and clave not in claves_cot:
+            return True
+    for nombre in _extraer_servicios_mencionados_en_texto(texto_cliente):
+        clave = _clave_servicio_dedup(nombre)
+        if clave and clave not in claves_cot:
+            return True
+    return False
+
+
+def _asegurar_servicios_para_actualizar_cotizacion(
+    *,
+    sesion: AgenteConversacionSesion,
+    datos: dict,
+    texto_cliente: str,
+) -> dict:
+    """Garantiza que servicios nuevos del chat queden en datos antes de armar el borrador."""
+    cot = _cotizacion_editable_sesion(sesion)
+    if not cot:
+        return datos
+    from mecanimovilapp.apps.agente_ia.services.cotizacion_borrador import _parse_servicios_solicitados
+
+    datos = dict(datos or {})
+    lista = list(_parse_servicios_solicitados(datos))
+    claves = {_clave_servicio_dedup(n) for n in lista}
+    # Conserva los ya cotizados para no perder diagnóstico al sumar aceite, etc.
+    for lin in (cot.metadata or {}).get('servicios_lineas') or []:
+        if not isinstance(lin, dict):
+            continue
+        nombre = (lin.get('nombre') or '').strip()
+        clave = _clave_servicio_dedup(nombre)
+        if nombre and clave and clave not in claves:
+            lista.append(nombre)
+            claves.add(clave)
+    for nombre in _extraer_servicios_mencionados_en_texto(texto_cliente):
+        clave = _clave_servicio_dedup(nombre)
+        if clave and clave not in claves:
+            lista.append(nombre)
+            claves.add(clave)
+    if lista:
+        datos['servicios'] = lista
+    return datos
 
 
 _MONTO_CLP_RE = re.compile(
@@ -1501,6 +1638,22 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         respuestas = sanitizadas
         respuesta = ' '.join(respuestas).strip()
 
+    # Si hay cotización abierta y el cliente pide sumar servicios (aunque el LLM
+    # no haya marcado listo_para_cotizar), forzamos actualización del borrador.
+    modifica_cotizacion = _cliente_modifica_cotizacion_existente(
+        sesion,
+        datos,
+        texto_cliente=texto_cliente,
+    )
+    if not listo_cotizar and modifica_cotizacion:
+        listo_cotizar = True
+        logger.info(
+            'Forzando actualización de cotización por pedido de servicio adicional '
+            '(conv=%s taller=%s)',
+            conversation.id,
+            taller.id,
+        )
+
     # Válvula de seguridad: no cotizar “de oficio” sin contexto ni pedido del cliente.
     if listo_cotizar:
         if not _contexto_minimo_para_cotizar(
@@ -1509,11 +1662,15 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
                 getattr(config, 'requiere_direccion_antes_de_cotizar', False)
             ),
         ):
-            listo_cotizar = False
+            # Al actualizar cotización existente, no exigir de nuevo dirección/teléfono
+            # si el borrador ya los tenía (el cliente solo suma un servicio).
+            cot_abierta = _cotizacion_editable_sesion(sesion)
+            if not (modifica_cotizacion and cot_abierta):
+                listo_cotizar = False
         elif (
             not cliente_pide_cotizacion
             and intencion not in ('cotizacion', 'cotizar', 'presupuesto')
-            and not _cliente_modifica_cotizacion_existente(sesion, datos)
+            and not modifica_cotizacion
         ):
             listo_cotizar = False
 
@@ -1555,7 +1712,17 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         return {'ok': True, 'accion': 'escalar'}
 
     if listo_cotizar:
-        datos_cot = dict(datos)
+        datos_cot = _asegurar_servicios_para_actualizar_cotizacion(
+            sesion=sesion,
+            datos=datos,
+            texto_cliente=texto_cliente,
+        )
+        # Persiste servicios fusionados en la sesión para el próximo turno.
+        if datos_cot.get('servicios') != (datos.get('servicios') or []):
+            datos = dict(datos)
+            datos['servicios'] = list(datos_cot.get('servicios') or [])
+            sesion.datos_capturados = datos
+            sesion.save(update_fields=['datos_capturados', 'actualizado_en'])
         datos_cot['contexto_rag'] = '\n'.join(
             filter(None, [chunks_texto, contexto_patente_txt])
         )

@@ -399,6 +399,7 @@ def crear_cotizacion_borrador_desde_agente(
     ultimo_servicio_turno = servicios_turno[-1] if servicios_turno else ''
 
     # Generar contexto IA una vez con el resumen de servicios del turno (desglose/orientación).
+    # Si Gemini falla, igual actualizamos líneas desde catálogo/historial: no bloquear el merge.
     servicio_prompt = ' + '.join(servicios_turno)
     resultado = generar_cotizacion_ia(
         conversation=conversation,
@@ -409,8 +410,22 @@ def crear_cotizacion_borrador_desde_agente(
         contexto_rag_extra=datos.get('contexto_rag') or '',
     )
     if not resultado.get('disponible'):
-        logger.info('generar_cotizacion_ia no disponible: %s', resultado.get('error'))
-        return None
+        logger.warning(
+            'generar_cotizacion_ia no disponible (%s); se actualiza borrador sin contenido IA '
+            '(sesion=%s servicios=%s)',
+            resultado.get('error'),
+            sesion.id,
+            servicios_turno,
+        )
+        resultado = {
+            'disponible': False,
+            'contenido': {},
+            'contenido_ia': {},
+            'contexto': {},
+            'tokens_entrada': 0,
+            'tokens_salida': 0,
+            'modelo': '',
+        }
 
     contenido = resultado.get('contenido') or {}
     ctx = resultado.get('contexto') or {}
@@ -438,6 +453,11 @@ def crear_cotizacion_borrador_desde_agente(
     hay_algun_catalogo = False
     faltan_precios_catalogo = False
 
+    from mecanimovilapp.apps.agente_ia.services.historial_pricing import buscar_estimado_historico
+
+    config_taller = TallerAgenteConfig.objects.filter(taller=taller).first()
+    permite_hist = bool(getattr(config_taller, 'permite_estimados_historicos', True))
+
     for nombre_serv in servicios_turno:
         oferta = buscar_oferta_exacta(
             taller=taller,
@@ -456,15 +476,26 @@ def crear_cotizacion_borrador_desde_agente(
             oferta_id = oferta.id
             nombre_final = oferta.servicio.nombre
 
-        lineas = _merge_linea_servicio(
-            lineas,
-            {
-                'nombre': nombre_final,
-                'oferta_servicio_id': oferta_id,
-                'precio_catalogo_clp': precio_cat or None,
-                'precio_desde_catalogo': bool(precio_cat),
-            },
-        )
+        linea_nueva: dict[str, Any] = {
+            'nombre': nombre_final,
+            'oferta_servicio_id': oferta_id,
+            'precio_catalogo_clp': precio_cat or None,
+            'precio_desde_catalogo': bool(precio_cat),
+        }
+        # Sin catálogo: referencia histórica (mercado del taller) para revisión humana.
+        if not precio_cat and permite_hist:
+            est = buscar_estimado_historico(
+                taller=taller,
+                servicio_nombre=nombre_final,
+                marca=marca,
+                modelo=modelo,
+                tipo_motor=tipo_motor,
+            )
+            if est:
+                linea_nueva['precio_estimado_historico_clp'] = est.mediana_clp
+                linea_nueva['precio_estimado_muestras'] = est.muestras
+
+        lineas = _merge_linea_servicio(lineas, linea_nueva)
 
     lineas = _compactar_lineas_servicio(lineas)
 
@@ -534,6 +565,16 @@ def crear_cotizacion_borrador_desde_agente(
         if ref_mano:
             advertencias.append(
                 f'Referencia IA (solo orientación, no enviar así): mano de obra ~${ref_mano:,} CLP'.replace(
+                    ',', '.'
+                )
+            )
+    for lin in lineas:
+        est_hist = int(lin.get('precio_estimado_historico_clp') or 0)
+        if est_hist > 0 and not lin.get('precio_desde_catalogo'):
+            n = (lin.get('nombre') or 'servicio').strip()
+            muestras = int(lin.get('precio_estimado_muestras') or 0)
+            advertencias.append(
+                f"Referencia histórica '{n}': ~${est_hist:,} CLP (n={muestras}; no es tarifa fija)".replace(
                     ',', '.'
                 )
             )
