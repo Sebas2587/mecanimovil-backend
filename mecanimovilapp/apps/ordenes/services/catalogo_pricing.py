@@ -5,7 +5,12 @@ import re
 import unicodedata
 
 from mecanimovilapp.apps.servicios.models import OfertaServicio
+from mecanimovilapp.apps.servicios.oferta_compatibilidad import (
+    normalizar_tipo_motor_oferta,
+    oferta_compatible_con_tipo_motor,
+)
 from mecanimovilapp.apps.usuarios.models import Taller
+from mecanimovilapp.apps.vehiculos.catalogo_resolver import normalizar_tipo_motor_vehiculo
 
 # El agente a veces mete la modalidad dentro del nombre del servicio
 # (ej. "cambio de aceite a domicilio") aunque la modalidad se guarda aparte.
@@ -14,6 +19,15 @@ from mecanimovilapp.apps.usuarios.models import Taller
 _MODALIDAD_SUFIJO_RE = re.compile(
     r'\s*\b(?:a|en)\s+(?:el\s+)?(?:domicilio|taller|casa|local)\b.*$',
     re.IGNORECASE,
+)
+
+_STOP_TOKENS = frozenset(
+    {'de', 'del', 'la', 'el', 'los', 'las', 'y', 'para', 'con', 'sin', 'a', 'e', 'un', 'una'}
+)
+# En packs de aceite, gasolina/diesel/bencina = tipo de motor del SKU, no "filtro de combustible".
+_ENGINE_NAME_TOKENS = frozenset({'gasolina', 'diesel', 'bencina', 'motor'})
+_FILTER_TYPE_TOKENS = frozenset(
+    {'aire', 'polen', 'habitaculo', 'cabina', 'combustible', 'aceite'}
 )
 
 
@@ -28,6 +42,10 @@ def _sin_sufijo_modalidad(texto: str) -> str:
     return limpio or (texto or '').strip()
 
 
+def _tokens_servicio(nombre_norm: str) -> set[str]:
+    return {t for t in re.split(r'\s+', nombre_norm or '') if t and t not in _STOP_TOKENS}
+
+
 def oferta_compatible_con_vehiculo(
     oferta: OfertaServicio,
     *,
@@ -40,21 +58,19 @@ def oferta_compatible_con_vehiculo(
     Reglas:
     - Oferta sin marca/modelo/motor → cobertura general, siempre compatible.
     - Si la oferta fija marca/modelo/motor y el cliente también los tiene,
-      deben coincidir (case-insensitive). Un mismatch excluye la oferta.
+      deben coincidir (case-insensitive; motor con bencina≡gasolina).
     - Si el cliente aún no tiene marca/modelo, no se excluye (faltan datos).
     """
     om = (getattr(oferta.marca_vehiculo_seleccionada, 'nombre', '') or '').strip()
     omod = (getattr(oferta.modelo_vehiculo_seleccionado, 'nombre', '') or '').strip()
-    tm = (oferta.tipo_motor or '').strip().lower()
     marca_req = (marca or '').strip()
     modelo_req = (modelo or '').strip()
-    tm_req = (tipo_motor or '').strip().lower()
 
     if marca_req and om and om.lower() != marca_req.lower():
         return False
     if modelo_req and omod and omod.lower() != modelo_req.lower():
         return False
-    if tm_req and tm and tm != tm_req:
+    if (tipo_motor or '').strip() and not oferta_compatible_con_tipo_motor(oferta, tipo_motor):
         return False
     return True
 
@@ -76,6 +92,7 @@ def buscar_oferta_exacta(
     nombre_norm = normalizar_nombre_servicio(_sin_sufijo_modalidad(servicio_nombre))
     if not nombre_norm:
         return None
+    query_tokens = _tokens_servicio(nombre_norm)
 
     qs = (
         OfertaServicio.objects.filter(taller=taller, disponible=True)
@@ -87,7 +104,18 @@ def buscar_oferta_exacta(
         serv_norm = normalizar_nombre_servicio(getattr(oferta.servicio, 'nombre', '') or '')
         if not serv_norm:
             continue
-        if nombre_norm not in serv_norm and serv_norm not in nombre_norm:
+        serv_tokens = _tokens_servicio(serv_norm)
+        # Substring clásico O overlap de tokens significativo (evita perder packs cercanos).
+        substring_ok = nombre_norm in serv_norm or serv_norm in nombre_norm
+        overlap = query_tokens & serv_tokens if query_tokens and serv_tokens else set()
+        token_ok = bool(overlap) and (
+            len(overlap) >= 2
+            or (
+                len(overlap) == 1
+                and overlap & {'aceite', 'diagnostico', 'alineacion', 'balanceo', 'scanner'}
+            )
+        )
+        if not substring_ok and not token_ok:
             continue
         if not oferta_compatible_con_vehiculo(
             oferta,
@@ -114,17 +142,42 @@ def buscar_oferta_exacta(
             s += 4
         elif not omod:
             s += 1
-        tm = (oferta.tipo_motor or '').strip().lower()
-        tm_req = (tipo_motor or '').strip().lower()
+        tm = normalizar_tipo_motor_oferta(getattr(oferta, 'tipo_motor', None))
+        tm_req = normalizar_tipo_motor_vehiculo(tipo_motor) if tipo_motor else ''
         if tm_req and tm and tm == tm_req:
             s += 2
         elif not tm:
             s += 1
         serv_norm = normalizar_nombre_servicio(oferta.servicio.nombre)
+        serv_tokens = _tokens_servicio(serv_norm)
         if serv_norm == nombre_norm:
-            s += 3
+            s += 5
+        if query_tokens and serv_tokens:
+            union = query_tokens | serv_tokens
+            jaccard = len(query_tokens & serv_tokens) / len(union) if union else 0
+            s += int(round(jaccard * 6))
+        # Pack aceite+filtro: preferir SKU que tenga ambos si el cliente pidió ambos.
+        if 'aceite' in query_tokens and 'filtro' in query_tokens:
+            if 'aceite' in serv_tokens and 'filtro' in serv_tokens:
+                s += 3
+            elif 'aceite' in serv_tokens and 'filtro' not in serv_tokens:
+                s -= 1
+        # No subir a "filtro de aire/polen/combustible" si el cliente no lo pidió.
+        extra_filtros = (serv_tokens - query_tokens) & _FILTER_TYPE_TOKENS
+        # En packs de aceite el token "aceite" del catálogo no es "extra indebido".
+        if 'aceite' in query_tokens:
+            extra_filtros -= {'aceite'}
+        if extra_filtros:
+            s -= 5
+        # Sufijo de motor en el nombre del SKU (… filtro Gasolina): leve penalización
+        # para preferir el nombre más corto si ambos matchean; no es filtro de combustible.
+        extra_engine = (serv_tokens - query_tokens) & _ENGINE_NAME_TOKENS
+        if extra_engine:
+            s -= 2 if 'aceite' in query_tokens else 4
         if int(oferta.precio_con_repuestos or 0) or int(oferta.precio_sin_repuestos or 0):
             s += 2
+        # Preferir nombre de catálogo más corto a igualdad de score (menos ruido "Gasolina").
+        s -= min(len(serv_tokens), 6) // 3
         return s
 
     candidatas.sort(key=_score, reverse=True)

@@ -228,8 +228,15 @@ def _recargo_domicilio_taller(taller: Taller) -> int:
     return RECARGO_DOMICILIO_DEFAULT_CLP
 
 
+# Parte "… filtro de aire y filtro de polen" sin romper "aceite y filtro".
+_SPLIT_SERVICIOS_Y_RE = re.compile(
+    r'^(.+?)\s+(?:y|e)\s+((?:cambio\s+de\s+|filtro\s+de\s+).+)$',
+    re.IGNORECASE,
+)
+
+
 def _expandir_nombre_servicio(texto: str) -> list[str]:
-    """Parte nombres compuestos ('A, B', 'A + B') en servicios individuales."""
+    """Parte nombres compuestos ('A, B', 'A + B', 'aire y filtro de polen') en individuales."""
     t = (texto or '').strip()
     if not t:
         return []
@@ -239,8 +246,87 @@ def _expandir_nombre_servicio(texto: str) -> list[str]:
         partes = [p.strip() for p in t.split(',') if p.strip()]
     else:
         partes = [t]
-    # Evita basura tipo "(+2 más)" del título compactado.
-    return [p for p in partes if p and not re.match(r'^\(\+\d+', p)]
+
+    out: list[str] = []
+    for p in partes:
+        if not p or re.match(r'^\(\+\d+', p):
+            continue
+        # No partir el pack clásico "cambio de aceite y filtro".
+        if re.search(r'aceite\s+y\s+filtro\b', p, re.IGNORECASE) and not re.search(
+            r'filtro\s+de\s+(?:aire|polen|habit[aá]culo|cabina)',
+            p,
+            re.IGNORECASE,
+        ):
+            out.append(p)
+            continue
+        m = _SPLIT_SERVICIOS_Y_RE.match(p)
+        if m:
+            left, right = m.group(1).strip(), m.group(2).strip()
+            if left and right:
+                if re.match(r'^filtro\s+de\s+', right, re.IGNORECASE) and re.match(
+                    r'^cambio\s+de\s+', left, re.IGNORECASE
+                ):
+                    right = f'Cambio de {right[0].lower() + right[1:]}'
+                out.extend(_expandir_nombre_servicio(left))
+                out.extend(_expandir_nombre_servicio(right))
+                continue
+        out.append(p)
+    return out
+
+
+_QUAL_SERVICIO = frozenset(
+    {
+        'aceite',
+        'aire',
+        'combustible',
+        'habitaculo',
+        'polen',
+        'cabina',
+        'gasolina',
+        'diesel',
+        'bencina',
+        'freno',
+        'frenos',
+        'pastillas',
+        'discos',
+    }
+)
+_ENGINE_QUAL = frozenset({'gasolina', 'diesel', 'bencina', 'motor'})
+
+
+def _tokens_servicio_util(nombre: str) -> set[str]:
+    stop = {'de', 'del', 'la', 'el', 'los', 'las', 'y', 'para', 'con', 'sin', 'a', 'e'}
+    clave = _clave_servicio(nombre)
+    return {t for t in clave.split() if t and t not in stop}
+
+
+def _qualificadores_servicio(tokens: set[str]) -> set[str]:
+    """Calificadores que distinguen servicios; en packs de aceite, gasolina≠filtro combustible."""
+    q = tokens & _QUAL_SERVICIO
+    if 'aceite' in tokens:
+        q -= _ENGINE_QUAL
+    return q
+
+
+def _servicios_equivalentes(nombre_a: str, nombre_b: str) -> bool:
+    """True si son el mismo servicio aunque el catálogo haya renombrado el SKU."""
+    if _clave_servicio(nombre_a) == _clave_servicio(nombre_b):
+        return True
+    ta, tb = _tokens_servicio_util(nombre_a), _tokens_servicio_util(nombre_b)
+    if not ta or not tb:
+        return False
+    qa, qb = _qualificadores_servicio(ta), _qualificadores_servicio(tb)
+    if qa and qb and qa != qb:
+        return False
+    # Familia cambio de aceite (+ filtro): variantes con/sin "motor"/"Gasolina".
+    if 'aceite' in ta and 'aceite' in tb:
+        return True
+    if 'filtro' in ta and 'filtro' in tb and qa == qb:
+        return True
+    inter = ta & tb
+    return bool(inter) and len(inter) >= min(len(ta), len(tb)) and (
+        len(inter) / max(len(ta), len(tb))
+    ) >= 0.7
 
 
 def _parse_servicios_solicitados(datos: dict) -> list[str]:
@@ -295,18 +381,30 @@ def _compactar_lineas_servicio(lineas: list[dict[str, Any]]) -> list[dict[str, A
     """Una línea por clave de servicio; conserva la más reciente/completa."""
     por_clave: dict[str, dict[str, Any]] = {}
     orden: list[str] = []
+    nombre_canon: dict[str, str] = {}
+
+    def _resolver_clave(nombre: str) -> str:
+        clave = _clave_servicio(nombre)
+        if not clave:
+            return ''
+        for k, prev_nombre in nombre_canon.items():
+            if _servicios_equivalentes(nombre, prev_nombre):
+                return k
+        return clave
+
     for lin in lineas or []:
         nombre_raw = (lin.get('nombre') or '').strip()
-        # Expande "A, B" / "A + B" que a veces llegan fusionados del LLM.
+        # Expande "A, B" / "A + B" / "aire y filtro de polen" del LLM.
         partes = _expandir_nombre_servicio(nombre_raw)
         if len(partes) > 1:
             for parte in partes:
                 sub = {**lin, 'nombre': parte}
-                clave = _clave_servicio(parte)
+                clave = _resolver_clave(parte)
                 if not clave:
                     continue
                 if clave not in por_clave:
                     orden.append(clave)
+                    nombre_canon[clave] = parte
                 prev = por_clave.get(clave) or {}
                 # Al partir un compuesto, no arrastres precios del bloque fusionado.
                 limpio = {
@@ -319,17 +417,32 @@ def _compactar_lineas_servicio(lineas: list[dict[str, Any]]) -> list[dict[str, A
                         'precio_estimado_historico_clp',
                         'precio_estimado_muestras',
                         'oferta_servicio_id',
+                        'nombre_catalogo',
                     )
                 }
-                por_clave[clave] = {**prev, **limpio, 'nombre': parte}
+                merged = {**prev, **limpio, 'nombre': parte}
+                # Prefiere nombre corto sin sufijo de motor del SKU.
+                if prev.get('nombre') and 'gasolina' in parte.lower() and 'gasolina' not in (
+                    prev.get('nombre') or ''
+                ).lower():
+                    merged['nombre'] = prev['nombre']
+                por_clave[clave] = merged
             continue
-        clave = _clave_servicio(nombre_raw)
+        clave = _resolver_clave(nombre_raw)
         if not clave:
             continue
         if clave not in por_clave:
             orden.append(clave)
+            nombre_canon[clave] = nombre_raw
         prev = por_clave.get(clave) or {}
-        por_clave[clave] = {**prev, **lin}
+        merged = {**prev, **lin}
+        if prev.get('nombre') and _servicios_equivalentes(prev.get('nombre') or '', nombre_raw):
+            # Conserva el label más legible (no el SKU "… Gasolina").
+            if 'gasolina' in nombre_raw.lower() and 'gasolina' not in (prev.get('nombre') or '').lower():
+                merged['nombre'] = prev['nombre']
+            elif len((prev.get('nombre') or '')) <= len(nombre_raw):
+                merged['nombre'] = prev['nombre']
+        por_clave[clave] = merged
     return [por_clave[k] for k in orden if k in por_clave]
 
 
@@ -529,30 +642,35 @@ def _merge_repuestos_borrador(
 def _podar_lineas_servicio_redundantes(lineas: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Elimina servicios genéricos ya cubiertos por otro más específico.
 
-    Ej: "Cambio de filtro" sobra si ya está "Cambio de filtro de aire" o
-    "Cambio aceite motor y filtro".
+    Ej: "Cambio de filtro" sobra si ya está "Cambio de filtro de aceite".
+    Nunca poda filtro de aire/polen contra un pack de aceite.
     """
-    stop = {'de', 'del', 'la', 'el', 'los', 'las', 'y', 'para', 'con', 'sin', 'a'}
-    enriched: list[tuple[str, set[str], dict[str, Any]]] = []
+    enriched: list[tuple[str, set[str], set[str], dict[str, Any]]] = []
     for lin in lineas or []:
         clave = _clave_servicio(lin.get('nombre') or '')
         if not clave:
             continue
-        tokens = {t for t in clave.split() if t and t not in stop}
-        enriched.append((clave, tokens, lin))
+        tokens = _tokens_servicio_util(lin.get('nombre') or '')
+        quals = _qualificadores_servicio(tokens)
+        enriched.append((clave, tokens, quals, lin))
 
     drop: set[int] = set()
-    for i, (ci, ti, _) in enumerate(enriched):
+    for i, (ci, ti, qi, _) in enumerate(enriched):
         if not ti:
             continue
-        for j, (cj, tj, _) in enumerate(enriched):
+        for j, (cj, tj, qj, _) in enumerate(enriched):
             if i == j or not tj:
+                continue
+            # Calificadores distintos (aire vs aceite vs polen) → servicios distintos.
+            if qi and qj and qi != qj:
+                continue
+            if qi - qj:
                 continue
             # i es más genérico / corto y sus tokens están contenidos en j
             if ti < tj or (ti <= tj and len(ci) < len(cj) and ti.issubset(tj)):
                 drop.add(i)
                 break
-    return [lin for idx, (_, _, lin) in enumerate(enriched) if idx not in drop]
+    return [lin for idx, (_, _, _, lin) in enumerate(enriched) if idx not in drop]
 
 
 def _titulo_servicios(lineas: list[dict[str, Any]]) -> str:
@@ -576,9 +694,34 @@ def _merge_linea_servicio(
         return existentes
     out = list(existentes or [])
     for i, lin in enumerate(out):
-        if _clave_servicio(lin.get('nombre') or '') == key:
-            out[i] = {**lin, **nueva}
-            return out
+        nombre_lin = lin.get('nombre') or ''
+        if _clave_servicio(nombre_lin) != key and not _servicios_equivalentes(
+            nombre_lin, nueva.get('nombre') or ''
+        ):
+            continue
+        merged = {**lin, **nueva}
+        # Si el rematch no encontró catálogo, no borres el match previo bueno.
+        if not nueva.get('oferta_servicio_id') and lin.get('oferta_servicio_id'):
+            merged['oferta_servicio_id'] = lin['oferta_servicio_id']
+            merged['precio_catalogo_clp'] = lin.get('precio_catalogo_clp')
+            merged['precio_desde_catalogo'] = lin.get('precio_desde_catalogo')
+            if lin.get('nombre_catalogo'):
+                merged['nombre_catalogo'] = lin.get('nombre_catalogo')
+        if not nueva.get('precio_estimado_historico_clp') and lin.get(
+            'precio_estimado_historico_clp'
+        ):
+            merged['precio_estimado_historico_clp'] = lin['precio_estimado_historico_clp']
+            merged['precio_estimado_muestras'] = lin.get('precio_estimado_muestras')
+        # Conserva el nombre más claro para el taller (evita SKU "… filtro Gasolina").
+        nom_nuevo = (nueva.get('nombre') or '').strip()
+        nom_prev = (lin.get('nombre') or '').strip()
+        if nom_prev and nom_nuevo:
+            if 'gasolina' in nom_nuevo.lower() and 'gasolina' not in nom_prev.lower():
+                merged['nombre'] = nom_prev
+            elif len(nom_prev) < len(nom_nuevo) and _servicios_equivalentes(nom_prev, nom_nuevo):
+                merged['nombre'] = nom_prev
+        out[i] = merged
+        return out
     out.append(nueva)
     return out
 
@@ -746,16 +889,24 @@ def crear_cotizacion_borrador_desde_agente(
         )
         precio_cat = 0
         oferta_id = None
+        # Mantener el nombre pedido por el cliente; el SKU de catálogo va aparte.
         nombre_final = nombre_serv
+        nombre_catalogo = None
         clave_serv = _clave_servicio(nombre_serv)
         con_repuestos = preferencias_repuestos.get(clave_serv, True)
         if oferta:
             precio_cat, _ = precio_publico_oferta(oferta, con_repuestos=con_repuestos)
             oferta_id = oferta.id
-            nombre_final = oferta.servicio.nombre
+            nombre_catalogo = oferta.servicio.nombre
+            # Solo copiar el nombre del catálogo si es match exacto (sin sufijos tipo motor).
+            if normalizar_nombre_servicio(nombre_catalogo) == normalizar_nombre_servicio(
+                nombre_serv
+            ):
+                nombre_final = nombre_catalogo
 
         linea_nueva: dict[str, Any] = {
             'nombre': nombre_final,
+            'nombre_catalogo': nombre_catalogo,
             'oferta_servicio_id': oferta_id,
             'precio_catalogo_clp': precio_cat or None,
             'precio_desde_catalogo': bool(precio_cat),
@@ -815,9 +966,17 @@ def crear_cotizacion_borrador_desde_agente(
         clave_serv = _clave_servicio(lin.get('nombre') or '')
         con_repuestos = preferencias_repuestos.get(clave_serv, True)
         precio_cat, _ = precio_publico_oferta(oferta, con_repuestos=con_repuestos)
+        nombre_cat = oferta.servicio.nombre or ''
+        nombre_lin = (lin.get('nombre') or '').strip()
+        nombre_mostrar = nombre_lin
+        if nombre_cat and normalizar_nombre_servicio(nombre_cat) == normalizar_nombre_servicio(
+            nombre_lin
+        ):
+            nombre_mostrar = nombre_cat
         lineas[i] = {
             **lin,
-            'nombre': oferta.servicio.nombre or lin.get('nombre'),
+            'nombre': nombre_mostrar or nombre_cat,
+            'nombre_catalogo': nombre_cat or lin.get('nombre_catalogo'),
             'oferta_servicio_id': oferta.id,
             'precio_catalogo_clp': precio_cat or None,
             'precio_desde_catalogo': bool(precio_cat),

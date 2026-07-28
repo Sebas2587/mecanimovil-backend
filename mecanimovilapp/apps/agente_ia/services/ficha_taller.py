@@ -319,7 +319,10 @@ def _bloque_catalogo(
 
     lineas = [
         'Catálogo de servicios publicados por el taller '
-        '(usa EXACTAMENTE estos nombres si el cliente pregunta qué servicios ofrecen; '
+        '(si el cliente pregunta qué ofrecen, puedes citar estos nombres; '
+        'para el JSON "servicios" usa nombres cortos del pedido del cliente '
+        '(ej. "Cambio de aceite y filtro"), NO copies sufijos de motor del SKU '
+        'como "Gasolina"/"Diesel" — eso no es filtro de combustible; '
         'NO inventes servicios ni precios que no estén en esta lista; '
         'precios al público incluyen IVA 19%). '
         'CRÍTICO sobre cobertura: un precio SOLO aplica al vehículo del cliente si la '

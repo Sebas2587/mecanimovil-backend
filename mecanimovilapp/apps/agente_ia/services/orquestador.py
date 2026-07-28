@@ -217,8 +217,13 @@ _AGREGAR_A_COTIZACION_RE = re.compile(
 )
 
 # Captura nombres de servicio frecuentes cuando el LLM olvida ponerlos en JSON.
+# Alternativas LARGAS primero: si no, "cambio de filtro de aire" colapsa a "cambio de filtro".
 _SERVICIO_MENCION_RE = re.compile(
     r'\b('
+    r'cambio\s+de\s+filtro\s+de\s+aire|'
+    r'cambio\s+de\s+filtro\s+de\s+(?:polen|habit[aá]culo|cabina)|'
+    r'cambio\s+de\s+filtro\s+de\s+(?:aceite|combustible|gasolina|bencina)|'
+    r'filtro\s+de\s+(?:aire|polen|habit[aá]culo|cabina|aceite|combustible)|'
     r'cambio\s+de\s+aceite(?:\s+y\s+filtro)?|'
     r'cambio\s+de\s+filtro(?:\s+de\s+aceite)?|'
     r'cambio\s+de\s+pastillas(?:\s+de\s+freno)?(?:\s+delanteras|\s+traseras)?|'
@@ -255,7 +260,12 @@ def _extraer_servicios_mencionados_en_texto(texto: str) -> list[str]:
         nombre = re.sub(r'\s+', ' ', (m.group(1) or '').strip())
         if not nombre:
             continue
+        # "filtro de aire" suelto → servicio de cambio (el taller cotiza el cambio).
+        if re.match(r'^filtro\s+de\s+', nombre, re.IGNORECASE):
+            nombre = 'Cambio de ' + nombre[0].lower() + nombre[1:]
         # Normaliza capitalización simple
+        if not nombre:
+            continue
         nombre = nombre[0].upper() + nombre[1:]
         clave = _clave_servicio_dedup(nombre)
         if clave and clave not in vistos:
@@ -328,23 +338,36 @@ def _asegurar_servicios_para_actualizar_cotizacion(
         return datos
     from mecanimovilapp.apps.agente_ia.services.cotizacion_borrador import _parse_servicios_solicitados
 
+    from mecanimovilapp.apps.agente_ia.services.cotizacion_borrador import (
+        _expandir_nombre_servicio,
+        _servicios_equivalentes,
+    )
+
     datos = dict(datos or {})
     lista = list(_parse_servicios_solicitados(datos))
     claves = {_clave_servicio_dedup(n) for n in lista}
+
+    def _ya_incluido(nombre: str) -> bool:
+        clave = _clave_servicio_dedup(nombre)
+        if clave and clave in claves:
+            return True
+        return any(_servicios_equivalentes(nombre, n) for n in lista)
+
     # Conserva los ya cotizados para no perder diagnóstico al sumar aceite, etc.
     for lin in (cot.metadata or {}).get('servicios_lineas') or []:
         if not isinstance(lin, dict):
             continue
         nombre = (lin.get('nombre') or '').strip()
-        clave = _clave_servicio_dedup(nombre)
-        if nombre and clave and clave not in claves:
-            lista.append(nombre)
-            claves.add(clave)
+        if not nombre or _ya_incluido(nombre):
+            continue
+        lista.append(nombre)
+        claves.add(_clave_servicio_dedup(nombre))
     for nombre in _extraer_servicios_mencionados_en_texto(texto_cliente):
-        clave = _clave_servicio_dedup(nombre)
-        if clave and clave not in claves:
-            lista.append(nombre)
-            claves.add(clave)
+        for parte in _expandir_nombre_servicio(nombre) or [nombre]:
+            if not parte or _ya_incluido(parte):
+                continue
+            lista.append(parte)
+            claves.add(_clave_servicio_dedup(parte))
     if lista:
         datos['servicios'] = lista
     return datos
@@ -817,6 +840,7 @@ REGLAS DE CONVERSACIÓN:
 13. cliente_pide_cotizacion=true únicamente si en este turno (o el historial reciente) el cliente pidió precio/cotización/presupuesto de forma explícita o claramente implícita. NUNCA lo marques true solo porque ya tienes patente+teléfono+síntoma completos — la disposición de datos NO es lo mismo que la intención de compra. Si el cliente usa una NEGACIÓN cerca de la palabra ("no he pedido cotización", "todavía no quiero cotizar", "aún no"), es FALSO aunque la palabra "cotización" aparezca en su frase — está aclarando que NO la pidió, no pidiéndola.
 14. UNA SOLA COTIZACIÓN por conversación/vehículo: si el cliente pide otro servicio para el MISMO auto, agrégalo a la misma cotización (lista "servicios") — NO trates cada servicio como cotización aparte. El sistema edita un único borrador hasta que el taller lo cierre/envíe. Si el taller ya envió una cotización y el cliente pide agregar/modificar algo, marca listo_para_cotizar=true para actualizar ESA misma cotización (se reabrirá a borrador); NO prometas una cotización nueva aparte.
 14b. SERVICIOS ESTABLES: usa nombres cortos y consistentes en "servicios" (ej. "Diagnóstico de frenos", "Cambio de pastillas de freno delanteras"). NO repitas ni reformules un servicio ya capturado. NO agregues variantes con paréntesis como "(con repuestos)" en el nombre — usa repuestos_incluidos_ultimo_servicio. NO fusiones dos servicios en una frase ("diagnóstico y pastillas") si ya existen por separado. CRÍTICO: NUNCA metas la modalidad dentro del nombre del servicio (mal: "Cambio de aceite a domicilio", "Diagnóstico en taller") — la modalidad va SOLO en el campo "modalidad". Si mezclas modalidad en el nombre, el sistema no puede encontrar el precio real del catálogo y termina diciendo que no hay tarifa aunque sí exista. Usa solo el nombre del servicio en sí (ej. "Cambio de aceite").
+14b2. ACEITE Y FILTROS: "cambio de aceite y filtro" = UN servicio (aceite + filtro de ACEITE). NUNCA lo mapees a "filtro Gasolina/combustible" ni copies SKUs del catálogo con sufijo de motor. Si el cliente pide además filtro de aire y/o polen/habitáculo, agrégalos como entradas SEPARADAS en "servicios" (ej. ["Cambio de aceite y filtro", "Cambio de filtro de aire", "Cambio de filtro de polen"]). Al actualizar una cotización, "servicios" debe incluir TODOS los pedidos (anteriores + nuevos), no solo el último.
 15. PRECIOS (ANTI-ALUCINACIÓN, CRÍTICO): Solo puedes mencionar un monto en pesos ($, CLP) si ese EXACTO valor aparece en la FICHA OPERATIVA / catálogo publicado para ese servicio y vehículo. Si el cliente pregunta "cuánto sale / cuánto cuesta" y NO hay precio publicado (ej. inspección/diagnóstico a domicilio sin tarifa en catálogo):
     - PROHIBIDO inventar cifras, rangos ("entre X e Y"), "unos treinta lucas", o dejar huecos tipo "el valor es de,".
     - PROHIBIDO inventar políticas de descuento ("se descuenta del total", "se abona a la reparación").
