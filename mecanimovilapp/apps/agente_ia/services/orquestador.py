@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import time
+import unicodedata
 from typing import Any
 
 import requests
@@ -193,10 +194,246 @@ def _contexto_minimo_para_cotizar(
     if requiere_direccion_antes_de_cotizar:
         modalidad = (datos.get('modalidad') or '').strip().lower()
         if modalidad != 'taller':
+            # Cliente pidió cotización primero / dirección después → no bloquear borrador.
+            if datos.get('direccion_diferida'):
+                return True
+            # Comuna o sector basta para armar borrador (calle exacta al coordinar visita).
             direccion = (datos.get('direccion_servicio') or '').strip()
-            if len(direccion) < 5:
+            if len(direccion) < 4:
                 return False
     return True
+
+
+# Comunas frecuentes RM + algunas regiones (match case-insensitive).
+_COMUNAS_CL_KNOWN = frozenset(
+    {
+        'vitacura',
+        'las condes',
+        'providencia',
+        'santiago',
+        'ñuñoa',
+        'nunoa',
+        'la reina',
+        'lo barnechea',
+        'huechuraba',
+        'recoleta',
+        'independencia',
+        'maipu',
+        'maipú',
+        'puente alto',
+        'la florida',
+        'macul',
+        'peñalolen',
+        'penalolen',
+        'san miguel',
+        'la cisterna',
+        'el bosque',
+        'san bernardo',
+        'colina',
+        'quilicura',
+        'renca',
+        'cerro navia',
+        'pudahuel',
+        'estacion central',
+        'estación central',
+        'conchali',
+        'conchalí',
+        'lo prado',
+        'pedro aguirre cerda',
+        'san joaquin',
+        'san joaquín',
+        'la granja',
+        'la pintana',
+        'el monte',
+        'talagante',
+        'buin',
+        'paine',
+        'melipilla',
+        'valparaiso',
+        'valparaíso',
+        'viña del mar',
+        'vina del mar',
+        'concepcion',
+        'concepción',
+        'temuco',
+        'antofagasta',
+        'la serena',
+        'rancagua',
+    }
+)
+
+_DIRECCION_CAPTURA_RE = re.compile(
+    r'(?:'
+    r'(?:vivo|estoy|quedo|qued[eé]|ando|andamos)\s+en\s+'
+    r'(?P<p1>[A-Za-zÁÉÍÓÚáéíóúÑñÜü][A-Za-zÁÉÍÓÚáéíóúÑñÜü\s]{2,40})|'
+    r'comuna(?:\s+de)?\s+(?P<p2>[A-Za-zÁÉÍÓÚáéíóúÑñÜü][A-Za-zÁÉÍÓÚáéíóúÑñÜü\s]{2,40})|'
+    r'(?:sector|barrio)\s+(?P<p3>[A-Za-zÁÉÍÓÚáéíóúÑñÜü][A-Za-zÁÉÍÓÚáéíóúÑñÜü\s]{2,40})|'
+    r'^(?P<p4>[A-Za-zÁÉÍÓÚáéíóúÑñÜü][A-Za-zÁÉÍÓÚáéíóúÑñÜü\s]{2,30})\s*,?\s+'
+    r'ya\s+(?:te|me|le)\s+'
+    r')',
+    re.IGNORECASE,
+)
+
+_DIRECCION_DIFERIDA_RE = re.compile(
+    r'(?:'
+    r'(?:te\s+)?(?:la|lo)\s+doy\s+(?:despu[eé]s|luego|al\s+aprobar|de\s+aprobar)|'
+    r'(?:direcci[oó]n|calle).{0,60}(?:despu[eé]s|luego|cuando\s+(?:apruebe|acepte|tenga)|primero)|'
+    r'(?:cotizaci[oó]n|presupuesto|precio).{0,40}(?:primero|antes)|'
+    r'(?:primero).{0,40}(?:cotizaci[oó]n|presupuesto|cu[aá]nto)|'
+    r'aprobar(?:se)?\s+la\s+cotizaci[oó]n|'
+    r'saber\s+primero\s+cu[aá]nto'
+    r')',
+    re.IGNORECASE,
+)
+
+_RE_SALUDO_AGENTE = re.compile(
+    r'^\s*Hola,?\s+soy\s+.+\s+de\s+.+?(?:\.|!|\n|$)',
+    re.IGNORECASE,
+)
+
+_STOP_LUGAR = frozenset(
+    {
+        'el',
+        'la',
+        'los',
+        'las',
+        'un',
+        'una',
+        'mi',
+        'casa',
+        'auto',
+        'taller',
+        'domicilio',
+        'semana',
+        'sabado',
+        'sábado',
+        'lunes',
+        'martes',
+        'miercoles',
+        'miércoles',
+        'jueves',
+        'viernes',
+        'domingo',
+    }
+)
+
+
+def _normalizar_lugar(texto: str) -> str:
+    t = re.sub(r'\s+', ' ', (texto or '').strip(' .,;:!?'))
+    # Corta coletillas ("Vitacura pero quiero…")
+    t = re.split(r'\b(?:pero|y|aunque|porque|para|donde|dónde)\b', t, maxsplit=1, flags=re.I)[0]
+    return t.strip(' .,;:!?')
+
+
+def _parece_comuna_o_sector(texto: str) -> bool:
+    t = _normalizar_lugar(texto)
+    if len(t) < 4 or len(t) > 40:
+        return False
+    clave = ''.join(
+        c for c in unicodedata.normalize('NFKD', t.lower()) if not unicodedata.combining(c)
+    )
+    if clave in _COMUNAS_CL_KNOWN:
+        return True
+    # Nombre propio razonable (1–3 palabras, sin dígitos).
+    palabras = [p for p in t.split() if p]
+    if not (1 <= len(palabras) <= 3):
+        return False
+    if any(ch.isdigit() for ch in t):
+        return False
+    if all(p.lower() in _STOP_LUGAR for p in palabras):
+        return False
+    return t[0].isalpha()
+
+
+def _extraer_ubicacion_cliente(texto: str) -> str:
+    """Heurística: comuna/sector del mensaje del cliente (no depende del LLM)."""
+    raw = (texto or '').strip()
+    if not raw:
+        return ''
+    m = _DIRECCION_CAPTURA_RE.search(raw)
+    if m:
+        cand = m.group('p1') or m.group('p2') or m.group('p3') or m.group('p4') or ''
+        cand = _normalizar_lugar(cand)
+        if _parece_comuna_o_sector(cand):
+            return cand[0].upper() + cand[1:] if cand else ''
+    # Mensaje corto que es solo la comuna ("Vitacura")
+    if _parece_comuna_o_sector(raw) and len(raw.split()) <= 3:
+        t = _normalizar_lugar(raw)
+        return t[0].upper() + t[1:]
+    # Comuna conocida embebida
+    low = ''.join(
+        c for c in unicodedata.normalize('NFKD', raw.lower()) if not unicodedata.combining(c)
+    )
+    for comuna in sorted(_COMUNAS_CL_KNOWN, key=len, reverse=True):
+        if re.search(rf'\b{re.escape(comuna)}\b', low):
+            # Restaura forma legible desde el texto original si es posible
+            return comuna.title().replace('Nunoa', 'Ñuñoa').replace('Penalolen', 'Peñalolén')
+    return ''
+
+
+def _cliente_diferir_direccion(texto: str) -> bool:
+    return bool(_DIRECCION_DIFERIDA_RE.search(texto or ''))
+
+
+def _agente_ya_respondio(conversation: Conversation) -> bool:
+    """True si el asistente IA ya envió al menos un mensaje en este chat."""
+    for msg in conversation.messages.filter(direction='outbound').order_by('-timestamp')[:30]:
+        meta = msg.channel_metadata or {}
+        if meta.get('from_agente_ia'):
+            return True
+    return False
+
+
+def _enriquecer_ubicacion_en_datos(datos: dict, texto_cliente: str) -> dict:
+    """Persiste comuna/sector y flag de dirección diferida sin depender del LLM."""
+    out = dict(datos or {})
+    ubic = _extraer_ubicacion_cliente(texto_cliente)
+    actual = (out.get('direccion_servicio') or '').strip()
+    if ubic:
+        if not actual:
+            out['direccion_servicio'] = ubic
+        elif ubic.lower() not in actual.lower() and not re.search(r'\d', actual):
+            # Actual es solo comuna/sector corto → actualiza; no pisa calle+número.
+            out['direccion_servicio'] = ubic
+    if _cliente_diferir_direccion(texto_cliente):
+        out['direccion_diferida'] = True
+    return out
+
+
+def _nota_ubicacion_para_prompt(datos: dict) -> str:
+    dir_txt = (datos.get('direccion_servicio') or '').strip()
+    diferida = bool(datos.get('direccion_diferida'))
+    partes: list[str] = []
+    if dir_txt:
+        partes.append(
+            f'Ubicación YA CAPTURADA del cliente: "{dir_txt}". '
+            'PROHIBIDO volver a preguntar comuna/sector. '
+            'Calle exacta SOLO al coordinar visita o si el cliente la ofrece.'
+        )
+    if diferida:
+        partes.append(
+            'El cliente pidió cotización ANTES de dar dirección exacta. '
+            'Respeta eso: NO insistas en la calle. Arma el borrador y dile que '
+            'la dirección se coordina al aprobar/agendar.'
+        )
+    return ' '.join(partes)
+
+
+def _quitar_re_saludo(burbujas: list[str], *, ya_presentado: bool) -> list[str]:
+    if not ya_presentado or not burbujas:
+        return burbujas
+    out: list[str] = []
+    for i, b in enumerate(burbujas):
+        txt = (b or '').strip()
+        if not txt:
+            continue
+        if i == 0 and _RE_SALUDO_AGENTE.search(txt):
+            limpio = _RE_SALUDO_AGENTE.sub('', txt).strip()
+            if limpio:
+                out.append(limpio)
+            continue
+        out.append(txt)
+    return out or burbujas
 
 
 _AGREGAR_A_COTIZACION_RE = re.compile(
@@ -411,6 +648,7 @@ _CLIENTE_PIDE_PRECIO_RE = re.compile(
     r'cu[aá]nto\s+(?:sale|cuesta|vale|cobra|cobran)|'
     r'precio|tarifa|presupuesto|cotizaci[oó]n|cotizar|'
     r'vale\s+la\s+pena|'
+    r'qu[eé]\s+conlleva|'
     r'cu[aá]nto\s+me\s+(?:sale|cuesta|cobran)'
     r')\b',
     re.IGNORECASE,
@@ -682,29 +920,42 @@ def _construir_prompt_agente(
     tiene_estimado_historico: bool = False,
     reglas_comerciales: str = '',
     calificacion_lead: str = '',
+    primer_contacto: bool = True,
+    nota_ubicacion: str = '',
 ) -> str:
     datos_json = json.dumps(datos_capturados or {}, ensure_ascii=False)
     tiene_contexto = bool((chunks_texto or '').strip())
     nombre = (nombre_taller or '').strip() or 'el taller'
     agente = (nombre_agente or '').strip()
+    if primer_contacto:
+        flag_contacto = (
+            'PRIMER_CONTACTO=true. Puedes presentarte una sola vez en este turno si el cliente solo saluda.'
+        )
+    else:
+        flag_contacto = (
+            'PRIMER_CONTACTO=false. La conversación YA empezó. '
+            f'PROHIBIDO reiniciar con "Hola, soy {agente or "…"} de {nombre}" u otra bienvenida. '
+            'Continúa el hilo con naturalidad.'
+        )
     if agente:
         bienvenida_default = (
             f'Hola, soy {agente} de {nombre}. ¿En qué te puedo ayudar con el auto?'
         )
         identidad = (
             f'Tu nombre es "{agente}" y representas al taller "{nombre}". '
-            f'En el primer saludo o cuando te presentes, di que eres {agente} de {nombre} '
-            f'(ej. "Hola, soy {agente} de {nombre}"). Habla SIEMPRE como {agente} del taller {nombre}.'
+            f'Solo en el PRIMER contacto puedes presentarte como {agente} de {nombre}. '
+            f'Habla SIEMPRE como {agente} del taller {nombre}.'
         )
         regla_presentacion = (
             f'0a. SOLO SALUDO / social ("hola", "buenas noches", "hey") sin problema ni pedido:\n'
-            f'    - Responde cálido y breve (1-2 frases). Preséntate como "{agente} de {nombre}" si es el primer contacto.\n'
+            f'    - Responde cálido y breve (1-2 frases). '
+            f'Preséntate como "{agente} de {nombre}" SOLO si PRIMER_CONTACTO=true.\n'
             f'    - Pregunta abierta tipo "¿en qué te puedo ayudar?" / "¿qué le pasa al auto?".\n'
             f'    - PROHIBIDO en este turno pedir patente, teléfono, modalidad, dirección o listar checklist de datos.'
         )
         regla_1b = (
-            f'1b. En el primer saludo o cuando te presentes, usa tu nombre "{agente}" y el del taller "{nombre}" '
-            f'(ej. "soy {agente} de {nombre}"). No digas solo "asistente del taller" ni te presentes sin nombrarte.'
+            f'1b. Si PRIMER_CONTACTO=true y te presentas, usa tu nombre "{agente}" y el del taller "{nombre}". '
+            f'Si PRIMER_CONTACTO=false, NO te presentes de nuevo.'
         )
     else:
         bienvenida_default = (
@@ -716,14 +967,28 @@ def _construir_prompt_agente(
         )
         regla_presentacion = (
             f'0a. SOLO SALUDO / social ("hola", "buenas noches", "hey") sin problema ni pedido:\n'
-            f'    - Responde cálido y breve (1-2 frases). Preséntate con "{nombre}" si es el primer contacto.\n'
+            f'    - Responde cálido y breve (1-2 frases). '
+            f'Preséntate con "{nombre}" SOLO si PRIMER_CONTACTO=true.\n'
             f'    - Pregunta abierta tipo "¿en qué te puedo ayudar?" / "¿qué le pasa al auto?".\n'
             f'    - PROHIBIDO en este turno pedir patente, teléfono, modalidad, dirección o listar checklist de datos.'
         )
         regla_1b = (
-            f'1b. En el primer saludo o cuando te presentes, usa el nombre real del taller ("{nombre}"). '
-            f'No digas "asistente del taller" sin nombrarlo.'
+            f'1b. Si PRIMER_CONTACTO=true y te presentas, usa el nombre real del taller ("{nombre}"). '
+            f'Si PRIMER_CONTACTO=false, NO te presentes de nuevo.'
         )
+    bloque_ubicacion = (
+        f'\nUBICACIÓN / DIRECCIÓN (sistema — respeta esto por encima de preguntar de nuevo):\n'
+        f'{nota_ubicacion}\n'
+        if (nota_ubicacion or '').strip()
+        else ''
+    )
+    bloque_bienvenida = (
+        f'Mensaje de bienvenida (tono/referencia opcional SOLO si PRIMER_CONTACTO=true; '
+        f'NO lo pegues entero ni lo combines con patente+modalidad+síntoma):\n'
+        f'{mensaje_bienvenida or bienvenida_default}\n'
+        if primer_contacto
+        else 'Mensaje de bienvenida: NO APLICA (conversación en curso — no reinicies).\n'
+    )
     regla_15e = ''
     if tiene_estimado_historico:
         regla_15e = """
@@ -741,6 +1006,9 @@ Tu prioridad en este orden:
 4) Pedir PATENTE cuando ya hay síntoma o el cliente quiere precio/agenda (obligatoria antes de cotizar/agendar, NO en el primer "hola").
 5) Cotizar SOLO cuando el cliente quiera precio/presupuesto Y ya haya patente + contexto suficiente.
 
+Estado de contacto (OBLIGATORIO):
+{flag_contacto}
+
 Nombre real del taller (úsarlo cuando hables del taller):
 {nombre}
 
@@ -750,9 +1018,7 @@ Nombre del agente / vendedor (cómo debes presentarte; vacío = solo usar el nom
 Instrucciones del taller (guía de fondo; NO las conviertas en checklist del primer mensaje — aplica el ritmo natural de abajo):
 {instrucciones or 'Sé cordial, profesional y humano. Primero conversa; cotiza cuando el cliente lo pida o cuando el problema ya esté claro.'}
 
-Mensaje de bienvenida (tono/referencia opcional para el primer contacto; NO lo pegues entero ni lo combines con patente+modalidad+síntoma en un solo mensaje):
-{mensaje_bienvenida or bienvenida_default}
-
+{bloque_bienvenida}{bloque_ubicacion}
 FICHA OPERATIVA DEL TALLER (verdad operativa en vivo: no inventes precios ni servicios fuera de catálogo/especialidades. Marcas fuera de lista: NO rechaces el lead. Categorías de servicio fuera de especialidad: no cotices ese tipo — primero diagnostica con datos reales y explica con sutileza):
 ---
 {contexto_operativo_taller or 'Sin datos operativos configurados todavía.'}
@@ -855,11 +1121,15 @@ REGLAS DE CONVERSACIÓN:
 15d. REPUESTOS Y GARANTÍA (proactivo): si la FICHA OPERATIVA indica repuestos con marca/calidad (Original, OEM, Alternativo) y/o días de garantía para un servicio, menciónalo al explicar ese servicio o cuando el cliente pregunte por repuestos ("¿con qué pieza queda?", "¿es original?"). Ofrece la opción configurada en catálogo con naturalidad (ej. "trabajamos con disco marca X, calidad OEM, con garantía de N días"). PROHIBIDO inventar marcas, calidades o plazos de garantía que no figuren en la ficha.{regla_15e}
 16. ENVÍO: TÚ NO envías la cotización por WhatsApp ni confirmas precios finales. Solo preparas el borrador; un humano del taller la revisa en "Cotizar con IA" y la envía. Dile al cliente que el taller le enviará la cotización.
 17. Si el cliente menciona preferencia de día/hora/técnico para la visita, guárdalo en preferencias_agenda (fecha ISO si puedes, hora HH:MM, tecnico_nombre, nota). Si el día/hora propuesto cae dentro del horario del taller en la FICHA OPERATIVA, confirma verbalmente de forma proactiva (ej. "perfecto, tráelo el jueves a primera hora") y marca confirmado_verbal=true. Esto NO reserva un cupo formal; el agendamiento real ocurre al aceptar la cotización. Si el día cae fuera de horario, indícalo con amabilidad y sugiere el horario más cercano disponible.
-18. MODALIDAD Y DIRECCIÓN (CRÍTICO — CERO INVENCIÓN): modalidad debe ser "taller" o "domicilio" según lo que pida el cliente Y lo que permita la FICHA OPERATIVA (bloque "Modalidad de atención del taller"). Pídela solo cuando sea relevante (cliente quiere venir/ir, o vas a cotizar/agendar) — nunca en un saludo vacío.
-    - Si la FICHA dice que el taller SOLO atiende a domicilio: PROHIBIDO ofrecer, mencionar o inventar un local/sucursal física, calle, número o comuna del taller. NUNCA digas que "para casos complejos hay que llevarlo al taller" ni des una dirección — esa modalidad no existe para este taller. Si el cliente pregunta por una dirección, aclara que la atención es a domicilio y pide LA DIRECCIÓN DEL CLIENTE.
-    - Si modalidad=domicilio, OBLIGATORIO pedir y guardar direccion_servicio (calle/comuna del CLIENTE). Sin dirección no digas que ya quedó a domicilio.
-    - Si el taller SÍ tiene local (modalidad "en taller" o "ambas"): SOLO puedes dar la dirección física si aparece EXACTA en la FICHA OPERATIVA ("Dirección física EXACTA y verificada del taller"). PROHIBIDO inventar, completar o "adivinar" calle/número/comuna aunque el cliente insista o pregunte varias veces. Si la ficha indica que no hay dirección registrada, dilo tal cual (no inventes) y ofrece confirmarla al coordinar o escala a humano si el cliente insiste.
-    - Si es taller, modalidad="taller" y direccion_servicio puede ir vacío (se usa la dirección del taller, no la del cliente).
+18. MODALIDAD Y DIRECCIÓN (CRÍTICO — CERO INVENCIÓN): modalidad debe ser "taller" o "domicilio" según lo que pida el cliente Y lo que permita la FICHA OPERATIVA. Pídela solo cuando sea relevante — nunca en un saludo vacío.
+    - Si la FICHA dice SOLO a domicilio: PROHIBIDO inventar local/sucursal. Si pregunta por dirección del taller, aclara que trabajan a domicilio.
+    - Para BORRADOR a domicilio basta COMUNA o sector en direccion_servicio (ej. "Vitacura"). NO exijas calle/número para armar cotización.
+    - Calle exacta se pide SOLO al coordinar la visita o cuando el cliente ya aceptó/aprobó la cotización.
+    - Si el cliente dice que dará la dirección DESPUÉS de ver/aprobar la cotización ("te la doy al aprobar", "primero el precio"): respeta eso. NO vuelvas a pedir la dirección. Marca listo_para_cotizar si ya hay patente+teléfono+servicio+pedido de precio (y comuna si la dio). Guarda direccion_diferida implícitamente avanzando al borrador.
+    - Si YA tienes comuna/sector en "Datos ya capturados" o en el bloque UBICACIÓN del sistema: PROHIBIDO preguntarla de nuevo (aunque el cliente se moleste diciendo "ya te lo dije").
+    - Si el taller tiene local: SOLO da la dirección EXACTA de la FICHA. PROHIBIDO inventar calle/número/comuna.
+    - Si modalidad=taller, direccion_servicio puede ir vacío.
+18b. INTENCIÓN DEL CLIENTE (CRÍTICO): si pide "cuánto vale", "qué conlleva", "quiero cotizar" o "envíame la cotización primero", RESPONDE eso (qué incluye + armar borrador). NO desvíes a pedir comuna/dirección/preferencia de día otra vez si ya la tienes o si el cliente la aplazó.
 19. TELÉFONO Y RITMO COMERCIAL (CRÍTICO — no ser insistente): pide el teléfono SOLO cuando el cliente muestre intención real de avanzar (pide presupuesto/cotización/precio, quiere agendar o llevar el auto, pregunta "cuándo puedo llevarlo", o ya aceptó que le armes el borrador). NO lo pidas automáticamente solo porque ya tienes patente + síntoma: mientras el cliente siga en modo consulta/duda técnica (preguntando causas, qué puede ser, si es grave, etc.) quédate en modo asesoría (regla 3b) y NO reintroduzcas el pedido de teléfono en cada respuesta — se siente a bot insistente. Guárdalo en datos_actualizados.cliente_telefono cuando lo entregue. Sin teléfono no marques listo_para_cotizar=true. Si ya está, no lo vuelvas a pedir.
 20. KILOMETRAJE: si el contexto de patente trae km registrados, trátarlo SOLO como referencia aproximada / último dato conocido — el auto pudo seguir circulando. NUNCA digas "tu auto tiene X km exactos". Puedes decir "según registro, el último km conocido era aprox. X; ¿me confirmas el kilometraje actual?" y guarda vehiculo.kilometraje_actual si el cliente lo confirma.
 21. MENSAJES CORTOS Y SEPARADOS (como WhatsApp humano): responde con "respuestas_cliente" = lista de 1 a 3 burbujas.
@@ -898,7 +1168,7 @@ Responde SOLO JSON válido:
     "servicio_nombre": "",
     "servicios": [],
     "descripcion_problema": "",
-    "modalidad": "taller",
+    "modalidad": "",
     "direccion_servicio": "",
     "urgencia": "",
     "preferencias_agenda": {{"fecha": "", "hora": "", "tecnico_nombre": "", "nota": "", "confirmado_verbal": false}}
@@ -1499,12 +1769,25 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         score=int(getattr(lead_prev, 'score', 0) or 0),
     )
 
+    # Persistencia determinística de comuna/objeción "cotización primero"
+    # antes del LLM (para que el prompt vea lo ya dicho).
+    datos_para_prompt = _enriquecer_ubicacion_en_datos(
+        dict(sesion.datos_capturados or {}),
+        texto_cliente,
+    )
+    if getattr(taller, 'modalidad_atencion', '') == 'a_domicilio':
+        datos_para_prompt['modalidad'] = 'domicilio'
+    elif re.search(r'\ba\s+domicilio\b', texto_cliente or '', re.I):
+        datos_para_prompt['modalidad'] = 'domicilio'
+    ya_presentado = _agente_ya_respondio(conversation)
+    nota_ubic = _nota_ubicacion_para_prompt(datos_para_prompt)
+
     prompt = _construir_prompt_agente(
         nombre_taller=(taller.nombre or '').strip(),
         nombre_agente=(config.nombre_agente or '').strip(),
         instrucciones=config.instrucciones_personalizadas,
         chunks_texto=chunks_texto,
-        datos_capturados=sesion.datos_capturados,
+        datos_capturados=datos_para_prompt,
         chat_reciente=_mensajes_recientes(conversation),
         mensaje_cliente=texto_cliente,
         mensaje_bienvenida=config.mensaje_bienvenida,
@@ -1517,6 +1800,8 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         tiene_estimado_historico=tiene_estimado_historico,
         reglas_comerciales=construir_reglas_comerciales(config),
         calificacion_lead=bloque_lead,
+        primer_contacto=not ya_presentado,
+        nota_ubicacion=nota_ubic,
     )
 
     decision, error = _llamar_gemini_agente(prompt)
@@ -1532,6 +1817,22 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         return {'ok': False, 'error': error}
 
     datos = _merge_datos(sesion.datos_capturados, decision.get('datos_actualizados') or {})
+    # Heurística gana al LLM vacío: comuna dicha por el cliente + dirección diferida.
+    datos = _enriquecer_ubicacion_en_datos(datos, texto_cliente)
+    if getattr(taller, 'modalidad_atencion', '') == 'a_domicilio':
+        datos['modalidad'] = 'domicilio'
+    elif re.search(r'\ba\s+domicilio\b', texto_cliente or '', re.I) and not (
+        datos.get('modalidad') or ''
+    ).strip():
+        datos['modalidad'] = 'domicilio'
+    # Conserva flags/ubicación ya capturados si el LLM los borró.
+    prev_datos = sesion.datos_capturados or {}
+    if prev_datos.get('direccion_diferida') and not datos.get('direccion_diferida'):
+        datos['direccion_diferida'] = True
+    if (prev_datos.get('direccion_servicio') or '').strip() and not (
+        datos.get('direccion_servicio') or ''
+    ).strip():
+        datos['direccion_servicio'] = prev_datos['direccion_servicio']
     rep_flag = decision.get('repuestos_incluidos_ultimo_servicio')
     if rep_flag is not None:
         datos['repuestos_incluidos_ultimo_servicio'] = rep_flag
@@ -1581,6 +1882,7 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
     necesita_humano = bool(decision.get('necesita_humano'))
     listo_cotizar = bool(decision.get('listo_para_cotizar'))
     respuestas = _extraer_respuestas_cliente(decision)
+    respuestas = _quitar_re_saludo(respuestas, ya_presentado=ya_presentado)
     respuesta = ' '.join(respuestas).strip()
     cliente_pide_cotizacion = bool(decision.get('cliente_pide_cotizacion'))
     intencion = (decision.get('intencion') or '').strip().lower()
@@ -1592,6 +1894,18 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         cliente_pide_cotizacion = False
         if intencion in ('cotizacion', 'cotizar', 'presupuesto'):
             intencion = ''
+    # Si el texto pide precio/cotización (o aplaza dirección tras pedirla),
+    # no dejamos que el LLM diluya la intención pidiendo calle otra vez.
+    if not _cliente_niega_pedir_precio(texto_cliente) and (
+        _CLIENTE_PIDE_PRECIO_RE.search(texto_cliente or '')
+        or (
+            datos.get('direccion_diferida')
+            and _CLIENTE_PIDE_PRECIO_RE.search(texto_cliente or '')
+        )
+    ):
+        cliente_pide_cotizacion = True
+        if intencion not in ('cotizacion', 'cotizar', 'presupuesto'):
+            intencion = 'cotizacion'
     cliente_pide_precio = _cliente_pide_precio_en_turno(
         texto_cliente=texto_cliente,
         cliente_pide_cotizacion=cliente_pide_cotizacion,
@@ -1678,14 +1992,33 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             taller.id,
         )
 
+    requiere_dir = bool(getattr(config, 'requiere_direccion_antes_de_cotizar', False))
+    contexto_ok = _contexto_minimo_para_cotizar(
+        datos,
+        requiere_direccion_antes_de_cotizar=requiere_dir,
+    )
+
+    # Si el cliente pidió precio y ya hay patente+teléfono(+comuna/diferida),
+    # no dependemos de que el LLM marque listo (suele quedarse pidiendo calle).
+    if (
+        not listo_cotizar
+        and not modifica_cotizacion
+        and cliente_pide_cotizacion
+        and contexto_ok
+    ):
+        listo_cotizar = True
+        logger.info(
+            'Forzando listo_para_cotizar: cliente pidió precio con contexto mínimo '
+            '(conv=%s taller=%s dir=%r diferida=%s)',
+            conversation.id,
+            taller.id,
+            (datos.get('direccion_servicio') or '')[:40],
+            bool(datos.get('direccion_diferida')),
+        )
+
     # Válvula de seguridad: no cotizar “de oficio” sin contexto ni pedido del cliente.
     if listo_cotizar:
-        if not _contexto_minimo_para_cotizar(
-            datos,
-            requiere_direccion_antes_de_cotizar=bool(
-                getattr(config, 'requiere_direccion_antes_de_cotizar', False)
-            ),
-        ):
+        if not contexto_ok:
             # Al actualizar cotización existente, no exigir de nuevo dirección/teléfono
             # si el borrador ya los tenía (el cliente solo suma un servicio).
             cot_abierta = _cotizacion_editable_sesion(sesion)
