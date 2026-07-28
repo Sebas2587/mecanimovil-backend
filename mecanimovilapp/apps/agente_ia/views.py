@@ -103,16 +103,20 @@ class AgenteIaViewSet(viewsets.ViewSet):
         taller = self._taller(request)
         if request.method == 'GET':
             docs = TallerConocimientoDocumento.objects.filter(taller=taller).order_by('-creado_en')
-            return Response(TallerConocimientoDocumentoSerializer(docs, many=True).data)
+            return Response(
+                TallerConocimientoDocumentoSerializer(
+                    docs, many=True, context={'request': request}
+                ).data
+            )
 
-        ser = TallerConocimientoDocumentoSerializer(data=request.data)
+        ser = TallerConocimientoDocumentoSerializer(data=request.data, context={'request': request})
         ser.is_valid(raise_exception=True)
         if not ser.validated_data.get('archivo') and not (ser.validated_data.get('texto_pegado') or '').strip():
             raise ValidationError({'detail': 'Sube un archivo o pega texto.'})
         doc = ser.save(taller=taller, creado_por=request.user)
         procesar_documento_conocimiento_task.delay(doc.id)
         return Response(
-            TallerConocimientoDocumentoSerializer(doc).data,
+            TallerConocimientoDocumentoSerializer(doc, context={'request': request}).data,
             status=status.HTTP_201_CREATED,
         )
 
@@ -122,6 +126,19 @@ class AgenteIaViewSet(viewsets.ViewSet):
         doc = TallerConocimientoDocumento.objects.filter(pk=doc_id, taller=taller).first()
         if not doc:
             return Response({'error': 'Documento no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+        # Borra chunks indexados y el archivo en Cloudflare R2 / storage.
+        from mecanimovilapp.apps.agente_ia.models import TallerConocimientoChunk
+
+        TallerConocimientoChunk.objects.filter(documento=doc).delete()
+        if doc.archivo:
+            try:
+                doc.archivo.delete(save=False)
+            except Exception:
+                import logging
+
+                logging.getLogger(__name__).exception(
+                    'No se pudo borrar archivo R2 del documento %s', doc.id
+                )
         doc.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
