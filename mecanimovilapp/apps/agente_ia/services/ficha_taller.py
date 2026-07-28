@@ -92,8 +92,11 @@ def _bloque_modalidad(taller: Taller) -> str:
             'IMPORTANTE: este taller SOLO atiende a domicilio. NO tiene local/sucursal física a la que '
             'el cliente pueda llevar el vehículo. PROHIBIDO ofrecer, sugerir o inventar una dirección de '
             'taller/sucursal, o decir que "para casos complejos hay que llevarlo al taller". Si el cliente '
-            'pregunta por una dirección física, aclara que la atención es a domicilio y pide la dirección '
-            'DEL CLIENTE (donde se realizará el servicio).'
+            'pregunta por una dirección física, responde breve y de forma natural que trabajan a domicilio '
+            '(sin sonar a texto legal ni repetir esta frase palabra por palabra). NO pidas la dirección del '
+            'cliente en esa misma respuesta si todavía no sabes qué le pasa al auto: sigue con UNA sola '
+            'pregunta sobre el síntoma/servicio primero. La dirección del cliente se pide más adelante, '
+            'cuando ya haya síntoma/patente y toque coordinar la visita.'
         )
         return '\n'.join(partes)
 
