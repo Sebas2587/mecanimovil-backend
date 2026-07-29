@@ -1,7 +1,7 @@
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from django.db import transaction
+from django.db import transaction, IntegrityError
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from channels.layers import get_channel_layer
@@ -1769,9 +1769,39 @@ class ChecklistResponseViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_403_FORBIDDEN,
                 )
             
-            logger.info(f"🔸 Creando respuesta para checklist {checklist_instance_id}, item {request.data.get('item_template')}")
-            
-            return super().create(request, *args, **kwargs)
+            item_template_id = request.data.get('item_template')
+            logger.info(
+                f"🔸 Creando respuesta para checklist {checklist_instance_id}, item {item_template_id}"
+            )
+
+            # Idempotente: reintentos/aborts del cliente (web) no deben 500 por unique_together.
+            existing = ChecklistItemResponse.objects.filter(
+                checklist_instance_id=checklist_instance_id,
+                item_template_id=item_template_id,
+            ).first()
+            if existing is not None:
+                serializer = self.get_serializer(
+                    existing,
+                    data=request.data,
+                    partial=True,
+                )
+                serializer.is_valid(raise_exception=True)
+                self.perform_update(serializer)
+                logger.info(f"🔸 Respuesta existente reutilizada: ID {existing.id}")
+                return Response(serializer.data, status=status.HTTP_200_OK)
+
+            try:
+                return super().create(request, *args, **kwargs)
+            except IntegrityError:
+                existing = ChecklistItemResponse.objects.filter(
+                    checklist_instance_id=checklist_instance_id,
+                    item_template_id=item_template_id,
+                ).first()
+                if existing is None:
+                    raise
+                serializer = self.get_serializer(existing)
+                logger.info(f"🔸 IntegrityError → respuesta existente ID {existing.id}")
+                return Response(serializer.data, status=status.HTTP_200_OK)
             
         except ChecklistInstance.DoesNotExist:
             logger.error(f"🔸 No se encontró checklist instance: {request.data.get('checklist_instance')}")
