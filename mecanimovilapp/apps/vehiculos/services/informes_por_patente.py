@@ -16,7 +16,7 @@ def _query_informes_pendientes_por_patente(patente: str):
     return (
         InformeServicioPublico.objects.filter(
             reclamado_por_vehiculo__isnull=True,
-            estado='FIRMADO',
+            estado__in=['PENDIENTE_FIRMA_CLIENTE', 'FIRMADO'],
         )
         .select_related(
             'checklist_instance',
@@ -43,12 +43,13 @@ def _taller_nombre(informe: InformeServicioPublico) -> str:
 
 def _serializar_informe_pendiente(informe: InformeServicioPublico) -> dict:
     """
-    Resumen público para UI de registro.
-    No incluye token: el vínculo solo es posible con QR/enlace del informe.
+    Resumen público / cliente para sincronización por patente.
     """
     fecha = informe.fecha_firma_cliente or informe.generado_en
     return {
         'id': informe.id,
+        'token': informe.token,
+        'estado': informe.estado,
         'taller_nombre': _taller_nombre(informe),
         'fecha_servicio': fecha.isoformat() if fecha else None,
         'kilometraje_servicio': informe.kilometraje_servicio,
