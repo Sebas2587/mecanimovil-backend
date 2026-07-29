@@ -129,10 +129,17 @@ def _serializar_informe_publico(informe: InformeServicioPublico, request) -> dic
             return s
         return f"data:image/png;base64,{s}"
 
+    # Firma del cliente sólo si el informe ya fue firmado
+    firma_cliente_val = (
+        informe.firma_cliente
+        if informe.estado in ('FIRMADO', 'VEHICULO_RECLAMADO')
+        else None
+    )
+
     firmas_payload = {
         'tecnico': _format_firma(checklist.firma_tecnico),
         'supervisor': _format_firma(checklist.firma_supervisor),
-        'cliente': _format_firma(informe.firma_cliente or checklist.firma_cliente),
+        'cliente': _format_firma(firma_cliente_val),
     }
 
     componentes_oficiales = []
@@ -142,6 +149,12 @@ def _serializar_informe_publico(informe: InformeServicioPublico, request) -> dic
         componentes_oficiales = _componentes_desde_checklist(checklist)
     except Exception:
         logger.warning('No se pudo calcular componentes_oficiales del informe %s', informe.token, exc_info=True)
+
+    firmado_nombre = (
+        informe.firmado_por_nombre
+        if informe.estado in ('FIRMADO', 'VEHICULO_RECLAMADO')
+        else ''
+    )
 
     return {
         'token': informe.token,
@@ -176,11 +189,13 @@ def _serializar_informe_publico(informe: InformeServicioPublico, request) -> dic
             'items_total': len(items),
             'firma_tecnico_presente': bool(checklist.firma_tecnico),
             'firma_supervisor_presente': bool(checklist.firma_supervisor),
-            'firma_cliente_presente': bool(checklist.firma_cliente),
+            'firma_cliente_presente': bool(checklist.firma_cliente and informe.estado in ('FIRMADO', 'VEHICULO_RECLAMADO')),
         },
-        'firmado_por_nombre': informe.firmado_por_nombre,
+        'firmado_por_nombre': firmado_nombre,
         'fecha_firma_cliente': (
-            informe.fecha_firma_cliente.isoformat() if informe.fecha_firma_cliente else None
+            informe.fecha_firma_cliente.isoformat()
+            if (informe.fecha_firma_cliente and informe.estado in ('FIRMADO', 'VEHICULO_RECLAMADO'))
+            else None
         ),
         'reclamado': informe.estado == 'VEHICULO_RECLAMADO',
         'qr_payload': informe.url_publica or construir_url_publica(informe.token),
