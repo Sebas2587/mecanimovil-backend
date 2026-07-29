@@ -3,6 +3,7 @@ from .models import (
     ChecklistItemCatalog, ChecklistTemplate, ChecklistItemTemplate,
     ChecklistInstance, ChecklistItemResponse, ChecklistPhoto
 )
+from .services.opciones_default import asegurar_opciones_en_catalog_item
 
 # Helper para URLs de archivos en cPanel
 from mecanimovilapp.storage.utils import get_image_url
@@ -10,7 +11,8 @@ from mecanimovilapp.storage.utils import get_image_url
 
 class ChecklistItemCatalogSerializer(serializers.ModelSerializer):
     """Serializer para items del catálogo"""
-    
+    opciones_seleccion = serializers.SerializerMethodField()
+
     class Meta:
         model = ChecklistItemCatalog
         fields = [
@@ -21,6 +23,9 @@ class ChecklistItemCatalogSerializer(serializers.ModelSerializer):
             'activo', 'uso_frecuente', 'fecha_creacion'
         ]
         read_only_fields = ['fecha_creacion']
+
+    def get_opciones_seleccion(self, obj):
+        return asegurar_opciones_en_catalog_item(obj)
 
 
 class ChecklistItemTemplateSerializer(serializers.ModelSerializer):
@@ -34,11 +39,14 @@ class ChecklistItemTemplateSerializer(serializers.ModelSerializer):
     descripcion_ayuda = serializers.CharField(source='catalog_item.descripcion_ayuda', read_only=True)
     placeholder = serializers.CharField(source='catalog_item.placeholder', read_only=True)
     es_obligatorio_efectivo = serializers.BooleanField(source='catalog_item.es_obligatorio_por_defecto', read_only=True)
-    opciones_seleccion = serializers.JSONField(source='catalog_item.opciones_seleccion', read_only=True)
+    opciones_seleccion = serializers.SerializerMethodField()
     valor_minimo = serializers.DecimalField(source='catalog_item.valor_minimo', max_digits=10, decimal_places=2, read_only=True)
     valor_maximo = serializers.DecimalField(source='catalog_item.valor_maximo', max_digits=10, decimal_places=2, read_only=True)
     min_fotos = serializers.IntegerField(source='catalog_item.min_fotos', read_only=True)
     max_fotos = serializers.IntegerField(source='catalog_item.max_fotos', read_only=True)
+
+    def get_opciones_seleccion(self, obj):
+        return asegurar_opciones_en_catalog_item(obj.catalog_item)
 
     # Semántica de salud (refactor 2026 — checklist inteligente)
     tipo_actualizacion_efectivo = serializers.SerializerMethodField()
@@ -119,12 +127,13 @@ class ChecklistItemResponseSerializer(serializers.ModelSerializer):
     item_info = serializers.SerializerMethodField()
     
     def get_item_info(self, obj):
+        catalog = obj.item_template.catalog_item
         return {
-            'nombre': obj.item_template.catalog_item.nombre,
-            'tipo_pregunta': obj.item_template.catalog_item.tipo_pregunta,
-            'pregunta_texto': obj.item_template.catalog_item.pregunta_texto,
-            'es_obligatorio': obj.item_template.catalog_item.es_obligatorio_por_defecto,
-            'opciones_seleccion': obj.item_template.catalog_item.opciones_seleccion,
+            'nombre': catalog.nombre,
+            'tipo_pregunta': catalog.tipo_pregunta,
+            'pregunta_texto': catalog.pregunta_texto,
+            'es_obligatorio': catalog.es_obligatorio_por_defecto,
+            'opciones_seleccion': asegurar_opciones_en_catalog_item(catalog),
         }
     
     class Meta:

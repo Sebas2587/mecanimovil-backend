@@ -37,6 +37,31 @@ def resolver_o_generar_template(
     if template:
         return template
 
+    # Si el servicio es libre (p.ej. "cambio de aceite y filtros") pero existe
+    # un template sembrado de un alias canónico, reutilizarlo en vez de IA.
+    from mecanimovilapp.apps.checklists.services.resolver_servicio import (
+        _buscar_alias_canonico,
+        _normalizar_nombre_servicio,
+    )
+
+    alias = _buscar_alias_canonico(_normalizar_nombre_servicio(servicio.nombre or ''))
+    if alias is not None and alias.id != servicio.id:
+        template_alias = (
+            ChecklistTemplate.objects
+            .filter(servicio=alias, activo=True)
+            .prefetch_related('items__catalog_item')
+            .order_by('generado_por_ia', '-fecha_creacion')  # preferir no-IA
+            .first()
+        )
+        if template_alias is not None:
+            logger.info(
+                'Reutilizando template %s del servicio canónico %s para %s',
+                template_alias.id,
+                alias.id,
+                servicio.id,
+            )
+            return template_alias
+
     if not generar_si_ausente:
         logger.info('Sin template para servicio %s y generación IA deshabilitada', servicio.id)
         return None

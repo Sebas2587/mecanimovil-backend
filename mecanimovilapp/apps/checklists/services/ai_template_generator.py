@@ -14,6 +14,10 @@ from mecanimovilapp.apps.checklists.models import (
     ChecklistItemTemplate,
     ChecklistTemplate,
 )
+from mecanimovilapp.apps.checklists.services.opciones_default import (
+    TIPOS_CON_OPCIONES,
+    opciones_efectivas,
+)
 from mecanimovilapp.apps.ordenes.services.asistente_diagnostico.generador import (
     _llamar_gemini,
     asistente_habilitado,
@@ -60,7 +64,7 @@ Devuelve SOLO un JSON con esta estructura exacta:
       "es_obligatorio": true,
       "min_fotos": null,
       "max_fotos": null,
-      "opciones_seleccion": null
+      "opciones_seleccion": ["opción 1", "opción 2"]
     }}
   ]
 }}
@@ -71,8 +75,9 @@ REGLAS:
 3. tipo_pregunta válidos: {tipos}
 4. categoria válidas: {categorias}
 5. Para PHOTO usa min_fotos entre 1 y 3.
-6. El checklist es reutilizable por tipo de servicio. Usa el vehículo solo para adaptar ítems relevantes (p.ej. diésel vs gasolina), no crees un template exclusivo de esa marca.
-7. Responde en español chileno, técnico pero claro.
+6. OBLIGATORIO: si tipo_pregunta es SELECT, MULTISELECT, FLUID_LEVEL o cualquier *_INSPECTION / *_CHECK / TIRE_CONDITION / VEHICLE_CONDITION, opciones_seleccion DEBE ser un array JSON con 3-6 opciones concretas en español (NUNCA null ni []). Para FLUID_LEVEL usa niveles (Mínimo/Bajo/Normal/Alto) o estado de fluidos.
+7. El checklist es reutilizable por tipo de servicio. Usa el vehículo solo para adaptar ítems relevantes (p.ej. diésel vs gasolina), no crees un template exclusivo de esa marca.
+8. Responde en español chileno, técnico pero claro.
 """
 
 
@@ -104,12 +109,22 @@ def _get_or_create_catalog_item(item_data: dict[str, Any]) -> ChecklistItemCatal
     nombre = str(item_data.get('nombre') or item_data.get('pregunta_texto') or 'Ítem')[:255]
     pregunta = str(item_data.get('pregunta_texto') or nombre)[:2000]
 
+    opciones = opciones_efectivas(
+        tipo,
+        item_data.get('opciones_seleccion'),
+        nombre=nombre,
+    )
+
     existing = (
         ChecklistItemCatalog.objects
         .filter(nombre=nombre, tipo_pregunta=tipo, categoria=categoria, activo=True)
         .first()
     )
     if existing:
+        # Repara catálogo IA viejo sin opciones (pasos vacíos en la app).
+        if tipo in TIPOS_CON_OPCIONES and opciones and not existing.opciones_seleccion:
+            existing.opciones_seleccion = opciones
+            existing.save(update_fields=['opciones_seleccion'])
         return existing
 
     min_fotos = item_data.get('min_fotos')
@@ -125,7 +140,7 @@ def _get_or_create_catalog_item(item_data: dict[str, Any]) -> ChecklistItemCatal
         pregunta_texto=pregunta,
         descripcion_ayuda=(item_data.get('descripcion_ayuda') or '')[:2000] or None,
         es_obligatorio_por_defecto=bool(item_data.get('es_obligatorio', True)),
-        opciones_seleccion=item_data.get('opciones_seleccion'),
+        opciones_seleccion=opciones,
         min_fotos=min_fotos,
         max_fotos=max_fotos,
         activo=True,
