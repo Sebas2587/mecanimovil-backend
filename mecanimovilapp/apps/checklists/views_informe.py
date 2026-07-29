@@ -113,8 +113,27 @@ def _serializar_informe_publico(informe: InformeServicioPublico, request) -> dic
             })
 
     taller_nombre = ''
+    taller_foto_url = ''
     if cita and cita.taller_id:
         taller_nombre = getattr(cita.taller, 'nombre', '') or ''
+        if hasattr(cita.taller, 'foto_perfil') and cita.taller.foto_perfil:
+            taller_foto_url = get_image_url(cita.taller.foto_perfil, request)
+
+    def _format_firma(f_val):
+        if not f_val:
+            return None
+        s = str(f_val).strip()
+        if not s:
+            return None
+        if s.startswith('http') or s.startswith('data:'):
+            return s
+        return f"data:image/png;base64,{s}"
+
+    firmas_payload = {
+        'tecnico': _format_firma(checklist.firma_tecnico),
+        'supervisor': _format_firma(checklist.firma_supervisor),
+        'cliente': _format_firma(informe.firma_cliente or checklist.firma_cliente),
+    }
 
     componentes_oficiales = []
     try:
@@ -144,6 +163,8 @@ def _serializar_informe_publico(informe: InformeServicioPublico, request) -> dic
         'cliente_nombre': getattr(det, 'cliente_nombre', '') if det else '',
         'servicio_descripcion': getattr(det, 'descripcion', '') if det else '',
         'taller_nombre': taller_nombre,
+        'taller_foto_url': taller_foto_url,
+        'firmas': firmas_payload,
         'hallazgos': hallazgos_ui,
         'fotos_evidencia': fotos_evidencia,
         'checklist': {
