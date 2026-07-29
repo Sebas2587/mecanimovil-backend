@@ -857,8 +857,18 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
             instance.progreso_porcentaje = 100
         elif instance.cita_personal_id:
             cita = instance.cita_personal
-            # Cita de taller: supervisor debe rectificar antes del informe al cliente.
-            if cita.taller_id:
+            _, _miembro_ctx, rol_ctx = self._contexto_proveedor()
+            mandante_ejecutor = bool(
+                cita.taller_id and rol_ctx in ('mandante', 'supervisor')
+            )
+            if mandante_ejecutor:
+                _, miembro, _rol = self._contexto_proveedor()
+                instance.firma_supervisor = instance.firma_tecnico
+                instance.firma_supervisor_por = miembro
+                instance.fecha_firma_supervisor = ahora
+                instance.estado = 'PENDIENTE_FIRMA_CLIENTE'
+                instance.progreso_porcentaje = 100
+            elif cita.taller_id:
                 instance.estado = 'PENDIENTE_FIRMA_SUPERVISOR'
                 instance.progreso_porcentaje = 100
             else:
@@ -895,12 +905,58 @@ class ChecklistInstanceViewSet(viewsets.ModelViewSet):
                 asegurar_cierre_cita_si_checklist_completo,
             )
 
+            cita = instance.cita_personal
+            _, _miembro_ctx, rol_ctx = self._contexto_proveedor()
+            mandante_ejecutor = bool(
+                cita.taller_id
+                and rol_ctx in ('mandante', 'supervisor')
+                and instance.estado == 'PENDIENTE_FIRMA_CLIENTE'
+                and instance.firma_supervisor
+            )
+
             with transaction.atomic():
                 instance.save()
-                cita = instance.cita_personal
                 if instance.estado == 'COMPLETADO':
                     asegurar_cierre_cita_si_checklist_completo(cita)
                     cita.refresh_from_db(fields=['estado', 'cerrada_en', 'horario_por_confirmar'])
+
+            if mandante_ejecutor:
+                from mecanimovilapp.apps.checklists.services.informe_servicio import (
+                    generar_informe,
+                    enviar_informe,
+                )
+
+                informe = generar_informe(instance)
+                envio = enviar_informe(cita, informe)
+                logger.info(
+                    'Mandante ejecutor firmó checklist %s → informe %s enviado=%s',
+                    instance.id,
+                    informe.token[:8],
+                    envio.get('enviado'),
+                )
+                return Response(
+                    {
+                        'message': 'Trabajo finalizado. Informe enviado al cliente para revisión y firma.',
+                        'checklist_id': instance.id,
+                        'cita_personal_id': cita.id,
+                        'cita_estado_nuevo': cita.estado,
+                        'estado': instance.estado,
+                        'requiere_firma_supervisor': False,
+                        'requiere_firma_cliente': True,
+                        'informe': {
+                            'token': informe.token,
+                            'url': informe.url_publica,
+                            'enviado': envio.get('enviado', False),
+                            'via': envio.get('via', 'manual_link'),
+                            'mensaje_envio': envio.get('message'),
+                        },
+                        'template_generado_por_ia': bool(
+                            getattr(instance.checklist_template, 'generado_por_ia', False)
+                            and instance.checklist_template.revisado_en is None
+                        ),
+                    }
+                )
+
             requiere_supervisor = instance.estado == 'PENDIENTE_FIRMA_SUPERVISOR'
             return Response(
                 {

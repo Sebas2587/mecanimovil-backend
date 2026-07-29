@@ -28,6 +28,7 @@ class InformeServicioPublico(models.Model):
         ('whatsapp', 'WhatsApp'),
         ('instagram', 'Instagram'),
         ('messenger', 'Messenger'),
+        ('app', 'App Mecanimovil'),
         ('manual_link', 'Enlace manual'),
     ]
 

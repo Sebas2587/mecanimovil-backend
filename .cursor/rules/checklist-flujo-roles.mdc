@@ -14,14 +14,14 @@ El servicio se cierra en este orden. No mezclar responsabilidades en UI ni permi
 - Firma como técnico al finalizar el llenado.
 - CTA: **Iniciar servicio** / **Continuar checklist**.
 
-En citas personales, si no hay mecánico de equipo operando (o el mandante ejecuta el trabajo), el mandante puede llenar hasta enviar a revisión.
+En citas personales, si no hay mecánico de equipo operando (o el mandante ejecuta el trabajo), el mandante puede llenar y finalizar con **una sola firma** (técnico + supervisor en el mismo paso) → informe al cliente.
 
 ## 2. Supervisor o mandante — REVISA
 
-- Entra cuando el estado es `PENDIENTE_FIRMA_SUPERVISOR`.
-- Revisa el trabajo y firma (rectificación).
-- Eso genera el informe público para el cliente.
-- CTA: **Firmar y generar informe** (no “Continuar checklist” ni editar ítems).
+- Entra cuando el estado es `PENDIENTE_FIRMA_SUPERVISOR` (mecánico ya firmó).
+- Revisa el checklist en **solo lectura**, firma (rectificación) y se genera el informe público.
+- El enlace se envía automáticamente por WhatsApp / Instagram / Messenger / app Mecanimovil si la cita tiene `conversation_origen`; si no, copiar enlace manual.
+- CTA: **Revisar y firmar** (no pedir firma del cliente en app proveedor).
 
 ## 3. Cliente — CIERRA el servicio
 
@@ -41,6 +41,7 @@ En citas personales, si no hay mecánico de equipo operando (o el mandante ejecu
 
 ## Anti-patrones
 
+- No pedir firma del **cliente** en la app proveedor (ítems SIGNATURE → solo técnico/supervisor).
 - No dar “Continuar checklist” (edición de ítems) a supervisor/mandante en etapa de revisión.
 - No permitir al mecánico firmar como supervisor.
 - No marcar el servicio cerrado solo con firma del taller: falta la del cliente cuando el flujo lo exige.

@@ -395,8 +395,9 @@ def enviar_informe(cita, informe: InformeServicioPublico) -> dict[str, Any]:
     """
     url = informe.url_publica or construir_url_publica(informe.token)
     mensaje = (
-        f'Hola, tu taller ha finalizado el servicio de tu vehículo. '
-        f'Revisa el informe y confirma con tu firma aquí: {url}'
+        'Hola, tu taller ha finalizado el servicio de tu vehículo. '
+        'Revisa el informe con el trabajo realizado y confirma con tu firma aquí: '
+        f'{url}'
     )
 
     conversation = getattr(cita, 'conversation_origen', None)
@@ -421,19 +422,26 @@ def enviar_informe(cita, informe: InformeServicioPublico) -> dict[str, Any]:
             direction='outbound',
             channel_metadata={'tipo': 'informe_servicio', 'informe_token': informe.token},
         )
-        from mecanimovilapp.apps.omnichannel.tasks import send_meta_message
+        conversation.save()
 
-        send_meta_message.delay(msg.id)
-
-        channel = getattr(conversation, 'source_channel', '') or 'WHATSAPP'
+        channel = (getattr(conversation, 'source_channel', '') or 'WHATSAPP').upper()
         via_map = {
             'WHATSAPP': 'whatsapp',
             'INSTAGRAM': 'instagram',
             'MESSENGER': 'messenger',
+            'APP': 'app',
         }
-        informe.enviado_via = via_map.get(channel.upper(), 'manual_link')
+        informe.enviado_via = via_map.get(channel, 'manual_link')
         informe.url_publica = url
         informe.save(update_fields=['enviado_via', 'url_publica'])
+
+        if channel == 'APP':
+            _broadcast_informe_en_chat_app(conversation, msg, mensaje)
+            return {'enviado': True, 'via': 'app', 'url': url}
+
+        from mecanimovilapp.apps.omnichannel.tasks import send_meta_message
+
+        send_meta_message.delay(msg.id)
         return {'enviado': True, 'via': informe.enviado_via, 'url': url}
     except Exception as exc:
         logger.warning('No se pudo enviar informe por canal: %s', exc, exc_info=True)
@@ -446,3 +454,28 @@ def enviar_informe(cita, informe: InformeServicioPublico) -> dict[str, Any]:
             'url': url,
             'message': str(exc),
         }
+
+
+def _broadcast_informe_en_chat_app(conversation, message, mensaje: str) -> None:
+    """Notifica en tiempo real el mensaje de informe en chat in-app (sin Meta)."""
+    try:
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+
+        channel_layer = get_channel_layer()
+        if channel_layer is None:
+            return
+        payload = {
+            'type': 'chat_message',
+            'conversation_id': str(conversation.id),
+            'id': str(message.id),
+            'mensaje_id': str(message.id),
+            'message': mensaje,
+            'content': mensaje,
+            'mensaje': mensaje,
+            'es_proveedor': True,
+            'timestamp': message.timestamp.isoformat() if getattr(message, 'timestamp', None) else None,
+        }
+        async_to_sync(channel_layer.group_send)(f'chat_{conversation.id}', payload)
+    except Exception as exc:
+        logger.warning('Broadcast WS informe en app falló: %s', exc, exc_info=True)
