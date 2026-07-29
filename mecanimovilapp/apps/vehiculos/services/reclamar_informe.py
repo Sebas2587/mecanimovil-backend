@@ -80,22 +80,37 @@ def reclamar_informe_por_token(token: str, cliente) -> dict:
     checklist = informe.checklist_instance
     checklist_id = checklist.id
     vehicle_id = vehiculo.id
-    # Anclar al odómetro ACTUAL del vehículo (no al km del taller). Así el %
-    # declarado en el checklist se refleja en salud sin degradar por la diferencia
-    # entre km del servicio (p.ej. 63.000) y km al registrar (p.ej. 148.000).
-    km_ancla = int(vehiculo.kilometraje or 0) or None
+
+    from mecanimovilapp.apps.vehiculos.tasks import extraer_kilometraje_desde_checklist_instance
+
+    km_checklist = (
+        informe.kilometraje_servicio
+        or extraer_kilometraje_desde_checklist_instance(checklist)
+    )
+    fecha_checklist = (
+        informe.fecha_firma_cliente
+        or informe.generado_en
+        or checklist.fecha_finalizacion
+        or checklist.creado_en
+    )
+
+    if km_checklist and int(km_checklist) > int(vehiculo.kilometraje or 0):
+        vehiculo.kilometraje = int(km_checklist)
+        vehiculo.save(update_fields=['kilometraje', 'fecha_actualizacion'])
 
     with transaction.atomic():
         from mecanimovilapp.apps.vehiculos.tasks import actualizar_salud_desde_checklist
+        from mecanimovilapp.apps.vehiculos.services.health_engine import HealthEngine
 
         try:
             actualizar_salud_desde_checklist(
                 checklist_id,
                 vehicle_id,
-                km_servicio_override=km_ancla,
-                fecha_servicio_override=timezone.now(),
-                actualizar_odometro=False,
+                km_servicio_override=km_checklist,
+                fecha_servicio_override=fecha_checklist,
+                actualizar_odometro=True,
             )
+            HealthEngine.calcular_salud_vehiculo(vehicle_id)
         except Exception as exc:
             logger.error('Error aplicando salud desde reclamo informe %s: %s', token, exc, exc_info=True)
             raise ValueError('No se pudo registrar el impacto del servicio en tu vehículo') from exc

@@ -45,7 +45,12 @@ def _serializar_informe_pendiente(informe: InformeServicioPublico) -> dict:
     """
     Resumen público / cliente para sincronización por patente.
     """
+    from mecanimovilapp.apps.vehiculos.services.reclamar_informe import _componentes_desde_checklist
+
+    checklist = getattr(informe, 'checklist_instance', None)
+    componentes = _componentes_desde_checklist(checklist) if checklist else []
     fecha = informe.fecha_firma_cliente or informe.generado_en
+
     return {
         'id': informe.id,
         'token': informe.token,
@@ -57,6 +62,8 @@ def _serializar_informe_pendiente(informe: InformeServicioPublico) -> dict:
         'vehiculo_modelo': informe.vehiculo_modelo or '',
         'vehiculo_anio': informe.vehiculo_anio,
         'resumen_corto': (informe.resumen_ia or '')[:200],
+        'componentes_afectados': componentes,
+        'metricas_afectadas_count': len(componentes),
     }
 
 
