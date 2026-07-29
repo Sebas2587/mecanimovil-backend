@@ -687,7 +687,7 @@ def _match_slot_deterministico(
       - consulta_dia: pregunta si un día tiene cupo
       - sin_match
     """
-    texto = (texto or '').strip()
+    texto = (texto_cliente or '').strip()
     if not texto:
         return {'resultado': 'sin_match', 'motivo': 'mensaje vacío'}
 
