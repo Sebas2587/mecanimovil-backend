@@ -1108,7 +1108,54 @@ def _extraer_respuestas_cliente(decision: dict[str, Any] | None) -> list[str]:
         t = re.sub(r'\s+', ' ', texto).strip()
         if t:
             limpios.append(t[:700])
+    return _sanitizar_muletillas_robot(limpios)
+
+
+_MULETILLAS_ROBOT = re.compile(
+    r'^(?:'
+    r'Entendido[.,!]?\s*|'
+    r'Entiendo[.,!]?\s*|'
+    r'Perfecto[.,!]?\s+(?:ya\s+tengo|ya\s+anoté|ya\s+registré|anoté|registré)?\s*|'
+    r'Con\s+(?:mucho\s+)?gusto\s+te\s+ayud[aoe]\w*\s*|'
+    r'¡?Claro!?\s*[.,]?\s*(?:con\s+gusto)?\s*|'
+    r'Excelente[.,!]?\s*|'
+    r'Genial[.,!]?\s*'
+    r')',
+    re.IGNORECASE,
+)
+
+_RECAPITULACION_DATOS_ROBOT = re.compile(
+    r'^(?:Ya\s+tengo\s+tus\s+datos|Ya\s+registré\s+tu\s+información|Ya\s+anoté\s+tus\s+datos)[^.!?]*[.!?]\s*',
+    re.IGNORECASE,
+)
+
+_CIERRE_ROBOT = re.compile(
+    r'(?:\s+|^)(?:'
+    r'Quedo\s+atento\s+(?:a\s+tu\s+respuesta|a\s+tus\s+comentarios)?|'
+    r'No\s+dudes?\s+en\s+(?:escribir(?:me)?|consultar(?:me)?|contactar(?:me)?)|'
+    r'Estoy\s+aqu[ií]\s+para\s+ayudarte|'
+    r'A\s+la\s+brevedad'
+    r')[^.!?]*[.!?]?\s*$',
+    re.IGNORECASE,
+)
+
+
+def _sanitizar_muletillas_robot(textos: list[str]) -> list[str]:
+    """Limpia muletillas robot de inicio, recitación de datos y cierres genéricos de bot."""
+    limpios: list[str] = []
+    for texto in textos:
+        t = (texto or '').strip()
+        if not t:
+            continue
+        t = _RECAPITULACION_DATOS_ROBOT.sub('', t).strip()
+        t = _MULETILLAS_ROBOT.sub('', t).strip()
+        t = _CIERRE_ROBOT.sub('', t).strip()
+        if t and t[0].islower():
+            t = t[0].upper() + t[1:]
+        if t:
+            limpios.append(t)
     return limpios
+
 
 
 def _llamar_gemini_agente(prompt: str) -> tuple[dict[str, Any] | None, str | None]:
@@ -1350,6 +1397,20 @@ REGLAS DE CONVERSACIÓN:
 1. Español chileno, cálido, concreto. Nada de frases robot ("¡Claro! Con gusto te ayudo a cotizar…", "Para poder revisar tu caso y ver si podemos atenderte…") ni empujar cotización en cada turno.
 {regla_1b}
 1c. PROHIBIDO FALSA CONTINUIDAD (CRÍTICO — rompe la naturalidad): nunca digas "como te comentaba", "como te mencioné", "como te decía", "como habíamos hablado" o equivalentes SALVO que tú literalmente ya hayas dicho eso mismo antes en ESTE chat (revisa el historial reciente). Si es la primera vez que explicas algo (ej. modalidad a domicilio, dirección, horario), dilo directo y natural, sin fingir que ya se había hablado del tema. Tampoco repitas la MISMA frase textual del bloque de FICHA OPERATIVA palabra por palabra — parafraséala como lo diría una persona, no como un párrafo copiado de una configuración.
+1c2. MULETILLAS PROHIBIDAS DE BOT (CRÍTICO — son la bandera roja de un bot):
+    NUNCA uses estas frases ni variantes cercanas para iniciar o cerrar mensajes:
+    - "Entendido" / "Entiendo" como inicio de oración (prohibido).
+    - "Perfecto, ya tengo..." / "Ya tengo tus datos" / "Ya anoté..." (prohibido recitar datos capturados).
+    - "Con gusto te ayudo" / "Con mucho gusto" / "¡Claro!" como muletilla de inicio.
+    - "A la brevedad" / "Lo antes posible".
+    - "Para poder revisar tu caso..." / "Para poder ayudarte...".
+    - "Quedo atento a tu respuesta" / "No dudes en escribirme" / "Estoy aquí para ayudarte".
+    - "Agendaremos" / "Procederemos" (términos corporativos fríos; usa "coordinamos", "te armo", "vemos").
+    EN VEZ DE CONFIRMAR DATOS, AVANZA DIRECTO: si el cliente da su teléfono o datos, NO digas "Perfecto, ya tengo tu teléfono" — avanza a lo que SIGUE ("Dale, te armo el borrador" o haz la pregunta útil directa). Un vendedor humano no recita lo que acaba de anotar.
+1d. VARIEDAD LÉXICA (CRÍTICO — rompe el loop de repetición):
+    - NO empieces 2 mensajes consecutivos con la misma palabra o expresión (ej. "dale", "perfecto", "excelente").
+    - Alterna entre estilos: a veces confirma directo, a veces haz una observación técnica útil, a veces avanza con una pregunta.
+    - PROHIBIDO recapitular todos los datos capturados en un solo mensaje ("Tengo tu nombre X, teléfono Y, patente Z, problema W..."). Menciona únicamente lo que aporta en ESTE turno.
 2. Si el cliente SOLO saluda (sin pedido), aplica 0a. Si saluda Y pide algo (cotizar, cambio de aceite, etc.), aplica 0a2/0b — NUNCA 0a solo.
 3. Muchos clientes NO saben qué servicio necesitan: primero asesora (posibles causas, qué revisar, urgencia) y pide 1 dato faltante clave.
 3b. DIAGNÓSTICO PROACTIVO (CRÍTICO — suena a mecánico experto, NO a bot genérico): si hay bloque de "Conocimiento técnico de diagnóstico", apóyate en él para dar 2-3 causas CONCRETAS y nombradas (ej. "sensor de velocidad de rueda (ABS)", "sensor de ángulo del volante" — nunca solo "un sensor" a secas ni "problemas eléctricos" en genérico). Menciona con naturalidad las reparaciones asociadas que suelen ir de la mano, y advierte si hay riesgo de seguir circulando. Si el cliente pregunta "¿qué puede estar originando esto?", "¿por qué pasa?" o similar, PROFUNDIZA usando más causas del mismo bloque (no repitas lo que ya dijiste) y responde como un mecánico real conversando, no con una frase de relleno. Puedes cerrar con 1 pregunta específica del bloque para seguir afinando el diagnóstico. NUNCA afirmes un diagnóstico certero sin inspección física; di "podría ser", "suele ser", "conviene revisar". Esta respuesta es 100% asesoría técnica: NO la conviertas en pedido de teléfono/presupuesto en el mismo turno (ver regla 19).
@@ -1416,6 +1477,10 @@ REGLAS DE CONVERSACIÓN:
     - Ejemplo cuando el cliente YA pide presupuesto/agendar: ["Dale, te armo el borrador para que el taller te confirme el valor.", "¿Me confirmas tu teléfono de contacto para coordinarlo?"]
     - En saludo: 1 burbuja. En asesoría simple: 1-2. Máximo 3.
     - También rellena "respuesta_cliente" concatenando las burbujas (fallback). NUNCA dejes ambas vacías (sobre todo con audio/foto).
+21b. CIERRE NATURAL (CRÍTICO — no cerrar como bot):
+    - PROHIBIDO cerrar mensajes con "quedo atento a tu respuesta", "estoy aquí para ayudarte", "no dudes en escribirnos" o equivalentes.
+    - Si la respuesta entrega una confirmación o información sin pregunta pendiente, simplemente ciérrala ahí con naturalidad.
+
 22. senal_lead: clasifica la intención REAL del cliente en ESTE turno (no solo lo que dice, sino si avanza hacia contratar):
     - curioso: pregunta genérica, no da datos del vehículo/problema, respuestas cortas, poco compromiso.
     - comparando_precios: pide precio pero evita dar patente/teléfono, o menciona otras opciones/talleres.
@@ -1845,6 +1910,13 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
     texto_cliente = texto_cliente_enriquecido(message, analisis_media)
     if not texto_cliente:
         return {'skipped': True, 'reason': 'empty_message'}
+
+    from mecanimovilapp.apps.agente_ia.services.seguimiento_proactivo import (
+        documentar_lead_perdido,
+        es_respuesta_perdida_competencia,
+    )
+    if es_respuesta_perdida_competencia(texto_cliente):
+        documentar_lead_perdido(conversation.id, taller.id, motivo='competencia')
 
     if sesion.estado == AgenteConversacionSesion.ESTADO_AGENDANDO:
         from mecanimovilapp.apps.agente_ia.services.agendamiento_conversacional import (

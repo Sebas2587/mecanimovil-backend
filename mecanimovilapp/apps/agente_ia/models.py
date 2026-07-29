@@ -369,6 +369,16 @@ class LeadCalificacion(models.Model):
     score = models.PositiveSmallIntegerField(default=0)
     senal_llm = models.CharField(max_length=30, blank=True, default='')
     senales = models.JSONField(default=dict, blank=True)
+    perdido_por_competencia = models.BooleanField(
+        default=False,
+        help_text='True si el cliente indicó que se fue con otro taller/competencia.',
+    )
+    motivo_perdida = models.CharField(
+        max_length=100,
+        blank=True,
+        default='',
+        help_text='Motivo por el cual se perdió el lead (competencia, presupuesto, etc.).',
+    )
     actualizado_en = models.DateTimeField(auto_now=True)
     creado_en = models.DateTimeField(auto_now_add=True)
 

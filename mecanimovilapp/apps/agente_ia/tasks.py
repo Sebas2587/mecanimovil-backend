@@ -174,3 +174,17 @@ def aprendizaje_diario_talleres_task() -> dict:
         aprendizaje_diario_taller_task.delay(tid)
         encolados += 1
     return {'ok': True, 'talleres': encolados}
+
+
+@shared_task(name='agente_ia.revisar_seguimiento_proactivo', queue='default')
+def revisar_seguimiento_proactivo_task() -> dict:
+    from mecanimovilapp.apps.agente_ia.services.seguimiento_proactivo import (
+        revisar_seguimiento_proactivo,
+    )
+
+    try:
+        return revisar_seguimiento_proactivo()
+    except Exception:
+        logger.exception('Error en revisión de seguimiento proactivo del agente IA')
+        return {'ok': False, 'error': 'internal'}
+

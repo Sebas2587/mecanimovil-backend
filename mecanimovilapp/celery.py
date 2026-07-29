@@ -165,6 +165,11 @@ app.conf.beat_schedule = {
         'schedule': crontab(hour=4, minute=30),
         'options': {'queue': 'default'},
     },
+    'agente-ia-seguimiento-proactivo': {
+        'task': 'agente_ia.revisar_seguimiento_proactivo',
+        'schedule': crontab(minute='*/30'),  # Cada 30 minutos
+        'options': {'queue': 'default'},
+    },
 }
 
 @app.task(bind=True)
