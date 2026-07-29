@@ -1187,7 +1187,15 @@ def crear_cotizacion_borrador_desde_agente(
 
     direccion_servicio_final = str(datos.get('direccion_servicio') or (
         cotizacion_existente.direccion_servicio if cotizacion_existente else ''
-    ))
+    )).strip()
+    # Evita persistir frases del chat como si fueran dirección ("Cuánto cuesta").
+    try:
+        from mecanimovilapp.apps.agente_ia.services.orquestador import _direccion_parece_basura
+
+        if _direccion_parece_basura(direccion_servicio_final):
+            direccion_servicio_final = ''
+    except Exception:
+        pass
 
     patente_verificada = bool(
         (datos.get('patente_enriquecida') or '').strip()
