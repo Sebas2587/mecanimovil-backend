@@ -317,58 +317,189 @@ _STOP_LUGAR = frozenset(
     }
 )
 
+# Palabras que NUNCA son comuna/sector (evita "Cuánto cuesta", "Muchas gracias").
+_STOP_UBICACION_TOKENS = frozenset(
+    {
+        'cuanto',
+        'cuesta',
+        'vale',
+        'sale',
+        'cobra',
+        'cobran',
+        'precio',
+        'tarifa',
+        'presupuesto',
+        'cotizacion',
+        'cotizar',
+        'gracias',
+        'muchas',
+        'hola',
+        'buenas',
+        'buenos',
+        'noches',
+        'dias',
+        'tardes',
+        'ok',
+        'okay',
+        'dale',
+        'listo',
+        'perfecto',
+        'excelente',
+        'claro',
+        'si',
+        'no',
+        'por',
+        'favor',
+        'necesito',
+        'quiero',
+        'realizar',
+        'cambio',
+        'aceite',
+        'filtro',
+        'servicio',
+        'telefono',
+        'patente',
+        'kilometraje',
+        'tiene',
+        'conlleva',
+        'incluye',
+        'puede',
+        'podria',
+        'ayuda',
+        'ayudar',
+        'auto',
+        'vehiculo',
+        'moto',
+    }
+)
+
+_BASURA_DIRECCION_RE = re.compile(
+    r'(?:'
+    r'cu[aá]nto\s+(?:cuesta|vale|sale)|'
+    r'\b(?:precio|cotizaci[oó]n|presupuesto|gracias|hola|buenas?)\b|'
+    r'\?'
+    r')',
+    re.IGNORECASE,
+)
+
+
+def _clave_lugar(texto: str) -> str:
+    return ''.join(
+        c for c in unicodedata.normalize('NFKD', (texto or '').strip().lower())
+        if not unicodedata.combining(c)
+    )
+
 
 def _normalizar_lugar(texto: str) -> str:
-    t = re.sub(r'\s+', ' ', (texto or '').strip(' .,;:!?'))
+    t = re.sub(r'\s+', ' ', (texto or '').strip(' .,;:!?¿¡'))
     # Corta coletillas ("Vitacura pero quiero…")
     t = re.split(r'\b(?:pero|y|aunque|porque|para|donde|dónde)\b', t, maxsplit=1, flags=re.I)[0]
-    return t.strip(' .,;:!?')
+    return t.strip(' .,;:!?¿¡')
 
 
-def _parece_comuna_o_sector(texto: str) -> bool:
+def _es_comuna_conocida(texto: str) -> bool:
+    return _clave_lugar(texto) in _COMUNAS_CL_KNOWN
+
+
+def _parece_comuna_o_sector(texto: str, *, solo_conocida: bool = False) -> bool:
     t = _normalizar_lugar(texto)
     if len(t) < 4 or len(t) > 40:
         return False
-    clave = ''.join(
-        c for c in unicodedata.normalize('NFKD', t.lower()) if not unicodedata.combining(c)
-    )
-    if clave in _COMUNAS_CL_KNOWN:
+    if _BASURA_DIRECCION_RE.search(t):
+        return False
+    if _es_comuna_conocida(t):
         return True
-    # Nombre propio razonable (1–3 palabras, sin dígitos).
+    if solo_conocida:
+        return False
     palabras = [p for p in t.split() if p]
     if not (1 <= len(palabras) <= 3):
         return False
     if any(ch.isdigit() for ch in t):
         return False
+    claves = {_clave_lugar(p) for p in palabras}
+    if claves & _STOP_UBICACION_TOKENS:
+        return False
     if all(p.lower() in _STOP_LUGAR for p in palabras):
         return False
+    # Exige mayúscula inicial o pinta a nombre propio (no frase verbal).
     return t[0].isalpha()
 
 
+def _formatear_comuna(texto: str) -> str:
+    t = _normalizar_lugar(texto)
+    if not t:
+        return ''
+    clave = _clave_lugar(t)
+    pretty = {
+        'nunoa': 'Ñuñoa',
+        'penalolen': 'Peñalolén',
+        'maipu': 'Maipú',
+        'conchali': 'Conchalí',
+        'san joaquin': 'San Joaquín',
+        'estacion central': 'Estación Central',
+        'valparaiso': 'Valparaíso',
+        'vina del mar': 'Viña del Mar',
+        'concepcion': 'Concepción',
+    }
+    if clave in pretty:
+        return pretty[clave]
+    return t.title() if t.islower() or t.isupper() else (t[0].upper() + t[1:])
+
+
 def _extraer_ubicacion_cliente(texto: str) -> str:
-    """Heurística: comuna/sector del mensaje del cliente (no depende del LLM)."""
+    """Heurística estricta: solo comuna/sector real (nunca 'cuánto cuesta')."""
     raw = (texto or '').strip()
     if not raw:
         return ''
+
+    tiene_ancla = bool(
+        re.search(r'\b(?:vivo|estoy|quedo|qued[eé]|ando|andamos|comuna|sector|barrio)\b', raw, re.I)
+    )
+
+    # "Cuánto cuesta?" / "Muchas gracias" solos → nunca ubicación.
+    if not tiene_ancla and (_BASURA_DIRECCION_RE.search(raw) or _CLIENTE_PIDE_PRECIO_RE.search(raw)):
+        return ''
+
     m = _DIRECCION_CAPTURA_RE.search(raw)
     if m:
-        cand = m.group('p1') or m.group('p2') or m.group('p3') or m.group('p4') or ''
-        cand = _normalizar_lugar(cand)
-        if _parece_comuna_o_sector(cand):
-            return cand[0].upper() + cand[1:] if cand else ''
-    # Mensaje corto que es solo la comuna ("Vitacura")
-    if _parece_comuna_o_sector(raw) and len(raw.split()) <= 3:
-        t = _normalizar_lugar(raw)
-        return t[0].upper() + t[1:]
-    # Comuna conocida embebida
-    low = ''.join(
-        c for c in unicodedata.normalize('NFKD', raw.lower()) if not unicodedata.combining(c)
-    )
+        cand = _normalizar_lugar(
+            m.group('p1') or m.group('p2') or m.group('p3') or m.group('p4') or ''
+        )
+        if _es_comuna_conocida(cand):
+            return _formatear_comuna(cand)
+        # "vivo en / sector / comuna X" con nombre propio limpio (no listado).
+        if (m.group('p1') or m.group('p2') or m.group('p3')) and _parece_comuna_o_sector(
+            cand, solo_conocida=False
+        ):
+            return _formatear_comuna(cand)
+
+    # Mensaje corto: SOLO comunas del listado.
+    words = [w for w in re.split(r'\s+', _normalizar_lugar(raw)) if w]
+    if 1 <= len(words) <= 3 and _es_comuna_conocida(raw):
+        return _formatear_comuna(raw)
+
+    # Comuna conocida embebida en frase con ancla o sin basura de precio.
+    if not tiene_ancla and _CLIENTE_PIDE_PRECIO_RE.search(raw):
+        return ''
+    low = _clave_lugar(raw)
     for comuna in sorted(_COMUNAS_CL_KNOWN, key=len, reverse=True):
         if re.search(rf'\b{re.escape(comuna)}\b', low):
-            # Restaura forma legible desde el texto original si es posible
-            return comuna.title().replace('Nunoa', 'Ñuñoa').replace('Penalolen', 'Peñalolén')
+            return _formatear_comuna(comuna)
     return ''
+
+
+def _direccion_parece_basura(texto: str) -> bool:
+    t = (texto or '').strip()
+    if not t:
+        return False
+    if _BASURA_DIRECCION_RE.search(t):
+        return True
+    if _CLIENTE_PIDE_PRECIO_RE.search(t) and not _es_comuna_conocida(t):
+        return True
+    claves = {_clave_lugar(p) for p in t.split()}
+    if claves & _STOP_UBICACION_TOKENS and not _es_comuna_conocida(t):
+        return True
+    return False
 
 
 def _cliente_diferir_direccion(texto: str) -> bool:
@@ -387,8 +518,12 @@ def _agente_ya_respondio(conversation: Conversation) -> bool:
 def _enriquecer_ubicacion_en_datos(datos: dict, texto_cliente: str) -> dict:
     """Persiste comuna/sector y flag de dirección diferida sin depender del LLM."""
     out = dict(datos or {})
-    ubic = _extraer_ubicacion_cliente(texto_cliente)
     actual = (out.get('direccion_servicio') or '').strip()
+    # Limpia basura ya persistida ("Cuánto cuesta", "Muchas gracias").
+    if actual and _direccion_parece_basura(actual):
+        out['direccion_servicio'] = ''
+        actual = ''
+    ubic = _extraer_ubicacion_cliente(texto_cliente)
     if ubic:
         if not actual:
             out['direccion_servicio'] = ubic
@@ -402,7 +537,10 @@ def _enriquecer_ubicacion_en_datos(datos: dict, texto_cliente: str) -> dict:
 
 def _nota_ubicacion_para_prompt(datos: dict) -> str:
     dir_txt = (datos.get('direccion_servicio') or '').strip()
+    if dir_txt and _direccion_parece_basura(dir_txt):
+        dir_txt = ''
     diferida = bool(datos.get('direccion_diferida'))
+    modalidad = (datos.get('modalidad') or '').strip().lower()
     partes: list[str] = []
     if dir_txt:
         partes.append(
@@ -410,12 +548,28 @@ def _nota_ubicacion_para_prompt(datos: dict) -> str:
             'PROHIBIDO volver a preguntar comuna/sector. '
             'Calle exacta SOLO al coordinar visita o si el cliente la ofrece.'
         )
-    if diferida:
+    elif diferida:
         partes.append(
             'El cliente pidió cotización ANTES de dar dirección exacta. '
             'Respeta eso: NO insistas en la calle. Arma el borrador y dile que '
             'la dirección se coordina al aprobar/agendar.'
         )
+    elif modalidad == 'domicilio':
+        telefono_ok = len(
+            ''.join(c for c in str(datos.get('cliente_telefono') or '') if c.isdigit())
+        ) >= 8
+        patente_ok = bool(
+            ((datos.get('vehiculo') or {}).get('patente') or datos.get('patente_enriquecida') or '')
+            .strip()
+        )
+        if telefono_ok and patente_ok:
+            partes.append(
+                'Falta comuna/sector para el servicio a domicilio. '
+                'Pídela UNA sola vez, al final, con naturalidad '
+                '(ej. "¿En qué comuna te atiendes para coordinar la visita?"). '
+                'NO la pidas junto al saludo ni antes de patente/teléfono. '
+                'Si el cliente aplaza la dirección, no insistas.'
+            )
     return ' '.join(partes)
 
 
@@ -1124,12 +1278,14 @@ REGLAS DE CONVERSACIÓN:
 18. MODALIDAD Y DIRECCIÓN (CRÍTICO — CERO INVENCIÓN): modalidad debe ser "taller" o "domicilio" según lo que pida el cliente Y lo que permita la FICHA OPERATIVA. Pídela solo cuando sea relevante — nunca en un saludo vacío.
     - Si la FICHA dice SOLO a domicilio: PROHIBIDO inventar local/sucursal. Si pregunta por dirección del taller, aclara que trabajan a domicilio.
     - Para BORRADOR a domicilio basta COMUNA o sector en direccion_servicio (ej. "Vitacura"). NO exijas calle/número para armar cotización.
+    - PROHIBIDO guardar en direccion_servicio frases del chat que no sean lugar (mal: "Cuánto cuesta", "Muchas gracias", "cambio de aceite"). Solo comuna/sector/calle reales.
+    - Momento correcto para pedir comuna (domicilio): DESPUÉS de patente + teléfono (o cuando vas a armar el borrador), UNA pregunta suave al cierre. NUNCA en el saludo ni como primera respuesta a "cuánto cuesta".
     - Calle exacta se pide SOLO al coordinar la visita o cuando el cliente ya aceptó/aprobó la cotización.
-    - Si el cliente dice que dará la dirección DESPUÉS de ver/aprobar la cotización ("te la doy al aprobar", "primero el precio"): respeta eso. NO vuelvas a pedir la dirección. Marca listo_para_cotizar si ya hay patente+teléfono+servicio+pedido de precio (y comuna si la dio). Guarda direccion_diferida implícitamente avanzando al borrador.
-    - Si YA tienes comuna/sector en "Datos ya capturados" o en el bloque UBICACIÓN del sistema: PROHIBIDO preguntarla de nuevo (aunque el cliente se moleste diciendo "ya te lo dije").
+    - Si el cliente dice que dará la dirección DESPUÉS de ver/aprobar la cotización ("te la doy al aprobar", "primero el precio"): respeta eso. NO vuelvas a pedir la dirección. Marca listo_para_cotizar si ya hay patente+teléfono+servicio+pedido de precio (y comuna si la dio).
+    - Si YA tienes comuna/sector REAL en "Datos ya capturados" o en el bloque UBICACIÓN: PROHIBIDO preguntarla de nuevo.
     - Si el taller tiene local: SOLO da la dirección EXACTA de la FICHA. PROHIBIDO inventar calle/número/comuna.
     - Si modalidad=taller, direccion_servicio puede ir vacío.
-18b. INTENCIÓN DEL CLIENTE (CRÍTICO): si pide "cuánto vale", "qué conlleva", "quiero cotizar" o "envíame la cotización primero", RESPONDE eso (qué incluye + armar borrador). NO desvíes a pedir comuna/dirección/preferencia de día otra vez si ya la tienes o si el cliente la aplazó.
+18b. INTENCIÓN DEL CLIENTE (CRÍTICO): si pide "cuánto vale", "qué conlleva", "quiero cotizar" o "envíame la cotización primero", RESPONDE eso (qué incluye + armar borrador). NO desvíes a pedir comuna/dirección/preferencia de día otra vez si ya la tienes o si el cliente la aplazó. "Cuánto cuesta" NO es una dirección.
 19. TELÉFONO Y RITMO COMERCIAL (CRÍTICO — no ser insistente): pide el teléfono SOLO cuando el cliente muestre intención real de avanzar (pide presupuesto/cotización/precio, quiere agendar o llevar el auto, pregunta "cuándo puedo llevarlo", o ya aceptó que le armes el borrador). NO lo pidas automáticamente solo porque ya tienes patente + síntoma: mientras el cliente siga en modo consulta/duda técnica (preguntando causas, qué puede ser, si es grave, etc.) quédate en modo asesoría (regla 3b) y NO reintroduzcas el pedido de teléfono en cada respuesta — se siente a bot insistente. Guárdalo en datos_actualizados.cliente_telefono cuando lo entregue. Sin teléfono no marques listo_para_cotizar=true. Si ya está, no lo vuelvas a pedir.
 20. KILOMETRAJE: si el contexto de patente trae km registrados, trátarlo SOLO como referencia aproximada / último dato conocido — el auto pudo seguir circulando. NUNCA digas "tu auto tiene X km exactos". Puedes decir "según registro, el último km conocido era aprox. X; ¿me confirmas el kilometraje actual?" y guarda vehiculo.kilometraje_actual si el cliente lo confirma.
 21. MENSAJES CORTOS Y SEPARADOS (como WhatsApp humano): responde con "respuestas_cliente" = lista de 1 a 3 burbujas.
@@ -1818,6 +1974,9 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
 
     datos = _merge_datos(sesion.datos_capturados, decision.get('datos_actualizados') or {})
     # Heurística gana al LLM vacío: comuna dicha por el cliente + dirección diferida.
+    # El LLM a veces mete frases del chat ("Cuánto cuesta") en direccion_servicio.
+    if _direccion_parece_basura(str(datos.get('direccion_servicio') or '')):
+        datos['direccion_servicio'] = ''
     datos = _enriquecer_ubicacion_en_datos(datos, texto_cliente)
     if getattr(taller, 'modalidad_atencion', '') == 'a_domicilio':
         datos['modalidad'] = 'domicilio'
@@ -1825,14 +1984,17 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         datos.get('modalidad') or ''
     ).strip():
         datos['modalidad'] = 'domicilio'
-    # Conserva flags/ubicación ya capturados si el LLM los borró.
+    # Conserva flags/ubicación ya capturados si el LLM los borró (nunca basura).
     prev_datos = sesion.datos_capturados or {}
     if prev_datos.get('direccion_diferida') and not datos.get('direccion_diferida'):
         datos['direccion_diferida'] = True
-    if (prev_datos.get('direccion_servicio') or '').strip() and not (
-        datos.get('direccion_servicio') or ''
-    ).strip():
-        datos['direccion_servicio'] = prev_datos['direccion_servicio']
+    prev_dir = (prev_datos.get('direccion_servicio') or '').strip()
+    if (
+        prev_dir
+        and not (datos.get('direccion_servicio') or '').strip()
+        and not _direccion_parece_basura(prev_dir)
+    ):
+        datos['direccion_servicio'] = prev_dir
     rep_flag = decision.get('repuestos_incluidos_ultimo_servicio')
     if rep_flag is not None:
         datos['repuestos_incluidos_ultimo_servicio'] = rep_flag
