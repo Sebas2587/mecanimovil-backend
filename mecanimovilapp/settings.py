@@ -125,20 +125,23 @@ WSGI_APPLICATION = 'mecanimovilapp.wsgi.application'
 DATABASE_URL = config('DATABASE_URL', default=None)
 
 if DATABASE_URL:
-    # Producción: usar DATABASE_URL con PostGIS
+    # Producción: usar DATABASE_URL con PostGIS.
+    # basic_256mb no tolera CONN_MAX_AGE alto (conexiones idle saturan RAM/slots).
+    # En build/migrate usar CONN_MAX_AGE=0 (ver build.sh).
+    _conn_max_age = int(config('CONN_MAX_AGE', default='60'))
+    _connect_timeout = int(config('DB_CONNECT_TIMEOUT', default='30'))
     db_config = dj_database_url.config(
         default=DATABASE_URL,
         engine='django.contrib.gis.db.backends.postgis',
-        conn_max_age=600,  # 10 minutos - mejor pooling para plan Standard (1GB)
-        conn_health_checks=True,  # Verificar salud de conexiones antes de usar
+        conn_max_age=_conn_max_age,
+        conn_health_checks=True,
     )
-    # Configuración optimizada para Render Standard (1GB RAM)
     db_config['OPTIONS'] = {
-        'connect_timeout': 10,  # Timeout de conexión inicial
-        'keepalives': 1,  # Habilitar keepalives TCP
-        'keepalives_idle': 30,  # Enviar keepalive después de 30s de inactividad
-        'keepalives_interval': 10,  # Intervalo entre keepalives
-        'keepalives_count': 5,  # Número de keepalives antes de considerar la conexión muerta
+        'connect_timeout': _connect_timeout,
+        'keepalives': 1,
+        'keepalives_idle': 30,
+        'keepalives_interval': 10,
+        'keepalives_count': 5,
     }
     DATABASES = {
         'default': db_config
