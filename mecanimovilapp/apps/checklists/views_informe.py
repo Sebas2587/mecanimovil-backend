@@ -114,10 +114,21 @@ def _serializar_informe_publico(informe: InformeServicioPublico, request) -> dic
 
     taller_nombre = ''
     taller_foto_url = ''
+    taller = None
     if cita and cita.taller_id:
-        taller_nombre = getattr(cita.taller, 'nombre', '') or ''
-        if hasattr(cita.taller, 'foto_perfil') and cita.taller.foto_perfil:
-            taller_foto_url = get_image_url(cita.taller.foto_perfil, request)
+        taller = cita.taller
+    elif hasattr(checklist, 'taller') and checklist.taller:
+        taller = checklist.taller
+    elif hasattr(checklist, 'creado_por') and hasattr(checklist.creado_por, 'taller'):
+        taller = checklist.creado_por.taller
+
+    if taller:
+        taller_nombre = getattr(taller, 'nombre', '') or ''
+        foto = getattr(taller, 'foto_perfil', None)
+        if not foto and getattr(taller, 'usuario', None):
+            foto = getattr(taller.usuario, 'foto_perfil', None)
+        if foto:
+            taller_foto_url = get_image_url(foto, request)
 
     def _format_firma(f_val):
         if not f_val:

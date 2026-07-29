@@ -156,7 +156,7 @@ def _valor_respuesta(resp, cat) -> str:
 
 
 def _es_hallazgo_relevante(pregunta: str, valor: str, tipo: str) -> bool:
-    """True si el ítem merece mención al cliente (no es un OK rutinario)."""
+    """True si el ítem merece mención al cliente (no es un OK rutinario o lista de mantenimiento)."""
     if not valor:
         return False
     v = ' '.join(valor.lower().split())
@@ -167,14 +167,19 @@ def _es_hallazgo_relevante(pregunta: str, valor: str, tipo: str) -> bool:
     if v in _VALORES_OK:
         return False
 
+    # Excluir preguntas de selección de repuestos/filtros reemplazados rutinariamente
+    if any(k in p for k in ('filtros reemplazados', 'repuestos reemplazados', 'piezas reemplazadas', 'elementos reemplazados', 'servicios realizados')):
+        if not any(k in v for k in ('fuga', 'dañ', 'falla', 'urgente', 'crític', 'critic', 'malo', 'mala', 'bajo', 'desgaste')):
+            return False
+
     keywords_alerta = (
         'bajo', 'alta', 'alto', 'malo', 'mala', 'regular', 'fuga', 'desgaste',
-        'ruido', 'golpe', 'fisura', 'grieta', 'oxid', 'reemplaz', 'cambiar',
+        'ruido', 'golpe', 'fisura', 'grieta', 'oxid',
         'urgente', 'crític', 'critic', 'falla', 'dañ', 'danad',
     )
     if any(k in v for k in keywords_alerta):
         return True
-    if v in ('sí', 'si') and any(k in p for k in ('fuga', 'ruido', 'golpe', 'falla', 'pérdida', 'perdida')):
+    if v in ('sí', 'si') and any(k in p for k in ('fuga', 'ruido', 'golpe', 'falla', 'pérdida', 'perdida', 'daño', 'dañado')):
         return True
 
     try:
