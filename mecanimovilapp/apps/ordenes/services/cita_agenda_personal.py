@@ -443,6 +443,7 @@ def actualizar_cita_personal(
     *,
     cabecera: dict | None = None,
     detalle: dict | None = None,
+    omitir_especialidad: bool = False,
 ) -> CitaAgendaPersonal:
     if cita.estado != 'activa':
         raise ValidationError('Solo se pueden editar citas activas.')
@@ -498,7 +499,9 @@ def actualizar_cita_personal(
     if 'miembro_taller' in cabecera and cabecera.get('miembro_taller') is None:
         miembro_id = None
 
-    categorias = _categorias_de_oferta(oferta)
+    # omitir_especialidad: el agente ya resolvió mecánico con fallback (cupo
+    # ofrecido sin especialidad alineada). Evita falso "horario tomado".
+    categorias = [] if omitir_especialidad else _categorias_de_oferta(oferta)
     miembro = validar_cita_personal_slot(
         taller=cita.taller,
         mecanico=cita.mecanico,

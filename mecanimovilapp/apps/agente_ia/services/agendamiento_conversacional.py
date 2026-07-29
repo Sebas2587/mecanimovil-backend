@@ -38,6 +38,69 @@ _DIAS_ES = {
     6: 'dom',
 }
 
+# weekday Python: lun=0 … dom=6
+_NOMBRE_DIA_A_WEEKDAY = {
+    'lunes': 0,
+    'lun': 0,
+    'martes': 1,
+    'mar': 1,
+    'miercoles': 2,
+    'miércoles': 2,
+    'mie': 2,
+    'mié': 2,
+    'jueves': 3,
+    'jue': 3,
+    'viernes': 4,
+    'vie': 4,
+    'sabado': 5,
+    'sábado': 5,
+    'sab': 5,
+    'sáb': 5,
+    'domingo': 6,
+    'dom': 6,
+}
+
+_PEDIR_MAS_FECHAS_RE = re.compile(
+    r'\b(?:'
+    r'otra\s+semana|semana\s+que\s+viene|m[aá]s\s+adelante|'
+    r'otros?\s+d[ií]as?|m[aá]s\s+fechas|m[aá]s\s+opciones|'
+    r'qu[eé]\s+otros?\s+d[ií]as?|alguna\s+otra\s+fecha|'
+    r'ninguno\s+de\s+(?:esos|ellos|estos)|no\s+me\s+sirve\s+(?:ninguno|nada)'
+    r')\b',
+    re.IGNORECASE,
+)
+
+# Hora explícita: exige :MM, AM/PM, "hrs", o prefijo "a las" (evita tomar el "4" de "martes 4").
+_HORA_RE = re.compile(
+    r'(?:'
+    r'(?:a\s+las?\s+|las\s+)(\d{1,2})(?::|\.)?(\d{2})?\s*(a\.?\s*m\.?|p\.?\s*m\.?|am|pm)?'
+    r'|'
+    r'\b(\d{1,2})(?::|\.)(\d{2})\s*(a\.?\s*m\.?|p\.?\s*m\.?|am|pm)?'
+    r'|'
+    r'\b(\d{1,2})\s*(a\.?\s*m\.?|p\.?\s*m\.?|am|pm)'
+    r'|'
+    r'\b(\d{1,2})\s*hrs?\b'
+    r')',
+    re.IGNORECASE,
+)
+
+_RANGO_HORA_RE = re.compile(
+    r'\b(?:entre\s+las?\s*)?(\d{1,2})(?::(\d{2}))?\s*(a\.?\s*m\.?|p\.?\s*m\.?|am|pm)?'
+    r'\s*(?:u|o|y|/|-|a)\s*'
+    r'(?:las?\s*)?(\d{1,2})(?::(\d{2}))?\s*(a\.?\s*m\.?|p\.?\s*m\.?|am|pm)?',
+    re.IGNORECASE,
+)
+
+_FECHA_DM_RE = re.compile(
+    r'\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\b',
+)
+
+_DIA_NOMBRE_RE = re.compile(
+    r'\b(lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo|'
+    r'lun|mar|mie|mi[eé]|jue|vie|sab|s[aá]b|dom)\b',
+    re.IGNORECASE,
+)
+
 
 def _parse_json(text: str) -> dict[str, Any] | None:
     if not text or not str(text).strip():
@@ -270,11 +333,20 @@ def iniciar_agendamiento(
 
     datos = dict(sesion.datos_capturados or {})
     datos['slots_ofrecidos'] = oferta
+    datos.pop('fecha_agenda_pendiente', None)
     if categorias_req:
         datos['categorias_requeridas'] = categorias_req
     preferencias = _preferencias_agenda_desde_sesion(sesion, cita)
     if preferencias:
         datos['preferencias_agenda'] = preferencias
+    mejor_previo = _mejor_slot_proximo(oferta, preferencias)
+    if mejor_previo:
+        oferta = dict(oferta)
+        oferta['propuesta_actual'] = {
+            'fecha': mejor_previo[0],
+            'hora': mejor_previo[1],
+        }
+        datos['slots_ofrecidos'] = oferta
     sesion.datos_capturados = datos
     sesion.estado = AgenteConversacionSesion.ESTADO_AGENDANDO
     sesion.cita_en_negociacion = cita
@@ -376,26 +448,371 @@ def iniciar_agendamiento(
 
 
 def _cliente_pide_otro_rango(texto: str) -> bool:
-    t = texto.lower()
-    indicadores = (
-        'no puedo',
-        'otra semana',
-        'semana que viene',
-        'más adelante',
-        'mas adelante',
-        'otro día',
-        'otro dia',
-        'más tarde',
-        'mas tarde',
-        'no me sirve',
-        'ninguno',
+    """Solo pedidos explícitos de otra ventana — no 'el miércoles' ni 'martes 4'."""
+    t = (texto or '').strip()
+    if not t:
+        return False
+    # Si elige un día concreto, NUNCA desplazar la ventana.
+    if _DIA_NOMBRE_RE.search(t) or _FECHA_DM_RE.search(t):
+        return False
+    return bool(_PEDIR_MAS_FECHAS_RE.search(t))
+
+
+def _normalizar_hora(hora_str: str | None) -> str:
+    """'9:00' / '9' / '10 AM' → 'HH:MM'."""
+    raw = (hora_str or '').strip().lower().replace('.', '')
+    if not raw:
+        return ''
+    m = re.match(
+        r'^(\d{1,2})(?::(\d{2}))?\s*(a\s*m|p\s*m|am|pm)?$',
+        raw,
     )
-    return any(x in t for x in indicadores)
+    if not m:
+        return (hora_str or '').strip()
+    h = int(m.group(1))
+    mins = int(m.group(2) or 0)
+    ampm = (m.group(3) or '').replace(' ', '')
+    if ampm in ('pm', 'p.m', 'p.m.') and h < 12:
+        h += 12
+    if ampm in ('am', 'a.m', 'a.m.') and h == 12:
+        h = 0
+    if h > 23 or mins > 59:
+        return ''
+    return f'{h:02d}:{mins:02d}'
+
+
+def _extraer_horas_candidatas(
+    texto: str,
+    *,
+    permitir_hora_suelta: bool = False,
+) -> list[str]:
+    """Horas o rangos ('entre 10 y 11 AM') → lista de HH:MM preferidas."""
+    t = texto or ''
+    out: list[str] = []
+    m_rango = _RANGO_HORA_RE.search(t)
+    if m_rango:
+        h1 = int(m_rango.group(1))
+        min1 = int(m_rango.group(2) or 0)
+        ap1 = (m_rango.group(3) or '').lower().replace('.', '').replace(' ', '')
+        h2 = int(m_rango.group(4))
+        min2 = int(m_rango.group(5) or 0)
+        ap2 = (m_rango.group(6) or '').lower().replace('.', '').replace(' ', '')
+        # Si solo el segundo trae AM/PM, aplícalo a ambos (10 u 11 AM).
+        if not ap1 and ap2:
+            ap1 = ap2
+        if not ap2 and ap1:
+            ap2 = ap1
+        for h, mins, ap in ((h1, min1, ap1), (h2, min2, ap2)):
+            norm = _normalizar_hora(f'{h}:{mins:02d} {ap}'.strip())
+            if norm and norm not in out:
+                out.append(norm)
+        if out:
+            return out
+    for m in _HORA_RE.finditer(t):
+        # Grupos: (1,2,3)=a las H[:MM][ampm] | (4,5,6)=H:MM[ampm] | (7,8)=H ampm | (9)=H hrs
+        if m.group(1) is not None:
+            h = int(m.group(1))
+            mins = int(m.group(2) or 0)
+            ap = (m.group(3) or '').lower().replace('.', '').replace(' ', '')
+            norm = _normalizar_hora(f'{h}:{mins:02d} {ap}'.strip())
+        elif m.group(4) is not None:
+            h = int(m.group(4))
+            mins = int(m.group(5))
+            ap = (m.group(6) or '').lower().replace('.', '').replace(' ', '')
+            norm = _normalizar_hora(f'{h}:{mins:02d} {ap}'.strip())
+        elif m.group(7) is not None:
+            h = int(m.group(7))
+            ap = (m.group(8) or '').lower().replace('.', '').replace(' ', '')
+            norm = _normalizar_hora(f'{h} {ap}'.strip())
+        else:
+            h = int(m.group(9))
+            norm = _normalizar_hora(f'{h}:00')
+        if norm and norm not in out:
+            out.append(norm)
+    # Con día ya elegido, aceptar "10" / "10:00" sueltos como hora.
+    if not out and permitir_hora_suelta:
+        m_suelta = re.match(
+            r'^\s*(?:a\s+las?\s+)?(\d{1,2})(?::(\d{2}))?\s*(a\.?\s*m\.?|p\.?\s*m\.?|am|pm)?\s*[!.]?\s*$',
+            t,
+            re.I,
+        )
+        if m_suelta:
+            h = int(m_suelta.group(1))
+            mins = int(m_suelta.group(2) or 0)
+            ap = (m_suelta.group(3) or '').lower().replace('.', '').replace(' ', '')
+            if 7 <= h <= 20 or ap:
+                norm = _normalizar_hora(f'{h}:{mins:02d} {ap}'.strip())
+                if norm:
+                    out.append(norm)
+    return out
+
+
+def _fechas_ofrecidas(slots_ctx: dict[str, Any]) -> list[str]:
+    return list(slots_ctx.get('fechas') or [])
+
+
+def _horas_del_dia(slots_ctx: dict[str, Any], fecha_iso: str) -> list[str]:
+    slots = (slots_ctx.get('slots_por_dia') or {}).get(fecha_iso) or []
+    horas: list[str] = []
+    for s in slots:
+        h = _normalizar_hora(s.get('hora'))
+        if h and h not in horas:
+            horas.append(h)
+    return horas
+
+
+def _resolver_fecha_por_nombre_dia(
+    texto: str,
+    fechas: list[str],
+    *,
+    hoy: date | None = None,  # noqa: ARG001 — API estable / callers
+) -> str | None:
+    """'lunes' / 'martes 4' → primera fecha ofrecida que calza."""
+    m = _DIA_NOMBRE_RE.search(texto or '')
+    if not m:
+        return None
+    key = m.group(1).lower().replace('é', 'e').replace('á', 'a')
+    # Normalizar miércoles/miercoles/mie
+    aliases = {
+        'miercoles': 'miércoles',
+        'mie': 'mié',
+        'sabado': 'sábado',
+        'sab': 'sáb',
+    }
+    nombre = aliases.get(key, m.group(1).lower())
+    weekday = _NOMBRE_DIA_A_WEEKDAY.get(nombre) or _NOMBRE_DIA_A_WEEKDAY.get(key)
+    if weekday is None:
+        # Reintento con acentos del match original
+        weekday = _NOMBRE_DIA_A_WEEKDAY.get(m.group(1).lower())
+    if weekday is None:
+        return None
+
+    dia_num = None
+    m_dia = re.search(
+        r'\b(?:el\s+)?(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)'
+        r'\s+(\d{1,2})\b',
+        texto or '',
+        re.I,
+    )
+    if m_dia:
+        dia_num = int(m_dia.group(1))
+    else:
+        # "el martes 4" / "martes 4"
+        m_dia2 = re.search(rf'\b{re.escape(m.group(1))}\s+(\d{{1,2}})\b', texto or '', re.I)
+        if m_dia2:
+            dia_num = int(m_dia2.group(1))
+
+    candidatas = []
+    for f_iso in fechas:
+        try:
+            f = date.fromisoformat(f_iso)
+        except ValueError:
+            continue
+        if f.weekday() != weekday:
+            continue
+        if dia_num is not None and f.day != dia_num:
+            continue
+        candidatas.append(f_iso)
+    return candidatas[0] if candidatas else None
+
+
+def _resolver_fecha_por_dm(texto: str, fechas: list[str]) -> str | None:
+    """'4/08', '4-8', '29/07' → ISO en lista ofrecida."""
+    m = _FECHA_DM_RE.search(texto or '')
+    if not m:
+        return None
+    dia = int(m.group(1))
+    mes = int(m.group(2))
+    anio_raw = m.group(3)
+    for f_iso in fechas:
+        try:
+            f = date.fromisoformat(f_iso)
+        except ValueError:
+            continue
+        if f.day == dia and f.month == mes:
+            if anio_raw:
+                anio = int(anio_raw)
+                if anio < 100:
+                    anio += 2000
+                if f.year != anio:
+                    continue
+            return f_iso
+    return None
+
+
+def _elegir_hora_en_dia(
+    horas_validas: list[str],
+    horas_pedidas: list[str],
+) -> str | None:
+    if not horas_validas:
+        return None
+    for h in horas_pedidas:
+        if h in horas_validas:
+            return h
+    # Rango 10–11: si ninguna exacta, primera del intervalo
+    if len(horas_pedidas) >= 2:
+        try:
+            lo = min(horas_pedidas)
+            hi = max(horas_pedidas)
+            for h in horas_validas:
+                if lo <= h <= hi:
+                    return h
+        except TypeError:
+            pass
+    return None
+
+
+def _construir_resumen_horas(horas: list[str], *, max_n: int = 12) -> str:
+    if not horas:
+        return 'sin cupos'
+    mostradas = horas[:max_n]
+    texto = ', '.join(mostradas)
+    if len(horas) > max_n:
+        texto += f' (+{len(horas) - max_n} más)'
+    return texto
+
+
+def _match_slot_deterministico(
+    texto_cliente: str,
+    slots_ctx: dict[str, Any],
+    *,
+    fecha_pendiente: str | None = None,
+) -> dict[str, Any]:
+    """Parsea día/hora en español sin depender del LLM.
+
+    Resultados:
+      - match: fecha+hora válidos
+      - dia_sin_hora: fecha OK, falta elegir hora
+      - pedir_mas_fechas
+      - consulta_dia: pregunta si un día tiene cupo
+      - sin_match
+    """
+    texto = (texto or '').strip()
+    if not texto:
+        return {'resultado': 'sin_match', 'motivo': 'mensaje vacío'}
+
+    if _cliente_pide_otro_rango(texto):
+        return {'resultado': 'pedir_mas_fechas', 'motivo': 'pide otra ventana'}
+
+    fechas = _fechas_ofrecidas(slots_ctx)
+    horas_pedidas = _extraer_horas_candidatas(
+        texto,
+        permitir_hora_suelta=bool(fecha_pendiente),
+    )
+
+    # "mañana" / "pasado mañana" contra la lista ofrecida
+    low = texto.lower()
+    hoy = timezone.localdate()
+    fecha_iso = _resolver_fecha_por_dm(texto, fechas)
+    if not fecha_iso:
+        if 'pasado mañana' in low or 'pasado manana' in low:
+            cand = (hoy + timedelta(days=2)).isoformat()
+            if cand in fechas:
+                fecha_iso = cand
+        elif re.search(r'\bma[nñ]ana\b', low):
+            cand = (hoy + timedelta(days=1)).isoformat()
+            if cand in fechas:
+                fecha_iso = cand
+    if not fecha_iso:
+        fecha_iso = _resolver_fecha_por_nombre_dia(texto, fechas, hoy=hoy)
+
+    # Si ya había día pendiente y ahora solo manda hora ("a las 10")
+    if not fecha_iso and fecha_pendiente and fecha_pendiente in fechas and horas_pedidas:
+        fecha_iso = fecha_pendiente
+
+    # Confirmación implícita del slot propuesto: "sí", "ok", "dale"
+    if not fecha_iso and not horas_pedidas:
+        prop = slots_ctx.get('propuesta_actual') or {}
+        if isinstance(prop, dict) and prop.get('fecha') and prop.get('hora'):
+            if re.match(
+                r'^\s*(?:s[ií]|ok|oka|okey|dale|perfecto|me\s+acomoda|de\s+acuerdo|'
+                r'te\s+confirmo|ese|esa|ese\s+horario)\s*[!.]*\s*$',
+                texto,
+                re.I,
+            ):
+                return {
+                    'resultado': 'match',
+                    'fecha': prop['fecha'],
+                    'hora': _normalizar_hora(prop['hora']),
+                    'motivo': 'acepta propuesta',
+                }
+
+    # Nombre de día sin número (ej. "el lunes", "¿el miércoles?") → buscar el
+    # próximo de ese weekday en ventana amplia (no el de dentro de 2 semanas).
+    m_dia_solo = _DIA_NOMBRE_RE.search(texto)
+    tiene_dia_num = bool(
+        re.search(
+            r'\b(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\s+\d{1,2}\b',
+            texto,
+            re.I,
+        )
+        or _FECHA_DM_RE.search(texto)
+    )
+    if m_dia_solo and not tiene_dia_num and not horas_pedidas:
+        return {
+            'resultado': 'consulta_dia',
+            'fecha': fecha_iso,
+            'hora': None,
+            'motivo': 'buscar próximo día de semana',
+            'texto_dia': m_dia_solo.group(1),
+        }
+
+    if not fecha_iso:
+        if m_dia_solo:
+            return {
+                'resultado': 'consulta_dia',
+                'fecha': None,
+                'hora': None,
+                'motivo': 'día no está en la oferta actual',
+                'texto_dia': m_dia_solo.group(1),
+            }
+        return {'resultado': 'sin_match', 'motivo': 'no detecté día'}
+
+    horas_validas = _horas_del_dia(slots_ctx, fecha_iso)
+    if not horas_validas:
+        return {
+            'resultado': 'sin_match',
+            'fecha': fecha_iso,
+            'motivo': 'día sin cupos',
+        }
+
+    if horas_pedidas:
+        hora = _elegir_hora_en_dia(horas_validas, horas_pedidas)
+        if hora:
+            return {
+                'resultado': 'match',
+                'fecha': fecha_iso,
+                'hora': hora,
+                'motivo': 'match determinístico',
+            }
+        return {
+            'resultado': 'dia_sin_hora',
+            'fecha': fecha_iso,
+            'hora': None,
+            'motivo': 'hora pedida no disponible ese día',
+            'hora_pedida': horas_pedidas,
+        }
+
+    # Solo día → pedir hora (no inventar 08:00)
+    return {
+        'resultado': 'dia_sin_hora',
+        'fecha': fecha_iso,
+        'hora': None,
+        'motivo': 'día elegido sin hora',
+    }
 
 
 def _prompt_match_slot(texto_cliente: str, slots_ctx: dict[str, Any]) -> str:
     hoy = timezone.localdate().isoformat()
-    slots_json = json.dumps(slots_ctx, ensure_ascii=False)
+    # Compactar contexto: fechas + horas por día (sin objetos largos)
+    compacto: dict[str, Any] = {
+        'fechas': slots_ctx.get('fechas') or [],
+        'horas_por_dia': {
+            f: _horas_del_dia(slots_ctx, f)[:16]
+            for f in (slots_ctx.get('fechas') or [])[:12]
+        },
+    }
+    slots_json = json.dumps(compacto, ensure_ascii=False)
     return f"""Eres un asistente de agendamiento de taller mecánico en Chile.
 El cliente debe elegir un horario REAL de la lista. NO inventes fechas ni horas fuera de la lista.
 
@@ -409,23 +826,49 @@ Mensaje del cliente:
 
 Responde SOLO JSON válido:
 {{
-  "resultado": "match|sin_match|pedir_mas_fechas",
+  "resultado": "match|dia_sin_hora|sin_match|pedir_mas_fechas",
   "fecha": "YYYY-MM-DD o null",
-  "hora": "HH:MM o null",
+  "hora": "HH:MM (24h, con cero: 09:00) o null",
   "motivo": "breve explicación en español"
 }}
 
-Reglas:
-- "match" solo si fecha+hora existen exactamente en slots_por_dia.
-- "pedir_mas_fechas" si pide otra semana/rango distinto.
-- "sin_match" si no calza con ningún slot ofrecido."""
+Reglas CRÍTICAS:
+- Si el cliente elige un día de la lista (ej. "el miércoles", "martes 4", "4/08") SIN hora → resultado "dia_sin_hora" con esa fecha. NUNCA "pedir_mas_fechas".
+- "match" solo si fecha+hora existen exactamente en horas_por_dia (hora en formato HH:MM).
+- "pedir_mas_fechas" SOLO si pide explícitamente otra semana / más fechas / otros días, SIN elegir uno concreto.
+- "sin_match" si no calza con ningún slot ofrecido.
+- Normaliza "10 AM" → "10:00", "9" → "09:00"."""
 
 
-def _interpretar_slot_cliente(texto_cliente: str, slots_ctx: dict[str, Any]) -> dict[str, Any]:
+def _interpretar_slot_cliente(
+    texto_cliente: str,
+    slots_ctx: dict[str, Any],
+    *,
+    fecha_pendiente: str | None = None,
+) -> dict[str, Any]:
+    det = _match_slot_deterministico(
+        texto_cliente,
+        slots_ctx,
+        fecha_pendiente=fecha_pendiente,
+    )
+    if det.get('resultado') in ('match', 'dia_sin_hora', 'pedir_mas_fechas', 'consulta_dia'):
+        return det
+
     decision, error = _llamar_gemini_agente(_prompt_match_slot(texto_cliente, slots_ctx))
     if not decision:
         logger.warning('Gemini agendamiento sin respuesta: %s', error)
-        return {'resultado': 'sin_match', 'motivo': error or 'No pude interpretar la respuesta.'}
+        return det if det.get('resultado') != 'sin_match' else {
+            'resultado': 'sin_match',
+            'motivo': error or 'No pude interpretar la respuesta.',
+        }
+    # Normalizar hora del LLM
+    if decision.get('hora'):
+        decision['hora'] = _normalizar_hora(decision.get('hora'))
+    # Guardrail: si el LLM dice pedir_mas_fechas pero el texto elige un día, ignóralo
+    if (decision.get('resultado') or '').lower() == 'pedir_mas_fechas' and (
+        _DIA_NOMBRE_RE.search(texto_cliente or '') or _FECHA_DM_RE.search(texto_cliente or '')
+    ):
+        decision['resultado'] = 'dia_sin_hora' if decision.get('fecha') else 'sin_match'
     return decision
 
 
@@ -509,6 +952,7 @@ def _confirmar_slot(
 
     miembro = None
     cats = categorias_requeridas or None
+    omitir_especialidad = False
     try:
         miembro = resolver_miembro_cita_personal(
             taller=taller,
@@ -532,6 +976,7 @@ def _confirmar_slot(
                 categorias_requeridas=None,
                 excluir_cita_id=cita.pk,
             )
+            omitir_especialidad = True
         else:
             raise
     cabecera: dict[str, Any] = {
@@ -541,7 +986,23 @@ def _confirmar_slot(
     if miembro is not None:
         cabecera['miembro_taller'] = miembro.id
 
-    cita = actualizar_cita_personal(cita, cabecera=cabecera)
+    try:
+        cita = actualizar_cita_personal(
+            cita,
+            cabecera=cabecera,
+            omitir_especialidad=omitir_especialidad,
+        )
+    except ValidationError:
+        # Último recurso: el cupo se ofreció con filtros relajados; confirmar
+        # sin exigir especialidad del catálogo (evita falso "acaba de tomarse").
+        if not omitir_especialidad:
+            cita = actualizar_cita_personal(
+                cita,
+                cabecera=cabecera,
+                omitir_especialidad=True,
+            )
+        else:
+            raise
 
     # Cinturón de seguridad: el flag debe quedar false tras confirmar slot real.
     if cita.horario_por_confirmar:
@@ -589,6 +1050,8 @@ def procesar_turno_agendamiento(
         'requiere_especialidad': bool(categorias_req or oferta_servicio_id),
     }
 
+    fecha_pendiente = (datos.get('fecha_agenda_pendiente') or '').strip() or None
+
     if _cliente_pide_otro_rango(texto_cliente):
         offset = int(slots_ctx.get('offset_dias') or 0) + 7
         slots_ctx = _recopilar_slots_ofrecidos(
@@ -596,6 +1059,7 @@ def procesar_turno_agendamiento(
             **slot_kwargs,
         )
         datos['slots_ofrecidos'] = slots_ctx
+        datos.pop('fecha_agenda_pendiente', None)
         sesion.datos_capturados = datos
         sesion.save(update_fields=['datos_capturados', 'actualizado_en'])
         resumen = _construir_resumen_dias(slots_ctx.get('fechas') or [])
@@ -617,7 +1081,11 @@ def procesar_turno_agendamiento(
         )
         return {'ok': True, 'accion': 'reofertar_slots'}
 
-    decision = _interpretar_slot_cliente(texto_cliente, slots_ctx)
+    decision = _interpretar_slot_cliente(
+        texto_cliente,
+        slots_ctx,
+        fecha_pendiente=fecha_pendiente,
+    )
     resultado = (decision.get('resultado') or 'sin_match').strip().lower()
 
     if resultado == 'pedir_mas_fechas':
@@ -627,6 +1095,7 @@ def procesar_turno_agendamiento(
             **slot_kwargs,
         )
         datos['slots_ofrecidos'] = slots_ctx
+        datos.pop('fecha_agenda_pendiente', None)
         sesion.datos_capturados = datos
         sesion.save(update_fields=['datos_capturados', 'actualizado_en'])
         resumen = _construir_resumen_dias(slots_ctx.get('fechas') or [])
@@ -638,12 +1107,114 @@ def procesar_turno_agendamiento(
         )
         return {'ok': True, 'accion': 'reofertar_slots'}
 
+    # Cliente pregunta por un día (ej. "¿el lunes?") que no está en la ventana actual:
+    # ampliar búsqueda SIN descartar si aparece, o explicar el próximo de ese weekday.
+    if resultado == 'consulta_dia':
+        texto_dia = (decision.get('texto_dia') or '').strip()
+        amplio = _recopilar_slots_ofrecidos(
+            offset_dias=0,
+            dias_adelante=21,
+            **slot_kwargs,
+        )
+        fecha_amplia = _resolver_fecha_por_nombre_dia(
+            texto_cliente,
+            amplio.get('fechas') or [],
+        )
+        if fecha_amplia:
+            # Fusiona la ventana actual con la nueva (no pierdas fechas cercanas).
+            fechas_merge = list(dict.fromkeys(
+                (slots_ctx.get('fechas') or []) + (amplio.get('fechas') or [])
+            ))
+            slots_merge = dict(slots_ctx.get('slots_por_dia') or {})
+            slots_merge.update(amplio.get('slots_por_dia') or {})
+            slots_ctx = {
+                **slots_ctx,
+                'fechas': sorted(fechas_merge),
+                'slots_por_dia': slots_merge,
+                'offset_dias': 0,
+            }
+            datos['slots_ofrecidos'] = slots_ctx
+            datos['fecha_agenda_pendiente'] = fecha_amplia
+            sesion.datos_capturados = datos
+            sesion.save(update_fields=['datos_capturados', 'actualizado_en'])
+            horas = _horas_del_dia(slots_ctx, fecha_amplia)
+            respuesta = (
+                f'Sí, el {_formatear_fecha_legible(fecha_amplia)} tengo disponibilidad. '
+                f'Horarios: {_construir_resumen_horas(horas)}. ¿Cuál te acomoda?'
+            )
+            enviar_respuesta_agente(
+                conversation=conversation,
+                proveedor_user_id=proveedor_user_id,
+                texto=respuesta,
+            )
+            return {'ok': True, 'accion': 'consultar_dia', 'fecha': fecha_amplia}
+        nombre = texto_dia or 'ese día'
+        resumen = _construir_resumen_dias(slots_ctx.get('fechas') or [])
+        respuesta = (
+            f'Por ahora no veo cupos el {nombre} en las próximas semanas. '
+            f'Tengo estos días: {resumen}. ¿Cuál prefieres y a qué hora?'
+        )
+        enviar_respuesta_agente(
+            conversation=conversation,
+            proveedor_user_id=proveedor_user_id,
+            texto=respuesta,
+        )
+        return {'ok': True, 'accion': 'consulta_dia_sin_cupo'}
+
     fecha_iso = (decision.get('fecha') or '').strip()
-    hora_str = (decision.get('hora') or '').strip()
-    slots_dia = (slots_ctx.get('slots_por_dia') or {}).get(fecha_iso) or []
-    horas_validas = {s.get('hora') for s in slots_dia}
+    hora_str = _normalizar_hora(decision.get('hora'))
+    horas_validas_list = _horas_del_dia(slots_ctx, fecha_iso) if fecha_iso else []
+    horas_validas = set(horas_validas_list)
+
+    # Día elegido sin hora (o hora pedida no disponible) → listar horas de ESE día.
+    if resultado == 'dia_sin_hora' and fecha_iso and fecha_iso in (slots_ctx.get('fechas') or []):
+        datos['fecha_agenda_pendiente'] = fecha_iso
+        sesion.datos_capturados = datos
+        sesion.save(update_fields=['datos_capturados', 'actualizado_en'])
+        horas = horas_validas_list
+        pedidas = decision.get('hora_pedida') or []
+        if pedidas:
+            respuesta = (
+                f'El {_formatear_fecha_legible(fecha_iso)} no tengo '
+                f'{"/".join(pedidas)}, pero sí: {_construir_resumen_horas(horas)}. '
+                '¿Cuál te acomoda?'
+            )
+        else:
+            respuesta = (
+                f'Perfecto, el {_formatear_fecha_legible(fecha_iso)}. '
+                f'Tengo estos horarios: {_construir_resumen_horas(horas)}. ¿Cuál prefieres?'
+            )
+        enviar_respuesta_agente(
+            conversation=conversation,
+            proveedor_user_id=proveedor_user_id,
+            texto=respuesta,
+        )
+        AgenteMensajeLog.objects.create(
+            sesion=sesion,
+            mensaje_entrante=texto_cliente,
+            respuesta_generada=respuesta,
+            accion=AgenteMensajeLog.ACCION_RESPONDER,
+            metadata={'agendamiento': True, 'dia_sin_hora': True, 'fecha': fecha_iso},
+        )
+        return {'ok': True, 'accion': 'pedir_hora', 'fecha': fecha_iso}
 
     if resultado != 'match' or not fecha_iso or not hora_str or hora_str not in horas_validas:
+        # Si al menos detectamos día, no digas "no ubiqué" genérico: pide hora.
+        if fecha_iso and fecha_iso in (slots_ctx.get('fechas') or []):
+            datos['fecha_agenda_pendiente'] = fecha_iso
+            sesion.datos_capturados = datos
+            sesion.save(update_fields=['datos_capturados', 'actualizado_en'])
+            horas = _horas_del_dia(slots_ctx, fecha_iso)
+            respuesta = (
+                f'Para el {_formatear_fecha_legible(fecha_iso)} tengo: '
+                f'{_construir_resumen_horas(horas)}. ¿A qué hora te acomoda?'
+            )
+            enviar_respuesta_agente(
+                conversation=conversation,
+                proveedor_user_id=proveedor_user_id,
+                texto=respuesta,
+            )
+            return {'ok': True, 'accion': 'pedir_hora', 'fecha': fecha_iso}
         respuesta = (
             'No logré ubicar ese horario en la disponibilidad actual. '
             f'Tengo estos días: {_construir_resumen_dias(slots_ctx.get("fechas") or [])}. '
@@ -672,22 +1243,56 @@ def procesar_turno_agendamiento(
             categorias_requeridas=categorias_req or None,
         )
     except (ValidationError, ValueError) as exc:
-        logger.info('Slot tomado o inválido en agendamiento IA: %s', exc)
-        slots_ctx = _recopilar_slots_ofrecidos(**slot_kwargs)
-        datos['slots_ofrecidos'] = slots_ctx
-        sesion.datos_capturados = datos
-        sesion.save(update_fields=['datos_capturados', 'actualizado_en'])
-        respuesta = (
-            'Disculpa, ese horario acaba de tomarse. '
-            f'Te ofrezco estos cupos: {_construir_resumen_dias(slots_ctx.get("fechas") or [])}. '
-            '¿Cuál te acomoda?'
+        logger.info('Slot inválido en agendamiento IA: %s', exc)
+        # Revalidar cupo real del día antes de decir "tomado".
+        slots_frescos = _obtener_slots_dia(
+            taller=taller,
+            fecha_iso=fecha_iso,
+            modalidad=modalidad,
+            duracion_minutos=duracion,
+            oferta_servicio_id=oferta_servicio_id,
+            requiere_especialidad=bool(categorias_req or oferta_servicio_id),
         )
+        horas_frescas = [_normalizar_hora(s.get('hora')) for s in slots_frescos]
+        horas_frescas = [h for h in horas_frescas if h]
+        if hora_str in horas_frescas:
+            # Cupo sigue en disponibilidad: fallo de asignación, no de carrera.
+            datos['fecha_agenda_pendiente'] = fecha_iso
+            if slots_frescos:
+                slots_por_dia = dict(slots_ctx.get('slots_por_dia') or {})
+                slots_por_dia[fecha_iso] = slots_frescos
+                slots_ctx = {**slots_ctx, 'slots_por_dia': slots_por_dia}
+                datos['slots_ofrecidos'] = slots_ctx
+            sesion.datos_capturados = datos
+            sesion.save(update_fields=['datos_capturados', 'actualizado_en'])
+            respuesta = (
+                f'Tuve un problema al reservar las {hora_str} del '
+                f'{_formatear_fecha_legible(fecha_iso)}. '
+                f'¿Probamos otro horario ese día? Tengo: '
+                f'{_construir_resumen_horas(horas_frescas)}.'
+            )
+        else:
+            slots_ctx = _recopilar_slots_ofrecidos(**slot_kwargs)
+            datos['slots_ofrecidos'] = slots_ctx
+            datos.pop('fecha_agenda_pendiente', None)
+            sesion.datos_capturados = datos
+            sesion.save(update_fields=['datos_capturados', 'actualizado_en'])
+            respuesta = (
+                f'Ese horario ({_formatear_fecha_legible(fecha_iso)} {hora_str}) '
+                'ya no está libre. '
+                f'Te ofrezco estos días: {_construir_resumen_dias(slots_ctx.get("fechas") or [])}. '
+                '¿Cuál te acomoda y a qué hora?'
+            )
         enviar_respuesta_agente(
             conversation=conversation,
             proveedor_user_id=proveedor_user_id,
             texto=respuesta,
         )
         return {'ok': True, 'accion': 'slot_ocupado'}
+
+    datos.pop('fecha_agenda_pendiente', None)
+    sesion.datos_capturados = datos
+    sesion.save(update_fields=['datos_capturados', 'actualizado_en'])
 
     mecanico_nombre = ''
     if miembro is not None:
