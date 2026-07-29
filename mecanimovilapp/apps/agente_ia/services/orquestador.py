@@ -590,6 +590,103 @@ def _quitar_re_saludo(burbujas: list[str], *, ya_presentado: bool) -> list[str]:
     return out or burbujas
 
 
+_PEDIDO_CONCRETO_RE = re.compile(
+    r'\b(?:'
+    r'cotiz|presupuesto|precio|cu[aá]nto|'
+    r'cambio\s+de|quiero\s+(?:un\s+)?(?:servicio|cotiz)|necesito|'
+    r'revisi[oó]n|diagn[oó]stico|alineaci[oó]n|balanceo|'
+    r'filtro|aceite|freno|pastillas|embrague|buj[ií]as|'
+    r'patente|agendar|a\s+domicilio'
+    r')\b',
+    re.IGNORECASE,
+)
+
+_SOLO_SALUDO_RE = re.compile(
+    r'^\s*(?:hola|holi|hey|ola|buenas?(?:\s+tardes|\s+noches|\s+d[ií]as)?)\s*[!.?…]*\s*$',
+    re.IGNORECASE,
+)
+
+_RESPUESTA_ABIERTA_RE = re.compile(
+    r'(?:en\s+qu[eé]\s+te\s+puedo\s+ayudar|qu[eé]\s+le\s+pasa\s+al\s+auto|'
+    r'c[oó]mo\s+te\s+puedo\s+ayudar)',
+    re.IGNORECASE,
+)
+
+
+def _cliente_solo_saluda(texto: str) -> bool:
+    t = (texto or '').strip()
+    if not t:
+        return True
+    if _SOLO_SALUDO_RE.match(t):
+        return True
+    # "Hola buenas" corto sin pedido
+    if len(t) <= 32 and not _PEDIDO_CONCRETO_RE.search(t):
+        low = t.lower()
+        if any(s in low for s in ('hola', 'buenas', 'hey', 'qué tal', 'que tal')):
+            return True
+    return False
+
+
+def _cliente_trae_pedido_concreto(texto: str) -> bool:
+    """True si el mensaje ya trae servicio/cotización/síntoma (no es solo 'hola')."""
+    t = (texto or '').strip()
+    if not t or _cliente_solo_saluda(t):
+        return False
+    return bool(_PEDIDO_CONCRETO_RE.search(t))
+
+
+def _respuesta_ignora_pedido_inicial(burbujas: list[str], texto_cliente: str) -> bool:
+    """True si el cliente pidió algo concreto y la IA solo respondió bienvenida abierta."""
+    if not _cliente_trae_pedido_concreto(texto_cliente):
+        return False
+    joined = ' '.join(b or '' for b in (burbujas or [])).strip()
+    if not joined:
+        return True
+    # No menciona nada del pedido y pregunta genérica → ignoró el contexto.
+    if _RESPUESTA_ABIERTA_RE.search(joined) and not _PEDIDO_CONCRETO_RE.search(joined):
+        return True
+    return False
+
+
+def _hint_servicio_desde_texto(texto: str) -> str:
+    t = (texto or '').lower()
+    if re.search(r'aceite', t):
+        if re.search(r'filtro', t):
+            return 'el cambio de aceite y filtro'
+        return 'el cambio de aceite'
+    if re.search(r'filtro\s+de\s+aire', t):
+        return 'el cambio de filtro de aire'
+    if re.search(r'polen|habit[aá]culo', t):
+        return 'el cambio de filtro de polen'
+    if re.search(r'embrague', t):
+        return 'el cambio de kit de embrague'
+    if re.search(r'pastillas|freno', t):
+        return 'el servicio de frenos'
+    if re.search(r'diagn[oó]stico', t):
+        return 'el diagnóstico'
+    if re.search(r'alineaci[oó]n', t):
+        return 'la alineación'
+    return 'el servicio que pediste'
+
+
+def _respuesta_fallback_pedido_inicial(
+    texto_cliente: str,
+    *,
+    nombre_agente: str,
+    nombre_taller: str,
+) -> list[str]:
+    """Respuesta determinística cuando el LLM ignora un pedido en el primer mensaje."""
+    taller = (nombre_taller or '').strip() or 'el taller'
+    agente = (nombre_agente or '').strip()
+    servicio = _hint_servicio_desde_texto(texto_cliente)
+    if agente:
+        b1 = f'Hola, soy {agente} de {taller}. Perfecto, te ayudo con {servicio}.'
+    else:
+        b1 = f'Hola, soy de {taller}. Perfecto, te ayudo con {servicio}.'
+    b2 = 'Para armarte una cotización precisa, ¿me indicas la patente del auto?'
+    return [b1, b2]
+
+
 _AGREGAR_A_COTIZACION_RE = re.compile(
     r'\b(?:'
     r'agrega(?:r|me|lo|la|s)?|'
@@ -1076,14 +1173,23 @@ def _construir_prompt_agente(
     calificacion_lead: str = '',
     primer_contacto: bool = True,
     nota_ubicacion: str = '',
+    pedido_en_primer_mensaje: bool = False,
 ) -> str:
     datos_json = json.dumps(datos_capturados or {}, ensure_ascii=False)
     tiene_contexto = bool((chunks_texto or '').strip())
     nombre = (nombre_taller or '').strip() or 'el taller'
     agente = (nombre_agente or '').strip()
-    if primer_contacto:
+    if primer_contacto and pedido_en_primer_mensaje:
         flag_contacto = (
-            'PRIMER_CONTACTO=true. Puedes presentarte una sola vez en este turno si el cliente solo saluda.'
+            'PRIMER_CONTACTO=true con PEDIDO CONCRETO en el mismo mensaje. '
+            'OBLIGATORIO: preséntate en 1 frase Y reconoce el pedido (ej. cambio de aceite / cotización). '
+            'PROHIBIDO responder solo con "¿en qué te puedo ayudar?" o pegar la bienvenida genérica '
+            'ignorando lo que ya pidió. Siguiente paso útil: pedir la patente.'
+        )
+    elif primer_contacto:
+        flag_contacto = (
+            'PRIMER_CONTACTO=true. El cliente SOLO saluda (sin pedido). '
+            'Puedes presentarte y preguntar en qué le ayudas.'
         )
     else:
         flag_contacto = (
@@ -1101,11 +1207,14 @@ def _construir_prompt_agente(
             f'Habla SIEMPRE como {agente} del taller {nombre}.'
         )
         regla_presentacion = (
-            f'0a. SOLO SALUDO / social ("hola", "buenas noches", "hey") sin problema ni pedido:\n'
+            f'0a. SOLO SALUDO / social ("hola", "buenas noches") SIN pedido ni servicio:\n'
             f'    - Responde cálido y breve (1-2 frases). '
             f'Preséntate como "{agente} de {nombre}" SOLO si PRIMER_CONTACTO=true.\n'
-            f'    - Pregunta abierta tipo "¿en qué te puedo ayudar?" / "¿qué le pasa al auto?".\n'
-            f'    - PROHIBIDO en este turno pedir patente, teléfono, modalidad, dirección o listar checklist de datos.'
+            f'    - Pregunta abierta tipo "¿en qué te puedo ayudar?".\n'
+            f'    - PROHIBIDO pedir patente/teléfono/dirección en ese turno.\n'
+            f'0a2. HOLA + PEDIDO en el mismo mensaje ("hola, quiero cotizar cambio de aceite"):\n'
+            f'    - Aplica 0b, NO 0a. Preséntate breve + reconoce el servicio + pide el siguiente dato útil '
+            f'(casi siempre la patente). NUNCA ignores el pedido con una bienvenida genérica.'
         )
         regla_1b = (
             f'1b. Si PRIMER_CONTACTO=true y te presentas, usa tu nombre "{agente}" y el del taller "{nombre}". '
@@ -1120,11 +1229,13 @@ def _construir_prompt_agente(
             f'Habla SIEMPRE en nombre de {nombre} (nunca digas solo "el taller" genérico si conoces el nombre).'
         )
         regla_presentacion = (
-            f'0a. SOLO SALUDO / social ("hola", "buenas noches", "hey") sin problema ni pedido:\n'
+            f'0a. SOLO SALUDO / social ("hola", "buenas noches") SIN pedido ni servicio:\n'
             f'    - Responde cálido y breve (1-2 frases). '
             f'Preséntate con "{nombre}" SOLO si PRIMER_CONTACTO=true.\n'
-            f'    - Pregunta abierta tipo "¿en qué te puedo ayudar?" / "¿qué le pasa al auto?".\n'
-            f'    - PROHIBIDO en este turno pedir patente, teléfono, modalidad, dirección o listar checklist de datos.'
+            f'    - Pregunta abierta tipo "¿en qué te puedo ayudar?".\n'
+            f'    - PROHIBIDO pedir patente/teléfono/dirección en ese turno.\n'
+            f'0a2. HOLA + PEDIDO en el mismo mensaje: aplica 0b (reconoce el pedido + patente). '
+            f'PROHIBIDO bienvenida genérica que ignore lo pedido.'
         )
         regla_1b = (
             f'1b. Si PRIMER_CONTACTO=true y te presentas, usa el nombre real del taller ("{nombre}"). '
@@ -1136,13 +1247,21 @@ def _construir_prompt_agente(
         if (nota_ubicacion or '').strip()
         else ''
     )
-    bloque_bienvenida = (
-        f'Mensaje de bienvenida (tono/referencia opcional SOLO si PRIMER_CONTACTO=true; '
-        f'NO lo pegues entero ni lo combines con patente+modalidad+síntoma):\n'
-        f'{mensaje_bienvenida or bienvenida_default}\n'
-        if primer_contacto
-        else 'Mensaje de bienvenida: NO APLICA (conversación en curso — no reinicies).\n'
-    )
+    if primer_contacto and pedido_en_primer_mensaje:
+        bloque_bienvenida = (
+            'Mensaje de bienvenida: NO lo uses como respuesta. El cliente YA pidió algo concreto; '
+            'preséntate en una frase y atiende ese pedido (no preguntes "¿en qué te ayudo?").\n'
+        )
+    elif primer_contacto:
+        bloque_bienvenida = (
+            f'Mensaje de bienvenida (tono/referencia opcional SOLO si el cliente solo saluda; '
+            f'NO lo pegues entero ni lo combines con patente+modalidad+síntoma):\n'
+            f'{mensaje_bienvenida or bienvenida_default}\n'
+        )
+    else:
+        bloque_bienvenida = (
+            'Mensaje de bienvenida: NO APLICA (conversación en curso — no reinicies).\n'
+        )
     regla_15e = ''
     if tiene_estimado_historico:
         regla_15e = """
@@ -1220,10 +1339,10 @@ Historial reciente del chat:
 REGLAS DE CONVERSACIÓN:
 0. LEE EL MOMENTO (CRÍTICO — prima sobre pedirle datos): adapta TONO y RITMO al mensaje actual. PROHIBIDO responder con un formulario (patente + síntoma + domicilio/taller + teléfono) en un solo mensaje. Máximo UNA pregunta nueva por turno — esto incluye preguntas compuestas unidas con "y" (ej. "¿en qué sector estás Y qué le pasa al auto?" cuenta como DOS preguntas, prohibido). Si dudas entre dos datos por pedir, prioriza SIEMPRE el síntoma/problema del auto antes que sector/dirección/teléfono.
 {regla_presentacion}
-0b. PREGUNTA RÁPIDA o dump de info (pide precio/servicio, o ya cuenta síntoma/patente/auto sin saludar):
+0b. PREGUNTA RÁPIDA o dump de info (pide precio/servicio, o ya cuenta síntoma/patente/auto; también "hola, quiero cotizar X"):
     - Contesta PRIMERO lo que preguntó o reconoce lo que ya dijo (no ignores su mensaje).
-    - Guarda en datos_actualizados lo que ya entregó.
-    - Luego pide SOLO el siguiente dato faltante más útil (si falta síntoma → síntoma; si ya hay síntoma y falta patente para cotizar → patente; etc.).
+    - Guarda en datos_actualizados lo que ya entregó (servicio_nombre / servicios).
+    - Luego pide SOLO el siguiente dato faltante más útil (si ya pidió cotizar un servicio → patente).
 0c. CASO YA AVANZADO (historial con datos o cliente insistiendo en cotizar/agendar):
     - No reinicies con bienvenida genérica.
     - Avanza: confirma lo que tienes, pide el faltante, o prepara cotización si cumple regla 12.
@@ -1231,7 +1350,7 @@ REGLAS DE CONVERSACIÓN:
 1. Español chileno, cálido, concreto. Nada de frases robot ("¡Claro! Con gusto te ayudo a cotizar…", "Para poder revisar tu caso y ver si podemos atenderte…") ni empujar cotización en cada turno.
 {regla_1b}
 1c. PROHIBIDO FALSA CONTINUIDAD (CRÍTICO — rompe la naturalidad): nunca digas "como te comentaba", "como te mencioné", "como te decía", "como habíamos hablado" o equivalentes SALVO que tú literalmente ya hayas dicho eso mismo antes en ESTE chat (revisa el historial reciente). Si es la primera vez que explicas algo (ej. modalidad a domicilio, dirección, horario), dilo directo y natural, sin fingir que ya se había hablado del tema. Tampoco repitas la MISMA frase textual del bloque de FICHA OPERATIVA palabra por palabra — parafraséala como lo diría una persona, no como un párrafo copiado de una configuración.
-2. Si el cliente saluda o habla en genérico, aplica 0a. No saltes a cotizar ni a capturar patente.
+2. Si el cliente SOLO saluda (sin pedido), aplica 0a. Si saluda Y pide algo (cotizar, cambio de aceite, etc.), aplica 0a2/0b — NUNCA 0a solo.
 3. Muchos clientes NO saben qué servicio necesitan: primero asesora (posibles causas, qué revisar, urgencia) y pide 1 dato faltante clave.
 3b. DIAGNÓSTICO PROACTIVO (CRÍTICO — suena a mecánico experto, NO a bot genérico): si hay bloque de "Conocimiento técnico de diagnóstico", apóyate en él para dar 2-3 causas CONCRETAS y nombradas (ej. "sensor de velocidad de rueda (ABS)", "sensor de ángulo del volante" — nunca solo "un sensor" a secas ni "problemas eléctricos" en genérico). Menciona con naturalidad las reparaciones asociadas que suelen ir de la mano, y advierte si hay riesgo de seguir circulando. Si el cliente pregunta "¿qué puede estar originando esto?", "¿por qué pasa?" o similar, PROFUNDIZA usando más causas del mismo bloque (no repitas lo que ya dijiste) y responde como un mecánico real conversando, no con una frase de relleno. Puedes cerrar con 1 pregunta específica del bloque para seguir afinando el diagnóstico. NUNCA afirmes un diagnóstico certero sin inspección física; di "podría ser", "suele ser", "conviene revisar". Esta respuesta es 100% asesoría técnica: NO la conviertas en pedido de teléfono/presupuesto en el mismo turno (ver regla 19).
 3c. PROHIBIDO REPETIR LA MISMA HIPÓTESIS (CRÍTICO): revisa el historial reciente antes de responder. Si ya dijiste una hipótesis (ej. "podría ser la pinza de freno o el freno de mano") NO la repitas casi textual en el siguiente turno. Cuando el cliente aporte un dato NUEVO (ej. huele a quemado, se calienta la llanta, pasa solo en frío), usa ESE dato para AVANZAR el razonamiento: confirma o descarta la hipótesis anterior con esa nueva evidencia ("Ese olor a quemado confirma que..."; "Como también se calienta solo esa rueda, ahora apunto más a...") en vez de repetir la misma frase genérica. Cada respuesta debe sumar información nueva, no reciclar la anterior.
@@ -1937,6 +2056,7 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
     elif re.search(r'\ba\s+domicilio\b', texto_cliente or '', re.I):
         datos_para_prompt['modalidad'] = 'domicilio'
     ya_presentado = _agente_ya_respondio(conversation)
+    pedido_inicial = (not ya_presentado) and _cliente_trae_pedido_concreto(texto_cliente)
     nota_ubic = _nota_ubicacion_para_prompt(datos_para_prompt)
 
     prompt = _construir_prompt_agente(
@@ -1959,6 +2079,7 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         calificacion_lead=bloque_lead,
         primer_contacto=not ya_presentado,
         nota_ubicacion=nota_ubic,
+        pedido_en_primer_mensaje=pedido_inicial,
     )
 
     decision, error = _llamar_gemini_agente(prompt)
@@ -2046,6 +2167,34 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
     listo_cotizar = bool(decision.get('listo_para_cotizar'))
     respuestas = _extraer_respuestas_cliente(decision)
     respuestas = _quitar_re_saludo(respuestas, ya_presentado=ya_presentado)
+    # Si el cliente abrió con pedido concreto y la IA solo pegó la bienvenida, corrige.
+    if pedido_inicial and _respuesta_ignora_pedido_inicial(respuestas, texto_cliente):
+        logger.info(
+            'Corrigiendo respuesta genérica que ignoró pedido inicial (conv=%s)',
+            conversation.id,
+        )
+        respuestas = _respuesta_fallback_pedido_inicial(
+            texto_cliente,
+            nombre_agente=(config.nombre_agente or '').strip(),
+            nombre_taller=(taller.nombre or '').strip(),
+        )
+        # Asegura capturar el servicio en datos aunque el LLM no lo haya puesto.
+        if not (datos.get('servicio_nombre') or '').strip() and not (
+            datos.get('servicios') or []
+        ):
+            hint = _hint_servicio_desde_texto(texto_cliente)
+            if hint and hint != 'el servicio que pediste':
+                # "el cambio de aceite" / "la alineación" → título capitalizado
+                nombre_serv = hint
+                if nombre_serv.startswith('el '):
+                    nombre_serv = nombre_serv[3:].strip()
+                elif nombre_serv.startswith('la '):
+                    nombre_serv = nombre_serv[3:].strip()
+                if nombre_serv:
+                    datos['servicio_nombre'] = nombre_serv[0].upper() + nombre_serv[1:]
+                    datos['servicios'] = [datos['servicio_nombre']]
+                    sesion.datos_capturados = datos
+                    sesion.save(update_fields=['datos_capturados', 'actualizado_en'])
     respuesta = ' '.join(respuestas).strip()
     cliente_pide_cotizacion = bool(decision.get('cliente_pide_cotizacion'))
     intencion = (decision.get('intencion') or '').strip().lower()
@@ -2057,6 +2206,12 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         cliente_pide_cotizacion = False
         if intencion in ('cotizacion', 'cotizar', 'presupuesto'):
             intencion = ''
+    # Primer mensaje con "quiero cotizar / cambio de aceite" cuenta como pedido de precio.
+    if pedido_inicial and _cliente_trae_pedido_concreto(texto_cliente):
+        if re.search(r'\b(?:cotiz|presupuesto|precio|cu[aá]nto|quiero\s+.*servicio)\b', texto_cliente or '', re.I):
+            cliente_pide_cotizacion = True
+            if intencion not in ('cotizacion', 'cotizar', 'presupuesto', 'asesoria'):
+                intencion = 'cotizacion'
     # Si el texto pide precio/cotización (o aplaza dirección tras pedirla),
     # no dejamos que el LLM diluya la intención pidiendo calle otra vez.
     if not _cliente_niega_pedir_precio(texto_cliente) and (
