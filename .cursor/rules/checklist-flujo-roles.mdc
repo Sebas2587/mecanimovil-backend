@@ -1,0 +1,46 @@
+---
+description: Flujo de roles del checklist operativo (mecánico → supervisor/mandante → cliente)
+globs: mecanimovil-prov/**/checklist*/**/*.{ts,tsx},mecanimovil-prov/**/cita-agenda-personal/**/*,mecanimovil-backend/**/checklists/**/*
+alwaysApply: false
+---
+
+# Checklist: flujo de roles (obligatorio)
+
+El servicio se cierra en este orden. No mezclar responsabilidades en UI ni permisos.
+
+## 1. Mecánico (o taller sin técnico de equipo) — LLENA
+
+- Completa los ítems del checklist (`EN_PROGRESO` / `PAUSADO`).
+- Firma como técnico al finalizar el llenado.
+- CTA: **Iniciar servicio** / **Continuar checklist**.
+
+En citas personales, si no hay mecánico de equipo operando (o el mandante ejecuta el trabajo), el mandante puede llenar hasta enviar a revisión.
+
+## 2. Supervisor o mandante — REVISA
+
+- Entra cuando el estado es `PENDIENTE_FIRMA_SUPERVISOR`.
+- Revisa el trabajo y firma (rectificación).
+- Eso genera el informe público para el cliente.
+- CTA: **Firmar y generar informe** (no “Continuar checklist” ni editar ítems).
+
+## 3. Cliente — CIERRA el servicio
+
+- Entra cuando el estado es `PENDIENTE_FIRMA_CLIENTE`.
+- Revisa el informe (link público / app usuarios) y firma/certifica.
+- Eso deja el checklist en `COMPLETADO` y cierra el servicio.
+- En app proveedor: compartir/copiar enlace; no reabrir llenado.
+
+## Estados (resumen)
+
+| Estado | Quién actúa | Acción |
+|--------|-------------|--------|
+| `PENDIENTE` / `EN_PROGRESO` / `PAUSADO` | Mecánico (o taller ejecutor) | Llenar ítems |
+| `PENDIENTE_FIRMA_SUPERVISOR` | Supervisor / mandante | Revisar + firmar |
+| `PENDIENTE_FIRMA_CLIENTE` | Cliente | Firmar / cerrar servicio |
+| `COMPLETADO` | — | Solo consulta / reenviar enlace |
+
+## Anti-patrones
+
+- No dar “Continuar checklist” (edición de ítems) a supervisor/mandante en etapa de revisión.
+- No permitir al mecánico firmar como supervisor.
+- No marcar el servicio cerrado solo con firma del taller: falta la del cliente cuando el flujo lo exige.
