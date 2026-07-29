@@ -639,6 +639,107 @@ def _merge_repuestos_borrador(
     return out
 
 
+def _es_servicio_nuevo_vs_previos(
+    nombre: str,
+    *,
+    claves_previas: set[str],
+    nombres_previos: list[str],
+) -> bool:
+    clave = _clave_servicio(nombre)
+    if not clave:
+        return False
+    if clave in claves_previas:
+        return False
+    for prev in nombres_previos:
+        if _servicios_equivalentes(nombre, prev):
+            return False
+    return True
+
+
+# Fallback cuando no hay catálogo ni IA para filtros pedidos al actualizar.
+_REPUESTOS_FALLBACK_SERVICIO: list[tuple[re.Pattern[str], str, int]] = [
+    (
+        re.compile(r'filtro\s+de\s+aire\b', re.IGNORECASE),
+        'Filtro de aire',
+        15_000,
+    ),
+    (
+        re.compile(r'filtro\s+de\s+(?:polen|habit[aá]culo|cabina)\b', re.IGNORECASE),
+        'Filtro de polen / habitáculo',
+        18_000,
+    ),
+    (
+        re.compile(r'filtro\s+de\s+(?:combustible|gasolina|bencina)\b', re.IGNORECASE),
+        'Filtro de combustible',
+        16_000,
+    ),
+]
+
+
+def _repuesto_cubre_servicio(nombre_rep: str, nombre_serv: str) -> bool:
+    """True si el repuesto parece corresponder al servicio (aire≠aceite)."""
+    ra = _clave_repuesto_fuzzy(nombre_rep)
+    sb = _clave_servicio(nombre_serv)
+    if not ra or not sb:
+        return False
+    quals_a = _qualificadores_servicio(set(ra.split()))
+    quals_b = _qualificadores_servicio(set(sb.split()))
+    # Pack aceite: aceite en servicio y (aceite o filtro aceite) en repuesto.
+    if 'aceite' in sb and 'aire' not in sb and 'polen' not in sb:
+        if 'aceite' in ra and 'filtro' not in ra:
+            return True
+        if 'filtro' in ra and quals_a <= {'aceite'} and 'aire' not in ra:
+            return True
+        return False
+    if quals_b and quals_a and quals_a == quals_b:
+        return True
+    if 'aire' in sb and 'aire' in ra:
+        return True
+    if ('polen' in sb or 'habitaculo' in sb or 'cabina' in sb) and (
+        'polen' in ra or 'habitaculo' in ra or 'cabina' in ra
+    ):
+        return True
+    if ('combustible' in sb or 'gasolina' in sb) and (
+        'combustible' in ra or 'gasolina' in ra
+    ):
+        return True
+    return False
+
+
+def _repuestos_fallback_servicios(
+    servicios: list[str],
+    ya_tienen: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Líneas de repuesto mínimas para servicios nuevos sin cobertura catálogo/IA."""
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
+        normalizar_repuesto,
+    )
+
+    out: list[dict[str, Any]] = []
+    for serv in servicios or []:
+        if any(_repuesto_cubre_servicio(str(r.get('nombre') or ''), serv) for r in (ya_tienen or [])):
+            continue
+        if any(_repuesto_cubre_servicio(str(r.get('nombre') or ''), serv) for r in out):
+            continue
+        for rx, nombre, precio in _REPUESTOS_FALLBACK_SERVICIO:
+            if not rx.search(serv):
+                continue
+            rep = normalizar_repuesto(
+                {
+                    'id': f'fallback-{_clave_servicio(serv)[:24]}',
+                    'nombre': nombre,
+                    'cantidad': 1,
+                    'precio_unitario_clp': precio,
+                    'comentario': 'Sugerido por el servicio pedido (IVA incl.; revisa precio)',
+                },
+                len(ya_tienen) + len(out),
+            )
+            rep['precio_iva_incluido'] = True
+            out.append(rep)
+            break
+    return out
+
+
 def _podar_lineas_servicio_redundantes(lineas: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Elimina servicios genéricos ya cubiertos por otro más específico.
 
@@ -817,15 +918,46 @@ def crear_cotizacion_borrador_desde_agente(
     servicios_turno = servicios_filtrados or servicios_turno
 
     repuestos_flag = datos.get('repuestos_incluidos_ultimo_servicio')
+    # Cambios de filtro / aceite implican repuestos salvo que el cliente diga lo contrario.
+    if repuestos_flag is None and any(
+        re.search(r'\b(?:filtro|aceite|pastillas|discos|buj[ií]as)\b', s, re.I)
+        for s in servicios_turno
+    ):
+        repuestos_flag = True
     ultimo_servicio_turno = servicios_turno[-1] if servicios_turno else ''
 
-    # Generar contexto IA una vez con el resumen de servicios del turno (desglose/orientación).
-    # Si Gemini falla, igual actualizamos líneas desde catálogo/historial: no bloquear el merge.
-    servicio_prompt = ' + '.join(servicios_turno)
+    nombres_previos = [
+        str(l.get('nombre') or '') for l in lineas if (l.get('nombre') or '').strip()
+    ]
+    servicios_nuevos = [
+        s
+        for s in servicios_turno
+        if _es_servicio_nuevo_vs_previos(
+            s,
+            claves_previas=claves_lineas_previas,
+            nombres_previos=nombres_previos,
+        )
+    ]
+
+    # En update: la IA estima SOLO los servicios nuevos (si regenera el pack de aceite,
+    # el merge fuzzy descarta piezas viejas y aire/polen nunca aparecen).
+    if es_update and servicios_nuevos:
+        servicio_prompt = ' + '.join(servicios_nuevos)
+        descripcion_ia = (
+            'Actualización de cotización existente. Estima ÚNICAMENTE mano de obra y '
+            'repuestos de estos servicios NUEVOS (no incluyas aceite ni filtro de aceite '
+            'si no están en la lista): '
+            + (descripcion or servicio_prompt)
+        )
+    else:
+        servicio_prompt = ' + '.join(servicios_turno)
+        descripcion_ia = descripcion
+
+    # Generar contexto IA (desglose/orientación). Si Gemini falla, igual mergeamos.
     resultado = generar_cotizacion_ia(
         conversation=conversation,
         servicio_nombre=servicio_prompt,
-        descripcion_problema=descripcion,
+        descripcion_problema=descripcion_ia,
         modalidad=modalidad if modalidad in ('taller', 'domicilio') else 'taller',
         vehiculo=vehiculo,
         contexto_rag_extra=datos.get('contexto_rag') or '',
@@ -1095,10 +1227,26 @@ def crear_cotizacion_borrador_desde_agente(
             mano_obra = base_prev if base_prev > 0 else (mano_obra_catalogo + mano_obra_historico)
         # Repuestos: nunca reinyectar los del servicio original; solo candidatos nuevos.
         reps_ia_nuevos = ref_reps if (repuestos_flag is not False) else []
+        if servicios_nuevos and reps_ia_nuevos:
+            filtrados = [
+                r
+                for r in reps_ia_nuevos
+                if any(
+                    _repuesto_cubre_servicio(str(r.get('nombre') or ''), s)
+                    for s in servicios_nuevos
+                )
+            ]
+            # Si la IA devolvió solo piezas del servicio viejo, no las metas de nuevo.
+            reps_ia_nuevos = filtrados
         repuestos = _merge_repuestos_borrador(repuestos, reps_para_agregar)
         repuestos = _merge_repuestos_borrador(repuestos, reps_ia_nuevos)
+        # Sin catálogo/IA para aire/polen: igual deja la línea de repuesto editable.
+        if servicios_nuevos and repuestos_flag is not False:
+            fallback = _repuestos_fallback_servicios(servicios_nuevos, repuestos)
+            if fallback:
+                repuestos = _merge_repuestos_borrador(repuestos, fallback)
+                usa_estimativo = True
         if reps_para_agregar or reps_ia_nuevos:
-            # Aunque la IA regenera piezas viejas, el merge fuzzy las descarta.
             if reps_ia_nuevos:
                 usa_estimativo = True
     else:

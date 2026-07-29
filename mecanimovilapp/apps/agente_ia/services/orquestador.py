@@ -1261,6 +1261,7 @@ REGLAS DE CONVERSACIÓN:
 14. UNA SOLA COTIZACIÓN por conversación/vehículo: si el cliente pide otro servicio para el MISMO auto, agrégalo a la misma cotización (lista "servicios") — NO trates cada servicio como cotización aparte. El sistema edita un único borrador hasta que el taller lo cierre/envíe. Si el taller ya envió una cotización y el cliente pide agregar/modificar algo, marca listo_para_cotizar=true para actualizar ESA misma cotización (se reabrirá a borrador); NO prometas una cotización nueva aparte.
 14b. SERVICIOS ESTABLES: usa nombres cortos y consistentes en "servicios" (ej. "Diagnóstico de frenos", "Cambio de pastillas de freno delanteras"). NO repitas ni reformules un servicio ya capturado. NO agregues variantes con paréntesis como "(con repuestos)" en el nombre — usa repuestos_incluidos_ultimo_servicio. NO fusiones dos servicios en una frase ("diagnóstico y pastillas") si ya existen por separado. CRÍTICO: NUNCA metas la modalidad dentro del nombre del servicio (mal: "Cambio de aceite a domicilio", "Diagnóstico en taller") — la modalidad va SOLO en el campo "modalidad". Si mezclas modalidad en el nombre, el sistema no puede encontrar el precio real del catálogo y termina diciendo que no hay tarifa aunque sí exista. Usa solo el nombre del servicio en sí (ej. "Cambio de aceite").
 14b2. ACEITE Y FILTROS: "cambio de aceite y filtro" = UN servicio (aceite + filtro de ACEITE). NUNCA lo mapees a "filtro Gasolina/combustible" ni copies SKUs del catálogo con sufijo de motor. Si el cliente pide además filtro de aire y/o polen/habitáculo, agrégalos como entradas SEPARADAS en "servicios" (ej. ["Cambio de aceite y filtro", "Cambio de filtro de aire", "Cambio de filtro de polen"]). Al actualizar una cotización, "servicios" debe incluir TODOS los pedidos (anteriores + nuevos), no solo el último.
+14b3. REPUESTOS AL AGREGAR SERVICIOS: si el cliente pide cambio de filtro (aire/polen/aceite), pastillas, discos o aceite, asume que VAN CON REPUESTOS (repuestos_incluidos_ultimo_servicio=true) salvo que diga "solo mano de obra" / "sin repuestos". No hace falta preguntar en cada turno; el taller ajusta precios en el borrador. Al sumar aire/polen a una cotización ya armada, márcalos en "servicios" y listo_para_cotizar=true para que el sistema agregue esas piezas al borrador.
 15. PRECIOS (ANTI-ALUCINACIÓN, CRÍTICO): Solo puedes mencionar un monto en pesos ($, CLP) si ese EXACTO valor aparece en la FICHA OPERATIVA / catálogo publicado para ese servicio y vehículo. Si el cliente pregunta "cuánto sale / cuánto cuesta" y NO hay precio publicado (ej. inspección/diagnóstico a domicilio sin tarifa en catálogo):
     - PROHIBIDO inventar cifras, rangos ("entre X e Y"), "unos treinta lucas", o dejar huecos tipo "el valor es de,".
     - PROHIBIDO inventar políticas de descuento ("se descuenta del total", "se abona a la reparación").
@@ -2242,6 +2243,15 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             datos['servicios'] = list(datos_cot.get('servicios') or [])
             sesion.datos_capturados = datos
             sesion.save(update_fields=['datos_capturados', 'actualizado_en'])
+        # Filtros/aceite/frenos: por defecto con repuestos (el taller ajusta montos).
+        if datos_cot.get('repuestos_incluidos_ultimo_servicio') is None:
+            servs = datos_cot.get('servicios') or []
+            if any(
+                re.search(r'\b(?:filtro|aceite|pastillas|discos|buj[ií]as)\b', str(s), re.I)
+                for s in servs
+            ):
+                datos_cot = dict(datos_cot)
+                datos_cot['repuestos_incluidos_ultimo_servicio'] = True
         datos_cot['contexto_rag'] = '\n'.join(
             filter(None, [chunks_texto, contexto_patente_txt])
         )
