@@ -2324,10 +2324,19 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         decision['senal_lead'] = 'cerrado_perdido'
         try:
             from mecanimovilapp.apps.ordenes.models import CotizacionCanal
-            CotizacionCanal.objects.filter(
+            from mecanimovilapp.apps.agente_ia.services.notificaciones import notificar_cotizacion_rechazada_agente
+            cot_canc = CotizacionCanal.objects.filter(
                 conversation_id=conversation.id,
                 estado__in=['borrador', 'enviada'],
-            ).update(estado='cancelada')
+            ).first()
+            if cot_canc:
+                cot_canc.estado = 'cancelada'
+                cot_canc.save(update_fields=['estado', 'actualizado_en'])
+                notificar_cotizacion_rechazada_agente(
+                    proveedor_user_id=proveedor_user_id,
+                    cotizacion=cot_canc,
+                    conversation_id=conversation.id,
+                )
         except Exception as c_exc:
             logger.warning('Error cancelando cotizaciones por desinterés del cliente: %s', c_exc)
         sesion.estado = AgenteConversacionSesion.ESTADO_CERRADO
