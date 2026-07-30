@@ -1254,21 +1254,21 @@ def procesar_turno_agendamiento(
             requiere_especialidad=bool(categorias_req or oferta_servicio_id),
         )
         horas_frescas = [_normalizar_hora(s.get('hora')) for s in slots_frescos]
-        horas_frescas = [h for h in horas_frescas if h]
-        if hora_str in horas_frescas:
-            # Cupo sigue en disponibilidad: fallo de asignación, no de carrera.
+        # Excluir explícitamente la hora que falló para evitar bucles repetitivos
+        horas_frescas = [h for h in horas_frescas if h and h != hora_str]
+        
+        if horas_frescas:
             datos['fecha_agenda_pendiente'] = fecha_iso
-            if slots_frescos:
-                slots_por_dia = dict(slots_ctx.get('slots_por_dia') or {})
-                slots_por_dia[fecha_iso] = slots_frescos
-                slots_ctx = {**slots_ctx, 'slots_por_dia': slots_por_dia}
-                datos['slots_ofrecidos'] = slots_ctx
+            slots_por_dia = dict(slots_ctx.get('slots_por_dia') or {})
+            slots_por_dia[fecha_iso] = [s for s in slots_frescos if _normalizar_hora(s.get('hora')) != hora_str]
+            slots_ctx = {**slots_ctx, 'slots_por_dia': slots_por_dia}
+            datos['slots_ofrecidos'] = slots_ctx
             sesion.datos_capturados = datos
             sesion.save(update_fields=['datos_capturados', 'actualizado_en'])
             respuesta = (
-                f'Tuve un problema al reservar las {hora_str} del '
+                f'El horario de las {hora_str} no quedó disponible para la reserva del '
                 f'{_formatear_fecha_legible(fecha_iso)}. '
-                f'¿Probamos otro horario ese día? Tengo: '
+                f'Para ese mismo día tengo disponibles: '
                 f'{_construir_resumen_horas(horas_frescas)}.'
             )
         else:
@@ -1278,10 +1278,9 @@ def procesar_turno_agendamiento(
             sesion.datos_capturados = datos
             sesion.save(update_fields=['datos_capturados', 'actualizado_en'])
             respuesta = (
-                f'Ese horario ({_formatear_fecha_legible(fecha_iso)} {hora_str}) '
-                'ya no está libre. '
-                f'Te ofrezco estos días: {_construir_resumen_dias(slots_ctx.get("fechas") or [])}. '
-                '¿Cuál te acomoda y a qué hora?'
+                f'No tenemos cupo disponible en las {hora_str} del {_formatear_fecha_legible(fecha_iso)}. '
+                f'Te ofrezco estos días disponibles: {_construir_resumen_dias(slots_ctx.get("fechas") or [])}. '
+                '¿Cuál te acomoda mejor?'
             )
         enviar_respuesta_agente(
             conversation=conversation,

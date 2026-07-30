@@ -116,15 +116,6 @@ CATALOG_ITEMS = [
         'es_obligatorio_por_defecto': True,
         'uso_frecuente': True,
     },
-    {
-        'nombre': 'Firma del Cliente',
-        'categoria': 'FIRMAS_CONFORMIDAD',
-        'tipo_pregunta': 'SIGNATURE',
-        'pregunta_texto': 'Firma del cliente',
-        'descripcion_ayuda': 'Firma digital del cliente confirmando la recepción del servicio',
-        'es_obligatorio_por_defecto': True,
-        'uso_frecuente': True,
-    },
     # --- Diagnósticos / revisiones ---
     {
         'nombre': 'Estado del Sistema Eléctrico',

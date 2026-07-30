@@ -4095,6 +4095,7 @@ class EstadoProveedorView(APIView):
             'verificado': proveedor_visible_como_verificado(proveedor),
             'onboarding_completado': proveedor.onboarding_completado,
             'onboarding_iniciado': proveedor.onboarding_iniciado,
+            'necesita_onboarding': not proveedor.onboarding_completado and not bool(proveedor.nombre and (getattr(proveedor, 'telefono', None) or hasattr(proveedor, 'direccion_fisica'))),
             'fecha_registro': proveedor.fecha_registro,
             'fecha_verificacion': proveedor.fecha_verificacion,
             'activo': proveedor.activo,

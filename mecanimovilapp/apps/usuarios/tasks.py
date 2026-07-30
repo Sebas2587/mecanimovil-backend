@@ -32,9 +32,12 @@ def _send_web_push_to_user(user, title, body, data=None):
     """
     from .models import WebPushSubscription
 
-    if _user_has_active_native_push(user.id):
+    notif_type = (data or {}).get('type', '')
+    # Si la notificación es un evento relevante para el taller (cotización borrador/enviada/aceptada/chat),
+    # enviar siempre a navegadores web activos aunque tenga app nativa instalada.
+    if _user_has_active_native_push(user.id) and not notif_type.startswith('agente_ia_'):
         logger.debug(
-            '[web-push] Usuario %s tiene PushToken nativo activo; omitiendo web push.',
+            '[web-push] Usuario %s tiene PushToken nativo activo; omitiendo web push no prioritario.',
             user.id,
         )
         return

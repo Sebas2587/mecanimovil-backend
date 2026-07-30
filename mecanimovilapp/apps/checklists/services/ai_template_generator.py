@@ -70,14 +70,16 @@ Devuelve SOLO un JSON con esta estructura exacta:
 }}
 
 REGLAS:
-1. Entre 6 y 14 ítems, orden lógico de ejecución (km → inspección → trabajo → fotos → firma).
-2. Incluye al menos: KILOMETER_INPUT, una inspección (BOOLEAN o SELECT), al menos un PHOTO, WORK_SUMMARY o FINAL_NOTES, y SIGNATURE o CLIENT_CONFIRMATION.
-3. tipo_pregunta válidos: {tipos}
-4. categoria válidas: {categorias}
-5. Para PHOTO usa min_fotos entre 1 y 3.
-6. OBLIGATORIO: si tipo_pregunta es SELECT, MULTISELECT, FLUID_LEVEL o cualquier *_INSPECTION / *_CHECK / TIRE_CONDITION / VEHICLE_CONDITION, opciones_seleccion DEBE ser un array JSON con 3-6 opciones concretas en español (NUNCA null ni []). Para FLUID_LEVEL usa niveles (Mínimo/Bajo/Normal/Alto) o estado de fluidos.
-7. El checklist es reutilizable por tipo de servicio. Usa el vehículo solo para adaptar ítems relevantes (p.ej. diésel vs gasolina), no crees un template exclusivo de esa marca.
-8. Responde en español chileno, técnico pero claro.
+1. Entre 6 y 14 ítems, orden lógico de ejecución (km → inspección → trabajo/hallazgos → fotos → firma del técnico).
+2. Incluye al menos: KILOMETER_INPUT, una inspección (BOOLEAN o SELECT), al menos un PHOTO, WORK_SUMMARY o FINAL_NOTES, y SIGNATURE (Firma del técnico responsable).
+3. PROHIBIDO incluir ítems de "Firma del cliente" o confirmación de cliente en el checklist del técnico. La firma del cliente se gestiona en la app de usuarios al finalizar.
+4. Si el servicio es de tipo REVISIÓN o DIAGNÓSTICO, PROHIBIDO incluir ítems de verificación de repuestos cambiados o sustitución de piezas (el servicio es sólo de evaluación/inspección).
+5. tipo_pregunta válidos: {tipos}
+6. categoria válidas: {categorias}
+7. Para PHOTO usa min_fotos entre 1 y 3.
+8. OBLIGATORIO: si tipo_pregunta es SELECT, MULTISELECT, FLUID_LEVEL o cualquier *_INSPECTION / *_CHECK / TIRE_CONDITION / VEHICLE_CONDITION, opciones_seleccion DEBE ser un array JSON con 3-6 opciones concretas en español (NUNCA null ni []). Para FLUID_LEVEL usa niveles (Mínimo/Bajo/Normal/Alto) o estado de fluidos.
+9. El checklist es reutilizable por tipo de servicio. Usa el vehículo solo para adaptar ítems relevantes (p.ej. diésel vs gasolina), no crees un template exclusivo de esa marca.
+10. Responde en español chileno, técnico pero claro.
 """
 
 
