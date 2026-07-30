@@ -139,11 +139,13 @@ def _mapear_categoria(
     cot_estado: str | None,
 ) -> str:
     if evento in ('rechazada', 'cancelada') or cot_estado in ('rechazada', 'cancelada', 'expirada'):
-        return LeadCalificacion.CATEGORIA_CURIOSO
+        return LeadCalificacion.CATEGORIA_CERRADO_PERDIDO
     if evento == 'aceptada' or cot_estado == 'aceptada':
         return LeadCalificacion.CATEGORIA_LISTO_AGENDAR
 
     llm_cat = LeadCalificacion.SENAL_LLM_MAP.get((senal_llm or '').strip().lower())
+    if llm_cat == LeadCalificacion.CATEGORIA_CERRADO_PERDIDO:
+        return LeadCalificacion.CATEGORIA_CERRADO_PERDIDO
     if llm_cat == LeadCalificacion.CATEGORIA_NO_AUTOMOTRIZ:
         return LeadCalificacion.CATEGORIA_NO_AUTOMOTRIZ
     if llm_cat == LeadCalificacion.CATEGORIA_LISTO_AGENDAR:

@@ -330,6 +330,7 @@ class LeadCalificacion(models.Model):
     CATEGORIA_INTERESADO = 'interesado_calificado'
     CATEGORIA_LISTO_AGENDAR = 'listo_agendar'
     CATEGORIA_NO_AUTOMOTRIZ = 'no_automotriz'
+    CATEGORIA_CERRADO_PERDIDO = 'cerrado_perdido'
 
     CATEGORIA_CHOICES = [
         (CATEGORIA_SIN_CALIFICAR, 'Sin calificar'),
@@ -339,6 +340,7 @@ class LeadCalificacion(models.Model):
         (CATEGORIA_INTERESADO, 'Interesado calificado'),
         (CATEGORIA_LISTO_AGENDAR, 'Listo para agendar'),
         (CATEGORIA_NO_AUTOMOTRIZ, 'No automotriz'),
+        (CATEGORIA_CERRADO_PERDIDO, 'Cerrado / Perdido'),
     ]
 
     SENAL_LLM_MAP = {
@@ -348,6 +350,9 @@ class LeadCalificacion(models.Model):
         'interesado': CATEGORIA_INTERESADO,
         'listo_agendar': CATEGORIA_LISTO_AGENDAR,
         'no_automotriz': CATEGORIA_NO_AUTOMOTRIZ,
+        'cerrado_perdido': CATEGORIA_CERRADO_PERDIDO,
+        'rechazado': CATEGORIA_CERRADO_PERDIDO,
+        'cancelado': CATEGORIA_CERRADO_PERDIDO,
     }
 
     conversation = models.OneToOneField(

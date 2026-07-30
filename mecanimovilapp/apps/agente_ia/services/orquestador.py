@@ -601,6 +601,19 @@ _PEDIDO_CONCRETO_RE = re.compile(
     re.IGNORECASE,
 )
 
+_CLIENTE_RECHAZO_O_CERRADO_RE = re.compile(
+    r'\b(?:'
+    r'ya\s+(?:realic[eé]|hice|hize|arregl[eé]|repar[eé]|solucion[eé]|cambi[eé]|vend[ií])|'
+    r'ya\s+lo\s+(?:hice|hicieron|arreglaron|arregl[eé]|solucionaron|cambiaron|tengo)|'
+    r'ya\s+no\s+(?:necesito|quiero|busco|voy\s+a)|'
+    r'no\s+gracias|gracias\s+de\s+todos\s+modos|'
+    r'encontr[eé]\s+otro|en\s+otro\s+taller|con\s+otro\s+mecanico|'
+    r'cancelar\s+(?:cotizac|servicio)|no\s+me\s+interesa|'
+    r'desisto|olv[ií]dalo'
+    r')\b',
+    re.IGNORECASE,
+)
+
 _SOLO_SALUDO_RE = re.compile(
     r'^\s*(?:hola|holi|hey|ola|buenas?(?:\s+tardes|\s+noches|\s+d[ií]as)?)\s*[!.?…]*\s*$',
     re.IGNORECASE,
@@ -2301,6 +2314,24 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         cliente_pide_cotizacion=cliente_pide_cotizacion,
         intencion=intencion,
     )
+
+    cliente_desistio = bool(_CLIENTE_RECHAZO_O_CERRADO_RE.search(texto_cliente or ''))
+    if cliente_desistio:
+        listo_cotizar = False
+        cliente_pide_cotizacion = False
+        intencion = 'rechazado'
+        senal_lead = 'cerrado_perdido'
+        decision['senal_lead'] = 'cerrado_perdido'
+        try:
+            from mecanimovilapp.apps.ordenes.models import CotizacionCanal
+            CotizacionCanal.objects.filter(
+                conversation_id=conversation.id,
+                estado__in=['borrador', 'enviada'],
+            ).update(estado='cancelada')
+        except Exception as c_exc:
+            logger.warning('Error cancelando cotizaciones por desinterés del cliente: %s', c_exc)
+        sesion.estado = AgenteConversacionSesion.ESTADO_CERRADO
+        sesion.save(update_fields=['estado', 'actualizado_en'])
 
     def _persistir_calificacion_lead() -> None:
         try:
