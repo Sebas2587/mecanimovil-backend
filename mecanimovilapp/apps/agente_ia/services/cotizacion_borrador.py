@@ -1563,3 +1563,106 @@ def crear_cotizacion_borrador_desde_agente(
         reabierta=reabierta,
     )
     return cotizacion
+
+
+def crear_cotizacion_adicional_orden(
+    *,
+    cotizacion_original_id: int,
+    taller_id: int,
+    servicio_nombre: str,
+    descripcion_problema: str = '',
+    mano_obra_clp: int = 0,
+    repuestos: list[dict] | None = None,
+    creado_por_id: int | None = None,
+) -> CotizacionCanal:
+    """Crea una cotización secundaria/adicional para un trabajo en ejecución."""
+    cot_orig = CotizacionCanal.objects.select_related('taller', 'conversation').get(pk=cotizacion_original_id)
+    rep_list = repuestos or []
+    costo_rep = sum(
+        int(r.get('cantidad', 1) or 1) * int(r.get('precio_unitario_clp', 0) or 0)
+        for r in rep_list
+    )
+    total_clp = int(mano_obra_clp or 0) + costo_rep
+
+    meta = {
+        'origen': 'cotizacion_adicional',
+        'cotizacion_original_id': cot_orig.id,
+        'es_cotizacion_adicional': True,
+    }
+
+    adicional = CotizacionCanal.objects.create(
+        conversation=cot_orig.conversation,
+        es_libre=cot_orig.es_libre,
+        taller=cot_orig.taller,
+        creado_por_id=creado_por_id,
+        estado='borrador',
+        modalidad=cot_orig.modalidad,
+        direccion_servicio=cot_orig.direccion_servicio,
+        vehiculo_marca=cot_orig.vehiculo_marca,
+        vehiculo_modelo=cot_orig.vehiculo_modelo,
+        vehiculo_anio=cot_orig.vehiculo_anio,
+        vehiculo_patente=cot_orig.vehiculo_patente,
+        vehiculo_cilindraje=cot_orig.vehiculo_cilindraje,
+        vehiculo_vin=cot_orig.vehiculo_vin,
+        tipo_motor=cot_orig.tipo_motor,
+        tipo_motor_label=cot_orig.tipo_motor_label,
+        servicio_nombre=servicio_nombre,
+        descripcion_problema=descripcion_problema,
+        repuestos=rep_list,
+        mano_obra_clp=int(mano_obra_clp or 0),
+        costo_repuestos_clp=costo_rep,
+        total_clp=total_clp,
+        metadata=meta,
+    )
+    logger.info('Cotización adicional %s creada para cotización original %s', adicional.id, cot_orig.id)
+    return adicional
+
+
+def procesar_ficha_sdr_spec(
+    sesion: AgenteConversacionSesion,
+    ficha: Any,
+) -> CotizacionCanal | None:
+    """Procesa una FichaLeadCapturada (Pydantic V2 Spec) y actualiza la sesión e historial."""
+    from mecanimovilapp.apps.agente_ia.specs.agente_1_sdr_spec import FichaLeadCapturada
+
+    if not isinstance(ficha, FichaLeadCapturada):
+        return None
+
+    datos = dict(sesion.datos_capturados or {})
+    if ficha.vehiculo.marca:
+        datos['vehiculo_marca'] = ficha.vehiculo.marca
+    if ficha.vehiculo.modelo:
+        datos['vehiculo_modelo'] = ficha.vehiculo.modelo
+    if ficha.vehiculo.anio:
+        datos['vehiculo_anio'] = ficha.vehiculo.anio
+    if ficha.vehiculo.patente:
+        datos['vehiculo_patente'] = ficha.vehiculo.patente
+    if ficha.vehiculo.motor:
+        datos['vehiculo_motor'] = ficha.vehiculo.motor
+    if ficha.vehiculo.vin:
+        datos['vehiculo_vin'] = ficha.vehiculo.vin
+
+    if ficha.cliente.nombre:
+        datos['cliente_nombre'] = ficha.cliente.nombre
+    if ficha.cliente.telefono:
+        datos['cliente_telefono'] = ficha.cliente.telefono
+    if ficha.cliente.comuna:
+        datos['cliente_comuna'] = ficha.cliente.comuna
+
+    if ficha.sintomas_cliente:
+        datos['sintomas_cliente'] = ficha.sintomas_cliente
+    if ficha.servicios_solicitados:
+        datos['servicios_solicitados'] = ficha.servicios_solicitados
+
+    sesion.datos_capturados = datos
+    sesion.save(update_fields=['datos_capturados', 'actualizado_en'])
+
+    if ficha.listo_para_cotizar:
+        return crear_cotizacion_borrador_desde_agente(
+            sesion=sesion,
+            datos_actualizados=datos,
+            listo_para_cotizar=True,
+        )
+
+    return getattr(sesion, 'cotizacion_borrador', None)
+

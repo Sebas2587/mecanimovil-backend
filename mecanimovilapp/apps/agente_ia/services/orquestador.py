@@ -19,7 +19,19 @@ from mecanimovilapp.apps.agente_ia.models import (
     LeadCalificacion,
     TallerAgenteConfig,
 )
-from mecanimovilapp.apps.agente_ia.services.cotizacion_borrador import crear_cotizacion_borrador_desde_agente
+from mecanimovilapp.apps.agente_ia.services.cotizacion_borrador import (
+    crear_cotizacion_borrador_desde_agente,
+    procesar_ficha_sdr_spec,
+)
+from mecanimovilapp.apps.agente_ia.specs.agente_1_sdr_spec import (
+    FichaLeadCapturada,
+    VehiculoCapturado,
+    ClienteCapturado,
+)
+from mecanimovilapp.apps.agente_ia.specs.agente_2_agenda_spec import (
+    CoordinacionCitaOutput,
+    BloqueHorarioSugerido,
+)
 from mecanimovilapp.apps.agente_ia.services.notificaciones import notificar_escalamiento_humano
 from mecanimovilapp.apps.agente_ia.services.rag import buscar_contexto_taller_combinado
 from mecanimovilapp.apps.agente_ia.services.taller_resolver import canal_conversacion, resolver_taller_desde_conversation
@@ -618,6 +630,54 @@ _SOLO_SALUDO_RE = re.compile(
     r'^\s*(?:hola|holi|hey|ola|buenas?(?:\s+tardes|\s+noches|\s+d[ií]as)?)\s*[!.?…]*\s*$',
     re.IGNORECASE,
 )
+
+_UBICACION_TACTICA_TERRENO_RE = re.compile(
+    r'\b(?:'
+    r'subterr[aá]neo|piso\s*-?\d+|menos\s*\d+|nivel\s*-?\d+|'
+    r'estoy\s+abajo|est[aá]\s+bajando|bajando|'
+    r'te\s+estoy\s+llamando|te\s+llamo|d[oó]nde\s+est[aá]s|en\s+qu[eé]\s+piso|'
+    r'llegu[eé]|estoy\s+afuera|en\s+la\s+puerta'
+    r')\b',
+    re.IGNORECASE,
+)
+
+
+def _es_mensaje_terreno_tactico(texto: str) -> bool:
+    return bool(_UBICACION_TACTICA_TERRENO_RE.search(texto or ''))
+
+
+def _prevenir_respuestas_repetitivas(conversation: Conversation, textos: list[str]) -> list[str]:
+    """Evita que el agente caiga en bucles repetitivos de plantillas idénticas."""
+    limpios = [t.strip() for t in (textos or []) if (t or '').strip()]
+    if not limpios:
+        return limpios
+    recientes = list(
+        conversation.messages.filter(direction='outbound')
+        .order_by('-timestamp')[:4]
+    )
+    textos_recientes = [
+        re.sub(r'\s+', ' ', (m.content or '').strip().lower())
+        for m in recientes
+        if (m.channel_metadata or {}).get('from_agente_ia')
+    ]
+    if not textos_recientes:
+        return limpios
+
+    out: list[str] = []
+    for txt in limpios:
+        txt_norm = re.sub(r'\s+', ' ', txt.strip().lower())
+        es_rep = False
+        for rec in textos_recientes:
+            if rec and (txt_norm == rec or (len(txt_norm) > 25 and txt_norm[:60] in rec)):
+                es_rep = True
+                break
+        if es_rep:
+            out.append(
+                'Entendido. He notificado directamente al equipo para confirmar los detalles de inmediato.'
+            )
+            break
+        out.append(txt)
+    return out
 
 _RESPUESTA_ABIERTA_RE = re.compile(
     r'(?:en\s+qu[eé]\s+te\s+puedo\s+ayudar|qu[eé]\s+le\s+pasa\s+al\s+auto|'
@@ -1234,11 +1294,22 @@ def _construir_prompt_agente(
     primer_contacto: bool = True,
     nota_ubicacion: str = '',
     pedido_en_primer_mensaje: bool = False,
+    es_coordinacion_terreno: bool = False,
 ) -> str:
     datos_json = json.dumps(datos_capturados or {}, ensure_ascii=False)
     tiene_contexto = bool((chunks_texto or '').strip())
     nombre = (nombre_taller or '').strip() or 'el taller'
     agente = (nombre_agente or '').strip()
+
+    bloque_terreno = ''
+    if es_coordinacion_terreno:
+        bloque_terreno = (
+            '\n🚨 MODO COORDINACIÓN EN TERRENO ACTIVO (CRÍTICO):\n'
+            'El cliente está físicamente en el vehículo, subterráneo, estacionamiento o intentando contactar al equipo en sitio.\n'
+            '1. PROHIBIDO solicitar patente, pedir datos del auto o enviar plantillas de cotización/horarios comerciales.\n'
+            '2. Responde en 1 frase corta confirmando que estás coordinando directamente con el mecánico o equipo en sitio.\n'
+            '3. Mantén la calma, concisión y naturalidad táctica.\n'
+        )
     if primer_contacto and pedido_en_primer_mensaje:
         flag_contacto = (
             'PRIMER_CONTACTO=true con PEDIDO CONCRETO en el mismo mensaje. '
@@ -1351,7 +1422,7 @@ Nombre del agente / vendedor (cómo debes presentarte; vacío = solo usar el nom
 Instrucciones del taller (guía de fondo; NO las conviertas en checklist del primer mensaje — aplica el ritmo natural de abajo):
 {instrucciones or 'Sé cordial, profesional y humano. Primero conversa; cotiza cuando el cliente lo pida o cuando el problema ya esté claro.'}
 
-{bloque_bienvenida}{bloque_ubicacion}
+{bloque_bienvenida}{bloque_ubicacion}{bloque_terreno}
 FICHA OPERATIVA DEL TALLER (verdad operativa en vivo: no inventes precios ni servicios fuera de catálogo/especialidades. Marcas fuera de lista: NO rechaces el lead. Categorías de servicio fuera de especialidad: no cotices ese tipo — primero diagnostica con datos reales y explica con sutileza):
 ---
 {contexto_operativo_taller or 'Sin datos operativos configurados todavía.'}
@@ -1793,6 +1864,7 @@ def enviar_respuestas_agente(
 
     enviados: list[Message] = []
     limpios = [t.strip() for t in (textos or []) if (t or '').strip()]
+    limpios = _prevenir_respuestas_repetitivas(conversation, limpios)
     for i, texto in enumerate(limpios):
         if i > 0 and pausa_segundos > 0:
             time.sleep(pausa_segundos)
@@ -2144,6 +2216,11 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
     pedido_inicial = (not ya_presentado) and _cliente_trae_pedido_concreto(texto_cliente)
     nota_ubic = _nota_ubicacion_para_prompt(datos_para_prompt)
 
+    es_terreno = _es_mensaje_terreno_tactico(texto_cliente) or sesion.estado == AgenteConversacionSesion.ESTADO_COORDINACION_TERRENO
+    if es_terreno and sesion.estado != AgenteConversacionSesion.ESTADO_COORDINACION_TERRENO:
+        sesion.estado = AgenteConversacionSesion.ESTADO_COORDINACION_TERRENO
+        sesion.save(update_fields=['estado', 'actualizado_en'])
+
     prompt = _construir_prompt_agente(
         nombre_taller=(taller.nombre or '').strip(),
         nombre_agente=(config.nombre_agente or '').strip(),
@@ -2165,6 +2242,7 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         primer_contacto=not ya_presentado,
         nota_ubicacion=nota_ubic,
         pedido_en_primer_mensaje=pedido_inicial,
+        es_coordinacion_terreno=es_terreno,
     )
 
     decision, error = _llamar_gemini_agente(prompt)

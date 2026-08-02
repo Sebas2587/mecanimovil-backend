@@ -214,6 +214,7 @@ class AgenteConversacionSesion(models.Model):
     ESTADO_LISTO_COTIZAR = 'listo_para_cotizar'
     ESTADO_ESPERANDO_REVISION = 'esperando_revision_taller'
     ESTADO_AGENDANDO = 'agendando'
+    ESTADO_COORDINACION_TERRENO = 'coordinacion_terreno'
     ESTADO_PAUSADO = 'pausado_por_taller'
     ESTADO_CERRADO = 'cerrado'
 
@@ -222,6 +223,7 @@ class AgenteConversacionSesion(models.Model):
         (ESTADO_LISTO_COTIZAR, 'Listo para cotizar'),
         (ESTADO_ESPERANDO_REVISION, 'Esperando revisión del taller'),
         (ESTADO_AGENDANDO, 'Agendando cita'),
+        (ESTADO_COORDINACION_TERRENO, 'Coordinación en terreno / en sitio'),
         (ESTADO_PAUSADO, 'Pausado por taller'),
         (ESTADO_CERRADO, 'Cerrado'),
     ]
