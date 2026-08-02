@@ -105,8 +105,9 @@ py-vapid==1.8.2
 google-auth==2.40.3
 
 # ============================================
-# Agente IA — RAG vectorial y PDF
+# Agente IA — RAG vectorial, Pydantic Specs y PDF
 # ============================================
+pydantic>=2.5.0
 pgvector==0.3.6
 pypdf==5.4.0
 
