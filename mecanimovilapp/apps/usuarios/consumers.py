@@ -209,6 +209,24 @@ class ConnectionConsumer(AsyncWebsocketConsumer):
             'fecha_expiracion': event['fecha_expiracion'],
             'timestamp': timezone.now().isoformat()
         }))
+
+    async def agente_ia_event(self, event):
+        """Eventos del agente IA comercial (borrador, escalamiento, procesando)."""
+        payload = {
+            'type': event.get('event_type', 'agente_ia_event'),
+            'timestamp': timezone.now().isoformat(),
+        }
+        for key in (
+            'conversation_id',
+            'cotizacion_id',
+            'cita_id',
+            'mensaje_preview',
+            'prioridad',
+            'lead_categoria',
+        ):
+            if key in event and event[key] is not None:
+                payload[key] = event[key]
+        await self.send(text_data=json.dumps(payload))
     
     async def oferta_aceptada(self, event):
         """
@@ -819,6 +837,23 @@ class MechanicStatusConsumer(AsyncWebsocketConsumer):
             'fecha_expiracion': event['fecha_expiracion'],
             'timestamp': event.get('timestamp', timezone.now().isoformat())
         }))
+
+    async def agente_ia_event(self, event):
+        payload = {
+            'type': event.get('event_type', 'agente_ia_event'),
+            'timestamp': timezone.now().isoformat(),
+        }
+        for key in (
+            'conversation_id',
+            'cotizacion_id',
+            'cita_id',
+            'mensaje_preview',
+            'prioridad',
+            'lead_categoria',
+        ):
+            if key in event and event[key] is not None:
+                payload[key] = event[key]
+        await self.send(text_data=json.dumps(payload))
     
     async def oferta_aceptada(self, event):
         """

@@ -8,6 +8,22 @@ logger = logging.getLogger(__name__)
 
 NATIVE_PUSH_RECENCY_DAYS = 30
 
+WEB_PUSH_ALWAYS_TYPES = frozenset({
+    'chat_message',
+    'nuevo_mensaje_chat',
+    'agente_ia_cotizacion_borrador',
+    'agente_ia_cotizacion_enviada',
+    'agente_ia_cotizacion_aceptada',
+    'agente_ia_cotizacion_rechazada',
+    'agente_ia_cita_confirmada',
+    'agente_ia_escalamiento',
+    'agente_ia_procesando',
+    'nueva_solicitud',
+    'solicitud_por_vencer',
+    'checklist_pendiente',
+    'orden_asignada_mecanico',
+})
+
 
 def _user_has_active_native_push(user_id) -> bool:
     """True si el usuario tiene token Expo nativo activo reciente (evita duplicar con web)."""
@@ -33,14 +49,14 @@ def _send_web_push_to_user(user, title, body, data=None):
     from .models import WebPushSubscription
 
     notif_type = (data or {}).get('type', '')
-    # Si la notificación es un evento relevante para el taller (cotización borrador/enviada/aceptada/chat),
-    # enviar siempre a navegadores web activos aunque tenga app nativa instalada.
-    if _user_has_active_native_push(user.id) and not notif_type.startswith('agente_ia_'):
-        logger.debug(
-            '[web-push] Usuario %s tiene PushToken nativo activo; omitiendo web push no prioritario.',
-            user.id,
-        )
-        return
+    # Eventos comerciales críticos y agente IA siempre llegan al navegador activo.
+    if _user_has_active_native_push(user.id) and notif_type not in WEB_PUSH_ALWAYS_TYPES:
+        if not notif_type.startswith('agente_ia_'):
+            logger.debug(
+                '[web-push] Usuario %s tiene PushToken nativo activo; omitiendo web push no prioritario.',
+                user.id,
+            )
+            return
 
     vapid_private = getattr(settings, 'VAPID_PRIVATE_KEY', None)
     vapid_public = getattr(settings, 'VAPID_PUBLIC_KEY', None)

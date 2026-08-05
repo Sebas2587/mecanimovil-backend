@@ -343,3 +343,71 @@ class AgenteIaViewSet(viewsets.ViewSet):
             cotizacion_borrador__estado='borrador',
         ).update(estado=AgenteConversacionSesion.ESTADO_CAPTURANDO)
         return Response({'count': count, 'results': items})
+
+    @action(detail=False, methods=['get'], url_path='actividad-taller')
+    def actividad_taller(self, request):
+        """Resumen de actividad del agente IA para el hub Hoy del taller."""
+        from django.utils import timezone
+        from datetime import timedelta
+        from mecanimovilapp.apps.ordenes.models import CotizacionCanal
+
+        taller = self._taller(request)
+        now = timezone.now()
+        cutoff_procesando = now - timedelta(minutes=3)
+
+        estados_activos = [
+            AgenteConversacionSesion.ESTADO_CAPTURANDO,
+            AgenteConversacionSesion.ESTADO_LISTO_COTIZAR,
+            AgenteConversacionSesion.ESTADO_AGENDANDO,
+            AgenteConversacionSesion.ESTADO_COORDINACION_TERRENO,
+        ]
+
+        sesiones_qs = AgenteConversacionSesion.objects.filter(
+            taller=taller,
+            habilitado_en_chat=True,
+            pausado_por_taller=False,
+            estado__in=estados_activos,
+        ).select_related('conversation').order_by('-actualizado_en')
+
+        sesiones_activas = list(sesiones_qs[:12])
+        procesando_count = sesiones_qs.filter(
+            ultima_interaccion_ia__gte=cutoff_procesando,
+        ).count()
+
+        esperando_revision_count = CotizacionCanal.objects.filter(
+            taller=taller,
+            estado='borrador',
+        ).count()
+
+        eventos = []
+        for sesion in sesiones_activas[:5]:
+            conv = sesion.conversation
+            contacto = getattr(conv, 'external_contact', None)
+            nombre = (
+                getattr(contacto, 'display_name', None)
+                or getattr(contacto, 'phone_number', None)
+                or f'Chat #{conv.id}'
+            )
+            estado_label = {
+                AgenteConversacionSesion.ESTADO_CAPTURANDO: 'Conversando',
+                AgenteConversacionSesion.ESTADO_LISTO_COTIZAR: 'Armando cotización',
+                AgenteConversacionSesion.ESTADO_AGENDANDO: 'Agendando',
+                AgenteConversacionSesion.ESTADO_COORDINACION_TERRENO: 'Coordinando visita',
+            }.get(sesion.estado, 'Activo')
+            eventos.append({
+                'conversation_id': conv.id,
+                'estado': sesion.estado,
+                'estado_label': estado_label,
+                'cliente_nombre': str(nombre)[:80],
+                'procesando': bool(
+                    sesion.ultima_interaccion_ia
+                    and sesion.ultima_interaccion_ia >= cutoff_procesando
+                ),
+            })
+
+        return Response({
+            'sesiones_activas_count': sesiones_qs.count(),
+            'procesando_count': procesando_count,
+            'esperando_revision_count': esperando_revision_count,
+            'eventos_recientes': eventos,
+        })

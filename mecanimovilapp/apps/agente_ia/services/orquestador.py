@@ -1933,6 +1933,15 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
     ):
         return {'skipped': True, 'reason': 'sesion_pausada'}
 
+    from mecanimovilapp.apps.agente_ia.services.ws_broadcast import emitir_evento_ws_agente_ia
+
+    emitir_evento_ws_agente_ia(
+        taller_id=taller.id,
+        event_type='agente_ia_procesando',
+        conversation_id=conversation.id,
+        mensaje_preview=(message.content or '')[:120],
+    )
+
     # Debounce: si el cliente siguió escribiendo, este turno queda obsoleto.
     if _mensaje_cliente_superado(message):
         return {'skipped': True, 'reason': 'superseded_by_newer_message'}

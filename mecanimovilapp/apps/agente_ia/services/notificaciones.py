@@ -8,6 +8,16 @@ from mecanimovilapp.apps.ordenes.models import CotizacionCanal
 logger = logging.getLogger(__name__)
 
 
+def _emitir_ws_agente(proveedor_user_id: int, event_type: str, **payload) -> None:
+    from mecanimovilapp.apps.agente_ia.services.ws_broadcast import emitir_evento_ws_agente_ia
+
+    emitir_evento_ws_agente_ia(
+        proveedor_user_id=proveedor_user_id,
+        event_type=event_type,
+        **payload,
+    )
+
+
 def notificar_cotizacion_enviada_agente(
     *,
     proveedor_user_id: int,
@@ -47,6 +57,7 @@ def notificar_cotizacion_enviada_agente(
         send_expo_push_notification.delay(proveedor_user_id, titulo, mensaje, data)
     except Exception as exc:
         logger.warning('No se pudo encolar push cotización enviada: %s', exc)
+    _emitir_ws_agente(proveedor_user_id, 'agente_ia_cotizacion_enviada', **data)
 
 
 def notificar_cotizacion_aceptada_agente(
@@ -89,6 +100,7 @@ def notificar_cotizacion_aceptada_agente(
         send_expo_push_notification.delay(proveedor_user_id, titulo, mensaje, data)
     except Exception as exc:
         logger.warning('No se pudo encolar push cotización aceptada: %s', exc)
+    _emitir_ws_agente(proveedor_user_id, 'agente_ia_cotizacion_aceptada', **data)
 
 
 def notificar_cotizacion_borrador_agente(
@@ -164,6 +176,7 @@ def notificar_cotizacion_borrador_agente(
         )
     except Exception as exc:
         logger.warning('No se pudo encolar push cotización agente: %s', exc)
+    _emitir_ws_agente(proveedor_user_id, 'agente_ia_cotizacion_borrador', **data)
 
 
 def notificar_cotizacion_rechazada_agente(
@@ -205,6 +218,7 @@ def notificar_cotizacion_rechazada_agente(
         send_expo_push_notification.delay(proveedor_user_id, titulo, mensaje, data)
     except Exception as exc:
         logger.warning('No se pudo encolar push cotización rechazada: %s', exc)
+    _emitir_ws_agente(proveedor_user_id, 'agente_ia_cotizacion_rechazada', **data)
 
 
 def notificar_cita_confirmada_por_agente(
@@ -248,6 +262,7 @@ def notificar_cita_confirmada_por_agente(
         send_expo_push_notification.delay(proveedor_user_id, titulo, mensaje, data)
     except Exception as exc:
         logger.warning('No se pudo encolar push cita confirmada agente: %s', exc)
+    _emitir_ws_agente(proveedor_user_id, 'agente_ia_cita_confirmada', **data)
 
 
 def notificar_escalamiento_humano(
@@ -300,3 +315,4 @@ def notificar_escalamiento_humano(
         )
     except Exception as exc:
         logger.warning('No se pudo encolar push escalamiento agente: %s', exc)
+    _emitir_ws_agente(proveedor_user_id, 'agente_ia_escalamiento', **data)
