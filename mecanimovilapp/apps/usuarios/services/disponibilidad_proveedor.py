@@ -32,6 +32,9 @@ ESTADOS_CITA_PERSONAL_OCUPAN = ('activa',)
 
 PASO_SLOT_MINUTOS = 15
 DURACION_DEFAULT_MINUTOS = 60
+DURACION_MINIMA_RANGO_MINUTOS = 15
+
+ESTADOS_SERVICIO_EXTIENDEN_BLOQUEO = ('en_proceso',)
 
 
 def _time_to_minutes(t: time | None) -> int | None:
@@ -87,6 +90,45 @@ def etiqueta_duracion(min_m: int, max_m: int) -> str:
     if min_m == max_m:
         return fmt(min_m)
     return f'{fmt(min_m)} – {fmt(max_m)}'
+
+
+def _fin_bloqueo_solicitud(
+    *,
+    sol: SolicitudServicio,
+    fecha: date,
+    inicio: datetime,
+    duracion_minutos: int,
+    tiempo_descanso: int,
+) -> datetime:
+    """
+    Fin del bloqueo en agenda para una solicitud.
+
+    Si el servicio sigue en curso hoy, extiende el bloqueo hasta el momento actual
+    aunque haya superado la duración programada.
+    """
+    fin = inicio + timedelta(minutes=duracion_minutos + tiempo_descanso)
+    if sol.estado in ESTADOS_SERVICIO_EXTIENDEN_BLOQUEO and fecha == timezone.localdate():
+        ahora = timezone.localtime().replace(tzinfo=None)
+        if ahora > inicio:
+            fin = max(fin, ahora)
+    return fin
+
+
+def _fin_bloqueo_cita_personal(
+    *,
+    cita: CitaAgendaPersonal,
+    fecha: date,
+    inicio: datetime,
+    duracion_minutos: int,
+    tiempo_descanso: int,
+) -> datetime:
+    """Cita activa no cerrada: extiende bloqueo si el servicio sigue en curso hoy."""
+    fin = inicio + timedelta(minutes=duracion_minutos + tiempo_descanso)
+    if cita.estado == 'activa' and fecha == timezone.localdate():
+        ahora = timezone.localtime().replace(tzinfo=None)
+        if inicio <= ahora:
+            fin = max(fin, ahora)
+    return fin
 
 
 def _duracion_solicitud_minutos(solicitud: SolicitudServicio, fallback: int) -> int:
@@ -146,7 +188,13 @@ def _intervalos_citas_personales_dia(
         if hasattr(cita, 'bloquea_agenda') and not cita.bloquea_agenda:
             continue
         inicio = datetime.combine(fecha, cita.hora_servicio)
-        fin = inicio + timedelta(minutes=cita.duracion_minutos + tiempo_descanso)
+        fin = _fin_bloqueo_cita_personal(
+            cita=cita,
+            fecha=fecha,
+            inicio=inicio,
+            duracion_minutos=cita.duracion_minutos,
+            tiempo_descanso=tiempo_descanso,
+        )
         intervalos.append((inicio, fin))
     return intervalos
 
@@ -180,7 +228,13 @@ def intervalos_ocupados_dia(
             continue
         inicio = datetime.combine(fecha, sol.hora_servicio)
         dur = _duracion_solicitud_minutos(sol, duracion_fallback)
-        fin = inicio + timedelta(minutes=dur + tiempo_descanso)
+        fin = _fin_bloqueo_solicitud(
+            sol=sol,
+            fecha=fecha,
+            inicio=inicio,
+            duracion_minutos=dur,
+            tiempo_descanso=tiempo_descanso,
+        )
         intervalos.append((inicio, fin))
 
     intervalos_citas = _intervalos_citas_personales_dia(
@@ -288,7 +342,13 @@ def _intervalos_ocupados_miembro(
             continue
         inicio = datetime.combine(fecha, sol.hora_servicio)
         dur = _duracion_solicitud_minutos(sol, duracion_fallback)
-        fin = inicio + timedelta(minutes=dur + tiempo_descanso)
+        fin = _fin_bloqueo_solicitud(
+            sol=sol,
+            fecha=fecha,
+            inicio=inicio,
+            duracion_minutos=dur,
+            tiempo_descanso=tiempo_descanso,
+        )
         intervalos.append((inicio, fin))
 
     citas = CitaAgendaPersonal.objects.filter(
@@ -303,10 +363,119 @@ def _intervalos_ocupados_miembro(
         if not cita.bloquea_agenda:
             continue
         inicio = datetime.combine(fecha, cita.hora_servicio)
-        fin = inicio + timedelta(minutes=cita.duracion_minutos + tiempo_descanso)
+        fin = _fin_bloqueo_cita_personal(
+            cita=cita,
+            fecha=fecha,
+            inicio=inicio,
+            duracion_minutos=cita.duracion_minutos,
+            tiempo_descanso=tiempo_descanso,
+        )
         intervalos.append((inicio, fin))
 
     return _merge_intervals(intervalos)
+
+
+def grilla_horaria_jornada(
+    hora_inicio: time,
+    hora_fin: time,
+    fecha: date,
+    paso_minutos: int = PASO_SLOT_MINUTOS,
+) -> list[str]:
+    """Marcas cada paso dentro de la jornada laboral (inicio y fin incluidos)."""
+    dia_inicio = datetime.combine(fecha, hora_inicio)
+    dia_fin = datetime.combine(fecha, hora_fin)
+    paso = timedelta(minutes=paso_minutos)
+    slots: list[str] = []
+    cursor = dia_inicio
+    while cursor <= dia_fin:
+        slots.append(cursor.time().strftime('%H:%M'))
+        cursor += paso
+
+    if fecha == timezone.localdate():
+        ahora_t = timezone.localtime().time()
+        slots = [s for s in slots if s > ahora_t.strftime('%H:%M')]
+    return slots
+
+
+def ventanas_libres_json(
+    ventanas: list[tuple[datetime, datetime]],
+) -> list[dict[str, str]]:
+    return [
+        {
+            'hora_inicio': a.time().strftime('%H:%M'),
+            'hora_fin': b.time().strftime('%H:%M'),
+        }
+        for a, b in ventanas
+        if b > a
+    ]
+
+
+def ventana_tiene_capacidad_minima(
+    ventanas: list[tuple[datetime, datetime]],
+    min_minutos: int = DURACION_MINIMA_RANGO_MINUTOS,
+) -> bool:
+    min_delta = timedelta(minutes=min_minutos)
+    return any((b - a) >= min_delta for a, b in ventanas)
+
+
+def enriquecer_payload_rango_libre(
+    payload: dict[str, Any],
+    *,
+    hora_inicio: time,
+    hora_fin: time,
+    fecha: date,
+    ventanas_libres: list[tuple[datetime, datetime]],
+) -> dict[str, Any]:
+    """Expone grilla completa y ventanas libres para agendar con rango arbitrario."""
+    grilla = grilla_horaria_jornada(hora_inicio, hora_fin, fecha)
+    tiene_cap = ventana_tiene_capacidad_minima(ventanas_libres) and len(grilla) > 0
+    payload['grilla_horaria'] = grilla
+    payload['ventanas_libres'] = ventanas_libres_json(ventanas_libres)
+    payload['hora_jornada_inicio'] = hora_inicio.strftime('%H:%M')
+    payload['hora_jornada_fin'] = hora_fin.strftime('%H:%M')
+    payload['tiene_capacidad_rango'] = tiene_cap
+    if tiene_cap:
+        payload['proveedor_disponible'] = True
+    elif not payload.get('slots_disponibles'):
+        payload['proveedor_disponible'] = False
+    return payload
+
+
+def _ventanas_libres_union_aptos(
+    *,
+    aptos: list[MiembroTaller],
+    taller: Taller,
+    fecha: date,
+    dia_semana: int,
+    max_dur: int,
+    excluir_cita_personal_id: int | None = None,
+) -> tuple[list[tuple[datetime, datetime]], HorarioProveedor | None]:
+    """Unión de ventanas libres de cada mecánico apto (referencia de jornada del primero)."""
+    all_libres: list[tuple[datetime, datetime]] = []
+    horario_ref: HorarioProveedor | None = None
+    for miembro in aptos:
+        horario = _horario_config_miembro(miembro, taller, dia_semana)
+        if horario is None:
+            continue
+        if horario_ref is None:
+            horario_ref = horario
+        ocupados = _intervalos_ocupados_miembro(
+            miembro=miembro,
+            fecha=fecha,
+            tiempo_descanso=horario.tiempo_descanso,
+            duracion_fallback=max_dur,
+            excluir_cita_personal_id=excluir_cita_personal_id,
+        )
+        libres = ventanas_libres(
+            horario.hora_inicio,
+            horario.hora_fin,
+            fecha,
+            ocupados,
+        )
+        all_libres.extend(libres)
+    if not all_libres:
+        return [], horario_ref
+    return _merge_intervals(all_libres), horario_ref
 
 
 def _slots_libres_miembro(
@@ -495,6 +664,13 @@ def _disponibilidad_union_equipo(
 
     # Unión de slots por hora de inicio (dedupe). Un mecánico aporta solo si cabe el servicio.
     slots_por_hora: dict[str, dict[str, Any]] = {}
+    ventanas_union, horario_ref = _ventanas_libres_union_aptos(
+        aptos=aptos,
+        taller=taller,
+        fecha=fecha,
+        dia_semana=dia_semana,
+        max_dur=max_dur,
+    )
     for miembro in aptos:
         for slot in _slots_libres_miembro(
             miembro=miembro,
@@ -511,8 +687,8 @@ def _disponibilidad_union_equipo(
         ahora_t = timezone.localtime().time()
         slots = [s for s in slots if s['hora_inicio_24h'] > ahora_t]
 
-    if not slots:
-        return _with_servicio_meta({
+    if not slots and not ventana_tiene_capacidad_minima(ventanas_union):
+        payload_vacio = _with_servicio_meta({
             'fecha': fecha.isoformat(),
             'proveedor_disponible': False,
             'mensaje': 'El proveedor no atiende este día',
@@ -525,9 +701,18 @@ def _disponibilidad_union_equipo(
             'slots_disponibles': [],
             'total_slots': 0,
         }, oferta)
+        if horario_ref is not None:
+            enriquecer_payload_rango_libre(
+                payload_vacio,
+                hora_inicio=horario_ref.hora_inicio,
+                hora_fin=horario_ref.hora_fin,
+                fecha=fecha,
+                ventanas_libres=ventanas_union,
+            )
+        return payload_vacio
 
     slots_safe = _slots_json_safe(slots)
-    return _with_servicio_meta({
+    payload = _with_servicio_meta({
         'fecha': fecha.isoformat(),
         'proveedor_disponible': True,
         'duracion_servicio_solicitado': {
@@ -539,6 +724,15 @@ def _disponibilidad_union_equipo(
         'slots_disponibles': slots_safe,
         'total_slots': len(slots_safe),
     }, oferta)
+    if horario_ref is not None:
+        enriquecer_payload_rango_libre(
+            payload,
+            hora_inicio=horario_ref.hora_inicio,
+            hora_fin=horario_ref.hora_fin,
+            fecha=fecha,
+            ventanas_libres=ventanas_union,
+        )
+    return payload
 
 
 def disponibilidad_con_duracion(
@@ -719,7 +913,7 @@ def disponibilidad_con_duracion(
 
     slots_safe = _slots_json_safe(slots)
 
-    return _with_servicio_meta({
+    payload = _with_servicio_meta({
         'fecha': fecha.isoformat(),
         'proveedor_disponible': True,
         'duracion_servicio_solicitado': {
@@ -735,6 +929,13 @@ def disponibilidad_con_duracion(
         'slots_disponibles': slots_safe,
         'total_slots': len(slots_safe),
     }, oferta)
+    return enriquecer_payload_rango_libre(
+        payload,
+        hora_inicio=horario_config.hora_inicio,
+        hora_fin=horario_config.hora_fin,
+        fecha=fecha,
+        ventanas_libres=libres,
+    )
 
 
 def dias_con_slots(
@@ -771,6 +972,6 @@ def dias_con_slots(
                 oferta_servicio_id,
             )
             continue
-        if data.get('proveedor_disponible') and data.get('slots_disponibles'):
+        if data.get('proveedor_disponible'):
             fechas_ok.append(f.isoformat())
     return fechas_ok
