@@ -140,16 +140,16 @@ Contexto del chat reciente:
 {chat}
 {rag_bloque}{conocimiento_bloque}
 REGLAS:
-1. Precios referenciales mercado Chile (CLP) para servicio en taller (sin recargo a domicilio). Usa valores realistas para el servicio y repuestos del vehículo indicado.
-2. CRÍTICO — IVA INCLUIDO: todos los montos (mano_obra_clp y precio_unitario_clp de cada repuesto) deben ser precios FINALES al cliente con IVA 19% ya incluido. NO cotices montos netos ni agregues una línea aparte de IVA.
-3. El motor efectivo de la cotización es {efectivo}. No mezcles repuestos diésel/bencina.
-4. Incluye mano de obra separada de repuestos.
-5. REPUESTOS POR VEHÍCULO (CRÍTICO): lista SOLO piezas compatibles con marca/modelo/año/cilindrada/motor del contexto. No inventes genéricos ajenos al auto. Prefiere menos líneas correctas.
-6. Si el servicio/síntoma implica embrague, patinaje o vibración en modelos con volante bimasa (ej. Fiat Bravo T-Jet / Sport TJet), incluye "Volante bimasa" (sin marca_repuesto; el backend la asigna con su fuente) y cantidad 1.
-7. marca_repuesto, fuente_marketplace y tienda_ml: SIEMPRE déjalos "" (string vacío). NO adivines ni inventes marcas de repuesto por tu cuenta, aunque conozcas marcas típicas del mercado. El backend es quien asigna marca_repuesto SOLO cuando proviene de una fuente real y verificable (catálogo del taller, historial de cotizaciones o Mercado Libre real), y siempre junto con su fuente/proveedor. Tú NUNCA debes rellenar marca_repuesto.
-8. fuente_marketplace y tienda_ml: déjalos "". El backend los completa con catálogo/ML real; NUNCA inventes tiendas ni pongas mercadolibre por costumbre.
-9. (reservado)
-10. duracion_minutos_estimada razonable para el servicio.
+1. Analiza el SERVICIO pedido + el VEHÍCULO concreto ({ctx.get('marca', '')} {ctx.get('modelo', '')} {ctx.get('anio', '')}, motor {efectivo}). Cada marca/modelo/año tiene piezas y cantidades distintas: no copies listas genéricas de otro auto.
+2. Precios en CLP enteros: son ESTIMADOS de mercado Chile (taller) para que el proveedor los revise. NO digas que vienen de un catálogo o tienda.
+3. CRÍTICO — IVA INCLUIDO: mano_obra_clp y precio_unitario_clp son precios FINALES al cliente con IVA 19% ya incluido. NO cotices neto ni agregues línea de IVA.
+4. El motor efectivo es {efectivo}. No mezcles repuestos diésel/bencina/híbrido.
+5. Incluye mano de obra separada de repuestos.
+6. REPUESTOS POR VEHÍCULO (CRÍTICO): SOLO piezas compatibles con marca/modelo/año/cilindrada/motor. Prefiere MENOS líneas correctas. Nombra la pieza con precisión (posición: delantero/trasero, lado, kit completo si aplica).
+7. Si el servicio/síntoma implica embrague, patinaje o vibración en modelos con volante bimasa (ej. Fiat Bravo T-Jet), incluye "Volante bimasa" (sin marca_repuesto) cantidad 1.
+8. marca_repuesto, fuente_marketplace y tienda_ml: SIEMPRE "". NUNCA inventes marca (ni "GENÉRICO", ni Bosch/Mann "por costumbre"), ni tienda, ni "catálogo". El backend solo completa marca/proveedor si hay match real del taller o listing verificable.
+9. En advertencias incluye siempre que los precios de repuesto son estimados y deben confirmarse en taller antes de enviar al cliente.
+10. duracion_minutos_estimada razonable para el servicio en este vehículo.
 
 Responde SOLO JSON válido en español:
 {{
@@ -240,12 +240,30 @@ def generar_cotizacion_ia(
             contenido['costo_repuestos_clp'] = costo_rep
             contenido['mano_obra_clp'] = mo
             contenido['total_clp'] = total
+            # Señales para el editor: precios sin match de catálogo/historial del taller.
+            contenido['valores_estimativos'] = any(
+                bool(r.get('precio_estimado', True)) for r in reps
+            ) if reps else True
         except Exception as exc:
             logger.warning(
                 'enriquecer_repuestos_cotizacion falló; se entrega cotización IA sin enrich: %s',
                 exc,
                 exc_info=True,
             )
+            contenido['valores_estimativos'] = True
+
+    if 'valores_estimativos' not in contenido:
+        # Sin enrich o sin repuestos: la cotización IA es estimativa por defecto.
+        contenido['valores_estimativos'] = True
+
+    adv = list(contenido.get('advertencias') or [])
+    if contenido.get('valores_estimativos'):
+        aviso = (
+            'Precios de repuestos estimados: revisa marca, proveedor y montos antes de enviar al cliente.'
+        )
+        if aviso not in adv:
+            adv.append(aviso)
+        contenido['advertencias'] = adv
 
     return {
         'disponible': True,
@@ -266,4 +284,5 @@ def generar_cotizacion_ia(
         'tokens_entrada': int(uso.get('tokens_entrada') or 0),
         'tokens_salida': int(uso.get('tokens_salida') or 0),
         'modelo': str(uso.get('modelo') or ''),
+        'valores_estimativos': bool(contenido.get('valores_estimativos')),
     }

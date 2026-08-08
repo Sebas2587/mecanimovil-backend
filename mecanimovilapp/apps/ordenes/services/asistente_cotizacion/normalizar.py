@@ -56,14 +56,19 @@ def normalizar_repuesto(item: Any, idx: int) -> dict[str, Any]:
     marca_repuesto = str(item.get('marca_repuesto') or '').strip()[:100]
     tienda_ml = str(item.get('tienda_ml') or '').strip()[:200]
     proveedor_nombre = str(item.get('proveedor_nombre') or '').strip()[:200]
+    # IA siempre entrega estimados; el enrich marca False solo con precio de taller.
+    precio_estimado = item.get('precio_estimado')
+    if precio_estimado is None:
+        precio_estimado = True
     out: dict[str, Any] = {
         'id': str(item.get('id') or f'rep-{idx}'),
         'nombre': nombre,
         'cantidad': cantidad,
-        # Precio final al cliente (IVA 19% incluido), alineado al catálogo Mecanimovil.
+        # Precio final al cliente (IVA 19% incluido).
         'precio_unitario_clp': precio,
         'precio_referencia_ia': precio,
         'precio_iva_incluido': True,
+        'precio_estimado': bool(precio_estimado),
         'comentario': str(item.get('comentario') or '')[:500],
     }
     if fuente_marketplace:

@@ -211,6 +211,13 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             tokens_entrada=resultado.get('tokens_entrada') or 0,
             tokens_salida=resultado.get('tokens_salida') or 0,
             modelo_ia=resultado.get('modelo') or '',
+            metadata={
+                'origen': 'ia',
+                'valores_estimativos': bool(
+                    resultado.get('valores_estimativos')
+                    or contenido.get('valores_estimativos', True)
+                ),
+            },
         )
         return Response({
             **resultado,

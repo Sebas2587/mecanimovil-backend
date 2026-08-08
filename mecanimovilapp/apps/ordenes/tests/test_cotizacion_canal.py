@@ -181,9 +181,6 @@ class NormalizarCotizacionTestCase(SimpleTestCase):
             'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos._candidatos_ofertas_taller',
             return_value=cat,
         ) as mock_cat, patch(
-            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos._candidatos_catalogo_maestro',
-            return_value=[],
-        ), patch(
             'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos._candidatos_historial_taller',
             return_value=[],
         ):
@@ -197,6 +194,87 @@ class NormalizarCotizacionTestCase(SimpleTestCase):
         self.assertEqual(out[0].get('precio_unitario_clp'), 12000)
         self.assertEqual(out[0].get('fuente_marketplace'), 'catalogo')
         self.assertEqual(out[0].get('proveedor_nombre'), 'Catálogo del taller')
+        self.assertFalse(out[0].get('precio_estimado'))
+
+    def test_no_usa_catalogo_maestro_mecanimovil_sin_ofertas_taller(self):
+        """Regresión: sin servicios del taller no debe aparecer Catálogo Mecanimovil/GENÉRICO."""
+        from unittest.mock import MagicMock, patch
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            _candidatos_catalogo_maestro,
+            enriquecer_repuestos_cotizacion,
+        )
+
+        self.assertEqual(_candidatos_catalogo_maestro('Hyundai'), [])
+
+        # Aunque el stub viejo devolviera hits del maestro, el pipeline ya no los mezcla.
+        fake_maestro = [{
+            'nombre': 'Pastillas freno',
+            'marca_repuesto': 'GENÉRICO',
+            'precio_unitario_clp': 42000,
+            'fuente_marketplace': 'catalogo',
+            'proveedor_nombre': 'Catálogo Mecanimovil',
+            'confianza': 0.85,
+            'clave': 'pastillas freno',
+        }]
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos._candidatos_ofertas_taller',
+            return_value=[],
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos._candidatos_catalogo_maestro',
+            return_value=fake_maestro,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos._candidatos_historial_taller',
+            return_value=[],
+        ):
+            out = enriquecer_repuestos_cotizacion(
+                [{
+                    'id': 'rep-0',
+                    'nombre': 'Pastillas freno delanteras',
+                    'cantidad': 1,
+                    'precio_unitario_clp': 42000,
+                }],
+                taller=MagicMock(),
+                marca_vehiculo='Hyundai',
+                modelo_vehiculo='Elantra',
+                usar_ml=False,
+            )
+        self.assertNotEqual(out[0].get('fuente_marketplace'), 'catalogo')
+        self.assertNotEqual(out[0].get('proveedor_nombre'), 'Catálogo Mecanimovil')
+        self.assertNotIn('marca_repuesto', out[0])
+        self.assertTrue(out[0].get('precio_estimado'))
+
+    def test_strips_marca_generico_legacy(self):
+        from unittest.mock import MagicMock, patch
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            enriquecer_repuestos_cotizacion,
+        )
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos._candidatos_ofertas_taller',
+            return_value=[],
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos._candidatos_historial_taller',
+            return_value=[],
+        ):
+            out = enriquecer_repuestos_cotizacion(
+                [{
+                    'id': 'rep-0',
+                    'nombre': 'Filtro de aire',
+                    'cantidad': 1,
+                    'precio_unitario_clp': 15000,
+                    'marca_repuesto': 'GENÉRICO',
+                    'fuente_marketplace': 'catalogo',
+                    'proveedor_nombre': 'Catálogo Mecanimovil',
+                }],
+                taller=MagicMock(),
+                usar_ml=False,
+            )
+        self.assertNotIn('marca_repuesto', out[0])
+        self.assertNotEqual(out[0].get('proveedor_nombre'), 'Catálogo Mecanimovil')
+        self.assertNotEqual(out[0].get('fuente_marketplace'), 'catalogo')
+        self.assertTrue(out[0].get('precio_estimado'))
 
     def test_enriquecer_historial_mediana_precio_y_marca(self):
         from unittest.mock import MagicMock, patch
