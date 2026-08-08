@@ -1,10 +1,16 @@
 """Enriquece repuestos de cotización con marca/precio/proveedor multi-fuente.
 
-Fuentes (merge por confianza):
-1. CatalogSource — ofertas del taller (disponible) + maestro Repuesto
-2. HistorialCotizacionSource — cotizaciones enviada/aceptada del taller
-3. KnowledgeBrandSource — inferencia de marca desde el nombre
-4. MercadoLibreSource — best-effort OAuth (nunca bloquea ni inventa)
+Fuentes (merge por confianza; marca y su fuente viajan siempre juntas en un
+mismo "hit" — nunca se asigna una marca sin decir de dónde salió):
+1. CatalogSource — ofertas del taller (disponible) + maestro Repuesto → fuente_marketplace='catalogo'
+2. HistorialCotizacionSource — cotizaciones enviada/aceptada del taller → fuente_marketplace='historial'
+3. MercadoLibreSource — best-effort OAuth (nunca bloquea ni inventa) → fuente_marketplace='mercadolibre'
+4. KnowledgeBrandSource — inferencia de marca desde el nombre; SOLO si no hubo match
+   real arriba, y siempre etiquetada fuente_marketplace='estimado' (nunca se confunde
+   con un dato verificado de catálogo/tienda).
+
+La IA (Gemini) nunca asigna marca_repuesto: siempre llega "" desde el prompt. Solo el
+backend la asigna, y solo junto con su fuente real o el rótulo 'estimado'.
 """
 from __future__ import annotations
 
@@ -37,6 +43,12 @@ _CONF_ML = 0.75
 _CONF_KNOWLEDGE = 0.4
 _HIST_MIN_MUESTRAS = 2
 _HIST_MESES = 6
+
+# Fuentes "grounded": la marca viene atada a un dato real y trazable
+# (catálogo del taller, historial de cotizaciones o un listado real de ML).
+# 'estimado' (inferencia por nombre) NUNCA se considera grounded: se muestra
+# siempre con su propia etiqueta de Canal para no confundirla con un dato verificado.
+_FUENTES_GROUND = ('catalogo', 'historial', 'mercadolibre')
 
 
 def _norm(texto: str) -> str:
@@ -483,25 +495,40 @@ def _buscar_ml_repuesto(
 # ---------------------------------------------------------------------------
 
 def _aplicar_hit_campos(next_rep: dict[str, Any], hit: dict[str, Any]) -> None:
-    """Rellena solo campos vacíos (marca/proveedor/fuente/tienda)."""
+    """Asigna marca/fuente/proveedor como grupo atómico (misma fuente = mismo hit).
+
+    Una fuente real (catálogo/historial/ML) puede sobrescribir un valor existente
+    que no esté ya atado a una fuente real (p. ej. un residuo sin `fuente_marketplace`,
+    o una marca 'estimado' de inferencia por nombre). Nunca sobrescribe un dato que
+    ya viene de otra fuente real: la primera fuente real gana (se procesa por confianza).
+    """
     if not hit:
         return
-    if not str(next_rep.get('marca_repuesto') or '').strip() and hit.get('marca_repuesto'):
+    fuente_hit = str(hit.get('fuente_marketplace') or '').strip()
+    fuente_actual = str(next_rep.get('fuente_marketplace') or next_rep.get('fuente_repuesto') or '').strip()
+    hit_grounded = fuente_hit in _FUENTES_GROUND
+    actual_grounded = fuente_actual in _FUENTES_GROUND
+
+    # Solo se permite sobrescribir cuando el hit es real y lo existente no lo es.
+    puede_reemplazar = hit_grounded and not actual_grounded
+
+    marca_actual = str(next_rep.get('marca_repuesto') or '').strip()
+    if hit.get('marca_repuesto') and (not marca_actual or puede_reemplazar):
         next_rep['marca_repuesto'] = hit['marca_repuesto']
 
-    if not str(next_rep.get('fuente_marketplace') or next_rep.get('fuente_repuesto') or '').strip():
-        if hit.get('fuente_marketplace'):
-            next_rep['fuente_marketplace'] = hit['fuente_marketplace']
+    if hit.get('fuente_marketplace') and (not fuente_actual or puede_reemplazar):
+        next_rep['fuente_marketplace'] = hit['fuente_marketplace']
+        next_rep.pop('fuente_repuesto', None)
 
-    if not str(next_rep.get('proveedor_nombre') or '').strip() and hit.get('proveedor_nombre'):
+    proveedor_actual = str(next_rep.get('proveedor_nombre') or '').strip()
+    if hit.get('proveedor_nombre') and (not proveedor_actual or puede_reemplazar):
         next_rep['proveedor_nombre'] = hit['proveedor_nombre']
 
-    if not str(next_rep.get('tienda_ml') or '').strip() and hit.get('tienda_ml'):
+    tienda_actual = str(next_rep.get('tienda_ml') or '').strip()
+    if hit.get('tienda_ml') and (not tienda_actual or puede_reemplazar):
         next_rep['tienda_ml'] = hit['tienda_ml']
-        if not next_rep.get('proveedor_nombre'):
+        if not str(next_rep.get('proveedor_nombre') or '').strip():
             next_rep['proveedor_nombre'] = hit['tienda_ml']
-        if not next_rep.get('fuente_marketplace'):
-            next_rep['fuente_marketplace'] = 'mercadolibre'
 
 
 def _aplicar_precio(next_rep: dict[str, Any], hits: list[dict[str, Any]]) -> None:
@@ -556,23 +583,15 @@ def enriquecer_repuestos_cotizacion(
         hist_hit = _mejor_hit(nombre, historial)
         if hist_hit:
             hits.append(hist_hit)
+        grounded_encontrado = bool(cat_hit or hist_hit)
 
-        marca_actual = str(next_rep.get('marca_repuesto') or '').strip()
-        if not marca_actual:
-            inferred = _inferir_marca_desde_nombre(nombre)
-            if inferred:
-                hits.append(_hit(
-                    nombre=nombre,
-                    marca_repuesto=inferred,
-                    confianza=_CONF_KNOWLEDGE,
-                    clave=_clave_fuzzy(nombre),
-                ))
-
-        needs_ml = usar_ml and (
+        # ML solo si no hay dato real de catálogo/historial del taller (evita
+        # pisar una marca/precio ya trazable con un hit de menor jerarquía).
+        needs_ml = usar_ml and not grounded_encontrado and (
             not str(next_rep.get('tienda_ml') or next_rep.get('proveedor_nombre') or '').strip()
             or not str(next_rep.get('marca_repuesto') or '').strip()
         )
-        if needs_ml and not cat_hit:
+        if needs_ml:
             ml = _buscar_ml_repuesto(
                 nombre,
                 marca_vehiculo=marca_vehiculo,
@@ -580,6 +599,21 @@ def enriquecer_repuestos_cotizacion(
             )
             if ml:
                 hits.append(ml)
+                grounded_encontrado = True
+
+        # La inferencia por nombre (Vimasa, Bosch, ...) NUNCA sustituye a una fuente
+        # real; solo aporta una marca "estimada" cuando no hay ningún dato trazable,
+        # y siempre queda etiquetada como fuente_marketplace='estimado' en la UI.
+        if not grounded_encontrado:
+            inferred = _inferir_marca_desde_nombre(nombre)
+            if inferred:
+                hits.append(_hit(
+                    nombre=nombre,
+                    marca_repuesto=inferred,
+                    fuente_marketplace='estimado',
+                    confianza=_CONF_KNOWLEDGE,
+                    clave=_clave_fuzzy(nombre),
+                ))
 
         hits.sort(key=lambda h: float(h.get('confianza') or 0), reverse=True)
         for hit in hits:

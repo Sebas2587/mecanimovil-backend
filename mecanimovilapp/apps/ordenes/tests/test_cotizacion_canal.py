@@ -69,7 +69,55 @@ class NormalizarCotizacionTestCase(SimpleTestCase):
             )
         self.assertEqual(out[0].get('marca_repuesto'), 'Vimasa')
         self.assertIsNone(out[0].get('tienda_ml'))
-        self.assertNotEqual(out[0].get('fuente_marketplace'), 'mercadolibre')
+        # La marca inferida por nombre SIEMPRE se etiqueta como 'estimado',
+        # nunca como si viniera de un dato real (catálogo/historial/ML).
+        self.assertEqual(out[0].get('fuente_marketplace'), 'estimado')
+
+    def test_enriquecer_catalogo_corrige_marca_adivinada_por_ia(self):
+        """La IA ya no debería mandar marca, pero si llega un residuo sin fuente
+        real, el catálogo del taller debe poder corregirlo (marca y fuente viajan
+        siempre juntas)."""
+        from unittest.mock import MagicMock, patch
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            enriquecer_repuestos_cotizacion,
+        )
+
+        cat = [{
+            'nombre': 'Pastillas freno',
+            'marca_repuesto': 'Mann',
+            'precio_unitario_clp': 30000,
+            'fuente_marketplace': 'catalogo',
+            'proveedor_nombre': 'Catálogo del taller',
+            'tienda_ml': '',
+            'confianza': 0.9,
+            'clave': 'pastillas freno',
+        }]
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos._candidatos_ofertas_taller',
+            return_value=cat,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos._candidatos_catalogo_maestro',
+            return_value=[],
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos._candidatos_historial_taller',
+            return_value=[],
+        ):
+            out = enriquecer_repuestos_cotizacion(
+                [{
+                    'id': 'rep-0',
+                    'nombre': 'Pastillas freno',
+                    'cantidad': 1,
+                    # Simula un residuo de marca sin fuente real (p. ej. de IA legacy).
+                    'marca_repuesto': 'Bosch',
+                    'precio_unitario_clp': 0,
+                }],
+                taller=MagicMock(),
+                usar_ml=False,
+            )
+        self.assertEqual(out[0].get('marca_repuesto'), 'Mann')
+        self.assertEqual(out[0].get('fuente_marketplace'), 'catalogo')
+        self.assertEqual(out[0].get('proveedor_nombre'), 'Catálogo del taller')
 
     def test_enriquecer_ml_mock_llena_tienda(self):
         from unittest.mock import patch

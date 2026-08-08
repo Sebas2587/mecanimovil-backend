@@ -145,8 +145,8 @@ REGLAS:
 3. El motor efectivo de la cotización es {efectivo}. No mezcles repuestos diésel/bencina.
 4. Incluye mano de obra separada de repuestos.
 5. REPUESTOS POR VEHÍCULO (CRÍTICO): lista SOLO piezas compatibles con marca/modelo/año/cilindrada/motor del contexto. No inventes genéricos ajenos al auto. Prefiere menos líneas correctas.
-6. Si el servicio/síntoma implica embrague, patinaje o vibración en modelos con volante bimasa (ej. Fiat Bravo T-Jet / Sport TJet), incluye "Volante bimasa" con marca_repuesto plausible (Vimasa, Sachs o LuK según aplique) y cantidad 1.
-7. Por cada repuesto: marca_repuesto = marca de la PIEZA (no del vehículo). DEBES ponerla si es una marca conocida del mercado (Vimasa, Sachs, LuK, Bosch, Mann, Mahle, Valeo, etc.). Solo "" si realmente desconoces.
+6. Si el servicio/síntoma implica embrague, patinaje o vibración en modelos con volante bimasa (ej. Fiat Bravo T-Jet / Sport TJet), incluye "Volante bimasa" (sin marca_repuesto; el backend la asigna con su fuente) y cantidad 1.
+7. marca_repuesto, fuente_marketplace y tienda_ml: SIEMPRE déjalos "" (string vacío). NO adivines ni inventes marcas de repuesto por tu cuenta, aunque conozcas marcas típicas del mercado. El backend es quien asigna marca_repuesto SOLO cuando proviene de una fuente real y verificable (catálogo del taller, historial de cotizaciones o Mercado Libre real), y siempre junto con su fuente/proveedor. Tú NUNCA debes rellenar marca_repuesto.
 8. fuente_marketplace y tienda_ml: déjalos "". El backend los completa con catálogo/ML real; NUNCA inventes tiendas ni pongas mercadolibre por costumbre.
 9. (reservado)
 10. duracion_minutos_estimada razonable para el servicio.
