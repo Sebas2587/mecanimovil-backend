@@ -630,3 +630,52 @@ class MetaGraphClient:
             params={'access_token': token},
             timeout=60,
         )
+
+    def fetch_messenger_user_profile(
+        self,
+        psid: str,
+        page_access_token: str,
+    ) -> dict[str, Any] | None:
+        """Nombre (y foto si disponible) de un usuario de Messenger/IG Messaging.
+
+        Requiere page access token. Si Meta no entrega nombre (permisos / política),
+        retorna None sin lanzar.
+        """
+        psid = (psid or '').strip()
+        token = (page_access_token or '').strip()
+        if not psid or not token:
+            return None
+        try:
+            resp = requests.get(
+                self._url(psid),
+                params={
+                    'access_token': token,
+                    'fields': 'name,first_name,last_name,profile_pic',
+                },
+                timeout=15,
+            )
+        except requests.RequestException as exc:
+            logger.warning('Messenger profile fetch network error psid=%s: %s', psid, exc)
+            return None
+        if resp.status_code >= 400:
+            logger.info(
+                'Messenger profile fetch failed psid=%s status=%s body=%s',
+                psid,
+                resp.status_code,
+                (resp.text or '')[:300],
+            )
+            return None
+        data = resp.json() if resp.content else {}
+        if not isinstance(data, dict):
+            return None
+        name = (data.get('name') or '').strip()
+        if not name:
+            first = (data.get('first_name') or '').strip()
+            last = (data.get('last_name') or '').strip()
+            name = f'{first} {last}'.strip()
+        if not name:
+            return None
+        return {
+            'name': name[:255],
+            'profile_pic': (data.get('profile_pic') or '').strip() or None,
+        }

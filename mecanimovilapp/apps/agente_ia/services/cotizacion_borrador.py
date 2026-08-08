@@ -496,12 +496,17 @@ def _desglose_oferta_catalogo(oferta, *, con_repuestos: bool) -> tuple[int, list
                 serv = getattr(getattr(oferta, 'servicio', None), 'nombre', '') or ''
                 if serv and nombre and serv.lower() not in nombre.lower():
                     nombre = f'{nombre} ({serv})'
+                marca_rep = (
+                    str(item.get('marca_repuesto') or item.get('marca') or '').strip()
+                )
                 rep = normalizar_repuesto(
                     {
                         'id': item.get('id') or f'cat-rep-{oferta.id}-{i}',
                         'nombre': nombre,
                         'cantidad': item.get('cantidad') or 1,
                         'precio_unitario_clp': precio_item,
+                        'marca_repuesto': marca_rep,
+                        'fuente_marketplace': 'catalogo',
                         'comentario': 'Desde catálogo del taller (IVA incl.)',
                     },
                     i,
@@ -961,6 +966,7 @@ def crear_cotizacion_borrador_desde_agente(
         modalidad=modalidad if modalidad in ('taller', 'domicilio') else 'taller',
         vehiculo=vehiculo,
         contexto_rag_extra=datos.get('contexto_rag') or '',
+        taller=taller,
     )
     if not resultado.get('disponible'):
         logger.warning(

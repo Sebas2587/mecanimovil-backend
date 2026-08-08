@@ -133,6 +133,7 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
                     'tipo_servicio': data['tipo_servicio'],
                     'miembro_taller': data.get('miembro_taller'),
                     'conversation_id': data.get('conversation_id'),
+                    'cotizacion_canal_origen_id': data.get('cotizacion_canal_origen_id'),
                 },
                 detalle=data['detalle'],
             )

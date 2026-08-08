@@ -289,6 +289,7 @@ class CitaAgendaPersonalCreateSerializer(serializers.Serializer):
     tipo_servicio = serializers.ChoiceField(choices=['taller', 'domicilio'])
     miembro_taller = serializers.IntegerField(required=False, allow_null=True)
     conversation_id = serializers.IntegerField(required=False, allow_null=True)
+    cotizacion_canal_origen_id = serializers.IntegerField(required=False, allow_null=True)
     detalle = CitaAgendaPersonalDetalleSerializer()
 
 

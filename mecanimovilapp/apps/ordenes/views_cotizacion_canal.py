@@ -158,6 +158,7 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             descripcion_problema=data.get('descripcion_problema', ''),
             modalidad=data.get('modalidad', 'taller'),
             vehiculo=data.get('vehiculo') or {},
+            taller=taller,
         )
         if not resultado.get('disponible'):
             return Response(resultado, status=status.HTTP_200_OK)

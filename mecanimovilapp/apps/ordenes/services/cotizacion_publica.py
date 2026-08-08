@@ -79,6 +79,17 @@ def marcar_visto(cotizacion: CotizacionCanal) -> CotizacionCanal:
     return cotizacion
 
 
+def _repuestos_publicos(repuestos: list | None) -> list[dict]:
+    """Repuestos para vista pública del cliente (sin datos internos del taller)."""
+    out: list[dict] = []
+    for item in repuestos or []:
+        if not isinstance(item, dict):
+            continue
+        pub = {k: v for k, v in item.items() if k != 'tienda_ml'}
+        out.append(pub)
+    return out
+
+
 def serializar_cotizacion_publica(cotizacion: CotizacionCanal) -> dict:
     taller = cotizacion.taller
     # direccion_fisica es reverse OneToOne: no existe taller.direccion_fisica_id
@@ -97,7 +108,7 @@ def serializar_cotizacion_publica(cotizacion: CotizacionCanal) -> dict:
         'vehiculo_patente': cotizacion.vehiculo_patente,
         'vehiculo_cilindraje': cotizacion.vehiculo_cilindraje,
         'tipo_motor_label': cotizacion.tipo_motor_label,
-        'repuestos': cotizacion.repuestos or [],
+        'repuestos': _repuestos_publicos(cotizacion.repuestos or []),
         'mano_obra_clp': int(cotizacion.mano_obra_clp or 0),
         'costo_repuestos_clp': int(cotizacion.costo_repuestos_clp or 0),
         'total_clp': int(cotizacion.total_clp or 0),

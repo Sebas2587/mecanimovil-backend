@@ -12,6 +12,11 @@ class RepuestoCotizacionSerializer(serializers.Serializer):
     cantidad = serializers.IntegerField(min_value=1, default=1)
     precio_unitario_clp = serializers.IntegerField(min_value=0, default=0)
     precio_referencia_ia = serializers.IntegerField(required=False, min_value=0)
+    precio_iva_incluido = serializers.BooleanField(required=False, default=True)
+    fuente_marketplace = serializers.CharField(required=False, allow_blank=True, default='')
+    fuente_repuesto = serializers.CharField(required=False, allow_blank=True, default='')
+    marca_repuesto = serializers.CharField(required=False, allow_blank=True, default='')
+    tienda_ml = serializers.CharField(required=False, allow_blank=True, default='')
     comentario = serializers.CharField(required=False, allow_blank=True, default='')
 
 

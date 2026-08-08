@@ -86,25 +86,80 @@ class OmnichannelService:
         return base.filter(page_id=account_id).first()
 
     @staticmethod
+    def _is_placeholder_display_name(name: str, external_id: str) -> bool:
+        """True si el nombre es vacío, igual al PSID/external_id, o solo dígitos largos."""
+        trimmed = (name or '').strip()
+        if not trimmed:
+            return True
+        ext = (external_id or '').strip()
+        if ext and trimmed == ext:
+            return True
+        compact = trimmed.replace(' ', '')
+        if len(compact) >= 8 and compact.isdigit():
+            return True
+        return False
+
+    @classmethod
     def get_or_create_external_contact(
+        cls,
         connection: ProviderChannelConnection,
         external_id: str,
         *,
         display_name: str = '',
         phone: str | None = None,
     ) -> ExternalContact:
+        # Evita persistir PSID como "nombre" en Messenger/IG.
+        safe_name = '' if cls._is_placeholder_display_name(display_name, external_id) else display_name.strip()
         contact, created = ExternalContact.objects.get_or_create(
             connection=connection,
             external_id=external_id,
             defaults={
                 'channel': connection.channel,
-                'display_name': display_name or external_id,
+                'display_name': safe_name,
                 'phone': phone,
             },
         )
-        if not created and display_name and contact.display_name != display_name:
-            contact.display_name = display_name
-            contact.save(update_fields=['display_name', 'updated_at'])
+        if not created and safe_name and contact.display_name != safe_name:
+            # No pisar un nombre humano previo con placeholder.
+            if not cls._is_placeholder_display_name(safe_name, external_id):
+                contact.display_name = safe_name
+                contact.save(update_fields=['display_name', 'updated_at'])
+        return contact
+
+    @classmethod
+    def maybe_enrich_messenger_contact_profile(
+        cls,
+        connection: ProviderChannelConnection,
+        contact: ExternalContact,
+    ) -> ExternalContact:
+        """Completa display_name vía Graph si el contacto solo tiene PSID."""
+        if connection.channel not in ('MESSENGER', 'INSTAGRAM'):
+            return contact
+        if not cls._is_placeholder_display_name(contact.display_name or '', contact.external_id):
+            return contact
+        token = (connection.access_token or '').strip()
+        if not token:
+            return contact
+        try:
+            from mecanimovilapp.apps.omnichannel.services.meta_graph import MetaGraphClient
+
+            profile = MetaGraphClient().fetch_messenger_user_profile(contact.external_id, token)
+        except Exception:
+            logger.exception(
+                'Error enriqueciendo perfil Meta contact=%s channel=%s',
+                contact.id,
+                connection.channel,
+            )
+            return contact
+        if not profile or not profile.get('name'):
+            return contact
+        update_fields = ['display_name', 'updated_at']
+        contact.display_name = profile['name']
+        pic = profile.get('profile_pic')
+        if pic and not contact.profile_picture_url:
+            contact.profile_picture_url = pic
+            update_fields.append('profile_picture_url')
+        contact.save(update_fields=update_fields)
         return contact
 
     @staticmethod
@@ -144,6 +199,7 @@ class OmnichannelService:
             display_name=display_name,
             phone=phone,
         )
+        contact = cls.maybe_enrich_messenger_contact_profile(connection, contact)
         conversation = cls.get_or_create_conversation(connection, contact)
 
         if not external_message_id:
@@ -253,7 +309,8 @@ class OmnichannelService:
             'external_id': sender.get('id'),
             'external_message_id': msg.get('mid'),
             'text': text,
-            'display_name': sender.get('id', ''),
+            # Messenger/IG no envían nombre en el webhook; se enriquece vía Graph.
+            'display_name': '',
             'media': media,
             'timestamp': item.get('timestamp'),
         }

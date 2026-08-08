@@ -22,6 +22,62 @@ class NormalizarCotizacionTestCase(SimpleTestCase):
         self.assertEqual(rep['nombre'], 'Filtro aceite')
         self.assertGreater(rep['precio_unitario_clp'], 0)
 
+    def test_normaliza_repuesto_marketplace_y_marca(self):
+        rep = normalizar_repuesto(
+            {
+                'nombre': 'Pastillas freno',
+                'fuente_repuesto': 'mercadolibre',
+                'marca_repuesto': 'Bosch',
+                'tienda_ml': 'Autopartes Sur',
+                'precio_unitario_clp': 45000,
+            },
+            0,
+        )
+        self.assertEqual(rep['nombre'], 'Pastillas freno')
+        self.assertEqual(rep['fuente_marketplace'], 'mercadolibre')
+        self.assertEqual(rep['marca_repuesto'], 'Bosch')
+        self.assertEqual(rep['tienda_ml'], 'Autopartes Sur')
+        self.assertTrue(rep['precio_iva_incluido'])
+
+    def test_enriquecer_infiere_marca_desde_nombre(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            enriquecer_repuestos_cotizacion,
+        )
+
+        out = enriquecer_repuestos_cotizacion(
+            [{'id': 'rep-0', 'nombre': 'Volante bimasa Vimasa', 'cantidad': 1, 'precio_unitario_clp': 180000}],
+            marca_vehiculo='Fiat',
+            modelo_vehiculo='Bravo',
+            usar_ml=False,
+        )
+        self.assertEqual(out[0].get('marca_repuesto'), 'Vimasa')
+        self.assertIsNone(out[0].get('tienda_ml'))
+        self.assertNotEqual(out[0].get('fuente_marketplace'), 'mercadolibre')
+
+    def test_enriquecer_ml_mock_llena_tienda(self):
+        from unittest.mock import patch
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            enriquecer_repuestos_cotizacion,
+        )
+
+        fake = {
+            'marca_repuesto': 'Bosch',
+            'tienda_ml': 'AutopartesSurCL',
+            'fuente_marketplace': 'mercadolibre',
+        }
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos._buscar_ml_repuesto',
+            return_value=fake,
+        ):
+            out = enriquecer_repuestos_cotizacion(
+                [{'id': 'rep-0', 'nombre': 'Pastillas freno', 'cantidad': 1, 'precio_unitario_clp': 45000}],
+                usar_ml=True,
+            )
+        self.assertEqual(out[0].get('marca_repuesto'), 'Bosch')
+        self.assertEqual(out[0].get('tienda_ml'), 'AutopartesSurCL')
+        self.assertEqual(out[0].get('fuente_marketplace'), 'mercadolibre')
+
     def test_recalcular_totales(self):
         rep, mo, total = recalcular_totales(
             [{'cantidad': 2, 'precio_unitario_clp': 10000}],

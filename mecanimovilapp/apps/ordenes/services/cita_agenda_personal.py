@@ -412,11 +412,33 @@ def crear_cita_personal(
 
         conversation = Conversation.objects.filter(pk=conversation_id).first()
 
+    cotizacion_origen = None
+    cotizacion_origen_id = cabecera.get('cotizacion_canal_origen_id')
+    if cotizacion_origen_id:
+        from mecanimovilapp.apps.ordenes.models import CotizacionCanal
+
+        cotizacion_origen = (
+            CotizacionCanal.objects.filter(pk=cotizacion_origen_id)
+            .select_related('taller', 'conversation')
+            .first()
+        )
+        if cotizacion_origen is None:
+            raise ValidationError({'cotizacion_canal_origen_id': 'Cotización no encontrada.'})
+        if taller and cotizacion_origen.taller_id != taller.id:
+            raise ValidationError({'cotizacion_canal_origen_id': 'La cotización no pertenece a tu taller.'})
+        if mecanico and cotizacion_origen.creado_por_id and cotizacion_origen.creado_por_id != user.id:
+            raise ValidationError({'cotizacion_canal_origen_id': 'La cotización no pertenece a tu perfil.'})
+        if cotizacion_origen.estado != 'aceptada':
+            raise ValidationError({'cotizacion_canal_origen_id': 'Solo se puede vincular una cotización aceptada.'})
+        if conversation is None and cotizacion_origen.conversation_id:
+            conversation = cotizacion_origen.conversation
+
     cita = CitaAgendaPersonal(
         taller=taller,
         mecanico=mecanico,
         miembro_taller=miembro,
         conversation_origen=conversation,
+        cotizacion_canal_origen=cotizacion_origen,
         fecha_servicio=fecha,
         hora_servicio=hora,
         duracion_minutos=duracion,

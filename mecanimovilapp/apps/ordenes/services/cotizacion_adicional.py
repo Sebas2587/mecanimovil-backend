@@ -246,6 +246,7 @@ def crear_cotizacion_adicional_con_ia(
             'vin': base['vehiculo_vin'],
             'tipo_motor': base['tipo_motor'],
         },
+        taller=taller,
     )
     if not resultado.get('disponible'):
         raise ValueError(resultado.get('error') or 'No se pudo generar la cotización con IA.')

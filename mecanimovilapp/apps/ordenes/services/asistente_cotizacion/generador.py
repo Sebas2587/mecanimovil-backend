@@ -119,6 +119,10 @@ def _construir_prompt(ctx: dict[str, Any]) -> str:
     chat = ctx.get('chat_reciente') or 'Sin mensajes previos.'
     rag = (ctx.get('contexto_rag') or '').strip()
     rag_bloque = f'\nConocimiento del taller (catálogo e historial):\n{rag}\n' if rag else ''
+    conocimiento = (ctx.get('conocimiento_diagnostico') or '').strip()
+    conocimiento_bloque = (
+        f'\n{conocimiento}\n' if conocimiento else ''
+    )
     return f"""Eres un asesor de taller mecánico en Chile. Genera una cotización referencial en pesos chilenos (CLP enteros, sin decimales).
 
 Vehículo:
@@ -134,14 +138,18 @@ Descripción del problema: {ctx.get('descripcion_problema', '')}
 
 Contexto del chat reciente:
 {chat}
-{rag_bloque}
+{rag_bloque}{conocimiento_bloque}
 REGLAS:
-1. Precios referenciales mercado Chile (CLP) para servicio en taller (sin recargo a domicilio). Usa valores realistas para el servicio y repuestos típicos.
+1. Precios referenciales mercado Chile (CLP) para servicio en taller (sin recargo a domicilio). Usa valores realistas para el servicio y repuestos del vehículo indicado.
 2. CRÍTICO — IVA INCLUIDO: todos los montos (mano_obra_clp y precio_unitario_clp de cada repuesto) deben ser precios FINALES al cliente con IVA 19% ya incluido. NO cotices montos netos ni agregues una línea aparte de IVA.
 3. El motor efectivo de la cotización es {efectivo}. No mezcles repuestos diésel/bencina.
 4. Incluye mano de obra separada de repuestos.
-5. Lista repuestos probables con cantidad y precio unitario estimado (IVA incl.).
-6. duracion_minutos_estimada razonable para el servicio.
+5. REPUESTOS POR VEHÍCULO (CRÍTICO): lista SOLO piezas compatibles con marca/modelo/año/cilindrada/motor del contexto. No inventes genéricos ajenos al auto. Prefiere menos líneas correctas.
+6. Si el servicio/síntoma implica embrague, patinaje o vibración en modelos con volante bimasa (ej. Fiat Bravo T-Jet / Sport TJet), incluye "Volante bimasa" con marca_repuesto plausible (Vimasa, Sachs o LuK según aplique) y cantidad 1.
+7. Por cada repuesto: marca_repuesto = marca de la PIEZA (no del vehículo). DEBES ponerla si es una marca conocida del mercado (Vimasa, Sachs, LuK, Bosch, Mann, Mahle, Valeo, etc.). Solo "" si realmente desconoces.
+8. fuente_marketplace y tienda_ml: déjalos "". El backend los completa con catálogo/ML real; NUNCA inventes tiendas ni pongas mercadolibre por costumbre.
+9. (reservado)
+10. duracion_minutos_estimada razonable para el servicio.
 
 Responde SOLO JSON válido en español:
 {{
@@ -152,7 +160,15 @@ Responde SOLO JSON válido en español:
   "duracion_minutos_estimada": 90,
   "mano_obra_clp": 45000,
   "repuestos": [
-    {{"nombre": "...", "cantidad": 1, "precio_unitario_clp": 65000, "comentario": "..."}}
+    {{
+      "nombre": "...",
+      "cantidad": 1,
+      "precio_unitario_clp": 65000,
+      "marca_repuesto": "",
+      "fuente_marketplace": "",
+      "tienda_ml": "",
+      "comentario": "..."
+    }}
   ],
   "advertencias": ["Precios referenciales con IVA incluido, sujetos a confirmación en taller"]
 }}"""
@@ -166,6 +182,8 @@ def generar_cotizacion_ia(
     modalidad: str = 'taller',
     vehiculo: dict[str, Any] | None = None,
     contexto_rag_extra: str = '',
+    taller=None,
+    enriquecer_marketplace: bool = True,
 ) -> dict[str, Any]:
     if not asistente_cotizacion_habilitado():
         return {
@@ -201,6 +219,27 @@ def generar_cotizacion_ia(
         }
 
     contenido = normalizar_cotizacion_ia(crudo, ctx)
+    if enriquecer_marketplace:
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            enriquecer_repuestos_cotizacion,
+        )
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
+            recalcular_totales,
+        )
+
+        reps = enriquecer_repuestos_cotizacion(
+            list(contenido.get('repuestos') or []),
+            marca_vehiculo=str(ctx.get('marca') or ''),
+            modelo_vehiculo=str(ctx.get('modelo') or ''),
+            taller=taller,
+            usar_ml=True,
+        )
+        costo_rep, mo, total = recalcular_totales(reps, int(contenido.get('mano_obra_clp') or 0))
+        contenido['repuestos'] = reps
+        contenido['costo_repuestos_clp'] = costo_rep
+        contenido['mano_obra_clp'] = mo
+        contenido['total_clp'] = total
+
     return {
         'disponible': True,
         'contenido': contenido,

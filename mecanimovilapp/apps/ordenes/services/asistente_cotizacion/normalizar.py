@@ -50,7 +50,12 @@ def normalizar_repuesto(item: Any, idx: int) -> dict[str, Any]:
         precio = _parse_rango_clp(precio_raw)
     else:
         precio = _to_int_clp(precio_raw)
-    return {
+    fuente_marketplace = str(
+        item.get('fuente_marketplace') or item.get('fuente_repuesto') or '',
+    ).strip()[:50]
+    marca_repuesto = str(item.get('marca_repuesto') or '').strip()[:100]
+    tienda_ml = str(item.get('tienda_ml') or '').strip()[:200]
+    out: dict[str, Any] = {
         'id': str(item.get('id') or f'rep-{idx}'),
         'nombre': nombre,
         'cantidad': cantidad,
@@ -60,6 +65,13 @@ def normalizar_repuesto(item: Any, idx: int) -> dict[str, Any]:
         'precio_iva_incluido': True,
         'comentario': str(item.get('comentario') or '')[:500],
     }
+    if fuente_marketplace:
+        out['fuente_marketplace'] = fuente_marketplace
+    if marca_repuesto:
+        out['marca_repuesto'] = marca_repuesto
+    if tienda_ml:
+        out['tienda_ml'] = tienda_ml
+    return out
 
 
 def recalcular_totales(
