@@ -55,6 +55,7 @@ def normalizar_repuesto(item: Any, idx: int) -> dict[str, Any]:
     ).strip()[:50]
     marca_repuesto = str(item.get('marca_repuesto') or '').strip()[:100]
     tienda_ml = str(item.get('tienda_ml') or '').strip()[:200]
+    proveedor_nombre = str(item.get('proveedor_nombre') or '').strip()[:200]
     out: dict[str, Any] = {
         'id': str(item.get('id') or f'rep-{idx}'),
         'nombre': nombre,
@@ -71,6 +72,8 @@ def normalizar_repuesto(item: Any, idx: int) -> dict[str, Any]:
         out['marca_repuesto'] = marca_repuesto
     if tienda_ml:
         out['tienda_ml'] = tienda_ml
+    if proveedor_nombre:
+        out['proveedor_nombre'] = proveedor_nombre
     return out
 
 

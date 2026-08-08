@@ -85,7 +85,11 @@ def _repuestos_publicos(repuestos: list | None) -> list[dict]:
     for item in repuestos or []:
         if not isinstance(item, dict):
             continue
-        pub = {k: v for k, v in item.items() if k != 'tienda_ml'}
+        pub = {
+            k: v
+            for k, v in item.items()
+            if k not in ('tienda_ml', 'proveedor_nombre')
+        }
         out.append(pub)
     return out
 

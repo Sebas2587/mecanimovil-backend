@@ -220,25 +220,32 @@ def generar_cotizacion_ia(
 
     contenido = normalizar_cotizacion_ia(crudo, ctx)
     if enriquecer_marketplace:
-        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
-            enriquecer_repuestos_cotizacion,
-        )
-        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
-            recalcular_totales,
-        )
+        try:
+            from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+                enriquecer_repuestos_cotizacion,
+            )
+            from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
+                recalcular_totales,
+            )
 
-        reps = enriquecer_repuestos_cotizacion(
-            list(contenido.get('repuestos') or []),
-            marca_vehiculo=str(ctx.get('marca') or ''),
-            modelo_vehiculo=str(ctx.get('modelo') or ''),
-            taller=taller,
-            usar_ml=True,
-        )
-        costo_rep, mo, total = recalcular_totales(reps, int(contenido.get('mano_obra_clp') or 0))
-        contenido['repuestos'] = reps
-        contenido['costo_repuestos_clp'] = costo_rep
-        contenido['mano_obra_clp'] = mo
-        contenido['total_clp'] = total
+            reps = enriquecer_repuestos_cotizacion(
+                list(contenido.get('repuestos') or []),
+                marca_vehiculo=str(ctx.get('marca') or ''),
+                modelo_vehiculo=str(ctx.get('modelo') or ''),
+                taller=taller,
+                usar_ml=True,
+            )
+            costo_rep, mo, total = recalcular_totales(reps, int(contenido.get('mano_obra_clp') or 0))
+            contenido['repuestos'] = reps
+            contenido['costo_repuestos_clp'] = costo_rep
+            contenido['mano_obra_clp'] = mo
+            contenido['total_clp'] = total
+        except Exception as exc:
+            logger.warning(
+                'enriquecer_repuestos_cotizacion falló; se entrega cotización IA sin enrich: %s',
+                exc,
+                exc_info=True,
+            )
 
     return {
         'disponible': True,

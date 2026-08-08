@@ -44,12 +44,29 @@ class NormalizarCotizacionTestCase(SimpleTestCase):
             enriquecer_repuestos_cotizacion,
         )
 
-        out = enriquecer_repuestos_cotizacion(
-            [{'id': 'rep-0', 'nombre': 'Volante bimasa Vimasa', 'cantidad': 1, 'precio_unitario_clp': 180000}],
-            marca_vehiculo='Fiat',
-            modelo_vehiculo='Bravo',
-            usar_ml=False,
-        )
+        from unittest.mock import patch
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos._candidatos_ofertas_taller',
+            return_value=[],
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos._candidatos_catalogo_maestro',
+            return_value=[],
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos._candidatos_historial_taller',
+            return_value=[],
+        ):
+            out = enriquecer_repuestos_cotizacion(
+                [{
+                    'id': 'rep-0',
+                    'nombre': 'Volante bimasa Vimasa',
+                    'cantidad': 1,
+                    'precio_unitario_clp': 180000,
+                }],
+                marca_vehiculo='Fiat',
+                modelo_vehiculo='Bravo',
+                usar_ml=False,
+            )
         self.assertEqual(out[0].get('marca_repuesto'), 'Vimasa')
         self.assertIsNone(out[0].get('tienda_ml'))
         self.assertNotEqual(out[0].get('fuente_marketplace'), 'mercadolibre')
@@ -64,11 +81,24 @@ class NormalizarCotizacionTestCase(SimpleTestCase):
         fake = {
             'marca_repuesto': 'Bosch',
             'tienda_ml': 'AutopartesSurCL',
+            'proveedor_nombre': 'AutopartesSurCL',
             'fuente_marketplace': 'mercadolibre',
+            'precio_unitario_clp': 42000,
+            'confianza': 0.75,
+            'clave': 'pastillas freno',
         }
         with patch(
             'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos._buscar_ml_repuesto',
             return_value=fake,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos._candidatos_ofertas_taller',
+            return_value=[],
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos._candidatos_catalogo_maestro',
+            return_value=[],
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos._candidatos_historial_taller',
+            return_value=[],
         ):
             out = enriquecer_repuestos_cotizacion(
                 [{'id': 'rep-0', 'nombre': 'Pastillas freno', 'cantidad': 1, 'precio_unitario_clp': 45000}],
@@ -76,7 +106,161 @@ class NormalizarCotizacionTestCase(SimpleTestCase):
             )
         self.assertEqual(out[0].get('marca_repuesto'), 'Bosch')
         self.assertEqual(out[0].get('tienda_ml'), 'AutopartesSurCL')
+        self.assertEqual(out[0].get('proveedor_nombre'), 'AutopartesSurCL')
         self.assertEqual(out[0].get('fuente_marketplace'), 'mercadolibre')
+        # ML no pisa precio IA si ya hay precio
+        self.assertEqual(out[0].get('precio_unitario_clp'), 45000)
+
+    def test_enriquecer_catalogo_disponible_sin_fielderror(self):
+        """Regresión: OfertaServicio usa disponible, no activo."""
+        from unittest.mock import MagicMock, patch
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            enriquecer_repuestos_cotizacion,
+        )
+
+        cat = [{
+            'nombre': 'Filtro de aceite',
+            'marca_repuesto': 'Mann',
+            'precio_unitario_clp': 12000,
+            'fuente_marketplace': 'catalogo',
+            'proveedor_nombre': 'Catálogo del taller',
+            'tienda_ml': '',
+            'confianza': 0.9,
+            'clave': 'filtro aceite',
+        }]
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos._candidatos_ofertas_taller',
+            return_value=cat,
+        ) as mock_cat, patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos._candidatos_catalogo_maestro',
+            return_value=[],
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos._candidatos_historial_taller',
+            return_value=[],
+        ):
+            out = enriquecer_repuestos_cotizacion(
+                [{'id': 'rep-0', 'nombre': 'Filtro aceite', 'cantidad': 1, 'precio_unitario_clp': 0}],
+                taller=MagicMock(),
+                usar_ml=False,
+            )
+        mock_cat.assert_called()
+        self.assertEqual(out[0].get('marca_repuesto'), 'Mann')
+        self.assertEqual(out[0].get('precio_unitario_clp'), 12000)
+        self.assertEqual(out[0].get('fuente_marketplace'), 'catalogo')
+        self.assertEqual(out[0].get('proveedor_nombre'), 'Catálogo del taller')
+
+    def test_enriquecer_historial_mediana_precio_y_marca(self):
+        from unittest.mock import MagicMock, patch
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            enriquecer_repuestos_cotizacion,
+        )
+
+        hist = [{
+            'nombre': 'Pastillas freno delanteras',
+            'marca_repuesto': 'Textar',
+            'precio_unitario_clp': 55000,
+            'fuente_marketplace': 'historial',
+            'proveedor_nombre': 'Historial del taller',
+            'tienda_ml': '',
+            'confianza': 0.7,
+            'clave': 'pastillas freno delanteras',
+        }]
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos._candidatos_ofertas_taller',
+            return_value=[],
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos._candidatos_catalogo_maestro',
+            return_value=[],
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos._candidatos_historial_taller',
+            return_value=hist,
+        ):
+            out = enriquecer_repuestos_cotizacion(
+                [{
+                    'id': 'rep-0',
+                    'nombre': 'Pastillas freno delanteras',
+                    'cantidad': 1,
+                    'precio_unitario_clp': 40000,
+                }],
+                taller=MagicMock(),
+                usar_ml=False,
+            )
+        self.assertEqual(out[0].get('marca_repuesto'), 'Textar')
+        self.assertEqual(out[0].get('precio_unitario_clp'), 55000)
+        self.assertEqual(out[0].get('fuente_marketplace'), 'historial')
+
+    def test_candidatos_ofertas_usa_disponible_no_activo(self):
+        """Asegura el filtro ORM correcto (FieldError si se usa activo)."""
+        from unittest.mock import MagicMock, patch
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import enriquecer_repuestos as mod
+
+        chain = MagicMock()
+        # filter().select_related().only()[:120] → iterable vacío
+        chain.select_related.return_value.only.return_value.__getitem__ = MagicMock(
+            return_value=[],
+        )
+        chain.select_related.return_value.only.return_value.__iter__ = MagicMock(
+            return_value=iter([]),
+        )
+        # Slicing on MagicMock often returns another MagicMock; force empty list
+        sliced = []
+        only_qs = MagicMock()
+        only_qs.__getitem__ = MagicMock(return_value=sliced)
+        chain.select_related.return_value.only.return_value = only_qs
+
+        filter_mock = MagicMock(return_value=chain)
+        oferta_cls = MagicMock()
+        oferta_cls.objects.filter = filter_mock
+        taller = MagicMock()
+
+        with patch(
+            'mecanimovilapp.apps.servicios.models.OfertaServicio',
+            oferta_cls,
+        ), patch(
+            'mecanimovilapp.apps.servicios.models.Repuesto',
+            MagicMock(),
+        ):
+            out = mod._candidatos_ofertas_taller(taller, 'Toyota')
+        filter_mock.assert_called_with(taller=taller, disponible=True)
+        self.assertEqual(out, [])
+
+    def test_generar_ia_enrich_failure_no_rompe(self):
+        from unittest.mock import patch
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import generador
+
+        crudo = {
+            'servicio_nombre': 'Cambio filtro',
+            'mano_obra_clp': 20000,
+            'repuestos': [{'nombre': 'Filtro', 'cantidad': 1, 'precio_unitario_clp': 10000}],
+        }
+        with patch.object(generador, 'asistente_cotizacion_habilitado', return_value=True), patch.object(
+            generador,
+            'armar_contexto_cotizacion',
+            return_value={'marca': 'Toyota', 'modelo': 'Yaris'},
+        ), patch.object(
+            generador,
+            '_construir_prompt',
+            return_value='prompt',
+        ), patch.object(
+            generador,
+            '_llamar_gemini',
+            return_value=(crudo, {'tokens_entrada': 1, 'tokens_salida': 1, 'modelo': 't'}, None),
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos.enriquecer_repuestos_cotizacion',
+            side_effect=Exception('boom'),
+        ):
+            result = generador.generar_cotizacion_ia(
+                taller=None,
+                servicio_nombre='Cambio filtro',
+                enriquecer_marketplace=True,
+            )
+        self.assertTrue(result.get('disponible'))
+        self.assertIsNotNone(result.get('contenido'))
+        self.assertEqual(result['contenido']['servicio_nombre'], 'Cambio filtro')
 
     def test_recalcular_totales(self):
         rep, mo, total = recalcular_totales(
