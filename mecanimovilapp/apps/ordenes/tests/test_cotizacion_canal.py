@@ -244,6 +244,137 @@ class NormalizarCotizacionTestCase(SimpleTestCase):
         self.assertNotIn('marca_repuesto', out[0])
         self.assertTrue(out[0].get('precio_estimado'))
 
+    def test_fusion_catalogo_taller_reemplaza_estimacion_ia(self):
+        """Si hay OfertaServicio para marca/modelo, alimenta la cotización."""
+        from unittest.mock import MagicMock, patch
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.aplicar_catalogo import (
+            fusionar_contenido_con_catalogo_taller,
+        )
+
+        contenido = {
+            'servicio_nombre': 'Cambio de bujías',
+            'mano_obra_clp': 99999,
+            'repuestos': [{
+                'nombre': 'Bujía inventada',
+                'cantidad': 1,
+                'precio_unitario_clp': 1000,
+                'precio_estimado': True,
+            }],
+            'advertencias': ['Precios de repuestos estimados: revisa'],
+        }
+        oferta = MagicMock()
+        oferta.id = 7
+        oferta.servicio.nombre = 'Cambio de bujías'
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.catalogo_pricing.buscar_oferta_exacta',
+            return_value=oferta,
+        ), patch(
+            'mecanimovilapp.apps.agente_ia.services.cotizacion_borrador._desglose_oferta_catalogo',
+            return_value=(25000, [{
+                'id': 'cat-1',
+                'nombre': 'Bujía iridium',
+                'cantidad': 4,
+                'precio_unitario_clp': 8000,
+                'marca_repuesto': 'NGK',
+                'fuente_marketplace': 'catalogo',
+                'proveedor_nombre': 'Catálogo del taller',
+                'precio_estimado': False,
+                'precio_iva_incluido': True,
+            }]),
+        ):
+            out = fusionar_contenido_con_catalogo_taller(
+                contenido,
+                taller=MagicMock(),
+                servicio_nombre='Cambio de bujías',
+                marca='Chevrolet',
+                modelo='Sail',
+            )
+        self.assertTrue(out.get('precio_desde_catalogo'))
+        self.assertFalse(out.get('valores_estimativos'))
+        self.assertEqual(out.get('mano_obra_clp'), 25000)
+        self.assertEqual(out['repuestos'][0].get('marca_repuesto'), 'NGK')
+        self.assertEqual(out['repuestos'][0].get('proveedor_nombre'), 'Catálogo del taller')
+        self.assertEqual(out['repuestos'][0].get('fuente_marketplace'), 'catalogo')
+        self.assertFalse(out['repuestos'][0].get('precio_estimado'))
+
+    def test_candidatos_ofertas_filtra_otro_modelo(self):
+        from unittest.mock import MagicMock, patch
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import enriquecer_repuestos as mod
+
+        marca = MagicMock()
+        marca.nombre = 'Chevrolet'
+        modelo_sail = MagicMock()
+        modelo_sail.nombre = 'Sail'
+        modelo_spark = MagicMock()
+        modelo_spark.nombre = 'Spark'
+
+        oferta_sail = MagicMock()
+        oferta_sail.marca_vehiculo_seleccionada_id = 1
+        oferta_sail.marca_vehiculo_seleccionada = marca
+        oferta_sail.modelo_vehiculo_seleccionado_id = 10
+        oferta_sail.modelo_vehiculo_seleccionado = modelo_sail
+        oferta_sail.repuestos_seleccionados = [{
+            'id': 1,
+            'nombre': 'Bujía Sail',
+            'marca_repuesto': 'NGK',
+            'precio': 5000,
+        }]
+
+        oferta_spark = MagicMock()
+        oferta_spark.marca_vehiculo_seleccionada_id = 1
+        oferta_spark.marca_vehiculo_seleccionada = marca
+        oferta_spark.modelo_vehiculo_seleccionado_id = 11
+        oferta_spark.modelo_vehiculo_seleccionado = modelo_spark
+        oferta_spark.repuestos_seleccionados = [{
+            'id': 2,
+            'nombre': 'Bujía Spark',
+            'marca_repuesto': 'Bosch',
+            'precio': 6000,
+        }]
+
+        only_qs = [oferta_sail, oferta_spark]
+        chain = MagicMock()
+        chain.select_related.return_value.only.return_value.__getitem__ = MagicMock(
+            return_value=only_qs,
+        )
+        # Iterate the slice result
+        sliced = MagicMock()
+        sliced.__iter__ = MagicMock(return_value=iter(only_qs))
+        chain.select_related.return_value.only.return_value.__getitem__ = MagicMock(
+            return_value=sliced,
+        )
+        # Simpler: make only() return a list-like that supports [:200]
+        class FakeQS(list):
+            def __getitem__(self, item):
+                if isinstance(item, slice):
+                    return list(self)[item]
+                return list.__getitem__(self, item)
+
+        fake = FakeQS([oferta_sail, oferta_spark])
+        chain.select_related.return_value.only.return_value = fake
+        filter_mock = MagicMock(return_value=chain)
+        oferta_cls = MagicMock()
+        oferta_cls.objects.filter = filter_mock
+
+        with patch(
+            'mecanimovilapp.apps.servicios.models.OfertaServicio',
+            oferta_cls,
+        ), patch(
+            'mecanimovilapp.apps.servicios.models.Repuesto',
+            MagicMock(),
+        ):
+            out = mod._candidatos_ofertas_taller(
+                MagicMock(),
+                'Chevrolet',
+                modelo_vehiculo='Sail',
+            )
+        nombres = {c.get('nombre') for c in out}
+        self.assertIn('Bujía Sail', nombres)
+        self.assertNotIn('Bujía Spark', nombres)
+
     def test_strips_marca_generico_legacy(self):
         from unittest.mock import MagicMock, patch
 

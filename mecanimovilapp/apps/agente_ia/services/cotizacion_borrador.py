@@ -507,11 +507,15 @@ def _desglose_oferta_catalogo(oferta, *, con_repuestos: bool) -> tuple[int, list
                         'precio_unitario_clp': precio_item,
                         'marca_repuesto': marca_rep,
                         'fuente_marketplace': 'catalogo',
+                        'proveedor_nombre': 'Catálogo del taller',
+                        'precio_estimado': False,
                         'comentario': 'Desde catálogo del taller (IVA incl.)',
                     },
                     i,
                 )
                 rep['precio_iva_incluido'] = True
+                rep['precio_estimado'] = False
+                rep['proveedor_nombre'] = 'Catálogo del taller'
                 reps.append(rep)
         elif precio_con > mano > 0 and (precio_con - mano) > 0:
             serv = getattr(getattr(oferta, 'servicio', None), 'nombre', '') or 'servicio'

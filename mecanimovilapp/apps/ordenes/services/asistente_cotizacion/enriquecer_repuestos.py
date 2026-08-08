@@ -189,7 +189,11 @@ def _candidatos_catalogo_maestro(marca_vehiculo: str = '') -> list[dict[str, Any
     return []
 
 
-def _candidatos_ofertas_taller(taller, marca_vehiculo: str = '') -> list[dict[str, Any]]:
+def _candidatos_ofertas_taller(
+    taller,
+    marca_vehiculo: str = '',
+    modelo_vehiculo: str = '',
+) -> list[dict[str, Any]]:
     if taller is None:
         return []
     try:
@@ -197,16 +201,19 @@ def _candidatos_ofertas_taller(taller, marca_vehiculo: str = '') -> list[dict[st
 
         qs = (
             OfertaServicio.objects.filter(taller=taller, disponible=True)
-            .select_related('marca_vehiculo_seleccionada')
+            .select_related('marca_vehiculo_seleccionada', 'modelo_vehiculo_seleccionado')
             .only(
                 'id',
                 'repuestos_seleccionados',
                 'marca_vehiculo_seleccionada',
                 'marca_vehiculo_seleccionada__nombre',
-            )[:120]
+                'modelo_vehiculo_seleccionado',
+                'modelo_vehiculo_seleccionado__nombre',
+            )[:200]
         )
 
         marca_req = _norm(marca_vehiculo)
+        modelo_req = _norm(modelo_vehiculo)
         repuesto_ids: set[int] = set()
         items: list[dict[str, Any]] = []
 
@@ -215,6 +222,21 @@ def _candidatos_ofertas_taller(taller, marca_vehiculo: str = '') -> list[dict[st
                 marca_oferta = _norm(getattr(oferta.marca_vehiculo_seleccionada, 'nombre', '') or '')
                 if marca_oferta and marca_oferta != marca_req:
                     continue
+            modelo_oferta = ''
+            if oferta.modelo_vehiculo_seleccionado_id:
+                modelo_oferta = _norm(
+                    getattr(oferta.modelo_vehiculo_seleccionado, 'nombre', '') or '',
+                )
+                # Si la oferta es de otro modelo concreto, no mezclar sus piezas.
+                if modelo_req and modelo_oferta and modelo_oferta != modelo_req:
+                    continue
+            # Preferir cobertura exacta marca+modelo sobre "toda la marca".
+            conf = _CONF_CATALOGO
+            if modelo_req and modelo_oferta and modelo_oferta == modelo_req:
+                conf = min(0.98, _CONF_CATALOGO + 0.05)
+            elif modelo_req and not modelo_oferta:
+                conf = _CONF_CATALOGO * 0.92
+
             for raw in (oferta.repuestos_seleccionados or []):
                 if not isinstance(raw, dict):
                     continue
@@ -242,7 +264,7 @@ def _candidatos_ofertas_taller(taller, marca_vehiculo: str = '') -> list[dict[st
                     'precio_unitario_clp': precio,
                     'fuente_marketplace': 'catalogo',
                     'proveedor_nombre': 'Catálogo del taller',
-                    'confianza': _CONF_CATALOGO,
+                    'confianza': conf,
                     'clave': _clave_fuzzy(nombre),
                 })
 
@@ -583,8 +605,12 @@ def enriquecer_repuestos_cotizacion(
     if not repuestos:
         return []
 
-    # Solo ofertas del taller. El maestro global NUNCA se mezcla aquí.
-    catalogo = _candidatos_ofertas_taller(taller, marca_vehiculo)
+    # Solo ofertas del taller (marca/modelo). El maestro global NUNCA se mezcla aquí.
+    catalogo = _candidatos_ofertas_taller(
+        taller,
+        marca_vehiculo,
+        modelo_vehiculo=modelo_vehiculo,
+    )
     historial = _candidatos_historial_taller(taller, marca_vehiculo=marca_vehiculo)
 
     out: list[dict[str, Any]] = []

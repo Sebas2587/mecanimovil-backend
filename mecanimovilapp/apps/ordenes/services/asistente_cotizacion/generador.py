@@ -202,6 +202,28 @@ def generar_cotizacion_ia(
     )
     if contexto_rag_extra:
         ctx['contexto_rag'] = contexto_rag_extra
+
+    # Inyecta tarifas publicadas del taller (marca/modelo) para orientar a Gemini
+    # y para que el merge posterior tenga contexto alineado al chat-agente.
+    if taller is not None:
+        try:
+            from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.aplicar_catalogo import (
+                construir_bloque_catalogo_prompt,
+            )
+
+            bloque_cat = construir_bloque_catalogo_prompt(
+                taller=taller,
+                servicio_nombre=servicio_nombre or str(ctx.get('servicio_nombre') or ''),
+                marca=str(ctx.get('marca') or ''),
+                modelo=str(ctx.get('modelo') or ''),
+                tipo_motor=str(ctx.get('tipo_motor_efectivo') or ''),
+            )
+            if bloque_cat:
+                prev = (ctx.get('contexto_rag') or '').strip()
+                ctx['contexto_rag'] = f'{prev}\n\n{bloque_cat}'.strip() if prev else bloque_cat
+        except Exception as exc:
+            logger.info('No se pudo inyectar catálogo en prompt cotización: %s', exc)
+
     prompt = _construir_prompt(ctx)
     inicio = time.monotonic()
     crudo, uso, error = _llamar_gemini(prompt)
@@ -240,7 +262,6 @@ def generar_cotizacion_ia(
             contenido['costo_repuestos_clp'] = costo_rep
             contenido['mano_obra_clp'] = mo
             contenido['total_clp'] = total
-            # Señales para el editor: precios sin match de catálogo/historial del taller.
             contenido['valores_estimativos'] = any(
                 bool(r.get('precio_estimado', True)) for r in reps
             ) if reps else True
@@ -252,17 +273,36 @@ def generar_cotizacion_ia(
             )
             contenido['valores_estimativos'] = True
 
+    # Prioridad: OfertaServicio del taller para marca/modelo (igual que el agente chat).
+    if taller is not None:
+        try:
+            from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.aplicar_catalogo import (
+                fusionar_contenido_con_catalogo_taller,
+            )
+
+            contenido = fusionar_contenido_con_catalogo_taller(
+                contenido,
+                taller=taller,
+                servicio_nombre=servicio_nombre or str(contenido.get('servicio_nombre') or ''),
+                marca=str(ctx.get('marca') or ''),
+                modelo=str(ctx.get('modelo') or ''),
+                tipo_motor=str(ctx.get('tipo_motor_efectivo') or ''),
+            )
+        except Exception as exc:
+            logger.warning('fusionar_contenido_con_catalogo_taller falló: %s', exc, exc_info=True)
+
     if 'valores_estimativos' not in contenido:
-        # Sin enrich o sin repuestos: la cotización IA es estimativa por defecto.
         contenido['valores_estimativos'] = True
 
     adv = list(contenido.get('advertencias') or [])
-    if contenido.get('valores_estimativos'):
+    if contenido.get('valores_estimativos') and not contenido.get('precio_desde_catalogo'):
         aviso = (
             'Precios de repuestos estimados: revisa marca, proveedor y montos antes de enviar al cliente.'
         )
         if aviso not in adv:
             adv.append(aviso)
+        contenido['advertencias'] = adv
+    else:
         contenido['advertencias'] = adv
 
     return {

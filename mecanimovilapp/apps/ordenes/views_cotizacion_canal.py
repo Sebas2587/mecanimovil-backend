@@ -216,7 +216,8 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
                 'valores_estimativos': bool(
                     resultado.get('valores_estimativos')
                     or contenido.get('valores_estimativos', True)
-                ),
+                ) and not bool(contenido.get('precio_desde_catalogo')),
+                'precio_desde_catalogo': bool(contenido.get('precio_desde_catalogo')),
             },
         )
         return Response({
