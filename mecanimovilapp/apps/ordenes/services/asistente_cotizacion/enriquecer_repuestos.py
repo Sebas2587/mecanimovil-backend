@@ -316,10 +316,33 @@ def _candidatos_ofertas_taller(
 # HistorialCotizacionSource
 # ---------------------------------------------------------------------------
 
+def _modelo_vehiculo_coincide(a: str, b: str) -> bool:
+    na, nb = _norm(a), _norm(b)
+    if not na or not nb:
+        return False
+    return na == nb or na in nb or nb in na
+
+
+def _servicio_tokens_hist(nombre: str) -> set[str]:
+    return {t for t in _norm(nombre).split() if len(t) > 2}
+
+
+def _servicios_similares_hist(a: str, b: str) -> bool:
+    ta, tb = _servicio_tokens_hist(a), _servicio_tokens_hist(b)
+    if not ta or not tb:
+        return True  # sin filtro de servicio → aceptar
+    if ta == tb:
+        return True
+    inter = ta & tb
+    return len(inter) >= max(1, min(len(ta), len(tb)) // 2)
+
+
 def _candidatos_historial_taller(
     taller,
     *,
     marca_vehiculo: str = '',
+    modelo_vehiculo: str = '',
+    servicio_nombre: str = '',
 ) -> list[dict[str, Any]]:
     if taller is None:
         return []
@@ -333,19 +356,47 @@ def _candidatos_historial_taller(
                 estado__in=('enviada', 'aceptada'),
                 creado_en__gte=desde,
             )
-            .only('id', 'repuestos', 'vehiculo_marca', 'creado_en')
+            .only(
+                'id',
+                'repuestos',
+                'vehiculo_marca',
+                'vehiculo_modelo',
+                'servicio_nombre',
+                'creado_en',
+            )
             .order_by('-creado_en')[:80]
         )
 
         marca_req = _norm(marca_vehiculo)
+        modelo_req = (modelo_vehiculo or '').strip()
+        servicio_req = (servicio_nombre or '').strip()
         buckets: dict[str, dict[str, Any]] = defaultdict(
-            lambda: {'precios': [], 'marcas': [], 'proveedores': []},
+            lambda: {
+                'precios': [],
+                'marcas': [],
+                'proveedores': [],
+                'urls': [],
+                'match_modelo': False,
+            },
         )
 
         for cot in qs:
             if marca_req:
                 cot_marca = _norm(cot.vehiculo_marca or '')
                 if cot_marca and cot_marca != marca_req:
+                    continue
+            match_modelo = False
+            if modelo_req:
+                if not _modelo_vehiculo_coincide(cot.vehiculo_modelo or '', modelo_req):
+                    # Sin modelo en la cotización antigua: no descartar del todo,
+                    # pero no cuenta como match exacto (exige más muestras).
+                    match_modelo = False
+                    if (cot.vehiculo_modelo or '').strip():
+                        continue
+                else:
+                    match_modelo = True
+            if servicio_req and (cot.servicio_nombre or '').strip():
+                if not _servicios_similares_hist(cot.servicio_nombre, servicio_req):
                     continue
             for raw in (cot.repuestos or []):
                 if not isinstance(raw, dict):
@@ -362,6 +413,7 @@ def _candidatos_historial_taller(
                 # No aprender "Catálogo Mecanimovil" como proveedor del taller.
                 if _norm(prov) in ('catalogo mecanimovil', 'catálogo mecanimovil'):
                     prov = ''
+                url = str(raw.get('url_producto') or '').strip()
                 b = buckets[clave]
                 if precio > 0:
                     b['precios'].append(precio)
@@ -369,11 +421,16 @@ def _candidatos_historial_taller(
                     b['marcas'].append(marca)
                 if prov:
                     b['proveedores'].append(prov)
+                if url:
+                    b['urls'].append(url)
                 b['nombre'] = nombre
+                b['match_modelo'] = b['match_modelo'] or match_modelo
 
         out: list[dict[str, Any]] = []
         for clave, data in buckets.items():
-            if len(data['precios']) < _HIST_MIN_MUESTRAS and len(data['marcas']) < _HIST_MIN_MUESTRAS:
+            # Con match de marca+modelo basta 1 cotización enviada; si no, umbral clásico.
+            min_muestras = 1 if data.get('match_modelo') else _HIST_MIN_MUESTRAS
+            if len(data['precios']) < min_muestras and len(data['marcas']) < min_muestras:
                 continue
             precio_med = int(statistics.median(data['precios'])) if data['precios'] else 0
             marca_moda = (
@@ -383,15 +440,21 @@ def _candidatos_historial_taller(
             prov_moda = (
                 Counter(data['proveedores']).most_common(1)[0][0] if data['proveedores'] else ''
             )
-            out.append(_hit(
+            url_moda = (
+                Counter(data['urls']).most_common(1)[0][0] if data['urls'] else ''
+            )
+            conf = _CONF_HISTORIAL + (0.05 if data.get('match_modelo') else 0.0)
+            hit = _hit(
                 nombre=data.get('nombre') or clave,
                 marca_repuesto=marca_moda,
                 precio_unitario_clp=precio_med,
                 fuente_marketplace='historial',
                 proveedor_nombre=prov_moda or 'Historial del taller',
-                confianza=_CONF_HISTORIAL,
+                url_producto=url_moda,
+                confianza=min(0.88, conf),
                 clave=clave,
-            ))
+            )
+            out.append(hit)
         return out
     except Exception as exc:
         logger.info('Historial cotización no disponible para enrich: %s', exc)
@@ -560,15 +623,24 @@ def _candidatos_web_cache(
                 continue
             marca = _marca_repuesto_valida(row.marca_repuesto)
             clave_nombre = clave.split('|', 1)[0] if '|' in clave else clave
-            conf = float(row.confianza or _CONF_WEB)
+            dominio = str(row.dominio or '').strip().lower()
+            # Semilla post-envío (aprendizaje) → historial del taller, no marketplace web.
+            if dominio in ('historial-taller', 'historial_taller'):
+                fuente = 'historial'
+                conf = float(row.confianza or _CONF_HISTORIAL)
+                proveedor = str(row.tienda or 'Historial del taller')[:200]
+            else:
+                fuente = 'web'
+                conf = float(row.confianza or _CONF_WEB)
+                proveedor = str(row.tienda or '')[:200]
             hit = _hit(
                 nombre=str(row.nombre_producto or '')[:200],
                 marca_repuesto=marca,
                 precio_unitario_clp=int(row.precio_clp or 0),
-                fuente_marketplace='web',
-                proveedor_nombre=str(row.tienda or '')[:200],
+                fuente_marketplace=fuente,
+                proveedor_nombre=proveedor,
                 url_producto=str(row.url or '')[:500],
-                confianza=conf if conf > 0 else _CONF_WEB,
+                confianza=conf if conf > 0 else (_CONF_HISTORIAL if fuente == 'historial' else _CONF_WEB),
                 clave=clave_nombre or _clave_fuzzy(str(row.nombre_producto or '')),
             )
             out.append(hit)
@@ -653,6 +725,7 @@ def enriquecer_repuestos_cotizacion(
     anio_vehiculo: str | int | None = '',
     cilindraje: str = '',
     tipo_motor: str = '',
+    servicio_nombre: str = '',
     taller=None,
     usar_ml: bool = True,
     usar_web: bool = True,
@@ -671,7 +744,12 @@ def enriquecer_repuestos_cotizacion(
         marca_vehiculo,
         modelo_vehiculo=modelo_vehiculo,
     )
-    historial = _candidatos_historial_taller(taller, marca_vehiculo=marca_vehiculo)
+    historial = _candidatos_historial_taller(
+        taller,
+        marca_vehiculo=marca_vehiculo,
+        modelo_vehiculo=modelo_vehiculo,
+        servicio_nombre=servicio_nombre,
+    )
     web_cands = (
         _candidatos_web_cache(
             marca_vehiculo=marca_vehiculo,

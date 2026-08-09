@@ -709,7 +709,7 @@ GEMINI_LIMITE_TOKENS_MENSUAL = config('GEMINI_LIMITE_TOKENS_MENSUAL', default=1_
 
 # Búsqueda web de repuestos vía Gemini URL Context (free tier; sin SerpApi).
 # Default OFF hasta validar tiendas con `manage.py probar_busqueda_web_repuestos`.
-BUSQUEDA_WEB_REPUESTOS_ENABLED = config('BUSQUEDA_WEB_REPUESTOS_ENABLED', default=False, cast=bool)
+BUSQUEDA_WEB_REPUESTOS_ENABLED = config('BUSQUEDA_WEB_REPUESTOS_ENABLED', default=True, cast=bool)
 BUSQUEDA_WEB_REPUESTOS_MODEL = config(
     'BUSQUEDA_WEB_REPUESTOS_MODEL',
     default='gemini-3.1-flash-lite',

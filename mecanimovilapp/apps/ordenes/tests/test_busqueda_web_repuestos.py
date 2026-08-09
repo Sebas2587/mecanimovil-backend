@@ -217,6 +217,128 @@ class ValidarResultadoTestCase(SimpleTestCase):
         self.assertEqual(out, {})
 
 
+class CacheSkipGeminiTestCase(SimpleTestCase):
+    def test_nombres_sin_cache_separa_faltantes(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import (
+            busqueda_web_repuestos as bw,
+        )
+
+        # _clave_fuzzy elimina ruido "kit" → clave "embrague".
+        with patch.object(
+            bw,
+            'hits_cache_vigentes_para_nombres',
+            return_value={
+                'embrague': {
+                    'nombre_producto': 'Kit embrague Sachs',
+                    'marca_repuesto': 'Sachs',
+                    'precio_clp': 150000,
+                    'tienda': 'AutoPlanet',
+                    'confianza': 0.8,
+                },
+            },
+        ):
+            faltantes, hits = bw.nombres_sin_cache_vigente(
+                ['Kit embrague', 'Volante bimasa'],
+                marca_vehiculo='Hyundai',
+                modelo_vehiculo='Accent',
+            )
+        self.assertIn('Volante bimasa', faltantes)
+        self.assertNotIn('Kit embrague', faltantes)
+        self.assertIn('embrague', hits)
+
+    def test_task_cache_completo_no_llama_gemini(self):
+        from mecanimovilapp.apps.ordenes.tasks import buscar_precios_web_cotizacion_task
+
+        cot = MagicMock()
+        cot.estado = 'borrador'
+        cot.pk = 11
+        cot.id = 11
+        cot.repuestos = [{
+            'nombre': 'Kit embrague',
+            'precio_estimado': True,
+            'cantidad': 1,
+            'precio_unitario_clp': 0,
+        }]
+        cot.mano_obra_clp = 20000
+        cot.vehiculo_marca = 'Hyundai'
+        cot.vehiculo_modelo = 'Accent'
+        cot.vehiculo_anio = 2015
+        cot.vehiculo_cilindraje = ''
+        cot.tipo_motor = ''
+        cot.servicio_nombre = 'Embrague'
+        cot.taller = MagicMock()
+        cot.metadata = {'busqueda_web_estado': 'pendiente'}
+
+        cache_hit = {
+            'kit embrague': {
+                'nombre_buscado': 'Kit embrague',
+                'nombre_producto': 'Kit embrague Sachs',
+                'marca_repuesto': 'Sachs',
+                'precio_clp': 150000,
+                'tienda': 'AutoPlanet',
+                'dominio': 'www.autoplanet.cl',
+                'url': 'https://www.autoplanet.cl/p/1',
+                'compatibilidad': 'alta',
+                'confianza': 0.8,
+                'desde_cache': True,
+            },
+        }
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.models.CotizacionCanal.objects.filter',
+        ) as filt, patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.busqueda_web_habilitada',
+            return_value=True,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.nombres_sin_cache_vigente',
+            return_value=([], cache_hit),
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.buscar_repuestos_web',
+        ) as buscar, patch(
+            'mecanimovilapp.apps.ordenes.models.PrecioRepuestoWeb.objects.update_or_create',
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos.enriquecer_repuestos_cotizacion',
+            side_effect=lambda reps, **kw: [{
+                **reps[0],
+                'fuente_marketplace': 'web',
+                'marca_repuesto': 'Sachs',
+                'proveedor_nombre': 'AutoPlanet',
+                'precio_unitario_clp': 150000,
+                'precio_estimado': True,
+                'precio_referencia_mercado': True,
+            }],
+        ):
+            filt.return_value.first.return_value = cot
+            result = buscar_precios_web_cotizacion_task.run(11)
+        buscar.assert_not_called()
+        self.assertTrue(result.get('ok'))
+
+
+class AprendizajeCotizacionTestCase(SimpleTestCase):
+    def test_bloque_historial_vacio_sin_taller(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.aprendizaje_cotizacion import (
+            construir_bloque_historial_prompt,
+        )
+
+        self.assertEqual(
+            construir_bloque_historial_prompt(
+                taller=None,
+                servicio_nombre='Embrague',
+                marca='Hyundai',
+                modelo='Accent',
+            ),
+            '',
+        )
+
+    def test_servicios_similares(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.aprendizaje_cotizacion import (
+            _servicios_similares,
+        )
+
+        self.assertTrue(_servicios_similares('Cambio de embrague', 'Embrague completo'))
+        self.assertFalse(_servicios_similares('Cambio de aceite', 'Alineación'))
+
+
 class DispararBusquedaWebTestCase(SimpleTestCase):
     @override_settings(BUSQUEDA_WEB_REPUESTOS_ENABLED=False)
     def test_marcar_pendiente_noop_si_disabled(self):
@@ -287,6 +409,9 @@ class BuscarPreciosWebTaskTestCase(SimpleTestCase):
             'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.busqueda_web_habilitada',
             return_value=True,
         ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.nombres_sin_cache_vigente',
+            return_value=(['Bujias'], {}),
+        ), patch(
             'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.cuota_diaria_disponible',
             return_value=True,
         ), patch(
@@ -305,12 +430,30 @@ class BuscarPreciosWebTaskTestCase(SimpleTestCase):
         cot = MagicMock()
         cot.estado = 'borrador'
         cot.pk = 3
+        cot.id = 3
+        cot.repuestos = [{
+            'nombre': 'Bujias',
+            'precio_estimado': True,
+            'cantidad': 1,
+            'precio_unitario_clp': 0,
+        }]
+        cot.mano_obra_clp = 10000
+        cot.vehiculo_marca = 'Fiat'
+        cot.vehiculo_modelo = 'Bravo'
+        cot.vehiculo_anio = 2010
+        cot.vehiculo_cilindraje = ''
+        cot.tipo_motor = ''
+        cot.servicio_nombre = 'Bujias'
+        cot.taller = MagicMock()
         cot.metadata = {}
         with patch(
             'mecanimovilapp.apps.ordenes.models.CotizacionCanal.objects.filter',
         ) as filt, patch(
             'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.busqueda_web_habilitada',
             return_value=True,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.nombres_sin_cache_vigente',
+            return_value=(['Bujias'], {}),
         ), patch(
             'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.cuota_diaria_disponible',
             return_value=False,

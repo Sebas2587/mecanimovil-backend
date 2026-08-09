@@ -460,6 +460,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
         busqueda_web_habilitada,
         clave_cache_repuesto,
         cuota_diaria_disponible,
+        nombres_sin_cache_vigente,
     )
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
         enriquecer_repuestos_cotizacion,
@@ -486,10 +487,6 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
             return {'ok': False, 'reason': 'not_found'}
         if cot.estado != 'borrador':
             return {'ok': False, 'reason': 'not_borrador', 'estado': cot.estado}
-
-        if not cuota_diaria_disponible():
-            _set_estado(cot, 'error')
-            return {'ok': False, 'reason': 'rpd'}
 
         reps = list(cot.repuestos or [])
         if not isinstance(reps, list) or not reps:
@@ -519,17 +516,46 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
             return {'ok': True, 'reason': 'nada_que_buscar'}
 
         nombres = [str(r.get('nombre') or '').strip() for r in candidatos if str(r.get('nombre') or '').strip()]
-        resultados = buscar_repuestos_web(
+        faltantes, cache_hits = nombres_sin_cache_vigente(
             nombres,
-            vehiculo={
-                'marca': cot.vehiculo_marca or '',
-                'modelo': cot.vehiculo_modelo or '',
-                'anio': cot.vehiculo_anio or '',
-                'cilindraje': cot.vehiculo_cilindraje or '',
-                'tipo_motor': cot.tipo_motor or '',
-            },
-            servicio_nombre=cot.servicio_nombre or '',
+            marca_vehiculo=cot.vehiculo_marca or '',
+            modelo_vehiculo=cot.vehiculo_modelo or '',
+            anio=cot.vehiculo_anio or '',
         )
+        resultados: dict = dict(cache_hits or {})
+
+        # Solo gasta Gemini (y cuota diaria) en líneas sin hit vigente.
+        if faltantes:
+            if not cuota_diaria_disponible():
+                if resultados:
+                    # Hay cache parcial: aplica lo que hay y no marca error duro.
+                    logger.info(
+                        'buscar_precios_web_cotizacion_task(%s): RPD agotado; usa cache parcial',
+                        cotizacion_id,
+                    )
+                else:
+                    _set_estado(cot, 'error')
+                    return {'ok': False, 'reason': 'rpd'}
+            else:
+                nuevos = buscar_repuestos_web(
+                    faltantes,
+                    vehiculo={
+                        'marca': cot.vehiculo_marca or '',
+                        'modelo': cot.vehiculo_modelo or '',
+                        'anio': cot.vehiculo_anio or '',
+                        'cilindraje': cot.vehiculo_cilindraje or '',
+                        'tipo_motor': cot.tipo_motor or '',
+                    },
+                    servicio_nombre=cot.servicio_nombre or '',
+                )
+                if nuevos:
+                    resultados.update(nuevos)
+        else:
+            logger.info(
+                'buscar_precios_web_cotizacion_task(%s): cache hit completo (%s líneas), sin Gemini',
+                cotizacion_id,
+                len(nombres),
+            )
 
         ttl_dias = max(1, int(getattr(settings, 'BUSQUEDA_WEB_REPUESTOS_TTL_DIAS', 14) or 14))
         expira = timezone.now() + timedelta(days=ttl_dias)

@@ -454,3 +454,94 @@ def clave_cache_repuesto(
     base = _clave_fuzzy(nombre)
     veh = _norm(' '.join(str(p) for p in (marca_vehiculo, modelo_vehiculo, anio or '') if p))
     return f'{base}|{veh}'[:240]
+
+
+def hits_cache_vigentes_para_nombres(
+    nombres: list[str],
+    *,
+    marca_vehiculo: str = '',
+    modelo_vehiculo: str = '',
+    anio: str | int | None = '',
+) -> dict[str, dict[str, Any]]:
+    """Devuelve mapa clave_fuzzy → hit vigente de PrecioRepuestoWeb (sin llamar Gemini)."""
+    nombres_limpios = [str(n).strip() for n in nombres if str(n).strip()]
+    if not nombres_limpios:
+        return {}
+    try:
+        from django.utils import timezone
+        from mecanimovilapp.apps.ordenes.models import PrecioRepuestoWeb
+    except Exception:
+        return {}
+
+    now = timezone.now()
+    claves_objetivo: dict[str, str] = {}
+    for nombre in nombres_limpios:
+        fuzzy = _clave_fuzzy(nombre)
+        if not fuzzy:
+            continue
+        claves_objetivo[fuzzy] = nombre
+        claves_objetivo[clave_cache_repuesto(
+            nombre,
+            marca_vehiculo=marca_vehiculo,
+            modelo_vehiculo=modelo_vehiculo,
+            anio=anio,
+        )] = nombre
+
+    if not claves_objetivo:
+        return {}
+
+    rows = (
+        PrecioRepuestoWeb.objects.filter(
+            clave__in=list(claves_objetivo.keys()),
+            expira_en__gt=now,
+            precio_clp__gt=0,
+        )
+        .order_by('-confianza', '-consultado_en')
+    )
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        clave = str(row.clave or '')
+        fuzzy = clave.split('|', 1)[0] if '|' in clave else clave
+        fuzzy = fuzzy or _clave_fuzzy(str(row.nombre_producto or ''))
+        if not fuzzy:
+            continue
+        # Preferir primer hit (mayor confianza) por fuzzy.
+        if fuzzy in out:
+            continue
+        marca = _marca_repuesto_valida(row.marca_repuesto)
+        out[fuzzy] = {
+            'nombre_buscado': claves_objetivo.get(clave) or claves_objetivo.get(fuzzy) or row.nombre_producto,
+            'nombre_producto': str(row.nombre_producto or '')[:200],
+            'marca_repuesto': marca,
+            'precio_clp': int(row.precio_clp or 0),
+            'tienda': str(row.tienda or '')[:200],
+            'dominio': str(row.dominio or '')[:200],
+            'url': str(row.url or '')[:500],
+            'compatibilidad': str(row.compatibilidad or 'media')[:20],
+            'confianza': float(row.confianza or 0.8),
+            'desde_cache': True,
+        }
+    return out
+
+
+def nombres_sin_cache_vigente(
+    nombres: list[str],
+    *,
+    marca_vehiculo: str = '',
+    modelo_vehiculo: str = '',
+    anio: str | int | None = '',
+) -> tuple[list[str], dict[str, dict[str, Any]]]:
+    """Separa nombres que aún requieren Gemini vs hits ya cacheados."""
+    cache_hits = hits_cache_vigentes_para_nombres(
+        nombres,
+        marca_vehiculo=marca_vehiculo,
+        modelo_vehiculo=modelo_vehiculo,
+        anio=anio,
+    )
+    faltantes: list[str] = []
+    for nombre in nombres:
+        fuzzy = _clave_fuzzy(nombre)
+        if fuzzy and fuzzy in cache_hits:
+            continue
+        faltantes.append(nombre)
+    return faltantes, cache_hits

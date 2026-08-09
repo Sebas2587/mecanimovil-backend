@@ -359,6 +359,15 @@ def enviar_cotizacion_canal(cotizacion: CotizacionCanal, user) -> Message:
         ],
     )
 
+    try:
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.aprendizaje_cotizacion import (
+            registrar_cotizacion_enviada,
+        )
+
+        registrar_cotizacion_enviada(cotizacion)
+    except Exception:
+        pass
+
     from mecanimovilapp.apps.agente_ia.services.sesion_cotizacion import (
         liberar_sesiones_tras_cerrar_borrador,
     )

@@ -203,26 +203,43 @@ def generar_cotizacion_ia(
     if contexto_rag_extra:
         ctx['contexto_rag'] = contexto_rag_extra
 
-    # Inyecta tarifas publicadas del taller (marca/modelo) para orientar a Gemini
-    # y para que el merge posterior tenga contexto alineado al chat-agente.
+    # Inyecta tarifas publicadas + historial enviado (marca/modelo) para orientar a Gemini.
     if taller is not None:
         try:
             from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.aplicar_catalogo import (
                 construir_bloque_catalogo_prompt,
             )
+            from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.aprendizaje_cotizacion import (
+                construir_bloque_historial_prompt,
+            )
 
+            servicio_ctx = servicio_nombre or str(ctx.get('servicio_nombre') or '')
+            marca_ctx = str(ctx.get('marca') or '')
+            modelo_ctx = str(ctx.get('modelo') or '')
+            bloques: list[str] = []
             bloque_cat = construir_bloque_catalogo_prompt(
                 taller=taller,
-                servicio_nombre=servicio_nombre or str(ctx.get('servicio_nombre') or ''),
-                marca=str(ctx.get('marca') or ''),
-                modelo=str(ctx.get('modelo') or ''),
+                servicio_nombre=servicio_ctx,
+                marca=marca_ctx,
+                modelo=modelo_ctx,
                 tipo_motor=str(ctx.get('tipo_motor_efectivo') or ''),
             )
             if bloque_cat:
+                bloques.append(bloque_cat)
+            bloque_hist = construir_bloque_historial_prompt(
+                taller=taller,
+                servicio_nombre=servicio_ctx,
+                marca=marca_ctx,
+                modelo=modelo_ctx,
+            )
+            if bloque_hist:
+                bloques.append(bloque_hist)
+            if bloques:
                 prev = (ctx.get('contexto_rag') or '').strip()
-                ctx['contexto_rag'] = f'{prev}\n\n{bloque_cat}'.strip() if prev else bloque_cat
+                extra = '\n\n'.join(bloques)
+                ctx['contexto_rag'] = f'{prev}\n\n{extra}'.strip() if prev else extra
         except Exception as exc:
-            logger.info('No se pudo inyectar catálogo en prompt cotización: %s', exc)
+            logger.info('No se pudo inyectar catálogo/historial en prompt cotización: %s', exc)
 
     prompt = _construir_prompt(ctx)
     inicio = time.monotonic()
@@ -257,6 +274,7 @@ def generar_cotizacion_ia(
                 anio_vehiculo=ctx.get('anio') or '',
                 cilindraje=str(ctx.get('cilindraje') or ''),
                 tipo_motor=str(ctx.get('tipo_motor_efectivo') or ''),
+                servicio_nombre=servicio_nombre or str(contenido.get('servicio_nombre') or ''),
                 taller=taller,
                 usar_ml=True,
                 usar_web=True,
