@@ -526,3 +526,180 @@ class BuscarPreciosWebTaskTestCase(SimpleTestCase):
         self.assertFalse(result.get('ok'))
         self.assertEqual(result.get('reason'), 'rpd')
         self.assertEqual(cot.metadata.get('busqueda_web_estado'), 'error')
+
+
+@override_settings(
+    BUSQUEDA_WEB_REPUESTOS_ENABLED=True,
+    GEMINI_API_KEY='test-key',
+    TAVILY_API_KEY='tvly-test',
+    BUSQUEDA_WEB_REPUESTOS_FUENTES=[
+        {
+            'nombre': 'Mercado Libre',
+            'dominio': 'listado.mercadolibre.cl',
+            'plantilla': 'https://listado.mercadolibre.cl/{q}',
+        },
+        {
+            'nombre': 'AutoPlanet',
+            'dominio': 'www.autoplanet.cl',
+            'plantilla': 'https://www.autoplanet.cl/search?q={q}',
+        },
+    ],
+)
+class BuscarRepuestosWebTavilyTestCase(SimpleTestCase):
+    def _fake_tavily_resp(self, results):
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {'results': results}
+        return resp
+
+    def _fake_gemini_resp(self, resultados):
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {
+            'candidates': [{'content': {'parts': [{'text': __import__('json').dumps({'resultados': resultados})}]}}],
+        }
+        return resp
+
+    def test_usa_tavily_como_fuente_primaria_y_no_llama_url_context(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        tavily_resp = self._fake_tavily_resp([
+            {
+                'title': 'Termostato Gates Fiat Bravo 1.4 T-Jet',
+                'url': 'https://articulo.mercadolibre.cl/MLC-123-termostato',
+                'content': 'Termostato Gates para Fiat Bravo T-Jet. Precio $ 18.990. Envío a todo Chile.',
+            },
+        ])
+        gemini_resp = self._fake_gemini_resp([
+            {
+                'nombre_buscado': 'Termostato de refrigerante',
+                'encontrado': True,
+                'nombre_producto': 'Termostato Gates Fiat Bravo 1.4 T-Jet',
+                'marca_repuesto': 'Gates',
+                'precio_clp': 18990,
+                'tienda': 'Mercado Libre',
+                'url': 'https://articulo.mercadolibre.cl/MLC-123-termostato',
+                'compatibilidad': 'alta',
+            },
+        ])
+
+        extract_resp = MagicMock()
+        extract_resp.status_code = 200
+        extract_resp.json.return_value = {'results': []}  # sin ficha; se usa el snippet.
+
+        calls = {'tavily_search': 0, 'tavily_extract': 0, 'gemini': 0}
+
+        def fake_post(url, **kwargs):
+            if url.endswith('/extract'):
+                calls['tavily_extract'] += 1
+                return extract_resp
+            if 'tavily.com' in url:
+                calls['tavily_search'] += 1
+                self.assertEqual(kwargs['headers']['Authorization'], 'Bearer tvly-test')
+                return tavily_resp
+            calls['gemini'] += 1
+            # El path Tavily NO debe pedir la tool url_context (evita alucinaciones).
+            self.assertNotIn('tools', kwargs.get('json', {}))
+            return gemini_resp
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.requests.post',
+            side_effect=fake_post,
+        ):
+            out = bw.buscar_repuestos_web(
+                ['Termostato de refrigerante'],
+                vehiculo={'marca': 'Fiat', 'modelo': 'Bravo Sport TJet', 'anio': 2010},
+                servicio_nombre='Cambio de termostato',
+            )
+
+        self.assertEqual(calls['tavily_search'], 1)
+        self.assertEqual(calls['tavily_extract'], 1)
+        self.assertEqual(calls['gemini'], 1)
+        self.assertEqual(len(out), 1)
+        hit = next(iter(out.values()))
+        self.assertEqual(hit['marca_repuesto'], 'Gates')
+        self.assertEqual(hit['tienda'], 'Mercado Libre')
+        self.assertEqual(hit['precio_clp'], 18990)
+        self.assertEqual(hit['url'], 'https://articulo.mercadolibre.cl/MLC-123-termostato')
+
+    def test_descarta_url_alucinada_que_tavily_no_devolvio(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        tavily_resp = self._fake_tavily_resp([
+            {
+                'title': 'Pastillas de freno genéricas',
+                'url': 'https://www.autoplanet.cl/producto/real-1',
+                'content': 'Pastillas de freno.',
+            },
+        ])
+        # Gemini inventa una URL que no estaba en los candidatos reales.
+        gemini_resp = self._fake_gemini_resp([
+            {
+                'nombre_buscado': 'Pastillas de freno',
+                'encontrado': True,
+                'nombre_producto': 'Pastillas Bosch',
+                'marca_repuesto': 'Bosch',
+                'precio_clp': 20000,
+                'tienda': 'AutoPlanet',
+                'url': 'https://www.autoplanet.cl/producto/inventada-2',
+                'compatibilidad': 'alta',
+            },
+        ])
+
+        def fake_post(url, **kwargs):
+            return tavily_resp if 'tavily.com' in url else gemini_resp
+
+        # Se llama directo a la función Tavily (no al dispatcher) para aislar
+        # el chequeo anti-alucinación del fallback a url_context.
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.requests.post',
+            side_effect=fake_post,
+        ):
+            out = bw._buscar_repuestos_web_tavily(
+                ['Pastillas de freno'],
+                marca='Fiat',
+                modelo='Bravo',
+                anio=2010,
+                cilindraje='',
+                tipo_motor='',
+                servicio_nombre='',
+                timeout=20,
+            )
+        self.assertEqual(out, {})
+
+    def test_fallback_a_url_context_si_tavily_sin_candidatos(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        tavily_resp = self._fake_tavily_resp([])  # Sin resultados → debe caer a url_context.
+        gemini_url_context_resp = MagicMock()
+        gemini_url_context_resp.status_code = 200
+        gemini_url_context_resp.json.return_value = {
+            'candidates': [{
+                'content': {'parts': [{'text': __import__('json').dumps({'resultados': []})}]},
+                'urlContextMetadata': {'urlMetadata': []},
+            }],
+        }
+
+        calls = {'tavily': 0, 'gemini_with_tools': 0}
+
+        def fake_post(url, **kwargs):
+            if 'tavily.com' in url:
+                calls['tavily'] += 1
+                return tavily_resp
+            if 'tools' in kwargs.get('json', {}):
+                calls['gemini_with_tools'] += 1
+            return gemini_url_context_resp
+
+        with patch.object(bw, 'cuota_diaria_disponible', return_value=True), patch.object(
+            bw, '_consumir_cuota_diaria', return_value=True,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.requests.post',
+            side_effect=fake_post,
+        ):
+            bw.buscar_repuestos_web(
+                ['Pastillas de freno'],
+                vehiculo={'marca': 'Fiat', 'modelo': 'Bravo', 'anio': 2010},
+            )
+
+        self.assertEqual(calls['tavily'], 1)
+        self.assertEqual(calls['gemini_with_tools'], 1)

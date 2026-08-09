@@ -1,10 +1,18 @@
-"""Búsqueda web de repuestos vía Gemini URL Context (sin SerpApi).
+"""Búsqueda web de repuestos: Tavily (agregador gratis) + Gemini como formateador.
 
-Construye URLs de tiendas chilenas a partir del vehículo (patente → marca/modelo/año)
-+ nombre del repuesto, pide a Gemini que lea esas páginas con `url_context` y
-devuelva JSON con marca, tienda, precio y link. Se aceptan resultados de
-dominios en whitelist con retrieval exitoso en `url_context_metadata`, o —si
-Gemini omite metadata— cuyo dominio coincida con las URLs que pedimos leer.
+Arquitectura (en orden de preferencia):
+1. Tavily Search API (free tier, 1000 créditos/mes, sin tarjeta) devuelve
+   resultados REALES (título, url, snippet) filtrados a tiendas chilenas
+   (`include_domains`). Gemini SOLO filtra compatibilidad y da formato al
+   JSON final (sin tool `url_context`, sin re-fetch de páginas).
+2. Fallback (si no hay `TAVILY_API_KEY`, o Tavily no devuelve nada): Gemini
+   con `url_context` sobre URLs de tiendas construidas por nosotros. Es más
+   frágil (Mercado Libre bloquea slugs con marca; tiendas tipo SPA como
+   AutoPlanet no muestran productos en el HTML crudo, y el modelo a veces
+   "confirma" haber leído una URL que en realidad fue bloqueada), por eso
+   Tavily es la ruta preferida cuando hay API key configurada.
+
+`TAVILY_API_KEY` se obtiene gratis (sin tarjeta) en https://app.tavily.com
 """
 from __future__ import annotations
 
@@ -20,7 +28,13 @@ import requests
 from django.conf import settings
 from django.core.cache import cache
 
-from .enriquecer_repuestos import _clave_fuzzy, _marca_repuesto_valida, _norm, _to_int_clp
+from .enriquecer_repuestos import (
+    _clave_fuzzy,
+    _inferir_marca_desde_nombre,
+    _marca_repuesto_valida,
+    _norm,
+    _to_int_clp,
+)
 from .generador import _parse_json
 
 logger = logging.getLogger(__name__)
@@ -85,9 +99,10 @@ _CATEGORY_SLUG_ML = {
     'filtro': 'filtro-aceite-auto',
     'aceite': 'aceite-motor',
     'embrague': 'kit-embrague',
-    'disco': 'disco-freno',
-    'pastilla': 'pastillas-freno',
-    'pastillas': 'pastillas-freno',
+    'disco': 'disco-de-freno',
+    'discos': 'disco-de-freno',
+    'pastilla': 'pastillas-de-freno',
+    'pastillas': 'pastillas-de-freno',
     'amortiguador': 'amortiguadores',
     'amortiguadores': 'amortiguadores',
     'correa': 'correa-distribucion',
@@ -527,7 +542,6 @@ def _validar_resultado(
         precio = 0
     nombre_prod = str(item.get('nombre_producto') or item.get('nombre_buscado') or '').strip()[:200]
     if not marca:
-        from .enriquecer_repuestos import _inferir_marca_desde_nombre
         marca = _marca_repuesto_valida(_inferir_marca_desde_nombre(nombre_prod))
     tienda = str(item.get('tienda') or '').strip()[:200] or _tienda_por_dominio(host)
     if not marca and not tienda and not precio_ok:
@@ -553,20 +567,360 @@ def _validar_resultado(
     }
 
 
+TAVILY_SEARCH_ENDPOINT = 'https://api.tavily.com/search'
+
+
+def tavily_habilitada() -> bool:
+    return bool((getattr(settings, 'TAVILY_API_KEY', '') or '').strip())
+
+
+def _tavily_dominios_incluidos() -> list[str]:
+    """Dominios whitelist + variantes (ML separa listado.* de articulo.*)."""
+    doms: set[str] = set()
+    for f in _fuentes():
+        doms |= _dominios_relacionados(f['dominio'])
+    if any('mercadolibre' in d for d in doms):
+        doms |= {
+            'mercadolibre.cl', 'www.mercadolibre.cl',
+            'listado.mercadolibre.cl', 'articulo.mercadolibre.cl',
+        }
+    return sorted(doms)[:300]
+
+
+def _tavily_buscar_uno(
+    query: str,
+    *,
+    include_domains: list[str],
+    max_results: int = 4,
+    timeout: int = 20,
+) -> list[dict[str, str]]:
+    """1 crédito Tavily (search_depth=basic). Devuelve [{title, url, content}]."""
+    api_key = (getattr(settings, 'TAVILY_API_KEY', '') or '').strip()
+    if not api_key or not query.strip():
+        return []
+    try:
+        resp = requests.post(
+            TAVILY_SEARCH_ENDPOINT,
+            headers={
+                'Authorization': f'Bearer {api_key}',
+                'Content-Type': 'application/json',
+            },
+            json={
+                'query': query.strip()[:400],
+                'search_depth': 'basic',
+                'max_results': max(1, min(max_results, 10)),
+                'include_domains': include_domains,
+                'country': 'chile',
+                'include_answer': False,
+                'include_raw_content': False,
+            },
+            timeout=timeout,
+        )
+    except requests.RequestException as exc:
+        logger.warning('tavily_buscar: error de red: %s', exc)
+        return []
+    if resp.status_code != 200:
+        logger.warning('tavily_buscar: status=%s body=%s', resp.status_code, resp.text[:300])
+        return []
+    try:
+        data = resp.json()
+    except ValueError:
+        return []
+    out: list[dict[str, str]] = []
+    for r in data.get('results') or []:
+        if not isinstance(r, dict):
+            continue
+        url = str(r.get('url') or '').strip()
+        if not url:
+            continue
+        out.append({
+            'title': str(r.get('title') or '')[:200],
+            'url': url[:500],
+            'content': str(r.get('content') or '')[:700],
+        })
+    return out
+
+
+TAVILY_EXTRACT_ENDPOINT = 'https://api.tavily.com/extract'
+
+
+def _tavily_extraer(urls: list[str], *, timeout: int = 25) -> dict[str, str]:
+    """Ficha completa del producto (specs/descripción) para rescatar marca/precio.
+
+    Barato: ~1 crédito cada 5 URLs exitosas (basic). Se llama 1 vez por
+    cotización con el mejor candidato de cada repuesto (máx 20 URLs).
+    """
+    api_key = (getattr(settings, 'TAVILY_API_KEY', '') or '').strip()
+    urls_unicas = [u for u in dict.fromkeys(urls) if u][:20]
+    if not api_key or not urls_unicas:
+        return {}
+    try:
+        resp = requests.post(
+            TAVILY_EXTRACT_ENDPOINT,
+            headers={
+                'Authorization': f'Bearer {api_key}',
+                'Content-Type': 'application/json',
+            },
+            json={
+                'urls': urls_unicas,
+                'extract_depth': 'basic',
+                'format': 'text',
+            },
+            timeout=timeout,
+        )
+    except requests.RequestException as exc:
+        logger.warning('tavily_extraer: error de red: %s', exc)
+        return {}
+    if resp.status_code != 200:
+        logger.info('tavily_extraer: status=%s (se sigue con snippets de búsqueda)', resp.status_code)
+        return {}
+    try:
+        data = resp.json()
+    except ValueError:
+        return {}
+    out: dict[str, str] = {}
+    for r in data.get('results') or []:
+        if not isinstance(r, dict):
+            continue
+        url = str(r.get('url') or '').strip()
+        raw = str(r.get('raw_content') or '').strip()
+        if url and raw:
+            out[url] = raw[:2000]
+    return out
+
+
+_PRECIO_CLP_RE = re.compile(r'\$\s?([\d.,]{4,10})')
+
+
+def _precio_desde_texto(texto: str) -> int:
+    """Extrae el primer precio CLP plausible de un snippet ('$ 18.990 ...')."""
+    for m in _PRECIO_CLP_RE.finditer(texto or ''):
+        val = _to_int_clp(m.group(1))
+        if _precio_en_rango(val):
+            return val
+    return 0
+
+
+def _construir_prompt_tavily(
+    *,
+    candidatos_por_nombre: dict[str, list[dict[str, str]]],
+    marca: str,
+    modelo: str,
+    anio: str,
+    cilindraje: str,
+    tipo_motor: str,
+    servicio_nombre: str,
+) -> str:
+    vehiculo = ' '.join(p for p in [marca, modelo, anio, cilindraje, tipo_motor] if p).strip() or 'desconocido'
+    bloques = []
+    for nombre, candidatos in candidatos_por_nombre.items():
+        lineas = '\n'.join(
+            f'  [{i}] título: {c["title"]}\n      url: {c["url"]}\n      texto: {c["content"][:400]}'
+            for i, c in enumerate(candidatos)
+        ) or '  (sin resultados)'
+        bloques.append(f'Repuesto: "{nombre}"\n{lineas}')
+    cuerpo = '\n\n'.join(bloques)
+    return f"""Eres un extractor de precios de repuestos automotrices en Chile.
+Se te dan, por cada repuesto, resultados REALES de búsqueda (título/url/texto) de tiendas chilenas.
+NO inventes datos que no estén en el texto entregado. Usa SOLO la información de estos candidatos.
+
+Vehículo de referencia (orientativo): {vehiculo}
+Servicio: {servicio_nombre or 'N/A'}
+
+{cuerpo}
+
+Para cada repuesto, elige el MEJOR candidato de su lista (por índice):
+1. Si algún candidato es de la categoría correcta, encontrado=true (aunque el título no mencione el modelo exacto).
+2. compatibilidad: alta si el título/texto menciona la marca/modelo del vehículo; media si es la categoría correcta; baja si es genérico.
+3. marca_repuesto = marca de la PIEZA visible en título/texto (Bosch, Gates, NGK, etc.). Si no aparece, "". NUNCA "Original", "GENÉRICO" ni la marca del auto.
+4. precio_clp = precio CLP visible en el texto (entero, sin puntos/símbolo). Si no aparece, 0.
+5. url = EXACTAMENTE la url del candidato elegido (cópiala tal cual, no la modifiques).
+6. tienda = nombre del sitio según el dominio de la url (Mercado Libre, AutoPlanet, etc.).
+7. Si NINGÚN candidato de la lista sirve, encontrado=false.
+8. Responde SOLO JSON válido (sin markdown):
+{{
+  "resultados": [
+    {{
+      "nombre_buscado": "...",
+      "encontrado": true,
+      "nombre_producto": "...",
+      "marca_repuesto": "...",
+      "precio_clp": 0,
+      "tienda": "...",
+      "url": "https://...",
+      "compatibilidad": "alta|media|baja"
+    }}
+  ]
+}}
+Incluye un ítem por cada repuesto listado arriba.
+"""
+
+
+def _gemini_generar(prompt: str, *, timeout: int, use_url_context: bool) -> dict[str, Any] | None:
+    api_key = (getattr(settings, 'GEMINI_API_KEY', '') or '').strip()
+    model = (
+        getattr(settings, 'BUSQUEDA_WEB_REPUESTOS_MODEL', '')
+        or getattr(settings, 'GEMINI_MODEL', 'gemini-3.1-flash-lite')
+        or 'gemini-3.1-flash-lite'
+    ).strip()
+    endpoint = (
+        f'https://generativelanguage.googleapis.com/v1beta/models/{model}:'
+        f'generateContent?key={api_key}'
+    )
+    payload: dict[str, Any] = {
+        'contents': [{'parts': [{'text': prompt}]}],
+        'generationConfig': {'temperature': 0.2, 'maxOutputTokens': 4096},
+    }
+    if use_url_context:
+        payload['tools'] = [{'url_context': {}}]
+        if getattr(settings, 'BUSQUEDA_WEB_REPUESTOS_GROUNDING', False):
+            payload['tools'].append({'google_search': {}})
+    try:
+        resp = requests.post(endpoint, json=payload, timeout=timeout)
+    except requests.RequestException as exc:
+        logger.warning('busqueda_web_repuestos: error de red Gemini: %s', exc)
+        return None
+    if resp.status_code != 200:
+        logger.warning(
+            'busqueda_web_repuestos: Gemini status=%s body=%s',
+            resp.status_code,
+            resp.text[:300],
+        )
+        return None
+    try:
+        return resp.json()
+    except ValueError:
+        return None
+
+
+def _buscar_repuestos_web_tavily(
+    nombres_limpios: list[str],
+    *,
+    marca: str,
+    modelo: str,
+    anio: str | int | None,
+    cilindraje: str,
+    tipo_motor: str,
+    servicio_nombre: str,
+    timeout: int,
+) -> dict[str, dict[str, Any]]:
+    """Agregador Tavily (JSON real) + Gemini solo como filtro/formateador."""
+    include_domains = _tavily_dominios_incluidos()
+    candidatos_por_nombre: dict[str, list[dict[str, str]]] = {}
+    for nombre in nombres_limpios:
+        query = ' '.join(p for p in [nombre, marca, _modelo_busqueda(modelo)] if p)
+        candidatos = _tavily_buscar_uno(query, include_domains=include_domains, max_results=4)
+        if candidatos:
+            candidatos_por_nombre[nombre] = candidatos
+
+    if not candidatos_por_nombre:
+        logger.info('busqueda_web_repuestos[tavily]: 0 candidatos para %s repuestos', len(nombres_limpios))
+        return {}
+
+    # Ficha completa del mejor candidato de cada repuesto: la marca casi nunca
+    # aparece en el título del listado, pero sí en la descripción/specs.
+    top_urls = [candidatos[0]['url'] for candidatos in candidatos_por_nombre.values() if candidatos]
+    fichas = _tavily_extraer(top_urls)
+    if fichas:
+        for candidatos in candidatos_por_nombre.values():
+            if candidatos and candidatos[0]['url'] in fichas:
+                candidatos[0] = {**candidatos[0], 'content': fichas[candidatos[0]['url']]}
+
+    prompt = _construir_prompt_tavily(
+        candidatos_por_nombre=candidatos_por_nombre,
+        marca=marca,
+        modelo=modelo,
+        anio=str(anio or ''),
+        cilindraje=cilindraje,
+        tipo_motor=tipo_motor,
+        servicio_nombre=servicio_nombre,
+    )
+    body = _gemini_generar(prompt, timeout=timeout, use_url_context=False)
+    if not body:
+        return {}
+
+    text = ''
+    try:
+        parts = body['candidates'][0]['content']['parts']
+        text = ''.join(str(p.get('text') or '') for p in parts if isinstance(p, dict) and p.get('text'))
+    except (KeyError, IndexError, TypeError):
+        return {}
+    parsed = _parse_json(text) or {}
+    resultados = parsed.get('resultados') or []
+    if not isinstance(resultados, list):
+        return {}
+
+    # URLs válidas = las que Tavily realmente devolvió (anti-alucinación).
+    urls_reales: set[str] = set()
+    for cands in candidatos_por_nombre.values():
+        urls_reales |= {c['url'] for c in cands}
+
+    whitelist = _dominios_whitelist()
+    out: dict[str, dict[str, Any]] = {}
+    for raw in resultados:
+        item = _normalizar_item_gemini(raw)
+        if not item or not bool(item.get('encontrado')):
+            continue
+        url = str(item.get('url') or '').strip()
+        if url not in urls_reales:
+            continue
+        if not _dominio_permitido(url, whitelist):
+            continue
+        host = _dominio_de_url(url)
+        marca_it = _marca_repuesto_valida(item.get('marca_repuesto'))
+        nombre_prod = str(item.get('nombre_producto') or item.get('nombre_buscado') or '').strip()[:200]
+        if not nombre_prod:
+            continue
+        if not marca_it:
+            marca_it = _marca_repuesto_valida(_inferir_marca_desde_nombre(nombre_prod))
+        precio = _to_int_clp(item.get('precio_clp'))
+        if not _precio_en_rango(precio):
+            # Backstop: intenta extraer el precio del snippet original.
+            snippet = next(
+                (c['content'] for c in candidatos_por_nombre.get(item.get('nombre_buscado') or '', []) if c['url'] == url),
+                '',
+            )
+            precio = _precio_desde_texto(snippet)
+        tienda = str(item.get('tienda') or '').strip()[:200] or _tienda_por_dominio(host)
+        compat = str(item.get('compatibilidad') or '').strip().lower()[:20]
+        if compat not in ('alta', 'media', 'baja'):
+            compat = 'media'
+        conf = 0.85 if compat == 'alta' else (0.75 if compat == 'media' else 0.6)
+        clave = _clave_fuzzy(str(item.get('nombre_buscado') or nombre_prod))
+        if not clave:
+            continue
+        prev = out.get(clave)
+        if prev and float(prev.get('confianza') or 0) >= conf:
+            continue
+        out[clave] = {
+            'nombre_buscado': str(item.get('nombre_buscado') or '').strip()[:200],
+            'nombre_producto': nombre_prod,
+            'marca_repuesto': marca_it,
+            'precio_clp': precio,
+            'tienda': tienda,
+            'dominio': host[:200],
+            'url': url,
+            'compatibilidad': compat,
+            'confianza': conf,
+        }
+    logger.info(
+        'busqueda_web_repuestos[tavily]: %s hits válidos de %s repuestos consultados (%s con candidatos)',
+        len(out),
+        len(nombres_limpios),
+        len(candidatos_por_nombre),
+    )
+    return out
+
+
 def buscar_repuestos_web(
     nombres: list[str],
     *,
     vehiculo: dict[str, Any] | None = None,
     servicio_nombre: str = '',
 ) -> dict[str, dict[str, Any]]:
-    """Una llamada Gemini url_context por cotización. Devuelve mapa clave_fuzzy → hit validado."""
-    if not busqueda_web_habilitada():
-        return {}
+    """Punto de entrada único: Tavily (si hay API key) y luego url_context para lo faltante."""
     nombres_limpios = [str(n).strip()[:200] for n in nombres if str(n).strip()]
     if not nombres_limpios:
-        return {}
-    if not cuota_diaria_disponible():
-        logger.warning('busqueda_web_repuestos: tope diario RPD alcanzado')
         return {}
 
     veh = vehiculo or {}
@@ -575,6 +929,67 @@ def buscar_repuestos_web(
     anio = veh.get('anio') or ''
     cilindraje = str(veh.get('cilindraje') or '').strip()
     tipo_motor = str(veh.get('tipo_motor') or '').strip()
+    timeout = int(getattr(settings, 'BUSQUEDA_WEB_REPUESTOS_TIMEOUT', 45) or 45)
+
+    resultados: dict[str, dict[str, Any]] = {}
+    pendientes = list(nombres_limpios)
+
+    if tavily_habilitada() and (getattr(settings, 'GEMINI_API_KEY', '') or '').strip():
+        try:
+            resultados = _buscar_repuestos_web_tavily(
+                nombres_limpios,
+                marca=marca,
+                modelo=modelo,
+                anio=anio,
+                cilindraje=cilindraje,
+                tipo_motor=tipo_motor,
+                servicio_nombre=servicio_nombre,
+                timeout=timeout,
+            )
+        except Exception as exc:
+            logger.warning('busqueda_web_repuestos[tavily]: fallo inesperado: %s', exc)
+            resultados = {}
+        claves_resueltas = {_clave_fuzzy(n) for n in nombres_limpios} & {
+            _clave_fuzzy(v.get('nombre_buscado') or '') for v in resultados.values()
+        }
+        pendientes = [n for n in nombres_limpios if _clave_fuzzy(n) not in claves_resueltas] or (
+            [] if resultados else nombres_limpios
+        )
+
+    if not pendientes or not busqueda_web_habilitada():
+        return resultados
+
+    legacy = _buscar_repuestos_web_url_context(
+        pendientes,
+        marca=marca,
+        modelo=modelo,
+        anio=anio,
+        cilindraje=cilindraje,
+        tipo_motor=tipo_motor,
+        servicio_nombre=servicio_nombre,
+        timeout=timeout,
+    )
+    resultados.update(legacy)
+    return resultados
+
+
+def _buscar_repuestos_web_url_context(
+    nombres_limpios: list[str],
+    *,
+    marca: str,
+    modelo: str,
+    anio: str | int | None,
+    cilindraje: str,
+    tipo_motor: str,
+    servicio_nombre: str,
+    timeout: int,
+) -> dict[str, dict[str, Any]]:
+    """Fallback: Gemini adivina/lee URLs de tiendas con la tool `url_context`."""
+    if not busqueda_web_habilitada():
+        return {}
+    if not cuota_diaria_disponible():
+        logger.warning('busqueda_web_repuestos: tope diario RPD alcanzado')
+        return {}
 
     urls = construir_urls_busqueda(
         nombres_limpios,
@@ -590,13 +1005,6 @@ def buscar_repuestos_web(
         logger.warning('busqueda_web_repuestos: no se pudo consumir cuota diaria')
         return {}
 
-    api_key = (getattr(settings, 'GEMINI_API_KEY', '') or '').strip()
-    model = (
-        getattr(settings, 'BUSQUEDA_WEB_REPUESTOS_MODEL', '')
-        or getattr(settings, 'GEMINI_MODEL', 'gemini-3.1-flash-lite')
-        or 'gemini-3.1-flash-lite'
-    ).strip()
-    timeout = int(getattr(settings, 'BUSQUEDA_WEB_REPUESTOS_TIMEOUT', 45) or 45)
     prompt = _construir_prompt(
         nombres=nombres_limpios,
         urls=urls,
@@ -607,39 +1015,8 @@ def buscar_repuestos_web(
         tipo_motor=tipo_motor,
         servicio_nombre=servicio_nombre or '',
     )
-    endpoint = (
-        f'https://generativelanguage.googleapis.com/v1beta/models/{model}:'
-        f'generateContent?key={api_key}'
-    )
-    payload: dict[str, Any] = {
-        'contents': [{'parts': [{'text': prompt}]}],
-        'tools': [{'url_context': {}}],
-        'generationConfig': {
-            'temperature': 0.2,
-            'maxOutputTokens': 4096,
-        },
-    }
-    # Grounding con Search queda apagado (requiere billing). Flag reservado.
-    if getattr(settings, 'BUSQUEDA_WEB_REPUESTOS_GROUNDING', False):
-        payload['tools'].append({'google_search': {}})
-
-    try:
-        resp = requests.post(endpoint, json=payload, timeout=timeout)
-    except requests.RequestException as exc:
-        logger.warning('busqueda_web_repuestos: error de red Gemini: %s', exc)
-        return {}
-
-    if resp.status_code != 200:
-        logger.warning(
-            'busqueda_web_repuestos: Gemini status=%s body=%s',
-            resp.status_code,
-            (resp.text or '')[:300],
-        )
-        return {}
-
-    try:
-        body = resp.json()
-    except ValueError:
+    body = _gemini_generar(prompt, timeout=timeout, use_url_context=True)
+    if not body:
         return {}
 
     urls_ok = _urls_exitosas_metadata(body)

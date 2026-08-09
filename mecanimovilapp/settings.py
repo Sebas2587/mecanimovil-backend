@@ -707,7 +707,11 @@ GEMINI_RETRY_MAX = config('GEMINI_RETRY_MAX', default=2, cast=int)
 # Cuota mensual de referencia para alertas de uso Gemini (Google AI Studio renueva cada mes calendario)
 GEMINI_LIMITE_TOKENS_MENSUAL = config('GEMINI_LIMITE_TOKENS_MENSUAL', default=1_000_000, cast=int)
 
-# Búsqueda web de repuestos vía Gemini URL Context (free tier; sin SerpApi).
+# Búsqueda web de repuestos: Tavily (agregador free, 1000 créditos/mes, sin
+# tarjeta — https://app.tavily.com) entrega resultados reales; Gemini solo
+# filtra compatibilidad y formatea. Sin TAVILY_API_KEY cae a Gemini url_context
+# (más frágil: adivina URLs de tiendas, sin SerpApi/Google CSE de pago).
+TAVILY_API_KEY = config('TAVILY_API_KEY', default='')
 BUSQUEDA_WEB_REPUESTOS_ENABLED = config('BUSQUEDA_WEB_REPUESTOS_ENABLED', default=True, cast=bool)
 # True: al crear borrador corre la task en el request (marca/tienda en la 1.ª respuesta).
 # False: solo Celery async (requiere worker vivo).
