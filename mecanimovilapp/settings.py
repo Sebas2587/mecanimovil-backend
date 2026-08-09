@@ -708,8 +708,14 @@ GEMINI_RETRY_MAX = config('GEMINI_RETRY_MAX', default=2, cast=int)
 GEMINI_LIMITE_TOKENS_MENSUAL = config('GEMINI_LIMITE_TOKENS_MENSUAL', default=1_000_000, cast=int)
 
 # Búsqueda web de repuestos vía Gemini URL Context (free tier; sin SerpApi).
-# Default OFF hasta validar tiendas con `manage.py probar_busqueda_web_repuestos`.
 BUSQUEDA_WEB_REPUESTOS_ENABLED = config('BUSQUEDA_WEB_REPUESTOS_ENABLED', default=True, cast=bool)
+# True: al crear borrador corre la task en el request (marca/tienda en la 1.ª respuesta).
+# False: solo Celery async (requiere worker vivo).
+BUSQUEDA_WEB_REPUESTOS_SYNC_ON_CREATE = config(
+    'BUSQUEDA_WEB_REPUESTOS_SYNC_ON_CREATE',
+    default=True,
+    cast=bool,
+)
 BUSQUEDA_WEB_REPUESTOS_MODEL = config(
     'BUSQUEDA_WEB_REPUESTOS_MODEL',
     default='gemini-3.1-flash-lite',

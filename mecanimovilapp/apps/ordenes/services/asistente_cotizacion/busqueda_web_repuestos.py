@@ -2,9 +2,9 @@
 
 Construye URLs de tiendas chilenas a partir del vehículo (patente → marca/modelo/año)
 + nombre del repuesto, pide a Gemini que lea esas páginas con `url_context` y
-devuelva JSON con marca, tienda, precio y link. Solo se aceptan resultados cuyo
-dominio esté en whitelist y cuya URL aparezca con retrieval exitoso en
-`url_context_metadata`.
+devuelva JSON con marca, tienda, precio y link. Se aceptan resultados de
+dominios en whitelist con retrieval exitoso en `url_context_metadata`, o —si
+Gemini omite metadata— cuyo dominio coincida con las URLs que pedimos leer.
 """
 from __future__ import annotations
 
@@ -177,25 +177,53 @@ def _consumir_cuota_diaria() -> bool:
 
 
 def _urls_exitosas_metadata(body: dict[str, Any]) -> set[str]:
-    """Extrae URLs con retrieval exitoso de url_context_metadata."""
+    """Extrae URLs con retrieval exitoso de url_context_metadata (REST o camelCase)."""
     ok: set[str] = set()
     try:
         candidates = body.get('candidates') or []
         if not candidates:
             return ok
-        meta = (candidates[0] or {}).get('url_context_metadata') or {}
-        for item in meta.get('url_metadata') or []:
+        cand0 = candidates[0] or {}
+        meta = (
+            cand0.get('url_context_metadata')
+            or cand0.get('urlContextMetadata')
+            or {}
+        )
+        items = meta.get('url_metadata') or meta.get('urlMetadata') or []
+        for item in items:
             if not isinstance(item, dict):
                 continue
-            status = str(item.get('url_retrieval_status') or '')
-            retrieved = str(item.get('retrieved_url') or item.get('url') or '').strip()
-            if retrieved and status in _URL_RETRIEVAL_OK:
+            status = str(
+                item.get('url_retrieval_status')
+                or item.get('urlRetrievalStatus')
+                or '',
+            )
+            retrieved = str(
+                item.get('retrieved_url')
+                or item.get('retrievedUrl')
+                or item.get('url')
+                or '',
+            ).strip()
+            # Algunos responses omiten status y solo traen retrieved_url.
+            status_ok = (not status) or status in _URL_RETRIEVAL_OK or 'SUCCESS' in status.upper()
+            if retrieved and status_ok:
                 ok.add(retrieved)
-                # También host-level: a veces el modelo cita un producto bajo el mismo dominio.
                 ok.add(_dominio_de_url(retrieved))
     except (TypeError, IndexError, AttributeError):
         return ok
     return ok
+
+
+def _dominios_de_urls(urls: list[str]) -> set[str]:
+    out: set[str] = set()
+    for u in urls or []:
+        host = _dominio_de_url(str(u))
+        if host:
+            out.add(host)
+            bare = host[4:] if host.startswith('www.') else host
+            out.add(bare)
+            out.add(f'www.{bare}')
+    return out
 
 
 def _precio_en_rango(precio: int) -> bool:
@@ -274,6 +302,7 @@ def _validar_resultado(
     *,
     urls_ok: set[str],
     whitelist: set[str],
+    dominios_solicitados: set[str] | None = None,
 ) -> dict[str, Any] | None:
     if not isinstance(item, dict):
         return None
@@ -284,18 +313,26 @@ def _validar_resultado(
         return None
     if not _dominio_permitido(url, whitelist):
         return None
-    # Sin retrieval exitoso no hay prueba de que Gemini leyó la página.
-    if not urls_ok:
-        return None
     host = _dominio_de_url(url)
-    if url not in urls_ok and host not in urls_ok:
-        # Aceptar si algún dominio recuperado es "pariente" (mismo sitio).
-        if not any(
-            _dominio_permitido(str(u) if str(u).startswith('http') else f'https://{u}/', {host})
-            or (isinstance(u, str) and host and (host in u or u in host))
-            for u in urls_ok
-        ):
-            return None
+    doms_req = dominios_solicitados or set()
+
+    def _host_en(conjunto: set[str]) -> bool:
+        if not conjunto:
+            return False
+        if url in conjunto or host in conjunto:
+            return True
+        bare = host[4:] if host.startswith('www.') else host
+        return any(
+            (isinstance(u, str) and host and (host in u or u in host or bare in u))
+            for u in conjunto
+        )
+
+    retrieval_ok = _host_en(urls_ok)
+    solicitado_ok = _host_en(doms_req)
+    # Prueba fuerte: metadata de retrieval. Fallback: dominio de una URL que
+    # nosotros pedimos leer (evita descartar JSON útil si Gemini omite metadata).
+    if not retrieval_ok and not solicitado_ok:
+        return None
     marca = _marca_repuesto_valida(item.get('marca_repuesto'))
     precio = _to_int_clp(item.get('precio_clp'))
     if not _precio_en_rango(precio):
@@ -304,10 +341,17 @@ def _validar_resultado(
     nombre_prod = str(item.get('nombre_producto') or item.get('nombre_buscado') or '').strip()[:200]
     if not nombre_prod:
         return None
+    # Si no vino marca explícita, intentar inferirla del título del producto.
+    if not marca:
+        from .enriquecer_repuestos import _inferir_marca_desde_nombre
+        marca = _marca_repuesto_valida(_inferir_marca_desde_nombre(nombre_prod))
     tienda = str(item.get('tienda') or '').strip()[:200] or _tienda_por_dominio(host)
     compat = str(item.get('compatibilidad') or '').strip().lower()[:20]
     if compat not in ('alta', 'media', 'baja'):
         compat = 'media'
+    conf = 0.8 if compat == 'alta' else (0.7 if compat == 'media' else 0.55)
+    if not retrieval_ok:
+        conf = min(conf, 0.65)
     return {
         'nombre_buscado': str(item.get('nombre_buscado') or '').strip()[:200],
         'nombre_producto': nombre_prod,
@@ -317,7 +361,7 @@ def _validar_resultado(
         'dominio': host[:200],
         'url': url[:500],
         'compatibilidad': compat,
-        'confianza': 0.8 if compat == 'alta' else (0.7 if compat == 'media' else 0.55),
+        'confianza': conf,
     }
 
 
@@ -411,10 +455,20 @@ def buscar_repuestos_web(
         return {}
 
     urls_ok = _urls_exitosas_metadata(body)
+    dominios_solicitados = _dominios_de_urls(urls)
+    if not urls_ok:
+        logger.info(
+            'busqueda_web_repuestos: sin url_context_metadata; fallback a dominios solicitados=%s',
+            sorted(dominios_solicitados),
+        )
     text = ''
     try:
         parts = body['candidates'][0]['content']['parts']
-        text = ''.join(str(p.get('text') or '') for p in parts if isinstance(p, dict))
+        text = ''.join(
+            str(p.get('text') or '')
+            for p in parts
+            if isinstance(p, dict) and p.get('text')
+        )
     except (KeyError, IndexError, TypeError):
         return {}
 
@@ -430,7 +484,12 @@ def buscar_repuestos_web(
     whitelist = _dominios_whitelist()
     out: dict[str, dict[str, Any]] = {}
     for item in resultados:
-        validado = _validar_resultado(item, urls_ok=urls_ok, whitelist=whitelist)
+        validado = _validar_resultado(
+            item,
+            urls_ok=urls_ok,
+            whitelist=whitelist,
+            dominios_solicitados=dominios_solicitados,
+        )
         if not validado:
             continue
         clave = _clave_fuzzy(validado['nombre_buscado'] or validado['nombre_producto'])
@@ -441,6 +500,12 @@ def buscar_repuestos_web(
         if prev and float(prev.get('confianza') or 0) >= float(validado.get('confianza') or 0):
             continue
         out[clave] = validado
+    if not out:
+        logger.info(
+            'busqueda_web_repuestos: 0 hits válidos de %s resultados (urls_ok=%s)',
+            len(resultados),
+            len(urls_ok),
+        )
     return out
 
 

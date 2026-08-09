@@ -68,6 +68,50 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             'conversation__external_contact',
         )
 
+    def retrieve(self, request, *args, **kwargs):
+        """Detalle; reintenta búsqueda web si el borrador quedó pendiente/sin marca."""
+        instance = self.get_object()
+        instance = self._reintentar_busqueda_web_si_corresponde(instance)
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
+
+    def _reintentar_busqueda_web_si_corresponde(self, cotizacion: CotizacionCanal) -> CotizacionCanal:
+        """Reintenta búsqueda web en borradores trabados (worker muerto / validación).
+
+        - `pendiente` o `error`: reintenta con debounce 45s.
+        - `sin_resultados`: un solo reintento (útil tras deploy de validación más permisiva).
+        """
+        if cotizacion.estado != 'borrador':
+            return cotizacion
+        meta = dict(cotizacion.metadata or {})
+        estado = str(meta.get('busqueda_web_estado') or '')
+        retries = int(meta.get('busqueda_web_retry_count') or 0)
+        if estado in ('pendiente', 'error'):
+            pass
+        elif estado in ('sin_resultados', '') and retries < 1:
+            # '' = borrador viejo sin disparo; un reintento tras deploy.
+            pass
+        else:
+            return cotizacion
+
+        from django.core.cache import cache
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web import (
+            disparar_y_refrescar_cotizacion,
+            marcar_busqueda_web_pendiente,
+        )
+
+        lock_key = f'busqueda_web_retry:{cotizacion.id}'
+        if not cache.add(lock_key, '1', timeout=45):
+            return cotizacion
+
+        meta['busqueda_web_retry_count'] = retries + 1
+        cotizacion.metadata = marcar_busqueda_web_pendiente(meta)
+        if cotizacion.metadata.get('busqueda_web_estado') == 'pendiente':
+            cotizacion.save(update_fields=['metadata', 'actualizado_en'])
+            cotizacion = disparar_y_refrescar_cotizacion(cotizacion)
+        return cotizacion
+
     @action(detail=False, methods=['post'], url_path='generar-ia')
     def generar_ia(self, request):
         taller, _rol = self._taller_contexto()
@@ -221,14 +265,14 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             },
         )
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web import (
-            disparar_busqueda_web_cotizacion,
+            disparar_y_refrescar_cotizacion,
             marcar_busqueda_web_pendiente,
         )
 
         cotizacion.metadata = marcar_busqueda_web_pendiente(cotizacion.metadata)
         if cotizacion.metadata.get('busqueda_web_estado') == 'pendiente':
             cotizacion.save(update_fields=['metadata', 'actualizado_en'])
-            disparar_busqueda_web_cotizacion(cotizacion.id)
+            cotizacion = disparar_y_refrescar_cotizacion(cotizacion)
         return Response({
             **resultado,
             'cotizacion': CotizacionCanalSerializer(cotizacion).data,

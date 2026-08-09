@@ -109,7 +109,7 @@ class ValidarResultadoTestCase(SimpleTestCase):
         )
         self.assertIsNone(out)
 
-    def test_descarta_sin_retrieval_exitoso(self):
+    def test_descarta_sin_retrieval_ni_dominio_solicitado(self):
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
             _validar_resultado,
         )
@@ -124,16 +124,17 @@ class ValidarResultadoTestCase(SimpleTestCase):
             'url': 'https://www.autoplanet.cl/producto/1',
             'compatibilidad': 'alta',
         }
-        # Sin retrieval OK → descartar.
+        # Sin retrieval OK y sin dominios solicitados → descartar.
         self.assertIsNone(
             _validar_resultado(item, urls_ok=set(), whitelist={'www.autoplanet.cl'}),
         )
-        # Retrieval de otro dominio → descartar.
+        # Retrieval de otro dominio y dominio solicitado distinto → descartar.
         self.assertIsNone(
             _validar_resultado(
                 item,
                 urls_ok={'https://listado.mercadolibre.cl/bujias'},
                 whitelist={'www.autoplanet.cl', 'listado.mercadolibre.cl'},
+                dominios_solicitados={'listado.mercadolibre.cl'},
             ),
         )
         # Retrieval del mismo dominio → aceptar.
@@ -144,6 +145,16 @@ class ValidarResultadoTestCase(SimpleTestCase):
                 whitelist={'www.autoplanet.cl'},
             ),
         )
+        # Sin metadata de retrieval, pero dominio coincidente con URL pedida → aceptar.
+        out = _validar_resultado(
+            item,
+            urls_ok=set(),
+            whitelist={'www.autoplanet.cl'},
+            dominios_solicitados={'www.autoplanet.cl', 'autoplanet.cl'},
+        )
+        self.assertIsNotNone(out)
+        self.assertEqual(out.get('marca_repuesto'), 'NGK')
+        self.assertEqual(out.get('tienda'), 'AutoPlanet')
 
     def test_descarta_precio_absurdo(self):
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (

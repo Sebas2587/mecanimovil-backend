@@ -1433,7 +1433,7 @@ def crear_cotizacion_borrador_desde_agente(
     }
 
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web import (
-        disparar_busqueda_web_cotizacion,
+        disparar_y_refrescar_cotizacion,
         marcar_busqueda_web_pendiente,
     )
 
@@ -1571,7 +1571,7 @@ def crear_cotizacion_borrador_desde_agente(
     sesion.save(update_fields=['cotizacion_borrador', 'estado', 'datos_capturados', 'actualizado_en'])
 
     if (cotizacion.metadata or {}).get('busqueda_web_estado') == 'pendiente':
-        disparar_busqueda_web_cotizacion(cotizacion.id)
+        cotizacion = disparar_y_refrescar_cotizacion(cotizacion)
 
     notificar_cotizacion_borrador_agente(
         proveedor_user_id=proveedor_user_id,
