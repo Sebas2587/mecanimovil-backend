@@ -707,6 +707,62 @@ GEMINI_RETRY_MAX = config('GEMINI_RETRY_MAX', default=2, cast=int)
 # Cuota mensual de referencia para alertas de uso Gemini (Google AI Studio renueva cada mes calendario)
 GEMINI_LIMITE_TOKENS_MENSUAL = config('GEMINI_LIMITE_TOKENS_MENSUAL', default=1_000_000, cast=int)
 
+# Búsqueda web de repuestos vía Gemini URL Context (free tier; sin SerpApi).
+# Default OFF hasta validar tiendas con `manage.py probar_busqueda_web_repuestos`.
+BUSQUEDA_WEB_REPUESTOS_ENABLED = config('BUSQUEDA_WEB_REPUESTOS_ENABLED', default=False, cast=bool)
+BUSQUEDA_WEB_REPUESTOS_MODEL = config(
+    'BUSQUEDA_WEB_REPUESTOS_MODEL',
+    default='gemini-3.1-flash-lite',
+)
+BUSQUEDA_WEB_REPUESTOS_TIMEOUT = config('BUSQUEDA_WEB_REPUESTOS_TIMEOUT', default=45, cast=int)
+BUSQUEDA_WEB_REPUESTOS_MAX_URLS = config('BUSQUEDA_WEB_REPUESTOS_MAX_URLS', default=4, cast=int)
+BUSQUEDA_WEB_REPUESTOS_MAX_LINEAS = config('BUSQUEDA_WEB_REPUESTOS_MAX_LINEAS', default=6, cast=int)
+BUSQUEDA_WEB_REPUESTOS_TTL_DIAS = config('BUSQUEDA_WEB_REPUESTOS_TTL_DIAS', default=14, cast=int)
+BUSQUEDA_WEB_REPUESTOS_RPD = config('BUSQUEDA_WEB_REPUESTOS_RPD', default=200, cast=int)
+BUSQUEDA_WEB_REPUESTOS_PRECIO_MIN = config('BUSQUEDA_WEB_REPUESTOS_PRECIO_MIN', default=1000, cast=int)
+BUSQUEDA_WEB_REPUESTOS_PRECIO_MAX = config('BUSQUEDA_WEB_REPUESTOS_PRECIO_MAX', default=3_000_000, cast=int)
+# Reservado: grounding con Google Search requiere billing (no Free Tier).
+BUSQUEDA_WEB_REPUESTOS_GROUNDING = config('BUSQUEDA_WEB_REPUESTOS_GROUNDING', default=False, cast=bool)
+
+
+def _parse_busqueda_web_fuentes_default():
+    """Plantillas de URL por tienda chilena. Override con BUSQUEDA_WEB_REPUESTOS_FUENTES (JSON)."""
+    import json as _json
+
+    raw = (config('BUSQUEDA_WEB_REPUESTOS_FUENTES', default='') or '').strip()
+    if raw:
+        try:
+            data = _json.loads(raw)
+            if isinstance(data, list) and data:
+                return data
+        except Exception:
+            pass
+    return [
+        {
+            'nombre': 'Mercado Libre',
+            'dominio': 'listado.mercadolibre.cl',
+            'plantilla': 'https://listado.mercadolibre.cl/{q}',
+        },
+        {
+            'nombre': 'AutoPlanet',
+            'dominio': 'www.autoplanet.cl',
+            'plantilla': 'https://www.autoplanet.cl/search?q={q}',
+        },
+        {
+            'nombre': 'Mundo Repuestos',
+            'dominio': 'www.mundorepuestos.cl',
+            'plantilla': 'https://www.mundorepuestos.cl/buscar?q={q}',
+        },
+        {
+            'nombre': 'Refax',
+            'dominio': 'www.refax.cl',
+            'plantilla': 'https://www.refax.cl/search?q={q}',
+        },
+    ]
+
+
+BUSQUEDA_WEB_REPUESTOS_FUENTES = _parse_busqueda_web_fuentes_default()
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,

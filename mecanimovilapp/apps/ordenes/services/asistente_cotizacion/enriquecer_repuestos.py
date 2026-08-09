@@ -5,9 +5,11 @@ Fuentes verificables (marca y fuente viajan juntas; nunca se inventa tienda/cat�
    → fuente_marketplace='catalogo', proveedor='Catálogo del taller'
 2. HistorialCotizacionSource — cotizaciones enviada|aceptada del mismo taller
    → fuente_marketplace='historial'
-3. MercadoLibreSource — best-effort OAuth con listing real
+3. WebSource — cache `PrecioRepuestoWeb` (Gemini URL Context, tiendas chilenas)
+   → fuente_marketplace='web' + tienda + url_producto; precio_referencia_mercado=True
+4. MercadoLibreSource — best-effort OAuth con listing real
    → fuente_marketplace='mercadolibre' + nickname tienda
-4. KnowledgeBrandSource — solo si el NOMBRE de la pieza ya incluye una marca conocida
+5. KnowledgeBrandSource — solo si el NOMBRE de la pieza ya incluye una marca conocida
    → fuente_marketplace='estimado' (NO es catálogo ni tienda)
 
 IMPORTANTE — el maestro global `Repuesto` (Catálogo Mecanimovil) NO es fuente de
@@ -51,6 +53,7 @@ _MARCAS_INVALIDAS = frozenset({
 _ML_CATEGORY_REPUESTOS = 'MLC1747'
 _CONF_CATALOGO = 0.9
 _CONF_HISTORIAL = 0.7
+_CONF_WEB = 0.8
 _CONF_ML = 0.75
 _CONF_KNOWLEDGE = 0.4
 _HIST_MIN_MUESTRAS = 2
@@ -58,10 +61,11 @@ _HIST_MESES = 6
 # Match más estricto para no atribuir catálogo del taller a un nombre genérico flojo.
 _MIN_SCORE_CATALOGO = 70
 _MIN_SCORE_HISTORIAL = 60
+_MIN_SCORE_WEB = 55
 
-# Fuentes "grounded": dato real y trazable del taller o listing ML.
+# Fuentes "grounded": dato real y trazable del taller, web verificada o listing ML.
 # 'estimado' NUNCA es grounded.
-_FUENTES_GROUND = ('catalogo', 'historial', 'mercadolibre')
+_FUENTES_GROUND = ('catalogo', 'historial', 'web', 'mercadolibre')
 _FUENTES_PRECIO_TALLER = ('catalogo', 'historial')
 
 
@@ -140,6 +144,7 @@ def _hit(
     fuente_marketplace: str = '',
     proveedor_nombre: str = '',
     tienda_ml: str = '',
+    url_producto: str = '',
     confianza: float = 0.0,
     clave: str = '',
 ) -> dict[str, Any]:
@@ -150,6 +155,7 @@ def _hit(
         'fuente_marketplace': (fuente_marketplace or '').strip()[:50],
         'proveedor_nombre': (proveedor_nombre or '').strip()[:200],
         'tienda_ml': (tienda_ml or '').strip()[:200],
+        'url_producto': (url_producto or '').strip()[:500],
         'confianza': float(confianza or 0),
         'clave': clave or _clave_fuzzy(nombre),
     }
@@ -528,13 +534,57 @@ def _buscar_ml_repuesto(
 
 
 # ---------------------------------------------------------------------------
+# WebSource (cache PrecioRepuestoWeb)
+# ---------------------------------------------------------------------------
+
+def _candidatos_web_cache(
+    *,
+    marca_vehiculo: str = '',
+    modelo_vehiculo: str = '',
+    anio_vehiculo: str | int | None = '',
+) -> list[dict[str, Any]]:
+    """Hits vigentes desde PrecioRepuestoWeb (rellenado por Celery/Gemini URL Context)."""
+    try:
+        from mecanimovilapp.apps.ordenes.models import PrecioRepuestoWeb
+
+        now = timezone.now()
+        qs = PrecioRepuestoWeb.objects.filter(expira_en__gt=now).order_by('-confianza')[:400]
+        out: list[dict[str, Any]] = []
+        veh_norm = _norm(
+            ' '.join(str(p) for p in (marca_vehiculo, modelo_vehiculo, anio_vehiculo or '') if p),
+        )
+        for row in qs:
+            clave = str(row.clave or '')
+            # Preferir filas del mismo vehículo cuando la clave lo incluye.
+            if veh_norm and '|' in clave and veh_norm not in _norm(clave):
+                continue
+            marca = _marca_repuesto_valida(row.marca_repuesto)
+            clave_nombre = clave.split('|', 1)[0] if '|' in clave else clave
+            conf = float(row.confianza or _CONF_WEB)
+            hit = _hit(
+                nombre=str(row.nombre_producto or '')[:200],
+                marca_repuesto=marca,
+                precio_unitario_clp=int(row.precio_clp or 0),
+                fuente_marketplace='web',
+                proveedor_nombre=str(row.tienda or '')[:200],
+                url_producto=str(row.url or '')[:500],
+                confianza=conf if conf > 0 else _CONF_WEB,
+                clave=clave_nombre or _clave_fuzzy(str(row.nombre_producto or '')),
+            )
+            out.append(hit)
+        return out
+    except Exception:
+        return []
+
+
+# ---------------------------------------------------------------------------
 # Merge
 # ---------------------------------------------------------------------------
 
 def _aplicar_hit_campos(next_rep: dict[str, Any], hit: dict[str, Any]) -> None:
     """Asigna marca/fuente/proveedor como grupo atómico (misma fuente = mismo hit).
 
-    Una fuente real (catálogo/historial/ML) puede sobrescribir un valor existente
+    Una fuente real (catálogo/historial/web/ML) puede sobrescribir un valor existente
     que no esté ya atado a una fuente real (p. ej. un residuo sin `fuente_marketplace`,
     o una marca 'estimado' de inferencia por nombre). Nunca sobrescribe un dato que
     ya viene de otra fuente real: la primera fuente real gana (se procesa por confianza).
@@ -567,17 +617,23 @@ def _aplicar_hit_campos(next_rep: dict[str, Any], hit: dict[str, Any]) -> None:
         if not str(next_rep.get('proveedor_nombre') or '').strip():
             next_rep['proveedor_nombre'] = hit['tienda_ml']
 
+    url_actual = str(next_rep.get('url_producto') or '').strip()
+    if hit.get('url_producto') and (not url_actual or puede_reemplazar):
+        next_rep['url_producto'] = hit['url_producto']
+
 
 def _aplicar_precio(next_rep: dict[str, Any], hits: list[dict[str, Any]]) -> None:
-    """Prefiere precio de catálogo, luego historial; ML solo si IA no tiene precio."""
+    """Prefiere catálogo → historial → web; ML solo si IA no tiene precio."""
     precio_ia = _to_int_clp(next_rep.get('precio_unitario_clp'))
-    for fuente in ('catalogo', 'historial'):
+    for fuente in ('catalogo', 'historial', 'web'):
         for hit in hits:
             if str(hit.get('fuente_marketplace') or '') != fuente:
                 continue
             precio_hit = _to_int_clp(hit.get('precio_unitario_clp'))
             if precio_hit > 0:
                 next_rep['precio_unitario_clp'] = precio_hit
+                if fuente == 'web':
+                    next_rep['precio_referencia_mercado'] = True
                 return
     if precio_ia <= 0:
         for hit in hits:
@@ -594,13 +650,17 @@ def enriquecer_repuestos_cotizacion(
     *,
     marca_vehiculo: str = '',
     modelo_vehiculo: str = '',
+    anio_vehiculo: str | int | None = '',
+    cilindraje: str = '',
+    tipo_motor: str = '',
     taller=None,
     usar_ml: bool = True,
+    usar_web: bool = True,
 ) -> list[dict[str, Any]]:
     """Devuelve nueva lista de repuestos enriquecida multi-fuente.
 
-    Solo el catálogo/historial del taller y ML real pueden marcar Canal: Catálogo
-    / Historial / Mercado Libre. Sin match del taller, el precio queda estimado.
+    Solo el catálogo/historial del taller, web verificada y ML real pueden marcar
+    Canal. Sin match del taller, el precio queda estimado (web marca referencia de mercado).
     """
     if not repuestos:
         return []
@@ -612,6 +672,17 @@ def enriquecer_repuestos_cotizacion(
         modelo_vehiculo=modelo_vehiculo,
     )
     historial = _candidatos_historial_taller(taller, marca_vehiculo=marca_vehiculo)
+    web_cands = (
+        _candidatos_web_cache(
+            marca_vehiculo=marca_vehiculo,
+            modelo_vehiculo=modelo_vehiculo,
+            anio_vehiculo=anio_vehiculo,
+        )
+        if usar_web
+        else []
+    )
+    # cilindraje/tipo_motor reservados para filtrado futuro de candidatos web.
+    _ = (cilindraje, tipo_motor)
 
     out: list[dict[str, Any]] = []
     for rep in repuestos:
@@ -646,9 +717,17 @@ def enriquecer_repuestos_cotizacion(
         hist_hit = _mejor_hit(nombre, historial, min_score=_MIN_SCORE_HISTORIAL)
         if hist_hit:
             hits.append(hist_hit)
-        grounded_encontrado = bool(cat_hit or hist_hit)
+        grounded_taller = bool(cat_hit or hist_hit)
 
-        # ML solo si no hay dato real de catálogo/historial del taller.
+        web_hit = None
+        if usar_web and not grounded_taller and web_cands:
+            web_hit = _mejor_hit(nombre, web_cands, min_score=_MIN_SCORE_WEB)
+            if web_hit:
+                hits.append(web_hit)
+
+        grounded_encontrado = bool(grounded_taller or web_hit)
+
+        # ML solo si no hay dato real de catálogo/historial/web.
         needs_ml = usar_ml and not grounded_encontrado and (
             not str(next_rep.get('tienda_ml') or '').strip()
             or not str(next_rep.get('marca_repuesto') or '').strip()
@@ -682,6 +761,7 @@ def enriquecer_repuestos_cotizacion(
                 hit = dict(hit)
                 hit['marca_repuesto'] = _marca_repuesto_valida(hit.get('marca_repuesto'))
             _aplicar_hit_campos(next_rep, hit)
+        next_rep.pop('precio_referencia_mercado', None)
         _aplicar_precio(next_rep, hits)
 
         fuente_final = str(next_rep.get('fuente_marketplace') or '').strip()
@@ -690,8 +770,12 @@ def enriquecer_repuestos_cotizacion(
             and _to_int_clp(h.get('precio_unitario_clp')) > 0
             for h in hits
         )
-        # Precio IA / ML / sin match de taller → estimado (el taller debe revisar).
+        # Precio IA / web / ML / sin match de taller → estimado (el taller debe revisar).
         next_rep['precio_estimado'] = not precio_de_taller
+        if fuente_final == 'web' or next_rep.get('precio_referencia_mercado'):
+            next_rep['precio_referencia_mercado'] = True
+        else:
+            next_rep.pop('precio_referencia_mercado', None)
 
         # No mostrar proveedor/canal de catálogo sin marca ni precio del taller.
         if fuente_final == 'catalogo' and not (
@@ -712,6 +796,8 @@ def enriquecer_repuestos_cotizacion(
             next_rep.pop('tienda_ml', None)
         if not str(next_rep.get('proveedor_nombre') or '').strip():
             next_rep.pop('proveedor_nombre', None)
+        if not str(next_rep.get('url_producto') or '').strip():
+            next_rep.pop('url_producto', None)
         # Nunca persistir "Catálogo Mecanimovil"
         if _norm(str(next_rep.get('proveedor_nombre') or '')) in (
             'catalogo mecanimovil', 'catálogo mecanimovil',

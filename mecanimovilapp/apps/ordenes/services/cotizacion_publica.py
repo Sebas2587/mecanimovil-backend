@@ -88,7 +88,7 @@ def _repuestos_publicos(repuestos: list | None) -> list[dict]:
         pub = {
             k: v
             for k, v in item.items()
-            if k not in ('tienda_ml', 'proveedor_nombre')
+            if k not in ('tienda_ml', 'proveedor_nombre', 'url_producto')
         }
         out.append(pub)
     return out

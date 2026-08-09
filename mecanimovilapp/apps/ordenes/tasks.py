@@ -440,3 +440,253 @@ def revisar_seguimiento_pipeline_comercial_task():
     except Exception as e:
         logger.error('❌ revisar_seguimiento_pipeline_comercial: %s', e, exc_info=True)
         return {'error': str(e)}
+
+
+@shared_task(bind=True, max_retries=1, default_retry_delay=30)
+def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
+    """Enriquece borrador con precios/marcas/tiendas vía Gemini URL Context.
+
+    Solo modifica cotizaciones en estado=borrador. Upsert en PrecioRepuestoWeb,
+    re-enriquece líneas y actualiza metadata.busqueda_web_estado.
+    """
+    from datetime import timedelta
+
+    from django.conf import settings
+    from django.utils import timezone
+
+    from mecanimovilapp.apps.ordenes.models import CotizacionCanal, PrecioRepuestoWeb
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+        buscar_repuestos_web,
+        busqueda_web_habilitada,
+        clave_cache_repuesto,
+        cuota_diaria_disponible,
+    )
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+        enriquecer_repuestos_cotizacion,
+        _clave_fuzzy,
+        _mejor_hit,
+    )
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
+        recalcular_totales,
+    )
+
+    def _set_estado(cot: CotizacionCanal, estado: str) -> None:
+        meta = dict(cot.metadata or {})
+        meta['busqueda_web_estado'] = estado
+        meta['busqueda_web_en'] = timezone.now().isoformat()
+        cot.metadata = meta
+        cot.save(update_fields=['metadata', 'actualizado_en'])
+
+    try:
+        if not busqueda_web_habilitada():
+            return {'ok': False, 'reason': 'disabled'}
+
+        cot = CotizacionCanal.objects.filter(pk=cotizacion_id).first()
+        if cot is None:
+            return {'ok': False, 'reason': 'not_found'}
+        if cot.estado != 'borrador':
+            return {'ok': False, 'reason': 'not_borrador', 'estado': cot.estado}
+
+        if not cuota_diaria_disponible():
+            _set_estado(cot, 'error')
+            return {'ok': False, 'reason': 'rpd'}
+
+        reps = list(cot.repuestos or [])
+        if not isinstance(reps, list) or not reps:
+            _set_estado(cot, 'sin_resultados')
+            return {'ok': True, 'reason': 'sin_repuestos'}
+
+        max_lineas = max(1, int(getattr(settings, 'BUSQUEDA_WEB_REPUESTOS_MAX_LINEAS', 6) or 6))
+        candidatos: list[dict] = []
+        for rep in reps:
+            if not isinstance(rep, dict):
+                continue
+            necesita = (
+                bool(rep.get('precio_estimado', True))
+                or not str(rep.get('marca_repuesto') or '').strip()
+                or not str(rep.get('proveedor_nombre') or '').strip()
+            )
+            fuente = str(rep.get('fuente_marketplace') or '').strip()
+            if fuente in ('catalogo', 'historial'):
+                continue
+            if necesita:
+                candidatos.append(rep)
+            if len(candidatos) >= max_lineas:
+                break
+
+        if not candidatos:
+            _set_estado(cot, 'sin_resultados')
+            return {'ok': True, 'reason': 'nada_que_buscar'}
+
+        nombres = [str(r.get('nombre') or '').strip() for r in candidatos if str(r.get('nombre') or '').strip()]
+        resultados = buscar_repuestos_web(
+            nombres,
+            vehiculo={
+                'marca': cot.vehiculo_marca or '',
+                'modelo': cot.vehiculo_modelo or '',
+                'anio': cot.vehiculo_anio or '',
+                'cilindraje': cot.vehiculo_cilindraje or '',
+                'tipo_motor': cot.tipo_motor or '',
+            },
+            servicio_nombre=cot.servicio_nombre or '',
+        )
+
+        ttl_dias = max(1, int(getattr(settings, 'BUSQUEDA_WEB_REPUESTOS_TTL_DIAS', 14) or 14))
+        expira = timezone.now() + timedelta(days=ttl_dias)
+        upserts = 0
+        for clave_fuzzy, hit in (resultados or {}).items():
+            if not isinstance(hit, dict):
+                continue
+            dominio = str(hit.get('dominio') or '').strip()[:200]
+            if not dominio:
+                continue
+            clave = clave_cache_repuesto(
+                hit.get('nombre_buscado') or hit.get('nombre_producto') or clave_fuzzy,
+                marca_vehiculo=cot.vehiculo_marca or '',
+                modelo_vehiculo=cot.vehiculo_modelo or '',
+                anio=cot.vehiculo_anio or '',
+            )
+            PrecioRepuestoWeb.objects.update_or_create(
+                clave=clave,
+                dominio=dominio,
+                defaults={
+                    'nombre_producto': str(hit.get('nombre_producto') or '')[:200],
+                    'marca_repuesto': str(hit.get('marca_repuesto') or '')[:100],
+                    'precio_clp': int(hit.get('precio_clp') or 0),
+                    'tienda': str(hit.get('tienda') or '')[:200],
+                    'url': str(hit.get('url') or '')[:500],
+                    'compatibilidad': str(hit.get('compatibilidad') or '')[:20],
+                    'confianza': float(hit.get('confianza') or 0.8),
+                    'expira_en': expira,
+                },
+            )
+            upserts += 1
+
+        # También indexar por clave fuzzy corta para match en enrich.
+        for clave_fuzzy, hit in (resultados or {}).items():
+            if not isinstance(hit, dict):
+                continue
+            dominio = str(hit.get('dominio') or '').strip()[:200]
+            if not dominio or not clave_fuzzy:
+                continue
+            # Shortcut: fila adicional solo con clave de nombre (match más fácil).
+            PrecioRepuestoWeb.objects.update_or_create(
+                clave=clave_fuzzy[:240],
+                dominio=dominio,
+                defaults={
+                    'nombre_producto': str(hit.get('nombre_producto') or '')[:200],
+                    'marca_repuesto': str(hit.get('marca_repuesto') or '')[:100],
+                    'precio_clp': int(hit.get('precio_clp') or 0),
+                    'tienda': str(hit.get('tienda') or '')[:200],
+                    'url': str(hit.get('url') or '')[:500],
+                    'compatibilidad': str(hit.get('compatibilidad') or '')[:20],
+                    'confianza': float(hit.get('confianza') or 0.8),
+                    'expira_en': expira,
+                },
+            )
+
+        reps_enriquecidos = enriquecer_repuestos_cotizacion(
+            reps,
+            marca_vehiculo=cot.vehiculo_marca or '',
+            modelo_vehiculo=cot.vehiculo_modelo or '',
+            anio_vehiculo=cot.vehiculo_anio or '',
+            cilindraje=cot.vehiculo_cilindraje or '',
+            tipo_motor=cot.tipo_motor or '',
+            taller=cot.taller,
+            usar_ml=False,
+            usar_web=True,
+        )
+
+        # Si el enrich por cache no matcheó, aplicar hits directos por clave fuzzy.
+        if resultados:
+            for i, rep in enumerate(reps_enriquecidos):
+                if str(rep.get('fuente_marketplace') or '') in ('catalogo', 'historial', 'web'):
+                    continue
+                q = _clave_fuzzy(str(rep.get('nombre') or ''))
+                hit = resultados.get(q)
+                if not hit:
+                    # fuzzy best among resultados keys
+                    cands = [
+                        {
+                            'clave': k,
+                            'marca_repuesto': v.get('marca_repuesto'),
+                            'precio_unitario_clp': v.get('precio_clp'),
+                            'fuente_marketplace': 'web',
+                            'proveedor_nombre': v.get('tienda'),
+                            'url_producto': v.get('url'),
+                            'confianza': v.get('confianza') or 0.8,
+                        }
+                        for k, v in resultados.items()
+                        if isinstance(v, dict)
+                    ]
+                    best = _mejor_hit(str(rep.get('nombre') or ''), cands, min_score=55)
+                    if not best:
+                        continue
+                    hit = {
+                        'marca_repuesto': best.get('marca_repuesto'),
+                        'precio_clp': best.get('precio_unitario_clp'),
+                        'tienda': best.get('proveedor_nombre'),
+                        'url': best.get('url_producto'),
+                    }
+                next_rep = dict(rep)
+                if hit.get('marca_repuesto'):
+                    next_rep['marca_repuesto'] = str(hit['marca_repuesto'])[:100]
+                if hit.get('tienda'):
+                    next_rep['proveedor_nombre'] = str(hit['tienda'])[:200]
+                if hit.get('url'):
+                    next_rep['url_producto'] = str(hit['url'])[:500]
+                precio = int(hit.get('precio_clp') or 0)
+                if precio > 0 and (
+                    bool(next_rep.get('precio_estimado', True))
+                    or int(next_rep.get('precio_unitario_clp') or 0) <= 0
+                ):
+                    next_rep['precio_unitario_clp'] = precio
+                    next_rep['precio_referencia_mercado'] = True
+                    next_rep['precio_estimado'] = True
+                next_rep['fuente_marketplace'] = 'web'
+                reps_enriquecidos[i] = next_rep
+
+        costo_rep, mo, total = recalcular_totales(
+            reps_enriquecidos,
+            int(cot.mano_obra_clp or 0),
+        )
+        meta = dict(cot.metadata or {})
+        meta['busqueda_web_estado'] = 'ok' if (resultados or upserts) else 'sin_resultados'
+        meta['busqueda_web_en'] = timezone.now().isoformat()
+        meta['valores_estimativos'] = any(
+            bool(r.get('precio_estimado', True)) for r in reps_enriquecidos
+        ) if reps_enriquecidos else True
+
+        cot.repuestos = reps_enriquecidos
+        cot.costo_repuestos_clp = costo_rep
+        cot.mano_obra_clp = mo
+        cot.total_clp = total
+        cot.metadata = meta
+        cot.save(update_fields=[
+            'repuestos',
+            'costo_repuestos_clp',
+            'mano_obra_clp',
+            'total_clp',
+            'metadata',
+            'actualizado_en',
+        ])
+        return {
+            'ok': True,
+            'estado': meta['busqueda_web_estado'],
+            'upserts': upserts,
+            'hits': len(resultados or {}),
+        }
+    except Exception as exc:
+        logger.warning(
+            'buscar_precios_web_cotizacion_task(%s) falló: %s',
+            cotizacion_id,
+            exc,
+            exc_info=True,
+        )
+        try:
+            cot = CotizacionCanal.objects.filter(pk=cotizacion_id).first()
+            if cot and cot.estado == 'borrador':
+                _set_estado(cot, 'error')
+        except Exception:
+            pass
+        return {'ok': False, 'error': str(exc)}

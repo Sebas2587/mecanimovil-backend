@@ -1432,6 +1432,13 @@ def crear_cotizacion_borrador_desde_agente(
         **meta_notas,
     }
 
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web import (
+        disparar_busqueda_web_cotizacion,
+        marcar_busqueda_web_pendiente,
+    )
+
+    metadata_cot = marcar_busqueda_web_pendiente(metadata_cot)
+
     if not es_update and not meta_prev.get('propuesta_agente_original'):
         metadata_cot['propuesta_agente_original'] = {
             'servicios_lineas': [
@@ -1562,6 +1569,9 @@ def crear_cotizacion_borrador_desde_agente(
         datos_sesion['preferencias_agenda'] = preferencias_agenda
     sesion.datos_capturados = datos_sesion
     sesion.save(update_fields=['cotizacion_borrador', 'estado', 'datos_capturados', 'actualizado_en'])
+
+    if (cotizacion.metadata or {}).get('busqueda_web_estado') == 'pendiente':
+        disparar_busqueda_web_cotizacion(cotizacion.id)
 
     notificar_cotizacion_borrador_agente(
         proveedor_user_id=proveedor_user_id,

@@ -220,6 +220,15 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
                 'precio_desde_catalogo': bool(contenido.get('precio_desde_catalogo')),
             },
         )
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web import (
+            disparar_busqueda_web_cotizacion,
+            marcar_busqueda_web_pendiente,
+        )
+
+        cotizacion.metadata = marcar_busqueda_web_pendiente(cotizacion.metadata)
+        if cotizacion.metadata.get('busqueda_web_estado') == 'pendiente':
+            cotizacion.save(update_fields=['metadata', 'actualizado_en'])
+            disparar_busqueda_web_cotizacion(cotizacion.id)
         return Response({
             **resultado,
             'cotizacion': CotizacionCanalSerializer(cotizacion).data,

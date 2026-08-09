@@ -18,7 +18,9 @@ class RepuestoCotizacionSerializer(serializers.Serializer):
     marca_repuesto = serializers.CharField(required=False, allow_blank=True, default='')
     tienda_ml = serializers.CharField(required=False, allow_blank=True, default='')
     proveedor_nombre = serializers.CharField(required=False, allow_blank=True, default='')
+    url_producto = serializers.CharField(required=False, allow_blank=True, default='')
     precio_estimado = serializers.BooleanField(required=False, default=True)
+    precio_referencia_mercado = serializers.BooleanField(required=False, default=False)
     comentario = serializers.CharField(required=False, allow_blank=True, default='')
 
 

@@ -346,6 +346,15 @@ def crear_cotizacion_adicional_con_ia(
             'precio_desde_catalogo': precio_cat,
         },
     )
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web import (
+        disparar_busqueda_web_cotizacion,
+        marcar_busqueda_web_pendiente,
+    )
+
+    cotizacion.metadata = marcar_busqueda_web_pendiente(cotizacion.metadata)
+    if cotizacion.metadata.get('busqueda_web_estado') == 'pendiente':
+        cotizacion.save(update_fields=['metadata', 'actualizado_en'])
+        disparar_busqueda_web_cotizacion(cotizacion.id)
     notificar_cotizacion_adicional_borrador(
         proveedor_user_id=creado_por.id,
         cotizacion=cotizacion,

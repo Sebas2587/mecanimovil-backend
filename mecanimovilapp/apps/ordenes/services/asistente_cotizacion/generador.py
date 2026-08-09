@@ -254,8 +254,12 @@ def generar_cotizacion_ia(
                 list(contenido.get('repuestos') or []),
                 marca_vehiculo=str(ctx.get('marca') or ''),
                 modelo_vehiculo=str(ctx.get('modelo') or ''),
+                anio_vehiculo=ctx.get('anio') or '',
+                cilindraje=str(ctx.get('cilindraje') or ''),
+                tipo_motor=str(ctx.get('tipo_motor_efectivo') or ''),
                 taller=taller,
                 usar_ml=True,
+                usar_web=True,
             )
             costo_rep, mo, total = recalcular_totales(reps, int(contenido.get('mano_obra_clp') or 0))
             contenido['repuestos'] = reps

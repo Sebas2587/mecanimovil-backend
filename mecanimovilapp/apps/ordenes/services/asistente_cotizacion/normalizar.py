@@ -56,10 +56,12 @@ def normalizar_repuesto(item: Any, idx: int) -> dict[str, Any]:
     marca_repuesto = str(item.get('marca_repuesto') or '').strip()[:100]
     tienda_ml = str(item.get('tienda_ml') or '').strip()[:200]
     proveedor_nombre = str(item.get('proveedor_nombre') or '').strip()[:200]
+    url_producto = str(item.get('url_producto') or '').strip()[:500]
     # IA siempre entrega estimados; el enrich marca False solo con precio de taller.
     precio_estimado = item.get('precio_estimado')
     if precio_estimado is None:
         precio_estimado = True
+    precio_referencia_mercado = bool(item.get('precio_referencia_mercado'))
     out: dict[str, Any] = {
         'id': str(item.get('id') or f'rep-{idx}'),
         'nombre': nombre,
@@ -79,6 +81,10 @@ def normalizar_repuesto(item: Any, idx: int) -> dict[str, Any]:
         out['tienda_ml'] = tienda_ml
     if proveedor_nombre:
         out['proveedor_nombre'] = proveedor_nombre
+    if url_producto:
+        out['url_producto'] = url_producto
+    if precio_referencia_mercado:
+        out['precio_referencia_mercado'] = True
     return out
 
 

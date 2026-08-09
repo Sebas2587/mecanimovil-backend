@@ -643,3 +643,130 @@ class PlantillaVehiculoTestCase(SimpleTestCase):
                 modelo='BRAVO',
             ),
         )
+
+
+class FuenteWebEnrichTestCase(SimpleTestCase):
+    def test_web_gana_a_estimado_y_pierde_contra_catalogo(self):
+        from unittest.mock import patch
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            enriquecer_repuestos_cotizacion,
+        )
+
+        web = [{
+            'nombre': 'Pastillas freno',
+            'marca_repuesto': 'Bosch',
+            'precio_unitario_clp': 38000,
+            'fuente_marketplace': 'web',
+            'proveedor_nombre': 'AutoPlanet',
+            'url_producto': 'https://www.autoplanet.cl/p/1',
+            'confianza': 0.8,
+            'clave': 'pastillas freno',
+        }]
+        cat = [{
+            'nombre': 'Pastillas freno',
+            'marca_repuesto': 'Mann',
+            'precio_unitario_clp': 30000,
+            'fuente_marketplace': 'catalogo',
+            'proveedor_nombre': 'Catálogo del taller',
+            'confianza': 0.9,
+            'clave': 'pastillas freno',
+        }]
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos._candidatos_ofertas_taller',
+            return_value=[],
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos._candidatos_historial_taller',
+            return_value=[],
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos._candidatos_web_cache',
+            return_value=web,
+        ):
+            solo_web = enriquecer_repuestos_cotizacion(
+                [{
+                    'id': 'rep-0',
+                    'nombre': 'Pastillas freno delanteras',
+                    'cantidad': 1,
+                    'precio_unitario_clp': 20000,
+                }],
+                marca_vehiculo='Hyundai',
+                modelo_vehiculo='Accent',
+                anio_vehiculo=2015,
+                usar_ml=False,
+                usar_web=True,
+            )
+        self.assertEqual(solo_web[0].get('fuente_marketplace'), 'web')
+        self.assertEqual(solo_web[0].get('marca_repuesto'), 'Bosch')
+        self.assertEqual(solo_web[0].get('proveedor_nombre'), 'AutoPlanet')
+        self.assertEqual(solo_web[0].get('url_producto'), 'https://www.autoplanet.cl/p/1')
+        self.assertTrue(solo_web[0].get('precio_estimado'))
+        self.assertTrue(solo_web[0].get('precio_referencia_mercado'))
+        self.assertEqual(solo_web[0].get('precio_unitario_clp'), 38000)
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos._candidatos_ofertas_taller',
+            return_value=cat,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos._candidatos_historial_taller',
+            return_value=[],
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos._candidatos_web_cache',
+            return_value=web,
+        ):
+            con_cat = enriquecer_repuestos_cotizacion(
+                [{
+                    'id': 'rep-0',
+                    'nombre': 'Pastillas freno delanteras',
+                    'cantidad': 1,
+                    'precio_unitario_clp': 20000,
+                }],
+                marca_vehiculo='Hyundai',
+                modelo_vehiculo='Accent',
+                usar_ml=False,
+                usar_web=True,
+            )
+        self.assertEqual(con_cat[0].get('fuente_marketplace'), 'catalogo')
+        self.assertEqual(con_cat[0].get('marca_repuesto'), 'Mann')
+        self.assertEqual(con_cat[0].get('precio_unitario_clp'), 30000)
+        self.assertFalse(con_cat[0].get('precio_estimado'))
+        self.assertIsNone(con_cat[0].get('precio_referencia_mercado'))
+
+    def test_normalizar_conserva_url_producto_y_referencia_mercado(self):
+        rep = normalizar_repuesto(
+            {
+                'nombre': 'Kit embrague',
+                'precio_unitario_clp': 120000,
+                'fuente_marketplace': 'web',
+                'marca_repuesto': 'Sachs',
+                'proveedor_nombre': 'AutoPlanet',
+                'url_producto': 'https://www.autoplanet.cl/p/9',
+                'precio_estimado': True,
+                'precio_referencia_mercado': True,
+            },
+            0,
+        )
+        self.assertEqual(rep.get('url_producto'), 'https://www.autoplanet.cl/p/9')
+        self.assertTrue(rep.get('precio_referencia_mercado'))
+        self.assertEqual(rep.get('fuente_marketplace'), 'web')
+
+    def test_vista_publica_omite_url_producto(self):
+        from mecanimovilapp.apps.ordenes.services.cotizacion_publica import (
+            _repuestos_publicos,
+        )
+
+        pubs = _repuestos_publicos([
+            {
+                'nombre': 'Kit embrague',
+                'precio_unitario_clp': 120000,
+                'marca_repuesto': 'Sachs',
+                'tienda_ml': 'seller',
+                'proveedor_nombre': 'AutoPlanet',
+                'url_producto': 'https://www.autoplanet.cl/p/9',
+            },
+        ])
+        self.assertEqual(len(pubs), 1)
+        self.assertNotIn('url_producto', pubs[0])
+        self.assertNotIn('tienda_ml', pubs[0])
+        self.assertNotIn('proveedor_nombre', pubs[0])
+        self.assertEqual(pubs[0].get('marca_repuesto'), 'Sachs')

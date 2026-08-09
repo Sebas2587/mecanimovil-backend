@@ -2438,3 +2438,44 @@ class CotizacionCanalPlantilla(models.Model):
 
     def __str__(self):
         return f'{self.titulo} ({self.taller_id})'
+
+
+class PrecioRepuestoWeb(models.Model):
+    """Cache de precios de repuestos obtenidos vía Gemini URL Context.
+
+    Cada búsqueda alimenta este catálogo web propio para reutilizar sin gastar
+    cuota del free tier (TTL configurable).
+    """
+
+    clave = models.CharField(
+        max_length=240,
+        db_index=True,
+        help_text='Clave normalizada nombre+marca+modelo+anio del vehículo.',
+    )
+    nombre_producto = models.CharField(max_length=200, blank=True, default='')
+    marca_repuesto = models.CharField(max_length=100, blank=True, default='')
+    precio_clp = models.PositiveIntegerField(default=0)
+    tienda = models.CharField(max_length=200, blank=True, default='')
+    dominio = models.CharField(max_length=200)
+    url = models.URLField(max_length=500, blank=True, default='')
+    compatibilidad = models.CharField(max_length=20, blank=True, default='')
+    confianza = models.FloatField(default=0.0)
+    consultado_en = models.DateTimeField(auto_now=True)
+    expira_en = models.DateTimeField(db_index=True)
+
+    class Meta:
+        verbose_name = _('precio repuesto web')
+        verbose_name_plural = _('precios repuesto web')
+        constraints = [
+            models.UniqueConstraint(
+                fields=['clave', 'dominio'],
+                name='ordenes_preciorepuestoweb_clave_dominio_uniq',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['expira_en'], name='ordenes_prw_expira_idx'),
+            models.Index(fields=['clave', '-confianza'], name='ordenes_prw_clave_conf_idx'),
+        ]
+
+    def __str__(self):
+        return f'{self.clave} @ {self.dominio} (${self.precio_clp})'
