@@ -68,6 +68,30 @@ class ConstruirUrlsTestCase(SimpleTestCase):
             )
         self.assertEqual(len(urls), 2)
 
+    def test_una_query_por_repuesto_no_mezcla_nombres(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+            construir_urls_busqueda,
+        )
+
+        with override_settings(BUSQUEDA_WEB_REPUESTOS_MAX_URLS=3):
+            urls = construir_urls_busqueda(
+                [
+                    'Termostato de refrigerante',
+                    'Sensor de temperatura de refrigerante',
+                    'Refrigerante orgánico',
+                ],
+                marca='Suzuki',
+                modelo='CELERIO HB 1.0',
+                anio=2017,
+            )
+        self.assertEqual(len(urls), 3)
+        joined = ' '.join(urls).lower()
+        # Prioriza slugs de categoría ML con buen retrieval (no mashup de 3 piezas).
+        self.assertTrue(any('termostato-auto' in u.lower() for u in urls))
+        self.assertTrue(any('sensor-temperatura-agua' in u.lower() for u in urls))
+        self.assertNotIn('termostato-de-refrigerante-sensor-de-temperatura', joined)
+        self.assertNotIn('2017', joined)
+
 
 @override_settings(
     BUSQUEDA_WEB_REPUESTOS_ENABLED=True,
@@ -156,7 +180,7 @@ class ValidarResultadoTestCase(SimpleTestCase):
         self.assertEqual(out.get('marca_repuesto'), 'NGK')
         self.assertEqual(out.get('tienda'), 'AutoPlanet')
 
-    def test_descarta_precio_absurdo(self):
+    def test_precio_absurdo_conserva_marca_tienda(self):
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
             _validar_resultado,
         )
@@ -175,7 +199,35 @@ class ValidarResultadoTestCase(SimpleTestCase):
             urls_ok={'https://www.autoplanet.cl/search?q=bujias'},
             whitelist={'www.autoplanet.cl'},
         )
-        self.assertIsNone(out)
+        # Precio fuera de rango no bloquea marca/tienda (precio_clp queda 0).
+        self.assertIsNotNone(out)
+        self.assertEqual(out.get('marca_repuesto'), 'NGK')
+        self.assertEqual(out.get('tienda'), 'AutoPlanet')
+        self.assertEqual(out.get('precio_clp'), 0)
+
+    def test_acepta_subdominio_mercadolibre(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+            _validar_resultado,
+        )
+
+        out = _validar_resultado(
+            {
+                'encontrado': True,
+                'nombre_buscado': 'termostato',
+                'nombre_producto': 'Termostato Gates Suzuki',
+                'marca_repuesto': 'Gates',
+                'precio_clp': 18990,
+                'tienda': 'Mercado Libre',
+                'url': 'https://articulo.mercadolibre.cl/MLC-123-termostato',
+                'compatibilidad': 'alta',
+            },
+            urls_ok={'https://listado.mercadolibre.cl/termostato-suzuki', 'listado.mercadolibre.cl'},
+            whitelist={'listado.mercadolibre.cl', 'www.autoplanet.cl'},
+            dominios_solicitados={'listado.mercadolibre.cl', 'mercadolibre.cl'},
+        )
+        self.assertIsNotNone(out)
+        self.assertEqual(out.get('marca_repuesto'), 'Gates')
+        self.assertIn('mercadolibre', (out.get('dominio') or ''))
 
     def test_descarta_marca_placeholder(self):
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (

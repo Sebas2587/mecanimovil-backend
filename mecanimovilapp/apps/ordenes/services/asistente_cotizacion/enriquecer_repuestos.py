@@ -48,6 +48,7 @@ _MARCAS_REPUESTO_CONOCIDAS = (
 _MARCAS_INVALIDAS = frozenset({
     'generico', 'genérico', 'generic', 'n/a', 'na', 'sin marca', 's/m', 'sm',
     'otro', 'otros', 'desconocido', 'unknown', 'ninguna', 'ninguno', '-', '--',
+    'original', 'oem', 'no especificada', 'no especificado', 'sin especificar',
 })
 
 _ML_CATEGORY_REPUESTOS = 'MLC1747'

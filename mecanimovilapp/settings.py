@@ -721,7 +721,8 @@ BUSQUEDA_WEB_REPUESTOS_MODEL = config(
     default='gemini-3.1-flash-lite',
 )
 BUSQUEDA_WEB_REPUESTOS_TIMEOUT = config('BUSQUEDA_WEB_REPUESTOS_TIMEOUT', default=45, cast=int)
-BUSQUEDA_WEB_REPUESTOS_MAX_URLS = config('BUSQUEDA_WEB_REPUESTOS_MAX_URLS', default=4, cast=int)
+# Subir default: 1 URL por repuesto (ML) + extras de otras tiendas.
+BUSQUEDA_WEB_REPUESTOS_MAX_URLS = config('BUSQUEDA_WEB_REPUESTOS_MAX_URLS', default=8, cast=int)
 BUSQUEDA_WEB_REPUESTOS_MAX_LINEAS = config('BUSQUEDA_WEB_REPUESTOS_MAX_LINEAS', default=6, cast=int)
 BUSQUEDA_WEB_REPUESTOS_TTL_DIAS = config('BUSQUEDA_WEB_REPUESTOS_TTL_DIAS', default=14, cast=int)
 BUSQUEDA_WEB_REPUESTOS_RPD = config('BUSQUEDA_WEB_REPUESTOS_RPD', default=200, cast=int)

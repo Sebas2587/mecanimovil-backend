@@ -69,25 +69,79 @@ def _slug_query(texto: str) -> str:
     return re.sub(r'-+', '-', t).strip('-')[:120]
 
 
-def _query_vehiculo(
-    nombres: list[str],
+_STOP_QUERY = frozenset({
+    'de', 'del', 'la', 'el', 'los', 'las', 'un', 'una', 'y', 'para', 'con',
+    'bidon', 'bidón', 'litro', 'litros', 'ml', 'kit', 'juego', 'par',
+})
+
+# Slugs ML con buen retrieval (los filtros largos marca+año suelen dar ERROR).
+_CATEGORY_SLUG_ML = {
+    'termostato': 'termostato-auto',
+    'sensor': 'sensor-temperatura-agua',
+    'refrigerante': 'refrigerante-anticongelante',
+    'anticongelante': 'refrigerante-anticongelante',
+    'bujia': 'bujias',
+    'bujias': 'bujias',
+    'filtro': 'filtro-aceite-auto',
+    'aceite': 'aceite-motor',
+    'embrague': 'kit-embrague',
+    'disco': 'disco-freno',
+    'pastilla': 'pastillas-freno',
+    'pastillas': 'pastillas-freno',
+    'amortiguador': 'amortiguadores',
+    'amortiguadores': 'amortiguadores',
+    'correa': 'correa-distribucion',
+    'bomba': 'bomba-agua-auto',
+}
+
+
+def _slug_categoria_ml(nombre: str) -> str:
+    tokens = _nombre_busqueda_corto(nombre).split()
+    if not tokens:
+        return ''
+    return _CATEGORY_SLUG_ML.get(tokens[0], tokens[0])
+
+
+def _modelo_busqueda(modelo: str) -> str:
+    """Primera palabra útil del modelo (CELERIO HB 1.0 → Celerio)."""
+    tokens = [t for t in str(modelo or '').strip().split() if t and not t.replace('.', '').isdigit()]
+    return tokens[0] if tokens else str(modelo or '').strip()
+
+
+def _nombre_busqueda_corto(nombre: str) -> str:
+    """'Termostato de refrigerante' → 'termostato refrigerante' (máx 3 tokens)."""
+    raw = unicodedata.normalize('NFD', (nombre or '').lower())
+    raw = ''.join(c for c in raw if unicodedata.category(c) != 'Mn')
+    tokens = [t for t in re.split(r'[^a-z0-9]+', raw) if t and t not in _STOP_QUERY]
+    return ' '.join(tokens[:3])
+
+
+def _query_repuesto(
+    nombre: str,
     *,
     marca: str = '',
     modelo: str = '',
     anio: str | int | None = '',
-    cilindraje: str = '',
+    compact: bool = False,
 ) -> str:
-    partes = [str(n).strip() for n in nombres if str(n).strip()]
-    # Una sola query compacta: primer repuesto + vehículo (evita URLs enormes).
-    nucleo = partes[0] if partes else 'repuesto'
-    if len(partes) > 1:
-        nucleo = f'{nucleo} {" ".join(partes[1:3])}'
-    extras = [marca, modelo]
-    if anio:
-        extras.append(str(anio))
-    if cilindraje:
-        extras.append(str(cilindraje).strip())
+    """Query enfocada: 1 repuesto (+ marca). `compact` = slugs cortos para ML."""
+    nucleo = _nombre_busqueda_corto(nombre) or str(nombre or '').strip()
+    if not nucleo:
+        return ''
+    if compact:
+        # ML falla con slugs largos. 1 token + marca recupera mejor (termostato-suzuki).
+        cabeza = nucleo.split()[0] if nucleo.split() else nucleo
+        return ' '.join(p for p in [cabeza, marca] if p).strip()
+    extras = [marca, _modelo_busqueda(modelo)]
     return ' '.join(p for p in [nucleo, *extras] if p).strip()
+
+
+def _url_desde_plantilla(plantilla: str, dominio: str, q: str) -> str:
+    q_enc = quote_plus(q)
+    q_slug = _slug_query(q)
+    if 'listado.mercadolibre' in dominio or ('/{q}' in plantilla):
+        return plantilla.replace('{q}', q_slug or q_enc)
+    return plantilla.replace('{q}', q_enc)
 
 
 def construir_urls_busqueda(
@@ -98,25 +152,66 @@ def construir_urls_busqueda(
     anio: str | int | None = '',
     cilindraje: str = '',
 ) -> list[str]:
-    """Arma URLs de búsqueda por dominio whitelist. Tope MAX_URLS (duro 20)."""
-    max_urls = max(1, min(int(getattr(settings, 'BUSQUEDA_WEB_REPUESTOS_MAX_URLS', 4) or 4), 20))
-    q = _query_vehiculo(nombres, marca=marca, modelo=modelo, anio=anio, cilindraje=cilindraje)
-    if not q:
+    """Arma URLs de búsqueda: una query por repuesto (no mezclar nombres).
+
+    Prioriza Mercado Libre con slugs cortos (mejor retrieval); luego otras tiendas.
+    Tope MAX_URLS (duro 20).
+    """
+    del anio, cilindraje  # año/cilindraje empeoran retrieval en listados
+    max_urls = max(1, min(int(getattr(settings, 'BUSQUEDA_WEB_REPUESTOS_MAX_URLS', 8) or 8), 20))
+    nombres_limpios = [str(n).strip()[:120] for n in nombres if str(n).strip()]
+    if not nombres_limpios:
         return []
-    q_enc = quote_plus(q)
-    q_slug = _slug_query(q)
+    fuentes = _fuentes()
+    if not fuentes:
+        return []
+
     urls: list[str] = []
-    for fuente in _fuentes():
-        plantilla = fuente['plantilla']
-        # ML listado usa path con guiones; el resto usa query string.
-        if 'listado.mercadolibre' in fuente['dominio'] or '{q}' in plantilla and '/{q}' in plantilla:
-            url = plantilla.replace('{q}', q_slug or q_enc)
-        else:
-            url = plantilla.replace('{q}', q_enc)
+
+    def _add(url: str) -> bool:
         if url and url not in urls:
             urls.append(url)
-        if len(urls) >= max_urls:
-            break
+        return len(urls) >= max_urls
+
+    fuente_pri = fuentes[0]
+    es_ml = 'mercadolibre' in fuente_pri['dominio']
+
+    # Pasada 1 (ML): slugs de categoría con buen retrieval (termostato-auto, etc.).
+    if es_ml:
+        for nombre in nombres_limpios:
+            q_cat = _slug_categoria_ml(nombre)
+            if not q_cat:
+                continue
+            url = _url_desde_plantilla(fuente_pri['plantilla'], fuente_pri['dominio'], q_cat)
+            if _add(url):
+                return urls
+
+    # Pasada 2: query compacta marca+pieza (termostato-suzuki) por fuente primaria.
+    for nombre in nombres_limpios:
+        q = _query_repuesto(
+            nombre, marca=marca, modelo=modelo, compact=es_ml,
+        )
+        if not q:
+            continue
+        url = _url_desde_plantilla(fuente_pri['plantilla'], fuente_pri['dominio'], q)
+        if _add(url):
+            return urls
+
+    # Pasada 3: otras tiendas.
+    for fuente in fuentes[1:]:
+        for nombre in nombres_limpios:
+            q = _query_repuesto(
+                nombre,
+                marca=marca,
+                modelo=modelo,
+                compact='mercadolibre' in fuente['dominio'],
+            )
+            if not q:
+                continue
+            url = _url_desde_plantilla(fuente['plantilla'], fuente['dominio'], q)
+            if _add(url):
+                return urls
+
     return urls
 
 
@@ -214,16 +309,67 @@ def _urls_exitosas_metadata(body: dict[str, Any]) -> set[str]:
     return ok
 
 
+def _raiz_registrable(host: str) -> str:
+    """Aproxima eTLD+1 para .cl/.com (listado.mercadolibre.cl → mercadolibre.cl)."""
+    h = (host or '').lower().strip('.')
+    if h.startswith('www.'):
+        h = h[4:]
+    parts = [p for p in h.split('.') if p]
+    if len(parts) >= 2:
+        return '.'.join(parts[-2:])
+    return h
+
+
+def _dominios_relacionados(host: str) -> set[str]:
+    """Host + variantes www + raíz registrable (para ML y subdominios de tienda)."""
+    out: set[str] = set()
+    h = (host or '').lower().strip()
+    if not h:
+        return out
+    out.add(h)
+    bare = h[4:] if h.startswith('www.') else h
+    out.add(bare)
+    out.add(f'www.{bare}')
+    raiz = _raiz_registrable(h)
+    if raiz:
+        out.add(raiz)
+        out.add(f'www.{raiz}')
+    return out
+
+
 def _dominios_de_urls(urls: list[str]) -> set[str]:
     out: set[str] = set()
     for u in urls or []:
         host = _dominio_de_url(str(u))
-        if host:
-            out.add(host)
-            bare = host[4:] if host.startswith('www.') else host
-            out.add(bare)
-            out.add(f'www.{bare}')
+        out |= _dominios_relacionados(host)
+        # También la URL completa ayuda al match exacto de retrieval.
+        if str(u).startswith('http'):
+            out.add(str(u).strip())
     return out
+
+
+def _host_relacionado_con(host: str, conjunto: set[str]) -> bool:
+    """True si host comparte sitio con algún valor del conjunto (URL o dominio)."""
+    if not host or not conjunto:
+        return False
+    relacionados = _dominios_relacionados(host)
+    for u in conjunto:
+        if not isinstance(u, str) or not u:
+            continue
+        if u.startswith('http'):
+            u_host = _dominio_de_url(u)
+        else:
+            u_host = u.lower().strip()
+        if not u_host:
+            continue
+        if u_host in relacionados or host in _dominios_relacionados(u_host):
+            return True
+        # Substring seguro por raíz (mercadolibre.cl ⊂ articulo.mercadolibre.cl).
+        raiz_h = _raiz_registrable(host)
+        raiz_u = _raiz_registrable(u_host)
+        if raiz_h and raiz_h == raiz_u:
+            return True
+    return False
 
 
 def _precio_en_rango(precio: int) -> bool:
@@ -260,25 +406,26 @@ def _construir_prompt(
     lista_reps = '\n'.join(f'- {n}' for n in nombres)
     lista_urls = '\n'.join(f'- {u}' for u in urls)
     return f"""Eres un extractor de precios de repuestos automotrices en Chile.
-Debes LEER ÚNICAMENTE el contenido de las URLs listadas (herramienta url_context).
-NO inventes marcas, tiendas, precios ni links. Si no hay dato en las páginas, marca encontrado=false.
+LEE el contenido de las URLs con la herramienta url_context.
+NO inventes precios ni URLs: solo datos visibles en las páginas leídas.
 
-Vehículo exacto: {vehiculo}
-Servicio solicitado: {servicio_nombre or 'N/A'}
+Vehículo de referencia (orientativo): {vehiculo}
+Servicio: {servicio_nombre or 'N/A'}
 
 Repuestos a buscar:
 {lista_reps}
 
-URLs a consultar:
+URLs:
 {lista_urls}
 
 Reglas:
-1. Solo reporta productos que aparezcan en las páginas leídas.
-2. Valida compatibilidad con marca/modelo/año/cilindraje del vehículo. Si no es compatible, encontrado=false.
-3. marca_repuesto = marca de la PIEZA (Bosch, Sachs, LuK, etc.). NUNCA "GENÉRICO", "N/A" ni marca del auto.
-4. tienda = nombre de la tienda del dominio leído. url = link del producto o del listado leído.
-5. precio_clp = entero en pesos chilenos (sin puntos ni símbolo).
-6. Responde SOLO JSON válido (sin markdown) con esta forma:
+1. Si la página muestra un producto de la MISMA CATEGORÍA del repuesto, reporta encontrado=true con el mejor candidato visible (aunque no diga el modelo exacto).
+2. compatibilidad: alta si menciona marca/modelo del auto; media si es la categoría correcta; baja si es genérico del rubro. NO uses encontrado=false solo por duda de año.
+3. marca_repuesto = marca de la PIEZA (Bosch, Gates, Wahler, NGK, etc.). Si no aparece, "". NUNCA "GENÉRICO", "Original", "N/A" ni la marca del auto.
+4. tienda = nombre del sitio (Mercado Libre, AutoPlanet, …). url = link del producto o del listado leído (https).
+5. precio_clp = entero CLP sin puntos ni símbolo.
+6. Solo encontrado=false si en las páginas NO hay ningún producto relacionado a ese repuesto.
+7. Responde SOLO JSON válido (sin markdown):
 {{
   "resultados": [
     {{
@@ -293,8 +440,64 @@ Reglas:
     }}
   ]
 }}
-Incluye un ítem por cada repuesto buscado. Si no hay match, encontrado=false y deja el resto vacío.
+Incluye un ítem por cada repuesto buscado.
 """
+
+
+def _normalizar_item_gemini(item: Any) -> dict[str, Any] | None:
+    """Unifica claves alternativas que a veces devuelve Gemini."""
+    if not isinstance(item, dict):
+        return None
+    out = {k: ('' if v is None else v) for k, v in item.items()}
+    if not out.get('nombre_producto'):
+        out['nombre_producto'] = out.get('titulo') or out.get('nombre') or ''
+    if not out.get('url'):
+        out['url'] = out.get('link_tienda') or out.get('link') or out.get('link_producto') or ''
+    if not out.get('marca_repuesto'):
+        out['marca_repuesto'] = out.get('marca') or ''
+    if not out.get('nombre_buscado'):
+        out['nombre_buscado'] = out.get('query') or out.get('nombre_producto') or ''
+    # Si trajo producto/precio y omitió el flag, asumir encontrado.
+    if out.get('encontrado') in ('', None) and (
+        out.get('nombre_producto') or _to_int_clp(out.get('precio_clp')) > 0
+    ):
+        out['encontrado'] = True
+    return out
+
+
+def _motivo_descarte(
+    item: dict[str, Any],
+    *,
+    urls_ok: set[str],
+    whitelist: set[str],
+    dominios_solicitados: set[str] | None = None,
+) -> str | None:
+    """None si válido; si no, razón corta para logs."""
+    if not isinstance(item, dict):
+        return 'no_dict'
+    encontrado = item.get('encontrado')
+    if encontrado in (False, None, '', 0, 'false', 'False', '0'):
+        return 'no_encontrado'
+    url = str(item.get('url') or '').strip()
+    if not url.startswith('http'):
+        return 'url_invalida'
+    if not _dominio_permitido(url, whitelist):
+        return f'dominio_fuera_whitelist:{_dominio_de_url(url)}'
+    host = _dominio_de_url(url)
+    doms_req = dominios_solicitados or set()
+    retrieval_ok = _host_relacionado_con(host, urls_ok) or (url in urls_ok)
+    solicitado_ok = _host_relacionado_con(host, doms_req)
+    # Si hubo retrieval o pedimos leer tiendas whitelist, aceptar producto
+    # del mismo ecosistema (p. ej. articulo.mercadolibre.cl tras listado.*).
+    contexto_ok = bool(urls_ok or doms_req)
+    if not retrieval_ok and not solicitado_ok and not (
+        contexto_ok and _dominio_permitido(url, whitelist)
+    ):
+        return f'dominio_sin_contexto:{host}'
+    nombre_prod = str(item.get('nombre_producto') or item.get('nombre_buscado') or '').strip()
+    if not nombre_prod:
+        return 'sin_nombre'
+    return None
 
 
 def _validar_resultado(
@@ -304,54 +507,39 @@ def _validar_resultado(
     whitelist: set[str],
     dominios_solicitados: set[str] | None = None,
 ) -> dict[str, Any] | None:
-    if not isinstance(item, dict):
-        return None
-    if not bool(item.get('encontrado')):
+    motivo = _motivo_descarte(
+        item,
+        urls_ok=urls_ok,
+        whitelist=whitelist,
+        dominios_solicitados=dominios_solicitados,
+    )
+    if motivo:
         return None
     url = str(item.get('url') or '').strip()
-    if not url.startswith('http'):
-        return None
-    if not _dominio_permitido(url, whitelist):
-        return None
     host = _dominio_de_url(url)
     doms_req = dominios_solicitados or set()
-
-    def _host_en(conjunto: set[str]) -> bool:
-        if not conjunto:
-            return False
-        if url in conjunto or host in conjunto:
-            return True
-        bare = host[4:] if host.startswith('www.') else host
-        return any(
-            (isinstance(u, str) and host and (host in u or u in host or bare in u))
-            for u in conjunto
-        )
-
-    retrieval_ok = _host_en(urls_ok)
-    solicitado_ok = _host_en(doms_req)
-    # Prueba fuerte: metadata de retrieval. Fallback: dominio de una URL que
-    # nosotros pedimos leer (evita descartar JSON útil si Gemini omite metadata).
-    if not retrieval_ok and not solicitado_ok:
-        return None
+    retrieval_ok = _host_relacionado_con(host, urls_ok) or (url in urls_ok)
     marca = _marca_repuesto_valida(item.get('marca_repuesto'))
     precio = _to_int_clp(item.get('precio_clp'))
-    if not _precio_en_rango(precio):
-        return None
-    # Exigimos marca o al menos nombre de producto usable + precio.
+    precio_ok = _precio_en_rango(precio)
+    # Marca/tienda deben llegar a la UI aunque el precio venga mal parseado.
+    if not precio_ok:
+        precio = 0
     nombre_prod = str(item.get('nombre_producto') or item.get('nombre_buscado') or '').strip()[:200]
-    if not nombre_prod:
-        return None
-    # Si no vino marca explícita, intentar inferirla del título del producto.
     if not marca:
         from .enriquecer_repuestos import _inferir_marca_desde_nombre
         marca = _marca_repuesto_valida(_inferir_marca_desde_nombre(nombre_prod))
     tienda = str(item.get('tienda') or '').strip()[:200] or _tienda_por_dominio(host)
+    if not marca and not tienda and not precio_ok:
+        return None
     compat = str(item.get('compatibilidad') or '').strip().lower()[:20]
     if compat not in ('alta', 'media', 'baja'):
         compat = 'media'
     conf = 0.8 if compat == 'alta' else (0.7 if compat == 'media' else 0.55)
     if not retrieval_ok:
         conf = min(conf, 0.65)
+    if not precio_ok:
+        conf = min(conf, 0.55)
     return {
         'nombre_buscado': str(item.get('nombre_buscado') or '').strip()[:200],
         'nombre_producto': nombre_prod,
@@ -427,7 +615,7 @@ def buscar_repuestos_web(
         'contents': [{'parts': [{'text': prompt}]}],
         'tools': [{'url_context': {}}],
         'generationConfig': {
-            'temperature': 0.1,
+            'temperature': 0.2,
             'maxOutputTokens': 4096,
         },
     }
@@ -483,7 +671,12 @@ def buscar_repuestos_web(
 
     whitelist = _dominios_whitelist()
     out: dict[str, dict[str, Any]] = {}
-    for item in resultados:
+    descartes: list[str] = []
+    for raw in resultados:
+        item = _normalizar_item_gemini(raw)
+        if not item:
+            descartes.append('no_dict:')
+            continue
         validado = _validar_resultado(
             item,
             urls_ok=urls_ok,
@@ -491,6 +684,14 @@ def buscar_repuestos_web(
             dominios_solicitados=dominios_solicitados,
         )
         if not validado:
+            motivo = _motivo_descarte(
+                item,
+                urls_ok=urls_ok,
+                whitelist=whitelist,
+                dominios_solicitados=dominios_solicitados,
+            ) or 'desconocido'
+            url_dbg = str(item.get('url') or '')[:80]
+            descartes.append(f'{motivo}:{url_dbg}')
             continue
         clave = _clave_fuzzy(validado['nombre_buscado'] or validado['nombre_producto'])
         if not clave:
@@ -502,9 +703,16 @@ def buscar_repuestos_web(
         out[clave] = validado
     if not out:
         logger.info(
-            'busqueda_web_repuestos: 0 hits válidos de %s resultados (urls_ok=%s)',
+            'busqueda_web_repuestos: 0 hits válidos de %s resultados (urls_ok=%s) descartes=%s',
             len(resultados),
             len(urls_ok),
+            descartes[:8],
+        )
+    else:
+        logger.info(
+            'busqueda_web_repuestos: %s hits válidos de %s resultados',
+            len(out),
+            len(resultados),
         )
     return out
 
