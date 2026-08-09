@@ -210,6 +210,182 @@ def registrar_cotizacion_enviada(cotizacion) -> dict[str, Any]:
         return {'ok': False, 'error': str(exc)}
 
 
+def buscar_plantilla_reutilizable(
+    *,
+    taller,
+    marca: str,
+    modelo: str,
+    servicio_nombre: str,
+    cilindraje: str = '',
+):
+    """Plantilla (manual o Auto:) del taller para mismo vehículo + servicio similar.
+
+    Prioriza plantillas de aprendizaje (`aprendizaje_auto`) y luego manuales.
+    Devuelve CotizacionCanalPlantilla o None.
+    """
+    if taller is None or not (marca or '').strip() or not (modelo or '').strip():
+        return None
+    if not (servicio_nombre or '').strip():
+        return None
+    try:
+        from mecanimovilapp.apps.ordenes.models import CotizacionCanalPlantilla
+        from mecanimovilapp.apps.ordenes.services.plantilla_vehiculo import (
+            filtrar_plantillas_por_vehiculo,
+        )
+    except Exception:
+        return None
+
+    qs = CotizacionCanalPlantilla.objects.filter(taller=taller).order_by('-actualizado_en')
+    candidatas = list(
+        filtrar_plantillas_por_vehiculo(
+            qs,
+            marca=marca,
+            modelo=modelo,
+            cilindraje=cilindraje or '',
+        )[:40]
+    )
+    if not candidatas:
+        # Fallback: filtro laxo por marca/modelo en snapshot.
+        marca_n = _norm(marca)
+        candidatas = []
+        for p in qs[:60]:
+            snap = p.snapshot if isinstance(p.snapshot, dict) else {}
+            if _norm(str(snap.get('vehiculo_marca') or '')) != marca_n:
+                continue
+            if not _modelo_coincide(str(snap.get('vehiculo_modelo') or ''), modelo):
+                continue
+            candidatas.append(p)
+
+    mejores_auto = []
+    mejores_manual = []
+    for p in candidatas:
+        snap = p.snapshot if isinstance(p.snapshot, dict) else {}
+        serv_p = str(snap.get('servicio_nombre') or p.titulo or '')
+        # Quitar prefijo "Auto: … — " del título si el snapshot no trae servicio.
+        if not snap.get('servicio_nombre') and (p.titulo or '').startswith('Auto:'):
+            partes = (p.titulo or '').split('—', 1)
+            if len(partes) == 2:
+                serv_p = partes[1].strip()
+        if not _servicios_similares(serv_p, servicio_nombre):
+            continue
+        reps = snap.get('repuestos') or []
+        if not isinstance(reps, list) or not reps:
+            continue
+        # Requiere al menos un precio o marca aprendida para valer la pena.
+        util = any(
+            isinstance(r, dict)
+            and (
+                _to_int_clp(r.get('precio_unitario_clp')) > 0
+                or _marca_repuesto_valida(r.get('marca_repuesto'))
+                or str(r.get('proveedor_nombre') or '').strip()
+            )
+            for r in reps
+        )
+        if not util:
+            continue
+        es_auto = bool(snap.get('aprendizaje_auto')) or (p.titulo or '').startswith('Auto:')
+        (mejores_auto if es_auto else mejores_manual).append(p)
+
+    return (mejores_auto or mejores_manual or [None])[0]
+
+
+def plantilla_tiene_cobertura_precios(plantilla) -> bool:
+    """True si la plantilla trae precios usables en la mayoría de líneas."""
+    if plantilla is None:
+        return False
+    snap = plantilla.snapshot if isinstance(plantilla.snapshot, dict) else {}
+    reps = snap.get('repuestos') or []
+    if not isinstance(reps, list) or not reps:
+        return False
+    con_precio = sum(
+        1 for r in reps if isinstance(r, dict) and _to_int_clp(r.get('precio_unitario_clp')) > 0
+    )
+    return con_precio >= max(1, (len(reps) + 1) // 2)
+
+
+def puede_omitir_busqueda_web(cotizacion) -> bool:
+    """True si no hace falta Tavily: historial/catálogo/cache cubren las líneas.
+
+    Criterios (cualquiera):
+    - origen plantilla / reutilizado_historial
+    - todas las líneas candidatas ya tienen fuente catalogo/historial
+    - PrecioRepuestoWeb vigente para todos los nombres que faltan
+    - existe plantilla aprendizaje mismo modelo+servicio con cobertura de precios
+    """
+    if cotizacion is None:
+        return False
+    meta = cotizacion.metadata if isinstance(cotizacion.metadata, dict) else {}
+    origen = str(meta.get('origen') or '')
+    if origen in ('plantilla', 'plantilla_auto', 'reutilizado_historial'):
+        return True
+
+    reps = list(cotizacion.repuestos or [])
+    if not reps:
+        return False
+
+    candidatos = []
+    for rep in reps:
+        if not isinstance(rep, dict):
+            continue
+        fuente = str(rep.get('fuente_marketplace') or '').strip()
+        if fuente in ('catalogo', 'historial'):
+            continue
+        necesita = (
+            bool(rep.get('precio_estimado', True))
+            or not str(rep.get('marca_repuesto') or '').strip()
+            or not str(rep.get('proveedor_nombre') or '').strip()
+        )
+        if necesita:
+            candidatos.append(rep)
+
+    if not candidatos:
+        return True
+
+    try:
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+            nombres_sin_cache_vigente,
+        )
+    except Exception:
+        nombres_sin_cache_vigente = None
+
+    if nombres_sin_cache_vigente is not None:
+        nombres = [
+            str(r.get('nombre') or '').strip() for r in candidatos if str(r.get('nombre') or '').strip()
+        ]
+        faltantes, _hits = nombres_sin_cache_vigente(
+            nombres,
+            marca_vehiculo=getattr(cotizacion, 'vehiculo_marca', '') or '',
+            modelo_vehiculo=getattr(cotizacion, 'vehiculo_modelo', '') or '',
+            anio=getattr(cotizacion, 'vehiculo_anio', '') or '',
+        )
+        if not faltantes:
+            return True
+
+    plantilla = buscar_plantilla_reutilizable(
+        taller=getattr(cotizacion, 'taller', None),
+        marca=getattr(cotizacion, 'vehiculo_marca', '') or '',
+        modelo=getattr(cotizacion, 'vehiculo_modelo', '') or '',
+        servicio_nombre=getattr(cotizacion, 'servicio_nombre', '') or '',
+        cilindraje=getattr(cotizacion, 'vehiculo_cilindraje', '') or '',
+    )
+    return plantilla_tiene_cobertura_precios(plantilla)
+
+
+def marcar_omitir_busqueda_web(cotizacion, *, motivo: str = 'historial') -> Any:
+    """Marca la cotización para no gastar Tavily/Gemini url_context."""
+    if cotizacion is None:
+        return cotizacion
+    meta = dict(cotizacion.metadata or {})
+    meta['busqueda_web_estado'] = f'omitida_{motivo}'[:40]
+    meta['busqueda_web_en'] = timezone.now().isoformat()
+    cotizacion.metadata = meta
+    try:
+        cotizacion.save(update_fields=['metadata', 'actualizado_en'])
+    except Exception:
+        pass
+    return cotizacion
+
+
 def construir_bloque_historial_prompt(
     *,
     taller,

@@ -94,11 +94,35 @@ def disparar_busqueda_web_cotizacion(
 
 
 def disparar_y_refrescar_cotizacion(cotizacion: Any) -> Any:
-    """Dispara búsqueda (sync por default) y refresca la instancia desde BD."""
+    """Dispara búsqueda (sync por default) y refresca la instancia desde BD.
+
+    Si historial/plantilla/cache ya cubren el mismo modelo+servicio, omite Tavily
+    (`busqueda_web_estado=omitida_*`) para no gastar créditos.
+    """
     if cotizacion is None or not getattr(cotizacion, 'id', None):
         return cotizacion
     if (getattr(cotizacion, 'metadata', None) or {}).get('busqueda_web_estado') != 'pendiente':
         return cotizacion
+
+    try:
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.aprendizaje_cotizacion import (
+            marcar_omitir_busqueda_web,
+            puede_omitir_busqueda_web,
+        )
+
+        if puede_omitir_busqueda_web(cotizacion):
+            logger.info(
+                'disparar_y_refrescar_cotizacion(%s): omitida (historial/cache/plantilla)',
+                cotizacion.id,
+            )
+            return marcar_omitir_busqueda_web(cotizacion, motivo='historial')
+    except Exception as exc:
+        logger.warning(
+            'No se pudo evaluar omitir busqueda web cotizacion=%s: %s',
+            cotizacion.id,
+            exc,
+        )
+
     ran_sync = disparar_busqueda_web_cotizacion(cotizacion.id)
     if ran_sync:
         try:

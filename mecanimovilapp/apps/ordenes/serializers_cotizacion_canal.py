@@ -265,6 +265,8 @@ class CotizacionCanalPlantillaSerializer(serializers.ModelSerializer):
     vehiculo_marca = serializers.SerializerMethodField()
     vehiculo_modelo = serializers.SerializerMethodField()
     vehiculo_cilindraje = serializers.SerializerMethodField()
+    aprendizaje_auto = serializers.SerializerMethodField()
+    servicio_nombre = serializers.SerializerMethodField()
 
     class Meta:
         model = CotizacionCanalPlantilla
@@ -275,6 +277,8 @@ class CotizacionCanalPlantillaSerializer(serializers.ModelSerializer):
             'vehiculo_marca',
             'vehiculo_modelo',
             'vehiculo_cilindraje',
+            'aprendizaje_auto',
+            'servicio_nombre',
             'uso_count',
             'creado_en',
             'actualizado_en',
@@ -292,6 +296,20 @@ class CotizacionCanalPlantillaSerializer(serializers.ModelSerializer):
 
     def get_vehiculo_cilindraje(self, obj) -> str:
         return str(self._snap(obj).get('vehiculo_cilindraje') or '')
+
+    def get_aprendizaje_auto(self, obj) -> bool:
+        snap = self._snap(obj)
+        return bool(snap.get('aprendizaje_auto')) or (obj.titulo or '').startswith('Auto:')
+
+    def get_servicio_nombre(self, obj) -> str:
+        snap = self._snap(obj)
+        serv = str(snap.get('servicio_nombre') or '').strip()
+        if serv:
+            return serv
+        titulo = obj.titulo or ''
+        if titulo.startswith('Auto:') and '—' in titulo:
+            return titulo.split('—', 1)[1].strip()
+        return titulo
 
 
 class GuardarPlantillaCotizacionSerializer(serializers.Serializer):

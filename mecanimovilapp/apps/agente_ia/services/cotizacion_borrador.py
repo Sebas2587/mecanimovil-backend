@@ -962,16 +962,83 @@ def crear_cotizacion_borrador_desde_agente(
         servicio_prompt = ' + '.join(servicios_turno)
         descripcion_ia = descripcion
 
+    # Reutilizar plantilla aprendizaje (mismo modelo + servicio) → sin Gemini ni Tavily.
+    resultado = None
+    plantilla_reuso_id = None
+    if not es_update:
+        try:
+            from mecanimovilapp.apps.ordenes.models import CotizacionCanalPlantilla
+            from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.aprendizaje_cotizacion import (
+                buscar_plantilla_reutilizable,
+                plantilla_tiene_cobertura_precios,
+            )
+            from django.db.models import F
+
+            plantilla = buscar_plantilla_reutilizable(
+                taller=taller,
+                marca=marca,
+                modelo=modelo,
+                servicio_nombre=servicio_prompt,
+                cilindraje=str(vehiculo.get('cilindraje') or ''),
+            )
+            if plantilla is not None and plantilla_tiene_cobertura_precios(plantilla):
+                snap = plantilla.snapshot if isinstance(plantilla.snapshot, dict) else {}
+                CotizacionCanalPlantilla.objects.filter(pk=plantilla.pk).update(
+                    uso_count=F('uso_count') + 1,
+                )
+                plantilla_reuso_id = plantilla.id
+                resultado = {
+                    'disponible': True,
+                    'contenido': {
+                        'servicio_nombre': snap.get('servicio_nombre') or servicio_prompt,
+                        'descripcion_problema': snap.get('descripcion_problema') or descripcion_ia,
+                        'repuestos': list(snap.get('repuestos') or []),
+                        'mano_obra_clp': int(snap.get('mano_obra_clp') or 0),
+                        'costo_repuestos_clp': int(snap.get('costo_repuestos_clp') or 0),
+                        'total_clp': int(snap.get('total_clp') or 0),
+                        'duracion_minutos_estimada': snap.get('duracion_minutos_estimada'),
+                        'advertencias': list(snap.get('advertencias') or []),
+                        'tipo_motor': snap.get('tipo_motor') or tipo_motor,
+                        'tipo_motor_label': snap.get('tipo_motor_label') or '',
+                        'valores_estimativos': False,
+                        'precio_desde_catalogo': False,
+                    },
+                    'contenido_ia': {'origen': 'plantilla_auto', 'plantilla_id': plantilla.id},
+                    'contexto': {
+                        'vehiculo_marca': marca,
+                        'vehiculo_modelo': modelo,
+                        'vehiculo_anio': vehiculo.get('anio'),
+                        'vehiculo_cilindraje': vehiculo.get('cilindraje'),
+                        'tipo_motor': tipo_motor,
+                    },
+                    'tokens_entrada': 0,
+                    'tokens_salida': 0,
+                    'modelo': 'plantilla_auto',
+                    'desde_plantilla': True,
+                }
+                logger.info(
+                    'Agente reutiliza plantilla %s (taller=%s %s %s / %s) — sin Gemini/Tavily',
+                    plantilla.id,
+                    taller.id,
+                    marca,
+                    modelo,
+                    servicio_prompt[:80],
+                )
+        except Exception as exc:
+            logger.warning('Reuso plantilla agente falló: %s', exc)
+            resultado = None
+
     # Generar contexto IA (desglose/orientación). Si Gemini falla, igual mergeamos.
-    resultado = generar_cotizacion_ia(
-        conversation=conversation,
-        servicio_nombre=servicio_prompt,
-        descripcion_problema=descripcion_ia,
-        modalidad=modalidad if modalidad in ('taller', 'domicilio') else 'taller',
-        vehiculo=vehiculo,
-        contexto_rag_extra=datos.get('contexto_rag') or '',
-        taller=taller,
-    )
+    if resultado is None:
+        resultado = generar_cotizacion_ia(
+            conversation=conversation,
+            servicio_nombre=servicio_prompt,
+            descripcion_problema=descripcion_ia,
+            modalidad=modalidad if modalidad in ('taller', 'domicilio') else 'taller',
+            vehiculo=vehiculo,
+            contexto_rag_extra=datos.get('contexto_rag') or '',
+            taller=taller,
+        )
     if not resultado.get('disponible'):
         logger.warning(
             'generar_cotizacion_ia no disponible (%s); se actualiza borrador sin contenido IA '
@@ -1407,7 +1474,8 @@ def crear_cotizacion_borrador_desde_agente(
 
     metadata_cot = {
         **meta_prev,
-        'origen': 'agente_ia',
+        'origen': 'plantilla_auto' if plantilla_reuso_id else 'agente_ia',
+        'plantilla_id': plantilla_reuso_id or meta_prev.get('plantilla_id'),
         'sesion_id': sesion.id,
         'mano_obra_manual_clp': mano_obra_manual_prev,
         'recargo_domicilio_aplicado_clp': recargo_aplicado,
