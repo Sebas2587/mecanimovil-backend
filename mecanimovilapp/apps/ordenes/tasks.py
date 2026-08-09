@@ -466,6 +466,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
         enriquecer_repuestos_cotizacion,
         _clave_fuzzy,
         _mejor_hit,
+        _nombre_con_marca,
     )
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
         recalcular_totales,
@@ -657,6 +658,10 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                 next_rep = dict(rep)
                 if hit.get('marca_repuesto'):
                     next_rep['marca_repuesto'] = str(hit['marca_repuesto'])[:100]
+                    next_rep['nombre'] = _nombre_con_marca(
+                        str(next_rep.get('nombre') or ''),
+                        hit['marca_repuesto'],
+                    )
                 if hit.get('tienda'):
                     next_rep['proveedor_nombre'] = str(hit['tienda'])[:200]
                 if hit.get('url'):

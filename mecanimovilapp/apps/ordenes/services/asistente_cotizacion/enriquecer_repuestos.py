@@ -96,6 +96,23 @@ def _inferir_marca_desde_nombre(nombre: str) -> str:
     return ''
 
 
+def _nombre_con_marca(nombre: str, marca: str | None) -> str:
+    """Incluye la marca en el nombre visible al cliente si aún no está.
+
+    'Discos de freno delanteros' + 'Repstock' → 'Discos de freno delanteros Repstock'
+    No duplica si el nombre ya contiene la marca (case-insensitive).
+    """
+    base = str(nombre or '').strip()
+    marca_ok = _marca_repuesto_valida(marca)
+    if not base:
+        return marca_ok
+    if not marca_ok:
+        return base
+    if marca_ok.lower() in base.lower():
+        return base
+    return f'{base} {marca_ok}'.strip()[:200]
+
+
 def _marca_repuesto_valida(marca: str | None) -> str:
     """Devuelve marca usable o '' si es placeholder (GENÉRICO, N/A, …)."""
     m = (marca or '').strip()
@@ -675,6 +692,11 @@ def _aplicar_hit_campos(next_rep: dict[str, Any], hit: dict[str, Any]) -> None:
     marca_actual = str(next_rep.get('marca_repuesto') or '').strip()
     if hit.get('marca_repuesto') and (not marca_actual or puede_reemplazar):
         next_rep['marca_repuesto'] = hit['marca_repuesto']
+        # El cliente ve el nombre del ítem: la marca debe ir ahí, no solo en un tag.
+        next_rep['nombre'] = _nombre_con_marca(
+            str(next_rep.get('nombre') or ''),
+            hit['marca_repuesto'],
+        )
 
     if hit.get('fuente_marketplace') and (not fuente_actual or puede_reemplazar):
         next_rep['fuente_marketplace'] = hit['fuente_marketplace']
