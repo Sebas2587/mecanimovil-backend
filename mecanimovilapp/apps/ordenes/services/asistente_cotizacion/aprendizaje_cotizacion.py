@@ -316,12 +316,15 @@ def puede_omitir_busqueda_web(cotizacion) -> bool:
         return False
     meta = cotizacion.metadata if isinstance(cotizacion.metadata, dict) else {}
     origen = str(meta.get('origen') or '')
-    if origen in ('plantilla', 'plantilla_auto', 'reutilizado_historial'):
+    if origen in ('plantilla', 'plantilla_auto', 'reutilizado_historial', 'catalogo_taller'):
+        return True
+    if meta.get('precio_desde_catalogo') and not meta.get('precio_parcial_catalogo'):
         return True
 
     reps = list(cotizacion.repuestos or [])
     if not reps:
-        return False
+        # Mano de obra sola desde catálogo (sin repuestos) también omite web.
+        return bool(meta.get('precio_desde_catalogo'))
 
     candidatos = []
     for rep in reps:

@@ -203,6 +203,61 @@ def generar_cotizacion_ia(
     if contexto_rag_extra:
         ctx['contexto_rag'] = contexto_rag_extra
 
+    # Catálogo del taller primero: si hay OfertaServicio para marca/modelo+servicio,
+    # no llamar Gemini ni búsqueda web (misma regla que el agente chat).
+    if taller is not None:
+        try:
+            from mecanimovilapp.apps.agente_ia.services.cotizacion_borrador import (
+                _intentar_contenido_solo_catalogo,
+            )
+            from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.aplicar_catalogo import (
+                _split_servicios,
+            )
+
+            servicio_ctx = servicio_nombre or str(ctx.get('servicio_nombre') or '')
+            solo_cat = _intentar_contenido_solo_catalogo(
+                taller=taller,
+                servicios=_split_servicios(servicio_ctx),
+                marca=str(ctx.get('marca') or ''),
+                modelo=str(ctx.get('modelo') or ''),
+                tipo_motor=str(ctx.get('tipo_motor_efectivo') or ''),
+                con_repuestos=True,
+                descripcion=descripcion_problema or servicio_ctx,
+                servicio_prompt=servicio_ctx,
+            )
+            if solo_cat and solo_cat.get('disponible') and solo_cat.get('contenido'):
+                contenido = solo_cat['contenido']
+                logger.info(
+                    'generar_cotizacion_ia: catálogo completo %s %s / %s — sin Gemini/web',
+                    ctx.get('marca'),
+                    ctx.get('modelo'),
+                    (servicio_ctx or '')[:80],
+                )
+                return {
+                    'disponible': True,
+                    'contenido': contenido,
+                    'contenido_ia': solo_cat.get('contenido_ia') or {'origen': 'catalogo_taller'},
+                    'contexto': {
+                        'vehiculo_marca': ctx.get('marca', ''),
+                        'vehiculo_modelo': ctx.get('modelo', ''),
+                        'vehiculo_anio': ctx.get('anio', ''),
+                        'vehiculo_patente': ctx.get('patente', ''),
+                        'vehiculo_cilindraje': ctx.get('cilindraje', ''),
+                        'tipo_motor': ctx.get('tipo_motor_efectivo', ''),
+                        'tipo_motor_label': ctx.get('tipo_motor_efectivo_label', ''),
+                        'aviso_motor': ctx.get('tipo_motor_conflicto_detalle', ''),
+                    },
+                    'error': None,
+                    'latencia_ms': 0,
+                    'tokens_entrada': 0,
+                    'tokens_salida': 0,
+                    'modelo': 'catalogo_taller',
+                    'valores_estimativos': False,
+                    'desde_catalogo': True,
+                }
+        except Exception as exc:
+            logger.info('generar_cotizacion_ia: intento catálogo falló, sigue Gemini: %s', exc)
+
     # Inyecta tarifas publicadas + historial enviado (marca/modelo) para orientar a Gemini.
     if taller is not None:
         try:

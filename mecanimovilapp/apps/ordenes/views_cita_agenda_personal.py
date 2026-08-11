@@ -63,7 +63,12 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
 
         base_qs = (
             CitaAgendaPersonal.objects
-            .select_related('detalle', 'detalle__oferta_servicio__servicio', 'miembro_taller')
+            .select_related(
+                'detalle',
+                'detalle__oferta_servicio__servicio',
+                'cotizacion_canal_origen',
+                'miembro_taller',
+            )
             .prefetch_related('miembro_taller__especialidades')
             .order_by('-fecha_servicio', '-hora_servicio')
         )

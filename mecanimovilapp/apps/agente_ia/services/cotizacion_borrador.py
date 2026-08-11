@@ -446,11 +446,91 @@ def _compactar_lineas_servicio(lineas: list[dict[str, Any]]) -> list[dict[str, A
     return [por_clave[k] for k in orden if k in por_clave]
 
 
+def _intentar_contenido_solo_catalogo(
+    *,
+    taller: Taller,
+    servicios: list[str],
+    marca: str,
+    modelo: str,
+    tipo_motor: str,
+    con_repuestos: bool,
+    descripcion: str,
+    servicio_prompt: str,
+) -> dict[str, Any] | None:
+    """Si TODOS los servicios tienen OfertaServicio para marca/modelo, arma contenido
+    solo desde catálogo (sin Gemini/Tavily/plantilla).
+
+    Returns None si falta alguna tarifa publicada.
+    """
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
+        recalcular_totales,
+    )
+
+    nombres = [str(s or '').strip() for s in (servicios or []) if str(s or '').strip()]
+    if not nombres or not taller:
+        return None
+
+    mano_total = 0
+    reps_total: list[dict[str, Any]] = []
+    nombres_catalogo: list[str] = []
+    for nombre in nombres:
+        oferta = buscar_oferta_exacta(
+            taller=taller,
+            servicio_nombre=nombre,
+            marca=marca,
+            modelo=modelo,
+            tipo_motor=tipo_motor,
+        )
+        if not oferta:
+            return None
+        precio_pub, _ = precio_publico_oferta(oferta, con_repuestos=con_repuestos)
+        if not precio_pub:
+            return None
+        mano_lin, reps_lin = _desglose_oferta_catalogo(oferta, con_repuestos=con_repuestos)
+        if mano_lin <= 0 and not reps_lin:
+            return None
+        mano_total += max(0, mano_lin)
+        reps_total.extend(reps_lin)
+        nombres_catalogo.append(
+            getattr(getattr(oferta, 'servicio', None), 'nombre', None) or nombre
+        )
+
+    costo_rep, mo, total = recalcular_totales(reps_total, mano_total)
+    return {
+        'disponible': True,
+        'contenido': {
+            'servicio_nombre': ' + '.join(nombres_catalogo) or servicio_prompt,
+            'descripcion_problema': descripcion or servicio_prompt,
+            'repuestos': reps_total,
+            'mano_obra_clp': mo,
+            'costo_repuestos_clp': costo_rep,
+            'total_clp': total,
+            'duracion_minutos_estimada': None,
+            'advertencias': [ADVERTENCIA_DESDE_CATALOGO],
+            'tipo_motor': tipo_motor,
+            'tipo_motor_label': '',
+            'valores_estimativos': False,
+            'precio_desde_catalogo': True,
+        },
+        'contenido_ia': {'origen': 'catalogo_taller'},
+        'contexto': {
+            'vehiculo_marca': marca,
+            'vehiculo_modelo': modelo,
+            'tipo_motor': tipo_motor,
+        },
+        'tokens_entrada': 0,
+        'tokens_salida': 0,
+        'modelo': 'catalogo_taller',
+        'desde_catalogo': True,
+    }
+
+
 def _desglose_oferta_catalogo(oferta, *, con_repuestos: bool) -> tuple[int, list[dict[str, Any]]]:
     """Separa mano de obra y repuestos en CLP públicos (IVA 19% incluido)."""
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import normalizar_repuesto
 
     # precio_sin_repuestos / precio_con_repuestos ya son al cliente (con IVA).
+    # Ej.: mano neto $25.000 → $29.750; reps neto $15.800 → $18.802.
     mano = int(oferta.precio_sin_repuestos or 0)
     if not mano:
         mano = _clp_con_iva(oferta.costo_mano_de_obra_sin_iva or 0)
@@ -962,10 +1042,41 @@ def crear_cotizacion_borrador_desde_agente(
         servicio_prompt = ' + '.join(servicios_turno)
         descripcion_ia = descripcion
 
-    # Reutilizar plantilla aprendizaje (mismo modelo + servicio) → sin Gemini ni Tavily.
+    # Prioridad de fuentes:
+    # 1) Catálogo OfertaServicio (mismo vehículo + servicio configurado) → sin Gemini/Tavily
+    # 2) Plantilla aprendizaje → sin Gemini/Tavily
+    # 3) Gemini (+ web posterior si faltan datos)
     resultado = None
     plantilla_reuso_id = None
+    desde_catalogo_completo = False
+    quiere_reps_turno = True if repuestos_flag is None else bool(repuestos_flag)
+
     if not es_update:
+        try:
+            resultado = _intentar_contenido_solo_catalogo(
+                taller=taller,
+                servicios=servicios_turno,
+                marca=marca,
+                modelo=modelo,
+                tipo_motor=tipo_motor,
+                con_repuestos=quiere_reps_turno,
+                descripcion=descripcion_ia,
+                servicio_prompt=servicio_prompt,
+            )
+            if resultado is not None:
+                desde_catalogo_completo = True
+                logger.info(
+                    'Agente usa catálogo taller (taller=%s %s %s / %s) — sin Gemini/Tavily/plantilla',
+                    taller.id,
+                    marca,
+                    modelo,
+                    servicio_prompt[:80],
+                )
+        except Exception as exc:
+            logger.warning('Resolución catálogo agente falló: %s', exc)
+            resultado = None
+
+    if resultado is None and not es_update:
         try:
             from mecanimovilapp.apps.ordenes.models import CotizacionCanalPlantilla
             from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.aprendizaje_cotizacion import (
@@ -1287,6 +1398,8 @@ def crear_cotizacion_borrador_desde_agente(
         else []
     )
 
+    catalogo_completo = bool(hay_algun_catalogo and not faltan_precios_catalogo)
+
     if es_update and cotizacion_existente:
         # Conserva mano de obra ya editada y solo SUMA lo nuevo.
         mano_prev = int(cotizacion_existente.mano_obra_clp or 0)
@@ -1302,51 +1415,60 @@ def crear_cotizacion_borrador_desde_agente(
                 usa_estimativo = True
         else:
             mano_obra = base_prev if base_prev > 0 else (mano_obra_catalogo + mano_obra_historico)
-        # Repuestos: nunca reinyectar los del servicio original; solo candidatos nuevos.
-        reps_ia_nuevos = ref_reps if (repuestos_flag is not False) else []
-        if servicios_nuevos and reps_ia_nuevos:
-            filtrados = [
-                r
-                for r in reps_ia_nuevos
-                if any(
-                    _repuesto_cubre_servicio(str(r.get('nombre') or ''), s)
-                    for s in servicios_nuevos
-                )
-            ]
-            # Si la IA devolvió solo piezas del servicio viejo, no las metas de nuevo.
-            reps_ia_nuevos = filtrados
+        # Repuestos: catálogo primero; IA/plantilla solo si falta tarifa.
+        reps_ia_nuevos: list[dict[str, Any]] = []
+        if faltan_precios_catalogo and repuestos_flag is not False:
+            reps_ia_nuevos = list(ref_reps)
+            if servicios_nuevos and reps_ia_nuevos:
+                filtrados = [
+                    r
+                    for r in reps_ia_nuevos
+                    if any(
+                        _repuesto_cubre_servicio(str(r.get('nombre') or ''), s)
+                        for s in servicios_nuevos
+                    )
+                ]
+                # Si la IA devolvió solo piezas del servicio viejo, no las metas de nuevo.
+                reps_ia_nuevos = filtrados
         repuestos = _merge_repuestos_borrador(repuestos, reps_para_agregar)
-        repuestos = _merge_repuestos_borrador(repuestos, reps_ia_nuevos)
+        if reps_ia_nuevos:
+            repuestos = _merge_repuestos_borrador(repuestos, reps_ia_nuevos)
+            usa_estimativo = True
         # Sin catálogo/IA para aire/polen: igual deja la línea de repuesto editable.
-        if servicios_nuevos and repuestos_flag is not False:
+        if faltan_precios_catalogo and servicios_nuevos and repuestos_flag is not False:
             fallback = _repuestos_fallback_servicios(servicios_nuevos, repuestos)
             if fallback:
                 repuestos = _merge_repuestos_borrador(repuestos, fallback)
                 usa_estimativo = True
-        if reps_para_agregar or reps_ia_nuevos:
-            if reps_ia_nuevos:
-                usa_estimativo = True
     else:
         mano_obra = mano_obra_catalogo + mano_obra_historico
-        if mano_obra <= 0 and ref_mano > 0:
-            mano_obra = ref_mano
-            usa_estimativo = True
-        elif faltan_precios_catalogo and ref_mano > mano_obra:
-            mano_obra = ref_mano
-            usa_estimativo = True
-        repuestos = _merge_repuestos_borrador(repuestos, reps_para_agregar)
-        cliente_quiere_reps = any(
-            preferencias_repuestos.get(_clave_servicio(l.get('nombre') or ''), True) for l in lineas
-        ) or (repuestos_flag is True)
-        if cliente_quiere_reps or not repuestos:
-            repuestos = _merge_repuestos_borrador(repuestos, ref_reps)
-            if ref_reps:
+        if not catalogo_completo:
+            if mano_obra <= 0 and ref_mano > 0:
+                mano_obra = ref_mano
                 usa_estimativo = True
+            elif faltan_precios_catalogo and ref_mano > mano_obra:
+                mano_obra = ref_mano
+                usa_estimativo = True
+        repuestos = _merge_repuestos_borrador(repuestos, reps_para_agregar)
+        # Catálogo completo: no mezclar estimaciones IA/plantilla encima.
+        if not catalogo_completo:
+            cliente_quiere_reps = any(
+                preferencias_repuestos.get(_clave_servicio(l.get('nombre') or ''), True)
+                for l in lineas
+            ) or (repuestos_flag is True)
+            if cliente_quiere_reps or not repuestos:
+                repuestos = _merge_repuestos_borrador(repuestos, ref_reps)
+                if ref_reps:
+                    usa_estimativo = True
 
     mano_obra_manual_prev = max(0, mano_obra - mano_obra_catalogo)
 
+    # Catálogo completo (match marca/modelo/servicio): no marcar estimativo.
+    if catalogo_completo or desde_catalogo_completo:
+        usa_estimativo = False
+
     advertencias: list[str] = []
-    if hay_algun_catalogo and not faltan_precios_catalogo and not usa_estimativo:
+    if (catalogo_completo or desde_catalogo_completo) and not usa_estimativo:
         advertencias.append(ADVERTENCIA_DESDE_CATALOGO)
     else:
         advertencias.append(ADVERTENCIA_SIN_CATALOGO)
@@ -1472,16 +1594,26 @@ def crear_cotizacion_borrador_desde_agente(
         meta_prev=meta_prev,
     )
 
+    precio_desde_catalogo = bool(
+        desde_catalogo_completo or catalogo_completo
+    )
+
+    origen_meta = 'agente_ia'
+    if precio_desde_catalogo:
+        origen_meta = 'catalogo_taller'
+    elif plantilla_reuso_id:
+        origen_meta = 'plantilla_auto'
+
     metadata_cot = {
         **meta_prev,
-        'origen': 'plantilla_auto' if plantilla_reuso_id else 'agente_ia',
+        'origen': origen_meta,
         'plantilla_id': plantilla_reuso_id or meta_prev.get('plantilla_id'),
         'sesion_id': sesion.id,
         'mano_obra_manual_clp': mano_obra_manual_prev,
         'recargo_domicilio_aplicado_clp': recargo_aplicado,
-        'precio_desde_catalogo': hay_algun_catalogo and not faltan_precios_catalogo,
+        'precio_desde_catalogo': precio_desde_catalogo,
         'precio_parcial_catalogo': hay_algun_catalogo and faltan_precios_catalogo,
-        'valores_estimativos': usa_estimativo,
+        'valores_estimativos': usa_estimativo and not precio_desde_catalogo,
         'precios_iva_incluido': True,
         'servicios_lineas': lineas,
         'precios_referenciales_ia': precios_ref_ia[-5:],  # últimas 5 estimaciones
@@ -1505,7 +1637,11 @@ def crear_cotizacion_borrador_desde_agente(
         marcar_busqueda_web_pendiente,
     )
 
-    metadata_cot = marcar_busqueda_web_pendiente(metadata_cot)
+    # Catálogo completo → no gastar Tavily/Gemini web; plantilla/IA parcial sí puede buscar.
+    if precio_desde_catalogo:
+        metadata_cot['busqueda_web_estado'] = 'omitida_catalogo'
+    else:
+        metadata_cot = marcar_busqueda_web_pendiente(metadata_cot)
 
     if not es_update and not meta_prev.get('propuesta_agente_original'):
         metadata_cot['propuesta_agente_original'] = {
