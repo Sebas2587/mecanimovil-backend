@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from django.db.models import F
-from django.utils import timezone
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -66,6 +65,9 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
         return CotizacionCanal.objects.filter(taller=taller).select_related(
             'conversation',
             'conversation__external_contact',
+            'cotizacion_original',
+            'cita_origen',
+            'cita_origen__detalle',
         )
 
     def retrieve(self, request, *args, **kwargs):
@@ -328,6 +330,9 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
                     motivo_servicio_adicional=data['motivo_servicio_adicional'],
                     servicio_nombre=data.get('servicio_nombre') or '',
                     descripcion_problema=data.get('descripcion_problema') or '',
+                    ejecucion_adicional=data.get('ejecucion_adicional') or 'misma_visita',
+                    fecha_propuesta=data.get('fecha_propuesta'),
+                    hora_propuesta=data.get('hora_propuesta'),
                 )
             else:
                 cotizacion = crear_cotizacion_adicional_desde_catalogo(
@@ -337,6 +342,9 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
                     creado_por=request.user,
                     motivo_servicio_adicional=data['motivo_servicio_adicional'],
                     servicios_catalogo=data.get('servicios_catalogo') or [],
+                    ejecucion_adicional=data.get('ejecucion_adicional') or 'misma_visita',
+                    fecha_propuesta=data.get('fecha_propuesta'),
+                    hora_propuesta=data.get('hora_propuesta'),
                 )
         except ValueError as exc:
             raise ValidationError(str(exc)) from exc
@@ -420,36 +428,31 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='marcar-aceptada')
     def marcar_aceptada(self, request, pk=None):
         """Fallback mandante cuando cliente acepta por teléfono (Messenger/IG)."""
-        from django.db import transaction
         from mecanimovilapp.apps.ordenes.services.cotizacion_publica import (
-            crear_cita_desde_cotizacion_aceptada,
+            aceptar_cotizacion_publica,
             on_cotizacion_respondida,
         )
 
         cotizacion = self.get_object()
         if cotizacion.estado != 'enviada':
             raise ValidationError({'estado': 'Solo cotizaciones enviadas pueden marcarse como aceptadas.'})
-        with transaction.atomic():
-            cotizacion.estado = 'aceptada'
-            cotizacion.aceptada_en = timezone.now()
-            cotizacion.save(update_fields=['estado', 'aceptada_en', 'actualizado_en'])
-
-            cita = crear_cita_desde_cotizacion_aceptada(cotizacion)
-            on_cotizacion_respondida(
-                cotizacion,
-                'aceptar',
-                conversation=cotizacion.conversation,
-                cita_id=cita.id,
-            )
-
-        from mecanimovilapp.apps.agente_ia.services.lead_scoring import (
-            actualizar_calificacion_desde_cotizacion,
+        try:
+            cotizacion, cita = aceptar_cotizacion_publica(cotizacion)
+        except ValueError as exc:
+            raise ValidationError({'estado': str(exc)}) from exc
+        on_cotizacion_respondida(
+            cotizacion,
+            'aceptar',
+            conversation=cotizacion.conversation,
+            cita_id=cita.id if cita else None,
         )
-        actualizar_calificacion_desde_cotizacion(cotizacion, evento='aceptada')
 
         data = CotizacionCanalSerializer(cotizacion).data
-        data['cita_id'] = cita.id
-        data['horario_por_confirmar'] = True
+        if cita is not None:
+            data['cita_id'] = cita.id
+        data['horario_por_confirmar'] = bool(
+            cita and not cotizacion.es_cotizacion_adicional and getattr(cita, 'horario_por_confirmar', False)
+        )
         return Response(data)
 
     @action(detail=True, methods=['post'], url_path='marcar-perdida')
@@ -469,6 +472,13 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
                 })
         cotizacion.estado = 'cancelada'
         cotizacion.save(update_fields=['estado', 'actualizado_en'])
+        if cotizacion.es_cotizacion_adicional and cotizacion.cita_origen_id:
+            from mecanimovilapp.apps.ordenes.services.cotizacion_adicional import (
+                actualizar_precio_referencia_visita,
+            )
+            cita = cotizacion.cita_origen
+            if cita is not None:
+                actualizar_precio_referencia_visita(cita)
         from mecanimovilapp.apps.agente_ia.services.lead_scoring import (
             actualizar_calificacion_desde_cotizacion,
         )

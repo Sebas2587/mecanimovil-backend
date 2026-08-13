@@ -33,6 +33,11 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
     listo_para_enviar = serializers.SerializerMethodField()
     pendientes_revision = serializers.SerializerMethodField()
     cotizacion_original_id = serializers.IntegerField(read_only=True, allow_null=True)
+    cita_origen_id = serializers.IntegerField(read_only=True, allow_null=True)
+    servicio_principal_nombre = serializers.SerializerMethodField()
+    ejecucion_adicional = serializers.CharField(read_only=True)
+    fecha_propuesta = serializers.DateField(read_only=True, allow_null=True)
+    hora_propuesta = serializers.TimeField(read_only=True, allow_null=True, format='%H:%M')
 
     def _metadata_agente(self, obj) -> dict:
         meta = obj.metadata if isinstance(getattr(obj, 'metadata', None), dict) else {}
@@ -75,6 +80,8 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
         return joined or 'Cliente'
 
     def get_cita_personal_id(self, obj) -> int | None:
+        if obj.es_cotizacion_adicional and obj.cita_origen_id:
+            return obj.cita_origen_id
         cache = self.context.setdefault('_cita_id_by_cotizacion', {})
         if obj.pk in cache:
             return cache[obj.pk]
@@ -86,6 +93,18 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
         )
         cache[obj.pk] = cita
         return cita
+
+    def get_servicio_principal_nombre(self, obj) -> str | None:
+        if not obj.es_cotizacion_adicional:
+            return None
+        orig = obj.cotizacion_original
+        if orig is not None and (orig.servicio_nombre or '').strip():
+            return orig.servicio_nombre.strip()
+        cita = obj.cita_origen
+        det = getattr(cita, 'detalle', None) if cita is not None else None
+        if det is not None and (det.servicio_nombre or '').strip():
+            return det.servicio_nombre.strip()
+        return None
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -111,6 +130,7 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             'cliente_display',
             'canal',
             'cita_personal_id',
+            'cita_origen_id',
             'token',
             'url_publica',
             'share_url',
@@ -142,6 +162,10 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             'cotizacion_original_id',
             'es_cotizacion_adicional',
             'motivo_servicio_adicional',
+            'servicio_principal_nombre',
+            'ejecucion_adicional',
+            'fecha_propuesta',
+            'hora_propuesta',
             'message_envio',
             'enviada_en',
             'aceptada_en',
@@ -156,6 +180,7 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             'cliente_display',
             'canal',
             'cita_personal_id',
+            'cita_origen_id',
             'token',
             'url_publica',
             'share_url',
@@ -166,6 +191,10 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             'cotizacion_original_id',
             'es_cotizacion_adicional',
             'motivo_servicio_adicional',
+            'servicio_principal_nombre',
+            'ejecucion_adicional',
+            'fecha_propuesta',
+            'hora_propuesta',
             'costo_repuestos_clp',
             'total_clp',
             'message_envio',
@@ -239,6 +268,13 @@ class CrearCotizacionAdicionalSerializer(serializers.Serializer):
     servicios_catalogo = ServicioCatalogoAdicionalSerializer(many=True, required=False)
     servicio_nombre = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
     descripcion_problema = serializers.CharField(required=False, allow_blank=True, default='')
+    ejecucion_adicional = serializers.ChoiceField(
+        choices=('misma_visita', 'nueva_fecha'),
+        required=False,
+        default='misma_visita',
+    )
+    fecha_propuesta = serializers.DateField(required=False, allow_null=True)
+    hora_propuesta = serializers.TimeField(required=False, allow_null=True)
 
     def validate(self, attrs):
         modo = attrs.get('modo') or 'catalogo'

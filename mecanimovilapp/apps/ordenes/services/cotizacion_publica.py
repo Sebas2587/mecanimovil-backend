@@ -94,11 +94,30 @@ def _repuestos_publicos(repuestos: list | None) -> list[dict]:
     return out
 
 
+def _servicio_principal_publico(cotizacion: CotizacionCanal) -> dict | None:
+    if not cotizacion.es_cotizacion_adicional:
+        return None
+    nombre = ''
+    orig = cotizacion.cotizacion_original
+    if orig is not None:
+        nombre = (orig.servicio_nombre or '').strip()
+    if not nombre:
+        cita = cotizacion.cita_origen
+        det = getattr(cita, 'detalle', None) if cita is not None else None
+        if det is not None:
+            nombre = (det.servicio_nombre or '').strip()
+    return {
+        'nombre': nombre or 'Servicio en curso',
+        'modalidad': cotizacion.modalidad,
+    }
+
+
 def serializar_cotizacion_publica(cotizacion: CotizacionCanal) -> dict:
     taller = cotizacion.taller
     # direccion_fisica es reverse OneToOne: no existe taller.direccion_fisica_id
     direccion_fisica = getattr(taller, 'direccion_fisica', None) if taller else None
     foto_perfil = getattr(taller, 'foto_perfil', None) if taller else None
+    es_adicional = bool(cotizacion.es_cotizacion_adicional)
     return {
         'id': cotizacion.id,
         'estado': cotizacion.estado,
@@ -138,6 +157,25 @@ def serializar_cotizacion_publica(cotizacion: CotizacionCanal) -> dict:
             'foto_perfil': foto_perfil.url if foto_perfil else None,
         },
         'puede_responder': cotizacion.estado == 'enviada',
+        'es_trabajo_adicional': es_adicional,
+        'motivo_servicio_adicional': (
+            (cotizacion.motivo_servicio_adicional or '').strip() if es_adicional else None
+        ),
+        'servicio_principal': _servicio_principal_publico(cotizacion),
+        'pago_directo_taller': True,
+        'ejecucion_adicional': (
+            (cotizacion.ejecucion_adicional or 'misma_visita') if es_adicional else None
+        ),
+        'fecha_propuesta': (
+            cotizacion.fecha_propuesta.isoformat()
+            if es_adicional and cotizacion.fecha_propuesta
+            else None
+        ),
+        'hora_propuesta': (
+            cotizacion.hora_propuesta.strftime('%H:%M')
+            if es_adicional and cotizacion.hora_propuesta
+            else None
+        ),
     }
 
 
@@ -148,6 +186,11 @@ def enviar_cotizacion_libre(cotizacion: CotizacionCanal) -> CotizacionCanal:
         raise ValueError('Solo se pueden enviar cotizaciones en borrador.')
     if not cotizacion.es_libre:
         raise ValueError('Use enviar_cotizacion_canal para cotizaciones con conversación.')
+    from mecanimovilapp.apps.ordenes.services.cotizacion_adicional import (
+        validar_adicional_listo_para_enviar,
+    )
+
+    validar_adicional_listo_para_enviar(cotizacion)
     if not cotizacion.servicio_nombre.strip():
         raise ValueError('Indica el nombre del servicio.')
     if not cotizacion.cliente_nombre.strip():
@@ -269,7 +312,7 @@ def crear_cita_desde_cotizacion_aceptada(cotizacion: CotizacionCanal) -> CitaAge
 
 
 @transaction.atomic
-def aceptar_cotizacion_publica(cotizacion: CotizacionCanal) -> tuple[CotizacionCanal, CitaAgendaPersonal]:
+def aceptar_cotizacion_publica(cotizacion: CotizacionCanal) -> tuple[CotizacionCanal, CitaAgendaPersonal | None]:
     if cotizacion.estado != 'enviada':
         raise ValueError('Esta cotización ya fue respondida.')
 
@@ -285,7 +328,31 @@ def aceptar_cotizacion_publica(cotizacion: CotizacionCanal) -> tuple[CotizacionC
         update_cot.append('cliente_telefono')
     cotizacion.save(update_fields=update_cot)
 
-    cita = crear_cita_desde_cotizacion_aceptada(cotizacion)
+    from mecanimovilapp.apps.ordenes.services.cotizacion_adicional import (
+        aplicar_adicional_aceptada_a_cita,
+        crear_cita_desde_adicional_nueva_fecha,
+        es_adicional_nueva_fecha,
+    )
+
+    if cotizacion.es_cotizacion_adicional:
+        cita = cotizacion.cita_origen
+        if cita is None:
+            meta = cotizacion.metadata if isinstance(cotizacion.metadata, dict) else {}
+            meta_cita_id = meta.get('cita_personal_id')
+            if meta_cita_id:
+                cita = CitaAgendaPersonal.objects.filter(pk=meta_cita_id).first()
+                if cita is not None:
+                    cotizacion.cita_origen = cita
+                    cotizacion.save(update_fields=['cita_origen', 'actualizado_en'])
+        if cita is None or cita.estado != 'activa':
+            raise ValueError('El servicio principal ya no está activo para asociar este trabajo adicional.')
+        if es_adicional_nueva_fecha(cotizacion):
+            cita = crear_cita_desde_adicional_nueva_fecha(cotizacion, cita)
+        else:
+            aplicar_adicional_aceptada_a_cita(cotizacion, cita)
+    else:
+        cita = crear_cita_desde_cotizacion_aceptada(cotizacion)
+
     from mecanimovilapp.apps.agente_ia.services.lead_scoring import (
         actualizar_calificacion_desde_cotizacion,
     )
@@ -338,7 +405,11 @@ def on_cotizacion_respondida(
             conversation_id=conversation_id or 0,
             cita_id=cita_id,
         )
-        if conv and isinstance(conv, Conversation):
+        from mecanimovilapp.apps.ordenes.services.cotizacion_adicional import (
+            cotizacion_es_trabajo_adicional,
+        )
+
+        if conv and isinstance(conv, Conversation) and not cotizacion_es_trabajo_adicional(cotizacion):
             from mecanimovilapp.apps.agente_ia.tasks import (
                 aprender_conversacion_exitosa_task,
                 iniciar_agendamiento_task,
@@ -346,6 +417,10 @@ def on_cotizacion_respondida(
 
             aprender_conversacion_exitosa_task.delay(cotizacion.id)
             iniciar_agendamiento_task.delay(cotizacion.id)
+        elif conv and isinstance(conv, Conversation):
+            from mecanimovilapp.apps.agente_ia.tasks import aprender_conversacion_exitosa_task
+
+            aprender_conversacion_exitosa_task.delay(cotizacion.id)
     elif accion == 'rechazar':
         from mecanimovilapp.apps.agente_ia.services.notificaciones import (
             notificar_cotizacion_rechazada_agente,

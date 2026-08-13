@@ -78,6 +78,35 @@ def formatear_teaser_cotizacion(cotizacion: CotizacionCanal) -> str:
         filter(None, [cotizacion.vehiculo_marca, cotizacion.vehiculo_modelo])
     ).strip() or 'tu vehículo'
     url = cotizacion.url_publica or ''
+    if cotizacion.es_cotizacion_adicional:
+        principal = ''
+        orig = cotizacion.cotizacion_original
+        if orig is not None:
+            principal = (orig.servicio_nombre or '').strip()
+        if not principal:
+            cita = cotizacion.cita_origen
+            det = getattr(cita, 'detalle', None) if cita is not None else None
+            if det is not None:
+                principal = (det.servicio_nombre or '').strip()
+        contexto = principal or 'tu servicio en curso'
+        from mecanimovilapp.apps.ordenes.services.cotizacion_adicional import (
+            es_adicional_nueva_fecha,
+            formatear_slot_propuesto,
+        )
+
+        slot = formatear_slot_propuesto(cotizacion) if es_adicional_nueva_fecha(cotizacion) else ''
+        fecha_txt = f' Fecha propuesta: {slot}.' if slot else ''
+        if url:
+            return (
+                f'Te enviamos un trabajo adicional encontrado durante {contexto} ({vehiculo}).'
+                f'{fecha_txt} '
+                f'Revísalo y responde (aceptar o rechazar) en este enlace: {url}'
+            )
+        return (
+            f'Te enviamos un trabajo adicional encontrado durante {contexto} ({vehiculo}).'
+            f'{fecha_txt} '
+            'Revisa los detalles y respóndenos cuando puedas.'
+        )
     if url:
         return (
             f'¡Tu cotización para {servicio} ({vehiculo}) está lista! '
@@ -86,7 +115,21 @@ def formatear_teaser_cotizacion(cotizacion: CotizacionCanal) -> str:
     return (
         f'¡Tu cotización para {servicio} ({vehiculo}) está lista! '
         'Revisa los detalles y respóndenos cuando puedas.'
+        )
+
+
+def _mensaje_inbound_aceptacion(cotizacion: CotizacionCanal) -> str:
+    from mecanimovilapp.apps.ordenes.services.cotizacion_adicional import (
+        es_adicional_nueva_fecha,
+        formatear_slot_propuesto,
     )
+
+    if es_adicional_nueva_fecha(cotizacion):
+        slot = formatear_slot_propuesto(cotizacion)
+        if slot:
+            return f'✅ Trabajo adicional aceptado. Quedó agendado para el {slot}.'
+        return '✅ Trabajo adicional aceptado. Quedó agendado en la fecha acordada.'
+    return '✅ Trabajo adicional aceptado. El taller puede continuar en la misma visita.'
 
 
 def formatear_resumen_cotizacion(cotizacion: CotizacionCanal) -> str:
@@ -287,6 +330,24 @@ def aplicar_edicion_cotizacion(cotizacion: CotizacionCanal, data: dict) -> Cotiz
     if 'duracion_minutos_estimada' in data:
         val = data['duracion_minutos_estimada']
         cotizacion.duracion_minutos_estimada = int(val) if val else None
+    if cotizacion.es_cotizacion_adicional and (
+        'ejecucion_adicional' in data or 'fecha_propuesta' in data or 'hora_propuesta' in data
+    ):
+        from mecanimovilapp.apps.ordenes.services.cotizacion_adicional import (
+            normalizar_plan_ejecucion,
+        )
+
+        modo_in = data.get('ejecucion_adicional', cotizacion.ejecucion_adicional)
+        fecha_in = data['fecha_propuesta'] if 'fecha_propuesta' in data else cotizacion.fecha_propuesta
+        hora_in = data['hora_propuesta'] if 'hora_propuesta' in data else cotizacion.hora_propuesta
+        ejecucion, fecha_p, hora_p = normalizar_plan_ejecucion(
+            ejecucion_adicional=modo_in,
+            fecha_propuesta=fecha_in,
+            hora_propuesta=hora_in,
+        )
+        cotizacion.ejecucion_adicional = ejecucion
+        cotizacion.fecha_propuesta = fecha_p
+        cotizacion.hora_propuesta = hora_p
     costo_rep, mo, total = recalcular_totales(
         cotizacion.repuestos or [],
         int(cotizacion.mano_obra_clp or 0),
@@ -309,6 +370,11 @@ def aplicar_edicion_cotizacion(cotizacion: CotizacionCanal, data: dict) -> Cotiz
 def enviar_cotizacion_canal(cotizacion: CotizacionCanal, user) -> Message:
     if cotizacion.estado not in ('borrador',):
         raise ValueError('Solo se pueden enviar cotizaciones en borrador.')
+    from mecanimovilapp.apps.ordenes.services.cotizacion_adicional import (
+        validar_adicional_listo_para_enviar,
+    )
+
+    validar_adicional_listo_para_enviar(cotizacion)
     conversation = cotizacion.conversation
     if conversation.type != 'OMNICHANNEL':
         raise ValueError('La cotización debe estar ligada a una conversación omnicanal.')
@@ -485,7 +551,11 @@ def procesar_respuesta_interactive_cotizacion(
         conversation=conversation,
         sender=None,
         content=(
-            '✅ Cotización aceptada. El taller la recibió y la agendará contigo.'
+            (
+                _mensaje_inbound_aceptacion(cotizacion)
+                if cotizacion.es_cotizacion_adicional
+                else '✅ Cotización aceptada. El taller la recibió y la agendará contigo.'
+            )
             if accion == 'aceptar'
             else '❌ Cotización rechazada.'
         ),

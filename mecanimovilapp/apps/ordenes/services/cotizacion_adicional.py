@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import date, datetime, time as dt_time
 from typing import Any
 
 from django.contrib.auth import get_user_model
@@ -25,6 +26,69 @@ logger = logging.getLogger(__name__)
 User = get_user_model()
 
 ADVERTENCIA_ADICIONAL = 'Cotización adicional sobre un trabajo en curso del mismo cliente'
+EJECUCION_MISMA_VISITA = 'misma_visita'
+EJECUCION_NUEVA_FECHA = 'nueva_fecha'
+
+
+def parse_fecha_propuesta(val) -> date | None:
+    if val in (None, ''):
+        return None
+    if isinstance(val, datetime):
+        return val.date()
+    if isinstance(val, date):
+        return val
+    return datetime.strptime(str(val)[:10], '%Y-%m-%d').date()
+
+
+def parse_hora_propuesta(val) -> dt_time | None:
+    if val in (None, ''):
+        return None
+    if isinstance(val, dt_time):
+        return val
+    raw = str(val).strip()
+    parts = raw[:8].split(':')
+    hora = int(parts[0])
+    minuto = int(parts[1]) if len(parts) > 1 else 0
+    return dt_time(hora, minuto)
+
+
+def normalizar_plan_ejecucion(
+    *,
+    ejecucion_adicional: str | None = None,
+    fecha_propuesta=None,
+    hora_propuesta=None,
+) -> tuple[str, date | None, dt_time | None]:
+    modo = (ejecucion_adicional or EJECUCION_MISMA_VISITA).strip() or EJECUCION_MISMA_VISITA
+    if modo not in (EJECUCION_MISMA_VISITA, EJECUCION_NUEVA_FECHA):
+        raise ValueError('La ejecución del adicional debe ser misma visita o nueva fecha.')
+    if modo == EJECUCION_MISMA_VISITA:
+        return modo, None, None
+    return modo, parse_fecha_propuesta(fecha_propuesta), parse_hora_propuesta(hora_propuesta)
+
+
+def es_adicional_nueva_fecha(cotizacion: CotizacionCanal) -> bool:
+    return bool(
+        cotizacion.es_cotizacion_adicional
+        and (cotizacion.ejecucion_adicional or '') == EJECUCION_NUEVA_FECHA
+    )
+
+
+def formatear_slot_propuesto(cotizacion: CotizacionCanal) -> str:
+    if not cotizacion.fecha_propuesta:
+        return ''
+    fecha = cotizacion.fecha_propuesta.strftime('%d/%m/%Y')
+    if cotizacion.hora_propuesta:
+        return f'{fecha} a las {cotizacion.hora_propuesta.strftime("%H:%M")}'
+    return fecha
+
+
+def validar_adicional_listo_para_enviar(cotizacion: CotizacionCanal) -> None:
+    if not es_adicional_nueva_fecha(cotizacion):
+        return
+    if not cotizacion.fecha_propuesta or not cotizacion.hora_propuesta:
+        raise ValueError(
+            'Indica fecha y hora para el trabajo adicional en una visita posterior.'
+        )
 
 
 def _titulo_servicios(lineas: list[dict[str, Any]]) -> str:
@@ -128,10 +192,21 @@ def crear_cotizacion_adicional_desde_catalogo(
     creado_por: User,
     motivo_servicio_adicional: str,
     servicios_catalogo: list[dict[str, Any]],
+    ejecucion_adicional: str = EJECUCION_MISMA_VISITA,
+    fecha_propuesta=None,
+    hora_propuesta=None,
 ) -> CotizacionCanal:
     validar_cotizacion_original(cotizacion_original=cotizacion_original, taller=taller)
+    if cotizacion_original.es_cotizacion_adicional:
+        raise ValueError('No se puede crear un trabajo adicional sobre otro adicional.')
     if not cita_permite_cotizacion_adicional(cita):
         raise ValueError('Este trabajo aún no permite cotizaciones adicionales.')
+
+    ejecucion, fecha_p, hora_p = normalizar_plan_ejecucion(
+        ejecucion_adicional=ejecucion_adicional,
+        fecha_propuesta=fecha_propuesta,
+        hora_propuesta=hora_propuesta,
+    )
 
     base = _datos_cliente_desde_original(cotizacion_original)
     lineas, advertencias, mano_obra = _armar_lineas_catalogo(
@@ -160,7 +235,11 @@ def crear_cotizacion_adicional_desde_catalogo(
         creado_por=creado_por,
         estado='borrador',
         cotizacion_original=cotizacion_original,
+        cita_origen=cita,
         es_cotizacion_adicional=True,
+        ejecucion_adicional=ejecucion,
+        fecha_propuesta=fecha_p,
+        hora_propuesta=hora_p,
         motivo_servicio_adicional=motivo[:2000],
         cliente_nombre=base['cliente_nombre'],
         cliente_telefono=base['cliente_telefono'],
@@ -208,6 +287,9 @@ def crear_cotizacion_adicional_con_ia(
     motivo_servicio_adicional: str,
     servicio_nombre: str,
     descripcion_problema: str = '',
+    ejecucion_adicional: str = EJECUCION_MISMA_VISITA,
+    fecha_propuesta=None,
+    hora_propuesta=None,
 ) -> CotizacionCanal:
     from mecanimovilapp.apps.suscripciones.cuotas_services import (
         CuotaAgotadaError,
@@ -217,8 +299,16 @@ def crear_cotizacion_adicional_con_ia(
     from mecanimovilapp.apps.suscripciones.models import ConsumoFeatureMensual
 
     validar_cotizacion_original(cotizacion_original=cotizacion_original, taller=taller)
+    if cotizacion_original.es_cotizacion_adicional:
+        raise ValueError('No se puede crear un trabajo adicional sobre otro adicional.')
     if not cita_permite_cotizacion_adicional(cita):
         raise ValueError('Este trabajo aún no permite cotizaciones adicionales.')
+
+    ejecucion, fecha_p, hora_p = normalizar_plan_ejecucion(
+        ejecucion_adicional=ejecucion_adicional,
+        fecha_propuesta=fecha_propuesta,
+        hora_propuesta=hora_propuesta,
+    )
 
     try:
         verificar_y_consumir_cuota(creado_por, ConsumoFeatureMensual.FEATURE_COTIZACION_IA)
@@ -308,7 +398,11 @@ def crear_cotizacion_adicional_con_ia(
         creado_por=creado_por,
         estado='borrador',
         cotizacion_original=cotizacion_original,
+        cita_origen=cita,
         es_cotizacion_adicional=True,
+        ejecucion_adicional=ejecucion,
+        fecha_propuesta=fecha_p,
+        hora_propuesta=hora_p,
         motivo_servicio_adicional=motivo[:2000],
         cliente_nombre=base['cliente_nombre'],
         cliente_telefono=base['cliente_telefono'],
@@ -367,3 +461,118 @@ def crear_cotizacion_adicional_con_ia(
         cita.id,
     )
     return cotizacion
+
+
+def cotizacion_es_trabajo_adicional(cotizacion: CotizacionCanal) -> bool:
+    return bool(cotizacion.es_cotizacion_adicional)
+
+
+def total_visita_cita(cita: CitaAgendaPersonal) -> int:
+    """Precio de referencia de la visita: principal + adicionales aceptadas."""
+    total = 0
+    origen = getattr(cita, 'cotizacion_canal_origen', None)
+    if origen is not None:
+        total += max(0, int(origen.total_clp or 0))
+    adicionales = getattr(cita, 'cotizaciones_adicionales', None)
+    if adicionales is None:
+        return total
+    for ad in adicionales.filter(estado='aceptada'):
+        if getattr(ad, 'ejecucion_adicional', EJECUCION_MISMA_VISITA) == EJECUCION_NUEVA_FECHA:
+            continue
+        total += max(0, int(ad.total_clp or 0))
+    return total
+
+
+def actualizar_precio_referencia_visita(cita: CitaAgendaPersonal) -> None:
+    det = getattr(cita, 'detalle', None)
+    if det is None:
+        return
+    det.precio_referencia = total_visita_cita(cita)
+    det.save(update_fields=['precio_referencia'])
+
+
+def aplicar_adicional_aceptada_a_cita(
+    cotizacion: CotizacionCanal,
+    cita: CitaAgendaPersonal,
+) -> CitaAgendaPersonal:
+    """Suma duración y precio de referencia a la cita principal. No crea cita nueva."""
+    extra = int(cotizacion.duracion_minutos_estimada or 0)
+    update_fields: list[str] = []
+    if extra > 0:
+        cita.duracion_minutos = int(cita.duracion_minutos or 0) + extra
+        update_fields.append('duracion_minutos')
+    if update_fields:
+        cita.save(update_fields=update_fields)
+    actualizar_precio_referencia_visita(cita)
+    logger.info(
+        'Cotización adicional %s aceptada → cita principal %s (sin cita nueva)',
+        cotizacion.id,
+        cita.id,
+    )
+    return cita
+
+
+def crear_cita_desde_adicional_nueva_fecha(
+    cotizacion: CotizacionCanal,
+    cita_padre: CitaAgendaPersonal,
+) -> CitaAgendaPersonal:
+    """Cita hija con horario propuesto. Ligada al principal vía cotización.cita_origen."""
+    from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonalDetalle
+    from mecanimovilapp.apps.ordenes.services.cotizacion_publica import _telefono_desde_cotizacion
+
+    if not cotizacion.fecha_propuesta or not cotizacion.hora_propuesta:
+        raise ValueError('Falta fecha y hora para agendar el trabajo adicional.')
+
+    duracion = cotizacion.duracion_minutos_estimada or 60
+    tipo_servicio = 'domicilio' if cotizacion.modalidad == 'domicilio' else 'taller'
+    direccion = (cotizacion.direccion_servicio or '').strip()[:500]
+    tel_efectivo = _telefono_desde_cotizacion(cotizacion)
+
+    cita = CitaAgendaPersonal(
+        taller=cotizacion.taller,
+        cotizacion_canal_origen=cotizacion,
+        conversation_origen=cotizacion.conversation or cita_padre.conversation_origen,
+        miembro_taller=cita_padre.miembro_taller,
+        fecha_servicio=cotizacion.fecha_propuesta,
+        hora_servicio=cotizacion.hora_propuesta,
+        duracion_minutos=duracion,
+        tipo_servicio=tipo_servicio,
+        horario_por_confirmar=False,
+        creado_por=cotizacion.creado_por or cita_padre.creado_por,
+    )
+    if cita.creado_por_id is None and cotizacion.taller and cotizacion.taller.usuario_id:
+        cita.creado_por_id = cotizacion.taller.usuario_id
+    cita.full_clean()
+    cita.save()
+
+    det_padre = getattr(cita_padre, 'detalle', None)
+    det = CitaAgendaPersonalDetalle(
+        cita=cita,
+        cliente_nombre=cotizacion.cliente_nombre or getattr(det_padre, 'cliente_nombre', None) or 'Cliente',
+        cliente_telefono=tel_efectivo or (cotizacion.cliente_telefono or '') or getattr(det_padre, 'cliente_telefono', ''),
+        direccion=direccion or getattr(det_padre, 'direccion', '') or '',
+        vehiculo_marca=cotizacion.vehiculo_marca or getattr(det_padre, 'vehiculo_marca', '') or '',
+        vehiculo_modelo=cotizacion.vehiculo_modelo or getattr(det_padre, 'vehiculo_modelo', '') or '',
+        vehiculo_patente=cotizacion.vehiculo_patente or getattr(det_padre, 'vehiculo_patente', '') or '',
+        vehiculo_vin=(cotizacion.vehiculo_vin or getattr(det_padre, 'vehiculo_vin', '') or '').strip().upper()[:30],
+        vehiculo_anio=cotizacion.vehiculo_anio or getattr(det_padre, 'vehiculo_anio', None),
+        vehiculo_cilindraje=cilindraje_efectivo(
+            cotizacion.vehiculo_cilindraje or getattr(det_padre, 'vehiculo_cilindraje', ''),
+            cotizacion.vehiculo_marca,
+            cotizacion.vehiculo_modelo,
+        ),
+        servicio_nombre=cotizacion.servicio_nombre,
+        descripcion=cotizacion.descripcion_problema or cotizacion.motivo_servicio_adicional,
+        precio_referencia=cotizacion.total_clp,
+    )
+    det.full_clean()
+    det.save()
+    logger.info(
+        'Cotización adicional %s aceptada → cita hija %s (fecha %s %s, padre %s)',
+        cotizacion.id,
+        cita.id,
+        cotizacion.fecha_propuesta,
+        cotizacion.hora_propuesta,
+        cita_padre.id,
+    )
+    return cita

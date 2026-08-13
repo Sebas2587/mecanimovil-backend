@@ -67,6 +67,7 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
     cotizacion_canal_origen_id = serializers.IntegerField(read_only=True, allow_null=True)
     resumen_economico = serializers.SerializerMethodField()
     permite_cotizacion_adicional = serializers.SerializerMethodField()
+    cotizaciones_adicionales = serializers.SerializerMethodField()
 
     class Meta:
         model = CitaAgendaPersonal
@@ -108,6 +109,7 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
             'cotizacion_canal_origen_id',
             'resumen_economico',
             'permite_cotizacion_adicional',
+            'cotizaciones_adicionales',
         ]
         read_only_fields = [
             'id',
@@ -144,6 +146,45 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
         )
 
         return cita_permite_cotizacion_adicional(obj)
+
+    def get_cotizaciones_adicionales(self, obj) -> list[dict]:
+        cache = self.context.setdefault('_adicionales_by_cita', {})
+        if obj.pk in cache:
+            return cache[obj.pk]
+        rows = []
+        qs = getattr(obj, 'cotizaciones_adicionales', None)
+        if qs is None:
+            cache[obj.pk] = rows
+            return rows
+        for cot in qs.order_by('creado_en'):
+            rows.append(
+                {
+                    'id': cot.id,
+                    'estado': cot.estado,
+                    'servicio_nombre': cot.servicio_nombre,
+                    'motivo_servicio_adicional': (cot.motivo_servicio_adicional or '').strip(),
+                    'total_clp': int(cot.total_clp or 0),
+                    'ejecucion_adicional': cot.ejecucion_adicional or 'misma_visita',
+                    'fecha_propuesta': (
+                        cot.fecha_propuesta.isoformat() if cot.fecha_propuesta else None
+                    ),
+                    'hora_propuesta': (
+                        cot.hora_propuesta.strftime('%H:%M') if cot.hora_propuesta else None
+                    ),
+                    'cita_hija_id': next(
+                        (
+                            c.id
+                            for c in cot.citas_generadas.all()
+                            if getattr(c, 'estado', None) == 'activa'
+                        ),
+                        None,
+                    ) if (cot.ejecucion_adicional or '') == 'nueva_fecha' and cot.estado == 'aceptada' else None,
+                    'enviada_en': cot.enviada_en.isoformat() if cot.enviada_en else None,
+                    'aceptada_en': cot.aceptada_en.isoformat() if cot.aceptada_en else None,
+                }
+            )
+        cache[obj.pk] = rows
+        return rows
 
     def get_resumen_economico(self, obj) -> dict | None:
         from mecanimovilapp.apps.ordenes.services.resumen_economico_cita import (

@@ -6,6 +6,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db.models import Prefetch
 from django.db.models.deletion import ProtectedError
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
@@ -14,7 +15,7 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
-from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonal, SolicitudServicio
+from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonal, CotizacionCanal, SolicitudServicio
 from mecanimovilapp.apps.ordenes.permissions import IsProveedor
 from mecanimovilapp.apps.ordenes.serializers_cita_agenda_personal import (
     CitaAgendaPersonalCreateSerializer,
@@ -69,7 +70,13 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
                 'cotizacion_canal_origen',
                 'miembro_taller',
             )
-            .prefetch_related('miembro_taller__especialidades')
+            .prefetch_related(
+                'miembro_taller__especialidades',
+                Prefetch(
+                    'cotizaciones_adicionales',
+                    queryset=CotizacionCanal.objects.prefetch_related('citas_generadas').order_by('creado_en'),
+                ),
+            )
             .order_by('-fecha_servicio', '-hora_servicio')
         )
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from mecanimovilapp.apps.ordenes.services.cotizacion_adicional import EJECUCION_MISMA_VISITA
+
 
 def _desglose_iva_desde_total(total_clp: int) -> dict[str, int]:
     total = max(0, int(total_clp or 0))
@@ -60,7 +62,7 @@ def _repuestos_desde_oferta(oferta) -> list[dict[str, Any]]:
     return out
 
 
-def construir_resumen_economico_cita(cita) -> dict[str, Any] | None:
+def _construir_resumen_principal(cita) -> dict[str, Any] | None:
     """Arma desglose completo desde cotización origen, oferta o precio referencia."""
     det = getattr(cita, 'detalle', None)
     if det is None:
@@ -173,3 +175,63 @@ def construir_resumen_economico_cita(cita) -> dict[str, Any] | None:
         }
 
     return None
+
+
+def _servicios_secundarios_cita(cita) -> list[dict[str, Any]]:
+    related = getattr(cita, 'cotizaciones_adicionales', None)
+    if related is None:
+        return []
+    try:
+        rows = list(related.order_by('creado_en'))
+    except (TypeError, AttributeError, ValueError):
+        return []
+    out: list[dict[str, Any]] = []
+    for cot in rows:
+        if not hasattr(cot, 'id'):
+            continue
+        out.append(
+            {
+                'cotizacion_id': cot.id,
+                'servicio_nombre': getattr(cot, 'servicio_nombre', None) or 'Trabajo adicional',
+                'motivo': (getattr(cot, 'motivo_servicio_adicional', None) or '').strip(),
+                'estado': getattr(cot, 'estado', '') or '',
+                'mano_obra_clp': max(0, int(getattr(cot, 'mano_obra_clp', 0) or 0)),
+                'costo_repuestos_clp': max(0, int(getattr(cot, 'costo_repuestos_clp', 0) or 0)),
+                'total_clp': max(0, int(getattr(cot, 'total_clp', 0) or 0)),
+                'ejecucion_adicional': getattr(cot, 'ejecucion_adicional', None) or EJECUCION_MISMA_VISITA,
+                'fecha_propuesta': (
+                    cot.fecha_propuesta.isoformat()
+                    if getattr(cot, 'fecha_propuesta', None) else None
+                ),
+                'hora_propuesta': (
+                    cot.hora_propuesta.strftime('%H:%M')
+                    if getattr(cot, 'hora_propuesta', None) else None
+                ),
+            }
+        )
+    return out
+
+
+def _adjuntar_adicionales(cita, resumen: dict[str, Any]) -> dict[str, Any]:
+    secundarios = _servicios_secundarios_cita(cita)
+    aceptados = sum(
+        int(s['total_clp'] or 0)
+        for s in secundarios
+        if s.get('estado') == 'aceptada'
+        and s.get('ejecucion_adicional') != 'nueva_fecha'
+    )
+    total_visita = max(0, int(resumen.get('total_clp') or 0)) + aceptados
+    iva_visita = _desglose_iva_desde_total(total_visita)
+    resumen['servicios_secundarios'] = secundarios
+    resumen['total_visita_clp'] = total_visita
+    resumen['neto_visita_clp'] = iva_visita['neto_clp']
+    resumen['iva_visita_clp'] = iva_visita['iva_clp']
+    return resumen
+
+
+def construir_resumen_economico_cita(cita) -> dict[str, Any] | None:
+    """Desglose de la cita principal más trabajos adicionales de la misma visita."""
+    resumen = _construir_resumen_principal(cita)
+    if resumen is None:
+        return None
+    return _adjuntar_adicionales(cita, resumen)

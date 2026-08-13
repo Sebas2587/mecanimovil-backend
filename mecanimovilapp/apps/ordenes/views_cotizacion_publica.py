@@ -23,7 +23,13 @@ class CotizacionPublicaDetailView(views.APIView):
 
     def get(self, request, token=None):
         cotizacion = (
-            CotizacionCanal.objects.select_related('taller', 'taller__direccion_fisica')
+            CotizacionCanal.objects.select_related(
+                'taller',
+                'taller__direccion_fisica',
+                'cotizacion_original',
+                'cita_origen',
+                'cita_origen__detalle',
+            )
             .filter(token=token)
             .first()
         )
@@ -50,7 +56,14 @@ class CotizacionPublicaAceptarView(views.APIView):
 
     def post(self, request, token=None):
         cotizacion = (
-            CotizacionCanal.objects.select_related('taller', 'taller__direccion_fisica', 'creado_por')
+            CotizacionCanal.objects.select_related(
+                'taller',
+                'taller__direccion_fisica',
+                'creado_por',
+                'cotizacion_original',
+                'cita_origen',
+                'cita_origen__detalle',
+            )
             .filter(token=token)
             .first()
         )
@@ -75,10 +88,13 @@ class CotizacionPublicaAceptarView(views.APIView):
             cotizacion, cita = aceptar_cotizacion_publica(cotizacion)
         except ValueError as exc:
             return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        on_cotizacion_respondida(cotizacion, 'aceptar', cita_id=cita.id)
+        on_cotizacion_respondida(cotizacion, 'aceptar', cita_id=cita.id if cita else None)
         data = serializar_cotizacion_publica(cotizacion)
-        data['cita_id'] = cita.id
-        data['horario_por_confirmar'] = True
+        if cita is not None and not cotizacion.es_cotizacion_adicional:
+            data['cita_id'] = cita.id
+            data['horario_por_confirmar'] = True
+        elif cotizacion.es_cotizacion_adicional:
+            data['horario_por_confirmar'] = False
         return Response(data)
 
 

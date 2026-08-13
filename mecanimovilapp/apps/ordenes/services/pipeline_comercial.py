@@ -344,7 +344,12 @@ def _filas_cotizaciones_canal(taller: Taller, leads_map: dict | None = None) -> 
     qs = (
         CotizacionCanal.objects.filter(taller=taller)
         .exclude(estado='borrador')
-        .select_related('conversation', 'conversation__external_contact')
+        .select_related(
+            'conversation',
+            'conversation__external_contact',
+            'cita_origen',
+            'cotizacion_original',
+        )
         .order_by('-actualizado_en')[:200]
     )
     filas: list[dict[str, Any]] = []
@@ -387,6 +392,7 @@ def _filas_cotizaciones_canal(taller: Taller, leads_map: dict | None = None) -> 
                 fecha_referencia=fecha_ref,
                 conversation_id=conv.id if conv else None,
                 cotizacion_id=cot.id,
+                cita_id=getattr(cot, 'cita_origen_id', None),
                 visto_sin_respuesta=_visto_sin_respuesta(estado_norm, cot.visto_en),
                 demorado_48h=_demorado_48h(fecha_ref, estado_norm),
                 es_cotizacion_adicional=bool(getattr(cot, 'es_cotizacion_adicional', False)),

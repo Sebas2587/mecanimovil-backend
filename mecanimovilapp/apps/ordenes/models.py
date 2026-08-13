@@ -2369,6 +2369,34 @@ class CotizacionCanal(models.Model):
         blank=True,
         related_name='cotizaciones_adicionales',
     )
+    cita_origen = models.ForeignKey(
+        'ordenes.CitaAgendaPersonal',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='cotizaciones_adicionales',
+        help_text='Cita principal en curso cuando esta cotización es un trabajo adicional.',
+    )
+    EJECUCION_ADICIONAL_CHOICES = [
+        ('misma_visita', 'Misma visita'),
+        ('nueva_fecha', 'Nueva fecha'),
+    ]
+    ejecucion_adicional = models.CharField(
+        max_length=20,
+        choices=EJECUCION_ADICIONAL_CHOICES,
+        default='misma_visita',
+        help_text='Cómo se ejecuta el trabajo adicional: en la visita en curso o en una fecha posterior.',
+    )
+    fecha_propuesta = models.DateField(
+        null=True,
+        blank=True,
+        help_text='Fecha acordada con el cliente cuando ejecucion_adicional=nueva_fecha.',
+    )
+    hora_propuesta = models.TimeField(
+        null=True,
+        blank=True,
+        help_text='Hora acordada con el cliente cuando ejecucion_adicional=nueva_fecha.',
+    )
     es_cotizacion_adicional = models.BooleanField(default=False)
     motivo_servicio_adicional = models.TextField(blank=True, default='')
     tokens_entrada = models.PositiveIntegerField(default=0)
@@ -2401,6 +2429,7 @@ class CotizacionCanal(models.Model):
         indexes = [
             models.Index(fields=['conversation', 'estado'], name='ordenes_cot_convers_fbf312_idx'),
             models.Index(fields=['taller', '-creado_en'], name='ordenes_cot_taller__12b798_idx'),
+            models.Index(fields=['cita_origen', 'estado'], name='ordenes_cot_cita_or_estado_idx'),
         ]
 
     def __str__(self):
