@@ -107,11 +107,23 @@ def _checklist_en_ejecucion(cita: CitaAgendaPersonal) -> bool:
     inst = getattr(cita, 'checklist_instance', None)
     if inst is None:
         return False
-    return inst.estado in ('EN_PROGRESO', 'PAUSADO', 'PENDIENTE_FIRMA_CLIENTE')
+    return inst.estado in ('EN_PROGRESO', 'PAUSADO')
+
+
+def adicional_pendiente_de_cita(cita: CitaAgendaPersonal) -> CotizacionCanal | None:
+    """Borrador o enviada pendiente de respuesta del cliente (un hallazgo a la vez)."""
+    related = getattr(cita, 'cotizaciones_adicionales', None)
+    if related is None:
+        return None
+    return (
+        related.filter(estado__in=('borrador', 'enviada'))
+        .order_by('-creado_en')
+        .first()
+    )
 
 
 def cita_permite_cotizacion_adicional(cita: CitaAgendaPersonal) -> bool:
-    """Trabajo agendado (horario confirmado) o en ejecución vía checklist."""
+    """Solo con checklist en curso y sin otro adicional pendiente (borrador/enviada)."""
     if cita.estado != 'activa':
         return False
     if not cita.cotizacion_canal_origen_id:
@@ -119,9 +131,22 @@ def cita_permite_cotizacion_adicional(cita: CitaAgendaPersonal) -> bool:
     origen = cita.cotizacion_canal_origen
     if origen is None or origen.estado != 'aceptada':
         return False
-    if _checklist_en_ejecucion(cita):
-        return True
-    return not bool(getattr(cita, 'horario_por_confirmar', False))
+    if getattr(cita, 'horario_por_confirmar', False):
+        return False
+    if not _checklist_en_ejecucion(cita):
+        return False
+    if adicional_pendiente_de_cita(cita) is not None:
+        return False
+    return True
+
+
+def validar_sin_adicional_pendiente(cita: CitaAgendaPersonal) -> None:
+    pendiente = adicional_pendiente_de_cita(cita)
+    if pendiente is not None:
+        raise ValueError(
+            'Ya hay un trabajo adicional pendiente. Revísalo o espera la respuesta del cliente '
+            'antes de agregar otro hallazgo.'
+        )
 
 
 def validar_cotizacion_original(
@@ -200,7 +225,14 @@ def crear_cotizacion_adicional_desde_catalogo(
     if cotizacion_original.es_cotizacion_adicional:
         raise ValueError('No se puede crear un trabajo adicional sobre otro adicional.')
     if not cita_permite_cotizacion_adicional(cita):
+        if not _checklist_en_ejecucion(cita):
+            raise ValueError(
+                'Solo puedes cotizar un hallazgo cuando el servicio ya está en ejecución. '
+                'Si el cliente pidió cambios antes de iniciar, actualiza la cotización original.'
+            )
+        validar_sin_adicional_pendiente(cita)
         raise ValueError('Este trabajo aún no permite cotizaciones adicionales.')
+    validar_sin_adicional_pendiente(cita)
 
     ejecucion, fecha_p, hora_p = normalizar_plan_ejecucion(
         ejecucion_adicional=ejecucion_adicional,
@@ -302,7 +334,14 @@ def crear_cotizacion_adicional_con_ia(
     if cotizacion_original.es_cotizacion_adicional:
         raise ValueError('No se puede crear un trabajo adicional sobre otro adicional.')
     if not cita_permite_cotizacion_adicional(cita):
+        if not _checklist_en_ejecucion(cita):
+            raise ValueError(
+                'Solo puedes cotizar un hallazgo cuando el servicio ya está en ejecución. '
+                'Si el cliente pidió cambios antes de iniciar, actualiza la cotización original.'
+            )
+        validar_sin_adicional_pendiente(cita)
         raise ValueError('Este trabajo aún no permite cotizaciones adicionales.')
+    validar_sin_adicional_pendiente(cita)
 
     ejecucion, fecha_p, hora_p = normalizar_plan_ejecucion(
         ejecucion_adicional=ejecucion_adicional,

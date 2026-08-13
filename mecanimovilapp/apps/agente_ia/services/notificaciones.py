@@ -127,10 +127,10 @@ def notificar_cotizacion_borrador_agente(
     total_txt = f'${int(cotizacion.total_clp or 0):,} CLP'.replace(',', '.')
 
     if reabierta:
-        titulo = 'Cotización reabierta por el cliente'
+        titulo = 'Cotización actualizada por el cliente'
         mensaje = (
-            f'El cliente pidió agregar o modificar algo en una cotización ya enviada '
-            f'("{servicio}"). Quedó de nuevo en Cotizar con IA para tu revisión.'
+            f'El cliente pidió agregar o modificar algo en "{servicio}". '
+            f'Revisa la misma cotización en Cotizar con IA y vuelve a enviarla si hace falta.'
         )
     elif listo_para_enviar:
         titulo = 'Cotización lista para enviar'

@@ -432,6 +432,22 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
                 },
                 status=status.HTTP_409_CONFLICT,
             )
+        from mecanimovilapp.apps.ordenes.services.cita_agenda_personal import (
+            cita_es_dia_de_servicio,
+        )
+
+        if not cita_es_dia_de_servicio(cita):
+            return Response(
+                {
+                    'error': (
+                        f'Solo puedes iniciar el servicio el día de la cita '
+                        f'({cita.fecha_servicio.strftime("%d/%m/%Y")}).'
+                    ),
+                    'codigo': 'fuera_de_fecha',
+                    'fecha_servicio': cita.fecha_servicio.isoformat(),
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
         # Taller/supervisor o el mecánico asignado pueden iniciar el servicio.
         exigir_puede_ejecutar_servicio(
             request.user,

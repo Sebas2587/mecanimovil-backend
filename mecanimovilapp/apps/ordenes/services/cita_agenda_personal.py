@@ -29,6 +29,11 @@ from mecanimovilapp.apps.usuarios.services.disponibilidad_proveedor import (
 )
 
 
+def cita_es_dia_de_servicio(cita: CitaAgendaPersonal) -> bool:
+    """True si fecha_servicio es hoy en la zona configurada (America/Santiago)."""
+    return cita.fecha_servicio == timezone.localdate()
+
+
 def resolver_proveedor_usuario(user: Usuario) -> tuple[Taller | None, MecanicoDomicilio | None]:
     if hasattr(user, 'taller'):
         try:

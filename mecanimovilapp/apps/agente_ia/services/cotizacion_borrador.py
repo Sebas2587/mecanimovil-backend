@@ -68,6 +68,35 @@ ADVERTENCIA_REABIERTA = (
 _ESTADOS_COTIZACION_EDITABLE = ('borrador', 'enviada')
 
 
+def _cita_activa_sin_checklist_iniciado(cotizacion: CotizacionCanal) -> bool:
+    """True si hay cita activa de esta cotización y el checklist aún no empezó."""
+    cita = (
+        cotizacion.citas_generadas.filter(estado='activa')
+        .order_by('-fecha_creacion')
+        .first()
+    )
+    if cita is None:
+        return False
+    if getattr(cita, 'horario_por_confirmar', False):
+        return True
+    inst = getattr(cita, 'checklist_instance', None)
+    if inst is None:
+        return True
+    return inst.estado in ('PENDIENTE',)
+
+
+def _cotizacion_editable_por_agente(cot: CotizacionCanal | None, taller: Taller) -> bool:
+    if cot is None or cot.taller_id != taller.id:
+        return False
+    if cot.es_cotizacion_adicional:
+        return False
+    if cot.estado in _ESTADOS_COTIZACION_EDITABLE:
+        return True
+    if cot.estado == 'aceptada' and _cita_activa_sin_checklist_iniciado(cot):
+        return True
+    return False
+
+
 def _construir_notas_cotizacion_ordenadas(
     *,
     descripcion: str,
@@ -922,20 +951,23 @@ def _obtener_borrador_abierto(
     conversation: Conversation,
     taller: Taller,
 ) -> CotizacionCanal | None:
-    """Reutiliza la cotización editable (borrador o enviada) de la misma conversación."""
+    """Reutiliza la cotización editable de la misma conversación (no crea duplicados)."""
     cot = getattr(sesion, 'cotizacion_borrador', None)
-    if cot and cot.estado in _ESTADOS_COTIZACION_EDITABLE and cot.taller_id == taller.id:
+    if _cotizacion_editable_por_agente(cot, taller):
         return cot
-    return (
+    candidatos = (
         CotizacionCanal.objects.filter(
             conversation=conversation,
             taller=taller,
-            estado__in=_ESTADOS_COTIZACION_EDITABLE,
-            metadata__origen='agente_ia',
+            es_cotizacion_adicional=False,
+            estado__in=('borrador', 'enviada', 'aceptada'),
         )
-        .order_by('-actualizado_en', '-id')
-        .first()
+        .order_by('-actualizado_en', '-id')[:8]
     )
+    for c in candidatos:
+        if _cotizacion_editable_por_agente(c, taller):
+            return c
+    return None
 
 
 def crear_cotizacion_borrador_desde_agente(
@@ -959,7 +991,12 @@ def crear_cotizacion_borrador_desde_agente(
     )
     es_update = cotizacion_existente is not None
     estado_previo = cotizacion_existente.estado if cotizacion_existente else None
-    reabierta = es_update and estado_previo == 'enviada'
+    reabierta = es_update and estado_previo in ('enviada', 'aceptada')
+    total_previo_aceptado = (
+        int(cotizacion_existente.total_clp or 0)
+        if es_update and estado_previo == 'aceptada'
+        else None
+    )
 
     if not es_update:
         try:
@@ -1736,15 +1773,39 @@ def crear_cotizacion_borrador_desde_agente(
     if es_update and cotizacion_existente:
         for k, v in campos.items():
             setattr(cotizacion_existente, k, v)
-        if reabierta:
+        if estado_previo == 'enviada':
             cotizacion_existente.estado = 'borrador'
+        elif estado_previo == 'aceptada':
+            total_nuevo = int(cotizacion_existente.total_clp or 0)
+            meta_acc = dict(cotizacion_existente.metadata or {})
+            meta_acc['actualizada_tras_aceptacion'] = True
+            meta_acc['actualizada_por_agente'] = True
+            meta_acc['total_previo_aceptado_clp'] = total_previo_aceptado
+            cotizacion_existente.metadata = meta_acc
+            if total_previo_aceptado is not None and total_nuevo > total_previo_aceptado:
+                # Subió el total: cliente debe reconfirmar en el mismo link.
+                cotizacion_existente.estado = 'enviada'
+                cotizacion_existente.aceptada_en = None
+                cotizacion_existente.enviada_en = timezone.now()
+            else:
+                # Misma o menor: mantiene aceptada; actualiza precio de la cita.
+                cita_acc = (
+                    cotizacion_existente.citas_generadas.filter(estado='activa')
+                    .order_by('-fecha_creacion')
+                    .first()
+                )
+                det_acc = getattr(cita_acc, 'detalle', None) if cita_acc else None
+                if det_acc is not None:
+                    det_acc.precio_referencia = total_nuevo
+                    det_acc.save(update_fields=['precio_referencia'])
         cotizacion_existente.save()
         cotizacion = cotizacion_existente
         logger.info(
-            'Cotización borrador %s actualizada (servicios=%s, reabierta=%s) sesion=%s',
+            'Cotización borrador %s actualizada (servicios=%s, reabierta=%s, prev=%s) sesion=%s',
             cotizacion.id,
             [l.get('nombre') for l in lineas],
             reabierta,
+            estado_previo,
             sesion.id,
         )
     else:

@@ -366,6 +366,87 @@ def aplicar_edicion_cotizacion(cotizacion: CotizacionCanal, data: dict) -> Cotiz
     return cotizacion
 
 
+def _cita_activa_no_iniciada_de_cotizacion(cotizacion: CotizacionCanal):
+    """Cita generada por esta cotización, activa y sin checklist en curso."""
+    cita = (
+        cotizacion.citas_generadas.filter(estado='activa')
+        .order_by('-fecha_creacion')
+        .first()
+    )
+    if cita is None:
+        return None
+    inst = getattr(cita, 'checklist_instance', None)
+    if inst is not None and inst.estado not in (None, '', 'PENDIENTE'):
+        return None
+    return cita
+
+
+@transaction.atomic
+def reabrir_cotizacion_enviada(cotizacion: CotizacionCanal) -> CotizacionCanal:
+    """enviada → borrador (mismo token). El cliente deja de poder aceptar hasta reenviar."""
+    if cotizacion.estado != 'enviada':
+        raise ValueError('Solo se puede reabrir una cotización enviada pendiente de respuesta.')
+    if cotizacion.es_cotizacion_adicional:
+        raise ValueError('Usa el flujo de hallazgo para trabajos adicionales.')
+    meta = dict(cotizacion.metadata or {})
+    meta['reabierta_por_taller'] = True
+    meta['reabierta_en'] = timezone.now().isoformat()
+    cotizacion.estado = 'borrador'
+    cotizacion.metadata = meta
+    cotizacion.save(update_fields=['estado', 'metadata', 'actualizado_en'])
+    return cotizacion
+
+
+@transaction.atomic
+def actualizar_cotizacion_aceptada_sin_iniciar(
+    cotizacion: CotizacionCanal,
+    data: dict,
+) -> tuple[CotizacionCanal, str]:
+    """
+    Actualiza cotización aceptada cuya cita aún no inició.
+    - Si el total sube: pasa a enviada para que el cliente confirme el delta (mismo link).
+    - Si no: mantiene aceptada y actualiza precio de referencia de la cita.
+    Retorna (cotizacion, modo) donde modo es 'requiere_confirmacion' | 'actualizada'.
+    """
+    if cotizacion.estado != 'aceptada':
+        raise ValueError('Solo aplica a cotizaciones aceptadas.')
+    if cotizacion.es_cotizacion_adicional:
+        raise ValueError('Los hallazgos usan cotizaciones adicionales.')
+    cita = _cita_activa_no_iniciada_de_cotizacion(cotizacion)
+    if cita is None:
+        raise ValueError(
+            'Solo puedes actualizar la cotización si la cita aún no inició el servicio.'
+        )
+
+    total_previo = int(cotizacion.total_clp or 0)
+    aplicar_edicion_cotizacion(cotizacion, data)
+    total_nuevo = int(cotizacion.total_clp or 0)
+    meta = dict(cotizacion.metadata or {})
+    meta['actualizada_tras_aceptacion'] = True
+    meta['actualizada_en'] = timezone.now().isoformat()
+    meta['total_previo_aceptado_clp'] = total_previo
+    cotizacion.metadata = meta
+
+    if total_nuevo > total_previo:
+        cotizacion.estado = 'enviada'
+        cotizacion.aceptada_en = None
+        cotizacion.enviada_en = timezone.now()
+        cotizacion.save()
+        # Precio de referencia queda en total previo hasta que el cliente confirme.
+        det = getattr(cita, 'detalle', None)
+        if det is not None:
+            det.precio_referencia = total_previo
+            det.save(update_fields=['precio_referencia'])
+        return cotizacion, 'requiere_confirmacion'
+
+    cotizacion.save()
+    det = getattr(cita, 'detalle', None)
+    if det is not None:
+        det.precio_referencia = total_nuevo
+        det.save(update_fields=['precio_referencia'])
+    return cotizacion, 'actualizada'
+
+
 @transaction.atomic
 def enviar_cotizacion_canal(cotizacion: CotizacionCanal, user) -> Message:
     if cotizacion.estado not in ('borrador',):

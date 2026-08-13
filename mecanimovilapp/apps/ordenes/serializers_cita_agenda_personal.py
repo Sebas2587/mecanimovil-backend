@@ -67,6 +67,8 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
     cotizacion_canal_origen_id = serializers.IntegerField(read_only=True, allow_null=True)
     resumen_economico = serializers.SerializerMethodField()
     permite_cotizacion_adicional = serializers.SerializerMethodField()
+    cotizacion_adicional_pendiente_id = serializers.SerializerMethodField()
+    puede_iniciar_servicio_hoy = serializers.SerializerMethodField()
     cotizaciones_adicionales = serializers.SerializerMethodField()
 
     class Meta:
@@ -109,6 +111,8 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
             'cotizacion_canal_origen_id',
             'resumen_economico',
             'permite_cotizacion_adicional',
+            'cotizacion_adicional_pendiente_id',
+            'puede_iniciar_servicio_hoy',
             'cotizaciones_adicionales',
         ]
         read_only_fields = [
@@ -146,6 +150,23 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
         )
 
         return cita_permite_cotizacion_adicional(obj)
+
+    def get_cotizacion_adicional_pendiente_id(self, obj) -> int | None:
+        from mecanimovilapp.apps.ordenes.services.cotizacion_adicional import (
+            adicional_pendiente_de_cita,
+        )
+
+        pendiente = adicional_pendiente_de_cita(obj)
+        return pendiente.id if pendiente is not None else None
+
+    def get_puede_iniciar_servicio_hoy(self, obj) -> bool:
+        from mecanimovilapp.apps.ordenes.services.cita_agenda_personal import (
+            cita_es_dia_de_servicio,
+        )
+
+        if obj.estado != 'activa' or getattr(obj, 'horario_por_confirmar', False):
+            return False
+        return cita_es_dia_de_servicio(obj)
 
     def get_cotizaciones_adicionales(self, obj) -> list[dict]:
         cache = self.context.setdefault('_adicionales_by_cita', {})

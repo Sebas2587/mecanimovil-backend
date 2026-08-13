@@ -140,6 +140,14 @@ def serializar_cotizacion_publica(cotizacion: CotizacionCanal) -> dict:
         'aceptada_en': cotizacion.aceptada_en.isoformat() if cotizacion.aceptada_en else None,
         'rechazada_en': cotizacion.rechazada_en.isoformat() if cotizacion.rechazada_en else None,
         'visto_en': cotizacion.visto_en.isoformat() if cotizacion.visto_en else None,
+        'actualizado_en': (
+            cotizacion.actualizado_en.isoformat() if cotizacion.actualizado_en else None
+        ),
+        'actualizada_por_taller': bool(
+            (cotizacion.metadata or {}).get('actualizada_tras_aceptacion')
+            or (cotizacion.metadata or {}).get('reabierta_por_taller')
+            or (cotizacion.metadata or {}).get('reabierta_por_cliente')
+        ),
         'fecha_expiracion_publica': (
             cotizacion.fecha_expiracion_publica.isoformat()
             if cotizacion.fecha_expiracion_publica else None

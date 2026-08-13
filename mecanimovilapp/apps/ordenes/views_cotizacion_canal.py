@@ -356,10 +356,42 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
 
     def partial_update(self, request, *args, **kwargs):
         cotizacion = self.get_object()
-        if cotizacion.estado != 'borrador':
-            raise ValidationError({'estado': 'Solo se puede editar una cotización en borrador.'})
-        aplicar_edicion_cotizacion(cotizacion, request.data)
-        cotizacion.save()
+        if cotizacion.estado == 'borrador':
+            aplicar_edicion_cotizacion(cotizacion, request.data)
+            cotizacion.save()
+            return Response(CotizacionCanalSerializer(cotizacion).data)
+        if cotizacion.estado == 'aceptada':
+            from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
+                actualizar_cotizacion_aceptada_sin_iniciar,
+            )
+            try:
+                cotizacion, modo = actualizar_cotizacion_aceptada_sin_iniciar(
+                    cotizacion, request.data,
+                )
+            except ValueError as exc:
+                raise ValidationError({'estado': str(exc)}) from exc
+            data = CotizacionCanalSerializer(cotizacion).data
+            data['modo_actualizacion'] = modo
+            return Response(data)
+        raise ValidationError({
+            'estado': (
+                'Solo se puede editar una cotización en borrador. '
+                'Si está enviada, reábrela primero.'
+            ),
+        })
+
+    @action(detail=True, methods=['post'], url_path='reabrir')
+    def reabrir(self, request, pk=None):
+        """enviada → borrador (mismo token) para que el taller actualice y reenvíe."""
+        from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
+            reabrir_cotizacion_enviada,
+        )
+
+        cotizacion = self.get_object()
+        try:
+            cotizacion = reabrir_cotizacion_enviada(cotizacion)
+        except ValueError as exc:
+            raise ValidationError({'estado': str(exc)}) from exc
         return Response(CotizacionCanalSerializer(cotizacion).data)
 
     @action(detail=True, methods=['post'])

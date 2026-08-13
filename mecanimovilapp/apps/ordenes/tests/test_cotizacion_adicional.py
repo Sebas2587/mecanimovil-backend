@@ -102,8 +102,24 @@ class CotizacionAdicionalFlujoTestCase(TestCase):
         defaults.update(kwargs)
         return CotizacionCanal.objects.create(**defaults)
 
-    def test_cita_permite_adicional_con_horario_confirmado(self):
+    def test_cita_no_permite_adicional_sin_checklist(self):
+        self.assertFalse(cita_permite_cotizacion_adicional(self.cita))
+
+    def test_cita_permite_adicional_con_checklist_en_curso(self):
+        from types import SimpleNamespace
+
+        self.cita.checklist_instance = SimpleNamespace(estado='EN_PROGRESO')
         self.assertTrue(cita_permite_cotizacion_adicional(self.cita))
+
+    def test_cita_no_permite_segundo_adicional_pendiente(self):
+        from types import SimpleNamespace
+
+        self.cita.checklist_instance = SimpleNamespace(estado='EN_PROGRESO')
+        self._crear_adicional(estado='enviada', token='tok-pendiente')
+        # Refresh related manager on the in-memory cita
+        self.cita = CitaAgendaPersonal.objects.get(pk=self.cita.pk)
+        self.cita.checklist_instance = SimpleNamespace(estado='EN_PROGRESO')
+        self.assertFalse(cita_permite_cotizacion_adicional(self.cita))
 
     def test_serializar_publico_expone_trabajo_adicional(self):
         adicional = self._crear_adicional()

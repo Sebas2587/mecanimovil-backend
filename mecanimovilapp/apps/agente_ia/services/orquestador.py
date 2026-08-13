@@ -803,8 +803,13 @@ _SERVICIO_MENCION_RE = re.compile(
 
 
 def _cotizacion_editable_sesion(sesion: AgenteConversacionSesion):
+    from mecanimovilapp.apps.agente_ia.services.cotizacion_borrador import (
+        _cotizacion_editable_por_agente,
+    )
+
     cot = getattr(sesion, 'cotizacion_borrador', None)
-    if cot and cot.estado in ('borrador', 'enviada'):
+    taller = getattr(sesion, 'taller', None) or getattr(cot, 'taller', None)
+    if cot and taller is not None and _cotizacion_editable_por_agente(cot, taller):
         return cot
     return None
 
