@@ -147,6 +147,11 @@ def serializar_cotizacion_publica(cotizacion: CotizacionCanal) -> dict:
             (cotizacion.metadata or {}).get('actualizada_tras_aceptacion')
             or (cotizacion.metadata or {}).get('reabierta_por_taller')
             or (cotizacion.metadata or {}).get('reabierta_por_cliente')
+            or (
+                cotizacion.enviada_en
+                and cotizacion.actualizado_en
+                and cotizacion.actualizado_en > cotizacion.enviada_en
+            )
         ),
         'fecha_expiracion_publica': (
             cotizacion.fecha_expiracion_publica.isoformat()
