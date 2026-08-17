@@ -17,8 +17,22 @@ from mecanimovilapp.apps.ordenes.models import (
 from mecanimovilapp.apps.vehiculos.cilindraje_texto import cilindraje_efectivo
 
 from mecanimovilapp.apps.usuarios.legal_constants import COTIZACION_PUBLICA_TTL_DAYS
+from mecanimovilapp.storage.utils import get_image_url
 
 logger = logging.getLogger(__name__)
+
+
+def _foto_perfil_taller(taller, request=None) -> str | None:
+    """Logo del taller: foto del proveedor, o la del usuario si solo está ahí."""
+    if not taller:
+        return None
+    url = get_image_url(getattr(taller, 'foto_perfil', None), request)
+    if url:
+        return url
+    usuario = getattr(taller, 'usuario', None)
+    if usuario:
+        return get_image_url(getattr(usuario, 'foto_perfil', None), request)
+    return None
 
 
 def _base_url_publica() -> str:
@@ -112,11 +126,11 @@ def _servicio_principal_publico(cotizacion: CotizacionCanal) -> dict | None:
     }
 
 
-def serializar_cotizacion_publica(cotizacion: CotizacionCanal) -> dict:
+def serializar_cotizacion_publica(cotizacion: CotizacionCanal, request=None) -> dict:
     taller = cotizacion.taller
     # direccion_fisica es reverse OneToOne: no existe taller.direccion_fisica_id
     direccion_fisica = getattr(taller, 'direccion_fisica', None) if taller else None
-    foto_perfil = getattr(taller, 'foto_perfil', None) if taller else None
+    foto_perfil = _foto_perfil_taller(taller, request)
     es_adicional = bool(cotizacion.es_cotizacion_adicional)
     return {
         'id': cotizacion.id,
@@ -167,7 +181,7 @@ def serializar_cotizacion_publica(cotizacion: CotizacionCanal) -> dict:
                 if direccion_fisica is not None
                 else ''
             ),
-            'foto_perfil': foto_perfil.url if foto_perfil else None,
+            'foto_perfil': foto_perfil,
         },
         'puede_responder': cotizacion.estado == 'enviada',
         'es_trabajo_adicional': es_adicional,

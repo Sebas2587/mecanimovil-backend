@@ -25,6 +25,7 @@ class CotizacionPublicaDetailView(views.APIView):
         cotizacion = (
             CotizacionCanal.objects.select_related(
                 'taller',
+                'taller__usuario',
                 'taller__direccion_fisica',
                 'cotizacion_original',
                 'cita_origen',
@@ -42,12 +43,12 @@ class CotizacionPublicaDetailView(views.APIView):
                     'error': 'Este enlace de cotización ha expirado',
                     'codigo': 'enlace_expirado',
                     'expirado': True,
-                    'cotizacion': serializar_cotizacion_publica(cotizacion),
+                    'cotizacion': serializar_cotizacion_publica(cotizacion, request),
                 },
                 status=status.HTTP_410_GONE,
             )
         marcar_visto(cotizacion)
-        return Response(serializar_cotizacion_publica(cotizacion))
+        return Response(serializar_cotizacion_publica(cotizacion, request))
 
 
 class CotizacionPublicaAceptarView(views.APIView):
@@ -58,6 +59,7 @@ class CotizacionPublicaAceptarView(views.APIView):
         cotizacion = (
             CotizacionCanal.objects.select_related(
                 'taller',
+                'taller__usuario',
                 'taller__direccion_fisica',
                 'creado_por',
                 'cotizacion_original',
@@ -80,7 +82,7 @@ class CotizacionPublicaAceptarView(views.APIView):
                 {
                     'message': 'Esta cotización ya fue respondida',
                     'estado': cotizacion.estado,
-                    'cotizacion': serializar_cotizacion_publica(cotizacion),
+                    'cotizacion': serializar_cotizacion_publica(cotizacion, request),
                 },
                 status=status.HTTP_200_OK,
             )
@@ -89,7 +91,7 @@ class CotizacionPublicaAceptarView(views.APIView):
         except ValueError as exc:
             return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         on_cotizacion_respondida(cotizacion, 'aceptar', cita_id=cita.id if cita else None)
-        data = serializar_cotizacion_publica(cotizacion)
+        data = serializar_cotizacion_publica(cotizacion, request)
         if cita is not None and not cotizacion.es_cotizacion_adicional:
             data['cita_id'] = cita.id
             data['horario_por_confirmar'] = True
@@ -104,7 +106,11 @@ class CotizacionPublicaRechazarView(views.APIView):
 
     def post(self, request, token=None):
         cotizacion = (
-            CotizacionCanal.objects.select_related('taller', 'taller__direccion_fisica')
+            CotizacionCanal.objects.select_related(
+                'taller',
+                'taller__usuario',
+                'taller__direccion_fisica',
+            )
             .filter(token=token)
             .first()
         )
@@ -121,7 +127,7 @@ class CotizacionPublicaRechazarView(views.APIView):
                 {
                     'message': 'Esta cotización ya fue respondida',
                     'estado': cotizacion.estado,
-                    'cotizacion': serializar_cotizacion_publica(cotizacion),
+                    'cotizacion': serializar_cotizacion_publica(cotizacion, request),
                 },
                 status=status.HTTP_200_OK,
             )
@@ -130,4 +136,4 @@ class CotizacionPublicaRechazarView(views.APIView):
         except ValueError as exc:
             return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         on_cotizacion_respondida(cotizacion, 'rechazar')
-        return Response(serializar_cotizacion_publica(cotizacion))
+        return Response(serializar_cotizacion_publica(cotizacion, request))

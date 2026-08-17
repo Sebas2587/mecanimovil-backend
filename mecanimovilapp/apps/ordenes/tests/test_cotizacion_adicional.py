@@ -415,3 +415,21 @@ class CotizacionAdicionalFlujoTestCase(TestCase):
         data2 = serializar_cotizacion_publica(self.cot_principal)
         self.assertTrue(data2['actualizada_por_taller'])
 
+    def test_serializar_publico_usa_foto_del_usuario_si_taller_no_tiene(self):
+        self.user.foto_perfil = 'perfiles/logo-taller.jpg'
+        self.user.save(update_fields=['foto_perfil'])
+        data = serializar_cotizacion_publica(self.cot_principal)
+        foto = data['taller']['foto_perfil']
+        self.assertTrue(foto)
+        self.assertIn('perfiles/logo-taller.jpg', foto)
+
+    def test_serializar_publico_prioriza_foto_del_taller(self):
+        self.user.foto_perfil = 'perfiles/logo-usuario.jpg'
+        self.user.save(update_fields=['foto_perfil'])
+        self.taller.foto_perfil = 'proveedores/logo-taller.jpg'
+        self.taller.save(update_fields=['foto_perfil'])
+        data = serializar_cotizacion_publica(self.cot_principal)
+        foto = data['taller']['foto_perfil']
+        self.assertTrue(foto)
+        self.assertIn('proveedores/logo-taller.jpg', foto)
+
