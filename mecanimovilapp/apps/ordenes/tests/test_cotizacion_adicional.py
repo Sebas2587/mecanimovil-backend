@@ -433,3 +433,11 @@ class CotizacionAdicionalFlujoTestCase(TestCase):
         self.assertTrue(foto)
         self.assertIn('proveedores/logo-taller.jpg', foto)
 
+    def test_serializar_publico_expone_verificado_taller(self):
+        self.taller.verificado = True
+        self.taller.calificacion_promedio = 4.8
+        self.taller.save(update_fields=['verificado', 'calificacion_promedio'])
+        data = serializar_cotizacion_publica(self.cot_principal)
+        self.assertTrue(data['taller']['verificado'])
+        self.assertEqual(data['taller']['calificacion_promedio'], 4.8)
+

@@ -182,6 +182,11 @@ def serializar_cotizacion_publica(cotizacion: CotizacionCanal, request=None) -> 
                 else ''
             ),
             'foto_perfil': foto_perfil,
+            'verificado': bool(getattr(taller, 'verificado', False)) if taller else False,
+            'calificacion_promedio': (
+                float(getattr(taller, 'calificacion_promedio', 0) or 0)
+                if taller else 0.0
+            ),
         },
         'puede_responder': cotizacion.estado == 'enviada',
         'es_trabajo_adicional': es_adicional,
