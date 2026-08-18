@@ -101,6 +101,7 @@ class CotizacionPublicaDocumentoTestCase(TestCase):
             pdf['Content-Disposition'],
         )
         self.assertTrue(pdf.content.startswith(b'%PDF'))
+        self.assertGreater(len(pdf.content), 20000)
 
     def test_pdf_disponible_si_expirada(self):
         preparar_emision_publica(self.cot)
