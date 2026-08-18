@@ -118,11 +118,14 @@ def _construir_prompt(ctx: dict[str, Any]) -> str:
     )
     chat = ctx.get('chat_reciente') or 'Sin mensajes previos.'
     rag = (ctx.get('contexto_rag') or '').strip()
-    rag_bloque = f'\nConocimiento del taller (catálogo e historial):\n{rag}\n' if rag else ''
-    conocimiento = (ctx.get('conocimiento_diagnostico') or '').strip()
-    conocimiento_bloque = (
-        f'\n{conocimiento}\n' if conocimiento else ''
+    rag_bloque = (
+        '\nConocimiento del taller (SOLO para precios/piezas del SERVICIO SOLICITADO '
+        'y ESTE vehículo; no agregues otros servicios ni copies precios de otro marca/modelo):\n'
+        f'{rag}\n'
+        if rag
+        else ''
     )
+    pedido = (ctx.get('servicio_nombre') or '').strip() or 'Servicio mecánico'
     return f"""Eres un asesor de taller mecánico en Chile. Genera una cotización referencial en pesos chilenos (CLP enteros, sin decimales).
 
 Vehículo:
@@ -133,20 +136,22 @@ Vehículo:
 - Cilindraje: {ctx.get('cilindraje', '')}
 {motor_bloque}
 
-Servicio solicitado: {ctx.get('servicio_nombre', '')}
+Servicio solicitado (ÚNICA fuente de líneas a cotizar): {pedido}
 Descripción del problema: {ctx.get('descripcion_problema', '')}
 
-Contexto del chat reciente:
+Contexto del chat reciente (NO son líneas de cotización; ignora servicios de otro auto o solo mencionados):
 {chat}
-{rag_bloque}{conocimiento_bloque}
+{rag_bloque}
 REGLAS:
+0. ALCANCE (CRÍTICO): cotiza ÚNICAMENTE "{pedido}" para ESTE vehículo ({ctx.get('marca', '')} {ctx.get('modelo', '')}). PROHIBIDO agregar servicios/repuestos que aparezcan en el chat, historial, catálogo extra o diagnósticos asociados si NO están en "Servicio solicitado". El campo servicio_nombre de salida DEBE ser exactamente "{pedido}".
+0b. PRECIOS POR VEHÍCULO (CRÍTICO): NUNCA copies mano de obra ni precios de piezas de otro marca/modelo (Toyota ≠ BAIC; Yaris ≠ Yaris Cross) aunque el servicio se llame igual. Si el bloque de historial no es de este marca+modelo exacto, ignóralo.
 1. Analiza el SERVICIO pedido + el VEHÍCULO concreto ({ctx.get('marca', '')} {ctx.get('modelo', '')} {ctx.get('anio', '')}, motor {efectivo}). Cada marca/modelo/año tiene piezas y cantidades distintas: no copies listas genéricas de otro auto.
 2. Precios en CLP enteros: son ESTIMADOS de mercado Chile (taller) para que el proveedor los revise. NO digas que vienen de un catálogo o tienda.
 3. CRÍTICO — IVA INCLUIDO: mano_obra_clp y precio_unitario_clp son precios FINALES al cliente con IVA 19% ya incluido. NO cotices neto ni agregues línea de IVA.
 4. El motor efectivo es {efectivo}. No mezcles repuestos diésel/bencina/híbrido.
 5. Incluye mano de obra separada de repuestos.
 6. REPUESTOS POR VEHÍCULO (CRÍTICO): SOLO piezas compatibles con marca/modelo/año/cilindrada/motor. Prefiere MENOS líneas correctas. Nombra la pieza con precisión (posición: delantero/trasero, lado, kit completo si aplica).
-7. Si el servicio/síntoma implica embrague, patinaje o vibración en modelos con volante bimasa (ej. Fiat Bravo T-Jet), incluye "Volante bimasa" (sin marca_repuesto) cantidad 1.
+7. Volante bimasa: inclúyelo SOLO si el SERVICIO SOLICITADO es de embrague/clutch (no porque el chat mencionó vibración u otro auto).
 8. marca_repuesto, fuente_marketplace y tienda_ml: SIEMPRE "". NUNCA inventes marca (ni "GENÉRICO", ni Bosch/Mann "por costumbre"), ni tienda, ni "catálogo". El backend solo completa marca/proveedor si hay match real del taller o listing verificable.
 9. En advertencias incluye siempre que los precios de repuesto son estimados y deben confirmarse en taller antes de enviar al cliente.
 10. duracion_minutos_estimada razonable para el servicio en este vehículo.

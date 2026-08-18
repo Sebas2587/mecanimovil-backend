@@ -567,30 +567,38 @@ class CotizacionCanalUtilTestCase(SimpleTestCase):
             total_clp = 95000
             duracion_minutos_estimada = 90
             advertencias = ['Precios referenciales']
+            metadata = {}
+            url_publica = ''
 
         texto = formatear_resumen_cotizacion(FakeCot())
         self.assertIn('Diagnóstico', texto)
         self.assertIn('$95.000', texto)
         self.assertIn('Marca: FIAT', texto)
         self.assertIn('Cilindraje: 1368', texto)
-        self.assertIn('Mano de obra:', texto)
+        self.assertIn('Mano de obra (IVA incl.):', texto)
         self.assertIn('Condiciones:', texto)
 
 
 class ContextoCotizacionTestCase(SimpleTestCase):
     def test_incluye_vehiculo_servicio_y_descripcion(self):
-        ctx = armar_contexto_cotizacion(
-            servicio_nombre='cambio de aceite',
-            descripcion_problema='Aceite sintético 5W40',
-            modalidad='taller',
-            vehiculo={
-                'marca': 'FIAT',
-                'modelo': 'BRAVO SPORT TJET',
-                'anio': 2010,
-                'patente': 'ABCD12',
-                'cilindraje': '1368',
-            },
-        )
+        from unittest.mock import patch
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.contexto.resolver_motor_vehiculo',
+            return_value='GASOLINA',
+        ):
+            ctx = armar_contexto_cotizacion(
+                servicio_nombre='cambio de aceite',
+                descripcion_problema='Aceite sintético 5W40',
+                modalidad='taller',
+                vehiculo={
+                    'marca': 'FIAT',
+                    'modelo': 'BRAVO SPORT TJET',
+                    'anio': 2010,
+                    'patente': 'ABCD12',
+                    'cilindraje': '1368',
+                },
+            )
         self.assertEqual(ctx['marca'], 'FIAT')
         self.assertEqual(ctx['modelo'], 'BRAVO SPORT TJET')
         self.assertEqual(ctx['servicio_nombre'], 'cambio de aceite')
@@ -643,6 +651,206 @@ class PlantillaVehiculoTestCase(SimpleTestCase):
                 modelo='BRAVO',
             ),
         )
+
+    def test_rechaza_modelo_parecido_no_identico(self):
+        from mecanimovilapp.apps.ordenes.services.plantilla_vehiculo import plantilla_coincide_vehiculo
+
+        snap = {'vehiculo_marca': 'Toyota', 'vehiculo_modelo': 'Yaris Cross'}
+        self.assertFalse(
+            plantilla_coincide_vehiculo(snap, marca='Toyota', modelo='Yaris'),
+        )
+        self.assertTrue(
+            plantilla_coincide_vehiculo(snap, marca='toyota', modelo='Yaris Cross'),
+        )
+
+    def test_rechaza_otra_marca_mismo_servicio(self):
+        from mecanimovilapp.apps.ordenes.services.plantilla_vehiculo import plantilla_coincide_vehiculo
+
+        snap = {'vehiculo_marca': 'Toyota', 'vehiculo_modelo': 'Corolla'}
+        self.assertFalse(
+            plantilla_coincide_vehiculo(snap, marca='BAIC', modelo='Corolla'),
+        )
+
+
+class VehiculoHistorialExactoTestCase(SimpleTestCase):
+    def test_marca_modelo_identicos_ignoran_guion_y_caso(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.vehiculo_exacto import (
+            vehiculo_historial_identico,
+        )
+
+        self.assertTrue(
+            vehiculo_historial_identico('FIAT', 'BRAVO SPORT TJET', 'Fiat', 'Bravo Sport T-Jet'),
+        )
+        self.assertTrue(vehiculo_historial_identico('Toyota', 'Yaris', 'TOYOTA', 'yaris'))
+
+    def test_no_comparte_toyota_con_baic_ni_yaris_con_cross(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.vehiculo_exacto import (
+            vehiculo_historial_identico,
+        )
+
+        self.assertFalse(
+            vehiculo_historial_identico('Toyota', 'Corolla', 'BAIC', 'X35'),
+        )
+        self.assertFalse(
+            vehiculo_historial_identico('Toyota', 'Yaris', 'Toyota', 'Yaris Cross'),
+        )
+
+    def test_falta_modelo_no_reusa(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.vehiculo_exacto import (
+            vehiculo_historial_identico,
+        )
+
+        self.assertFalse(vehiculo_historial_identico('Toyota', 'Yaris', 'Toyota', ''))
+        self.assertFalse(vehiculo_historial_identico('Toyota', '', 'Toyota', 'Yaris'))
+
+    def test_clave_historial_exige_marca_modelo_en_clave(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.vehiculo_exacto import (
+            clave_historial_cubre_vehiculo,
+        )
+
+        self.assertFalse(
+            clave_historial_cubre_vehiculo('pastillas freno', 'Toyota', 'Yaris'),
+        )
+        self.assertTrue(
+            clave_historial_cubre_vehiculo(
+                'pastillas freno|toyota yaris 2018',
+                'Toyota',
+                'Yaris',
+            ),
+        )
+        self.assertFalse(
+            clave_historial_cubre_vehiculo(
+                'pastillas freno|toyota yaris cross 2018',
+                'Toyota',
+                'Yaris',
+            ),
+        )
+        self.assertFalse(
+            clave_historial_cubre_vehiculo(
+                'pastillas freno|baic x35',
+                'Toyota',
+                'Yaris',
+            ),
+        )
+
+
+class SplitServiciosCatalogoTestCase(SimpleTestCase):
+    def test_no_parte_aceite_y_filtro(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.aplicar_catalogo import (
+            _split_servicios,
+        )
+
+        self.assertEqual(
+            _split_servicios('Cambio de aceite y filtro'),
+            ['Cambio de aceite y filtro'],
+        )
+
+    def test_parte_servicios_distintos_por_mas(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.aplicar_catalogo import (
+            _split_servicios,
+        )
+
+        parts = _split_servicios('Cambio de aceite y filtro + Cambio de filtro de aire')
+        self.assertEqual(len(parts), 2)
+        self.assertIn('Cambio de aceite y filtro', parts[0])
+        self.assertIn('aire', parts[1].lower())
+
+
+class NormalizarMantieneServicioPedidoTestCase(SimpleTestCase):
+    def test_pin_servicio_del_contexto_aunque_ia_expanda(self):
+        ctx = {'servicio_nombre': 'Cambio de aceite'}
+        data = {
+            'servicio_nombre': 'Cambio de aceite + filtro de aire + diagnóstico',
+            'mano_obra_clp': 30000,
+            'repuestos': [],
+        }
+        out = normalizar_cotizacion_ia(data, ctx)
+        self.assertEqual(out['servicio_nombre'], 'Cambio de aceite')
+
+
+class HistorialCacheNoCruzaModelosTestCase(SimpleTestCase):
+    def test_clave_fuzzy_historial_no_aplica_a_otro_auto(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            _candidatos_web_cache,
+        )
+
+        row_fuzzy = SimpleNamespace(
+            clave='pastillas freno',
+            dominio='historial-taller',
+            marca_repuesto='Bosch',
+            nombre_producto='Pastillas freno',
+            precio_clp=99000,
+            tienda='Historial del taller',
+            url='',
+            confianza=0.85,
+        )
+        row_baic = SimpleNamespace(
+            clave='pastillas freno|baic x35',
+            dominio='historial-taller',
+            marca_repuesto='Bosch',
+            nombre_producto='Pastillas freno',
+            precio_clp=45000,
+            tienda='Historial del taller',
+            url='',
+            confianza=0.85,
+        )
+        row_toyota = SimpleNamespace(
+            clave='pastillas freno|toyota yaris',
+            dominio='historial-taller',
+            marca_repuesto='Bosch',
+            nombre_producto='Pastillas freno',
+            precio_clp=22000,
+            tienda='Historial del taller',
+            url='',
+            confianza=0.85,
+        )
+
+        class FakeQS(list):
+            def order_by(self, *args, **kwargs):
+                return self
+
+            def filter(self, *args, **kwargs):
+                return self
+
+            def __getitem__(self, item):
+                return list(self)[item]
+
+        fake_qs = FakeQS([row_fuzzy, row_baic, row_toyota])
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.models.PrecioRepuestoWeb.objects.filter',
+            return_value=fake_qs,
+        ):
+            hits = _candidatos_web_cache(
+                marca_vehiculo='Toyota',
+                modelo_vehiculo='Yaris',
+            )
+        precios = {h.get('precio_unitario_clp') for h in hits}
+        self.assertIn(22000, precios)
+        self.assertNotIn(99000, precios)
+        self.assertNotIn(45000, precios)
+
+    def test_prompt_cotizacion_acota_alcance(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador import (
+            _construir_prompt,
+        )
+
+        prompt = _construir_prompt({
+            'marca': 'Toyota',
+            'modelo': 'Yaris',
+            'anio': '2018',
+            'servicio_nombre': 'Cambio de aceite',
+            'descripcion_problema': 'Mantención',
+            'chat_reciente': 'Cliente: también hablamos de pastillas el mes pasado',
+            'tipo_motor_efectivo_label': 'Bencinero',
+        })
+        self.assertIn('ALCANCE', prompt)
+        self.assertIn('Cambio de aceite', prompt)
+        self.assertIn('Toyota ≠ BAIC', prompt)
+
 
 
 class FuenteWebEnrichTestCase(SimpleTestCase):

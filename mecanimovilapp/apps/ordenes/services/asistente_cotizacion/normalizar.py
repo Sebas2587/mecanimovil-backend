@@ -118,12 +118,11 @@ def normalizar_cotizacion_ia(data: dict[str, Any], ctx: dict[str, Any]) -> dict[
         advertencias = [str(advertencias)]
     advertencias = [str(a).strip() for a in advertencias if str(a).strip()][:8]
 
-    servicio = str(
-        data.get('servicio_nombre')
-        or data.get('servicio')
-        or ctx.get('servicio_nombre')
-        or 'Servicio mecánico'
-    ).strip()[:255]
+    pedido = str(ctx.get('servicio_nombre') or '').strip()
+    servicio = (
+        pedido
+        or str(data.get('servicio_nombre') or data.get('servicio') or 'Servicio mecánico').strip()
+    )[:255]
 
     descripcion = str(
         data.get('descripcion_resumen')

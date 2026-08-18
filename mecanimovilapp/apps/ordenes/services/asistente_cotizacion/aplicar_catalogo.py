@@ -7,6 +7,7 @@ Usado por generar-ia (modal Cotizar) y alineado con el borrador del agente chat.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -18,12 +19,30 @@ def _split_servicios(servicio_nombre: str) -> list[str]:
     raw = (servicio_nombre or '').strip()
     if not raw:
         return []
-    parts: list[str] = []
-    for chunk in raw.replace('+', '|').replace(' y ', '|').split('|'):
+
+    def _es_pack_aceite(texto: str) -> bool:
+        return bool(
+            re.search(r'aceite\s+y\s+filtro\b', texto, re.IGNORECASE)
+            and not re.search(
+                r'filtro\s+de\s+(?:aire|polen|habit[aá]culo|cabina)',
+                texto,
+                re.IGNORECASE,
+            )
+        )
+
+    out: list[str] = []
+    for chunk in raw.replace('+', '|').split('|'):
         c = chunk.strip()
-        if c:
-            parts.append(c)
-    return parts or [raw]
+        if not c:
+            continue
+        if _es_pack_aceite(c):
+            out.append(c)
+            continue
+        for sub in c.replace(' y ', '|').split('|'):
+            s = sub.strip()
+            if s:
+                out.append(s)
+    return out or [raw]
 
 
 def construir_bloque_catalogo_prompt(

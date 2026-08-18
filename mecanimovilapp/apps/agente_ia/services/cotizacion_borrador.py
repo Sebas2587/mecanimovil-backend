@@ -945,6 +945,55 @@ def _merge_linea_servicio(
     return out
 
 
+def _cotizacion_mismo_vehiculo(cot: CotizacionCanal, datos: dict) -> bool:
+    """False si el borrador es de otra patente o de otro marca+modelo."""
+    from mecanimovilapp.apps.agente_ia.services.contexto_patente import normalizar_patente
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.vehiculo_exacto import (
+        vehiculo_historial_identico,
+    )
+
+    vehiculo = datos.get('vehiculo') or {}
+    if not isinstance(vehiculo, dict):
+        vehiculo = {}
+    patente_nueva = normalizar_patente(
+        (vehiculo.get('patente') or '') or (datos.get('patente_enriquecida') or '')
+    )
+    patente_old = normalizar_patente(cot.vehiculo_patente or '')
+    if patente_old and patente_nueva and patente_old != patente_nueva:
+        return False
+    marca_n = (vehiculo.get('marca') or '').strip()
+    modelo_n = (vehiculo.get('modelo') or '').strip()
+    if cot.vehiculo_marca and cot.vehiculo_modelo and marca_n and modelo_n:
+        if not vehiculo_historial_identico(
+            cot.vehiculo_marca,
+            cot.vehiculo_modelo,
+            marca_n,
+            modelo_n,
+        ):
+            return False
+    return True
+
+
+def _podar_lineas_fuera_del_pedido(
+    lineas: list[dict[str, Any]],
+    servicios_turno: list[str],
+) -> list[dict[str, Any]]:
+    if not servicios_turno or not lineas:
+        return lineas
+    out: list[dict[str, Any]] = []
+    for lin in lineas:
+        nombre = (lin.get('nombre') or '').strip()
+        if not nombre:
+            continue
+        if any(_servicios_equivalentes(nombre, s) for s in servicios_turno):
+            out.append(lin)
+            continue
+        clave = _clave_servicio(nombre)
+        if clave and any(_clave_servicio(s) == clave for s in servicios_turno):
+            out.append(lin)
+    return out
+
+
 def _obtener_borrador_abierto(
     *,
     sesion: AgenteConversacionSesion,
@@ -989,6 +1038,11 @@ def crear_cotizacion_borrador_desde_agente(
         conversation=conversation,
         taller=taller,
     )
+    if cotizacion_existente is not None and not _cotizacion_mismo_vehiculo(
+        cotizacion_existente,
+        datos,
+    ):
+        cotizacion_existente = None
     es_update = cotizacion_existente is not None
     estado_previo = cotizacion_existente.estado if cotizacion_existente else None
     reabierta = es_update and estado_previo in ('enviada', 'aceptada')
@@ -1028,6 +1082,7 @@ def crear_cotizacion_borrador_desde_agente(
     lineas: list[dict[str, Any]] = _compactar_lineas_servicio(
         list(meta_prev.get('servicios_lineas') or [])
     )
+    lineas = _podar_lineas_fuera_del_pedido(lineas, servicios_turno)
     precios_ref_ia: list[dict[str, Any]] = list(meta_prev.get('precios_referenciales_ia') or [])
     claves_lineas_previas = {_clave_servicio(l.get('nombre') or '') for l in lineas if l.get('nombre')}
 
@@ -1434,6 +1489,31 @@ def crear_cotizacion_borrador_desde_agente(
         if es_update and cotizacion_existente
         else []
     )
+    nombres_prev_todas = [
+        str(l.get('nombre') or '').strip()
+        for l in (meta_prev.get('servicios_lineas') or [])
+        if isinstance(l, dict) and str(l.get('nombre') or '').strip()
+    ]
+    nombres_removed = [
+        n
+        for n in nombres_prev_todas
+        if not any(_servicios_equivalentes(n, s) for s in servicios_turno)
+    ]
+    if nombres_removed and repuestos:
+        repuestos = [
+            r
+            for r in repuestos
+            if not (
+                any(
+                    _repuesto_cubre_servicio(str(r.get('nombre') or ''), rem)
+                    for rem in nombres_removed
+                )
+                and not any(
+                    _repuesto_cubre_servicio(str(r.get('nombre') or ''), k)
+                    for k in servicios_turno
+                )
+            )
+        ]
 
     catalogo_completo = bool(hay_algun_catalogo and not faltan_precios_catalogo)
 

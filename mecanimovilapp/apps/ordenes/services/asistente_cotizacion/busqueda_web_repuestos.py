@@ -1149,8 +1149,14 @@ def hits_cache_vigentes_para_nombres(
         .order_by('-confianza', '-consultado_en')
     )
     out: dict[str, dict[str, Any]] = {}
+    from .vehiculo_exacto import clave_historial_cubre_vehiculo
+
     for row in rows:
         clave = str(row.clave or '')
+        dominio = str(row.dominio or '').strip().lower()
+        if dominio in ('historial-taller', 'historial_taller'):
+            if not clave_historial_cubre_vehiculo(clave, marca_vehiculo, modelo_vehiculo):
+                continue
         fuzzy = clave.split('|', 1)[0] if '|' in clave else clave
         fuzzy = fuzzy or _clave_fuzzy(str(row.nombre_producto or ''))
         if not fuzzy:

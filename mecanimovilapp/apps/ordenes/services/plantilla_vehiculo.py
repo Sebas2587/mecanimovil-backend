@@ -41,11 +41,11 @@ def plantilla_coincide_vehiculo(
     if not snap_marca or not snap_modelo:
         return False
 
-    if _norm_texto(marca) != snap_marca:
-        return False
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.vehiculo_exacto import (
+        vehiculo_historial_identico,
+    )
 
-    modelo_norm = _norm_texto(modelo)
-    if modelo_norm != snap_modelo and modelo_norm not in snap_modelo and snap_modelo not in modelo_norm:
+    if not vehiculo_historial_identico(marca, modelo, snap.get('vehiculo_marca'), snap.get('vehiculo_modelo')):
         return False
 
     snap_cil = _norm_cilindraje(snap.get('vehiculo_cilindraje'))

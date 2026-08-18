@@ -335,10 +335,13 @@ def _candidatos_ofertas_taller(
 # ---------------------------------------------------------------------------
 
 def _modelo_vehiculo_coincide(a: str, b: str) -> bool:
-    na, nb = _norm(a), _norm(b)
+    """Igualdad estricta de modelo. Usar vehiculo_historial_identico para marca+modelo."""
+    from .vehiculo_exacto import _norm_vehiculo_campo
+
+    na, nb = _norm_vehiculo_campo(a), _norm_vehiculo_campo(b)
     if not na or not nb:
         return False
-    return na == nb or na in nb or nb in na
+    return na == nb
 
 
 def _servicio_tokens_hist(nombre: str) -> set[str]:
@@ -366,6 +369,10 @@ def _candidatos_historial_taller(
         return []
     try:
         from mecanimovilapp.apps.ordenes.models import CotizacionCanal
+        from .vehiculo_exacto import vehiculo_historial_identico
+
+        if not (marca_vehiculo or '').strip() or not (modelo_vehiculo or '').strip():
+            return []
 
         desde = timezone.now() - timedelta(days=_HIST_MESES * 30)
         qs = (
@@ -385,7 +392,7 @@ def _candidatos_historial_taller(
             .order_by('-creado_en')[:80]
         )
 
-        marca_req = _norm(marca_vehiculo)
+        marca_req = (marca_vehiculo or '').strip()
         modelo_req = (modelo_vehiculo or '').strip()
         servicio_req = (servicio_nombre or '').strip()
         buckets: dict[str, dict[str, Any]] = defaultdict(
@@ -399,20 +406,14 @@ def _candidatos_historial_taller(
         )
 
         for cot in qs:
-            if marca_req:
-                cot_marca = _norm(cot.vehiculo_marca or '')
-                if cot_marca and cot_marca != marca_req:
-                    continue
-            match_modelo = False
-            if modelo_req:
-                if not _modelo_vehiculo_coincide(cot.vehiculo_modelo or '', modelo_req):
-                    # Sin modelo en la cotización antigua: no descartar del todo,
-                    # pero no cuenta como match exacto (exige más muestras).
-                    match_modelo = False
-                    if (cot.vehiculo_modelo or '').strip():
-                        continue
-                else:
-                    match_modelo = True
+            if not vehiculo_historial_identico(
+                marca_req,
+                modelo_req,
+                cot.vehiculo_marca,
+                cot.vehiculo_modelo,
+            ):
+                continue
+            match_modelo = True
             if servicio_req and (cot.servicio_nombre or '').strip():
                 if not _servicios_similares_hist(cot.servicio_nombre, servicio_req):
                     continue
@@ -631,13 +632,18 @@ def _candidatos_web_cache(
         now = timezone.now()
         qs = PrecioRepuestoWeb.objects.filter(expira_en__gt=now).order_by('-confianza')[:400]
         out: list[dict[str, Any]] = []
+        from .vehiculo_exacto import clave_historial_cubre_vehiculo
+
         veh_norm = _norm(
             ' '.join(str(p) for p in (marca_vehiculo, modelo_vehiculo, anio_vehiculo or '') if p),
         )
         for row in qs:
             clave = str(row.clave or '')
-            # Preferir filas del mismo vehículo cuando la clave lo incluye.
-            if veh_norm and '|' in clave and veh_norm not in _norm(clave):
+            dominio = str(row.dominio or '').strip().lower()
+            if dominio in ('historial-taller', 'historial_taller'):
+                if not clave_historial_cubre_vehiculo(clave, marca_vehiculo, modelo_vehiculo):
+                    continue
+            elif veh_norm and '|' in clave and veh_norm not in _norm(clave):
                 continue
             marca = _marca_repuesto_valida(row.marca_repuesto)
             clave_nombre = clave.split('|', 1)[0] if '|' in clave else clave

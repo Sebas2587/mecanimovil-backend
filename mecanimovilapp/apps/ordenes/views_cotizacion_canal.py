@@ -245,8 +245,14 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             tipo_motor=contenido.get('tipo_motor') or ctx.get('tipo_motor', ''),
             tipo_motor_label=contenido.get('tipo_motor_label') or ctx.get('tipo_motor_label', ''),
             aviso_motor=contenido.get('aviso_motor') or ctx.get('aviso_motor', ''),
-            servicio_nombre=contenido.get('servicio_nombre', ''),
-            descripcion_problema=contenido.get('descripcion_problema', ''),
+            servicio_nombre=(
+                (data.get('servicio_nombre') or '').strip()
+                or contenido.get('servicio_nombre', '')
+            ),
+            descripcion_problema=(
+                (data.get('descripcion_problema') or '').strip()
+                or contenido.get('descripcion_problema', '')
+            ),
             repuestos=contenido.get('repuestos') or [],
             mano_obra_clp=contenido.get('mano_obra_clp') or 0,
             costo_repuestos_clp=contenido.get('costo_repuestos_clp') or 0,

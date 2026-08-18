@@ -14,7 +14,8 @@ from django.conf import settings
 from django.db.models import Q
 from django.utils import timezone
 
-from .enriquecer_repuestos import _clave_fuzzy, _marca_repuesto_valida, _norm, _to_int_clp
+from .enriquecer_repuestos import _marca_repuesto_valida, _norm, _to_int_clp
+from .vehiculo_exacto import vehiculo_historial_identico
 
 logger = logging.getLogger(__name__)
 
@@ -37,10 +38,17 @@ def _servicios_similares(a: str, b: str) -> bool:
 
 
 def _modelo_coincide(a: str, b: str) -> bool:
-    na, nb = _norm(a), _norm(b)
+    """Igualdad estricta de modelo (sin substring). Preferir vehiculo_historial_identico."""
+    na, nb = _norm_vehiculo_modelo(a), _norm_vehiculo_modelo(b)
     if not na or not nb:
         return False
-    return na == nb or na in nb or nb in na
+    return na == nb
+
+
+def _norm_vehiculo_modelo(texto: str) -> str:
+    from .vehiculo_exacto import _norm_vehiculo_campo
+
+    return _norm_vehiculo_campo(texto)
 
 
 def _titulo_plantilla_auto(*, marca: str, modelo: str, servicio: str) -> str:
@@ -56,6 +64,8 @@ def _seed_precios_desde_cotizacion(cotizacion) -> int:
         clave_cache_repuesto,
     )
 
+    if not (cotizacion.vehiculo_marca or '').strip() or not (cotizacion.vehiculo_modelo or '').strip():
+        return 0
     reps = cotizacion.repuestos or []
     if not isinstance(reps, list):
         return 0
@@ -99,23 +109,6 @@ def _seed_precios_desde_cotizacion(cotizacion) -> int:
                 'expira_en': expira,
             },
         )
-        # También por clave fuzzy corta (match enrich).
-        fuzzy = _clave_fuzzy(nombre)
-        if fuzzy and fuzzy != clave:
-            PrecioRepuestoWeb.objects.update_or_create(
-                clave=fuzzy[:240],
-                dominio=_DOMINIO_HISTORIAL,
-                defaults={
-                    'nombre_producto': nombre[:200],
-                    'marca_repuesto': marca,
-                    'precio_clp': precio,
-                    'tienda': proveedor or 'Historial del taller',
-                    'url': url,
-                    'compatibilidad': 'alta',
-                    'confianza': 0.85,
-                    'expira_en': expira,
-                },
-            )
         upserts += 1
     return upserts
 
@@ -147,9 +140,12 @@ def _upsert_plantilla_auto(cotizacion) -> Any | None:
     plantilla = None
     for cand in existentes:
         snap_c = cand.snapshot if isinstance(cand.snapshot, dict) else {}
-        if not _modelo_coincide(str(snap_c.get('vehiculo_modelo') or ''), modelo):
-            continue
-        if _norm(str(snap_c.get('vehiculo_marca') or '')) != _norm(marca):
+        if not vehiculo_historial_identico(
+            marca,
+            modelo,
+            snap_c.get('vehiculo_marca'),
+            snap_c.get('vehiculo_modelo'),
+        ):
             continue
         if not _servicios_similares(str(snap_c.get('servicio_nombre') or ''), servicio):
             continue
@@ -245,14 +241,15 @@ def buscar_plantilla_reutilizable(
         )[:40]
     )
     if not candidatas:
-        # Fallback: filtro laxo por marca/modelo en snapshot.
-        marca_n = _norm(marca)
         candidatas = []
         for p in qs[:60]:
             snap = p.snapshot if isinstance(p.snapshot, dict) else {}
-            if _norm(str(snap.get('vehiculo_marca') or '')) != marca_n:
-                continue
-            if not _modelo_coincide(str(snap.get('vehiculo_modelo') or ''), modelo):
+            if not vehiculo_historial_identico(
+                marca,
+                modelo,
+                snap.get('vehiculo_marca'),
+                snap.get('vehiculo_modelo'),
+            ):
                 continue
             candidatas.append(p)
 
@@ -416,12 +413,14 @@ def construir_bloque_historial_prompt(
         .exclude(vehiculo_modelo='')
         .order_by('-enviada_en', '-creado_en')[:40]
     )
-    marca_n = _norm(marca)
     lineas: list[str] = []
     for cot in qs:
-        if _norm(cot.vehiculo_marca or '') != marca_n:
-            continue
-        if not _modelo_coincide(cot.vehiculo_modelo or '', modelo):
+        if not vehiculo_historial_identico(
+            marca,
+            modelo,
+            cot.vehiculo_marca,
+            cot.vehiculo_modelo,
+        ):
             continue
         if servicio_nombre and not _servicios_similares(cot.servicio_nombre or '', servicio_nombre):
             # Si no hay servicio pedido, igual listamos; si hay y no match, skip.
@@ -451,7 +450,7 @@ def construir_bloque_historial_prompt(
     if not lineas:
         return ''
     return (
-        'HISTORIAL DEL TALLER PARA ESTE MARCA/MODELO (cotizaciones ya enviadas al cliente; '
-        'reutiliza piezas/marcas/precios cuando el servicio sea similar; no inventes otras):\n'
+        'HISTORIAL DEL TALLER SOLO PARA ESTE MARCA+MODELO EXACTO (no copies montos de otro auto; '
+        'Toyota ≠ BAIC; Yaris ≠ Yaris Cross). Reutiliza piezas/precios si el servicio es el pedido:\n'
         + '\n'.join(lineas)
     )

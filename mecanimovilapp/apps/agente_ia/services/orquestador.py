@@ -32,11 +32,20 @@ from mecanimovilapp.apps.agente_ia.specs.agente_2_agenda_spec import (
     CoordinacionCitaOutput,
     BloqueHorarioSugerido,
 )
+from mecanimovilapp.apps.agente_ia.services.alcance_pedido import (
+    _CLIENTE_PIDE_PRECIO_RE,
+    _SOLO_SERVICIO_RE,
+    _acotar_servicios_al_pedido,
+    _clave_servicio_dedup,
+    _cliente_niega_pedir_precio,
+    _cliente_pide_agregar_a_cotizacion,
+    _cliente_pide_quitar_de_cotizacion,
+    _extraer_servicios_mencionados_en_texto,
+)
 from mecanimovilapp.apps.agente_ia.services.notificaciones import notificar_escalamiento_humano
 from mecanimovilapp.apps.agente_ia.services.rag import buscar_contexto_taller_combinado
 from mecanimovilapp.apps.agente_ia.services.taller_resolver import canal_conversacion, resolver_taller_desde_conversation
 from mecanimovilapp.apps.chat.models import Conversation, Message
-from mecanimovilapp.apps.ordenes.services.catalogo_pricing import normalizar_nombre_servicio
 
 logger = logging.getLogger(__name__)
 
@@ -44,17 +53,6 @@ _MENSAJES_RECIENTES_LIMITE = 16
 _RESUMEN_CONVERSACION_MAX = 500
 
 _JSON_FENCE = re.compile(r'```(?:json)?\s*([\s\S]*?)\s*```', re.IGNORECASE)
-_SERVICIO_PAREN_RE = re.compile(
-    r'\s*\([^)]*(?:repuesto|sin repuesto|con repuesto|incluye|no incluye)[^)]*\)\s*',
-    re.IGNORECASE,
-)
-
-
-def _clave_servicio_dedup(nombre: str) -> str:
-    """Clave estable para deduplicar servicios en datos capturados."""
-    base = _SERVICIO_PAREN_RE.sub('', (nombre or '').strip())
-    base = re.sub(r'\s*\([^)]*\)\s*', ' ', base).strip()
-    return normalizar_nombre_servicio(base)
 
 
 def agente_ia_habilitado() -> bool:
@@ -760,48 +758,6 @@ def _respuesta_fallback_pedido_inicial(
     return [b1, b2]
 
 
-_AGREGAR_A_COTIZACION_RE = re.compile(
-    r'\b(?:'
-    r'agrega(?:r|me|lo|la|s)?|'
-    r'suma(?:r|me|le)?|'
-    r'a[nñ]ade(?:r|me)?|'
-    r'incluye(?:me)?|'
-    r'tambi[eé]n\s+(?:quiero|necesito|pido|el|la|un|una)|'
-    r'adem[aá]s\s+(?:quiero|necesito|el|la|un|una)|'
-    r'actualiza(?:r)?\s+(?:la\s+)?cotizaci[oó]n|'
-    r'agregar\s+a\s+(?:la\s+)?cotizaci[oó]n|'
-    r'suma(?:r)?\s+(?:a\s+)?(?:la\s+)?cotizaci[oó]n|'
-    r'cambio\s+de\s+aceite|'
-    r'aceite\s+y\s+filtro'
-    r')\b',
-    re.IGNORECASE,
-)
-
-# Captura nombres de servicio frecuentes cuando el LLM olvida ponerlos en JSON.
-# Alternativas LARGAS primero: si no, "cambio de filtro de aire" colapsa a "cambio de filtro".
-_SERVICIO_MENCION_RE = re.compile(
-    r'\b('
-    r'cambio\s+de\s+filtro\s+de\s+aire|'
-    r'cambio\s+de\s+filtro\s+de\s+(?:polen|habit[aá]culo|cabina)|'
-    r'cambio\s+de\s+filtro\s+de\s+(?:aceite|combustible|gasolina|bencina)|'
-    r'filtro\s+de\s+(?:aire|polen|habit[aá]culo|cabina|aceite|combustible)|'
-    r'cambio\s+de\s+aceite(?:\s+y\s+filtro)?|'
-    r'cambio\s+de\s+filtro(?:\s+de\s+aceite)?|'
-    r'cambio\s+de\s+pastillas(?:\s+de\s+freno)?(?:\s+delanteras|\s+traseras)?|'
-    r'cambio\s+de\s+discos?(?:\s+de\s+freno)?|'
-    r'diagn[oó]stico(?:\s+(?:de\s+)?(?:frenos|motor|electr[oó]nico))?|'
-    r'alineaci[oó]n(?:\s+y\s+balanceo)?|'
-    r'balanceo|'
-    r'revisi[oó]n\s+(?:t[eé]cnica|pre\-?compra|general)|'
-    r'scanne?r|'
-    r'carga\s+de\s+aire\s+acondicionado|'
-    r'cambio\s+de\s+buj[ií]as|'
-    r'cambio\s+de\s+correa(?:\s+de\s+distribuci[oó]n)?'
-    r')\b',
-    re.IGNORECASE,
-)
-
-
 def _cotizacion_editable_sesion(sesion: AgenteConversacionSesion):
     from mecanimovilapp.apps.agente_ia.services.cotizacion_borrador import (
         _cotizacion_editable_por_agente,
@@ -812,32 +768,6 @@ def _cotizacion_editable_sesion(sesion: AgenteConversacionSesion):
     if cot and taller is not None and _cotizacion_editable_por_agente(cot, taller):
         return cot
     return None
-
-
-def _cliente_pide_agregar_a_cotizacion(texto_cliente: str) -> bool:
-    return bool(_AGREGAR_A_COTIZACION_RE.search(texto_cliente or ''))
-
-
-def _extraer_servicios_mencionados_en_texto(texto: str) -> list[str]:
-    """Heurística: servicios explícitos en el mensaje del cliente."""
-    out: list[str] = []
-    vistos: set[str] = set()
-    for m in _SERVICIO_MENCION_RE.finditer(texto or ''):
-        nombre = re.sub(r'\s+', ' ', (m.group(1) or '').strip())
-        if not nombre:
-            continue
-        # "filtro de aire" suelto → servicio de cambio (el taller cotiza el cambio).
-        if re.match(r'^filtro\s+de\s+', nombre, re.IGNORECASE):
-            nombre = 'Cambio de ' + nombre[0].lower() + nombre[1:]
-        # Normaliza capitalización simple
-        if not nombre:
-            continue
-        nombre = nombre[0].upper() + nombre[1:]
-        clave = _clave_servicio_dedup(nombre)
-        if clave and clave not in vistos:
-            vistos.add(clave)
-            out.append(nombre)
-    return out
 
 
 def _claves_servicios_en_cotizacion(cot) -> set[str]:
@@ -885,10 +815,6 @@ def _cliente_modifica_cotizacion_existente(
         clave = _clave_servicio_dedup(nombre)
         if clave and clave not in claves_cot:
             return True
-    for nombre in _extraer_servicios_mencionados_en_texto(texto_cliente):
-        clave = _clave_servicio_dedup(nombre)
-        if clave and clave not in claves_cot:
-            return True
     return False
 
 
@@ -919,21 +845,26 @@ def _asegurar_servicios_para_actualizar_cotizacion(
             return True
         return any(_servicios_equivalentes(nombre, n) for n in lista)
 
-    # Conserva los ya cotizados para no perder diagnóstico al sumar aceite, etc.
-    for lin in (cot.metadata or {}).get('servicios_lineas') or []:
-        if not isinstance(lin, dict):
-            continue
-        nombre = (lin.get('nombre') or '').strip()
-        if not nombre or _ya_incluido(nombre):
-            continue
-        lista.append(nombre)
-        claves.add(_clave_servicio_dedup(nombre))
-    for nombre in _extraer_servicios_mencionados_en_texto(texto_cliente):
-        for parte in _expandir_nombre_servicio(nombre) or [nombre]:
-            if not parte or _ya_incluido(parte):
+    # Conserva los ya cotizados al SUMAR; no los reinyectes si el cliente pidió quitar/solo.
+    poda = _cliente_pide_quitar_de_cotizacion(texto_cliente) or bool(
+        _SOLO_SERVICIO_RE.search(texto_cliente or '')
+    )
+    if not poda:
+        for lin in (cot.metadata or {}).get('servicios_lineas') or []:
+            if not isinstance(lin, dict):
                 continue
-            lista.append(parte)
-            claves.add(_clave_servicio_dedup(parte))
+            nombre = (lin.get('nombre') or '').strip()
+            if not nombre or _ya_incluido(nombre):
+                continue
+            lista.append(nombre)
+            claves.add(_clave_servicio_dedup(nombre))
+    if _cliente_pide_agregar_a_cotizacion(texto_cliente):
+        for nombre in _extraer_servicios_mencionados_en_texto(texto_cliente):
+            for parte in _expandir_nombre_servicio(nombre) or [nombre]:
+                if not parte or _ya_incluido(parte):
+                    continue
+                lista.append(parte)
+                claves.add(_clave_servicio_dedup(parte))
     if lista:
         datos['servicios'] = lista
     return datos
@@ -972,28 +903,6 @@ _FRASE_SANITIZER_LEGACY = re.compile(
     re.IGNORECASE,
 )
 
-_CLIENTE_PIDE_PRECIO_RE = re.compile(
-    r'\b(?:'
-    r'cu[aá]nto\s+(?:sale|cuesta|vale|cobra|cobran)|'
-    r'precio|tarifa|presupuesto|cotizaci[oó]n|cotizar|'
-    r'vale\s+la\s+pena|'
-    r'qu[eé]\s+conlleva|'
-    r'cu[aá]nto\s+me\s+(?:sale|cuesta|cobran)'
-    r')\b',
-    re.IGNORECASE,
-)
-
-# Si el cliente NIEGA haber pedido precio/cotización ("no he pedido cotización",
-# "todavía no quiero cotizar", "aún no"), NO debe contar como una petición —
-# aunque la palabra "cotización"/"precio" aparezca literalmente en su frase.
-_NEGACION_PRECIO_RE = re.compile(
-    r'\b(?:no|nunca|jam[aá]s|todav[ií]a\s+no|a[uú]n\s+no)\b'
-    r'(?:\s+\S+){0,4}?\s+'
-    r'(?:cotizaci[oó]n|cotizar|presupuesto|precio|tarifa)\b',
-    re.IGNORECASE,
-)
-
-
 def _respuesta_contiene_monto(texto: str) -> bool:
     return bool(_MONTO_CLP_RE.search(texto or ''))
 
@@ -1006,11 +915,6 @@ def _respuesta_afirma_precio(texto: str) -> bool:
         return True
     low = t.lower()
     return 'se descuent' in low or 'tarifa de visita' in low
-
-
-def _cliente_niega_pedir_precio(texto_cliente: str) -> bool:
-    """True si el cliente está aclarando que NO pidió precio/cotización (negación)."""
-    return bool(_NEGACION_PRECIO_RE.search(texto_cliente or ''))
 
 
 def _cliente_pide_precio_en_turno(
@@ -1527,9 +1431,10 @@ REGLAS DE CONVERSACIÓN:
     - el cliente pide cotización/presupuesto/precio O ya confirmó que quiere que le armes el presupuesto.
     Sin patente, sin teléfono o servicio fuera de especialidad → listo_para_cotizar=false.
 13. cliente_pide_cotizacion=true únicamente si en este turno (o el historial reciente) el cliente pidió precio/cotización/presupuesto de forma explícita o claramente implícita. NUNCA lo marques true solo porque ya tienes patente+teléfono+síntoma completos — la disposición de datos NO es lo mismo que la intención de compra. Si el cliente usa una NEGACIÓN cerca de la palabra ("no he pedido cotización", "todavía no quiero cotizar", "aún no"), es FALSO aunque la palabra "cotización" aparezca en su frase — está aclarando que NO la pidió, no pidiéndola.
-14. UNA SOLA COTIZACIÓN por conversación/vehículo: si el cliente pide otro servicio para el MISMO auto, agrégalo a la misma cotización (lista "servicios") — NO trates cada servicio como cotización aparte. El sistema edita un único borrador hasta que el taller lo cierre/envíe. Si el taller ya envió una cotización y el cliente pide agregar/modificar algo, marca listo_para_cotizar=true para actualizar ESA misma cotización (se reabrirá a borrador); NO prometas una cotización nueva aparte.
+14. UNA SOLA COTIZACIÓN por conversación y el MISMO vehículo: si el cliente pide EXPLÍCITAMENTE otro servicio para ESTE auto ("súmale", "agrega", "también quiero"), agrégalo a la misma cotización (lista "servicios"). NO trates cada servicio como cotización aparte. NO agregues un servicio solo porque se mencionó en el chat, en memoria de otros hilos, en el historial de la patente o porque el taller lo ofrece. Si cambia la patente/vehículo, parte de cero (no heredes servicios del auto anterior). Si el taller ya envió una cotización y el cliente pide agregar/modificar algo de ESTE auto, marca listo_para_cotizar=true para actualizar ESA misma cotización (se reabrirá a borrador); NO prometas una cotización nueva aparte.
 14b. SERVICIOS ESTABLES: usa nombres cortos y consistentes en "servicios" (ej. "Diagnóstico de frenos", "Cambio de pastillas de freno delanteras"). NO repitas ni reformules un servicio ya capturado. NO agregues variantes con paréntesis como "(con repuestos)" en el nombre — usa repuestos_incluidos_ultimo_servicio. NO fusiones dos servicios en una frase ("diagnóstico y pastillas") si ya existen por separado. CRÍTICO: NUNCA metas la modalidad dentro del nombre del servicio (mal: "Cambio de aceite a domicilio", "Diagnóstico en taller") — la modalidad va SOLO en el campo "modalidad". Si mezclas modalidad en el nombre, el sistema no puede encontrar el precio real del catálogo y termina diciendo que no hay tarifa aunque sí exista. Usa solo el nombre del servicio en sí (ej. "Cambio de aceite").
-14b2. ACEITE Y FILTROS: "cambio de aceite y filtro" = UN servicio (aceite + filtro de ACEITE). NUNCA lo mapees a "filtro Gasolina/combustible" ni copies SKUs del catálogo con sufijo de motor. Si el cliente pide además filtro de aire y/o polen/habitáculo, agrégalos como entradas SEPARADAS en "servicios" (ej. ["Cambio de aceite y filtro", "Cambio de filtro de aire", "Cambio de filtro de polen"]). Al actualizar una cotización, "servicios" debe incluir TODOS los pedidos (anteriores + nuevos), no solo el último.
+14b2. ACEITE Y FILTROS: "cambio de aceite y filtro" = UN servicio (aceite + filtro de ACEITE). NUNCA lo mapees a "filtro Gasolina/combustible" ni copies SKUs del catálogo con sufijo de motor. Si el cliente pide EXPLÍCITAMENTE además filtro de aire y/o polen/habitáculo, agrégalos como entradas SEPARADAS en "servicios". Al actualizar, "servicios" incluye TODOS los pedidos explícitos de ESTE auto (anteriores + nuevos), no menciones sueltas ni trabajos de otro vehículo. Si dice "quita X" o "solo el aceite", deja únicamente lo pedido.
+14b4. PRECIOS HISTÓRICOS: NUNCA cites ni copies el precio de una cotización de OTRO marca/modelo (Toyota ≠ BAIC). Solo puedes reusar un monto histórico si es el mismo marca Y el mismo modelo exactos.
 14b3. REPUESTOS AL AGREGAR SERVICIOS: si el cliente pide cambio de filtro (aire/polen/aceite), pastillas, discos o aceite, asume que VAN CON REPUESTOS (repuestos_incluidos_ultimo_servicio=true) salvo que diga "solo mano de obra" / "sin repuestos". No hace falta preguntar en cada turno; el taller ajusta precios en el borrador. Al sumar aire/polen a una cotización ya armada, márcalos en "servicios" y listo_para_cotizar=true para que el sistema agregue esas piezas al borrador.
 15. PRECIOS (ANTI-ALUCINACIÓN, CRÍTICO): Solo puedes mencionar un monto en pesos ($, CLP) si ese EXACTO valor aparece en la FICHA OPERATIVA / catálogo publicado para ese servicio y vehículo. Si el cliente pregunta "cuánto sale / cuánto cuesta" y NO hay precio publicado (ej. inspección/diagnóstico a domicilio sin tarifa en catálogo):
     - PROHIBIDO inventar cifras, rangos ("entre X e Y"), "unos treinta lucas", o dejar huecos tipo "el valor es de,".
@@ -2071,6 +1976,14 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             vehiculo_previo = _merge_datos(vehiculo_previo, enriq['vehiculo'])
             datos_previos['vehiculo'] = vehiculo_previo
             datos_previos['patente_enriquecida'] = patente_detectada
+            if (
+                patente_prev_enriquecida
+                and patente_detectada
+                and patente_prev_enriquecida != patente_detectada
+            ):
+                datos_previos['servicios'] = []
+                datos_previos['servicio_nombre'] = ''
+                datos_previos['descripcion_problema'] = ''
             datos_previos['vehiculo_registrado'] = bool(enriq.get('registrado_en_sistema'))
             if enriq.get('vehiculo_id'):
                 datos_previos['vehiculo_id'] = enriq['vehiculo_id']
@@ -2272,6 +2185,11 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         return {'ok': False, 'error': error}
 
     datos = _merge_datos(sesion.datos_capturados, decision.get('datos_actualizados') or {})
+    datos = _acotar_servicios_al_pedido(
+        previos=sesion.datos_capturados or {},
+        datos=datos,
+        texto_cliente=texto_cliente,
+    )
     # Heurística gana al LLM vacío: comuna dicha por el cliente + dirección diferida.
     # El LLM a veces mete frases del chat ("Cuánto cuesta") en direccion_servicio.
     if _direccion_parece_basura(str(datos.get('direccion_servicio') or '')):
@@ -2505,6 +2423,12 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         datos,
         texto_cliente=texto_cliente,
     )
+    if not modifica_cotizacion and (
+        _cliente_pide_quitar_de_cotizacion(texto_cliente)
+        or _SOLO_SERVICIO_RE.search(texto_cliente or '')
+    ):
+        if _cotizacion_editable_sesion(sesion):
+            modifica_cotizacion = True
     if not listo_cotizar and modifica_cotizacion:
         listo_cotizar = True
         logger.info(
@@ -2611,9 +2535,7 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             ):
                 datos_cot = dict(datos_cot)
                 datos_cot['repuestos_incluidos_ultimo_servicio'] = True
-        datos_cot['contexto_rag'] = '\n'.join(
-            filter(None, [chunks_texto, contexto_patente_txt])
-        )
+        datos_cot['contexto_rag'] = ''
         cotizacion = crear_cotizacion_borrador_desde_agente(
             sesion=sesion,
             conversation=conversation,

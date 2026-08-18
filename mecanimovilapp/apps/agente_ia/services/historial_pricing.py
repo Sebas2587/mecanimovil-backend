@@ -62,6 +62,8 @@ def buscar_estimado_historico(
     min_muestras: int = MIN_MUESTRAS,
 ) -> EstimadoHistorico | None:
     """Mediana de precios finales en solicitudes completadas (últimos ~6 meses)."""
+    if not (marca or '').strip() or not (modelo or '').strip():
+        return None
     nombre_norm = normalizar_nombre_servicio(_sin_sufijo_modalidad(servicio_nombre))
     if not nombre_norm:
         return None
@@ -83,20 +85,19 @@ def buscar_estimado_historico(
         )
     )
 
-    marca_req = (marca or '').strip().lower()
-    modelo_req = (modelo or '').strip().lower()
-    precios: list[int] = []
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.vehiculo_exacto import (
+        vehiculo_historial_identico,
+    )
 
+    precios: list[int] = []
     for linea in qs.iterator():
         if not _linea_coincide_servicio(linea, nombre_norm):
             continue
         veh = linea.solicitud.vehiculo
-        if marca_req and veh and veh.marca:
-            if (veh.marca.nombre or '').strip().lower() != marca_req:
-                continue
-        if modelo_req and veh and veh.modelo:
-            if (veh.modelo.nombre or '').strip().lower() != modelo_req:
-                continue
+        marca_hist = getattr(getattr(veh, 'marca', None), 'nombre', '') if veh else ''
+        modelo_hist = getattr(getattr(veh, 'modelo', None), 'nombre', '') if veh else ''
+        if not vehiculo_historial_identico(marca, modelo, marca_hist, modelo_hist):
+            continue
         try:
             monto = int(linea.precio_final or linea.precio_unitario or 0)
         except (TypeError, ValueError):

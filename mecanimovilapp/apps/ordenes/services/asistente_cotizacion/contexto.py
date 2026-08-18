@@ -67,16 +67,12 @@ def armar_contexto_cotizacion(
     )
 
     chat_ctx = _mensajes_recientes(conversation)
-
-    from mecanimovilapp.apps.agente_ia.services.conocimiento_diagnostico import (
-        bloque_diagnostico_relevante,
-    )
-
-    conocimiento = bloque_diagnostico_relevante(
-        chat_ctx,
-        f'{servicio_nombre} {descripcion_problema}'.strip(),
-        max_bloques=2,
-    )
+    if chat_ctx:
+        chat_ctx = (
+            'CONTEXTO CONVERSACIONAL (no son líneas de cotización; '
+            'ignora servicios mencionados que no estén en "Servicio solicitado"):\n'
+            + chat_ctx
+        )
 
     return {
         'marca': marca,
@@ -89,6 +85,6 @@ def armar_contexto_cotizacion(
         'servicio_nombre': servicio_nombre,
         'descripcion_problema': descripcion_problema,
         'chat_reciente': chat_ctx,
-        'conocimiento_diagnostico': conocimiento,
+        'conocimiento_diagnostico': '',
         **motor_ctx,
     }
