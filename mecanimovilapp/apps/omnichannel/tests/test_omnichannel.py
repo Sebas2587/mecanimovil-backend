@@ -49,6 +49,64 @@ class FriendlyOAuthErrorTests(SimpleTestCase):
         self.assertNotIn('graph.facebook', msg)
 
 
+class WhatsAppConnectDiagnosticsTests(SimpleTestCase):
+    def _client(self, **overrides):
+        from unittest.mock import MagicMock
+
+        client = MagicMock()
+        client.granted_scopes.return_value = set()
+        client.get_user_businesses.return_value = []
+        client.get_granted_waba_ids.return_value = []
+        client.get_whatsapp_business_accounts.return_value = []
+        client.get_client_whatsapp_business_accounts.return_value = []
+        client.get_phone_numbers.return_value = []
+        for key, value in overrides.items():
+            getattr(client, key).return_value = value
+        return client
+
+    def test_personal_facebook_sin_negocio(self):
+        from mecanimovilapp.apps.omnichannel.services.whatsapp_connect_diagnostics import (
+            diagnose_whatsapp_connection_gap,
+        )
+
+        diagnosis = diagnose_whatsapp_connection_gap(self._client(), 'token')
+        self.assertEqual(diagnosis.error_code, 'facebook_sin_negocio')
+        self.assertIn('Facebook personal', diagnosis.message)
+
+    def test_negocio_sin_whatsapp_business(self):
+        from mecanimovilapp.apps.omnichannel.services.whatsapp_connect_diagnostics import (
+            diagnose_whatsapp_connection_gap,
+        )
+
+        client = self._client(get_user_businesses=[{'id': 'biz-1'}])
+        diagnosis = diagnose_whatsapp_connection_gap(client, 'token')
+        self.assertEqual(diagnosis.error_code, 'sin_whatsapp_business')
+        self.assertIn('WhatsApp personal', diagnosis.message)
+
+    def test_waba_sin_numero(self):
+        from mecanimovilapp.apps.omnichannel.services.whatsapp_connect_diagnostics import (
+            diagnose_whatsapp_connection_gap,
+        )
+
+        client = self._client(
+            get_granted_waba_ids=['waba-1'],
+            get_user_businesses=[{'id': 'biz-1'}],
+        )
+        diagnosis = diagnose_whatsapp_connection_gap(client, 'token')
+        self.assertEqual(diagnosis.error_code, 'sin_numero_whatsapp')
+
+    def test_scopes_sin_waba_ni_negocio(self):
+        from mecanimovilapp.apps.omnichannel.services.whatsapp_connect_diagnostics import (
+            diagnose_whatsapp_connection_gap,
+        )
+
+        client = self._client(
+            granted_scopes={'whatsapp_business_management'},
+        )
+        diagnosis = diagnose_whatsapp_connection_gap(client, 'token')
+        self.assertEqual(diagnosis.error_code, 'sin_permisos_admin')
+
+
 class EmbeddedConfigTests(SimpleTestCase):
     def test_build_embedded_config_requires_app_and_config_id(self):
         from mecanimovilapp.apps.omnichannel.utils import build_embedded_config_payload

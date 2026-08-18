@@ -230,6 +230,7 @@ class ProviderChannelConnectionViewSet(viewsets.GenericViewSet):
             'needs_phone_number_id': result.needs_phone_number_id,
             'waba_id': result.waba_id,
             'channel': result.channel or conn.channel.lower(),
+            'error_code': result.error_code,
         }
         if result.success:
             payload['connection'] = ProviderChannelConnectionSerializer(conn).data
@@ -472,11 +473,22 @@ def meta_oauth_callback(request):
             title='Casi listo',
             message=result.message,
             instruction=result.instruction,
+            error_code=result.error_code,
         )
 
+    title = 'No se pudo conectar'
+    if result.error_code == 'facebook_sin_negocio':
+        title = 'Facebook incorrecto'
+    elif result.error_code == 'sin_whatsapp_business':
+        title = 'Falta WhatsApp Business'
+    elif result.error_code == 'sin_numero_whatsapp':
+        title = 'Sin número de WhatsApp Business'
+    elif result.error_code == 'sin_permisos_admin':
+        title = 'Sin permiso de administrador'
     return build_oauth_callback_html(
         success=False,
-        title='No se pudo conectar',
+        title=title,
         message=result.message,
         instruction=result.instruction,
+        error_code=result.error_code,
     )

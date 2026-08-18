@@ -9,7 +9,15 @@ from django.http import HttpResponse
 
 from mecanimovilapp.apps.omnichannel.models import ProviderChannelConnection
 from mecanimovilapp.apps.omnichannel.services.meta_graph import MetaGraphClient
-from mecanimovilapp.apps.omnichannel.utils import friendly_oauth_error, meta_oauth_redirect_uri
+from mecanimovilapp.apps.omnichannel.services.whatsapp_connect_diagnostics import (
+    copy_for_error,
+    diagnose_whatsapp_connection_gap,
+)
+from mecanimovilapp.apps.omnichannel.utils import (
+    MetaOAuthExchangeError,
+    friendly_oauth_error,
+    meta_oauth_redirect_uri,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +38,7 @@ class MetaOAuthCompletionResult:
     needs_phone_number_id: bool = False
     waba_id: str | None = None
     channel: str | None = None
+    error_code: str | None = None
 
 
 def complete_meta_oauth_connection(
@@ -44,13 +53,15 @@ def complete_meta_oauth_connection(
         token_data = client.exchange_code(code, meta_oauth_redirect_uri())
         access_token = token_data.get('access_token')
         if not access_token:
+            diagnosis = copy_for_error('codigo_expirado')
             conn.status = 'error'
-            conn.mensaje_estado = 'No se recibió access token de Meta.'
+            conn.mensaje_estado = diagnosis.message
             conn.save(update_fields=['status', 'mensaje_estado', 'updated_at'])
             return MetaOAuthCompletionResult(
                 success=False,
-                message=conn.mensaje_estado,
-                instruction='Vuelve a la app e intenta conectar de nuevo.',
+                message=diagnosis.message,
+                instruction=diagnosis.instruction,
+                error_code=diagnosis.error_code,
             )
 
         user_token = access_token
@@ -170,20 +181,24 @@ def complete_meta_oauth_connection(
                 granted = client.get_granted_waba_ids(user_token)
                 if granted:
                     conn.waba_id = granted[0]
+                diagnosis = diagnose_whatsapp_connection_gap(client, user_token)
+                logger.info(
+                    'WhatsApp OAuth sin phone_number_id user=%s error_code=%s',
+                    conn.usuario_id,
+                    diagnosis.error_code,
+                )
                 conn.access_token = user_token
                 conn.status = 'error'
-                conn.mensaje_estado = (
-                    'No pudimos vincular tu WhatsApp automáticamente. '
-                    'Pulsa Conectar e intenta de nuevo.'
-                )
+                conn.mensaje_estado = diagnosis.message
                 conn.save()
                 return MetaOAuthCompletionResult(
                     success=False,
-                    message=conn.mensaje_estado,
-                    instruction='Vuelve a la app y pulsa Conectar otra vez.',
+                    message=diagnosis.message,
+                    instruction=diagnosis.instruction,
                     needs_phone_number_id=False,
                     waba_id=conn.waba_id,
                     channel=conn.channel.lower(),
+                    error_code=diagnosis.error_code,
                 )
 
             waba_for_sub = update_fields.get('waba_id')
@@ -230,6 +245,17 @@ def complete_meta_oauth_connection(
         )
     except Exception as exc:
         logger.exception('Meta OAuth completion failed: %s', exc)
+        if isinstance(exc, MetaOAuthExchangeError) and getattr(exc, 'status_code', None) == 400:
+            diagnosis = copy_for_error('codigo_expirado')
+            conn.status = 'error'
+            conn.mensaje_estado = diagnosis.message
+            conn.save(update_fields=['status', 'mensaje_estado', 'updated_at'])
+            return MetaOAuthCompletionResult(
+                success=False,
+                message=diagnosis.message,
+                instruction=diagnosis.instruction,
+                error_code=diagnosis.error_code,
+            )
         friendly = friendly_oauth_error(exc)
         conn.status = 'error'
         conn.mensaje_estado = friendly
@@ -238,6 +264,7 @@ def complete_meta_oauth_connection(
             success=False,
             message=friendly,
             instruction='Vuelve a la app Mecanimovil Proveedores e intenta de nuevo.',
+            error_code='generico',
         )
 
 
@@ -247,6 +274,7 @@ def build_oauth_callback_html(
     title: str,
     message: str,
     instruction: str = '',
+    error_code: str | None = None,
 ) -> HttpResponse:
     color = '#0052FF' if success else '#CF202F'
     icon = '✓' if success else '!'
@@ -302,7 +330,9 @@ def build_oauth_callback_html(
     notifyOpener({{
       type: 'mecanimovil:meta-oauth',
       success: {'true' if success else 'false'},
-      message: {repr(message)}
+      message: {repr(message)},
+      instruction: {repr(instruction or '')},
+      error_code: {repr(error_code or '')}
     }});
     function cerrar() {{
       try {{ window.close(); }} catch (e) {{}}
