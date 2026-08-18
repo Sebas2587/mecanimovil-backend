@@ -126,19 +126,157 @@ def _servicio_principal_publico(cotizacion: CotizacionCanal) -> dict | None:
     }
 
 
+def formatear_numero_publico(pk: int) -> str:
+    return f'MM-{int(pk):06d}'
+
+
+def asegurar_numero_publico(cotizacion: CotizacionCanal) -> CotizacionCanal:
+    """Asigna folio inmutable MM-000184. No pisa un valor existente."""
+    if (cotizacion.numero_publico or '').strip():
+        return cotizacion
+    if cotizacion.pk is None:
+        cotizacion.save()
+    cotizacion.numero_publico = formatear_numero_publico(cotizacion.pk)
+    cotizacion.save(update_fields=['numero_publico', 'actualizado_en'])
+    return cotizacion
+
+
+def _email_taller(taller) -> str:
+    if not taller:
+        return ''
+    usuario = getattr(taller, 'usuario', None)
+    return ((getattr(usuario, 'email', None) or '') if usuario else '').strip()
+
+
+def _direccion_taller(taller) -> str:
+    if not taller:
+        return ''
+    direccion_fisica = getattr(taller, 'direccion_fisica', None)
+    if direccion_fisica is None:
+        return ''
+    return (getattr(direccion_fisica, 'direccion_completa', None) or '').strip()
+
+
+def construir_emisor_snapshot(taller, request=None) -> dict:
+    if not taller:
+        return {}
+    return {
+        'nombre': (getattr(taller, 'nombre', None) or '').strip(),
+        'telefono': (getattr(taller, 'telefono', None) or '').strip(),
+        'email': _email_taller(taller),
+        'direccion': _direccion_taller(taller),
+        'foto_perfil': _foto_perfil_taller(taller, request),
+        'verificado': bool(getattr(taller, 'verificado', False)),
+        'calificacion_promedio': float(getattr(taller, 'calificacion_promedio', 0) or 0),
+    }
+
+
+def persistir_emisor_snapshot(cotizacion: CotizacionCanal, request=None) -> CotizacionCanal:
+    cotizacion.emisor_snapshot = construir_emisor_snapshot(cotizacion.taller, request)
+    cotizacion.save(update_fields=['emisor_snapshot', 'actualizado_en'])
+    return cotizacion
+
+
+def _contacto_canal(cotizacion: CotizacionCanal):
+    conv = getattr(cotizacion, 'conversation', None)
+    return getattr(conv, 'external_contact', None) if conv else None
+
+
+def rellenar_cliente_desde_canal(cotizacion: CotizacionCanal) -> CotizacionCanal:
+    """Completa nombre/teléfono vacíos desde el contacto omnicanal."""
+    contact = _contacto_canal(cotizacion)
+    if contact is None:
+        return cotizacion
+    update_fields: list[str] = []
+    if not (cotizacion.cliente_nombre or '').strip():
+        nombre = (getattr(contact, 'display_name', None) or '').strip()
+        if nombre:
+            cotizacion.cliente_nombre = nombre[:200]
+            update_fields.append('cliente_nombre')
+    if not (cotizacion.cliente_telefono or '').strip():
+        tel = ''
+        if hasattr(contact, 'telefono_efectivo'):
+            tel = (contact.telefono_efectivo() or '').strip()
+        if not tel:
+            tel = (getattr(contact, 'phone', None) or '').strip()
+        if tel:
+            cotizacion.cliente_telefono = tel[:20]
+            update_fields.append('cliente_telefono')
+    if update_fields:
+        update_fields.append('actualizado_en')
+        cotizacion.save(update_fields=update_fields)
+    return cotizacion
+
+
+def preparar_emision_publica(cotizacion: CotizacionCanal, request=None) -> CotizacionCanal:
+    """Token, folio, destinatario de canal y snapshot del taller."""
+    asegurar_token_cotizacion(cotizacion)
+    asegurar_numero_publico(cotizacion)
+    rellenar_cliente_desde_canal(cotizacion)
+    persistir_emisor_snapshot(cotizacion, request)
+    return cotizacion
+
+
+def _cliente_publico(cotizacion: CotizacionCanal) -> dict:
+    nombre = (cotizacion.cliente_nombre or '').strip()
+    telefono = (cotizacion.cliente_telefono or '').strip()
+    if not nombre or not telefono:
+        contact = _contacto_canal(cotizacion)
+        if contact is not None:
+            if not nombre:
+                nombre = (getattr(contact, 'display_name', None) or '').strip()
+            if not telefono:
+                if hasattr(contact, 'telefono_efectivo'):
+                    telefono = (contact.telefono_efectivo() or '').strip()
+                if not telefono:
+                    telefono = (getattr(contact, 'phone', None) or '').strip()
+    direccion = (cotizacion.direccion_servicio or '').strip()
+    out: dict = {}
+    if nombre:
+        out['nombre'] = nombre
+    if telefono:
+        out['telefono'] = telefono
+    if direccion:
+        out['direccion'] = direccion
+    return out
+
+
+def _taller_publico(cotizacion: CotizacionCanal, request=None) -> dict:
+    snap = cotizacion.emisor_snapshot if isinstance(cotizacion.emisor_snapshot, dict) else {}
+    if snap.get('nombre') or snap.get('telefono') or snap.get('email') or snap.get('direccion'):
+        return {
+            'nombre': str(snap.get('nombre') or ''),
+            'telefono': str(snap.get('telefono') or ''),
+            'email': str(snap.get('email') or ''),
+            'direccion': str(snap.get('direccion') or ''),
+            'foto_perfil': snap.get('foto_perfil') or None,
+            'verificado': bool(snap.get('verificado')),
+            'calificacion_promedio': float(snap.get('calificacion_promedio') or 0),
+        }
+    live = construir_emisor_snapshot(cotizacion.taller, request)
+    return {
+        'nombre': live.get('nombre') or '',
+        'telefono': live.get('telefono') or '',
+        'email': live.get('email') or '',
+        'direccion': live.get('direccion') or '',
+        'foto_perfil': live.get('foto_perfil'),
+        'verificado': bool(live.get('verificado')),
+        'calificacion_promedio': float(live.get('calificacion_promedio') or 0),
+    }
+
+
 def serializar_cotizacion_publica(cotizacion: CotizacionCanal, request=None) -> dict:
-    taller = cotizacion.taller
-    # direccion_fisica es reverse OneToOne: no existe taller.direccion_fisica_id
-    direccion_fisica = getattr(taller, 'direccion_fisica', None) if taller else None
-    foto_perfil = _foto_perfil_taller(taller, request)
     es_adicional = bool(cotizacion.es_cotizacion_adicional)
+    cliente = _cliente_publico(cotizacion)
     return {
         'id': cotizacion.id,
+        'numero_publico': (cotizacion.numero_publico or '').strip() or None,
         'estado': cotizacion.estado,
         'modalidad': cotizacion.modalidad,
         'direccion_servicio': cotizacion.direccion_servicio or '',
         'servicio_nombre': cotizacion.servicio_nombre,
         'descripcion_problema': cotizacion.descripcion_problema,
+        'notas_cotizacion': (cotizacion.notas_internas or '').strip(),
         'vehiculo_marca': cotizacion.vehiculo_marca,
         'vehiculo_modelo': cotizacion.vehiculo_modelo,
         'vehiculo_anio': cotizacion.vehiculo_anio,
@@ -173,21 +311,8 @@ def serializar_cotizacion_publica(cotizacion: CotizacionCanal, request=None) -> 
         ),
         'expirado': cotizacion_publica_expirada(cotizacion),
         'cliente_nombre': cotizacion.cliente_nombre,
-        'taller': {
-            'nombre': (getattr(taller, 'nombre', None) or '') if taller else '',
-            'telefono': (getattr(taller, 'telefono', None) or '') if taller else '',
-            'direccion': (
-                (getattr(direccion_fisica, 'direccion_completa', None) or '')
-                if direccion_fisica is not None
-                else ''
-            ),
-            'foto_perfil': foto_perfil,
-            'verificado': bool(getattr(taller, 'verificado', False)) if taller else False,
-            'calificacion_promedio': (
-                float(getattr(taller, 'calificacion_promedio', 0) or 0)
-                if taller else 0.0
-            ),
-        },
+        'cliente': cliente,
+        'taller': _taller_publico(cotizacion, request),
         'puede_responder': cotizacion.estado == 'enviada',
         'es_trabajo_adicional': es_adicional,
         'motivo_servicio_adicional': (
@@ -239,7 +364,7 @@ def enviar_cotizacion_libre(cotizacion: CotizacionCanal) -> CotizacionCanal:
     cotizacion.total_clp = total
     cotizacion.estado = 'enviada'
     cotizacion.enviada_en = timezone.now()
-    asegurar_token_cotizacion(cotizacion)
+    preparar_emision_publica(cotizacion)
     cotizacion.save(
         update_fields=[
             'costo_repuestos_clp',
@@ -250,6 +375,10 @@ def enviar_cotizacion_libre(cotizacion: CotizacionCanal) -> CotizacionCanal:
             'token',
             'url_publica',
             'fecha_expiracion_publica',
+            'numero_publico',
+            'emisor_snapshot',
+            'cliente_nombre',
+            'cliente_telefono',
             'actualizado_en',
         ],
     )

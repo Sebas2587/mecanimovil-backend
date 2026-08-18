@@ -15,6 +15,7 @@ from .views_cotizacion_canal import CotizacionCanalViewSet, CotizacionCanalPlant
 from .views_cotizacion_publica import (
     CotizacionPublicaAceptarView,
     CotizacionPublicaDetailView,
+    CotizacionPublicaPdfView,
     CotizacionPublicaRechazarView,
 )
 from .views_pipeline_comercial import PipelineComercialViewSet
@@ -87,6 +88,11 @@ urlpatterns = [
         'cotizaciones-publicas/<str:token>/',
         CotizacionPublicaDetailView.as_view(),
         name='cotizacion-publica-detail',
+    ),
+    path(
+        'cotizaciones-publicas/<str:token>/pdf/',
+        CotizacionPublicaPdfView.as_view(),
+        name='cotizacion-publica-pdf',
     ),
     path(
         'cotizaciones-publicas/<str:token>/aceptar/',

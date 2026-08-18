@@ -78,6 +78,8 @@ def formatear_teaser_cotizacion(cotizacion: CotizacionCanal) -> str:
         filter(None, [cotizacion.vehiculo_marca, cotizacion.vehiculo_modelo])
     ).strip() or 'tu vehículo'
     url = cotizacion.url_publica or ''
+    folio = (cotizacion.numero_publico or '').strip()
+    folio_txt = f' {folio}' if folio else ''
     if cotizacion.es_cotizacion_adicional:
         principal = ''
         orig = cotizacion.cotizacion_original
@@ -98,22 +100,22 @@ def formatear_teaser_cotizacion(cotizacion: CotizacionCanal) -> str:
         fecha_txt = f' Fecha propuesta: {slot}.' if slot else ''
         if url:
             return (
-                f'Te enviamos un trabajo adicional encontrado durante {contexto} ({vehiculo}).'
+                f'Te enviamos un trabajo adicional{folio_txt} encontrado durante {contexto} ({vehiculo}).'
                 f'{fecha_txt} '
                 f'Revísalo y responde (aceptar o rechazar) en este enlace: {url}'
             )
         return (
-            f'Te enviamos un trabajo adicional encontrado durante {contexto} ({vehiculo}).'
+            f'Te enviamos un trabajo adicional{folio_txt} encontrado durante {contexto} ({vehiculo}).'
             f'{fecha_txt} '
             'Revisa los detalles y respóndenos cuando puedas.'
         )
     if url:
         return (
-            f'¡Tu cotización para {servicio} ({vehiculo}) está lista! '
+            f'¡Tu cotización{folio_txt} para {servicio} ({vehiculo}) está lista! '
             f'Revísala y responde (aceptar o rechazar) en este enlace: {url}'
         )
     return (
-        f'¡Tu cotización para {servicio} ({vehiculo}) está lista! '
+        f'¡Tu cotización{folio_txt} para {servicio} ({vehiculo}) está lista! '
         'Revisa los detalles y respóndenos cuando puedas.'
         )
 
@@ -431,6 +433,9 @@ def actualizar_cotizacion_aceptada_sin_iniciar(
         cotizacion.estado = 'enviada'
         cotizacion.aceptada_en = None
         cotizacion.enviada_en = timezone.now()
+        from mecanimovilapp.apps.ordenes.services.cotizacion_publica import preparar_emision_publica
+
+        preparar_emision_publica(cotizacion)
         cotizacion.save()
         # Precio de referencia queda en total previo hasta que el cliente confirme.
         det = getattr(cita, 'detalle', None)
@@ -471,9 +476,9 @@ def enviar_cotizacion_canal(cotizacion: CotizacionCanal, user) -> Message:
         update_fields=['costo_repuestos_clp', 'mano_obra_clp', 'total_clp', 'actualizado_en'],
     )
 
-    from mecanimovilapp.apps.ordenes.services.cotizacion_publica import asegurar_token_cotizacion
+    from mecanimovilapp.apps.ordenes.services.cotizacion_publica import preparar_emision_publica
 
-    asegurar_token_cotizacion(cotizacion)
+    preparar_emision_publica(cotizacion)
     _persistir_correcciones_taller_al_enviar(cotizacion)
     if cotizacion.url_publica:
         meta_extra = dict(cotizacion.metadata or {})
@@ -501,6 +506,10 @@ def enviar_cotizacion_canal(cotizacion: CotizacionCanal, user) -> Message:
             'token',
             'url_publica',
             'fecha_expiracion_publica',
+            'numero_publico',
+            'emisor_snapshot',
+            'cliente_nombre',
+            'cliente_telefono',
             'metadata',
             'actualizado_en',
         ],

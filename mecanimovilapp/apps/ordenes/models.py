@@ -2358,7 +2358,20 @@ class CotizacionCanal(models.Model):
     notas_internas = models.TextField(
         blank=True,
         default='',
-        help_text='Notas de cotización (agente/taller). Editables; no se exponen al cliente por defecto.',
+        help_text='Notas de cotización (agente/taller). Editables; se exponen al cliente como notas_cotizacion.',
+    )
+    numero_publico = models.CharField(
+        max_length=16,
+        unique=True,
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text='Folio humano inmutable, formato MM-000184.',
+    )
+    emisor_snapshot = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text='Identidad del taller congelada al enviar (nombre, contacto, logo).',
     )
     contenido_ia = models.JSONField(default=dict, blank=True)
     metadata = models.JSONField(default=dict, blank=True)

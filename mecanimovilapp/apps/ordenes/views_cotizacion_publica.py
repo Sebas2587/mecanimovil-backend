@@ -1,10 +1,12 @@
 """Vistas públicas de cotización (link compartido, sin autenticación)."""
 from __future__ import annotations
 
+from django.http import HttpResponse
 from rest_framework import permissions, status, views
 from rest_framework.response import Response
 
 from mecanimovilapp.apps.ordenes.models import CotizacionCanal
+from mecanimovilapp.apps.ordenes.services.cotizacion_pdf import generar_pdf_cotizacion_publica
 from mecanimovilapp.apps.ordenes.services.cotizacion_publica import (
     aceptar_cotizacion_publica,
     cotizacion_publica_expirada,
@@ -16,6 +18,17 @@ from mecanimovilapp.apps.ordenes.services.cotizacion_publica import (
 )
 from mecanimovilapp.apps.ordenes.throttling import CotizacionPublicaThrottle
 
+_TALLER_RELATED = (
+    'taller',
+    'taller__usuario',
+    'taller__direccion_fisica',
+    'cotizacion_original',
+    'cita_origen',
+    'cita_origen__detalle',
+    'conversation',
+    'conversation__external_contact',
+)
+
 
 class CotizacionPublicaDetailView(views.APIView):
     permission_classes = [permissions.AllowAny]
@@ -23,14 +36,7 @@ class CotizacionPublicaDetailView(views.APIView):
 
     def get(self, request, token=None):
         cotizacion = (
-            CotizacionCanal.objects.select_related(
-                'taller',
-                'taller__usuario',
-                'taller__direccion_fisica',
-                'cotizacion_original',
-                'cita_origen',
-                'cita_origen__detalle',
-            )
+            CotizacionCanal.objects.select_related(*_TALLER_RELATED)
             .filter(token=token)
             .first()
         )
@@ -137,3 +143,24 @@ class CotizacionPublicaRechazarView(views.APIView):
             return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         on_cotizacion_respondida(cotizacion, 'rechazar')
         return Response(serializar_cotizacion_publica(cotizacion, request))
+
+
+class CotizacionPublicaPdfView(views.APIView):
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [CotizacionPublicaThrottle]
+
+    def get(self, request, token=None):
+        cotizacion = (
+            CotizacionCanal.objects.select_related(*_TALLER_RELATED)
+            .filter(token=token)
+            .first()
+        )
+        if cotizacion is None:
+            return Response({'error': 'Cotización no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+        marcar_cotizacion_expirada_si_corresponde(cotizacion)
+        pdf_bytes = generar_pdf_cotizacion_publica(cotizacion, request)
+        folio = (cotizacion.numero_publico or f'MM-{cotizacion.pk:06d}').strip()
+        response = HttpResponse(pdf_bytes, content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="Cotizacion-{folio}.pdf"'
+        response['Cache-Control'] = 'private, max-age=60'
+        return response
