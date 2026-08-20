@@ -15,7 +15,11 @@ from mecanimovilapp.apps.agente_ia.models import (
     LeadCalificacion,
     TallerAgenteConfig,
 )
-from mecanimovilapp.apps.agente_ia.services.lead_scoring import umbrales_seguimiento_por_lead
+from mecanimovilapp.apps.agente_ia.services.lead_scoring import (
+    actualizar_calificacion_lead,
+    es_lead_alta_intencion,
+    umbrales_seguimiento_por_lead,
+)
 from mecanimovilapp.apps.agente_ia.services.taller_resolver import canal_conversacion, resolver_taller_desde_conversation
 from mecanimovilapp.apps.chat.models import Conversation, Message
 from mecanimovilapp.apps.ordenes.models import CotizacionCanal
@@ -91,10 +95,15 @@ def documentar_lead_perdido(
         )
 
 
+def _es_alta_intencion(categoria: str | None) -> bool:
+    return es_lead_alta_intencion(categoria)
+
+
 def _generar_mensaje_followup(
     cotizacion: CotizacionCanal,
     nombre_agente: str = '',
     nombre_taller: str = '',
+    categoria: str | None = None,
 ) -> str | None:
     """Utiliza Gemini para generar un mensaje de seguimiento personalizado y natural."""
     from mecanimovilapp.apps.agente_ia.services.orquestador import _llamar_gemini_agente
@@ -105,16 +114,38 @@ def _generar_mensaje_followup(
     vehiculo = f'{cotizacion.vehiculo_marca} {cotizacion.vehiculo_modelo}'.strip() or 'auto'
     total = int(cotizacion.total_clp or 0)
     total_txt = f'${total:,} CLP'.replace(',', '.') if total > 0 else 'cotización'
+    alta = _es_alta_intencion(categoria)
+
+    if alta:
+        objetivo = (
+            'El cliente ya mostró interés en contratar. Pregunta si pudo revisar el presupuesto '
+            'y, si le acomoda, ofrece coordinar un día. No presiones.'
+        )
+        fallback = (
+            f'Hola, te escribo de {taller_nombre} por la cotización de {servicio} para tu {vehiculo}. '
+            f'Si te acomoda, coordinamos un día.'
+        )
+    else:
+        objetivo = (
+            'El cliente partió curioso o poco comprometido. Pregunta SOLO si alcanzó a revisar '
+            'el presupuesto o si le quedó alguna duda. PROHIBIDO pedir que agende, coordinar día/hora '
+            'o empujar la venta.'
+        )
+        fallback = (
+            f'Hola, te escribo de {taller_nombre} para saber si alcanzaste a revisar el presupuesto '
+            f'de {servicio} para tu {vehiculo}. Si te quedó alguna duda, me comentas.'
+        )
 
     prompt = f"""Eres {agente_nombre} del taller "{taller_nombre}".
 Hace un tiempo enviaste al cliente el presupuesto de "{servicio}" para su {vehiculo} (monto {total_txt}).
 El cliente aún no ha respondido.
+Intención actual del lead: {"alta (quiere el servicio)" if alta else "baja (curioso / comparando / pensándolo)"}.
 
 Escribe UN mensaje de seguimiento personalizado para WhatsApp (1 a 2 frases cortas, máximo 40 palabras).
 Reglas:
 - Sé cálido, servicial y profesional como un vendedor humano.
 - NO uses muletillas robot ("Entendido", "Perfecto", "Quedo atento", "A la brevedad").
-- Pregunta si le quedó alguna duda sobre el presupuesto o si prefiere coordinar un día para realizar el trabajo.
+- {objetivo}
 - NO seas agresivo ni insistente.
 
 Responde SOLO JSON válido:
@@ -126,11 +157,7 @@ Responde SOLO JSON válido:
         if resp:
             return resp
 
-    # Fallback conversacional sin muletillas si falla el LLM
-    return (
-        f'Hola! Te escribo de {taller_nombre} para saber si pudiste revisar la cotización '
-        f'de {servicio} para tu {vehiculo}. Si tienes alguna duda con el valor o los repuestos, me comentas!'
-    )
+    return fallback
 
 
 def revisar_seguimiento_proactivo() -> dict[str, Any]:
@@ -187,8 +214,11 @@ def revisar_seguimiento_proactivo() -> dict[str, Any]:
         if not config.canal_habilitado(canal):
             continue
 
-        # Verificar si el lead ya fue documentado como perdido por competencia
-        lead = getattr(conv, 'lead_calificacion', None)
+        # Recalcula intención: un curioso puede haber subido a interesado en el chat.
+        lead = actualizar_calificacion_lead(
+            conversation_id=conv.id,
+            taller_id=taller.id,
+        ) or getattr(conv, 'lead_calificacion', None)
         if lead and lead.perdido_por_competencia:
             stats['omitidas_perdidas'] += 1
             continue
@@ -234,6 +264,7 @@ def revisar_seguimiento_proactivo() -> dict[str, Any]:
                 cotizacion=cot,
                 nombre_agente=(config.nombre_agente or '').strip(),
                 nombre_taller=(taller.nombre or '').strip(),
+                categoria=categoria,
             )
             if not msg_texto:
                 continue
@@ -260,6 +291,8 @@ def revisar_seguimiento_proactivo() -> dict[str, Any]:
                         'cotizacion_id': cot.id,
                         'followup': True,
                         'horas_sin_respuesta': round(horas_transcurridas, 1),
+                        'lead_categoria': categoria or '',
+                        'alta_intencion': bool(es_lead_alta_intencion(categoria)),
                     },
                 )
                 stats['followups_enviados'] += 1

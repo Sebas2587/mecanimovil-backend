@@ -123,20 +123,38 @@ def _tiempo_en_estado(fecha_ref) -> int | None:
     return max(0, int(delta.total_seconds() // 3600))
 
 
-def _esperando_respuesta_24h(fecha_ref, estado_normalizado: str) -> bool:
+def _umbrales_silencio_lead(lead_categoria: str | None) -> tuple[int, int]:
+    from mecanimovilapp.apps.agente_ia.services.lead_scoring import umbrales_seguimiento_por_lead
+
+    return umbrales_seguimiento_por_lead(lead_categoria)
+
+
+def _esperando_respuesta_24h(
+    fecha_ref,
+    estado_normalizado: str,
+    lead_categoria: str | None = None,
+) -> bool:
     if estado_normalizado != 'cotizacion_enviada':
         return False
     if not fecha_ref:
         return False
-    return timezone.now() - fecha_ref >= timedelta(hours=24)
+    horas_alerta, _ = _umbrales_silencio_lead(lead_categoria)
+    return timezone.now() - fecha_ref >= timedelta(hours=horas_alerta)
 
 
-def _demorado_48h(fecha_ref, estado_normalizado: str) -> bool:
+def _demorado_48h(
+    fecha_ref,
+    estado_normalizado: str,
+    lead_categoria: str | None = None,
+) -> bool:
     if estado_normalizado != 'cotizacion_enviada':
         return False
     if not fecha_ref:
         return False
-    return timezone.now() - fecha_ref >= timedelta(hours=48)
+    _, horas_demorado = _umbrales_silencio_lead(lead_categoria)
+    if horas_demorado >= 999:
+        return False
+    return timezone.now() - fecha_ref >= timedelta(hours=horas_demorado)
 
 
 def _visto_sin_respuesta(estado_normalizado: str, visto_en) -> bool:
@@ -178,7 +196,6 @@ def _fila_base(
     miembro_taller_nombre: str | None = None,
     template_generado_por_ia: bool = False,
     visto_sin_respuesta: bool = False,
-    demorado_48h: bool = False,
     horario_por_confirmar: bool = False,
     listo_para_enviar: bool = False,
     pendientes_revision: list[str] | None = None,
@@ -202,7 +219,11 @@ def _fila_base(
             fecha_limite_respuesta.isoformat() if fecha_limite_respuesta else None
         ),
         'tiempo_en_estado_horas': _tiempo_en_estado(fecha_referencia),
-        'esperando_respuesta_24h': _esperando_respuesta_24h(fecha_referencia, estado_normalizado),
+        'esperando_respuesta_24h': _esperando_respuesta_24h(
+            fecha_referencia,
+            estado_normalizado,
+            lead_categoria,
+        ),
         'conversation_id': conversation_id,
         'solicitud_id': solicitud_id,
         'oferta_id': oferta_id,
@@ -213,7 +234,11 @@ def _fila_base(
         'miembro_taller_nombre': miembro_taller_nombre,
         'template_generado_por_ia': template_generado_por_ia,
         'visto_sin_respuesta': visto_sin_respuesta,
-        'demorado_48h': demorado_48h,
+        'demorado_48h': _demorado_48h(
+            fecha_referencia,
+            estado_normalizado,
+            lead_categoria,
+        ),
         'horario_por_confirmar': horario_por_confirmar,
         'listo_para_enviar': listo_para_enviar,
         'pendientes_revision': list(pendientes_revision or []),
@@ -394,7 +419,6 @@ def _filas_cotizaciones_canal(taller: Taller, leads_map: dict | None = None) -> 
                 cotizacion_id=cot.id,
                 cita_id=getattr(cot, 'cita_origen_id', None),
                 visto_sin_respuesta=_visto_sin_respuesta(estado_norm, cot.visto_en),
-                demorado_48h=_demorado_48h(fecha_ref, estado_norm),
                 es_cotizacion_adicional=bool(getattr(cot, 'es_cotizacion_adicional', False)),
                 **_lead_fields(conv.id if conv else None, leads_map),
             )

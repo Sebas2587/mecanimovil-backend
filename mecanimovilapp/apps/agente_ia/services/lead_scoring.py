@@ -159,6 +159,11 @@ def _mapear_categoria(
 
     if score >= 70 and (tiene_agenda or llm_cat == LeadCalificacion.CATEGORIA_LISTO_AGENDAR):
         return LeadCalificacion.CATEGORIA_LISTO_AGENDAR
+    # Este turno manda: un curioso que ahora pide el servicio sube; uno que sigue curioso no.
+    if llm_cat == LeadCalificacion.CATEGORIA_INTERESADO:
+        return LeadCalificacion.CATEGORIA_INTERESADO
+    if llm_cat == LeadCalificacion.CATEGORIA_CURIOSO and score < 70:
+        return LeadCalificacion.CATEGORIA_CURIOSO
     if score >= 45:
         return LeadCalificacion.CATEGORIA_INTERESADO
     if senales.get('objecion_precio', 0) < 0 or llm_cat == LeadCalificacion.CATEGORIA_SIN_PRESUPUESTO:

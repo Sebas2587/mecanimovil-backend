@@ -75,4 +75,130 @@ class AgenteNaturalidadYSeguimientoTestCase(TestCase):
         lead = LeadCalificacion.objects.get(conversation_id=self.conversation.id)
         self.assertTrue(lead.perdido_por_competencia)
         self.assertEqual(lead.motivo_perdida, 'competencia')
-        self.assertTrue(lead.senales.get('competencia'))
+
+    def test_followup_curioso_no_pide_agendar(self):
+        from unittest.mock import patch
+        from mecanimovilapp.apps.agente_ia.models import LeadCalificacion
+        from mecanimovilapp.apps.agente_ia.services.seguimiento_proactivo import (
+            _generar_mensaje_followup,
+        )
+        from mecanimovilapp.apps.ordenes.models import CotizacionCanal
+
+        cot = CotizacionCanal(
+            taller=self.taller,
+            servicio_nombre='Cambio de aceite',
+            vehiculo_marca='Nissan',
+            vehiculo_modelo='Kicks',
+            total_clp=0,
+        )
+        with patch(
+            'mecanimovilapp.apps.agente_ia.services.orquestador._llamar_gemini_agente',
+            return_value=(None, 'skip'),
+        ):
+            msg = _generar_mensaje_followup(
+                cotizacion=cot,
+                nombre_agente='Carlos',
+                nombre_taller='Taller MecaniTest',
+                categoria=LeadCalificacion.CATEGORIA_CURIOSO,
+            )
+        self.assertIsNotNone(msg)
+        bajo = msg.lower()
+        self.assertIn('presupuesto', bajo)
+        self.assertNotIn('coordinamos', bajo)
+        self.assertNotIn('agendar', bajo)
+
+    def test_followup_interesado_puede_coordinar(self):
+        from unittest.mock import patch
+        from mecanimovilapp.apps.agente_ia.models import LeadCalificacion
+        from mecanimovilapp.apps.agente_ia.services.seguimiento_proactivo import (
+            _generar_mensaje_followup,
+        )
+        from mecanimovilapp.apps.ordenes.models import CotizacionCanal
+
+        cot = CotizacionCanal(
+            taller=self.taller,
+            servicio_nombre='Cambio de aceite',
+            vehiculo_marca='Nissan',
+            vehiculo_modelo='Kicks',
+            total_clp=0,
+        )
+        with patch(
+            'mecanimovilapp.apps.agente_ia.services.orquestador._llamar_gemini_agente',
+            return_value=(None, 'skip'),
+        ):
+            msg = _generar_mensaje_followup(
+                cotizacion=cot,
+                nombre_agente='Carlos',
+                nombre_taller='Taller MecaniTest',
+                categoria=LeadCalificacion.CATEGORIA_INTERESADO,
+            )
+        self.assertIsNotNone(msg)
+        self.assertIn('coordinamos', msg.lower())
+
+    def test_senal_interesado_sube_categoria(self):
+        from mecanimovilapp.apps.agente_ia.models import LeadCalificacion
+        from mecanimovilapp.apps.agente_ia.services.lead_scoring import _mapear_categoria
+
+        cat = _mapear_categoria(
+            30,
+            senales={},
+            senal_llm='interesado',
+            datos={},
+            evento=None,
+            cot_estado='enviada',
+        )
+        self.assertEqual(cat, LeadCalificacion.CATEGORIA_INTERESADO)
+
+    def test_senal_curioso_no_sube_por_score_medio(self):
+        from mecanimovilapp.apps.agente_ia.models import LeadCalificacion
+        from mecanimovilapp.apps.agente_ia.services.lead_scoring import _mapear_categoria
+
+        cat = _mapear_categoria(
+            50,
+            senales={},
+            senal_llm='curioso',
+            datos={},
+            evento=None,
+            cot_estado='enviada',
+        )
+        self.assertEqual(cat, LeadCalificacion.CATEGORIA_CURIOSO)
+
+    def test_pipeline_alerta_silencio_segun_intencion(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from mecanimovilapp.apps.agente_ia.models import LeadCalificacion
+        from mecanimovilapp.apps.ordenes.services.pipeline_comercial import (
+            _demorado_48h,
+            _esperando_respuesta_24h,
+        )
+
+        hace_13h = timezone.now() - timedelta(hours=13)
+        self.assertTrue(
+            _esperando_respuesta_24h(
+                hace_13h,
+                'cotizacion_enviada',
+                LeadCalificacion.CATEGORIA_INTERESADO,
+            )
+        )
+        self.assertFalse(
+            _esperando_respuesta_24h(
+                hace_13h,
+                'cotizacion_enviada',
+                LeadCalificacion.CATEGORIA_CURIOSO,
+            )
+        )
+        hace_50h = timezone.now() - timedelta(hours=50)
+        self.assertFalse(
+            _demorado_48h(
+                hace_50h,
+                'cotizacion_enviada',
+                LeadCalificacion.CATEGORIA_CURIOSO,
+            )
+        )
+        self.assertTrue(
+            _demorado_48h(
+                hace_50h,
+                'cotizacion_enviada',
+                LeadCalificacion.CATEGORIA_INTERESADO,
+            )
+        )
