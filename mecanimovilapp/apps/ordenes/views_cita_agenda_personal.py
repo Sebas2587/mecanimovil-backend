@@ -723,6 +723,8 @@ class ProveedorAgendaViewSet(viewsets.ViewSet):
             reparar_citas_activas_con_checklist_completo(citas_qs)
 
         citas_qs = citas_qs.filter(estado__in=estados_cita)
+        # Placeholders (cotización aceptada sin día/hora) no son visitas de calendario.
+        citas_qs = citas_qs.exclude(horario_por_confirmar=True)
         eventos = [_serializar_cita_personal_evento(c) for c in citas_qs]
 
         if 'mecanimovil' in incluir or 'activas' in incluir or 'cerradas' in incluir:

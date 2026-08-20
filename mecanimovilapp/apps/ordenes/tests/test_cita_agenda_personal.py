@@ -330,3 +330,62 @@ class CitaAgendaPersonalCerrarChecklistTestCase(TestCase):
         res = self.client.post(f'/api/ordenes/citas-agenda-personal/{cita.id}/cerrar/')
         self.assertEqual(res.status_code, 409, res.content)
         self.assertEqual(res.data.get('codigo'), 'requiere_checklist')
+
+
+class ProveedorAgendaHorarioPorConfirmarTestCase(TestCase):
+    """Citas placeholder no se pintan en el calendario hasta confirmar horario."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username='prov_agenda_ph', password='test123')
+        self.taller = Taller.objects.create(
+            usuario=self.user,
+            nombre='Taller Agenda Placeholder',
+            telefono='900000004',
+            estado_verificacion='aprobado',
+        )
+        self.client.force_authenticate(user=self.user)
+
+    def _crear_cita(self, *, horario_por_confirmar: bool, hora=time(8, 0)):
+        cita = CitaAgendaPersonal.objects.create(
+            taller=self.taller,
+            fecha_servicio=date(2030, 8, 18),
+            hora_servicio=hora,
+            duracion_minutos=60,
+            tipo_servicio='taller',
+            estado='activa',
+            horario_por_confirmar=horario_por_confirmar,
+            creado_por=self.user,
+        )
+        CitaAgendaPersonalDetalle.objects.create(
+            cita=cita,
+            cliente_nombre='Cliente Agenda',
+            cliente_telefono='+56933333333',
+            vehiculo_marca='Nissan',
+            vehiculo_modelo='Kicks',
+            servicio_nombre='Cambio de bomba',
+        )
+        return cita
+
+    def test_placeholder_no_aparece_en_agenda_activas(self):
+        placeholder = self._crear_cita(horario_por_confirmar=True)
+        confirmada = self._crear_cita(horario_por_confirmar=False, hora=time(10, 0))
+
+        res = self.client.get('/api/ordenes/proveedor-agenda/?incluir=activas')
+        self.assertEqual(res.status_code, 200, res.content)
+        ids = {str(item['id']) for item in res.data}
+        self.assertNotIn(str(placeholder.id), ids)
+        self.assertIn(str(confirmada.id), ids)
+
+    def test_aparece_en_agenda_al_confirmar_horario(self):
+        cita = self._crear_cita(horario_por_confirmar=True)
+        res_antes = self.client.get('/api/ordenes/proveedor-agenda/?incluir=activas')
+        self.assertNotIn(str(cita.id), {str(item['id']) for item in res_antes.data})
+
+        cita.horario_por_confirmar = False
+        cita.hora_servicio = time(11, 0)
+        cita.save(update_fields=['horario_por_confirmar', 'hora_servicio', 'fecha_actualizacion'])
+
+        res = self.client.get('/api/ordenes/proveedor-agenda/?incluir=activas')
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertIn(str(cita.id), {str(item['id']) for item in res.data})
