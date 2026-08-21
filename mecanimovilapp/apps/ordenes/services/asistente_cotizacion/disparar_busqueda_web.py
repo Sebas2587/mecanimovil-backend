@@ -45,14 +45,15 @@ def disparar_busqueda_web_cotizacion(
 ) -> bool:
     """Ejecuta búsqueda web. Devuelve True si corrió en sync (hay que refrescar).
 
-    sync por defecto: BUSQUEDA_WEB_REPUESTOS_SYNC_ON_CREATE (True) para no depender
-    solo del worker Celery (p. ej. Free tier dormido).
+    sync por defecto: BUSQUEDA_WEB_REPUESTOS_SYNC_ON_CREATE (False). El editor
+    hace poll; correr Tavily/Gemini en el HTTP de generar-ia supera el timeout
+    del cliente y dispara reintentos que gastan tokens.
     """
     if not cotizacion_id or not _feature_listo():
         return False
 
     if sync is None:
-        sync = bool(getattr(settings, 'BUSQUEDA_WEB_REPUESTOS_SYNC_ON_CREATE', True))
+        sync = bool(getattr(settings, 'BUSQUEDA_WEB_REPUESTOS_SYNC_ON_CREATE', False))
 
     if sync:
         try:

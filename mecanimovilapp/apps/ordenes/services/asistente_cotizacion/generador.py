@@ -80,7 +80,18 @@ def _llamar_gemini(prompt: str) -> tuple[dict[str, Any] | None, dict[str, int | 
     for intento in range(max_retries + 1):
         try:
             resp = requests.post(url, json=payload, timeout=timeout)
-        except requests.RequestException:
+        except requests.RequestException as exc:
+            # Timeout/red intermitente: reintentar. Fallar al primer intento gastaba
+            # tokens en el cliente (retry manual) sin reusar la misma llamada.
+            if intento < max_retries:
+                logger.warning(
+                    'Gemini cotización intento %s/%s falló (%s); reintenta',
+                    intento + 1,
+                    max_retries + 1,
+                    exc,
+                )
+                time.sleep(min(4, max(1, 2 ** intento)))
+                continue
             return None, uso_vacio, 'Error de conexión con Gemini. Intenta de nuevo.'
 
         if resp.status_code == 200:
@@ -189,6 +200,7 @@ def generar_cotizacion_ia(
     contexto_rag_extra: str = '',
     taller=None,
     enriquecer_marketplace: bool = True,
+    enriquecer_ml: bool = True,
 ) -> dict[str, Any]:
     if not asistente_cotizacion_habilitado():
         return {
@@ -336,7 +348,7 @@ def generar_cotizacion_ia(
                 tipo_motor=str(ctx.get('tipo_motor_efectivo') or ''),
                 servicio_nombre=servicio_nombre or str(contenido.get('servicio_nombre') or ''),
                 taller=taller,
-                usar_ml=True,
+                usar_ml=enriquecer_ml,
                 usar_web=True,
             )
             costo_rep, mo, total = recalcular_totales(reps, int(contenido.get('mano_obra_clp') or 0))

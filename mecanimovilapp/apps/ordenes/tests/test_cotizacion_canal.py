@@ -851,6 +851,30 @@ class HistorialCacheNoCruzaModelosTestCase(SimpleTestCase):
         self.assertIn('Cambio de aceite', prompt)
         self.assertIn('Toyota ≠ BAIC', prompt)
 
+    def test_gemini_reintenta_timeout_de_red(self):
+        from unittest.mock import MagicMock, patch
+
+        import requests
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import generador
+
+        ok = MagicMock()
+        ok.status_code = 200
+        ok.json.return_value = {
+            'candidates': [{'content': {'parts': [{'text': '{"servicio_nombre":"X"}'}]}}],
+            'usageMetadata': {},
+        }
+        with patch.object(generador.settings, 'GEMINI_API_KEY', 'k'), patch.object(
+            generador.settings, 'GEMINI_RETRY_MAX', 1,
+        ), patch.object(generador.time, 'sleep'), patch.object(
+            generador.requests,
+            'post',
+            side_effect=[requests.Timeout('read timed out'), ok],
+        ) as post_mock:
+            data, _uso, err = generador._llamar_gemini('prompt')
+        self.assertIsNone(err)
+        self.assertEqual(data.get('servicio_nombre'), 'X')
+        self.assertEqual(post_mock.call_count, 2)
 
 
 class FuenteWebEnrichTestCase(SimpleTestCase):

@@ -190,14 +190,6 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
         )
         from mecanimovilapp.apps.suscripciones.models import ConsumoFeatureMensual
 
-        try:
-            verificar_y_consumir_cuota(
-                request.user,
-                ConsumoFeatureMensual.FEATURE_COTIZACION_IA,
-            )
-        except (CuotaAgotadaError, SinSuscripcionError) as exc:
-            return Response(exc.to_dict(), status=status.HTTP_403_FORBIDDEN)
-
         resultado = generar_cotizacion_ia(
             conversation=conversation,
             servicio_nombre=data.get('servicio_nombre', ''),
@@ -205,9 +197,18 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             modalidad=data.get('modalidad', 'taller'),
             vehiculo=data.get('vehiculo') or {},
             taller=taller,
+            enriquecer_ml=False,
         )
         if not resultado.get('disponible'):
             return Response(resultado, status=status.HTTP_200_OK)
+
+        try:
+            verificar_y_consumir_cuota(
+                request.user,
+                ConsumoFeatureMensual.FEATURE_COTIZACION_IA,
+            )
+        except (CuotaAgotadaError, SinSuscripcionError) as exc:
+            return Response(exc.to_dict(), status=status.HTTP_403_FORBIDDEN)
 
         contenido = resultado['contenido'] or {}
         ctx = resultado.get('contexto') or {}
@@ -273,14 +274,14 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             },
         )
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web import (
-            disparar_y_refrescar_cotizacion,
+            disparar_busqueda_web_cotizacion,
             marcar_busqueda_web_pendiente,
         )
 
         cotizacion.metadata = marcar_busqueda_web_pendiente(cotizacion.metadata)
         if cotizacion.metadata.get('busqueda_web_estado') == 'pendiente':
             cotizacion.save(update_fields=['metadata', 'actualizado_en'])
-            cotizacion = disparar_y_refrescar_cotizacion(cotizacion)
+            disparar_busqueda_web_cotizacion(cotizacion.id, sync=False)
         return Response({
             **resultado,
             'cotizacion': CotizacionCanalSerializer(cotizacion).data,

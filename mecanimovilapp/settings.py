@@ -713,11 +713,11 @@ GEMINI_LIMITE_TOKENS_MENSUAL = config('GEMINI_LIMITE_TOKENS_MENSUAL', default=1_
 # (más frágil: adivina URLs de tiendas, sin SerpApi/Google CSE de pago).
 TAVILY_API_KEY = config('TAVILY_API_KEY', default='')
 BUSQUEDA_WEB_REPUESTOS_ENABLED = config('BUSQUEDA_WEB_REPUESTOS_ENABLED', default=True, cast=bool)
-# True: al crear borrador corre la task en el request (marca/tienda en la 1.ª respuesta).
-# False: solo Celery async (requiere worker vivo).
+# True: al crear borrador corre Tavily/Gemini en el mismo HTTP (rompe el timeout de 30s del cliente).
+# False: Celery async; el editor ya hace poll de busqueda_web_estado.
 BUSQUEDA_WEB_REPUESTOS_SYNC_ON_CREATE = config(
     'BUSQUEDA_WEB_REPUESTOS_SYNC_ON_CREATE',
-    default=True,
+    default=False,
     cast=bool,
 )
 BUSQUEDA_WEB_REPUESTOS_MODEL = config(
