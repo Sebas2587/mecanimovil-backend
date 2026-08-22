@@ -123,6 +123,11 @@ services:
       # - META_EMBEDDED_SIGNUP_CONFIG_ID_INSTAGRAM
       # - META_OAUTH_REDIRECT_URI=https://<api-host>/api/omnichannel/oauth/callback/
       # - META_GRAPH_API_VERSION=v21.0
+      # Plantillas Utility WhatsApp (nombres exactos en Meta). Ver docs/whatsapp-plantillas-utility.md
+      # - WHATSAPP_TEMPLATE_COTIZACION=cotizacion_lista
+      # - WHATSAPP_TEMPLATE_CITA=cita_recordatorio
+      # - WHATSAPP_TEMPLATE_AVISO=aviso_taller
+      # - WHATSAPP_TEMPLATE_LANG=es
       # Web Push VAPID (generadas localmente — NO subir al repo):
       # VAPID_PUBLIC_KEY=BN7Gtru3a4tdRrUe9cDw6hxsZax_3SiqxX8xCSXhWtFvoLYUfJfjs3KjCmHf-ix_NYVggp1B2o2rfLkjcako_ak
       # VAPID_PRIVATE_KEY=<tu clave privada — ver llaves generadas en setup>

@@ -548,6 +548,25 @@ META_OAUTH_REDIRECT_URI = config(
 )
 META_GRAPH_API_VERSION = config('META_GRAPH_API_VERSION', default='v21.0')
 
+# Plantillas UTILITY de WhatsApp (fuera de la ventana de 24 h). Ver
+# docs/whatsapp-plantillas-utility.md. Vacío = no se envía por el canal.
+# cotizacion_lista: {{1}} taller  {{2}} servicio  {{3}} total  {{4}} URL
+# cita_recordatorio: {{1}} taller  {{2}} slot
+# aviso_taller: {{1}} taller
+WHATSAPP_TEMPLATE_COTIZACION = config('WHATSAPP_TEMPLATE_COTIZACION', default='')
+WHATSAPP_TEMPLATE_CITA = config('WHATSAPP_TEMPLATE_CITA', default='')
+WHATSAPP_TEMPLATE_AVISO = config('WHATSAPP_TEMPLATE_AVISO', default='')
+WHATSAPP_TEMPLATE_LANG = config(
+    'WHATSAPP_TEMPLATE_LANG',
+    default=config('WHATSAPP_TEMPLATE_COTIZACION_LANG', default='es'),
+)
+WHATSAPP_TEMPLATE_COTIZACION_LANG = WHATSAPP_TEMPLATE_LANG
+WHATSAPP_TEMPLATE_COTIZACION_URL_BUTTON = config(
+    'WHATSAPP_TEMPLATE_COTIZACION_URL_BUTTON',
+    default=False,
+    cast=bool,
+)
+
 # ============================================
 # CONFIGURACIÓN DE CACHE CON REDIS
 # ============================================

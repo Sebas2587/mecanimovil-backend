@@ -19,6 +19,25 @@ def formatear_moneda_clp(valor: int | Decimal) -> str:
     return f'${n:,}'.replace(',', '.')
 
 
+def payload_plantilla_whatsapp_cotizacion(cotizacion: CotizacionCanal) -> dict:
+    """Componentes de plantilla UTILITY: taller, servicio, total, URL."""
+    from mecanimovilapp.apps.omnichannel.services.whatsapp_templates import (
+        payload_cotizacion,
+    )
+
+    taller_nombre = ''
+    taller = getattr(cotizacion, 'taller', None)
+    if taller is not None:
+        taller_nombre = (getattr(taller, 'nombre', '') or '').strip()
+    return payload_cotizacion(
+        taller=taller_nombre,
+        servicio=(cotizacion.servicio_nombre or '').strip() or 'tu servicio',
+        total=formatear_moneda_clp(cotizacion.total_clp),
+        url=(cotizacion.url_publica or '').strip() or '—',
+        token=(cotizacion.token or '').strip(),
+    )
+
+
 def _linea_vehiculo_cotizacion(cotizacion: CotizacionCanal) -> list[str]:
     lineas = ['*Vehículo:*']
     if cotizacion.vehiculo_marca:
@@ -566,6 +585,18 @@ def enviar_cotizacion_canal(cotizacion: CotizacionCanal, user) -> Message:
         logger.warning('No se pudo notificar cotización enviada cot=%s', cotizacion.id, exc_info=True)
 
     return message
+
+
+def aplicar_plan_entrega_cotizacion(cotizacion: CotizacionCanal, plan) -> CotizacionCanal:
+    meta = dict(cotizacion.metadata or {})
+    meta['entrega_canal'] = plan.via
+    if plan.code:
+        meta['entrega_canal_motivo'] = plan.code
+    else:
+        meta.pop('entrega_canal_motivo', None)
+    cotizacion.metadata = meta
+    cotizacion.save(update_fields=['metadata', 'actualizado_en'])
+    return cotizacion
 
 
 def _parse_button_id(button_id: str) -> tuple[str, int] | None:

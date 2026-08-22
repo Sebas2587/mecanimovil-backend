@@ -202,7 +202,7 @@ def send_meta_message(message_id: int):
 
     client = MetaGraphClient(connection.access_token)
     text = (message.content or '').strip()
-    meta = message.channel_metadata or {}
+    meta = dict(message.channel_metadata or {})
     external_id = contact.external_id
     attachment_url = get_cpanel_file_url(message.attachment) if message.attachment else None
     media_kind = None
@@ -213,8 +213,42 @@ def send_meta_message(message_id: int):
         )
     resp = None
 
+    def _guardar_error_envio(error_text: str) -> None:
+        merged = dict(message.channel_metadata or {})
+        merged['send_error'] = error_text[:500]
+        Message.objects.filter(pk=message_id).update(channel_metadata=merged)
+
     try:
-        if attachment_url and connection.channel == 'WHATSAPP' and connection.phone_number_id:
+        if (
+            meta.get('whatsapp_template')
+            and connection.channel == 'WHATSAPP'
+            and connection.phone_number_id
+        ):
+            from mecanimovilapp.apps.omnichannel.services.whatsapp_templates import (
+                payload_desde_metadata,
+            )
+
+            tpl = payload_desde_metadata(meta)
+            if tpl is None and meta.get('cotizacion_id'):
+                from mecanimovilapp.apps.ordenes.models import CotizacionCanal
+                from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
+                    payload_plantilla_whatsapp_cotizacion,
+                )
+
+                cotizacion = CotizacionCanal.objects.filter(pk=meta.get('cotizacion_id')).first()
+                tpl = payload_plantilla_whatsapp_cotizacion(cotizacion) if cotizacion else None
+            if not tpl or not tpl.get('name'):
+                _guardar_error_envio('template_sin_nombre')
+                return {'error': 'template_sin_nombre'}
+            resp = client.send_whatsapp_template(
+                connection.phone_number_id,
+                external_id,
+                tpl['name'],
+                tpl['language'],
+                tpl['components'],
+                connection.access_token,
+            )
+        elif attachment_url and connection.channel == 'WHATSAPP' and connection.phone_number_id:
             resp = client.send_whatsapp_media(
                 connection.phone_number_id,
                 external_id,
@@ -307,9 +341,7 @@ def send_meta_message(message_id: int):
 
         if resp is not None and resp.status_code >= 400:
             logger.error('Meta send failed: %s', resp.text)
-            Message.objects.filter(pk=message_id).update(
-                channel_metadata={'send_error': resp.text[:500]},
-            )
+            _guardar_error_envio(resp.text)
             return {'error': resp.text}
 
         ext_id = None

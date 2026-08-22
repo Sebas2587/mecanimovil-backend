@@ -492,6 +492,34 @@ class MetaGraphClient:
             timeout=30,
         )
 
+    def send_whatsapp_template(
+        self,
+        phone_number_id: str,
+        to_wa_id: str,
+        template_name: str,
+        language: str,
+        components: list[dict],
+        token: str,
+    ):
+        """Plantilla aprobada (única vía libre de WhatsApp fuera de la ventana de 24 h)."""
+        payload: dict[str, Any] = {
+            'messaging_product': 'whatsapp',
+            'to': to_wa_id,
+            'type': 'template',
+            'template': {
+                'name': template_name,
+                'language': {'code': language or 'es'},
+            },
+        }
+        if components:
+            payload['template']['components'] = components
+        return requests.post(
+            self._url(f'{phone_number_id}/messages'),
+            json=payload,
+            params={'access_token': token},
+            timeout=30,
+        )
+
     def send_whatsapp_interactive_buttons(
         self,
         phone_number_id: str,

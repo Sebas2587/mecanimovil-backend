@@ -166,6 +166,30 @@ class ConversationViewSet(DestroyModelMixin, viewsets.ReadOnlyModelViewSet):
         serializer = ConversationSerializer(conversation, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK if not created else status.HTTP_201_CREATED)
 
+    @action(detail=True, methods=['post'], url_path='enviar-aviso')
+    def enviar_aviso(self, request, pk=None):
+        """Plantilla Utility de WhatsApp cuando la ventana de 24 h está cerrada."""
+        conversation = self.get_object()
+        from mecanimovilapp.apps.omnichannel.services.enviar_aviso import (
+            AvisoNoDisponibleError,
+            enviar_aviso_conversacion,
+        )
+
+        try:
+            message = enviar_aviso_conversacion(conversation=conversation, user=request.user)
+        except AvisoNoDisponibleError as exc:
+            return Response(
+                {'error': exc.code, 'message': exc.message},
+                status=exc.http_status,
+            )
+        return Response(
+            {
+                'message_id': message.id,
+                'template_kind': (message.channel_metadata or {}).get('template_kind'),
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
     @action(detail=True, methods=['post'])
     def send_message(self, request, pk=None):
         """

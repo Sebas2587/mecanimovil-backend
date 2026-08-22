@@ -28,7 +28,9 @@ from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador import 
 from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.permisos import usuario_puede_cotizar_canal
 from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
     aplicar_edicion_cotizacion,
+    aplicar_plan_entrega_cotizacion,
     enviar_cotizacion_canal,
+    payload_plantilla_whatsapp_cotizacion,
     snapshot_desde_cotizacion,
 )
 from mecanimovilapp.apps.ordenes.services.cotizacion_publica import enviar_cotizacion_libre
@@ -63,8 +65,10 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
         except PermissionDenied:
             return CotizacionCanal.objects.none()
         return CotizacionCanal.objects.filter(taller=taller).select_related(
+            'taller',
             'conversation',
             'conversation__external_contact',
+            'conversation__external_contact__connection',
             'cotizacion_original',
             'cita_origen',
             'cita_origen__detalle',
@@ -430,9 +434,29 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
         except ValueError as exc:
             raise ValidationError(str(exc)) from exc
 
+        from mecanimovilapp.apps.omnichannel.services.outbound_guard import (
+            plan_entrega_cotizacion,
+        )
+
+        plan = plan_entrega_cotizacion(cotizacion.conversation)
+        aplicar_plan_entrega_cotizacion(cotizacion, plan)
+        cotizacion.refresh_from_db()
+
+        if plan.use_template:
+            tpl = payload_plantilla_whatsapp_cotizacion(cotizacion)
+            meta_msg = dict(message.channel_metadata or {})
+            meta_msg['whatsapp_template'] = True
+            meta_msg['cotizacion_id'] = cotizacion.id
+            meta_msg['template_kind'] = tpl.get('kind') or 'cotizacion'
+            meta_msg['template_name'] = tpl.get('name') or ''
+            meta_msg['template_language'] = tpl.get('language') or 'es'
+            meta_msg['template_components'] = tpl.get('components') or []
+            message.channel_metadata = meta_msg
+            message.save(update_fields=['channel_metadata'])
+
         from mecanimovilapp.apps.omnichannel.tasks import send_meta_message
 
-        if cotizacion.conversation.source_channel != 'APP':
+        if cotizacion.conversation.source_channel != 'APP' and plan.should_send_meta:
             send_meta_message.delay(message.id)
 
         from mecanimovilapp.apps.agente_ia.services.lead_scoring import (
@@ -440,10 +464,13 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
         )
         actualizar_calificacion_desde_cotizacion(cotizacion, evento='enviada')
 
+        serialized = CotizacionCanalSerializer(cotizacion).data
         return Response({
-            'cotizacion': CotizacionCanalSerializer(cotizacion).data,
+            'cotizacion': serialized,
             'message_id': message.id,
-            'share_url': None,
+            'share_url': serialized.get('share_url') or cotizacion.url_publica,
+            'entrega_via': plan.via,
+            'entrega_mensaje': plan.message,
         })
 
     @action(detail=True, methods=['post'])
