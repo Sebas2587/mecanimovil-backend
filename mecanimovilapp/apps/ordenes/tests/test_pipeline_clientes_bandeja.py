@@ -189,3 +189,29 @@ class PipelineClientesBandejaTests(TestCase):
             'Cambio de pastillas y discos de freno',
         )
         self.assertEqual(fila_adicional['cotizacion_original_id'], principal.id)
+
+    def test_borrador_ia_descartado_no_entra_a_bandeja(self):
+        cot = CotizacionCanal.objects.create(
+            conversation=self.conversation,
+            taller=self.taller,
+            creado_por=self.user,
+            estado='cancelada',
+            modalidad='taller',
+            cliente_nombre='Jennifer',
+            cliente_telefono='+56987654321',
+            vehiculo_marca='Chevrolet',
+            vehiculo_modelo='Sail',
+            servicio_nombre='Cambio de bujías',
+            total_clp=48552,
+        )
+        asegurar_numero_publico(cot)
+        cot.refresh_from_db()
+        self.assertTrue((cot.numero_publico or '').strip())
+        self.assertIsNone(cot.enviada_en)
+        folios = construir_pipeline_comercial(user=self.user, taller=self.taller, limite=50)
+        self.assertEqual(
+            [f for f in folios['results'] if f['tipo_entidad'] == 'cotizacion_canal'],
+            [],
+        )
+        payload = construir_pipeline_clientes(user=self.user, taller=self.taller, limite=50)
+        self.assertEqual(payload['count'], 0)

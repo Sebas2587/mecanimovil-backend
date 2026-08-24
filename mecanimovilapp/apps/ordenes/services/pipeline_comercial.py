@@ -479,6 +479,15 @@ def _hay_folio_publico(cot: CotizacionCanal) -> bool:
     return bool((cot.numero_publico or '').strip())
 
 
+def _es_cancelada_sin_envio(cot: CotizacionCanal) -> bool:
+    """Borrador IA que el taller descartó antes de enviarlo: no es un caso comercial.
+
+    El folio MM- no basta: se asigna al emitir y también se backfillea a
+    borradores nunca enviados. Lo que cuenta es si el cliente la recibió.
+    """
+    return cot.estado == 'cancelada' and not cot.enviada_en
+
+
 def _entrega_via_cotizacion(cot: CotizacionCanal) -> str:
     meta = cot.metadata if isinstance(cot.metadata, dict) else {}
     return str(meta.get('entrega_canal') or '').strip()
@@ -625,6 +634,8 @@ def _filas_cotizaciones_canal(
     leads_map = leads_map or {}
     for cot in qs:
         if cot.estado == 'borrador' and not _es_borrador_en_edicion(cot) and not _hay_folio_publico(cot):
+            continue
+        if _es_cancelada_sin_envio(cot):
             continue
         estado_norm = _estado_normalizado_cotizacion_canal(cot)
         conv = cot.conversation

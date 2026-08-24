@@ -520,7 +520,9 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
         )
 
         liberar_sesiones_tras_cerrar_borrador(cotizacion)
-        actualizar_calificacion_desde_cotizacion(cotizacion, evento='cancelada')
+        # Un borrador nunca enviado no es un lead perdido: no baja el score.
+        if cotizacion.enviada_en:
+            actualizar_calificacion_desde_cotizacion(cotizacion, evento='cancelada')
         return Response(CotizacionCanalSerializer(cotizacion).data)
 
     @action(detail=True, methods=['post'], url_path='marcar-aceptada')
