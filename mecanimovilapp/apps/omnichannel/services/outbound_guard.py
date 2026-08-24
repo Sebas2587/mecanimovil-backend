@@ -5,8 +5,8 @@ Política de ventana de atención (customer care):
 - Dentro de la ventana: texto libre / interactivos.
 - Fuera de la ventana:
   - Chat libre: bloqueado (política de Meta).
-  - Cotización WhatsApp: plantilla UTILITY aprobada, si está configurada.
-  - Si no hay plantilla (o el canal es IG/Messenger): link público de la cotización.
+  - Cotización: link público para que el taller lo comparta a mano.
+  - Plantilla Utility: solo si WHATSAPP_TEMPLATES_ENABLED (apagado por ahora).
 """
 from __future__ import annotations
 
@@ -22,35 +22,35 @@ META_SESSION_CHANNELS = frozenset({'WHATSAPP', 'MESSENGER', 'INSTAGRAM'})
 WHATSAPP_WINDOW_MESSAGE = (
     'Pasaron más de 24 horas desde el último mensaje del cliente. '
     'WhatsApp no permite mensajes libres fuera de esa ventana. '
-    'Puedes enviar la cotización: el cliente la abre con un link.'
+    'Cotiza y comparte el link por el canal que prefieras.'
 )
 
 WHATSAPP_NO_INBOUND_MESSAGE = (
     'El cliente aún no ha escrito por WhatsApp. '
     'No se pueden enviar mensajes libres hasta que te contacte. '
-    'Sí puedes compartir el link de la cotización.'
+    'Cotiza y comparte el link por el canal que prefieras.'
 )
 
 MESSENGER_WINDOW_MESSAGE = (
     'Pasaron más de 24 horas desde el último mensaje del cliente. '
     'Messenger no permite mensajes libres fuera de esa ventana. '
-    'Comparte el link de la cotización.'
+    'Cotiza y comparte el link por el canal que prefieras.'
 )
 
 MESSENGER_NO_INBOUND_MESSAGE = (
     'El cliente aún no ha escrito por Messenger. '
-    'Comparte el link de la cotización.'
+    'Cotiza y comparte el link por el canal que prefieras.'
 )
 
 INSTAGRAM_WINDOW_MESSAGE = (
     'Pasaron más de 24 horas desde el último mensaje del cliente. '
     'Instagram no permite mensajes libres fuera de esa ventana. '
-    'Comparte el link de la cotización.'
+    'Cotiza y comparte el link por el canal que prefieras.'
 )
 
 INSTAGRAM_NO_INBOUND_MESSAGE = (
     'El cliente aún no ha escrito por Instagram. '
-    'Comparte el link de la cotización.'
+    'Cotiza y comparte el link por el canal que prefieras.'
 )
 
 CHANNEL_DISCONNECTED_MESSAGE = (
@@ -117,7 +117,13 @@ def connection_activa(conversation):
     return connection
 
 
+def plantillas_whatsapp_habilitadas() -> bool:
+    return bool(getattr(settings, 'WHATSAPP_TEMPLATES_ENABLED', False))
+
+
 def whatsapp_template_cotizacion_nombre() -> str:
+    if not plantillas_whatsapp_habilitadas():
+        return ''
     return (getattr(settings, 'WHATSAPP_TEMPLATE_COTIZACION', '') or '').strip()
 
 

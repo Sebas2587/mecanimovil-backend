@@ -86,6 +86,17 @@ class VentanaAtencionEntregaTests(TestCase):
         self.assertEqual(ctx.exception.code, 'whatsapp_window_closed')
 
     @override_settings(WHATSAPP_TEMPLATE_COTIZACION='cotizacion_lista')
+    def test_ventana_cerrada_sin_flag_ignora_plantilla(self):
+        self._inbound(hours_ago=30)
+        plan = plan_entrega_cotizacion(self.conversation)
+        self.assertEqual(plan.via, ENTREGA_LINK_PUBLICO)
+        self.assertFalse(plan.should_send_meta)
+        self.assertFalse(plan.use_template)
+
+    @override_settings(
+        WHATSAPP_TEMPLATES_ENABLED=True,
+        WHATSAPP_TEMPLATE_COTIZACION='cotizacion_lista',
+    )
     def test_ventana_cerrada_con_plantilla_whatsapp(self):
         self._inbound(hours_ago=30)
         plan = plan_entrega_cotizacion(self.conversation)
@@ -135,7 +146,10 @@ class VentanaAtencionEntregaTests(TestCase):
         self.assertEqual(cot.estado, 'enviada')
         self.assertEqual((cot.metadata or {}).get('entrega_canal'), ENTREGA_LINK_PUBLICO)
 
-    @override_settings(WHATSAPP_TEMPLATE_COTIZACION='cotizacion_lista')
+    @override_settings(
+        WHATSAPP_TEMPLATES_ENABLED=True,
+        WHATSAPP_TEMPLATE_COTIZACION='cotizacion_lista',
+    )
     @patch('mecanimovilapp.apps.omnichannel.tasks.send_meta_message.delay')
     def test_enviar_cotizacion_ventana_cerrada_usa_plantilla(self, mock_delay):
         self._inbound(hours_ago=26)
@@ -158,6 +172,7 @@ class VentanaAtencionEntregaTests(TestCase):
         self.assertTrue(data['share_url'])
         mock_delay.assert_called_once()
 
+    @override_settings(WHATSAPP_TEMPLATES_ENABLED=True)
     @patch('mecanimovilapp.apps.omnichannel.tasks.send_meta_message.delay')
     def test_enviar_aviso_ventana_abierta_pide_escribir(self, mock_delay):
         self._inbound(hours_ago=2)
@@ -196,6 +211,20 @@ class VentanaAtencionEntregaTests(TestCase):
 
     @override_settings(WHATSAPP_TEMPLATE_AVISO='aviso_taller')
     @patch('mecanimovilapp.apps.omnichannel.tasks.send_meta_message.delay')
+    def test_enviar_aviso_deshabilitado_por_defecto(self, mock_delay):
+        self._inbound(hours_ago=26)
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+        resp = client.post(f'/api/chat/conversations/{self.conversation.id}/enviar-aviso/')
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()['error'], 'plantillas_deshabilitadas')
+        mock_delay.assert_not_called()
+
+    @override_settings(
+        WHATSAPP_TEMPLATES_ENABLED=True,
+        WHATSAPP_TEMPLATE_AVISO='aviso_taller',
+    )
+    @patch('mecanimovilapp.apps.omnichannel.tasks.send_meta_message.delay')
     def test_enviar_aviso_whatsapp_ventana_cerrada(self, mock_delay):
         self._inbound(hours_ago=26)
         client = APIClient()
@@ -206,6 +235,7 @@ class VentanaAtencionEntregaTests(TestCase):
         mock_delay.assert_called_once()
 
     @override_settings(
+        WHATSAPP_TEMPLATES_ENABLED=True,
         WHATSAPP_TEMPLATE_AVISO='aviso_taller',
         WHATSAPP_TEMPLATE_CITA='cita_recordatorio',
     )
@@ -231,6 +261,7 @@ class VentanaAtencionEntregaTests(TestCase):
         mock_delay.assert_called_once()
 
     @override_settings(
+        WHATSAPP_TEMPLATES_ENABLED=True,
         WHATSAPP_TEMPLATE_AVISO='aviso_taller',
         WHATSAPP_TEMPLATE_CITA='cita_recordatorio',
     )
@@ -255,6 +286,7 @@ class VentanaAtencionEntregaTests(TestCase):
         self.assertEqual(resp.json()['template_kind'], 'cita')
         mock_delay.assert_called_once()
 
+    @override_settings(WHATSAPP_TEMPLATES_ENABLED=True)
     @patch('mecanimovilapp.apps.omnichannel.tasks.send_meta_message.delay')
     def test_enviar_aviso_instagram_no_llama_meta(self, mock_delay):
         self.conversation.source_channel = 'INSTAGRAM'

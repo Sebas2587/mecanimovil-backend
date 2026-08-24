@@ -1,13 +1,16 @@
 # Plantillas Utility de WhatsApp (ventana 24 h)
 
-Meta no permite texto libre fuera de las 24 h. Mecanimovil envía estas plantillas **Utility** (español). Sin ellas, la cotización se comparte con link público y el aviso no sale por el canal.
+**Estado actual: apagadas.** `WHATSAPP_TEMPLATES_ENABLED=False`.
 
-El nombre de cada plantilla en Meta debe coincidir **exactamente** con el valor de la variable en Render.
+El taller no recontacta por plantilla. Cotiza con IA y **comparte el link** por el canal que quiera (WhatsApp personal, Instagram, etc.). Las reglas de Meta siguen: fuera de 24 h no hay texto libre en el chat conectado.
+
+Para encenderlas más adelante: aprobar las 3 plantillas en Meta y poner `WHATSAPP_TEMPLATES_ENABLED=True` + los nombres en Render.
 
 ## Variables Render
 
 | Variable | Nombre sugerido | Cuerpo |
 |---|---|---|
+| `WHATSAPP_TEMPLATES_ENABLED` | `False` | Kill switch. Por ahora `False`. |
 | `WHATSAPP_TEMPLATE_COTIZACION` | `cotizacion_lista` | `{{1}} tiene lista tu cotización de {{2}} por {{3}}. Revísala aquí: {{4}}` |
 | `WHATSAPP_TEMPLATE_CITA` | `cita_recordatorio` | `{{1}} te recuerda tu visita: {{2}}. Si necesitas cambiarla, responde este mensaje.` |
 | `WHATSAPP_TEMPLATE_AVISO` | `aviso_taller` | `{{1}} te dejó un aviso. Responde este mensaje para continuar.` |
@@ -21,7 +24,7 @@ Variables de cuerpo:
 
 Opcional: `WHATSAPP_TEMPLATE_COTIZACION_URL_BUTTON=True` si la plantilla de cotización tiene botón URL (dominio fijo + token).
 
-## Cómo crearlas en Meta (WhatsApp Manager)
+## Cómo crearlas en Meta (cuando se reactive)
 
 Hace falta un WhatsApp Business Account (WABA) ya conectado (el de Embedded Signup de Mecanimovil).
 
@@ -50,24 +53,26 @@ Hace falta un WhatsApp Business Account (WABA) ya conectado (el de Embedded Sign
 6. Enviar a revisión. Meta suele tardar minutos u horas. El estado debe quedar **Aprobada**.
 7. Si la rechazan: quita tono promocional (“oferta”, “descuento”) y reenvía como Utility.
 
-## Cómo pegarlas en Render
+## Cómo pegarlas en Render (cuando se reactive)
 
-Cuando estén **Aprobadas**, en el servicio `mecanimovil-api` (y el worker si lee las mismas env vars):
+Cuando estén **Aprobadas**, en el servicio `mecanimovil-api`:
 
 1. [Render Dashboard](https://dashboard.render.com) → `mecanimovil-api` → **Environment**.
 2. Agrega (o edita) estas claves, sin comillas:
 
 ```
+WHATSAPP_TEMPLATES_ENABLED=True
 WHATSAPP_TEMPLATE_COTIZACION=cotizacion_lista
 WHATSAPP_TEMPLATE_CITA=cita_recordatorio
 WHATSAPP_TEMPLATE_AVISO=aviso_taller
 WHATSAPP_TEMPLATE_LANG=es
 ```
 
-3. Guarda. Render reinicia el servicio. Hasta que existan, WhatsApp solo entrega cotización por **link** y **Enviar aviso** no sale.
+3. Guarda. Render reinicia el servicio.
 
 ## Cómo las usa la app
 
-- **Cotizar** con ventana cerrada: plantilla de cotización si está configurada; si no, link público.
-- **Enviar aviso** (franja del chat, solo WhatsApp): cita próxima o horario por confirmar → plantilla de cita; si no → aviso.
-- Instagram / Messenger: no hay plantilla; solo link de cotización o esperar al cliente.
+- **Cotizar** con ventana abierta: el agente IA envía la cotización al chat del canal.
+- **Cotizar** con ventana cerrada (hoy): link público; el taller lo comparte a mano.
+- Instagram / Messenger: nunca hay plantilla; solo link o esperar al cliente.
+- **Enviar aviso** por plantilla queda en el backend, apagado hasta que se encienda el flag.

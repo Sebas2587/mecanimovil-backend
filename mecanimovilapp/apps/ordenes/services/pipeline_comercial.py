@@ -8,6 +8,7 @@ from datetime import timedelta
 from decimal import Decimal
 from typing import Any
 
+from django.db.models import Q
 from django.utils import timezone
 
 from mecanimovilapp.apps.chat.models import Conversation
@@ -202,6 +203,10 @@ def _fila_base(
     es_cotizacion_adicional: bool = False,
     lead_categoria: str | None = None,
     lead_score: int | None = None,
+    numero_publico: str = '',
+    es_libre: bool = False,
+    entrega_via: str = '',
+    en_edicion: bool = False,
 ) -> dict[str, Any]:
     return {
         'tipo_entidad': tipo_entidad,
@@ -245,6 +250,10 @@ def _fila_base(
         'es_cotizacion_adicional': es_cotizacion_adicional,
         'lead_categoria': lead_categoria or 'sin_calificar',
         'lead_score': lead_score if lead_score is not None else 0,
+        'numero_publico': (numero_publico or '').strip(),
+        'es_libre': bool(es_libre),
+        'entrega_via': (entrega_via or '').strip(),
+        'en_edicion': bool(en_edicion),
     }
 
 
@@ -353,6 +362,88 @@ def _estado_normalizado_cotizacion_canal(cot: CotizacionCanal) -> str:
     return COTIZACION_CANAL_MAP.get(cot.estado, 'nuevo')
 
 
+def _hay_folio_publico(cot: CotizacionCanal) -> bool:
+    return bool((cot.numero_publico or '').strip())
+
+
+def _entrega_via_cotizacion(cot: CotizacionCanal) -> str:
+    meta = cot.metadata if isinstance(cot.metadata, dict) else {}
+    return str(meta.get('entrega_canal') or '').strip()
+
+
+def _es_borrador_en_edicion(cot: CotizacionCanal) -> bool:
+    if cot.estado != 'borrador':
+        return False
+    meta = cot.metadata if isinstance(cot.metadata, dict) else {}
+    return _hay_folio_publico(cot) or bool(meta.get('reabierta_por_taller'))
+
+
+def _normalizar_busqueda(q: str | None) -> str:
+    return ' '.join((q or '').strip().lower().split())
+
+
+def _digitos_busqueda(q: str) -> str:
+    return ''.join(c for c in q if c.isdigit())
+
+
+def _filtrar_cotizaciones_queryset(qs, q: str):
+    """Filtra CotizacionCanal por folio MM, id, cliente, vehículo o servicio."""
+    needle = _normalizar_busqueda(q)
+    if not needle:
+        return qs
+    filtros = (
+        Q(numero_publico__icontains=needle)
+        | Q(cliente_nombre__icontains=needle)
+        | Q(cliente_telefono__icontains=needle)
+        | Q(vehiculo_marca__icontains=needle)
+        | Q(vehiculo_modelo__icontains=needle)
+        | Q(vehiculo_patente__icontains=needle)
+        | Q(servicio_nombre__icontains=needle)
+        | Q(descripcion_problema__icontains=needle)
+    )
+    folio = needle.upper().replace(' ', '')
+    if folio.startswith('MM-') or folio.startswith('MM'):
+        filtros |= Q(numero_publico__iexact=folio if folio.startswith('MM-') else f'MM-{folio[2:].zfill(6)}')
+        filtros |= Q(numero_publico__icontains=folio)
+    digits = _digitos_busqueda(needle)
+    if digits:
+        filtros |= Q(numero_publico__icontains=digits)
+        filtros |= Q(numero_publico__iendswith=digits.zfill(6))
+        try:
+            filtros |= Q(pk=int(digits))
+        except (TypeError, ValueError):
+            pass
+    return qs.filter(filtros)
+
+
+def _fila_coincide_busqueda(fila: dict[str, Any], q: str) -> bool:
+    needle = _normalizar_busqueda(q)
+    if not needle:
+        return True
+    haystack = ' '.join(
+        str(fila.get(k) or '')
+        for k in (
+            'numero_publico',
+            'cliente_nombre',
+            'cliente_telefono',
+            'vehiculo_resumen',
+            'servicio_resumen',
+            'cotizacion_id',
+            'entidad_id',
+        )
+    ).lower()
+    if needle in haystack:
+        return True
+    compact = needle.replace(' ', '').replace('-', '')
+    folio = str(fila.get('numero_publico') or '').lower().replace('-', '')
+    if compact and compact in folio:
+        return True
+    digits = _digitos_busqueda(needle)
+    if digits and digits in ''.join(c for c in haystack if c.isdigit()):
+        return True
+    return False
+
+
 def _lead_fields(conversation_id: int | None, leads_map: dict) -> dict[str, Any]:
     if not conversation_id:
         return {'lead_categoria': 'sin_calificar', 'lead_score': 0}
@@ -365,21 +456,39 @@ def _lead_fields(conversation_id: int | None, leads_map: dict) -> dict[str, Any]
     }
 
 
-def _filas_cotizaciones_canal(taller: Taller, leads_map: dict | None = None) -> list[dict[str, Any]]:
+def _filas_cotizaciones_canal(
+    taller: Taller,
+    leads_map: dict | None = None,
+    q: str | None = None,
+) -> list[dict[str, Any]]:
     qs = (
         CotizacionCanal.objects.filter(taller=taller)
-        .exclude(estado='borrador')
+        .filter(
+            ~Q(estado='borrador')
+            | (
+                ~Q(numero_publico='')
+                & Q(numero_publico__isnull=False)
+            )
+            | Q(metadata__reabierta_por_taller=True)
+        )
         .select_related(
             'conversation',
             'conversation__external_contact',
             'cita_origen',
             'cotizacion_original',
         )
-        .order_by('-actualizado_en')[:200]
+        .order_by('-actualizado_en')
     )
+    needle = _normalizar_busqueda(q)
+    if needle:
+        qs = _filtrar_cotizaciones_queryset(qs, needle)[:1000]
+    else:
+        qs = qs[:500]
     filas: list[dict[str, Any]] = []
     leads_map = leads_map or {}
     for cot in qs:
+        if cot.estado == 'borrador' and not _es_borrador_en_edicion(cot) and not _hay_folio_publico(cot):
+            continue
         estado_norm = _estado_normalizado_cotizacion_canal(cot)
         conv = cot.conversation
         ext = getattr(conv, 'external_contact', None) if conv else None
@@ -402,6 +511,7 @@ def _filas_cotizaciones_canal(taller: Taller, leads_map: dict | None = None) -> 
             origen = _canal_origen(conv)
         fecha_ref = cot.enviada_en or cot.actualizado_en or cot.creado_en
         vehiculo_txt = _vehiculo_resumen_cotizacion(cot)
+        en_edicion = _es_borrador_en_edicion(cot)
         filas.append(
             _fila_base(
                 tipo_entidad='cotizacion_canal',
@@ -420,6 +530,10 @@ def _filas_cotizaciones_canal(taller: Taller, leads_map: dict | None = None) -> 
                 cita_id=getattr(cot, 'cita_origen_id', None),
                 visto_sin_respuesta=_visto_sin_respuesta(estado_norm, cot.visto_en),
                 es_cotizacion_adicional=bool(getattr(cot, 'es_cotizacion_adicional', False)),
+                numero_publico=(cot.numero_publico or '').strip(),
+                es_libre=bool(cot.es_libre),
+                entrega_via=_entrega_via_cotizacion(cot),
+                en_edicion=en_edicion,
                 **_lead_fields(conv.id if conv else None, leads_map),
             )
         )
@@ -469,6 +583,10 @@ def _filas_cotizaciones_borrador_agente(taller: Taller, leads_map: dict | None =
                 cotizacion_id=cot.id,
                 listo_para_enviar=bool(meta.get('listo_para_enviar')),
                 pendientes_revision=list(meta.get('pendientes_revision') or []),
+                numero_publico=(cot.numero_publico or '').strip(),
+                es_libre=bool(cot.es_libre),
+                entrega_via=_entrega_via_cotizacion(cot),
+                en_edicion=_es_borrador_en_edicion(cot),
                 **_lead_fields(conv.id if conv else None, leads_map),
             )
         )
@@ -671,6 +789,9 @@ _DEDUPE_TIPO_PRIORITY = {
 
 
 def _pipeline_dedupe_key(fila: dict[str, Any]) -> str:
+    # Una fila por folio de cotización: no colapsar el caso en el chat ni en la cita.
+    if fila.get('tipo_entidad') == 'cotizacion_canal' and fila.get('cotizacion_id'):
+        return f'cot:{fila["cotizacion_id"]}'
     if fila.get('es_cotizacion_adicional') and fila.get('cotizacion_id'):
         return f'cot_adicional:{fila["cotizacion_id"]}'
     conv_id = fila.get('conversation_id')
@@ -691,14 +812,8 @@ def _pipeline_dedupe_key(fila: dict[str, Any]) -> str:
 
 def _dedupe_pipeline_filas(filas: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
-    Colapsa filas repetidas del mismo hilo comercial.
-
-    Prioridad de clave:
-    1. conversation_id (mismo chat omnicanal → una sola fila)
-    2. cotizacion_id / oferta_id / solicitud_id / cita_id / orden_id
-    3. tipo_entidad + entidad_id
-
-    Ante empate de clave, prioriza cita_personal sobre cotizacion_canal.
+    Colapsa filas repetidas del mismo hilo comercial, excepto cotizaciones de canal:
+    cada CotizacionCanal es un caso con folio MM propio.
     """
     best: dict[str, dict[str, Any]] = {}
     order: list[str] = []
@@ -729,6 +844,7 @@ def construir_pipeline_comercial(
     miembro_taller_id: int | None = None,
     limite: int = 100,
     incluir_borradores: bool = False,
+    q: str | None = None,
 ) -> dict[str, Any]:
     """Construye la lista agregada del pipeline comercial del proveedor."""
     if taller is None:
@@ -746,7 +862,7 @@ def construir_pipeline_comercial(
     filas.extend(_filas_ofertas(user, taller))
     if incluir_borradores:
         filas.extend(_filas_cotizaciones_borrador_agente(taller, leads_map))
-    filas.extend(_filas_cotizaciones_canal(taller, leads_map))
+    filas.extend(_filas_cotizaciones_canal(taller, leads_map, q=q))
     filas.extend(_filas_citas_personales(taller, miembro_taller_id, leads_map))
     filas.extend(_filas_solicitudes_directas(taller, user))
 
@@ -766,6 +882,8 @@ def construir_pipeline_comercial(
             f for f in filas
             if f.get('miembro_taller_id') in (None, miembro_taller_id)
         ]
+    if q:
+        filas = [f for f in filas if _fila_coincide_busqueda(f, q)]
 
     filas.sort(
         key=lambda f: (
@@ -775,8 +893,6 @@ def construir_pipeline_comercial(
         ),
         reverse=True,
     )
-    # Una fila por conversación/cotización de canal: evita repetir el mismo
-    # contacto varias veces cuando hay cotizaciones sucesivas en el mismo hilo.
     filas = _dedupe_pipeline_filas(filas)
     filas = filas[:limite]
 

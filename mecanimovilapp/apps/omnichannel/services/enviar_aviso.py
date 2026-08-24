@@ -10,6 +10,7 @@ from mecanimovilapp.apps.omnichannel.services.outbound_guard import (
     CHANNEL_DISCONNECTED_MESSAGE,
     customer_care_window_open,
     connection_activa,
+    plantillas_whatsapp_habilitadas,
 )
 from mecanimovilapp.apps.omnichannel.services.whatsapp_templates import (
     KIND_AVISO,
@@ -72,6 +73,12 @@ def _teaser(kind: str, taller: str, slot: str) -> str:
 
 
 def enviar_aviso_conversacion(*, conversation, user) -> Message:
+    if not plantillas_whatsapp_habilitadas():
+        raise AvisoNoDisponibleError(
+            'plantillas_deshabilitadas',
+            'Por ahora no enviamos avisos por WhatsApp. '
+            'Cotiza y comparte el link por el canal que prefieras.',
+        )
     if conversation.source_channel == 'APP':
         raise AvisoNoDisponibleError(
             'ventana_abierta',

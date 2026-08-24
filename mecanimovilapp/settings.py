@@ -549,7 +549,9 @@ META_OAUTH_REDIRECT_URI = config(
 META_GRAPH_API_VERSION = config('META_GRAPH_API_VERSION', default='v21.0')
 
 # Plantillas UTILITY de WhatsApp (fuera de la ventana de 24 h). Ver
-# docs/whatsapp-plantillas-utility.md. Vacío = no se envía por el canal.
+# docs/whatsapp-plantillas-utility.md. Apagadas por ahora: el taller
+# comparte el link a mano. Encender solo cuando Meta tenga las 3 aprobadas.
+WHATSAPP_TEMPLATES_ENABLED = config('WHATSAPP_TEMPLATES_ENABLED', default=False, cast=bool)
 # cotizacion_lista: {{1}} taller  {{2}} servicio  {{3}} total  {{4}} URL
 # cita_recordatorio: {{1}} taller  {{2}} slot
 # aviso_taller: {{1}} taller

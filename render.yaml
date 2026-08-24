@@ -123,7 +123,8 @@ services:
       # - META_EMBEDDED_SIGNUP_CONFIG_ID_INSTAGRAM
       # - META_OAUTH_REDIRECT_URI=https://<api-host>/api/omnichannel/oauth/callback/
       # - META_GRAPH_API_VERSION=v21.0
-      # Plantillas Utility WhatsApp (nombres exactos en Meta). Ver docs/whatsapp-plantillas-utility.md
+      # Plantillas Utility WhatsApp (apagadas). El taller comparte el link a mano.
+      # - WHATSAPP_TEMPLATES_ENABLED=False
       # - WHATSAPP_TEMPLATE_COTIZACION=cotizacion_lista
       # - WHATSAPP_TEMPLATE_CITA=cita_recordatorio
       # - WHATSAPP_TEMPLATE_AVISO=aviso_taller

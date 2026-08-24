@@ -26,9 +26,10 @@ class PipelineComercialViewSet(viewsets.ViewSet):
         )
         limite_raw = request.query_params.get('limite', '100')
         try:
-            limite = min(int(limite_raw), 200)
+            limite = min(int(limite_raw), 500)
         except (TypeError, ValueError):
             limite = 100
+        q = (request.query_params.get('q') or '').strip() or None
 
         miembro_param = request.query_params.get('miembro_taller')
         miembro_id = None
@@ -49,5 +50,6 @@ class PipelineComercialViewSet(viewsets.ViewSet):
             miembro_taller_id=miembro_id,
             limite=limite,
             incluir_borradores=incluir_borradores,
+            q=q,
         )
         return Response(payload)
