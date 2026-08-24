@@ -365,6 +365,9 @@ def enviar_cotizacion_libre(cotizacion: CotizacionCanal) -> CotizacionCanal:
     cotizacion.estado = 'enviada'
     cotizacion.enviada_en = timezone.now()
     preparar_emision_publica(cotizacion)
+    from mecanimovilapp.apps.ordenes.services.cotizacion_canal import cerrar_reapertura_taller
+
+    cerrar_reapertura_taller(cotizacion)
     cotizacion.save(
         update_fields=[
             'costo_repuestos_clp',
@@ -379,6 +382,7 @@ def enviar_cotizacion_libre(cotizacion: CotizacionCanal) -> CotizacionCanal:
             'emisor_snapshot',
             'cliente_nombre',
             'cliente_telefono',
+            'metadata',
             'actualizado_en',
         ],
     )

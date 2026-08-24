@@ -402,6 +402,16 @@ def _cita_activa_no_iniciada_de_cotizacion(cotizacion: CotizacionCanal):
     return cita
 
 
+def cerrar_reapertura_taller(cotizacion: CotizacionCanal) -> None:
+    """Quita el flag de edición al reenviar para que Bandeja deje 'En edición'."""
+    meta = dict(cotizacion.metadata or {})
+    if not meta.get('reabierta_por_taller'):
+        return
+    meta['reabierta_por_taller'] = False
+    meta['reenviada_tras_edicion_en'] = timezone.now().isoformat()
+    cotizacion.metadata = meta
+
+
 @transaction.atomic
 def reabrir_cotizacion_enviada(cotizacion: CotizacionCanal) -> CotizacionCanal:
     """enviada → borrador (mismo token). El cliente deja de poder aceptar hasta reenviar."""
@@ -517,6 +527,7 @@ def enviar_cotizacion_canal(cotizacion: CotizacionCanal, user) -> Message:
     cotizacion.message_envio = message
     cotizacion.estado = 'enviada'
     cotizacion.enviada_en = timezone.now()
+    cerrar_reapertura_taller(cotizacion)
     cotizacion.save(
         update_fields=[
             'message_envio',

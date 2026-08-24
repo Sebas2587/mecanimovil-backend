@@ -912,9 +912,15 @@ def _fusionar_filas_mismo_caso(a: dict[str, Any], b: dict[str, Any]) -> dict[str
             merged['template_generado_por_ia'] = True
         rank_cot = _ESTADO_RANK.get(str(cot.get('estado_normalizado')), 0)
         rank_cita = _ESTADO_RANK.get(str(cita.get('estado_normalizado')), 0)
-        if rank_cita > rank_cot:
-            merged['estado_normalizado'] = cita['estado_normalizado']
-            merged['estado_raw'] = cita.get('estado_raw') or merged.get('estado_raw')
+        if cot.get('estado_raw') == 'borrador' or cot.get('en_edicion'):
+            merged['en_edicion'] = True
+            merged['estado_raw'] = 'borrador'
+            merged['estado_normalizado'] = cot.get('estado_normalizado') or 'nuevo'
+        else:
+            merged['en_edicion'] = False
+            if rank_cita > rank_cot:
+                merged['estado_normalizado'] = cita['estado_normalizado']
+                merged['estado_raw'] = cita.get('estado_raw') or merged.get('estado_raw')
         return merged
     p_a = _DEDUPE_TIPO_PRIORITY.get(str(a.get('tipo_entidad')), 9)
     p_b = _DEDUPE_TIPO_PRIORITY.get(str(b.get('tipo_entidad')), 9)

@@ -160,6 +160,63 @@ class PipelineFolioBandejaTests(TestCase):
         self.assertEqual(fila['estado_normalizado'], 'nuevo')
         self.assertTrue(fila['en_edicion'])
 
+    def test_reenviada_deja_de_estar_en_edicion(self):
+        cot = self._cotizacion()
+        reabrir_cotizacion_enviada(cot)
+        cot.refresh_from_db()
+        from mecanimovilapp.apps.ordenes.services.cotizacion_canal import cerrar_reapertura_taller
+
+        cot.estado = 'enviada'
+        cot.enviada_en = timezone.now()
+        cerrar_reapertura_taller(cot)
+        cot.save(update_fields=['estado', 'enviada_en', 'metadata', 'actualizado_en'])
+        payload = construir_pipeline_comercial(user=self.user, taller=self.taller, limite=50)
+        fila = next(
+            f for f in payload['results']
+            if f['tipo_entidad'] == 'cotizacion_canal' and f['cotizacion_id'] == cot.id
+        )
+        self.assertFalse(fila['en_edicion'])
+        self.assertEqual(fila['estado_raw'], 'enviada')
+        self.assertFalse((cot.metadata or {}).get('reabierta_por_taller'))
+
+    def test_cita_no_mantiene_en_edicion_tras_reenviar(self):
+        cot = self._cotizacion()
+        cita = CitaAgendaPersonal.objects.create(
+            taller=self.taller,
+            conversation_origen=self.conversation,
+            cotizacion_canal_origen=cot,
+            fecha_servicio=date(2030, 8, 22),
+            hora_servicio=time(10, 0),
+            duracion_minutos=60,
+            tipo_servicio='taller',
+            estado='activa',
+            horario_por_confirmar=True,
+            creado_por=self.user,
+        )
+        CitaAgendaPersonalDetalle.objects.create(
+            cita=cita,
+            cliente_nombre='Gonzalo',
+            vehiculo_marca='Changan',
+            vehiculo_modelo='Hunter',
+            servicio_nombre='Diagnóstico',
+        )
+        reabrir_cotizacion_enviada(cot)
+        payload_edit = construir_pipeline_comercial(user=self.user, taller=self.taller, limite=50)
+        fila_edit = next(f for f in payload_edit['results'] if f.get('cotizacion_id') == cot.id)
+        self.assertTrue(fila_edit['en_edicion'])
+        self.assertEqual(fila_edit['estado_raw'], 'borrador')
+
+        from mecanimovilapp.apps.ordenes.services.cotizacion_canal import cerrar_reapertura_taller
+
+        cot.estado = 'enviada'
+        cot.enviada_en = timezone.now()
+        cerrar_reapertura_taller(cot)
+        cot.save(update_fields=['estado', 'enviada_en', 'metadata', 'actualizado_en'])
+        payload = construir_pipeline_comercial(user=self.user, taller=self.taller, limite=50)
+        fila = next(f for f in payload['results'] if f.get('cotizacion_id') == cot.id)
+        self.assertFalse(fila['en_edicion'])
+        self.assertTrue(fila['horario_por_confirmar'])
+
     def test_busqueda_por_folio_mm_y_digitos(self):
         cot = self._cotizacion()
         folio = cot.numero_publico
