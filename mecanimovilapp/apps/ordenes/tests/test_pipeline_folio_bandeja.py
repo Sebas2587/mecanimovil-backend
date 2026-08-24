@@ -88,7 +88,7 @@ class PipelineFolioBandejaTests(TestCase):
         self.assertIn(b.id, ids)
         self.assertTrue(any(f.get('numero_publico') == a.numero_publico for f in payload['results']))
 
-    def test_cita_del_mismo_chat_no_elimina_cotizacion(self):
+    def test_cita_del_mismo_caso_se_fusiona_en_folio(self):
         cot = self._cotizacion()
         cita = CitaAgendaPersonal.objects.create(
             taller=self.taller,
@@ -99,6 +99,7 @@ class PipelineFolioBandejaTests(TestCase):
             duracion_minutos=60,
             tipo_servicio='taller',
             estado='activa',
+            horario_por_confirmar=True,
             creado_por=self.user,
         )
         CitaAgendaPersonalDetalle.objects.create(
@@ -106,12 +107,42 @@ class PipelineFolioBandejaTests(TestCase):
             cliente_nombre='Gonzalo',
             vehiculo_marca='Changan',
             vehiculo_modelo='Hunter',
+            vehiculo_patente='KGGR22',
             servicio_nombre='Diagnóstico',
         )
         payload = construir_pipeline_comercial(user=self.user, taller=self.taller, limite=50)
-        tipos = [(f['tipo_entidad'], f.get('cotizacion_id'), f.get('cita_id')) for f in payload['results']]
-        self.assertTrue(any(t[0] == 'cotizacion_canal' and t[1] == cot.id for t in tipos))
-        self.assertTrue(any(t[0] == 'cita_personal' and t[2] == cita.id for t in tipos))
+        filas_caso = [
+            f for f in payload['results']
+            if f.get('cotizacion_id') == cot.id or f.get('cita_id') == cita.id
+        ]
+        self.assertEqual(len(filas_caso), 1)
+        fila = filas_caso[0]
+        self.assertEqual(fila['tipo_entidad'], 'cotizacion_canal')
+        self.assertEqual(fila['numero_publico'], cot.numero_publico)
+        self.assertEqual(fila['cita_id'], cita.id)
+        self.assertTrue(fila['horario_por_confirmar'])
+
+    def test_cita_manual_sin_cotizacion_sigue_apareciendo(self):
+        cita = CitaAgendaPersonal.objects.create(
+            taller=self.taller,
+            fecha_servicio=date(2030, 8, 22),
+            hora_servicio=time(10, 0),
+            duracion_minutos=60,
+            tipo_servicio='taller',
+            estado='activa',
+            creado_por=self.user,
+        )
+        CitaAgendaPersonalDetalle.objects.create(
+            cita=cita,
+            cliente_nombre='Walk-in',
+            vehiculo_marca='Toyota',
+            vehiculo_modelo='Yaris',
+            servicio_nombre='Revisión',
+        )
+        payload = construir_pipeline_comercial(user=self.user, taller=self.taller, limite=50)
+        self.assertTrue(
+            any(f['tipo_entidad'] == 'cita_personal' and f['cita_id'] == cita.id for f in payload['results'])
+        )
 
     def test_reabierta_con_folio_aparece_en_edicion(self):
         cot = self._cotizacion()
@@ -148,6 +179,17 @@ class PipelineFolioBandejaTests(TestCase):
             user=self.user, taller=self.taller, limite=50, q='Gonzalo',
         )
         self.assertTrue(any(f['cotizacion_id'] == cot.id for f in por_nombre['results']))
+
+    def test_busqueda_por_patente_ignora_guion_y_espacios(self):
+        cot = self._cotizacion(vehiculo_patente='KGGR-22', vehiculo_marca='Nissan', vehiculo_modelo='Kicks')
+        for q in ('KGGR22', 'kggr-22', 'kggr 22', 'KGGR-22'):
+            payload = construir_pipeline_comercial(
+                user=self.user, taller=self.taller, limite=50, q=q,
+            )
+            self.assertTrue(
+                any(f['cotizacion_id'] == cot.id for f in payload['results']),
+                msg=f'No encontró la cotización con q={q!r}',
+            )
 
     def test_borrador_sin_folio_no_aparece(self):
         CotizacionCanal.objects.create(
