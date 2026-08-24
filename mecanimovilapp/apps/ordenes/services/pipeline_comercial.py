@@ -1000,11 +1000,13 @@ def construir_pipeline_comercial(
     if q:
         filas = [f for f in filas if _fila_coincide_busqueda(f, q)]
 
+    # Más reciente primero (fecha_referencia ISO desc). listo_para_enviar y lead_score
+    # solo desempatan filas con la misma fecha.
     filas.sort(
         key=lambda f: (
+            f.get('fecha_referencia') or '',
             bool(f.get('listo_para_enviar')),
             int(f.get('lead_score') or 0),
-            f.get('fecha_referencia') or '',
         ),
         reverse=True,
     )

@@ -1,5 +1,5 @@
 """Pipeline: una fila por folio MM, reabiertas visibles, búsqueda por código."""
-from datetime import date, time
+from datetime import date, time, timedelta
 
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
@@ -247,6 +247,25 @@ class PipelineFolioBandejaTests(TestCase):
                 any(f['cotizacion_id'] == cot.id for f in payload['results']),
                 msg=f'No encontró la cotización con q={q!r}',
             )
+
+    def test_orden_mas_reciente_primero(self):
+        vieja = self._cotizacion(
+            servicio_nombre='Vieja',
+            enviada_en=timezone.now() - timedelta(days=10),
+        )
+        reciente = self._cotizacion(
+            servicio_nombre='Reciente',
+            enviada_en=timezone.now() - timedelta(hours=1),
+        )
+        payload = construir_pipeline_comercial(user=self.user, taller=self.taller, limite=50)
+        ids = [
+            f['cotizacion_id']
+            for f in payload['results']
+            if f['tipo_entidad'] == 'cotizacion_canal'
+        ]
+        self.assertIn(reciente.id, ids)
+        self.assertIn(vieja.id, ids)
+        self.assertLess(ids.index(reciente.id), ids.index(vieja.id))
 
     def test_borrador_sin_folio_no_aparece(self):
         CotizacionCanal.objects.create(
