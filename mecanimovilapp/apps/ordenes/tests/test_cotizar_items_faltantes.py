@@ -208,3 +208,48 @@ class CotizarItemsIaAPITests(TestCase):
             format='json',
         )
         self.assertEqual(resp.status_code, 400)
+
+
+class FusionarRepuestosEdicionTests(TestCase):
+    def test_conserva_enriquecimiento_web_si_el_patch_trae_precio_vacio(self):
+        from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
+            fusionar_repuestos_edicion,
+        )
+
+        actuales = [
+            {
+                'id': 'rep-1',
+                'nombre': 'Filtro de aceite',
+                'precio_unitario_clp': 8900,
+                'fuente_marketplace': 'web',
+                'proveedor_nombre': 'AutoPlanet',
+                'url_producto': 'https://www.autoplanet.cl/p/1',
+            },
+        ]
+        incoming = [
+            {
+                'id': 'rep-1',
+                'nombre': 'Filtro de aceite Mann',
+                'precio_unitario_clp': 0,
+            },
+        ]
+        out = fusionar_repuestos_edicion(actuales, incoming)
+        self.assertEqual(out[0]['nombre'], 'Filtro de aceite Mann')
+        self.assertEqual(out[0]['precio_unitario_clp'], 8900)
+        self.assertEqual(out[0]['fuente_marketplace'], 'web')
+        self.assertEqual(out[0]['proveedor_nombre'], 'AutoPlanet')
+
+    def test_no_bloquea_item_nuevo_del_patch(self):
+        from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
+            fusionar_repuestos_edicion,
+        )
+
+        actuales = [{'id': 'rep-1', 'nombre': 'Kit', 'precio_unitario_clp': 100}]
+        incoming = [
+            {'id': 'rep-1', 'nombre': 'Kit', 'precio_unitario_clp': 100},
+            {'id': 'rep-2', 'nombre': 'Filtro', 'precio_unitario_clp': 0},
+        ]
+        out = fusionar_repuestos_edicion(actuales, incoming)
+        self.assertEqual(len(out), 2)
+        self.assertEqual(out[1]['id'], 'rep-2')
+

@@ -323,6 +323,71 @@ def _persistir_correcciones_taller_al_enviar(cotizacion: CotizacionCanal) -> Non
         cotizacion.metadata = meta
 
 
+_FUENTES_VERIFICADAS_EDICION = frozenset({'catalogo', 'historial', 'web', 'mercadolibre'})
+
+
+def _precio_clp(rep: dict) -> int:
+    try:
+        return max(0, int(rep.get('precio_unitario_clp') or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def fusionar_repuestos_edicion(
+    actuales: list,
+    incoming: list,
+) -> list:
+    """Conserva precio/fuente ya enriquecidos si el PATCH trae un snapshot más débil.
+
+    Evita que el autosave del editor pise líneas que la búsqueda web acaba de llenar
+    (ítems previos y los recién agregados con IA).
+    """
+    by_id: dict[str, dict] = {}
+    for rep in actuales:
+        if isinstance(rep, dict) and rep.get('id'):
+            by_id[str(rep['id'])] = rep
+
+    out: list = []
+    for i, inc in enumerate(incoming):
+        if not isinstance(inc, dict):
+            continue
+        prev = by_id.get(str(inc.get('id') or ''))
+        if prev is None and not inc.get('id') and i < len(actuales) and isinstance(actuales[i], dict):
+            prev = actuales[i]
+        if not isinstance(prev, dict):
+            out.append(inc)
+            continue
+
+        fuente_prev = str(prev.get('fuente_marketplace') or '').strip().lower()
+        fuente_inc = str(inc.get('fuente_marketplace') or '').strip().lower()
+        precio_prev = _precio_clp(prev)
+        precio_inc = _precio_clp(inc)
+        keep_enriquecido = (
+            fuente_prev in _FUENTES_VERIFICADAS_EDICION
+            and precio_prev > 0
+            and (precio_inc <= 0 or fuente_inc not in _FUENTES_VERIFICADAS_EDICION)
+        )
+        if not keep_enriquecido:
+            out.append(inc)
+            continue
+
+        merged = dict(inc)
+        for key in (
+            'precio_unitario_clp',
+            'fuente_marketplace',
+            'proveedor_nombre',
+            'marca_repuesto',
+            'url_producto',
+            'tienda_ml',
+            'precio_estimado',
+            'precio_referencia_mercado',
+        ):
+            if key in prev:
+                merged[key] = prev[key]
+        out.append(merged)
+    return out
+
+
 def aplicar_edicion_cotizacion(cotizacion: CotizacionCanal, data: dict) -> CotizacionCanal:
     if 'servicio_nombre' in data:
         cotizacion.servicio_nombre = str(data['servicio_nombre'] or '')[:255]
@@ -345,7 +410,10 @@ def aplicar_edicion_cotizacion(cotizacion: CotizacionCanal, data: dict) -> Cotiz
             meta['notas_editadas_por_taller'] = True
             cotizacion.metadata = meta
     if 'repuestos' in data and isinstance(data['repuestos'], list):
-        cotizacion.repuestos = data['repuestos']
+        cotizacion.repuestos = fusionar_repuestos_edicion(
+            list(cotizacion.repuestos or []),
+            data['repuestos'],
+        )
     if 'mano_obra_clp' in data:
         cotizacion.mano_obra_clp = int(data['mano_obra_clp'] or 0)
     if 'duracion_minutos_estimada' in data:
