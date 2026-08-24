@@ -20,6 +20,7 @@ from mecanimovilapp.apps.ordenes.permissions import IsProveedor
 from mecanimovilapp.apps.ordenes.serializers_cotizacion_canal import (
     CotizacionCanalPlantillaSerializer,
     CotizacionCanalSerializer,
+    CotizarItemsIaSerializer,
     CrearCotizacionAdicionalSerializer,
     GenerarCotizacionIaSerializer,
     GuardarPlantillaCotizacionSerializer,
@@ -364,6 +365,37 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             {'cotizacion': CotizacionCanalSerializer(cotizacion).data},
             status=status.HTTP_201_CREATED,
         )
+
+    @action(detail=True, methods=['post'], url_path='cotizar-items')
+    def cotizar_items(self, request, pk=None):
+        """Agrega ítems faltantes al borrador y cotiza precio + fuente con IA."""
+        cotizacion = self.get_object()
+        if cotizacion.estado != 'borrador':
+            raise ValidationError({
+                'estado': 'Solo se pueden cotizar ítems en un borrador.',
+            })
+        ser = CotizarItemsIaSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        data = ser.validated_data
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.cotizar_items_faltantes import (
+            cotizar_items_faltantes,
+        )
+
+        try:
+            resultado = cotizar_items_faltantes(
+                cotizacion,
+                nombres=data.get('nombres') or [],
+                repuestos_locales=data.get('repuestos'),
+            )
+        except ValueError as exc:
+            raise ValidationError({'nombres': str(exc)}) from exc
+
+        cotizacion = resultado['cotizacion']
+        return Response({
+            'cotizacion': CotizacionCanalSerializer(cotizacion).data,
+            'agregados': resultado.get('agregados') or [],
+            'busqueda_web': bool(resultado.get('busqueda_web')),
+        })
 
     def partial_update(self, request, *args, **kwargs):
         cotizacion = self.get_object()

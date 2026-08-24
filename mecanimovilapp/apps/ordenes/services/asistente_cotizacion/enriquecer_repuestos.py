@@ -88,6 +88,37 @@ def _clave_fuzzy(nombre: str) -> str:
     return re.sub(r'\s+', ' ', t).strip()
 
 
+_NOMBRES_PLACEHOLDER = frozenset({
+    'repuesto', 'repuestos', 'item', 'pieza', 'n/a', 'na', '-',
+})
+
+
+def nombre_repuesto_buscable(nombre: str | None) -> bool:
+    n = _norm(nombre or '')
+    return bool(n) and n not in _NOMBRES_PLACEHOLDER
+
+
+def linea_necesita_busqueda_web(rep: Any) -> bool:
+    """True si la línea aún no tiene precio/fuente verificable para el taller."""
+    if not isinstance(rep, dict):
+        return False
+    if not nombre_repuesto_buscable(str(rep.get('nombre') or '')):
+        return False
+    fuente = str(rep.get('fuente_marketplace') or '').strip().lower()
+    if fuente in ('catalogo', 'historial'):
+        return False
+    precio = _to_int_clp(rep.get('precio_unitario_clp'))
+    if precio <= 0:
+        return True
+    if fuente in ('web', 'mercadolibre') and str(rep.get('proveedor_nombre') or '').strip():
+        return False
+    return (
+        bool(rep.get('precio_estimado', True))
+        or not str(rep.get('marca_repuesto') or '').strip()
+        or not str(rep.get('proveedor_nombre') or '').strip()
+    )
+
+
 def _inferir_marca_desde_nombre(nombre: str) -> str:
     raw = nombre or ''
     for marca in _MARCAS_REPUESTO_CONOCIDAS:

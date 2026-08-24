@@ -4,6 +4,9 @@ from __future__ import annotations
 from rest_framework import serializers
 
 from mecanimovilapp.apps.ordenes.models import CotizacionCanal, CotizacionCanalPlantilla
+from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.cotizar_items_faltantes import (
+    MAX_ITEMS_POR_REQUEST,
+)
 
 
 class RepuestoCotizacionSerializer(serializers.Serializer):
@@ -354,3 +357,23 @@ class GuardarPlantillaCotizacionSerializer(serializers.Serializer):
     titulo = serializers.CharField(max_length=255)
     cotizacion_id = serializers.IntegerField(required=False, allow_null=True)
     snapshot = serializers.DictField(required=False)
+
+
+class CotizarItemsIaSerializer(serializers.Serializer):
+    """Ítems a agregar y cotizar con IA sobre un borrador existente."""
+
+    nombres = serializers.ListField(
+        child=serializers.CharField(max_length=200, allow_blank=False),
+        required=False,
+        allow_empty=True,
+        max_length=MAX_ITEMS_POR_REQUEST,
+    )
+    repuestos = RepuestoCotizacionSerializer(many=True, required=False)
+
+    def validate_nombres(self, value):
+        limpios = []
+        for raw in value or []:
+            nombre = ' '.join(str(raw or '').split()).strip()
+            if nombre:
+                limpios.append(nombre[:200])
+        return limpios[:MAX_ITEMS_POR_REQUEST]

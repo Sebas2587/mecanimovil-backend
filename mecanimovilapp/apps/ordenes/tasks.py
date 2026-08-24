@@ -464,9 +464,11 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
     )
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
         enriquecer_repuestos_cotizacion,
+        linea_necesita_busqueda_web,
         _clave_fuzzy,
         _mejor_hit,
         _nombre_con_marca,
+        _to_int_clp,
     )
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
         recalcular_totales,
@@ -495,22 +497,11 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
             return {'ok': True, 'reason': 'sin_repuestos'}
 
         max_lineas = max(1, int(getattr(settings, 'BUSQUEDA_WEB_REPUESTOS_MAX_LINEAS', 6) or 6))
-        candidatos: list[dict] = []
-        for rep in reps:
-            if not isinstance(rep, dict):
-                continue
-            necesita = (
-                bool(rep.get('precio_estimado', True))
-                or not str(rep.get('marca_repuesto') or '').strip()
-                or not str(rep.get('proveedor_nombre') or '').strip()
-            )
-            fuente = str(rep.get('fuente_marketplace') or '').strip()
-            if fuente in ('catalogo', 'historial'):
-                continue
-            if necesita:
-                candidatos.append(rep)
-            if len(candidatos) >= max_lineas:
-                break
+
+        candidatos = [rep for rep in reps if linea_necesita_busqueda_web(rep)]
+        # Prioriza líneas sin precio (ítems que el taller acaba de agregar).
+        candidatos.sort(key=lambda r: _to_int_clp(r.get('precio_unitario_clp')) > 0)
+        candidatos = candidatos[:max_lineas]
 
         if not candidatos:
             _set_estado(cot, 'sin_resultados')
