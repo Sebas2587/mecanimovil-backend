@@ -165,3 +165,27 @@ class PipelineClientesBandejaTests(TestCase):
             user=self.user, taller=self.taller, prioridad='con_accion', limite=50
         )
         self.assertEqual(abiertos['count'], 1)
+
+    def test_ficha_adicional_cita_trabajo_principal(self):
+        principal = self._cotizacion(servicio_nombre='Cambio de pastillas y discos de freno')
+        adicional = self._cotizacion(
+            servicio_nombre='Cambio de kit de embrague',
+            es_cotizacion_adicional=True,
+            cotizacion_original=principal,
+            motivo_servicio_adicional='cambio de embrague',
+            total_clp=285000,
+        )
+        lista = construir_pipeline_clientes(user=self.user, taller=self.taller, limite=50)
+        key = lista['results'][0]['cliente_key']
+        ficha = construir_pipeline_cliente_detalle(
+            user=self.user, taller=self.taller, cliente_key=key
+        )
+        casos = [caso for veh in ficha['vehiculos'] for caso in veh['casos']]
+        fila_adicional = next(c for c in casos if c['cotizacion_id'] == adicional.id)
+        self.assertTrue(fila_adicional['es_cotizacion_adicional'])
+        self.assertEqual(fila_adicional['folio_principal'], principal.numero_publico)
+        self.assertEqual(
+            fila_adicional['servicio_principal_nombre'],
+            'Cambio de pastillas y discos de freno',
+        )
+        self.assertEqual(fila_adicional['cotizacion_original_id'], principal.id)

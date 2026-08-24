@@ -267,6 +267,10 @@ def _fila_base(
     listo_para_enviar: bool = False,
     pendientes_revision: list[str] | None = None,
     es_cotizacion_adicional: bool = False,
+    servicio_principal_nombre: str = '',
+    folio_principal: str = '',
+    cotizacion_original_id: int | None = None,
+    ejecucion_adicional: str = '',
     lead_categoria: str | None = None,
     lead_score: int | None = None,
     numero_publico: str = '',
@@ -323,12 +327,46 @@ def _fila_base(
         'listo_para_enviar': listo_para_enviar,
         'pendientes_revision': list(pendientes_revision or []),
         'es_cotizacion_adicional': es_cotizacion_adicional,
+        'servicio_principal_nombre': (servicio_principal_nombre or '').strip(),
+        'folio_principal': (folio_principal or '').strip(),
+        'cotizacion_original_id': cotizacion_original_id,
+        'ejecucion_adicional': (ejecucion_adicional or '').strip(),
         'lead_categoria': lead_categoria or 'sin_calificar',
         'lead_score': lead_score if lead_score is not None else 0,
         'numero_publico': (numero_publico or '').strip(),
         'es_libre': bool(es_libre),
         'entrega_via': (entrega_via or '').strip(),
         'en_edicion': bool(en_edicion),
+    }
+
+
+def _referencia_principal_adicional(cot: CotizacionCanal) -> dict[str, Any]:
+    """Folio y servicio del trabajo principal cuando la fila es un adicional."""
+    if not getattr(cot, 'es_cotizacion_adicional', False):
+        return {
+            'servicio_principal_nombre': '',
+            'folio_principal': '',
+            'cotizacion_original_id': None,
+            'ejecucion_adicional': '',
+        }
+    orig = getattr(cot, 'cotizacion_original', None)
+    nombre = ''
+    folio = ''
+    orig_id = None
+    if orig is not None:
+        orig_id = orig.id
+        nombre = (orig.servicio_nombre or '').strip()
+        folio = (orig.numero_publico or '').strip()
+    if not nombre:
+        cita = getattr(cot, 'cita_origen', None)
+        det = getattr(cita, 'detalle', None) if cita is not None else None
+        if det is not None:
+            nombre = (det.servicio_nombre or '').strip()
+    return {
+        'servicio_principal_nombre': nombre,
+        'folio_principal': folio,
+        'cotizacion_original_id': orig_id,
+        'ejecucion_adicional': (getattr(cot, 'ejecucion_adicional', None) or '').strip(),
     }
 
 
@@ -572,6 +610,7 @@ def _filas_cotizaciones_canal(
             'conversation',
             'conversation__external_contact',
             'cita_origen',
+            'cita_origen__detalle',
             'cotizacion_original',
         )
         .prefetch_related('citas_generadas')
@@ -635,6 +674,7 @@ def _filas_cotizaciones_canal(
                 ),
                 visto_sin_respuesta=_visto_sin_respuesta(estado_norm, cot.visto_en),
                 es_cotizacion_adicional=bool(getattr(cot, 'es_cotizacion_adicional', False)),
+                **_referencia_principal_adicional(cot),
                 numero_publico=(cot.numero_publico or '').strip(),
                 es_libre=bool(cot.es_libre),
                 entrega_via=_entrega_via_cotizacion(cot),
@@ -653,7 +693,13 @@ def _filas_cotizaciones_borrador_agente(taller: Taller, leads_map: dict | None =
             estado='borrador',
             metadata__origen='agente_ia',
         )
-        .select_related('conversation', 'conversation__external_contact')
+        .select_related(
+            'conversation',
+            'conversation__external_contact',
+            'cita_origen',
+            'cita_origen__detalle',
+            'cotizacion_original',
+        )
         .order_by('-actualizado_en')[:50]
     )
     filas: list[dict[str, Any]] = []
@@ -695,6 +741,8 @@ def _filas_cotizaciones_borrador_agente(taller: Taller, leads_map: dict | None =
                 es_libre=bool(cot.es_libre),
                 entrega_via=_entrega_via_cotizacion(cot),
                 en_edicion=_es_borrador_en_edicion(cot),
+                es_cotizacion_adicional=bool(getattr(cot, 'es_cotizacion_adicional', False)),
+                **_referencia_principal_adicional(cot),
                 **_lead_fields(conv.id if conv else None, leads_map),
             )
         )
@@ -1154,6 +1202,11 @@ _CASO_PUBLICO_KEYS = (
     'en_edicion',
     'vehiculo_resumen',
     'vehiculo_patente',
+    'es_cotizacion_adicional',
+    'servicio_principal_nombre',
+    'folio_principal',
+    'cotizacion_original_id',
+    'ejecucion_adicional',
 )
 
 
