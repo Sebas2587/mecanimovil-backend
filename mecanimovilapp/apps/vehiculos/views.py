@@ -129,6 +129,9 @@ class VehiculoViewSet(viewsets.ModelViewSet):
             return [permissions.AllowAny()]
         if self.action == 'consultar_patente_publica':
             return [permissions.AllowAny()]
+        if self.action == 'historial_red':
+            from mecanimovilapp.apps.ordenes.permissions import IsProveedor
+            return [permissions.IsAuthenticated(), IsProveedor()]
         return [permissions.IsAuthenticated()]
     
     def get_queryset(self):
@@ -561,6 +564,29 @@ class VehiculoViewSet(viewsets.ModelViewSet):
             )
 
         return Response(normalized_data)
+
+    @action(detail=False, methods=['get'], url_path='historial-red')
+    def historial_red(self, request):
+        """Timeline de servicios de la red por patente. Montos solo del taller consultante."""
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
+        from mecanimovilapp.apps.vehiculos.services.historial_red import (
+            consultar_historial_red,
+            patente_consulta_valida,
+        )
+
+        patente = (request.query_params.get('patente') or '').strip()
+        if not patente_consulta_valida(patente):
+            return Response(
+                {'error': 'Indica una patente chilena válida (sin basura).', 'code': 'patente_invalida'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        taller, _, _ = resolver_contexto_taller(request.user)
+        payload = consultar_historial_red(
+            patente=patente,
+            taller_id=taller.id if taller is not None else None,
+        )
+        payload.pop('error', None)
+        return Response(payload)
 
     @action(
         detail=False,

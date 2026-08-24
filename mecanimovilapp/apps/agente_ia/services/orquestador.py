@@ -1972,10 +1972,14 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             proveedor_user=proveedor,
         )
         contexto_patente_txt = enriq.get('texto_contexto') or ''
+        persistir_enriquecimiento = False
+        if enriq.get('historial_red'):
+            datos_previos['historial_red'] = enriq['historial_red']
+            persistir_enriquecimiento = True
         if enriq.get('vehiculo'):
+            persistir_enriquecimiento = True
             vehiculo_previo = _merge_datos(vehiculo_previo, enriq['vehiculo'])
             datos_previos['vehiculo'] = vehiculo_previo
-            datos_previos['patente_enriquecida'] = patente_detectada
             if (
                 patente_prev_enriquecida
                 and patente_detectada
@@ -2001,6 +2005,8 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             elif patente_nueva_en_mensaje and patente_nueva_en_mensaje != patente_prev_enriquecida:
                 datos_previos.pop('vehiculo_verificado', None)
                 datos_previos.pop('vehiculo_fuente', None)
+        if persistir_enriquecimiento:
+            datos_previos['patente_enriquecida'] = patente_detectada
             sesion.datos_capturados = datos_previos
             sesion.save(update_fields=['datos_capturados', 'actualizado_en'])
     elif datos_previos.get('patente_enriquecida'):
@@ -2015,6 +2021,12 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             contexto_patente_txt += '\nOfertas:\n' + '\n'.join(datos_previos['ofertas_catalogo'][:8])
         if datos_previos.get('salud_vehiculo'):
             contexto_patente_txt += '\n' + str(datos_previos['salud_vehiculo'])
+        if datos_previos.get('historial_red'):
+            from mecanimovilapp.apps.vehiculos.services.historial_red import texto_historial_red_para_prompt
+
+            texto_red = texto_historial_red_para_prompt(datos_previos['historial_red'])
+            if texto_red:
+                contexto_patente_txt += '\n' + texto_red
 
     query_rag = '\n'.join(
         filter(

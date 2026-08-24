@@ -174,6 +174,66 @@ def _monto_a_float(val) -> float | None:
         return None
 
 
+def _vehiculo_resumen_partes(
+    patente: str = '',
+    marca: str = '',
+    modelo: str = '',
+    anio=None,
+) -> str:
+    """Patente · marca modelo · año — para Bandeja y detalle rápido."""
+    partes: list[str] = []
+    patente_txt = (patente or '').strip().upper()
+    if patente_txt:
+        partes.append(patente_txt)
+    mm = ' '.join(p for p in [marca, modelo] if p).strip()
+    if mm:
+        partes.append(mm)
+    if anio:
+        partes.append(str(anio))
+    return ' · '.join(partes)
+
+
+def _campos_vehiculo_obj(vehiculo) -> dict[str, Any]:
+    if vehiculo is None:
+        return {
+            'vehiculo_patente': '',
+            'vehiculo_marca': '',
+            'vehiculo_modelo': '',
+            'vehiculo_anio': None,
+        }
+    marca = getattr(getattr(vehiculo, 'marca', None), 'nombre', '') or ''
+    modelo = getattr(getattr(vehiculo, 'modelo', None), 'nombre', '') or ''
+    patente = (getattr(vehiculo, 'patente', None) or '').strip().upper()
+    anio = getattr(vehiculo, 'year', None)
+    return {
+        'vehiculo_patente': patente,
+        'vehiculo_marca': marca,
+        'vehiculo_modelo': modelo,
+        'vehiculo_anio': anio,
+    }
+
+
+def _cliente_user_id(cliente) -> int | None:
+    if cliente is None:
+        return None
+    uid = getattr(cliente, 'usuario_id', None)
+    if uid:
+        return int(uid)
+    if hasattr(cliente, 'username') and getattr(cliente, 'id', None):
+        return int(cliente.id)
+    cid = getattr(cliente, 'id', None)
+    return int(cid) if cid else None
+
+
+def _telefono_contacto_ext(ext) -> str:
+    if ext is None:
+        return ''
+    fn = getattr(ext, 'telefono_efectivo', None)
+    if callable(fn):
+        return (fn() or '').strip()
+    return (getattr(ext, 'phone', None) or '').strip()
+
+
 def _fila_base(
     *,
     tipo_entidad: str,
@@ -184,6 +244,11 @@ def _fila_base(
     cliente_nombre: str,
     cliente_telefono: str = '',
     vehiculo_resumen: str = '',
+    vehiculo_patente: str = '',
+    vehiculo_marca: str = '',
+    vehiculo_modelo: str = '',
+    vehiculo_anio: int | None = None,
+    cliente_user_id: int | None = None,
     servicio_resumen: str = '',
     monto_clp: float | None = None,
     fecha_referencia,
@@ -209,6 +274,10 @@ def _fila_base(
     entrega_via: str = '',
     en_edicion: bool = False,
 ) -> dict[str, Any]:
+    patente = (vehiculo_patente or '').strip().upper()
+    resumen = vehiculo_resumen or _vehiculo_resumen_partes(
+        patente, vehiculo_marca, vehiculo_modelo, vehiculo_anio
+    )
     return {
         'tipo_entidad': tipo_entidad,
         'entidad_id': entidad_id,
@@ -217,7 +286,12 @@ def _fila_base(
         'estado_raw': estado_raw,
         'cliente_nombre': cliente_nombre,
         'cliente_telefono': cliente_telefono,
-        'vehiculo_resumen': vehiculo_resumen,
+        'vehiculo_resumen': resumen,
+        'vehiculo_patente': patente,
+        'vehiculo_marca': (vehiculo_marca or '').strip(),
+        'vehiculo_modelo': (vehiculo_modelo or '').strip(),
+        'vehiculo_anio': vehiculo_anio,
+        'cliente_user_id': cliente_user_id,
         'servicio_resumen': servicio_resumen,
         'monto_clp': monto_clp,
         'fecha_referencia': fecha_referencia.isoformat() if fecha_referencia else None,
@@ -294,12 +368,7 @@ def _filas_ofertas(proveedor_user, taller: Taller | None) -> list[dict[str, Any]
         estado_norm = OFERTA_ESTADO_MAP.get(oferta.estado, 'nuevo')
         solicitud = oferta.solicitud
         cliente = solicitud.cliente if solicitud else None
-        vehiculo = solicitud.vehiculo if solicitud else None
-        vehiculo_txt = ''
-        if vehiculo:
-            marca = getattr(getattr(vehiculo, 'marca', None), 'nombre', '') or ''
-            modelo = getattr(getattr(vehiculo, 'modelo', None), 'nombre', '') or ''
-            vehiculo_txt = f'{marca} {modelo}'.strip()
+        veh = _campos_vehiculo_obj(solicitud.vehiculo if solicitud else None)
         origen = 'catalogo' if oferta.origen == 'catalogo' else 'marketplace'
         fecha_ref = (
             oferta.fecha_visualizacion_cliente
@@ -317,7 +386,17 @@ def _filas_ofertas(proveedor_user, taller: Taller | None) -> list[dict[str, Any]
                     getattr(cliente, 'apellido', None),
                 ),
                 cliente_telefono=getattr(cliente, 'telefono', '') or '',
-                vehiculo_resumen=vehiculo_txt,
+                cliente_user_id=_cliente_user_id(cliente),
+                vehiculo_resumen=_vehiculo_resumen_partes(
+                    veh['vehiculo_patente'],
+                    veh['vehiculo_marca'],
+                    veh['vehiculo_modelo'],
+                    veh['vehiculo_anio'],
+                ),
+                vehiculo_patente=veh['vehiculo_patente'],
+                vehiculo_marca=veh['vehiculo_marca'],
+                vehiculo_modelo=veh['vehiculo_modelo'],
+                vehiculo_anio=veh['vehiculo_anio'],
                 servicio_resumen=(solicitud.descripcion_problema or '')[:120] if solicitud else '',
                 monto_clp=_monto_a_float(oferta.precio_total_ofrecido),
                 fecha_referencia=fecha_ref,
@@ -332,25 +411,6 @@ def _filas_ofertas(proveedor_user, taller: Taller | None) -> list[dict[str, Any]
             )
         )
     return filas
-
-
-def _vehiculo_resumen_partes(
-    patente: str = '',
-    marca: str = '',
-    modelo: str = '',
-    anio=None,
-) -> str:
-    """Patente · marca modelo · año — para Bandeja y detalle rápido."""
-    partes: list[str] = []
-    patente_txt = (patente or '').strip().upper()
-    if patente_txt:
-        partes.append(patente_txt)
-    mm = ' '.join(p for p in [marca, modelo] if p).strip()
-    if mm:
-        partes.append(mm)
-    if anio:
-        partes.append(str(anio))
-    return ' · '.join(partes)
 
 
 def _vehiculo_resumen_cotizacion(cot: CotizacionCanal) -> str:
@@ -462,6 +522,7 @@ def _fila_coincide_busqueda(fila: dict[str, Any], q: str) -> bool:
             'cliente_nombre',
             'cliente_telefono',
             'vehiculo_resumen',
+            'vehiculo_patente',
             'servicio_resumen',
             'cotizacion_id',
             'entidad_id',
@@ -542,12 +603,10 @@ def _filas_cotizaciones_canal(
             )
             cliente_telefono = (
                 (cot.cliente_telefono or '').strip()
-                or getattr(ext, 'phone', '')
-                or ''
+                or _telefono_contacto_ext(ext)
             )
             origen = _canal_origen(conv)
         fecha_ref = cot.enviada_en or cot.actualizado_en or cot.creado_en
-        vehiculo_txt = _vehiculo_resumen_cotizacion(cot)
         en_edicion = _es_borrador_en_edicion(cot)
         cita_rel = _cita_activa_de_cotizacion(cot)
         cita_id = getattr(cot, 'cita_origen_id', None) or (cita_rel.id if cita_rel else None)
@@ -560,7 +619,11 @@ def _filas_cotizaciones_canal(
                 estado_raw=cot.estado,
                 cliente_nombre=str(cliente_nombre),
                 cliente_telefono=cliente_telefono,
-                vehiculo_resumen=vehiculo_txt,
+                vehiculo_resumen=_vehiculo_resumen_cotizacion(cot),
+                vehiculo_patente=cot.vehiculo_patente or '',
+                vehiculo_marca=cot.vehiculo_marca or '',
+                vehiculo_modelo=cot.vehiculo_modelo or '',
+                vehiculo_anio=cot.vehiculo_anio,
                 servicio_resumen=(cot.servicio_nombre or cot.descripcion_problema or '')[:120],
                 monto_clp=_monto_a_float(cot.total_clp),
                 fecha_referencia=fecha_ref,
@@ -604,9 +667,8 @@ def _filas_cotizaciones_borrador_agente(taller: Taller, leads_map: dict | None =
             or getattr(ext, 'display_name', None)
             or 'Contacto'
         )
-        cliente_telefono = (cot.cliente_telefono or '').strip() or getattr(ext, 'phone', '') or ''
+        cliente_telefono = (cot.cliente_telefono or '').strip() or _telefono_contacto_ext(ext)
         origen = _canal_origen(conv) if conv else 'canal'
-        vehiculo_txt = _vehiculo_resumen_cotizacion(cot)
         fecha_ref = cot.actualizado_en or cot.creado_en
         filas.append(
             _fila_base(
@@ -617,7 +679,11 @@ def _filas_cotizaciones_borrador_agente(taller: Taller, leads_map: dict | None =
                 estado_raw='borrador',
                 cliente_nombre=str(cliente_nombre),
                 cliente_telefono=cliente_telefono,
-                vehiculo_resumen=vehiculo_txt,
+                vehiculo_resumen=_vehiculo_resumen_cotizacion(cot),
+                vehiculo_patente=cot.vehiculo_patente or '',
+                vehiculo_marca=cot.vehiculo_marca or '',
+                vehiculo_modelo=cot.vehiculo_modelo or '',
+                vehiculo_anio=cot.vehiculo_anio,
                 servicio_resumen=(cot.servicio_nombre or cot.descripcion_problema or '')[:120],
                 monto_clp=_monto_a_float(cot.total_clp),
                 fecha_referencia=fecha_ref,
@@ -677,14 +743,15 @@ def _filas_citas_personales(
     leads_map = leads_map or {}
     for cita in qs:
         det = cita.detalle
+        if det is None:
+            continue
         estado_norm = _estado_normalizado_cita_personal(cita)
         inst = getattr(cita, 'checklist_instance', None)
-        vehiculo_txt = _vehiculo_resumen_partes(
-            getattr(det, 'vehiculo_patente', '') or '',
-            det.vehiculo_marca or '',
-            det.vehiculo_modelo or '',
-            getattr(det, 'vehiculo_anio', None),
-        )
+        patente = getattr(det, 'vehiculo_patente', '') or ''
+        marca = det.vehiculo_marca or ''
+        modelo = det.vehiculo_modelo or ''
+        anio = getattr(det, 'vehiculo_anio', None)
+        vehiculo_txt = _vehiculo_resumen_partes(patente, marca, modelo, anio)
         cot_origen = getattr(cita, 'cotizacion_canal_origen', None)
         if cot_origen is not None and getattr(cot_origen, 'es_libre', False):
             origen_cita = 'directo'
@@ -702,6 +769,10 @@ def _filas_citas_personales(
                 cliente_nombre=det.cliente_nombre or 'Cliente',
                 cliente_telefono=det.cliente_telefono or '',
                 vehiculo_resumen=vehiculo_txt,
+                vehiculo_patente=patente,
+                vehiculo_marca=marca,
+                vehiculo_modelo=modelo,
+                vehiculo_anio=anio,
                 servicio_resumen=(det.descripcion or det.servicio_nombre or '')[:120],
                 monto_clp=_monto_a_float(
                     cot_origen.total_clp if cot_origen is not None else det.precio_referencia
@@ -771,12 +842,7 @@ def _filas_solicitudes_publicas_sin_oferta(proveedor_user, taller: Taller | None
     for solicitud in qs:
         estado_norm = SOLICITUD_PUBLICA_MAP.get(solicitud.estado, 'nuevo')
         cliente = solicitud.cliente
-        vehiculo = solicitud.vehiculo
-        vehiculo_txt = ''
-        if vehiculo:
-            marca = getattr(getattr(vehiculo, 'marca', None), 'nombre', '') or ''
-            modelo = getattr(getattr(vehiculo, 'modelo', None), 'nombre', '') or ''
-            vehiculo_txt = f'{marca} {modelo}'.strip()
+        veh = _campos_vehiculo_obj(solicitud.vehiculo)
         fecha_ref = solicitud.fecha_publicacion or solicitud.fecha_creacion
         filas.append(
             _fila_base(
@@ -790,7 +856,17 @@ def _filas_solicitudes_publicas_sin_oferta(proveedor_user, taller: Taller | None
                     getattr(cliente, 'apellido', None),
                 ),
                 cliente_telefono=getattr(cliente, 'telefono', '') or '',
-                vehiculo_resumen=vehiculo_txt,
+                cliente_user_id=_cliente_user_id(cliente),
+                vehiculo_resumen=_vehiculo_resumen_partes(
+                    veh['vehiculo_patente'],
+                    veh['vehiculo_marca'],
+                    veh['vehiculo_modelo'],
+                    veh['vehiculo_anio'],
+                ),
+                vehiculo_patente=veh['vehiculo_patente'],
+                vehiculo_marca=veh['vehiculo_marca'],
+                vehiculo_modelo=veh['vehiculo_modelo'],
+                vehiculo_anio=veh['vehiculo_anio'],
                 servicio_resumen=(solicitud.descripcion_problema or '')[:120],
                 monto_clp=None,
                 fecha_referencia=fecha_ref,
@@ -811,12 +887,7 @@ def _filas_solicitudes_directas(taller: Taller, proveedor_user) -> list[dict[str
     for orden in qs:
         estado_norm = SOLICITUD_DIRECTA_MAP.get(orden.estado, 'nuevo')
         cliente = orden.cliente
-        vehiculo = orden.vehiculo
-        vehiculo_txt = ''
-        if vehiculo:
-            marca = getattr(getattr(vehiculo, 'marca', None), 'nombre', '') or ''
-            modelo = getattr(getattr(vehiculo, 'modelo', None), 'nombre', '') or ''
-            vehiculo_txt = f'{marca} {modelo}'.strip()
+        veh = _campos_vehiculo_obj(orden.vehiculo)
         filas.append(
             _fila_base(
                 tipo_entidad='orden_directa',
@@ -829,7 +900,17 @@ def _filas_solicitudes_directas(taller: Taller, proveedor_user) -> list[dict[str
                     getattr(cliente, 'apellido', None),
                 ),
                 cliente_telefono=getattr(cliente, 'telefono', '') or '',
-                vehiculo_resumen=vehiculo_txt,
+                cliente_user_id=_cliente_user_id(cliente),
+                vehiculo_resumen=_vehiculo_resumen_partes(
+                    veh['vehiculo_patente'],
+                    veh['vehiculo_marca'],
+                    veh['vehiculo_modelo'],
+                    veh['vehiculo_anio'],
+                ),
+                vehiculo_patente=veh['vehiculo_patente'],
+                vehiculo_marca=veh['vehiculo_marca'],
+                vehiculo_modelo=veh['vehiculo_modelo'],
+                vehiculo_anio=veh['vehiculo_anio'],
                 servicio_resumen=(orden.notas_cliente or '')[:120],
                 monto_clp=_monto_a_float(orden.total),
                 fecha_referencia=orden.fecha_hora_solicitud,
@@ -949,6 +1030,47 @@ def _dedupe_pipeline_filas(filas: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [best[k] for k in order]
 
 
+def _recoger_filas_pipeline(
+    *,
+    user,
+    taller: Taller,
+    incluir_borradores: bool = False,
+    q: str | None = None,
+    miembro_taller_id: int | None = None,
+) -> tuple[list[dict[str, Any]], int]:
+    from mecanimovilapp.apps.agente_ia.models import LeadCalificacion
+
+    leads_map = {
+        lc.conversation_id: lc
+        for lc in LeadCalificacion.objects.filter(taller=taller)
+    }
+    filas: list[dict[str, Any]] = []
+    filas.extend(_filas_solicitudes_publicas_sin_oferta(user, taller))
+    filas.extend(_filas_ofertas(user, taller))
+    if incluir_borradores:
+        filas.extend(_filas_cotizaciones_borrador_agente(taller, leads_map))
+    filas.extend(_filas_cotizaciones_canal(taller, leads_map, q=q))
+    filas.extend(_filas_citas_personales(taller, miembro_taller_id, leads_map, q=q))
+    filas.extend(_filas_solicitudes_directas(taller, user))
+    borradores_pendientes_count = CotizacionCanal.objects.filter(
+        taller=taller,
+        estado='borrador',
+    ).count()
+    return filas, borradores_pendientes_count
+
+
+def _ordenar_filas_recientes(filas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    filas.sort(
+        key=lambda f: (
+            f.get('fecha_referencia') or '',
+            bool(f.get('listo_para_enviar')),
+            int(f.get('lead_score') or 0),
+        ),
+        reverse=True,
+    )
+    return filas
+
+
 def construir_pipeline_comercial(
     *,
     user,
@@ -965,26 +1087,13 @@ def construir_pipeline_comercial(
     if taller is None:
         return {'count': 0, 'results': [], 'resumen': {}, 'borradores_pendientes_count': 0}
 
-    from mecanimovilapp.apps.agente_ia.models import LeadCalificacion
-
-    leads_map = {
-        lc.conversation_id: lc
-        for lc in LeadCalificacion.objects.filter(taller=taller)
-    }
-
-    filas: list[dict[str, Any]] = []
-    filas.extend(_filas_solicitudes_publicas_sin_oferta(user, taller))
-    filas.extend(_filas_ofertas(user, taller))
-    if incluir_borradores:
-        filas.extend(_filas_cotizaciones_borrador_agente(taller, leads_map))
-    filas.extend(_filas_cotizaciones_canal(taller, leads_map, q=q))
-    filas.extend(_filas_citas_personales(taller, miembro_taller_id, leads_map, q=q))
-    filas.extend(_filas_solicitudes_directas(taller, user))
-
-    borradores_pendientes_count = CotizacionCanal.objects.filter(
+    filas, borradores_pendientes_count = _recoger_filas_pipeline(
+        user=user,
         taller=taller,
-        estado='borrador',
-    ).count()
+        incluir_borradores=incluir_borradores,
+        q=q,
+        miembro_taller_id=miembro_taller_id,
+    )
 
     if estado_normalizado:
         filas = [f for f in filas if f['estado_normalizado'] == estado_normalizado]
@@ -1002,14 +1111,7 @@ def construir_pipeline_comercial(
 
     # Más reciente primero (fecha_referencia ISO desc). listo_para_enviar y lead_score
     # solo desempatan filas con la misma fecha.
-    filas.sort(
-        key=lambda f: (
-            f.get('fecha_referencia') or '',
-            bool(f.get('listo_para_enviar')),
-            int(f.get('lead_score') or 0),
-        ),
-        reverse=True,
-    )
+    filas = _ordenar_filas_recientes(filas)
     filas = _dedupe_pipeline_filas(filas)
     filas = filas[:limite]
 
@@ -1028,3 +1130,356 @@ def construir_pipeline_comercial(
         ),
         'borradores_pendientes_count': borradores_pendientes_count,
     }
+
+
+_NOMBRES_GENERICOS = frozenset({'cliente', 'contacto', ''})
+
+_CASO_PUBLICO_KEYS = (
+    'tipo_entidad',
+    'entidad_id',
+    'numero_publico',
+    'servicio_resumen',
+    'monto_clp',
+    'estado_normalizado',
+    'estado_raw',
+    'origen',
+    'fecha_referencia',
+    'cotizacion_id',
+    'cita_id',
+    'oferta_id',
+    'solicitud_id',
+    'orden_id',
+    'conversation_id',
+    'horario_por_confirmar',
+    'en_edicion',
+    'vehiculo_resumen',
+    'vehiculo_patente',
+)
+
+
+def _telefono_cliente_key(raw: str) -> str:
+    digits = ''.join(c for c in (raw or '') if c.isdigit())
+    if len(digits) < 8:
+        return ''
+    if digits.startswith('569') and len(digits) >= 11:
+        nacional = digits[-9:]
+    elif digits.startswith('56') and len(digits) >= 11:
+        nacional = digits[-9:]
+    else:
+        nacional = digits[-9:] if len(digits) >= 9 else digits
+    if len(nacional) == 9 and nacional[0] == '9':
+        return f'tel-56{nacional}'
+    return f'tel-{digits}'
+
+
+def _identidad_tokens(fila: dict[str, Any]) -> list[str]:
+    tokens: list[str] = []
+    tel = _telefono_cliente_key(str(fila.get('cliente_telefono') or ''))
+    if tel:
+        tokens.append(tel)
+    conv = fila.get('conversation_id')
+    if conv:
+        tokens.append(f'conv-{conv}')
+    user_id = fila.get('cliente_user_id')
+    if user_id:
+        tokens.append(f'user-{user_id}')
+    return tokens
+
+
+def _clave_canonica(tokens: set[str]) -> str:
+    tels = sorted(t for t in tokens if t.startswith('tel-'))
+    if tels:
+        return tels[0]
+    convs = sorted(t for t in tokens if t.startswith('conv-'))
+    if convs:
+        return convs[0]
+    users = sorted(t for t in tokens if t.startswith('user-'))
+    if users:
+        return users[0]
+    return sorted(tokens)[0]
+
+
+def _vehiculo_grupo_key(fila: dict[str, Any]) -> str:
+    pat = _compactar_alfanum(str(fila.get('vehiculo_patente') or '')).upper()
+    if pat:
+        return f'pat-{pat}'
+    marca = (fila.get('vehiculo_marca') or '').strip().lower()
+    modelo = (fila.get('vehiculo_modelo') or '').strip().lower()
+    anio = fila.get('vehiculo_anio')
+    if marca or modelo:
+        return f'veh-{marca}|{modelo}|{anio or ""}'
+    return 'sin-vehiculo'
+
+
+def _caso_enviado(fila: dict[str, Any]) -> bool:
+    raw = str(fila.get('estado_raw') or '')
+    tipo = fila.get('tipo_entidad')
+    if tipo == 'cotizacion_canal':
+        return raw in {'enviada', 'aceptada', 'rechazada', 'expirada', 'cancelada'}
+    if tipo == 'oferta':
+        return raw not in {'retirada', ''}
+    return False
+
+
+def _caso_aceptado(fila: dict[str, Any]) -> bool:
+    if str(fila.get('estado_raw') or '') == 'aceptada':
+        return True
+    return fila.get('estado_normalizado') in (
+        'aceptado_agendado',
+        'en_ejecucion',
+        'completado',
+    )
+
+
+def _caso_rechazado(fila: dict[str, Any]) -> bool:
+    return fila.get('estado_normalizado') == 'rechazado_perdido'
+
+
+def _caso_abierto(fila: dict[str, Any]) -> bool:
+    if fila.get('en_edicion') or fila.get('horario_por_confirmar') or fila.get('listo_para_enviar'):
+        return True
+    return fila.get('estado_normalizado') in (
+        'nuevo',
+        'cotizacion_enviada',
+        'en_negociacion',
+        'aceptado_agendado',
+        'en_ejecucion',
+    )
+
+
+def _nombre_cliente_casos(casos: list[dict[str, Any]]) -> str:
+    ordered = sorted(casos, key=lambda c: c.get('fecha_referencia') or '', reverse=True)
+    for caso in ordered:
+        nombre = (caso.get('cliente_nombre') or '').strip()
+        if nombre.lower() not in _NOMBRES_GENERICOS:
+            return nombre
+    if ordered:
+        return (ordered[0].get('cliente_nombre') or '').strip() or 'Cliente'
+    return 'Cliente'
+
+
+def _telefono_display_casos(casos: list[dict[str, Any]], cliente_key: str) -> str:
+    if cliente_key.startswith('tel-') and len(cliente_key) > 4:
+        digits = cliente_key[4:]
+        return f'+{digits}' if digits.startswith('56') else digits
+    for caso in sorted(casos, key=lambda c: c.get('fecha_referencia') or '', reverse=True):
+        tel = (caso.get('cliente_telefono') or '').strip()
+        if tel:
+            return tel
+    return ''
+
+
+def _caso_publico(fila: dict[str, Any]) -> dict[str, Any]:
+    return {k: fila.get(k) for k in _CASO_PUBLICO_KEYS}
+
+
+def _payload_cliente(cliente_key: str, casos: list[dict[str, Any]]) -> dict[str, Any]:
+    ordered = sorted(casos, key=lambda c: c.get('fecha_referencia') or '', reverse=True)
+    vehiculos_map: dict[str, dict[str, Any]] = {}
+    vehiculos_order: list[str] = []
+    for caso in ordered:
+        vkey = _vehiculo_grupo_key(caso)
+        if vkey not in vehiculos_map:
+            vehiculos_map[vkey] = {
+                'key': vkey,
+                'resumen': (caso.get('vehiculo_resumen') or '').strip() or 'Sin vehículo',
+                'patente': (caso.get('vehiculo_patente') or '').strip().upper(),
+                'casos': [],
+            }
+            vehiculos_order.append(vkey)
+        vehiculos_map[vkey]['casos'].append(_caso_publico(caso))
+        if caso.get('vehiculo_resumen') and vehiculos_map[vkey]['resumen'] == 'Sin vehículo':
+            vehiculos_map[vkey]['resumen'] = caso['vehiculo_resumen']
+    origenes: list[str] = []
+    for caso in ordered:
+        origen = caso.get('origen')
+        if origen and origen not in origenes:
+            origenes.append(origen)
+    conv_id = next((c.get('conversation_id') for c in ordered if c.get('conversation_id')), None)
+    return {
+        'cliente_key': cliente_key,
+        'cliente_nombre': _nombre_cliente_casos(ordered),
+        'cliente_telefono': _telefono_display_casos(ordered, cliente_key),
+        'origenes': origenes,
+        'vehiculos': [vehiculos_map[k] for k in vehiculos_order],
+        'casos_count': len(ordered),
+        'enviadas': sum(1 for c in ordered if _caso_enviado(c)),
+        'aceptadas': sum(1 for c in ordered if _caso_aceptado(c)),
+        'rechazadas': sum(1 for c in ordered if _caso_rechazado(c)),
+        'abiertas': sum(1 for c in ordered if _caso_abierto(c)),
+        'ultima_actividad': ordered[0].get('fecha_referencia') if ordered else None,
+        'conversation_id': conv_id,
+        'con_accion': any(_caso_abierto(c) for c in ordered),
+    }
+
+
+def _agrupar_filas_por_cliente(filas: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    parent: dict[str, str] = {}
+
+    def find(x: str) -> str:
+        parent.setdefault(x, x)
+        if parent[x] != x:
+            parent[x] = find(parent[x])
+        return parent[x]
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    sueltos: dict[str, list[dict[str, Any]]] = {}
+    vinculados: list[dict[str, Any]] = []
+    for fila in filas:
+        tokens = _identidad_tokens(fila)
+        if not tokens:
+            key = f"caso-{fila.get('tipo_entidad')}-{fila.get('entidad_id')}"
+            sueltos.setdefault(key, []).append(fila)
+            continue
+        for token in tokens[1:]:
+            union(tokens[0], token)
+        vinculados.append(fila)
+
+    tokens_por_raiz: dict[str, set[str]] = {}
+    casos_por_raiz: dict[str, list[dict[str, Any]]] = {}
+    for fila in vinculados:
+        tokens = _identidad_tokens(fila)
+        raiz = find(tokens[0])
+        casos_por_raiz.setdefault(raiz, []).append(fila)
+        tokens_por_raiz.setdefault(raiz, set()).update(tokens)
+    for token, p in list(parent.items()):
+        tokens_por_raiz.setdefault(find(p), set()).add(token)
+
+    agrupados: dict[str, dict[str, Any]] = {}
+    for raiz, casos in casos_por_raiz.items():
+        key = _clave_canonica(tokens_por_raiz.get(raiz, {raiz}))
+        if key in agrupados:
+            agrupados[key]['casos'].extend(casos)
+        else:
+            agrupados[key] = {'casos': casos}
+    for key, casos in sueltos.items():
+        agrupados[key] = {'casos': casos}
+
+    return {key: _payload_cliente(key, data['casos']) for key, data in agrupados.items()}
+
+
+def construir_pipeline_clientes(
+    *,
+    user,
+    taller: Taller | None,
+    origen: str | None = None,
+    prioridad: str | None = None,
+    miembro_taller_id: int | None = None,
+    limite: int = 100,
+    q: str | None = None,
+) -> dict[str, Any]:
+    """Lista de clientes comerciales (personas), no filas por folio."""
+    if taller is None:
+        return {'count': 0, 'results': [], 'resumen': {'todos': 0, 'con_accion': 0, 'cerrados': 0}}
+
+    filas, _ = _recoger_filas_pipeline(
+        user=user,
+        taller=taller,
+        incluir_borradores=False,
+        q=q,
+        miembro_taller_id=miembro_taller_id,
+    )
+    if origen:
+        filas = [f for f in filas if f['origen'] == origen]
+    if miembro_taller_id:
+        filas = [
+            f for f in filas
+            if f.get('miembro_taller_id') in (None, miembro_taller_id)
+        ]
+    filas = _ordenar_filas_recientes(filas)
+    filas = _dedupe_pipeline_filas(filas)
+    clientes = list(_agrupar_filas_por_cliente(filas).values())
+    clientes.sort(key=lambda c: c.get('ultima_actividad') or '', reverse=True)
+
+    if q:
+        clientes = [
+            c
+            for c in clientes
+            if _fila_coincide_busqueda(
+                {
+                    'cliente_nombre': c.get('cliente_nombre'),
+                    'cliente_telefono': c.get('cliente_telefono'),
+                    'numero_publico': ' '.join(
+                        caso.get('numero_publico') or ''
+                        for veh in c.get('vehiculos') or []
+                        for caso in veh.get('casos') or []
+                    ),
+                    'vehiculo_resumen': ' '.join(
+                        veh.get('resumen') or '' for veh in c.get('vehiculos') or []
+                    ),
+                    'vehiculo_patente': ' '.join(
+                        veh.get('patente') or '' for veh in c.get('vehiculos') or []
+                    ),
+                    'servicio_resumen': ' '.join(
+                        caso.get('servicio_resumen') or ''
+                        for veh in c.get('vehiculos') or []
+                        for caso in veh.get('casos') or []
+                    ),
+                    'cotizacion_id': '',
+                    'entidad_id': c.get('cliente_key'),
+                },
+                q,
+            )
+        ]
+
+    resumen = {
+        'todos': len(clientes),
+        'con_accion': sum(1 for c in clientes if c.get('con_accion')),
+        'cerrados': sum(1 for c in clientes if not c.get('con_accion')),
+    }
+    prioridad_norm = (prioridad or 'todos').strip().lower()
+    if prioridad_norm == 'con_accion':
+        clientes = [c for c in clientes if c.get('con_accion')]
+    elif prioridad_norm == 'cerrados':
+        clientes = [c for c in clientes if not c.get('con_accion')]
+
+    results = []
+    for cliente in clientes[:limite]:
+        row = dict(cliente)
+        row['vehiculos'] = [
+            {'key': v['key'], 'resumen': v['resumen'], 'patente': v['patente']}
+            for v in cliente.get('vehiculos') or []
+        ]
+        row.pop('con_accion', None)
+        results.append(row)
+
+    return {
+        'count': len(results),
+        'results': results,
+        'resumen': resumen,
+    }
+
+
+def construir_pipeline_cliente_detalle(
+    *,
+    user,
+    taller: Taller | None,
+    cliente_key: str,
+    miembro_taller_id: int | None = None,
+) -> dict[str, Any] | None:
+    if taller is None or not (cliente_key or '').strip():
+        return None
+    filas, _ = _recoger_filas_pipeline(
+        user=user,
+        taller=taller,
+        incluir_borradores=False,
+        q=None,
+        miembro_taller_id=miembro_taller_id,
+    )
+    if miembro_taller_id:
+        filas = [
+            f for f in filas
+            if f.get('miembro_taller_id') in (None, miembro_taller_id)
+        ]
+    filas = _dedupe_pipeline_filas(filas)
+    agrupados = _agrupar_filas_por_cliente(filas)
+    cliente = agrupados.get(cliente_key.strip())
+    if cliente is None:
+        return None
+    payload = dict(cliente)
+    payload.pop('con_accion', None)
+    return payload

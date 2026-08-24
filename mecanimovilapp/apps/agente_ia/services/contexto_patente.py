@@ -147,6 +147,7 @@ def enriquecer_contexto_patente(
         'texto_contexto': '',
         'ofertas': [],
         'historial': [],
+        'historial_red': [],
         'salud': '',
         'error': None,
     }
@@ -177,10 +178,23 @@ def enriquecer_contexto_patente(
                 'vin': (veh.vin or '').strip().upper(),
                 'kilometraje': veh.kilometraje,
             }
-            resultado['historial'] = _resumen_historial(veh.id)
             resultado['salud'] = _resumen_salud(veh.id)
     except Exception as exc:
         logger.warning('Error buscando vehículo registrado por patente: %s', exc)
+
+    try:
+        from mecanimovilapp.apps.vehiculos.services.historial_red import consultar_historial_red
+
+        hist = consultar_historial_red(patente=patente_norm, taller_id=taller_id)
+        eventos = list(hist.get('eventos') or [])
+        resultado['historial_red'] = eventos
+        if eventos:
+            resultado['historial'] = [
+                f"- {(e.get('fecha') or '')[:10]}: {e.get('servicio_nombre')}"
+                for e in eventos[:5]
+            ]
+    except Exception as exc:
+        logger.warning('Error historial red por patente %s: %s', patente_norm, exc)
 
     # 2) API externa de patentes (GetAPI.cl), solo si no estaba registrado localmente.
     if resultado['vehiculo_fuente'] == 'ninguna':
@@ -276,14 +290,18 @@ def _finalizar_contexto(resultado: dict[str, Any], taller_id: int) -> dict[str, 
 
     if resultado['registrado_en_sistema']:
         bloques.append('Esta patente ESTÁ registrada por un cliente en Mecanimovil.')
-        if resultado['historial']:
-            bloques.append('Historial de servicios completados:\n' + '\n'.join(resultado['historial']))
-        else:
-            bloques.append('Sin historial de servicios completados en el sistema.')
         if resultado['salud']:
             bloques.append(resultado['salud'])
     else:
         bloques.append('Esta patente NO está registrada como vehículo de un cliente en Mecanimovil.')
+
+    from mecanimovilapp.apps.vehiculos.services.historial_red import texto_historial_red_para_prompt
+
+    texto_red = texto_historial_red_para_prompt(resultado.get('historial_red') or [])
+    if texto_red:
+        bloques.append(texto_red)
+    elif resultado['registrado_en_sistema']:
+        bloques.append('Sin historial de servicios de la red para esta patente.')
 
     if resultado['ofertas']:
         bloques.append(

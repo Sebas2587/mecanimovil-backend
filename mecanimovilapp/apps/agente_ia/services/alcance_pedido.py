@@ -1,4 +1,8 @@
-"""Alcance del pedido de cotización: mención ≠ ítem; suma solo explícita."""
+"""Alcance del pedido de cotización: mención ≠ ítem; suma solo explícita.
+
+El historial clínico de patente (`historial_red`) informa recomendaciones.
+NO es lista de servicios a cotizar: solo entra al pedido si el cliente lo pide ahora.
+"""
 from __future__ import annotations
 
 import re
