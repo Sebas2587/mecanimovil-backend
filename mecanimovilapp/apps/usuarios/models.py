@@ -219,6 +219,11 @@ class ProveedorServicio(models.Model):
         default='especialista',
         help_text='Especialista: marcas concretas. Multimarca: atiende cualquier marca.',
     )
+    politicas_cotizacion = models.TextField(
+        blank=True,
+        default='',
+        help_text='Políticas de validez y trabajo. Se copian a cada cotización al crearla.',
+    )
 
     class Meta:
         abstract = True

@@ -653,21 +653,24 @@ def _draw_bottom(pdf: DocumentoPDF, data: dict) -> None:
     neto = int(round(total / 1.19)) if total else 0
     iva = total - neto
     vigente = _fecha_larga(data.get('fecha_expiracion_publica'))
-    note = ''
+    politicas = (data.get('politicas_cotizacion') or '').strip()
+    if not politicas:
+        from mecanimovilapp.apps.usuarios.legal_constants import POLITICAS_COTIZACION_FALLBACK
+        politicas = POLITICAS_COTIZACION_FALLBACK
+    note_parts = []
     if vigente:
-        note = (
-            f'Esta cotización es válida hasta el {vigente}. '
-            'Los precios de repuestos pueden variar si cambia disponibilidad o marca.'
-        )
-    extra_pago = ''
+        note_parts.append(f'Esta cotización es válida hasta el {vigente}.')
+    if politicas:
+        note_parts.append(politicas)
+    note_parts.append(
+        'Los precios de línea ya incluyen IVA. El desglose neto/IVA es informativo.'
+    )
     if data.get('es_trabajo_adicional') or data.get('pago_directo_taller'):
-        extra_pago = (
+        note_parts.append(
             'El pago de mano de obra y repuestos se coordina directo con el taller. '
             'Mecanimovil no cobra este trabajo.'
         )
-    iva_hint = 'Los precios de línea ya incluyen IVA. El desglose neto/IVA es informativo.'
-    if extra_pago:
-        note = f'{note}\n\n{extra_pago}'.strip() if note else extra_pago
+    note = '\n\n'.join(note_parts)
 
     totals_w = 70.0
     gap = 4.0
@@ -678,8 +681,7 @@ def _draw_bottom(pdf: DocumentoPDF, data: dict) -> None:
     lines.append(('Mano de obra', _clp(data.get('mano_obra_clp')), False))
     lines.append(('Neto', _clp(neto), False))
     lines.append(('IVA 19%', _clp(iva), False))
-    hint_h = _measure(pdf, totals_w - 2 * PAD, iva_hint, 3.5, 7)
-    totals_h = PAD + len(lines) * 4.8 + 1.6 + 7.2 + hint_h + PAD
+    totals_h = PAD + len(lines) * 4.8 + 1.6 + 7.2 + PAD
     note_h = 0.0
     if note:
         note_h = PAD + 3.6 + _measure(pdf, note_w - 2 * PAD, note, 4.4, 8.5) + PAD
@@ -706,8 +708,6 @@ def _draw_bottom(pdf: DocumentoPDF, data: dict) -> None:
     y += 1.6
     _text(pdf, tx + PAD, y, label_w, 'Total a pagar', 5.6, 10.5, bold=True)
     _text(pdf, tx + PAD + label_w, y, 28, _clp(total), 5.6, 12, bold=True, color=MAGENTA, align='R')
-    y += 7.0
-    y = _text(pdf, tx + PAD, y, tw - 2 * PAD, iva_hint, 3.5, 7, color=MUTED)
     pdf.set_y(y0 + height + GAP)
 
 

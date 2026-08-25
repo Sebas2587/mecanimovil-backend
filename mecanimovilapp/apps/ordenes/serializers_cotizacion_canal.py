@@ -160,6 +160,7 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             'duracion_minutos_estimada',
             'advertencias',
             'notas_internas',
+            'politicas_cotizacion',
             'metadata',
             'listo_para_enviar',
             'pendientes_revision',

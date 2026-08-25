@@ -771,7 +771,7 @@ class TallerSerializer(PanelServiciosSerializerMixin, serializers.ModelSerialize
                   'especialidades', 'especialidades_nombres',
                   'marcas_atendidas', 'marcas_atendidas_nombres',
                   'tipo_cobertura_marca',
-                  'descripcion', 'calificacion_promedio', 'rating_average', 'rating_reviews_count', 'numero_de_calificaciones', 'activo',
+                  'descripcion', 'politicas_cotizacion', 'calificacion_promedio', 'rating_average', 'rating_reviews_count', 'numero_de_calificaciones', 'activo',
                   'foto_perfil', 'foto_perfil_url',  # NUEVO: foto de perfil
                   'estado_verificacion', 'estado_verificacion_display', 
                   'verificado', 'kpi_badge', 'onboarding_completado', 'onboarding_iniciado', 'fecha_verificacion',
@@ -1120,7 +1120,7 @@ class MecanicoDomicilioSerializer(PanelServiciosSerializerMixin, serializers.Mod
                   'tipo_cobertura_marca',
                   'disponibilidad', 'foto_perfil', 'foto_perfil_url', 'distance',
                   'radio_cobertura', 'calificacion_promedio', 'rating_average', 'rating_reviews_count', 'numero_de_calificaciones', 'activo',
-                  'descripcion', 'dni', 'experiencia_anos',
+                  'descripcion', 'politicas_cotizacion', 'dni', 'experiencia_anos',
                   'estado_verificacion', 'estado_verificacion_display', 
                   'verificado', 'kpi_badge', 'onboarding_completado', 'onboarding_iniciado', 'fecha_verificacion',
                   'fecha_registro', 'ultima_actualizacion', 'zonas_servicio',

@@ -34,7 +34,10 @@ from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
     payload_plantilla_whatsapp_cotizacion,
     snapshot_desde_cotizacion,
 )
-from mecanimovilapp.apps.ordenes.services.cotizacion_publica import enviar_cotizacion_libre
+from mecanimovilapp.apps.ordenes.services.cotizacion_publica import (
+    enviar_cotizacion_libre,
+    resolver_politicas_cotizacion,
+)
 from mecanimovilapp.apps.ordenes.services.plantilla_vehiculo import filtrar_plantillas_por_vehiculo
 from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
 from mecanimovilapp.apps.vehiculos.cilindraje_texto import cilindraje_efectivo
@@ -180,6 +183,11 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
                 total_clp=snap.get('total_clp') or 0,
                 duracion_minutos_estimada=snap.get('duracion_minutos_estimada'),
                 advertencias=snap.get('advertencias') or [],
+                notas_internas=snap.get('notas_internas') or '',
+                politicas_cotizacion=resolver_politicas_cotizacion(
+                    taller=taller,
+                    texto=snap.get('politicas_cotizacion'),
+                ),
                 metadata={'origen': 'plantilla', 'plantilla_id': plantilla_id},
             )
             return Response({
@@ -265,6 +273,7 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             total_clp=contenido.get('total_clp') or 0,
             duracion_minutos_estimada=contenido.get('duracion_minutos_estimada'),
             advertencias=contenido.get('advertencias') or [],
+            politicas_cotizacion=resolver_politicas_cotizacion(taller=taller),
             contenido_ia=resultado.get('contenido_ia') or {},
             tokens_entrada=resultado.get('tokens_entrada') or 0,
             tokens_salida=resultado.get('tokens_salida') or 0,

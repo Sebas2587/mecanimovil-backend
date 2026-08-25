@@ -8,3 +8,8 @@ PRIVACIDAD_DOC_VERSION = LEGAL_DOCS_VERSION
 # TTL enlaces públicos (días)
 INFORME_PUBLICO_TTL_DAYS = 30
 COTIZACION_PUBLICA_TTL_DAYS = 30
+
+# Texto de validez si el taller no definió políticas propias.
+POLITICAS_COTIZACION_FALLBACK = (
+    'Los precios de repuestos pueden variar si cambia disponibilidad o marca.'
+)

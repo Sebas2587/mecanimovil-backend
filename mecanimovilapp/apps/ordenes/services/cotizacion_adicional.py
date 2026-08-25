@@ -19,6 +19,7 @@ from mecanimovilapp.apps.ordenes.services.catalogo_pricing import (
 from mecanimovilapp.apps.ordenes.services.notificaciones_pipeline import (
     notificar_cotizacion_adicional_borrador,
 )
+from mecanimovilapp.apps.ordenes.services.cotizacion_publica import resolver_politicas_cotizacion
 from mecanimovilapp.apps.usuarios.models import Taller
 from mecanimovilapp.apps.vehiculos.cilindraje_texto import cilindraje_efectivo
 
@@ -292,6 +293,7 @@ def crear_cotizacion_adicional_desde_catalogo(
         costo_repuestos_clp=costo_rep,
         total_clp=total,
         advertencias=advertencias,
+        politicas_cotizacion=resolver_politicas_cotizacion(taller=taller),
         metadata={
             'origen': 'cotizacion_adicional',
             'cotizacion_original_id': cotizacion_original.id,
@@ -464,6 +466,7 @@ def crear_cotizacion_adicional_con_ia(
         total_clp=total,
         duracion_minutos_estimada=contenido.get('duracion_minutos_estimada'),
         advertencias=advertencias,
+        politicas_cotizacion=resolver_politicas_cotizacion(taller=taller),
         contenido_ia=resultado.get('contenido_ia') or {},
         tokens_entrada=resultado.get('tokens_entrada') or 0,
         tokens_salida=resultado.get('tokens_salida') or 0,

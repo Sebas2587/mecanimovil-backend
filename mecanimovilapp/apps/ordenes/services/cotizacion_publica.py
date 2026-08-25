@@ -16,7 +16,10 @@ from mecanimovilapp.apps.ordenes.models import (
 )
 from mecanimovilapp.apps.vehiculos.cilindraje_texto import cilindraje_efectivo
 
-from mecanimovilapp.apps.usuarios.legal_constants import COTIZACION_PUBLICA_TTL_DAYS
+from mecanimovilapp.apps.usuarios.legal_constants import (
+    COTIZACION_PUBLICA_TTL_DAYS,
+    POLITICAS_COTIZACION_FALLBACK,
+)
 from mecanimovilapp.storage.utils import get_image_url
 
 logger = logging.getLogger(__name__)
@@ -44,6 +47,24 @@ def _base_url_publica() -> str:
 
 def construir_url_publica_cotizacion(token: str) -> str:
     return f'{_base_url_publica()}/cotizacion/{token}'
+
+
+def resolver_politicas_cotizacion(*, taller=None, texto: str | None = None) -> str:
+    """Override de la cotización → default del taller → fallback de plataforma."""
+    for candidate in (texto, getattr(taller, 'politicas_cotizacion', None) if taller else None):
+        cleaned = (candidate or '').strip()
+        if cleaned:
+            return cleaned
+    return POLITICAS_COTIZACION_FALLBACK
+
+
+def asegurar_politicas_cotizacion(cotizacion: CotizacionCanal) -> CotizacionCanal:
+    """Congela políticas en la cotización si aún no tiene snapshot."""
+    if (cotizacion.politicas_cotizacion or '').strip():
+        return cotizacion
+    cotizacion.politicas_cotizacion = resolver_politicas_cotizacion(taller=cotizacion.taller)
+    cotizacion.save(update_fields=['politicas_cotizacion', 'actualizado_en'])
+    return cotizacion
 
 
 def asegurar_token_cotizacion(cotizacion: CotizacionCanal) -> CotizacionCanal:
@@ -212,6 +233,7 @@ def preparar_emision_publica(cotizacion: CotizacionCanal, request=None) -> Cotiz
     """Token, folio, destinatario de canal y snapshot del taller."""
     asegurar_token_cotizacion(cotizacion)
     asegurar_numero_publico(cotizacion)
+    asegurar_politicas_cotizacion(cotizacion)
     rellenar_cliente_desde_canal(cotizacion)
     persistir_emisor_snapshot(cotizacion, request)
     return cotizacion
@@ -277,6 +299,10 @@ def serializar_cotizacion_publica(cotizacion: CotizacionCanal, request=None) -> 
         'servicio_nombre': cotizacion.servicio_nombre,
         'descripcion_problema': cotizacion.descripcion_problema,
         'notas_cotizacion': (cotizacion.notas_internas or '').strip(),
+        'politicas_cotizacion': resolver_politicas_cotizacion(
+            taller=cotizacion.taller,
+            texto=cotizacion.politicas_cotizacion,
+        ),
         'vehiculo_marca': cotizacion.vehiculo_marca,
         'vehiculo_modelo': cotizacion.vehiculo_modelo,
         'vehiculo_anio': cotizacion.vehiculo_anio,
@@ -380,6 +406,7 @@ def enviar_cotizacion_libre(cotizacion: CotizacionCanal) -> CotizacionCanal:
             'fecha_expiracion_publica',
             'numero_publico',
             'emisor_snapshot',
+            'politicas_cotizacion',
             'cliente_nombre',
             'cliente_telefono',
             'metadata',

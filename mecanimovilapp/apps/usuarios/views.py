@@ -4017,6 +4017,7 @@ class EstadoProveedorView(APIView):
         # Preparar datos del proveedor
         datos_proveedor = {
             'descripcion': proveedor.descripcion,
+            'politicas_cotizacion': getattr(proveedor, 'politicas_cotizacion', '') or '',
             'telefono': proveedor.telefono,
             'calificacion_promedio': proveedor.calificacion_promedio,
             'numero_de_calificaciones': proveedor.numero_de_calificaciones,

@@ -2360,6 +2360,11 @@ class CotizacionCanal(models.Model):
         default='',
         help_text='Notas de cotización (agente/taller). Editables; se exponen al cliente como notas_cotizacion.',
     )
+    politicas_cotizacion = models.TextField(
+        blank=True,
+        default='',
+        help_text='Políticas de validez del taller (snapshot). Se muestran en el recuadro Validez.',
+    )
     numero_publico = models.CharField(
         max_length=16,
         unique=True,

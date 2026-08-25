@@ -468,7 +468,7 @@ class TallerAdmin(GISModelAdmin):
             'fields': ('nombre', 'telefono', 'foto_perfil')
         }),
         ('Datos del Onboarding', {
-            'fields': ('descripcion', 'rut'),
+            'fields': ('descripcion', 'politicas_cotizacion', 'rut'),
         }),
         ('Especialidades y Marcas', {
             'fields': ('especialidades', 'marcas_atendidas'),
@@ -612,7 +612,7 @@ class MecanicoDomicilioAdmin(GISModelAdmin):
             'fields': ('usuario', 'nombre', 'telefono', 'disponible', 'foto_perfil')
         }),
         ('Datos del Onboarding', {
-            'fields': ('descripcion', 'dni', 'experiencia_anos'),
+            'fields': ('descripcion', 'politicas_cotizacion', 'dni', 'experiencia_anos'),
         }),
         ('Especialidades y Marcas', {
             'fields': ('especialidades', 'marcas_atendidas'),

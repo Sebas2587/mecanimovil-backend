@@ -226,6 +226,8 @@ def snapshot_desde_cotizacion(cotizacion: CotizacionCanal) -> dict:
         'total_clp': int(cotizacion.total_clp or 0),
         'duracion_minutos_estimada': cotizacion.duracion_minutos_estimada,
         'advertencias': cotizacion.advertencias,
+        'notas_internas': (cotizacion.notas_internas or '').strip(),
+        'politicas_cotizacion': (cotizacion.politicas_cotizacion or '').strip(),
     }
 
 
@@ -249,6 +251,7 @@ def _estado_actual_para_correcciones(cotizacion: CotizacionCanal) -> dict:
         'mano_obra_clp': int(cotizacion.mano_obra_clp or 0),
         'total_clp': int(cotizacion.total_clp or 0),
         'notas_internas': (cotizacion.notas_internas or '').strip(),
+        'politicas_cotizacion': (cotizacion.politicas_cotizacion or '').strip(),
         'repuestos': cotizacion.repuestos or [],
     }
 
@@ -270,6 +273,7 @@ def _calcular_correcciones_taller(
         'mano_obra_clp',
         'total_clp',
         'notas_internas',
+        'politicas_cotizacion',
     )
     for campo in campos_simples:
         val_agente = original.get(campo)
@@ -409,6 +413,8 @@ def aplicar_edicion_cotizacion(cotizacion: CotizacionCanal, data: dict) -> Cotiz
             meta = dict(cotizacion.metadata or {})
             meta['notas_editadas_por_taller'] = True
             cotizacion.metadata = meta
+    if 'politicas_cotizacion' in data:
+        cotizacion.politicas_cotizacion = str(data.get('politicas_cotizacion') or '')
     if 'repuestos' in data and isinstance(data['repuestos'], list):
         cotizacion.repuestos = fusionar_repuestos_edicion(
             list(cotizacion.repuestos or []),
@@ -606,6 +612,7 @@ def enviar_cotizacion_canal(cotizacion: CotizacionCanal, user) -> Message:
             'fecha_expiracion_publica',
             'numero_publico',
             'emisor_snapshot',
+            'politicas_cotizacion',
             'cliente_nombre',
             'cliente_telefono',
             'metadata',
