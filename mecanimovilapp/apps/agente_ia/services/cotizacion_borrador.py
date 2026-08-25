@@ -64,36 +64,22 @@ ADVERTENCIA_REABIERTA = (
     'Cliente pidió cambios después del envío — revisa y vuelve a enviar.'
 )
 
-# Estados editables por el agente (no terminales).
+# Estados editables por el agente sobre la MISMA cotización (sin horario agendado).
 _ESTADOS_COTIZACION_EDITABLE = ('borrador', 'enviada')
-
-
-def _cita_activa_sin_checklist_iniciado(cotizacion: CotizacionCanal) -> bool:
-    """True si hay cita activa de esta cotización y el checklist aún no empezó."""
-    cita = (
-        cotizacion.citas_generadas.filter(estado='activa')
-        .order_by('-fecha_creacion')
-        .first()
-    )
-    if cita is None:
-        return False
-    if getattr(cita, 'horario_por_confirmar', False):
-        return True
-    inst = getattr(cita, 'checklist_instance', None)
-    if inst is None:
-        return True
-    return inst.estado in ('PENDIENTE',)
 
 
 def _cotizacion_editable_por_agente(cot: CotizacionCanal | None, taller: Taller) -> bool:
     if cot is None or cot.taller_id != taller.id:
         return False
     if cot.es_cotizacion_adicional:
-        return False
+        return cot.estado == 'borrador'
     if cot.estado in _ESTADOS_COTIZACION_EDITABLE:
         return True
-    if cot.estado == 'aceptada' and _cita_activa_sin_checklist_iniciado(cot):
-        return True
+    if cot.estado == 'aceptada':
+        from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
+            cotizacion_tiene_horario_agendado,
+        )
+        return not cotizacion_tiene_horario_agendado(cot)
     return False
 
 
@@ -1008,7 +994,6 @@ def _obtener_borrador_abierto(
         CotizacionCanal.objects.filter(
             conversation=conversation,
             taller=taller,
-            es_cotizacion_adicional=False,
             estado__in=('borrador', 'enviada', 'aceptada'),
         )
         .order_by('-actualizado_en', '-id')[:8]
@@ -1017,6 +1002,72 @@ def _obtener_borrador_abierto(
         if _cotizacion_editable_por_agente(c, taller):
             return c
     return None
+
+
+def _crear_adicional_desde_agente(
+    *,
+    conversation: Conversation,
+    taller: Taller,
+    proveedor,
+    datos: dict,
+) -> CotizacionCanal | None:
+    """Si ya hay horario agendado, el extra va en un trabajo adicional (no en la original)."""
+    from mecanimovilapp.apps.ordenes.services.cotizacion_adicional import (
+        cita_permite_cotizacion_adicional,
+        crear_cotizacion_adicional_con_ia,
+    )
+    from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
+        cita_activa_de_cotizacion,
+        cotizacion_tiene_horario_agendado,
+    )
+
+    booked = (
+        CotizacionCanal.objects.filter(
+            conversation=conversation,
+            taller=taller,
+            es_cotizacion_adicional=False,
+            estado='aceptada',
+        )
+        .order_by('-actualizado_en', '-id')[:5]
+    )
+    original = None
+    cita = None
+    for cot in booked:
+        if cotizacion_tiene_horario_agendado(cot):
+            original = cot
+            cita = cita_activa_de_cotizacion(cot)
+            break
+    if original is None or cita is None:
+        return None
+    if not cita_permite_cotizacion_adicional(cita):
+        return None
+    servicios = _parse_servicios_solicitados(datos)
+    servicio_nombre = ' + '.join(servicios) if servicios else (
+        str(datos.get('servicio_nombre') or '').strip() or 'Trabajo adicional'
+    )
+    motivo = (
+        datos.get('descripcion_problema')
+        or datos.get('sintoma')
+        or servicio_nombre
+    )
+    motivo = str(motivo or '').strip() or servicio_nombre
+    try:
+        return crear_cotizacion_adicional_con_ia(
+            cotizacion_original=original,
+            cita=cita,
+            taller=taller,
+            creado_por=proveedor,
+            motivo_servicio_adicional=motivo[:2000],
+            servicio_nombre=servicio_nombre,
+            descripcion_problema=motivo,
+        )
+    except ValueError:
+        logger.info(
+            'Agente no pudo crear adicional sobre cotización %s',
+            original.id,
+            exc_info=True,
+        )
+        return None
 
 
 def crear_cotizacion_borrador_desde_agente(
@@ -1043,6 +1094,40 @@ def crear_cotizacion_borrador_desde_agente(
         datos,
     ):
         cotizacion_existente = None
+    if cotizacion_existente is None:
+        adicional_nuevo = _crear_adicional_desde_agente(
+            conversation=conversation,
+            taller=taller,
+            proveedor=proveedor,
+            datos=datos,
+        )
+        if adicional_nuevo is not None:
+            sesion.cotizacion_borrador = adicional_nuevo
+            sesion.estado = AgenteConversacionSesion.ESTADO_ESPERANDO_REVISION
+            datos_sesion = dict(sesion.datos_capturados or {})
+            if adicional_nuevo.servicio_nombre:
+                datos_sesion['servicios'] = [adicional_nuevo.servicio_nombre]
+                datos_sesion['servicio_nombre'] = adicional_nuevo.servicio_nombre
+            sesion.datos_capturados = datos_sesion
+            sesion.save(
+                update_fields=['cotizacion_borrador', 'estado', 'datos_capturados', 'actualizado_en'],
+            )
+            return adicional_nuevo
+        from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
+            cotizacion_tiene_horario_agendado,
+        )
+        hay_agendada = CotizacionCanal.objects.filter(
+            conversation=conversation,
+            taller=taller,
+            es_cotizacion_adicional=False,
+            estado='aceptada',
+        ).order_by('-actualizado_en', '-id')[:5]
+        if any(cotizacion_tiene_horario_agendado(c) for c in hay_agendada):
+            logger.info(
+                'Agente no actualiza cotización agendada (conversation=%s); se requiere adicional',
+                conversation.id,
+            )
+            return None
     es_update = cotizacion_existente is not None
     estado_previo = cotizacion_existente.estado if cotizacion_existente else None
     reabierta = es_update and estado_previo in ('enviada', 'aceptada')

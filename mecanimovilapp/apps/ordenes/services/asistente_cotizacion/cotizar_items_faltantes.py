@@ -61,8 +61,9 @@ def cotizar_items_faltantes(
     No pisa líneas con precio de catálogo/historial. Las líneas con monto 0
     (recién agregadas o escritas a mano) son la prioridad de la búsqueda web.
     """
-    if cotizacion is None or getattr(cotizacion, 'estado', '') != 'borrador':
-        raise ValueError('Solo se pueden cotizar ítems en un borrador.')
+    estado = getattr(cotizacion, 'estado', '') if cotizacion is not None else ''
+    if cotizacion is None or estado not in ('borrador', 'aceptada'):
+        raise ValueError('Solo se pueden cotizar ítems si la cotización aún se puede editar.')
 
     if isinstance(repuestos_locales, list):
         base = [normalizar_repuesto(r, i) for i, r in enumerate(repuestos_locales)]

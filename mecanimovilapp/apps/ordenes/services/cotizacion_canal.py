@@ -461,19 +461,99 @@ def aplicar_edicion_cotizacion(cotizacion: CotizacionCanal, data: dict) -> Cotiz
     return cotizacion
 
 
-def _cita_activa_no_iniciada_de_cotizacion(cotizacion: CotizacionCanal):
-    """Cita generada por esta cotización, activa y sin checklist en curso."""
-    cita = (
+MSG_EDICION_CON_HORARIO = (
+    'Esta cotización ya tiene un horario agendado. '
+    'Agrega un trabajo adicional (servicio o solo repuestos) sobre la cita, '
+    'sin modificar la cotización original.'
+)
+
+
+def cita_activa_de_cotizacion(cotizacion: CotizacionCanal):
+    """Cita activa más reciente generada por esta cotización, o None."""
+    return (
         cotizacion.citas_generadas.filter(estado='activa')
         .order_by('-fecha_creacion')
         .first()
     )
+
+
+def _cita_activa_no_iniciada_de_cotizacion(cotizacion: CotizacionCanal):
+    """Cita generada por esta cotización, activa y sin checklist en curso."""
+    cita = cita_activa_de_cotizacion(cotizacion)
     if cita is None:
         return None
     inst = getattr(cita, 'checklist_instance', None)
     if inst is not None and inst.estado not in (None, '', 'PENDIENTE'):
         return None
     return cita
+
+
+def cotizacion_tiene_horario_agendado(cotizacion: CotizacionCanal) -> bool:
+    """True si hay cita activa con día y hora confirmados (no 'por confirmar')."""
+    cita = cita_activa_de_cotizacion(cotizacion)
+    if cita is None:
+        return False
+    if getattr(cita, 'horario_por_confirmar', False):
+        return False
+    return bool(getattr(cita, 'fecha_servicio', None) and getattr(cita, 'hora_servicio', None))
+
+
+def cotizacion_permite_edicion_completa(cotizacion: CotizacionCanal) -> bool:
+    """Misma cotización editable (ítems IA o manual) si aún no hay horario agendado."""
+    if cotizacion.es_cotizacion_adicional:
+        return cotizacion.estado == 'borrador'
+    if cotizacion.estado in ('borrador', 'enviada'):
+        return True
+    if cotizacion.estado == 'aceptada':
+        return not cotizacion_tiene_horario_agendado(cotizacion)
+    return False
+
+
+def asegurar_cotizacion_editable_para_items(cotizacion: CotizacionCanal) -> CotizacionCanal:
+    """Valida edición y, si está enviada, la reabre a borrador (mismo token)."""
+    if not cotizacion_permite_edicion_completa(cotizacion):
+        if cotizacion_tiene_horario_agendado(cotizacion):
+            raise ValueError(MSG_EDICION_CON_HORARIO)
+        raise ValueError('Esta cotización ya no se puede editar.')
+    if cotizacion.estado == 'enviada' and not cotizacion.es_cotizacion_adicional:
+        return reabrir_cotizacion_enviada(cotizacion)
+    return cotizacion
+
+
+def aplicar_efecto_edicion_aceptada(
+    cotizacion: CotizacionCanal,
+    *,
+    total_previo: int,
+    cita=None,
+) -> str:
+    """Tras cambiar una aceptada: si el total sube, pide reconfirmación en el mismo link."""
+    total_nuevo = int(cotizacion.total_clp or 0)
+    meta = dict(cotizacion.metadata or {})
+    meta['actualizada_tras_aceptacion'] = True
+    meta['actualizada_en'] = timezone.now().isoformat()
+    meta['total_previo_aceptado_clp'] = total_previo
+    cotizacion.metadata = meta
+
+    if total_nuevo > total_previo:
+        cotizacion.estado = 'enviada'
+        cotizacion.aceptada_en = None
+        cotizacion.enviada_en = timezone.now()
+        from mecanimovilapp.apps.ordenes.services.cotizacion_publica import preparar_emision_publica
+
+        preparar_emision_publica(cotizacion)
+        cotizacion.save()
+        det = getattr(cita, 'detalle', None) if cita is not None else None
+        if det is not None:
+            det.precio_referencia = total_previo
+            det.save(update_fields=['precio_referencia'])
+        return 'requiere_confirmacion'
+
+    cotizacion.save()
+    det = getattr(cita, 'detalle', None) if cita is not None else None
+    if det is not None:
+        det.precio_referencia = total_nuevo
+        det.save(update_fields=['precio_referencia'])
+    return 'actualizada'
 
 
 def cerrar_reapertura_taller(cotizacion: CotizacionCanal) -> None:
@@ -508,51 +588,28 @@ def actualizar_cotizacion_aceptada_sin_iniciar(
     data: dict,
 ) -> tuple[CotizacionCanal, str]:
     """
-    Actualiza cotización aceptada cuya cita aún no inició.
+    Actualiza cotización aceptada sin horario agendado (o con horario aún por confirmar).
+    Si ya hay día/hora confirmados, hay que usar un trabajo adicional.
     - Si el total sube: pasa a enviada para que el cliente confirme el delta (mismo link).
-    - Si no: mantiene aceptada y actualiza precio de referencia de la cita.
+    - Si no: mantiene aceptada y actualiza precio de referencia de la cita, si existe.
     Retorna (cotizacion, modo) donde modo es 'requiere_confirmacion' | 'actualizada'.
     """
     if cotizacion.estado != 'aceptada':
         raise ValueError('Solo aplica a cotizaciones aceptadas.')
     if cotizacion.es_cotizacion_adicional:
         raise ValueError('Los hallazgos usan cotizaciones adicionales.')
+    if cotizacion_tiene_horario_agendado(cotizacion):
+        raise ValueError(MSG_EDICION_CON_HORARIO)
     cita = _cita_activa_no_iniciada_de_cotizacion(cotizacion)
-    if cita is None:
-        raise ValueError(
-            'Solo puedes actualizar la cotización si la cita aún no inició el servicio.'
-        )
 
     total_previo = int(cotizacion.total_clp or 0)
     aplicar_edicion_cotizacion(cotizacion, data)
-    total_nuevo = int(cotizacion.total_clp or 0)
-    meta = dict(cotizacion.metadata or {})
-    meta['actualizada_tras_aceptacion'] = True
-    meta['actualizada_en'] = timezone.now().isoformat()
-    meta['total_previo_aceptado_clp'] = total_previo
-    cotizacion.metadata = meta
-
-    if total_nuevo > total_previo:
-        cotizacion.estado = 'enviada'
-        cotizacion.aceptada_en = None
-        cotizacion.enviada_en = timezone.now()
-        from mecanimovilapp.apps.ordenes.services.cotizacion_publica import preparar_emision_publica
-
-        preparar_emision_publica(cotizacion)
-        cotizacion.save()
-        # Precio de referencia queda en total previo hasta que el cliente confirme.
-        det = getattr(cita, 'detalle', None)
-        if det is not None:
-            det.precio_referencia = total_previo
-            det.save(update_fields=['precio_referencia'])
-        return cotizacion, 'requiere_confirmacion'
-
-    cotizacion.save()
-    det = getattr(cita, 'detalle', None)
-    if det is not None:
-        det.precio_referencia = total_nuevo
-        det.save(update_fields=['precio_referencia'])
-    return cotizacion, 'actualizada'
+    modo = aplicar_efecto_edicion_aceptada(
+        cotizacion,
+        total_previo=total_previo,
+        cita=cita,
+    )
+    return cotizacion, modo
 
 
 @transaction.atomic

@@ -377,12 +377,18 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='cotizar-items')
     def cotizar_items(self, request, pk=None):
-        """Agrega ítems faltantes al borrador y cotiza precio + fuente con IA."""
+        """Agrega ítems (IA o líneas vacías) si la cotización aún se puede editar."""
+        from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
+            aplicar_efecto_edicion_aceptada,
+            asegurar_cotizacion_editable_para_items,
+            cita_activa_de_cotizacion,
+        )
+
         cotizacion = self.get_object()
-        if cotizacion.estado != 'borrador':
-            raise ValidationError({
-                'estado': 'Solo se pueden cotizar ítems en un borrador.',
-            })
+        try:
+            cotizacion = asegurar_cotizacion_editable_para_items(cotizacion)
+        except ValueError as exc:
+            raise ValidationError({'estado': str(exc)}) from exc
         ser = CotizarItemsIaSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
@@ -390,6 +396,8 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             cotizar_items_faltantes,
         )
 
+        estado_previo = cotizacion.estado
+        total_previo = int(cotizacion.total_clp or 0)
         try:
             resultado = cotizar_items_faltantes(
                 cotizacion,
@@ -400,22 +408,34 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             raise ValidationError({'nombres': str(exc)}) from exc
 
         cotizacion = resultado['cotizacion']
-        return Response({
+        modo = None
+        if estado_previo == 'aceptada':
+            modo = aplicar_efecto_edicion_aceptada(
+                cotizacion,
+                total_previo=total_previo,
+                cita=cita_activa_de_cotizacion(cotizacion),
+            )
+        payload = {
             'cotizacion': CotizacionCanalSerializer(cotizacion).data,
             'agregados': resultado.get('agregados') or [],
             'busqueda_web': bool(resultado.get('busqueda_web')),
-        })
+        }
+        if modo:
+            payload['modo_actualizacion'] = modo
+        return Response(payload)
 
     def partial_update(self, request, *args, **kwargs):
+        from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
+            actualizar_cotizacion_aceptada_sin_iniciar,
+            asegurar_cotizacion_editable_para_items,
+        )
+
         cotizacion = self.get_object()
-        if cotizacion.estado == 'borrador':
-            aplicar_edicion_cotizacion(cotizacion, request.data)
-            cotizacion.save()
-            return Response(CotizacionCanalSerializer(cotizacion).data)
+        try:
+            cotizacion = asegurar_cotizacion_editable_para_items(cotizacion)
+        except ValueError as exc:
+            raise ValidationError({'estado': str(exc)}) from exc
         if cotizacion.estado == 'aceptada':
-            from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
-                actualizar_cotizacion_aceptada_sin_iniciar,
-            )
             try:
                 cotizacion, modo = actualizar_cotizacion_aceptada_sin_iniciar(
                     cotizacion, request.data,
@@ -425,12 +445,9 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             data = CotizacionCanalSerializer(cotizacion).data
             data['modo_actualizacion'] = modo
             return Response(data)
-        raise ValidationError({
-            'estado': (
-                'Solo se puede editar una cotización en borrador. '
-                'Si está enviada, reábrela primero.'
-            ),
-        })
+        aplicar_edicion_cotizacion(cotizacion, request.data)
+        cotizacion.save()
+        return Response(CotizacionCanalSerializer(cotizacion).data)
 
     @action(detail=True, methods=['post'], url_path='reabrir')
     def reabrir(self, request, pk=None):

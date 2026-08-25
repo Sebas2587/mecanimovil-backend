@@ -136,8 +136,13 @@ class CotizarItemsFaltantesServiceTests(TestCase):
         with self.assertRaises(ValueError):
             cotizar_items_faltantes(self.cot, nombres=['repuesto'])
 
-    def test_rechaza_si_no_es_borrador(self):
+    def test_rechaza_si_no_es_editable(self):
         self.cot.estado = 'enviada'
+        self.cot.save(update_fields=['estado'])
+        with self.assertRaises(ValueError):
+            cotizar_items_faltantes(self.cot, nombres=['Filtro de aceite'])
+
+        self.cot.estado = 'cancelada'
         self.cot.save(update_fields=['estado'])
         with self.assertRaises(ValueError):
             cotizar_items_faltantes(self.cot, nombres=['Filtro de aceite'])
@@ -199,15 +204,87 @@ class CotizarItemsIaAPITests(TestCase):
         self.assertEqual(reps[0]['fuente_marketplace'], 'web')
         self.assertEqual(reps[0]['proveedor_nombre'], 'AutoPlanet')
 
-    def test_endpoint_rechaza_enviada(self):
+    @patch(
+        'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.cotizar_items_faltantes.enriquecer_repuestos_cotizacion',
+        side_effect=lambda reps, **_k: [
+            {
+                **r,
+                'precio_unitario_clp': 8900,
+                'fuente_marketplace': 'web',
+                'proveedor_nombre': 'AutoPlanet',
+                'url_producto': 'https://www.autoplanet.cl/p/1',
+                'precio_referencia_mercado': True,
+                'precio_estimado': True,
+            }
+            for r in reps
+        ],
+    )
+    def test_endpoint_reabre_enviada_y_agrega(self, _mock_enrich):
         self.cot.estado = 'enviada'
+        self.cot.token = 'tok-enviada-items'
+        self.cot.save(update_fields=['estado', 'token'])
+        resp = self.client.post(
+            f'/api/ordenes/cotizaciones-canal/{self.cot.id}/cotizar-items/',
+            {'nombres': ['Filtro de aceite']},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        data = resp.json()
+        self.assertEqual(data['agregados'], ['Filtro de aceite'])
+        self.cot.refresh_from_db()
+        self.assertEqual(self.cot.estado, 'borrador')
+        self.assertEqual(self.cot.token, 'tok-enviada-items')
+
+    def test_endpoint_rechaza_aceptada_con_horario(self):
+        from datetime import date, time
+
+        from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonal
+
+        self.cot.estado = 'aceptada'
         self.cot.save(update_fields=['estado'])
+        CitaAgendaPersonal.objects.create(
+            taller=self.taller,
+            cotizacion_canal_origen=self.cot,
+            fecha_servicio=date(2030, 8, 12),
+            hora_servicio=time(10, 0),
+            duracion_minutos=60,
+            tipo_servicio='taller',
+            estado='activa',
+            horario_por_confirmar=False,
+            creado_por=self.user,
+        )
         resp = self.client.post(
             f'/api/ordenes/cotizaciones-canal/{self.cot.id}/cotizar-items/',
             {'nombres': ['Filtro de aceite']},
             format='json',
         )
         self.assertEqual(resp.status_code, 400)
+
+    def test_patch_enviada_reabre_y_agrega_item_manual(self):
+        self.cot.estado = 'enviada'
+        self.cot.token = 'tok-patch-enviada'
+        self.cot.save(update_fields=['estado', 'token'])
+        resp = self.client.patch(
+            f'/api/ordenes/cotizaciones-canal/{self.cot.id}/',
+            {
+                'repuestos': [
+                    {
+                        'nombre': 'Filtro de aceite',
+                        'cantidad': 1,
+                        'precio_unitario_clp': 15000,
+                    }
+                ],
+            },
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        data = resp.json()
+        self.assertEqual(data['estado'], 'borrador')
+        self.assertEqual(data['token'], 'tok-patch-enviada')
+        self.assertTrue(data['permite_edicion_completa'])
+        self.assertEqual(len(data['repuestos']), 1)
+        self.assertEqual(data['repuestos'][0]['precio_unitario_clp'], 15000)
+        self.assertEqual(int(data['total_clp']), 55000)
 
 
 class FusionarRepuestosEdicionTests(TestCase):

@@ -37,6 +37,8 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
     pendientes_revision = serializers.SerializerMethodField()
     cotizacion_original_id = serializers.IntegerField(read_only=True, allow_null=True)
     cita_origen_id = serializers.IntegerField(read_only=True, allow_null=True)
+    tiene_horario_agendado = serializers.SerializerMethodField()
+    permite_edicion_completa = serializers.SerializerMethodField()
     servicio_principal_nombre = serializers.SerializerMethodField()
     ejecucion_adicional = serializers.CharField(read_only=True)
     fecha_propuesta = serializers.DateField(read_only=True, allow_null=True)
@@ -82,20 +84,39 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
         joined = ' '.join(p for p in parts if p).strip()
         return joined or 'Cliente'
 
+    def _cita_activa(self, obj):
+        if obj.es_cotizacion_adicional and obj.cita_origen_id:
+            return None
+        cache = self.context.setdefault('_cita_obj_by_cotizacion', {})
+        if obj.pk in cache:
+            return cache[obj.pk]
+        from mecanimovilapp.apps.ordenes.services.cotizacion_canal import cita_activa_de_cotizacion
+        cita = cita_activa_de_cotizacion(obj)
+        cache[obj.pk] = cita
+        return cita
+
     def get_cita_personal_id(self, obj) -> int | None:
         if obj.es_cotizacion_adicional and obj.cita_origen_id:
             return obj.cita_origen_id
-        cache = self.context.setdefault('_cita_id_by_cotizacion', {})
-        if obj.pk in cache:
-            return cache[obj.pk]
-        cita = (
-            obj.citas_generadas.filter(estado='activa')
-            .order_by('-fecha_creacion')
-            .values_list('id', flat=True)
-            .first()
-        )
-        cache[obj.pk] = cita
-        return cita
+        cita = self._cita_activa(obj)
+        return getattr(cita, 'id', None) if cita is not None else None
+
+    def get_tiene_horario_agendado(self, obj) -> bool:
+        cita = self._cita_activa(obj)
+        if cita is None:
+            return False
+        if getattr(cita, 'horario_por_confirmar', False):
+            return False
+        return bool(getattr(cita, 'fecha_servicio', None) and getattr(cita, 'hora_servicio', None))
+
+    def get_permite_edicion_completa(self, obj) -> bool:
+        if obj.es_cotizacion_adicional:
+            return obj.estado == 'borrador'
+        if obj.estado in ('borrador', 'enviada'):
+            return True
+        if obj.estado == 'aceptada':
+            return not self.get_tiene_horario_agendado(obj)
+        return False
 
     def get_servicio_principal_nombre(self, obj) -> str | None:
         if not obj.es_cotizacion_adicional:
@@ -134,6 +155,8 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             'canal',
             'cita_personal_id',
             'cita_origen_id',
+            'tiene_horario_agendado',
+            'permite_edicion_completa',
             'token',
             'numero_publico',
             'url_publica',
@@ -186,6 +209,8 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             'canal',
             'cita_personal_id',
             'cita_origen_id',
+            'tiene_horario_agendado',
+            'permite_edicion_completa',
             'token',
             'numero_publico',
             'url_publica',

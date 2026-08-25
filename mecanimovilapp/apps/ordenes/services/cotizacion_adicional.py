@@ -124,7 +124,7 @@ def adicional_pendiente_de_cita(cita: CitaAgendaPersonal) -> CotizacionCanal | N
 
 
 def cita_permite_cotizacion_adicional(cita: CitaAgendaPersonal) -> bool:
-    """Solo con checklist en curso y sin otro adicional pendiente (borrador/enviada)."""
+    """Con horario confirmado, sin adicional pendiente. No exige checklist iniciado."""
     if cita.estado != 'activa':
         return False
     if not cita.cotizacion_canal_origen_id:
@@ -134,7 +134,7 @@ def cita_permite_cotizacion_adicional(cita: CitaAgendaPersonal) -> bool:
         return False
     if getattr(cita, 'horario_por_confirmar', False):
         return False
-    if not _checklist_en_ejecucion(cita):
+    if not cita.fecha_servicio or not cita.hora_servicio:
         return False
     if adicional_pendiente_de_cita(cita) is not None:
         return False
@@ -226,12 +226,11 @@ def crear_cotizacion_adicional_desde_catalogo(
     if cotizacion_original.es_cotizacion_adicional:
         raise ValueError('No se puede crear un trabajo adicional sobre otro adicional.')
     if not cita_permite_cotizacion_adicional(cita):
-        if not _checklist_en_ejecucion(cita):
-            raise ValueError(
-                'Solo puedes cotizar un hallazgo cuando el servicio ya está en ejecución. '
-                'Si el cliente pidió cambios antes de iniciar, actualiza la cotización original.'
-            )
         validar_sin_adicional_pendiente(cita)
+        if getattr(cita, 'horario_por_confirmar', False):
+            raise ValueError(
+                'Cuando el horario aún no está confirmado, actualiza la cotización original.'
+            )
         raise ValueError('Este trabajo aún no permite cotizaciones adicionales.')
     validar_sin_adicional_pendiente(cita)
 
@@ -336,12 +335,11 @@ def crear_cotizacion_adicional_con_ia(
     if cotizacion_original.es_cotizacion_adicional:
         raise ValueError('No se puede crear un trabajo adicional sobre otro adicional.')
     if not cita_permite_cotizacion_adicional(cita):
-        if not _checklist_en_ejecucion(cita):
-            raise ValueError(
-                'Solo puedes cotizar un hallazgo cuando el servicio ya está en ejecución. '
-                'Si el cliente pidió cambios antes de iniciar, actualiza la cotización original.'
-            )
         validar_sin_adicional_pendiente(cita)
+        if getattr(cita, 'horario_por_confirmar', False):
+            raise ValueError(
+                'Cuando el horario aún no está confirmado, actualiza la cotización original.'
+            )
         raise ValueError('Este trabajo aún no permite cotizaciones adicionales.')
     validar_sin_adicional_pendiente(cita)
 
