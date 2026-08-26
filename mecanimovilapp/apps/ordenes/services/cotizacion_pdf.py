@@ -644,6 +644,21 @@ def _draw_lineas(pdf: DocumentoPDF, rows: list[dict], data: dict | None = None) 
     pdf.set_y(y + GAP)
 
 
+def _totals_row_height(
+    pdf: DocumentoPDF,
+    label_w: float,
+    value_w: float,
+    label: str,
+    value: str,
+    *,
+    line_h: float = 4.4,
+    size: float = 8,
+) -> float:
+    label_h = _measure(pdf, label_w, label, line_h, size)
+    value_h = _measure(pdf, value_w, value, line_h, size)
+    return max(line_h, label_h, value_h) + 0.4
+
+
 def _draw_bottom(pdf: DocumentoPDF, data: dict) -> None:
     cw = _content_w()
     x0 = MARGIN
@@ -693,7 +708,16 @@ def _draw_bottom(pdf: DocumentoPDF, data: dict) -> None:
         lines.append((etiqueta, f'-{_clp(desc)}', False))
     lines.append(('Neto', _clp(neto), False))
     lines.append(('IVA 19%', _clp(iva), False))
-    totals_h = PAD + len(lines) * 4.8 + 1.6 + 7.2 + PAD
+    tx = x0 + (note_w + gap if note else 0)
+    tw = totals_w if note else cw
+    label_w = tw - 2 * PAD - 28
+    value_w = 28.0
+    row_heights = [
+        _totals_row_height(pdf, label_w, value_w, label, value)
+        for label, value, _ in lines
+    ]
+    totals_body_h = sum(row_heights)
+    totals_h = PAD + totals_body_h + 0.4 + 1.6 + 7.2 + PAD
     note_h = 0.0
     if note:
         note_h = PAD + 3.6 + _measure(pdf, note_w - 2 * PAD, note, 4.4, 8.5) + PAD
@@ -706,15 +730,15 @@ def _draw_bottom(pdf: DocumentoPDF, data: dict) -> None:
         y = _eyebrow(pdf, x0 + PAD, y0 + PAD, note_w - 2 * PAD, 'Validez')
         _text(pdf, x0 + PAD, y, note_w - 2 * PAD, note, 4.4, 8.5)
 
-    tx = x0 + (note_w + gap if note else 0)
-    tw = totals_w if note else cw
     _card(pdf, tx, y0, tw, height)
     y = y0 + PAD
-    label_w = tw - 2 * PAD - 28
-    for label, value, _strong in lines:
-        _text(pdf, tx + PAD, y, label_w, label, 4.4, 8, color=MUTED)
-        _text(pdf, tx + PAD + label_w, y, 28, value, 4.4, 8, color=MUTED, align='R')
-        y += 4.8
+    for (label, value, _strong), row_h in zip(lines, row_heights):
+        row_y = y
+        label_end = _text(pdf, tx + PAD, row_y, label_w, label, 4.4, 8, color=MUTED)
+        value_end = _text(
+            pdf, tx + PAD + label_w, row_y, value_w, value, 4.4, 8, color=MUTED, align='R',
+        )
+        y = max(label_end, value_end, row_y + row_h - 0.4)
     y += 0.4
     _rule(pdf, tx + PAD, y, tw - 2 * PAD)
     y += 1.6
