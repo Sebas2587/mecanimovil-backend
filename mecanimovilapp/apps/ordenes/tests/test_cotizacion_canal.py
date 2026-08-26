@@ -3,6 +3,8 @@ from django.test import SimpleTestCase
 
 from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.contexto import armar_contexto_cotizacion
 from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
+    calcular_descuento_aplicado,
+    etiqueta_descuento,
     normalizar_cotizacion_ia,
     normalizar_repuesto,
     recalcular_totales,
@@ -527,6 +529,59 @@ class NormalizarCotizacionTestCase(SimpleTestCase):
         self.assertEqual(rep, 20000)
         self.assertEqual(mo, 5000)
         self.assertEqual(total, 25000)
+
+    def test_descuento_porcentaje_sobre_mano_obra(self):
+        desc, total = calcular_descuento_aplicado(
+            costo_repuestos_clp=20000,
+            mano_obra_clp=100000,
+            descuento_tipo='porcentaje',
+            descuento_alcance='mano_obra',
+            descuento_valor=10,
+        )
+        self.assertEqual(desc, 10000)
+        self.assertEqual(total, 110000)
+
+    def test_descuento_monto_sobre_total_no_excede_base(self):
+        desc, total = calcular_descuento_aplicado(
+            costo_repuestos_clp=20000,
+            mano_obra_clp=30000,
+            descuento_tipo='monto',
+            descuento_alcance='total',
+            descuento_valor=999999,
+        )
+        self.assertEqual(desc, 50000)
+        self.assertEqual(total, 0)
+
+    def test_descuento_porcentaje_capped_at_100(self):
+        desc, total = calcular_descuento_aplicado(
+            costo_repuestos_clp=0,
+            mano_obra_clp=80000,
+            descuento_tipo='porcentaje',
+            descuento_alcance='mano_obra',
+            descuento_valor=150,
+        )
+        self.assertEqual(desc, 80000)
+        self.assertEqual(total, 0)
+
+    def test_etiqueta_descuento(self):
+        self.assertEqual(
+            etiqueta_descuento(
+                descuento_tipo='porcentaje',
+                descuento_alcance='mano_obra',
+                descuento_valor=10,
+                descuento_clp=10000,
+            ),
+            'Descuento 10% sobre mano de obra',
+        )
+        self.assertIn(
+            'sobre total',
+            etiqueta_descuento(
+                descuento_tipo='monto',
+                descuento_alcance='total',
+                descuento_valor=5000,
+                descuento_clp=5000,
+            ),
+        )
 
     def test_normalizar_cotizacion_completa(self):
         ctx = {'tipo_motor_efectivo': 'GASOLINA', 'tipo_motor_efectivo_label': 'Bencinero (gasolina)'}

@@ -39,6 +39,7 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
     cita_origen_id = serializers.IntegerField(read_only=True, allow_null=True)
     tiene_horario_agendado = serializers.SerializerMethodField()
     permite_edicion_completa = serializers.SerializerMethodField()
+    descuento_etiqueta = serializers.SerializerMethodField()
     servicio_principal_nombre = serializers.SerializerMethodField()
     ejecucion_adicional = serializers.CharField(read_only=True)
     fecha_propuesta = serializers.DateField(read_only=True, allow_null=True)
@@ -118,6 +119,17 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             return not self.get_tiene_horario_agendado(obj)
         return False
 
+    def get_descuento_etiqueta(self, obj) -> str:
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
+            etiqueta_descuento,
+        )
+        return etiqueta_descuento(
+            descuento_tipo=obj.descuento_tipo or '',
+            descuento_alcance=obj.descuento_alcance or 'mano_obra',
+            descuento_valor=obj.descuento_valor or 0,
+            descuento_clp=int(obj.descuento_clp or 0),
+        )
+
     def get_servicio_principal_nombre(self, obj) -> str | None:
         if not obj.es_cotizacion_adicional:
             return None
@@ -132,9 +144,15 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
-        for key in ('mano_obra_clp', 'costo_repuestos_clp', 'total_clp'):
+        for key in ('mano_obra_clp', 'costo_repuestos_clp', 'total_clp', 'descuento_clp'):
             if data.get(key) is not None:
                 data[key] = int(data[key])
+        if data.get('descuento_valor') is not None:
+            try:
+                val = float(data['descuento_valor'])
+            except (TypeError, ValueError):
+                val = 0.0
+            data['descuento_valor'] = int(val) if val == int(val) else val
         for rep in data.get('repuestos') or []:
             if rep.get('precio_unitario_clp') is not None:
                 rep['precio_unitario_clp'] = int(rep['precio_unitario_clp'])
@@ -179,6 +197,11 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             'repuestos',
             'mano_obra_clp',
             'costo_repuestos_clp',
+            'descuento_tipo',
+            'descuento_alcance',
+            'descuento_valor',
+            'descuento_clp',
+            'descuento_etiqueta',
             'total_clp',
             'duracion_minutos_estimada',
             'advertencias',
@@ -227,6 +250,8 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             'fecha_propuesta',
             'hora_propuesta',
             'costo_repuestos_clp',
+            'descuento_clp',
+            'descuento_etiqueta',
             'total_clp',
             'message_envio',
             'enviada_en',

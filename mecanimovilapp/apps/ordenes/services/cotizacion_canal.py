@@ -9,7 +9,11 @@ from django.utils import timezone
 
 from mecanimovilapp.apps.chat.models import Conversation, Message
 from mecanimovilapp.apps.ordenes.models import CotizacionCanal
-from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import recalcular_totales
+from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
+    aplicar_totales_cotizacion,
+    etiqueta_descuento,
+    recalcular_totales,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -180,8 +184,19 @@ def formatear_resumen_cotizacion(cotizacion: CotizacionCanal) -> str:
     lineas.extend([
         '',
         f'Mano de obra (IVA incl.): {formatear_moneda_clp(cotizacion.mano_obra_clp)}',
-        f'*Total estimado (IVA incluido): {formatear_moneda_clp(cotizacion.total_clp)}*',
     ])
+    desc = int(getattr(cotizacion, 'descuento_clp', 0) or 0)
+    if desc > 0:
+        etiqueta = etiqueta_descuento(
+            descuento_tipo=getattr(cotizacion, 'descuento_tipo', '') or '',
+            descuento_alcance=getattr(cotizacion, 'descuento_alcance', '') or 'mano_obra',
+            descuento_valor=getattr(cotizacion, 'descuento_valor', 0) or 0,
+            descuento_clp=desc,
+        )
+        lineas.append(f'{etiqueta}: -{formatear_moneda_clp(desc)}')
+    lineas.append(
+        f'*Total estimado (IVA incluido): {formatear_moneda_clp(cotizacion.total_clp)}*',
+    )
     if cotizacion.duracion_minutos_estimada:
         lineas.append(f'Duración estimada: {cotizacion.duracion_minutos_estimada} min')
 
@@ -425,6 +440,23 @@ def aplicar_edicion_cotizacion(cotizacion: CotizacionCanal, data: dict) -> Cotiz
     if 'duracion_minutos_estimada' in data:
         val = data['duracion_minutos_estimada']
         cotizacion.duracion_minutos_estimada = int(val) if val else None
+    if 'descuento_tipo' in data:
+        tipo = str(data.get('descuento_tipo') or '').strip()
+        cotizacion.descuento_tipo = tipo if tipo in ('monto', 'porcentaje') else ''
+    if 'descuento_alcance' in data:
+        alcance = str(data.get('descuento_alcance') or '').strip()
+        cotizacion.descuento_alcance = alcance if alcance in ('mano_obra', 'total') else 'mano_obra'
+    if 'descuento_valor' in data:
+        try:
+            cotizacion.descuento_valor = Decimal(str(data.get('descuento_valor') or 0))
+        except Exception:
+            cotizacion.descuento_valor = Decimal('0')
+        if cotizacion.descuento_tipo == 'porcentaje' and cotizacion.descuento_valor > 100:
+            cotizacion.descuento_valor = Decimal('100')
+        if cotizacion.descuento_valor < 0:
+            cotizacion.descuento_valor = Decimal('0')
+    if not cotizacion.descuento_tipo:
+        cotizacion.descuento_valor = Decimal('0')
     if cotizacion.es_cotizacion_adicional and (
         'ejecucion_adicional' in data or 'fecha_propuesta' in data or 'hora_propuesta' in data
     ):
@@ -443,19 +475,13 @@ def aplicar_edicion_cotizacion(cotizacion: CotizacionCanal, data: dict) -> Cotiz
         cotizacion.ejecucion_adicional = ejecucion
         cotizacion.fecha_propuesta = fecha_p
         cotizacion.hora_propuesta = hora_p
-    costo_rep, mo, total = recalcular_totales(
-        cotizacion.repuestos or [],
-        int(cotizacion.mano_obra_clp or 0),
-    )
-    cotizacion.costo_repuestos_clp = costo_rep
-    cotizacion.mano_obra_clp = mo
-    cotizacion.total_clp = total
+    aplicar_totales_cotizacion(cotizacion)
 
     if 'mano_obra_clp' in data:
         meta = dict(cotizacion.metadata or {})
         recargo = int(meta.get('recargo_domicilio_aplicado_clp') or 0)
         catalogo = _suma_catalogo_metadata(cotizacion)
-        meta['mano_obra_manual_clp'] = max(0, mo - catalogo - recargo)
+        meta['mano_obra_manual_clp'] = max(0, int(cotizacion.mano_obra_clp or 0) - catalogo - recargo)
         cotizacion.metadata = meta
 
     return cotizacion
@@ -625,15 +651,15 @@ def enviar_cotizacion_canal(cotizacion: CotizacionCanal, user) -> Message:
     if conversation.type != 'OMNICHANNEL':
         raise ValueError('La cotización debe estar ligada a una conversación omnicanal.')
 
-    costo_rep, mo, total = recalcular_totales(
-        cotizacion.repuestos or [],
-        int(cotizacion.mano_obra_clp or 0),
-    )
-    cotizacion.costo_repuestos_clp = costo_rep
-    cotizacion.mano_obra_clp = mo
-    cotizacion.total_clp = total
+    aplicar_totales_cotizacion(cotizacion)
     cotizacion.save(
-        update_fields=['costo_repuestos_clp', 'mano_obra_clp', 'total_clp', 'actualizado_en'],
+        update_fields=[
+            'costo_repuestos_clp',
+            'mano_obra_clp',
+            'descuento_clp',
+            'total_clp',
+            'actualizado_en',
+        ],
     )
 
     from mecanimovilapp.apps.ordenes.services.cotizacion_publica import preparar_emision_publica

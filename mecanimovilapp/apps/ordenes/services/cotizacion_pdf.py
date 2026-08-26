@@ -679,6 +679,10 @@ def _draw_bottom(pdf: DocumentoPDF, data: dict) -> None:
     if int(data.get('costo_repuestos_clp') or 0) > 0:
         lines.append(('Repuestos', _clp(data.get('costo_repuestos_clp')), False))
     lines.append(('Mano de obra', _clp(data.get('mano_obra_clp')), False))
+    desc = int(data.get('descuento_clp') or 0)
+    if desc > 0:
+        etiqueta = (data.get('descuento_etiqueta') or 'Descuento').strip() or 'Descuento'
+        lines.append((etiqueta, f'-{_clp(desc)}', False))
     lines.append(('Neto', _clp(neto), False))
     lines.append(('IVA 19%', _clp(iva), False))
     totals_h = PAD + len(lines) * 4.8 + 1.6 + 7.2 + PAD

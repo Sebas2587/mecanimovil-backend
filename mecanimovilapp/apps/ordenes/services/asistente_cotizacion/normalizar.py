@@ -101,6 +101,90 @@ def recalcular_totales(
     return costo_rep, mo, costo_rep + mo
 
 
+DESCUENTO_TIPO_MONTO = 'monto'
+DESCUENTO_TIPO_PORCENTAJE = 'porcentaje'
+DESCUENTO_ALCANCE_MANO_OBRA = 'mano_obra'
+DESCUENTO_ALCANCE_TOTAL = 'total'
+
+
+def calcular_descuento_aplicado(
+    *,
+    costo_repuestos_clp: int,
+    mano_obra_clp: int,
+    descuento_tipo: str = '',
+    descuento_alcance: str = DESCUENTO_ALCANCE_MANO_OBRA,
+    descuento_valor=0,
+) -> tuple[int, int]:
+    """Descuento sobre bruto IVA-incl. Retorna (descuento_clp, total_clp)."""
+    costo_rep = max(0, int(costo_repuestos_clp or 0))
+    mo = max(0, int(mano_obra_clp or 0))
+    bruto = costo_rep + mo
+    tipo = (descuento_tipo or '').strip()
+    if tipo not in (DESCUENTO_TIPO_MONTO, DESCUENTO_TIPO_PORCENTAJE):
+        return 0, bruto
+    alcance = (
+        descuento_alcance
+        if descuento_alcance in (DESCUENTO_ALCANCE_MANO_OBRA, DESCUENTO_ALCANCE_TOTAL)
+        else DESCUENTO_ALCANCE_MANO_OBRA
+    )
+    base = mo if alcance == DESCUENTO_ALCANCE_MANO_OBRA else bruto
+    if tipo == DESCUENTO_TIPO_PORCENTAJE:
+        try:
+            pct = float(descuento_valor or 0)
+        except (TypeError, ValueError):
+            pct = 0.0
+        pct = min(100.0, max(0.0, pct))
+        desc = int(round(base * pct / 100.0))
+    else:
+        desc = _to_int_clp(descuento_valor)
+    desc = max(0, min(desc, base))
+    return desc, max(0, bruto - desc)
+
+
+def etiqueta_descuento(
+    *,
+    descuento_tipo: str = '',
+    descuento_alcance: str = DESCUENTO_ALCANCE_MANO_OBRA,
+    descuento_valor=0,
+    descuento_clp: int = 0,
+) -> str:
+    if int(descuento_clp or 0) <= 0:
+        return ''
+    alcance_txt = (
+        'mano de obra'
+        if descuento_alcance != DESCUENTO_ALCANCE_TOTAL
+        else 'total'
+    )
+    if (descuento_tipo or '').strip() == DESCUENTO_TIPO_PORCENTAJE:
+        try:
+            pct = float(descuento_valor or 0)
+        except (TypeError, ValueError):
+            pct = 0.0
+        pct_txt = str(int(pct)) if pct == int(pct) else f'{pct:g}'
+        return f'Descuento {pct_txt}% sobre {alcance_txt}'
+    n = int(descuento_clp or 0)
+    return f'Descuento ${n:,}'.replace(',', '.') + f' sobre {alcance_txt}'
+
+
+def aplicar_totales_cotizacion(cotizacion) -> None:
+    """Recalcula repuestos, mano de obra bruta, descuento_clp y total a pagar."""
+    costo_rep, mo, _bruto = recalcular_totales(
+        list(cotizacion.repuestos or []),
+        int(cotizacion.mano_obra_clp or 0),
+    )
+    desc, total = calcular_descuento_aplicado(
+        costo_repuestos_clp=costo_rep,
+        mano_obra_clp=mo,
+        descuento_tipo=getattr(cotizacion, 'descuento_tipo', '') or '',
+        descuento_alcance=getattr(cotizacion, 'descuento_alcance', '') or DESCUENTO_ALCANCE_MANO_OBRA,
+        descuento_valor=getattr(cotizacion, 'descuento_valor', 0) or 0,
+    )
+    cotizacion.costo_repuestos_clp = costo_rep
+    cotizacion.mano_obra_clp = mo
+    cotizacion.descuento_clp = desc
+    cotizacion.total_clp = total
+
+
 def normalizar_cotizacion_ia(data: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     repuestos_raw = data.get('repuestos') or []
     if not isinstance(repuestos_raw, list):

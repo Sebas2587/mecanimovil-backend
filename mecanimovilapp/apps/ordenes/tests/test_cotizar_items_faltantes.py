@@ -286,6 +286,42 @@ class CotizarItemsIaAPITests(TestCase):
         self.assertEqual(data['repuestos'][0]['precio_unitario_clp'], 15000)
         self.assertEqual(int(data['total_clp']), 55000)
 
+    def test_crear_borrador_vacio_sin_cuota_ia(self):
+        resp = self.client.post(
+            '/api/ordenes/cotizaciones-canal/crear-borrador/',
+            {
+                'cliente_nombre': 'Ana Pérez',
+                'servicio_nombre': 'Frenos',
+                'modalidad': 'taller',
+                'vehiculo': {'marca': 'Toyota', 'modelo': 'Yaris'},
+            },
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        data = resp.json()['cotizacion']
+        self.assertEqual(data['estado'], 'borrador')
+        self.assertEqual(data['repuestos'], [])
+        self.assertEqual(int(data['total_clp']), 0)
+        self.assertEqual(int(data['mano_obra_clp']), 0)
+        self.assertEqual(data['metadata']['origen'], 'manual')
+        self.assertEqual(data['cliente_nombre'], 'Ana Pérez')
+        self.assertEqual(data['vehiculo_marca'], 'Toyota')
+        self.assertFalse(data['metadata'].get('busqueda_web_estado'))
+
+    def test_crear_borrador_rechaza_plantilla(self):
+        resp = self.client.post(
+            '/api/ordenes/cotizaciones-canal/crear-borrador/',
+            {
+                'cliente_nombre': 'Ana',
+                'servicio_nombre': 'Frenos',
+                'modalidad': 'taller',
+                'vehiculo': {'marca': 'Toyota', 'modelo': 'Yaris'},
+                'plantilla_id': 1,
+            },
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 400)
+
 
 class FusionarRepuestosEdicionTests(TestCase):
     def test_conserva_enriquecimiento_web_si_el_patch_trae_precio_vacio(self):

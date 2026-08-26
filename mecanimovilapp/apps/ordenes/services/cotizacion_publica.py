@@ -14,6 +14,9 @@ from mecanimovilapp.apps.ordenes.models import (
     CitaAgendaPersonalDetalle,
     CotizacionCanal,
 )
+from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
+    etiqueta_descuento,
+)
 from mecanimovilapp.apps.vehiculos.cilindraje_texto import cilindraje_efectivo
 
 from mecanimovilapp.apps.usuarios.legal_constants import (
@@ -312,6 +315,16 @@ def serializar_cotizacion_publica(cotizacion: CotizacionCanal, request=None) -> 
         'repuestos': _repuestos_publicos(cotizacion.repuestos or []),
         'mano_obra_clp': int(cotizacion.mano_obra_clp or 0),
         'costo_repuestos_clp': int(cotizacion.costo_repuestos_clp or 0),
+        'descuento_tipo': (cotizacion.descuento_tipo or '').strip() or None,
+        'descuento_alcance': cotizacion.descuento_alcance or 'mano_obra',
+        'descuento_valor': float(cotizacion.descuento_valor or 0),
+        'descuento_clp': int(cotizacion.descuento_clp or 0),
+        'descuento_etiqueta': etiqueta_descuento(
+            descuento_tipo=cotizacion.descuento_tipo or '',
+            descuento_alcance=cotizacion.descuento_alcance or 'mano_obra',
+            descuento_valor=cotizacion.descuento_valor or 0,
+            descuento_clp=int(cotizacion.descuento_clp or 0),
+        ),
         'total_clp': int(cotizacion.total_clp or 0),
         'duracion_minutos_estimada': cotizacion.duracion_minutos_estimada,
         'enviada_en': cotizacion.enviada_en.isoformat() if cotizacion.enviada_en else None,
@@ -379,15 +392,11 @@ def enviar_cotizacion_libre(cotizacion: CotizacionCanal) -> CotizacionCanal:
     if not cotizacion.cliente_nombre.strip():
         raise ValueError('Indica el nombre del cliente.')
 
-    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import recalcular_totales
-
-    costo_rep, mo, total = recalcular_totales(
-        cotizacion.repuestos or [],
-        int(cotizacion.mano_obra_clp or 0),
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
+        aplicar_totales_cotizacion,
     )
-    cotizacion.costo_repuestos_clp = costo_rep
-    cotizacion.mano_obra_clp = mo
-    cotizacion.total_clp = total
+
+    aplicar_totales_cotizacion(cotizacion)
     cotizacion.estado = 'enviada'
     cotizacion.enviada_en = timezone.now()
     preparar_emision_publica(cotizacion)
@@ -398,6 +407,7 @@ def enviar_cotizacion_libre(cotizacion: CotizacionCanal) -> CotizacionCanal:
         update_fields=[
             'costo_repuestos_clp',
             'mano_obra_clp',
+            'descuento_clp',
             'total_clp',
             'estado',
             'enviada_en',

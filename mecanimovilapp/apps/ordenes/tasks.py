@@ -471,7 +471,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
         _to_int_clp,
     )
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
-        recalcular_totales,
+        aplicar_totales_cotizacion,
     )
 
     def _set_estado(cot: CotizacionCanal, estado: str) -> None:
@@ -668,10 +668,6 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                 next_rep['fuente_marketplace'] = 'web'
                 reps_enriquecidos[i] = next_rep
 
-        costo_rep, mo, total = recalcular_totales(
-            reps_enriquecidos,
-            int(cot.mano_obra_clp or 0),
-        )
         meta = dict(cot.metadata or {})
         meta['busqueda_web_estado'] = 'ok' if (resultados or upserts) else 'sin_resultados'
         meta['busqueda_web_en'] = timezone.now().isoformat()
@@ -680,14 +676,13 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
         ) if reps_enriquecidos else True
 
         cot.repuestos = reps_enriquecidos
-        cot.costo_repuestos_clp = costo_rep
-        cot.mano_obra_clp = mo
-        cot.total_clp = total
+        aplicar_totales_cotizacion(cot)
         cot.metadata = meta
         cot.save(update_fields=[
             'repuestos',
             'costo_repuestos_clp',
             'mano_obra_clp',
+            'descuento_clp',
             'total_clp',
             'metadata',
             'actualizado_en',

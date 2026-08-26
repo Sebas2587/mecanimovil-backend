@@ -301,6 +301,67 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             'cotizacion': CotizacionCanalSerializer(cotizacion).data,
         }, status=status.HTTP_201_CREATED)
 
+    @action(detail=False, methods=['post'], url_path='crear-borrador')
+    def crear_borrador(self, request):
+        """Borrador vacío sin IA ni cuota: el taller carga precios a mano."""
+        taller, _rol = self._taller_contexto()
+        ser = GenerarCotizacionIaSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        data = ser.validated_data
+        if data.get('plantilla_id'):
+            raise ValidationError({'plantilla_id': 'Usa generar-ia para aplicar una plantilla.'})
+
+        conversation_id = data.get('conversation_id')
+        conversation = None
+        es_libre = conversation_id is None
+        if conversation_id is not None:
+            conversation = self._get_conversation(conversation_id)
+
+        veh = data.get('vehiculo') or {}
+        marca = str(veh.get('marca') or '').strip()
+        modelo = str(veh.get('modelo') or '').strip()
+        anio_raw = veh.get('anio')
+        try:
+            anio_int = int(anio_raw) if anio_raw else None
+        except (TypeError, ValueError):
+            anio_int = None
+
+        cotizacion = CotizacionCanal.objects.create(
+            conversation=conversation,
+            es_libre=es_libre,
+            cliente_nombre=(data.get('cliente_nombre') or '').strip(),
+            cliente_telefono=(data.get('cliente_telefono') or '').strip(),
+            taller=taller,
+            creado_por=request.user,
+            estado='borrador',
+            modalidad=data.get('modalidad') or 'taller',
+            direccion_servicio=str(data.get('direccion_servicio') or '')[:500],
+            vehiculo_marca=marca,
+            vehiculo_modelo=modelo,
+            vehiculo_anio=anio_int,
+            vehiculo_patente=str(veh.get('patente') or '')[:20],
+            vehiculo_cilindraje=cilindraje_efectivo(
+                str(veh.get('cilindraje') or ''),
+                marca,
+                modelo,
+            ),
+            vehiculo_vin=str(veh.get('vin') or '')[:50],
+            tipo_motor=str(veh.get('tipo_motor') or ''),
+            tipo_motor_label=str(veh.get('tipo_motor_label') or ''),
+            servicio_nombre=(data.get('servicio_nombre') or '').strip(),
+            descripcion_problema=(data.get('descripcion_problema') or '').strip(),
+            repuestos=[],
+            mano_obra_clp=0,
+            costo_repuestos_clp=0,
+            total_clp=0,
+            politicas_cotizacion=resolver_politicas_cotizacion(taller=taller),
+            metadata={'origen': 'manual', 'valores_estimativos': False},
+        )
+        return Response(
+            {'cotizacion': CotizacionCanalSerializer(cotizacion).data},
+            status=status.HTTP_201_CREATED,
+        )
+
     @action(detail=False, methods=['post'], url_path='crear-adicional')
     def crear_adicional(self, request):
         """Cotización adicional sobre un trabajo de canal agendado o en ejecución."""

@@ -489,4 +489,23 @@ class CotizacionAdicionalFlujoTestCase(TestCase):
         self.assertEqual(cot.estado, 'enviada')
         self.assertEqual(int(cot.total_clp), 412000)
 
+    def test_serializar_publico_expone_descuento(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
+            aplicar_totales_cotizacion,
+        )
+
+        self.cot_principal.descuento_tipo = 'porcentaje'
+        self.cot_principal.descuento_alcance = 'mano_obra'
+        self.cot_principal.descuento_valor = 10
+        aplicar_totales_cotizacion(self.cot_principal)
+        self.cot_principal.save()
+        data = serializar_cotizacion_publica(self.cot_principal)
+        self.assertEqual(data['descuento_tipo'], 'porcentaje')
+        self.assertEqual(data['descuento_alcance'], 'mano_obra')
+        self.assertEqual(int(data['descuento_clp']), 18000)
+        self.assertEqual(int(data['mano_obra_clp']), 180000)
+        self.assertEqual(int(data['total_clp']), 382000)
+        self.assertIn('10%', data['descuento_etiqueta'])
+
+
 

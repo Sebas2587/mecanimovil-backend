@@ -2352,6 +2352,40 @@ class CotizacionCanal(models.Model):
     repuestos = models.JSONField(default=list, blank=True)
     mano_obra_clp = models.DecimalField(max_digits=12, decimal_places=0, default=0)
     costo_repuestos_clp = models.DecimalField(max_digits=12, decimal_places=0, default=0)
+    DESCUENTO_TIPO_CHOICES = [
+        ('', 'Sin descuento'),
+        ('monto', 'Monto en CLP'),
+        ('porcentaje', 'Porcentaje'),
+    ]
+    DESCUENTO_ALCANCE_CHOICES = [
+        ('mano_obra', 'Mano de obra'),
+        ('total', 'Total'),
+    ]
+    descuento_tipo = models.CharField(
+        max_length=12,
+        choices=DESCUENTO_TIPO_CHOICES,
+        blank=True,
+        default='',
+        help_text='monto (CLP) o porcentaje. Vacío = sin descuento.',
+    )
+    descuento_alcance = models.CharField(
+        max_length=12,
+        choices=DESCUENTO_ALCANCE_CHOICES,
+        default='mano_obra',
+        help_text='Base del descuento: mano de obra o total (repuestos + mano de obra).',
+    )
+    descuento_valor = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=0,
+        help_text='CLP si tipo=monto; 0–100 si tipo=porcentaje.',
+    )
+    descuento_clp = models.DecimalField(
+        max_digits=12,
+        decimal_places=0,
+        default=0,
+        help_text='Monto de descuento aplicado (IVA incl.). Read-only, se recalcula.',
+    )
     total_clp = models.DecimalField(max_digits=12, decimal_places=0, default=0)
     duracion_minutos_estimada = models.PositiveIntegerField(null=True, blank=True)
     advertencias = models.JSONField(default=list, blank=True)

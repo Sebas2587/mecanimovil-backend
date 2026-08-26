@@ -12,8 +12,8 @@ from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repues
     nombre_repuesto_buscable,
 )
 from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
+    aplicar_totales_cotizacion,
     normalizar_repuesto,
-    recalcular_totales,
 )
 
 logger = logging.getLogger(__name__)
@@ -121,13 +121,8 @@ def cotizar_items_faltantes(
         )
         enriquecidos = base
 
-    costo_rep, _mo, total = recalcular_totales(
-        enriquecidos,
-        int(cotizacion.mano_obra_clp or 0),
-    )
     cotizacion.repuestos = enriquecidos
-    cotizacion.costo_repuestos_clp = costo_rep
-    cotizacion.total_clp = total
+    aplicar_totales_cotizacion(cotizacion)
 
     meta = dict(cotizacion.metadata or {})
     valores_estimativos = any(
@@ -150,6 +145,7 @@ def cotizar_items_faltantes(
         cotizacion.save(update_fields=[
             'repuestos',
             'costo_repuestos_clp',
+            'descuento_clp',
             'total_clp',
             'metadata',
             'actualizado_en',
@@ -161,6 +157,7 @@ def cotizar_items_faltantes(
         cotizacion.save(update_fields=[
             'repuestos',
             'costo_repuestos_clp',
+            'descuento_clp',
             'total_clp',
             'metadata',
             'actualizado_en',
