@@ -37,6 +37,7 @@ from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
 from mecanimovilapp.apps.ordenes.services.cotizacion_publica import (
     enviar_cotizacion_libre,
     resolver_politicas_cotizacion,
+    snapshot_dias_validez,
 )
 from mecanimovilapp.apps.ordenes.services.plantilla_vehiculo import filtrar_plantillas_por_vehiculo
 from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
@@ -188,8 +189,26 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
                     taller=taller,
                     texto=snap.get('politicas_cotizacion'),
                 ),
+                dias_validez=snapshot_dias_validez(taller, snap.get('dias_validez')),
+                descuento_tipo=(
+                    snap.get('descuento_tipo')
+                    if snap.get('descuento_tipo') in ('monto', 'porcentaje')
+                    else ''
+                ),
+                descuento_alcance=(
+                    snap.get('descuento_alcance')
+                    if snap.get('descuento_alcance') in ('mano_obra', 'total')
+                    else 'mano_obra'
+                ),
+                descuento_valor=snap.get('descuento_valor') or 0,
                 metadata={'origen': 'plantilla', 'plantilla_id': plantilla_id},
             )
+            from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
+                aplicar_totales_cotizacion,
+            )
+
+            aplicar_totales_cotizacion(cotizacion)
+            cotizacion.save()
             return Response({
                 'disponible': True,
                 'cotizacion': CotizacionCanalSerializer(cotizacion).data,
@@ -274,6 +293,7 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             duracion_minutos_estimada=contenido.get('duracion_minutos_estimada'),
             advertencias=contenido.get('advertencias') or [],
             politicas_cotizacion=resolver_politicas_cotizacion(taller=taller),
+            dias_validez=snapshot_dias_validez(taller),
             contenido_ia=resultado.get('contenido_ia') or {},
             tokens_entrada=resultado.get('tokens_entrada') or 0,
             tokens_salida=resultado.get('tokens_salida') or 0,
@@ -355,6 +375,7 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             costo_repuestos_clp=0,
             total_clp=0,
             politicas_cotizacion=resolver_politicas_cotizacion(taller=taller),
+            dias_validez=snapshot_dias_validez(taller),
             metadata={'origen': 'manual', 'valores_estimativos': False},
         )
         return Response(

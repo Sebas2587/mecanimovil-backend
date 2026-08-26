@@ -4018,6 +4018,7 @@ class EstadoProveedorView(APIView):
         datos_proveedor = {
             'descripcion': proveedor.descripcion,
             'politicas_cotizacion': getattr(proveedor, 'politicas_cotizacion', '') or '',
+            'dias_validez_cotizacion': int(getattr(proveedor, 'dias_validez_cotizacion', None) or 30),
             'telefono': proveedor.telefono,
             'calificacion_promedio': proveedor.calificacion_promedio,
             'numero_de_calificaciones': proveedor.numero_de_calificaciones,

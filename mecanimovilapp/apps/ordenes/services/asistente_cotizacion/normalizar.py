@@ -163,7 +163,26 @@ def etiqueta_descuento(
         pct_txt = str(int(pct)) if pct == int(pct) else f'{pct:g}'
         return f'Descuento {pct_txt}% sobre {alcance_txt}'
     n = int(descuento_clp or 0)
-    return f'Descuento ${n:,}'.replace(',', '.') + f' sobre {alcance_txt}'
+    monto_txt = f'Descuento ${n:,}'.replace(',', '.')
+    if (descuento_tipo or '').strip() == DESCUENTO_TIPO_MONTO:
+        return f'{monto_txt} sobre {alcance_txt}'
+    return monto_txt
+
+
+def descuento_visible_clp(
+    *,
+    costo_repuestos_clp=0,
+    mano_obra_clp=0,
+    total_clp=0,
+    descuento_clp=0,
+) -> int:
+    """Monto a mostrar: persistido o diferencia bruto − total a pagar."""
+    stored = max(0, int(descuento_clp or 0))
+    if stored > 0:
+        return stored
+    bruto = max(0, int(costo_repuestos_clp or 0)) + max(0, int(mano_obra_clp or 0))
+    total = max(0, int(total_clp or 0))
+    return max(0, bruto - total)
 
 
 def aplicar_totales_cotizacion(cotizacion) -> None:

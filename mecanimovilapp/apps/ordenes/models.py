@@ -2399,6 +2399,11 @@ class CotizacionCanal(models.Model):
         default='',
         help_text='Políticas de validez del taller (snapshot). Se muestran en el recuadro Validez.',
     )
+    dias_validez = models.PositiveSmallIntegerField(
+        default=30,
+        validators=[MinValueValidator(1), MaxValueValidator(90)],
+        help_text='Vigencia en días (snapshot del taller). Se usa al emitir fecha_expiracion_publica.',
+    )
     numero_publico = models.CharField(
         max_length=16,
         unique=True,

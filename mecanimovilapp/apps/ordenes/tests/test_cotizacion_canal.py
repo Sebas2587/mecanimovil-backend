@@ -4,6 +4,7 @@ from django.test import SimpleTestCase
 from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.contexto import armar_contexto_cotizacion
 from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
     calcular_descuento_aplicado,
+    descuento_visible_clp,
     etiqueta_descuento,
     normalizar_cotizacion_ia,
     normalizar_repuesto,
@@ -581,6 +582,26 @@ class NormalizarCotizacionTestCase(SimpleTestCase):
                 descuento_valor=5000,
                 descuento_clp=5000,
             ),
+        )
+
+    def test_descuento_visible_deriva_si_no_esta_persistido(self):
+        self.assertEqual(
+            descuento_visible_clp(
+                costo_repuestos_clp=140000,
+                mano_obra_clp=30000,
+                total_clp=161500,
+                descuento_clp=0,
+            ),
+            8500,
+        )
+        self.assertEqual(
+            descuento_visible_clp(
+                costo_repuestos_clp=140000,
+                mano_obra_clp=30000,
+                total_clp=161500,
+                descuento_clp=8500,
+            ),
+            8500,
         )
 
     def test_normalizar_cotizacion_completa(self):

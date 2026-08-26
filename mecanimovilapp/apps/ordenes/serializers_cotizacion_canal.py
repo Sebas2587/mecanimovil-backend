@@ -207,6 +207,7 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             'advertencias',
             'notas_internas',
             'politicas_cotizacion',
+            'dias_validez',
             'metadata',
             'listo_para_enviar',
             'pendientes_revision',

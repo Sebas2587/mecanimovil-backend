@@ -134,11 +134,10 @@ def _initials(nombre: str) -> str:
 def _lineas(data: dict) -> list[dict]:
     rows: list[dict] = []
     mo = int(data.get('mano_obra_clp') or 0)
-    nombre = (data.get('servicio_nombre') or '').strip()
-    if mo > 0 or nombre:
+    if mo > 0 or (data.get('servicio_nombre') or '').strip():
         rows.append({
-            'nombre': nombre or 'Servicio',
-            'tipo': 'Servicio',
+            'nombre': 'Mano de obra',
+            'tipo': 'Mano de obra',
             'qty': 1,
             'unit_label': '',
             'unitario': mo,
@@ -536,27 +535,17 @@ def _draw_paper(pdf: DocumentoPDF, eyebrow: str, title: str | None, body: str) -
 
 
 def _draw_hero(pdf: DocumentoPDF, data: dict) -> None:
-    if data.get('es_trabajo_adicional'):
-        princ = (data.get('servicio_principal') or {}).get('nombre') or 'Servicio en curso'
-        motivo = _txt(data.get('motivo_servicio_adicional') or '').strip()
-        body = (
-            f'Este trabajo se propone durante tu servicio en curso'
-            f'{": " + princ if princ else "."}'
-        )
-        if motivo:
-            body = f'{body}\n\n{motivo}'
-        _draw_paper(pdf, 'Durante tu servicio', princ, body)
+    if not data.get('es_trabajo_adicional'):
         return
-    nombre = (data.get('servicio_nombre') or '').strip()
-    if not nombre:
-        return
-    cw = _content_w()
-    h = 4.2 + _measure(pdf, cw, nombre, 5.8, 12.5, bold=True) + 0.6
-    _ensure(pdf, h)
-    y = pdf.get_y()
-    _badge(pdf, MARGIN, y, 'Servicio', SOFT, SELECTION_TEXT)
-    y = _text(pdf, MARGIN, y + 4.8, cw, nombre, 5.8, 12.5, bold=True)
-    pdf.set_y(y + GAP)
+    princ = (data.get('servicio_principal') or {}).get('nombre') or 'Servicio en curso'
+    motivo = _txt(data.get('motivo_servicio_adicional') or '').strip()
+    body = (
+        f'Este trabajo se propone durante tu servicio en curso'
+        f'{": " + princ if princ else "."}'
+    )
+    if motivo:
+        body = f'{body}\n\n{motivo}'
+    _draw_paper(pdf, 'Durante tu servicio', princ, body)
 
 
 def _row_height(pdf: DocumentoPDF, row: dict, desc_w: float) -> float:
@@ -566,7 +555,7 @@ def _row_height(pdf: DocumentoPDF, row: dict, desc_w: float) -> float:
     return max(11.0, name_h + meta_h + qty_h + 2.2)
 
 
-def _draw_lineas(pdf: DocumentoPDF, rows: list[dict]) -> None:
+def _draw_lineas(pdf: DocumentoPDF, rows: list[dict], data: dict | None = None) -> None:
     if not rows:
         return
     cw = _content_w()
@@ -574,7 +563,14 @@ def _draw_lineas(pdf: DocumentoPDF, rows: list[dict]) -> None:
     inner_w = cw - 2 * PAD
     amt_w = 26.0
     desc_w = inner_w - (amt_w * 2) - 6
-    header_h = PAD + 3.6 + 5.0 + 1.6 + 3.8
+    titulo = ((data or {}).get('servicio_nombre') or '').strip() or 'Detalle'
+    subtitulo = ((data or {}).get('descripcion_problema') or '').strip()
+    notas = ((data or {}).get('notas_cotizacion') or '').strip()
+    if subtitulo and subtitulo in notas:
+        subtitulo = ''
+    titulo_h = _measure(pdf, inner_w, titulo, 5.0, 11, bold=True)
+    sub_h = _measure(pdf, inner_w, subtitulo, 4.2, 8) if subtitulo else 0
+    header_h = PAD + 3.6 + titulo_h + sub_h + 1.6 + 3.8
     row_heights = [_row_height(pdf, row, desc_w) for row in rows]
     total_h = header_h + sum(row_heights) + PAD
     _ensure(pdf, min(total_h, 32))
@@ -586,7 +582,9 @@ def _draw_lineas(pdf: DocumentoPDF, rows: list[dict]) -> None:
         _card(pdf, x0, y0, cw, CONTENT_BOTTOM - y0)
 
     y = _eyebrow(pdf, x0 + PAD, y0 + PAD, inner_w, 'Detalle')
-    y = _text(pdf, x0 + PAD, y, inner_w, 'Repuestos y servicio', 5.0, 11, bold=True)
+    y = _text(pdf, x0 + PAD, y, inner_w, titulo, 5.0, 11, bold=True)
+    if subtitulo:
+        y = _text(pdf, x0 + PAD, y, inner_w, subtitulo, 4.2, 8, color=MUTED)
     y += 0.6
     _rule(pdf, x0 + PAD, y, inner_w)
     y += 1.2
@@ -614,8 +612,8 @@ def _draw_lineas(pdf: DocumentoPDF, rows: list[dict]) -> None:
             y += 1.2
         name_h = _measure(pdf, desc_w, row['nombre'], 4.6, 9.5, bold=True)
         _text(pdf, x0 + PAD, y, desc_w, row['nombre'], 4.6, 9.5, bold=True)
-        is_servicio = row['tipo'] == 'Servicio'
-        badge_bg, badge_fg = (SOFT, SELECTION_TEXT) if is_servicio else (TONAL, MUTED)
+        is_mo = row['tipo'] != 'Repuesto'
+        badge_bg, badge_fg = (SOFT, SELECTION_TEXT) if is_mo else (TONAL, MUTED)
         cy = y + name_h + 0.2
         badge_w = _badge(pdf, x0 + PAD, cy, row['tipo'], badge_bg, badge_fg)
         qty = f"{row['qty']} {row['unit_label']}".strip()
@@ -680,6 +678,16 @@ def _draw_bottom(pdf: DocumentoPDF, data: dict) -> None:
         lines.append(('Repuestos', _clp(data.get('costo_repuestos_clp')), False))
     lines.append(('Mano de obra', _clp(data.get('mano_obra_clp')), False))
     desc = int(data.get('descuento_clp') or 0)
+    if desc <= 0:
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
+            descuento_visible_clp,
+        )
+        desc = descuento_visible_clp(
+            costo_repuestos_clp=int(data.get('costo_repuestos_clp') or 0),
+            mano_obra_clp=int(data.get('mano_obra_clp') or 0),
+            total_clp=total,
+            descuento_clp=desc,
+        )
     if desc > 0:
         etiqueta = (data.get('descuento_etiqueta') or 'Descuento').strip() or 'Descuento'
         lines.append((etiqueta, f'-{_clp(desc)}', False))
@@ -750,11 +758,8 @@ def generar_pdf_desde_payload(data: dict) -> bytes:
             'Revisa el desglose. Si el total cambió y aún puedes responder, acepta o rechaza de nuevo.',
         )
     _draw_hero(pdf, data)
-    desc = (data.get('descripcion_problema') or '').strip()
+    _draw_lineas(pdf, _lineas(data), data)
     notas = (data.get('notas_cotizacion') or '').strip()
-    if desc and desc not in notas:
-        _draw_paper(pdf, 'Detalle', 'Sobre el servicio', desc)
-    _draw_lineas(pdf, _lineas(data))
     if notas:
         _draw_paper(pdf, 'Notas de cotización', None, notas)
     _draw_bottom(pdf, data)

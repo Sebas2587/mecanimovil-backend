@@ -224,6 +224,11 @@ class ProveedorServicio(models.Model):
         default='',
         help_text='Políticas de validez y trabajo. Se copian a cada cotización al crearla.',
     )
+    dias_validez_cotizacion = models.PositiveSmallIntegerField(
+        default=30,
+        validators=[MinValueValidator(1), MaxValueValidator(90)],
+        help_text='Días de vigencia de las cotizaciones públicas (1–90). Default 30.',
+    )
 
     class Meta:
         abstract = True

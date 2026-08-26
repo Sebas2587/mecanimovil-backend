@@ -15,6 +15,7 @@ from mecanimovilapp.apps.ordenes.models import (
     CotizacionCanal,
 )
 from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
+    descuento_visible_clp,
     etiqueta_descuento,
 )
 from mecanimovilapp.apps.vehiculos.cilindraje_texto import cilindraje_efectivo
@@ -52,6 +53,33 @@ def construir_url_publica_cotizacion(token: str) -> str:
     return f'{_base_url_publica()}/cotizacion/{token}'
 
 
+def resolver_dias_validez(*, taller=None, dias=None) -> int:
+    """Override de la cotización → default del taller → 30 días."""
+    for candidate in (dias, getattr(taller, 'dias_validez_cotizacion', None) if taller else None):
+        try:
+            n = int(candidate)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= n <= 90:
+            return n
+    return COTIZACION_PUBLICA_TTL_DAYS
+
+
+def snapshot_dias_validez(taller=None, override=None) -> int:
+    return resolver_dias_validez(taller=taller, dias=override)
+
+
+def aplicar_fecha_expiracion_publica(cotizacion: CotizacionCanal, *, desde=None) -> None:
+    """fecha_expiracion_publica = enviada_en (o ahora) + dias_validez."""
+    dias = resolver_dias_validez(
+        taller=cotizacion.taller,
+        dias=getattr(cotizacion, 'dias_validez', None),
+    )
+    cotizacion.dias_validez = dias
+    base = desde or cotizacion.enviada_en or timezone.now()
+    cotizacion.fecha_expiracion_publica = base + timezone.timedelta(days=dias)
+
+
 def resolver_politicas_cotizacion(*, taller=None, texto: str | None = None) -> str:
     """Override de la cotización → default del taller → fallback de plataforma."""
     for candidate in (texto, getattr(taller, 'politicas_cotizacion', None) if taller else None):
@@ -80,10 +108,10 @@ def asegurar_token_cotizacion(cotizacion: CotizacionCanal) -> CotizacionCanal:
         cotizacion.url_publica = construir_url_publica_cotizacion(cotizacion.token)
         update_fields.append('url_publica')
     if not cotizacion.fecha_expiracion_publica:
-        cotizacion.fecha_expiracion_publica = timezone.now() + timezone.timedelta(
-            days=COTIZACION_PUBLICA_TTL_DAYS,
-        )
+        aplicar_fecha_expiracion_publica(cotizacion)
         update_fields.append('fecha_expiracion_publica')
+        if 'dias_validez' not in update_fields:
+            update_fields.append('dias_validez')
     if update_fields:
         update_fields.append('actualizado_en')
         cotizacion.save(update_fields=update_fields)
@@ -235,6 +263,9 @@ def rellenar_cliente_desde_canal(cotizacion: CotizacionCanal) -> CotizacionCanal
 def preparar_emision_publica(cotizacion: CotizacionCanal, request=None) -> CotizacionCanal:
     """Token, folio, destinatario de canal y snapshot del taller."""
     asegurar_token_cotizacion(cotizacion)
+    aplicar_fecha_expiracion_publica(cotizacion)
+    if cotizacion.pk:
+        cotizacion.save(update_fields=['dias_validez', 'fecha_expiracion_publica', 'actualizado_en'])
     asegurar_numero_publico(cotizacion)
     asegurar_politicas_cotizacion(cotizacion)
     rellenar_cliente_desde_canal(cotizacion)
@@ -293,6 +324,23 @@ def _taller_publico(cotizacion: CotizacionCanal, request=None) -> dict:
 def serializar_cotizacion_publica(cotizacion: CotizacionCanal, request=None) -> dict:
     es_adicional = bool(cotizacion.es_cotizacion_adicional)
     cliente = _cliente_publico(cotizacion)
+    mano = int(cotizacion.mano_obra_clp or 0)
+    reps = int(cotizacion.costo_repuestos_clp or 0)
+    total = int(cotizacion.total_clp or 0)
+    desc_clp = descuento_visible_clp(
+        costo_repuestos_clp=reps,
+        mano_obra_clp=mano,
+        total_clp=total,
+        descuento_clp=int(cotizacion.descuento_clp or 0),
+    )
+    desc_etiqueta = etiqueta_descuento(
+        descuento_tipo=cotizacion.descuento_tipo or '',
+        descuento_alcance=cotizacion.descuento_alcance or 'mano_obra',
+        descuento_valor=cotizacion.descuento_valor or 0,
+        descuento_clp=desc_clp,
+    )
+    if desc_clp > 0 and not desc_etiqueta:
+        desc_etiqueta = f'Descuento ${desc_clp:,}'.replace(',', '.')
     return {
         'id': cotizacion.id,
         'numero_publico': (cotizacion.numero_publico or '').strip() or None,
@@ -313,19 +361,18 @@ def serializar_cotizacion_publica(cotizacion: CotizacionCanal, request=None) -> 
         'vehiculo_cilindraje': cotizacion.vehiculo_cilindraje,
         'tipo_motor_label': cotizacion.tipo_motor_label,
         'repuestos': _repuestos_publicos(cotizacion.repuestos or []),
-        'mano_obra_clp': int(cotizacion.mano_obra_clp or 0),
-        'costo_repuestos_clp': int(cotizacion.costo_repuestos_clp or 0),
+        'mano_obra_clp': mano,
+        'costo_repuestos_clp': reps,
         'descuento_tipo': (cotizacion.descuento_tipo or '').strip() or None,
         'descuento_alcance': cotizacion.descuento_alcance or 'mano_obra',
         'descuento_valor': float(cotizacion.descuento_valor or 0),
-        'descuento_clp': int(cotizacion.descuento_clp or 0),
-        'descuento_etiqueta': etiqueta_descuento(
-            descuento_tipo=cotizacion.descuento_tipo or '',
-            descuento_alcance=cotizacion.descuento_alcance or 'mano_obra',
-            descuento_valor=cotizacion.descuento_valor or 0,
-            descuento_clp=int(cotizacion.descuento_clp or 0),
+        'descuento_clp': desc_clp,
+        'descuento_etiqueta': desc_etiqueta,
+        'dias_validez': resolver_dias_validez(
+            taller=cotizacion.taller,
+            dias=getattr(cotizacion, 'dias_validez', None),
         ),
-        'total_clp': int(cotizacion.total_clp or 0),
+        'total_clp': total,
         'duracion_minutos_estimada': cotizacion.duracion_minutos_estimada,
         'enviada_en': cotizacion.enviada_en.isoformat() if cotizacion.enviada_en else None,
         'aceptada_en': cotizacion.aceptada_en.isoformat() if cotizacion.aceptada_en else None,
@@ -417,6 +464,7 @@ def enviar_cotizacion_libre(cotizacion: CotizacionCanal) -> CotizacionCanal:
             'numero_publico',
             'emisor_snapshot',
             'politicas_cotizacion',
+            'dias_validez',
             'cliente_nombre',
             'cliente_telefono',
             'metadata',

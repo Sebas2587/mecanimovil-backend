@@ -1937,6 +1937,9 @@ def crear_cotizacion_borrador_desde_agente(
     if not es_update or not (getattr(cotizacion_existente, 'politicas_cotizacion', None) or '').strip():
         from mecanimovilapp.apps.ordenes.services.cotizacion_publica import resolver_politicas_cotizacion
         campos['politicas_cotizacion'] = resolver_politicas_cotizacion(taller=taller)
+    if not es_update:
+        from mecanimovilapp.apps.ordenes.services.cotizacion_publica import snapshot_dias_validez
+        campos['dias_validez'] = snapshot_dias_validez(taller)
 
     if es_update and cotizacion_existente:
         for k, v in campos.items():

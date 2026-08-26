@@ -243,6 +243,11 @@ def snapshot_desde_cotizacion(cotizacion: CotizacionCanal) -> dict:
         'advertencias': cotizacion.advertencias,
         'notas_internas': (cotizacion.notas_internas or '').strip(),
         'politicas_cotizacion': (cotizacion.politicas_cotizacion or '').strip(),
+        'dias_validez': int(getattr(cotizacion, 'dias_validez', None) or 30),
+        'descuento_tipo': (cotizacion.descuento_tipo or '') or '',
+        'descuento_alcance': (cotizacion.descuento_alcance or 'mano_obra'),
+        'descuento_valor': float(cotizacion.descuento_valor or 0),
+        'descuento_clp': int(cotizacion.descuento_clp or 0),
     }
 
 
@@ -430,6 +435,13 @@ def aplicar_edicion_cotizacion(cotizacion: CotizacionCanal, data: dict) -> Cotiz
             cotizacion.metadata = meta
     if 'politicas_cotizacion' in data:
         cotizacion.politicas_cotizacion = str(data.get('politicas_cotizacion') or '')
+    if 'dias_validez' in data:
+        from mecanimovilapp.apps.ordenes.services.cotizacion_publica import resolver_dias_validez
+
+        cotizacion.dias_validez = resolver_dias_validez(
+            taller=cotizacion.taller,
+            dias=data.get('dias_validez'),
+        )
     if 'repuestos' in data and isinstance(data['repuestos'], list):
         cotizacion.repuestos = fusionar_repuestos_edicion(
             list(cotizacion.repuestos or []),
@@ -684,6 +696,11 @@ def enviar_cotizacion_canal(cotizacion: CotizacionCanal, user) -> Message:
     cotizacion.message_envio = message
     cotizacion.estado = 'enviada'
     cotizacion.enviada_en = timezone.now()
+    from mecanimovilapp.apps.ordenes.services.cotizacion_publica import (
+        aplicar_fecha_expiracion_publica,
+    )
+
+    aplicar_fecha_expiracion_publica(cotizacion)
     cerrar_reapertura_taller(cotizacion)
     cotizacion.save(
         update_fields=[
@@ -696,6 +713,7 @@ def enviar_cotizacion_canal(cotizacion: CotizacionCanal, user) -> Message:
             'numero_publico',
             'emisor_snapshot',
             'politicas_cotizacion',
+            'dias_validez',
             'cliente_nombre',
             'cliente_telefono',
             'metadata',
