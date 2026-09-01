@@ -1,7 +1,10 @@
 """API cotizaciones canal con IA."""
 from __future__ import annotations
 
+import logging
 from django.db.models import F
+
+logger = logging.getLogger(__name__)
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -29,9 +32,9 @@ from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador import 
 from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.permisos import usuario_puede_cotizar_canal
 from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
     aplicar_edicion_cotizacion,
-    aplicar_plan_entrega_cotizacion,
+    crear_mensaje_actualizacion_cotizacion,
+    entregar_mensaje_cotizacion_meta,
     enviar_cotizacion_canal,
-    payload_plantilla_whatsapp_cotizacion,
     snapshot_desde_cotizacion,
 )
 from mecanimovilapp.apps.ordenes.services.cotizacion_publica import (
@@ -513,6 +516,13 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
         )
 
         cotizacion = self.get_object()
+        from mecanimovilapp.apps.ordenes.services.cotizacion_publica import (
+            asegurar_documento_emitido_antes_de_editar,
+            marcar_emision_pendiente,
+        )
+
+        # Congelar el documento público ANTES de reabrir enviada → borrador.
+        asegurar_documento_emitido_antes_de_editar(cotizacion)
         try:
             cotizacion = asegurar_cotizacion_editable_para_items(cotizacion)
         except ValueError as exc:
@@ -524,10 +534,13 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
                 )
             except ValueError as exc:
                 raise ValidationError({'estado': str(exc)}) from exc
+            marcar_emision_pendiente(cotizacion)
+            cotizacion.save(update_fields=['metadata', 'actualizado_en'])
             data = CotizacionCanalSerializer(cotizacion).data
             data['modo_actualizacion'] = modo
             return Response(data)
         aplicar_edicion_cotizacion(cotizacion, request.data)
+        marcar_emision_pendiente(cotizacion)
         cotizacion.save()
         return Response(CotizacionCanalSerializer(cotizacion).data)
 
@@ -545,11 +558,42 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             raise ValidationError({'estado': str(exc)}) from exc
         return Response(CotizacionCanalSerializer(cotizacion).data)
 
+    @action(detail=True, methods=['get'], url_path='vista-previa')
+    def vista_previa(self, request, pk=None):
+        """Documento tal como quedará para el cliente (borrador actual, no el snapshot viejo)."""
+        from mecanimovilapp.apps.ordenes.services.cotizacion_publica import (
+            serializar_cotizacion_publica,
+        )
+
+        cotizacion = self.get_object()
+        return Response(serializar_cotizacion_publica(cotizacion, request, live=True))
+
     @action(detail=True, methods=['post'])
     def enviar(self, request, pk=None):
         cotizacion = self.get_object()
-        if cotizacion.estado != 'borrador':
+        from mecanimovilapp.apps.ordenes.services.cotizacion_publica import (
+            emision_pendiente,
+            persistir_documento_emitido,
+        )
+
+        if cotizacion.estado != 'borrador' and not emision_pendiente(cotizacion):
             raise ValidationError({'estado': 'La cotización ya fue enviada o cerrada.'})
+        if cotizacion.estado != 'borrador' and emision_pendiente(cotizacion):
+            persistir_documento_emitido(cotizacion)
+            cotizacion.save(update_fields=['metadata', 'actualizado_en'])
+            message = None
+            plan = None
+            if cotizacion.conversation_id:
+                message = crear_mensaje_actualizacion_cotizacion(cotizacion, request.user)
+                plan = entregar_mensaje_cotizacion_meta(cotizacion, message)
+            serialized = CotizacionCanalSerializer(cotizacion).data
+            return Response({
+                'cotizacion': serialized,
+                'message_id': message.id if message else None,
+                'share_url': serialized.get('share_url') or cotizacion.url_publica,
+                'entrega_via': getattr(plan, 'via', None),
+                'entrega_mensaje': getattr(plan, 'message', None),
+            })
         if not cotizacion.servicio_nombre.strip():
             raise ValidationError({'servicio_nombre': 'Indica el nombre del servicio.'})
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.mano_obra_lineas import (
@@ -580,30 +624,7 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
         except ValueError as exc:
             raise ValidationError(str(exc)) from exc
 
-        from mecanimovilapp.apps.omnichannel.services.outbound_guard import (
-            plan_entrega_cotizacion,
-        )
-
-        plan = plan_entrega_cotizacion(cotizacion.conversation)
-        aplicar_plan_entrega_cotizacion(cotizacion, plan)
-        cotizacion.refresh_from_db()
-
-        if plan.use_template:
-            tpl = payload_plantilla_whatsapp_cotizacion(cotizacion)
-            meta_msg = dict(message.channel_metadata or {})
-            meta_msg['whatsapp_template'] = True
-            meta_msg['cotizacion_id'] = cotizacion.id
-            meta_msg['template_kind'] = tpl.get('kind') or 'cotizacion'
-            meta_msg['template_name'] = tpl.get('name') or ''
-            meta_msg['template_language'] = tpl.get('language') or 'es'
-            meta_msg['template_components'] = tpl.get('components') or []
-            message.channel_metadata = meta_msg
-            message.save(update_fields=['channel_metadata'])
-
-        from mecanimovilapp.apps.omnichannel.tasks import send_meta_message
-
-        if cotizacion.conversation.source_channel != 'APP' and plan.should_send_meta:
-            send_meta_message.delay(message.id)
+        plan = entregar_mensaje_cotizacion_meta(cotizacion, message)
 
         from mecanimovilapp.apps.agente_ia.services.lead_scoring import (
             actualizar_calificacion_desde_cotizacion,
@@ -615,8 +636,8 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             'cotizacion': serialized,
             'message_id': message.id,
             'share_url': serialized.get('share_url') or cotizacion.url_publica,
-            'entrega_via': plan.via,
-            'entrega_mensaje': plan.message,
+            'entrega_via': getattr(plan, 'via', None),
+            'entrega_mensaje': getattr(plan, 'message', None),
         })
 
     @action(detail=True, methods=['post'])

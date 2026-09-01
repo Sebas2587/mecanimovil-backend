@@ -274,3 +274,67 @@ class CotizacionPublicaDocumentoTestCase(TestCase):
             'Rotación de neumáticos',
         ])
         self.assertEqual(int(data['mano_obra_clp']), 50000)
+
+    def test_edicion_congela_publico_hasta_enviar(self):
+        cot = CotizacionCanal.objects.create(
+            es_libre=True,
+            taller=self.taller,
+            creado_por=self.user,
+            estado='borrador',
+            modalidad='taller',
+            cliente_nombre='Ana Pérez',
+            cliente_telefono='+56911111111',
+            vehiculo_marca='Nissan',
+            vehiculo_modelo='Kicks',
+            servicio_nombre='Cambio de aceite',
+            mano_obra_clp=35000,
+            costo_repuestos_clp=0,
+            total_clp=35000,
+        )
+        enviar_cotizacion_libre(cot)
+        cot.refresh_from_db()
+        token = cot.token
+        public_client = APIClient()
+        before = public_client.get(f'/api/ordenes/cotizaciones-publicas/{token}/')
+        self.assertEqual(before.status_code, 200)
+        self.assertEqual(int(before.data['mano_obra_clp']), 35000)
+        self.assertTrue(before.data['puede_responder'])
+
+        taller = APIClient()
+        taller.force_authenticate(self.user)
+        patch = taller.patch(
+            f'/api/ordenes/cotizaciones-canal/{cot.id}/',
+            {
+                'mano_obra_clp': 50000,
+                'servicio_nombre': 'Cambio de aceite y filtro',
+            },
+            format='json',
+        )
+        self.assertEqual(patch.status_code, 200, patch.data)
+        self.assertEqual(patch.data['estado'], 'borrador')
+        self.assertTrue(patch.data['emision_pendiente'])
+        self.assertEqual(int(patch.data['mano_obra_clp']), 50000)
+
+        frozen = public_client.get(f'/api/ordenes/cotizaciones-publicas/{token}/')
+        self.assertEqual(frozen.status_code, 200)
+        self.assertEqual(int(frozen.data['mano_obra_clp']), 35000)
+        self.assertEqual(frozen.data['servicio_nombre'], 'Cambio de aceite')
+        self.assertFalse(frozen.data['puede_responder'])
+
+        accept = public_client.post(f'/api/ordenes/cotizaciones-publicas/{token}/aceptar/')
+        self.assertEqual(accept.status_code, 409)
+        self.assertEqual(accept.data.get('codigo'), 'emision_pendiente')
+
+        preview = taller.get(f'/api/ordenes/cotizaciones-canal/{cot.id}/vista-previa/')
+        self.assertEqual(preview.status_code, 200)
+        self.assertEqual(int(preview.data['mano_obra_clp']), 50000)
+        self.assertEqual(preview.data['servicio_nombre'], 'Cambio de aceite y filtro')
+
+        sent = taller.post(f'/api/ordenes/cotizaciones-canal/{cot.id}/enviar/')
+        self.assertEqual(sent.status_code, 200, sent.data)
+
+        after = public_client.get(f'/api/ordenes/cotizaciones-publicas/{token}/')
+        self.assertEqual(after.status_code, 200)
+        self.assertEqual(int(after.data['mano_obra_clp']), 50000)
+        self.assertEqual(after.data['servicio_nombre'], 'Cambio de aceite y filtro')
+        self.assertTrue(after.data['puede_responder'])

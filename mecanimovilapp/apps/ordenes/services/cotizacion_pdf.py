@@ -585,7 +585,10 @@ def _draw_lineas(pdf: DocumentoPDF, rows: list[dict], data: dict | None = None) 
     inner_w = cw - 2 * PAD
     amt_w = 26.0
     desc_w = inner_w - (amt_w * 2) - 6
-    titulo = ((data or {}).get('servicio_nombre') or '').strip() or 'Detalle'
+    raw_titulo = ((data or {}).get('servicio_nombre') or '').strip()
+    titulo = raw_titulo if raw_titulo and len(raw_titulo) <= 72 else (
+        'Detalle del presupuesto' if raw_titulo else 'Detalle'
+    )
     subtitulo = ((data or {}).get('descripcion_problema') or '').strip()
     notas = ((data or {}).get('notas_cotizacion') or '').strip()
     if subtitulo and subtitulo in notas:

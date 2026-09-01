@@ -12,7 +12,9 @@ from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import
 )
 from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
     _parse_button_id,
+    es_reenvio_cotizacion,
     formatear_resumen_cotizacion,
+    formatear_teaser_cotizacion,
 )
 
 
@@ -687,6 +689,47 @@ class CotizacionCanalUtilTestCase(SimpleTestCase):
         self.assertIn('Inspección de frenos: $20.000', texto)
         self.assertIn('Subtotal mano de obra: $70.000', texto)
         self.assertNotIn('Mano de obra (IVA incl.): $70.000', texto)
+
+    def test_teaser_actualizacion_lista_trabajos(self):
+        class FakeCot:
+            servicio_nombre = 'Mantención 10.000 km'
+            vehiculo_marca = 'CHEVROLET'
+            vehiculo_modelo = 'Sail'
+            numero_publico = 'MM-000214'
+            url_publica = 'https://ejemplo.cl/c/abc'
+            es_cotizacion_adicional = False
+            cotizacion_original = None
+            cita_origen = None
+            mano_obra_clp = 70000
+            metadata = {
+                'servicios_lineas': [
+                    {'nombre': 'Cambio de aceite y filtro', 'monto_clp': 35000},
+                    {'nombre': 'Rotación de neumáticos', 'monto_clp': 15000},
+                ],
+            }
+            repuestos = [{'nombre': 'Filtro de aceite', 'cantidad': 1, 'precio_unitario_clp': 8000}]
+
+        texto = formatear_teaser_cotizacion(FakeCot(), actualizada=True)
+        self.assertIn('Actualizamos tu cotización MM-000214', texto)
+        self.assertIn('Cambio de aceite y filtro', texto)
+        self.assertIn('Filtro de aceite', texto)
+        self.assertIn('https://ejemplo.cl/c/abc', texto)
+        primero = formatear_teaser_cotizacion(FakeCot(), actualizada=False)
+        self.assertIn('está lista', primero)
+        self.assertNotIn('Actualizamos', primero)
+
+    def test_es_reenvio_si_ya_tiene_folio(self):
+        class FakeCot:
+            numero_publico = 'MM-1'
+            metadata = {}
+
+        self.assertTrue(es_reenvio_cotizacion(FakeCot()))
+
+        class Nuevo:
+            numero_publico = ''
+            metadata = {}
+
+        self.assertFalse(es_reenvio_cotizacion(Nuevo()))
 
 
 class ContextoCotizacionTestCase(SimpleTestCase):

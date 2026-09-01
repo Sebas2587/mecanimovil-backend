@@ -10,6 +10,7 @@ from mecanimovilapp.apps.ordenes.services.cotizacion_pdf import generar_pdf_coti
 from mecanimovilapp.apps.ordenes.services.cotizacion_publica import (
     aceptar_cotizacion_publica,
     cotizacion_publica_expirada,
+    emision_pendiente,
     marcar_cotizacion_expirada_si_corresponde,
     marcar_visto,
     on_cotizacion_respondida,
@@ -17,6 +18,19 @@ from mecanimovilapp.apps.ordenes.services.cotizacion_publica import (
     serializar_cotizacion_publica,
 )
 from mecanimovilapp.apps.ordenes.throttling import CotizacionPublicaThrottle
+
+_CACHE_PUBLICA = 'private, no-store, no-cache, must-revalidate'
+_MSG_EMISION_PENDIENTE = (
+    'El taller está actualizando esta cotización. '
+    'En breve recibirás la versión nueva.'
+)
+
+
+def _respuesta_publica(payload, status_code=status.HTTP_200_OK):
+    resp = Response(payload, status=status_code)
+    resp['Cache-Control'] = _CACHE_PUBLICA
+    return resp
+
 
 _TALLER_RELATED = (
     'taller',
@@ -44,17 +58,17 @@ class CotizacionPublicaDetailView(views.APIView):
             return Response({'error': 'Cotización no encontrada'}, status=status.HTTP_404_NOT_FOUND)
         marcar_cotizacion_expirada_si_corresponde(cotizacion)
         if cotizacion_publica_expirada(cotizacion):
-            return Response(
+            return _respuesta_publica(
                 {
                     'error': 'Este enlace de cotización ha expirado',
                     'codigo': 'enlace_expirado',
                     'expirado': True,
                     'cotizacion': serializar_cotizacion_publica(cotizacion, request),
                 },
-                status=status.HTTP_410_GONE,
+                status.HTTP_410_GONE,
             )
         marcar_visto(cotizacion)
-        return Response(serializar_cotizacion_publica(cotizacion, request))
+        return _respuesta_publica(serializar_cotizacion_publica(cotizacion, request))
 
 
 class CotizacionPublicaAceptarView(views.APIView):
@@ -82,6 +96,15 @@ class CotizacionPublicaAceptarView(views.APIView):
             return Response(
                 {'error': 'Este enlace de cotización ha expirado', 'codigo': 'enlace_expirado'},
                 status=status.HTTP_410_GONE,
+            )
+        if emision_pendiente(cotizacion):
+            return Response(
+                {
+                    'error': _MSG_EMISION_PENDIENTE,
+                    'codigo': 'emision_pendiente',
+                    'cotizacion': serializar_cotizacion_publica(cotizacion, request),
+                },
+                status=status.HTTP_409_CONFLICT,
             )
         if cotizacion.estado != 'enviada':
             return Response(
@@ -128,6 +151,15 @@ class CotizacionPublicaRechazarView(views.APIView):
                 {'error': 'Este enlace de cotización ha expirado', 'codigo': 'enlace_expirado'},
                 status=status.HTTP_410_GONE,
             )
+        if emision_pendiente(cotizacion):
+            return Response(
+                {
+                    'error': _MSG_EMISION_PENDIENTE,
+                    'codigo': 'emision_pendiente',
+                    'cotizacion': serializar_cotizacion_publica(cotizacion, request),
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
         if cotizacion.estado != 'enviada':
             return Response(
                 {
@@ -162,5 +194,5 @@ class CotizacionPublicaPdfView(views.APIView):
         folio = (cotizacion.numero_publico or f'MM-{cotizacion.pk:06d}').strip()
         response = HttpResponse(pdf_bytes, content_type='application/pdf')
         response['Content-Disposition'] = f'attachment; filename="Cotizacion-{folio}.pdf"'
-        response['Cache-Control'] = 'private, max-age=60'
+        response['Cache-Control'] = _CACHE_PUBLICA
         return response

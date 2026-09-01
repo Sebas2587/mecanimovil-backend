@@ -324,7 +324,78 @@ def _taller_publico(cotizacion: CotizacionCanal, request=None) -> dict:
     }
 
 
-def serializar_cotizacion_publica(cotizacion: CotizacionCanal, request=None) -> dict:
+META_DOCUMENTO_EMITIDO = 'documento_emitido'
+META_EMISION_PENDIENTE = 'emision_pendiente'
+
+
+def persistir_documento_emitido(cotizacion: CotizacionCanal, request=None) -> None:
+    """Congela lo que el cliente verá hasta el próximo envío explícito."""
+    payload = _serializar_cotizacion_publica_live(cotizacion, request)
+    meta = dict(cotizacion.metadata or {})
+    meta[META_DOCUMENTO_EMITIDO] = payload
+    meta[META_EMISION_PENDIENTE] = False
+    cotizacion.metadata = meta
+
+
+def asegurar_documento_emitido_antes_de_editar(cotizacion: CotizacionCanal) -> None:
+    """Si ya hay folio y no hay snapshot, congela el documento actual (pre-edición)."""
+    if not (cotizacion.numero_publico or '').strip():
+        return
+    meta = dict(cotizacion.metadata or {})
+    if isinstance(meta.get(META_DOCUMENTO_EMITIDO), dict) and meta.get(META_DOCUMENTO_EMITIDO):
+        return
+    meta[META_DOCUMENTO_EMITIDO] = _serializar_cotizacion_publica_live(cotizacion)
+    cotizacion.metadata = meta
+
+
+def marcar_emision_pendiente(cotizacion: CotizacionCanal) -> None:
+    if not (cotizacion.numero_publico or '').strip():
+        return
+    meta = dict(cotizacion.metadata or {})
+    meta[META_EMISION_PENDIENTE] = True
+    cotizacion.metadata = meta
+
+
+def emision_pendiente(cotizacion: CotizacionCanal) -> bool:
+    meta = cotizacion.metadata if isinstance(cotizacion.metadata, dict) else {}
+    return bool(meta.get(META_EMISION_PENDIENTE) and (cotizacion.numero_publico or '').strip())
+
+
+def serializar_cotizacion_publica(
+    cotizacion: CotizacionCanal,
+    request=None,
+    *,
+    live: bool = False,
+) -> dict:
+    data = _serializar_cotizacion_publica_live(cotizacion, request)
+    if live:
+        return data
+    meta = cotizacion.metadata if isinstance(cotizacion.metadata, dict) else {}
+    snap = meta.get(META_DOCUMENTO_EMITIDO)
+    if not meta.get(META_EMISION_PENDIENTE) or not isinstance(snap, dict) or not snap:
+        return data
+    frozen = dict(snap)
+    frozen['taller'] = data.get('taller')
+    frozen['visto_en'] = data.get('visto_en')
+    frozen['fecha_expiracion_publica'] = data.get('fecha_expiracion_publica')
+    frozen['expirado'] = data.get('expirado')
+    if cotizacion.estado in ('cancelada', 'rechazada', 'expirada'):
+        frozen['estado'] = cotizacion.estado
+        frozen['puede_responder'] = False
+    elif cotizacion.estado == 'aceptada':
+        frozen['estado'] = 'aceptada'
+        frozen['puede_responder'] = False
+        frozen['aceptada_en'] = data.get('aceptada_en')
+    else:
+        frozen['estado'] = snap.get('estado') or 'enviada'
+    # Hasta el envío explícito el cliente ve lo último emitido, sin aceptar el borrador.
+    frozen['puede_responder'] = False
+    frozen['actualizada_por_taller'] = False
+    frozen['emision_pendiente'] = True
+    return frozen
+
+
+def _serializar_cotizacion_publica_live(cotizacion: CotizacionCanal, request=None) -> dict:
     es_adicional = bool(cotizacion.es_cotizacion_adicional)
     cliente = _cliente_publico(cotizacion)
     mano = int(cotizacion.mano_obra_clp or 0)
@@ -389,6 +460,7 @@ def serializar_cotizacion_publica(cotizacion: CotizacionCanal, request=None) -> 
             (cotizacion.metadata or {}).get('actualizada_tras_aceptacion')
             or (cotizacion.metadata or {}).get('reabierta_por_taller')
             or (cotizacion.metadata or {}).get('reabierta_por_cliente')
+            or (cotizacion.metadata or {}).get('reenviada_tras_edicion_en')
             or (
                 cotizacion.enviada_en
                 and cotizacion.actualizado_en
@@ -460,6 +532,7 @@ def enviar_cotizacion_libre(cotizacion: CotizacionCanal) -> CotizacionCanal:
     from mecanimovilapp.apps.ordenes.services.cotizacion_canal import cerrar_reapertura_taller
 
     cerrar_reapertura_taller(cotizacion)
+    persistir_documento_emitido(cotizacion)
     cotizacion.save(
         update_fields=[
             'costo_repuestos_clp',

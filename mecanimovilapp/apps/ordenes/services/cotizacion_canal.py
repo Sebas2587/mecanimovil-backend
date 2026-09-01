@@ -99,14 +99,74 @@ def metadata_cotizacion_mensaje(cotizacion: CotizacionCanal, *, estado: str = 'e
     }
 
 
-def formatear_teaser_cotizacion(cotizacion: CotizacionCanal) -> str:
-    servicio = cotizacion.servicio_nombre or 'tu servicio'
+def _servicio_corto_teaser(nombre: str) -> str:
+    s = (nombre or '').strip()
+    if not s:
+        return 'tu servicio'
+    if len(s) <= 70:
+        return s
+    recorte = s[:67].rsplit(' ', 1)[0] or s[:67]
+    return recorte.rstrip('.,;') + '…'
+
+
+def _nombres_items_para_cliente(cotizacion: CotizacionCanal, *, max_items: int = 6) -> str:
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.mano_obra_lineas import (
+        resolver_mano_obra_lineas,
+    )
+
+    nombres: list[str] = []
+    for lin in resolver_mano_obra_lineas(cotizacion):
+        if int(lin.get('monto_clp') or 0) <= 0:
+            continue
+        n = str(lin.get('nombre') or '').strip()
+        if n:
+            nombres.append(n)
+    for rep in cotizacion.repuestos or []:
+        if not isinstance(rep, dict):
+            continue
+        n = str(rep.get('nombre') or '').strip()
+        if n:
+            nombres.append(n)
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for n in nombres:
+        key = n.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(n)
+    if not uniq:
+        return ''
+    if len(uniq) > max_items:
+        extra = len(uniq) - max_items
+        return f'{", ".join(uniq[:max_items])} y {extra} más'
+    return ', '.join(uniq)
+
+
+def es_reenvio_cotizacion(cotizacion: CotizacionCanal) -> bool:
+    meta = cotizacion.metadata or {}
+    return bool(
+        (cotizacion.numero_publico or '').strip()
+        or meta.get('reabierta_por_taller')
+        or meta.get('reenviada_tras_edicion_en')
+        or meta.get('actualizada_tras_aceptacion')
+    )
+
+
+def formatear_teaser_cotizacion(
+    cotizacion: CotizacionCanal,
+    *,
+    actualizada: bool = False,
+) -> str:
+    servicio = _servicio_corto_teaser(cotizacion.servicio_nombre or '')
     vehiculo = ' '.join(
         filter(None, [cotizacion.vehiculo_marca, cotizacion.vehiculo_modelo])
     ).strip() or 'tu vehículo'
     url = cotizacion.url_publica or ''
     folio = (cotizacion.numero_publico or '').strip()
     folio_txt = f' {folio}' if folio else ''
+    items = _nombres_items_para_cliente(cotizacion)
+    incluye = f' Incluye: {items}.' if items else ''
     if cotizacion.es_cotizacion_adicional:
         principal = ''
         orig = cotizacion.cotizacion_original
@@ -125,17 +185,29 @@ def formatear_teaser_cotizacion(cotizacion: CotizacionCanal) -> str:
 
         slot = formatear_slot_propuesto(cotizacion) if es_adicional_nueva_fecha(cotizacion) else ''
         fecha_txt = f' Fecha propuesta: {slot}.' if slot else ''
+        if actualizada:
+            cabeza = (
+                f'Actualizamos el trabajo adicional{folio_txt} de {contexto} ({vehiculo}).'
+                f'{fecha_txt}{incluye}'
+            )
+        else:
+            cabeza = (
+                f'Te enviamos un trabajo adicional{folio_txt} encontrado durante {contexto} ({vehiculo}).'
+                f'{fecha_txt}'
+            )
+        if url:
+            return f'{cabeza} Revísalo y responde (aceptar o rechazar) en este enlace: {url}'
+        return f'{cabeza} Revisa los detalles y respóndenos cuando puedas.'
+    if actualizada:
+        cabeza = (
+            f'Actualizamos tu cotización{folio_txt} para {servicio} ({vehiculo}).'
+            f'{incluye}'
+        )
         if url:
             return (
-                f'Te enviamos un trabajo adicional{folio_txt} encontrado durante {contexto} ({vehiculo}).'
-                f'{fecha_txt} '
-                f'Revísalo y responde (aceptar o rechazar) en este enlace: {url}'
+                f'{cabeza} Revísala de nuevo y responde (aceptar o rechazar) en este enlace: {url}'
             )
-        return (
-            f'Te enviamos un trabajo adicional{folio_txt} encontrado durante {contexto} ({vehiculo}).'
-            f'{fecha_txt} '
-            'Revisa los detalles y respóndenos cuando puedas.'
-        )
+        return f'{cabeza} Revisa los detalles actualizados y respóndenos cuando puedas.'
     if url:
         return (
             f'¡Tu cotización{folio_txt} para {servicio} ({vehiculo}) está lista! '
@@ -689,6 +761,7 @@ def enviar_cotizacion_canal(cotizacion: CotizacionCanal, user) -> Message:
     if conversation.type != 'OMNICHANNEL':
         raise ValueError('La cotización debe estar ligada a una conversación omnicanal.')
 
+    es_update = es_reenvio_cotizacion(cotizacion)
     aplicar_totales_cotizacion(cotizacion)
     cotizacion.save(
         update_fields=[
@@ -710,8 +783,9 @@ def enviar_cotizacion_canal(cotizacion: CotizacionCanal, user) -> Message:
         cotizacion.metadata = meta_extra
         cotizacion.save(update_fields=['metadata', 'actualizado_en'])
 
-    teaser = formatear_teaser_cotizacion(cotizacion)
+    teaser = formatear_teaser_cotizacion(cotizacion, actualizada=es_update)
     meta = metadata_cotizacion_mensaje(cotizacion, estado='enviada')
+    meta['actualizada'] = es_update
     message = Message.objects.create(
         conversation=conversation,
         sender=user,
@@ -728,6 +802,9 @@ def enviar_cotizacion_canal(cotizacion: CotizacionCanal, user) -> Message:
 
     aplicar_fecha_expiracion_publica(cotizacion)
     cerrar_reapertura_taller(cotizacion)
+    from mecanimovilapp.apps.ordenes.services.cotizacion_publica import persistir_documento_emitido
+
+    persistir_documento_emitido(cotizacion)
     cotizacion.save(
         update_fields=[
             'message_envio',
@@ -798,6 +875,51 @@ def enviar_cotizacion_canal(cotizacion: CotizacionCanal, user) -> Message:
         logger.warning('No se pudo notificar cotización enviada cot=%s', cotizacion.id, exc_info=True)
 
     return message
+
+
+def crear_mensaje_actualizacion_cotizacion(cotizacion: CotizacionCanal, user) -> Message:
+    """Aviso en el chat de que el taller actualizó una cotización ya emitida."""
+    if not cotizacion.conversation_id:
+        raise ValueError('La cotización no tiene conversación para notificar.')
+    teaser = formatear_teaser_cotizacion(cotizacion, actualizada=True)
+    meta = metadata_cotizacion_mensaje(cotizacion, estado=cotizacion.estado or 'enviada')
+    meta['actualizada'] = True
+    return Message.objects.create(
+        conversation=cotizacion.conversation,
+        sender=user,
+        content=teaser,
+        direction='outbound',
+        channel_metadata=meta,
+    )
+
+
+def entregar_mensaje_cotizacion_meta(cotizacion: CotizacionCanal, message: Message):
+    """Plan de ventana Meta + plantilla + envío. None si no hay conversación."""
+    conversation = cotizacion.conversation
+    if conversation is None:
+        return None
+    from mecanimovilapp.apps.omnichannel.services.outbound_guard import (
+        plan_entrega_cotizacion,
+    )
+    from mecanimovilapp.apps.omnichannel.tasks import send_meta_message
+
+    plan = plan_entrega_cotizacion(conversation)
+    aplicar_plan_entrega_cotizacion(cotizacion, plan)
+    cotizacion.refresh_from_db()
+    if plan.use_template:
+        tpl = payload_plantilla_whatsapp_cotizacion(cotizacion)
+        meta_msg = dict(message.channel_metadata or {})
+        meta_msg['whatsapp_template'] = True
+        meta_msg['cotizacion_id'] = cotizacion.id
+        meta_msg['template_kind'] = tpl.get('kind') or 'cotizacion'
+        meta_msg['template_name'] = tpl.get('name') or ''
+        meta_msg['template_language'] = tpl.get('language') or 'es'
+        meta_msg['template_components'] = tpl.get('components') or []
+        message.channel_metadata = meta_msg
+        message.save(update_fields=['channel_metadata'])
+    if conversation.source_channel != 'APP' and plan.should_send_meta:
+        send_meta_message.delay(message.id)
+    return plan
 
 
 def aplicar_plan_entrega_cotizacion(cotizacion: CotizacionCanal, plan) -> CotizacionCanal:

@@ -44,6 +44,7 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
     mano_obra_lineas = serializers.SerializerMethodField()
     entrega_via = serializers.SerializerMethodField()
     entrega_pendiente_compartir = serializers.SerializerMethodField()
+    emision_pendiente = serializers.SerializerMethodField()
     ejecucion_adicional = serializers.CharField(read_only=True)
     fecha_propuesta = serializers.DateField(read_only=True, allow_null=True)
     hora_propuesta = serializers.TimeField(read_only=True, allow_null=True, format='%H:%M')
@@ -147,6 +148,10 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
         via = self.get_entrega_via(obj)
         return via in ('link_publico', 'whatsapp_template')
 
+    def get_emision_pendiente(self, obj) -> bool:
+        from mecanimovilapp.apps.ordenes.services.cotizacion_publica import emision_pendiente
+        return emision_pendiente(obj)
+
     def get_servicio_principal_nombre(self, obj) -> str | None:
         if not obj.es_cotizacion_adicional:
             return None
@@ -219,6 +224,7 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             'mano_obra_clp',
             'entrega_via',
             'entrega_pendiente_compartir',
+            'emision_pendiente',
             'costo_repuestos_clp',
             'descuento_tipo',
             'descuento_alcance',
@@ -261,6 +267,7 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             'mano_obra_lineas',
             'entrega_via',
             'entrega_pendiente_compartir',
+            'emision_pendiente',
             'token',
             'numero_publico',
             'url_publica',
