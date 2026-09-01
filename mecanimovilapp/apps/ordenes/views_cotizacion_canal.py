@@ -552,6 +552,12 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             raise ValidationError({'estado': 'La cotización ya fue enviada o cerrada.'})
         if not cotizacion.servicio_nombre.strip():
             raise ValidationError({'servicio_nombre': 'Indica el nombre del servicio.'})
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.mano_obra_lineas import (
+            validar_nombres_mano_obra_para_enviar,
+        )
+        mo_err = validar_nombres_mano_obra_para_enviar(cotizacion)
+        if mo_err:
+            raise ValidationError({'mano_obra_lineas': mo_err})
 
         if cotizacion.es_libre or cotizacion.conversation_id is None:
             try:

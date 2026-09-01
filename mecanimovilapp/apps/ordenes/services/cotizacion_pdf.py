@@ -133,17 +133,35 @@ def _initials(nombre: str) -> str:
 
 def _lineas(data: dict) -> list[dict]:
     rows: list[dict] = []
-    mo = int(data.get('mano_obra_clp') or 0)
-    if mo > 0 or (data.get('servicio_nombre') or '').strip():
-        rows.append({
-            'nombre': 'Mano de obra',
-            'tipo': 'Mano de obra',
-            'qty': 1,
-            'unit_label': '',
-            'unitario': mo,
-            'subtotal': mo,
-            'meta': '',
-        })
+    mo_lineas = data.get('mano_obra_lineas') or []
+    if isinstance(mo_lineas, list) and mo_lineas:
+        for lin in mo_lineas:
+            if not isinstance(lin, dict):
+                continue
+            nombre = (lin.get('nombre') or '').strip() or 'Mano de obra'
+            monto = int(lin.get('monto_clp') or 0)
+            rows.append({
+                'nombre': nombre,
+                'tipo': 'Mano de obra',
+                'qty': 1,
+                'unit_label': '',
+                'unitario': monto,
+                'subtotal': monto,
+                'meta': '',
+            })
+    else:
+        mo = int(data.get('mano_obra_clp') or 0)
+        if mo > 0 or (data.get('servicio_nombre') or '').strip():
+            titulo = (data.get('servicio_nombre') or '').strip() or 'Mano de obra'
+            rows.append({
+                'nombre': titulo,
+                'tipo': 'Mano de obra',
+                'qty': 1,
+                'unit_label': '',
+                'unitario': mo,
+                'subtotal': mo,
+                'meta': '',
+            })
     for rep in data.get('repuestos') or []:
         if not isinstance(rep, dict):
             continue

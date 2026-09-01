@@ -1078,3 +1078,80 @@ class FuenteWebEnrichTestCase(SimpleTestCase):
         self.assertNotIn('tienda_ml', pubs[0])
         self.assertNotIn('proveedor_nombre', pubs[0])
         self.assertEqual(pubs[0].get('marca_repuesto'), 'Sachs')
+
+
+class ManoObraLineasTestCase(SimpleTestCase):
+    def _cot(self, **kwargs):
+        from types import SimpleNamespace
+        defaults = {
+            'servicio_nombre': 'Mantención 10.000',
+            'mano_obra_clp': 70000,
+            'metadata': {},
+        }
+        defaults.update(kwargs)
+        return SimpleNamespace(**defaults)
+
+    def test_backfill_desde_lump(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.mano_obra_lineas import (
+            resolver_mano_obra_lineas,
+        )
+        lineas = resolver_mano_obra_lineas(self._cot())
+        self.assertEqual(len(lineas), 1)
+        self.assertEqual(lineas[0]['nombre'], 'Mantención 10.000')
+        self.assertEqual(lineas[0]['monto_clp'], 70000)
+
+    def test_alias_precio_mano_obra_clp(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.mano_obra_lineas import (
+            resolver_mano_obra_lineas,
+        )
+        cot = self._cot(metadata={
+            'servicios_lineas': [
+                {'nombre': 'Diagnóstico', 'precio_mano_obra_clp': 20000},
+                {'nombre': 'Alineación', 'precio_clp': 15000},
+            ],
+        })
+        lineas = resolver_mano_obra_lineas(cot)
+        self.assertEqual([l['monto_clp'] for l in lineas], [20000, 15000])
+
+    def test_lineas_ganan_sobre_lump(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.mano_obra_lineas import (
+            aplicar_mano_obra_en_edicion,
+        )
+        cot = self._cot(metadata={
+            'servicios_lineas': [
+                {'id': 'a', 'nombre': 'Frenos', 'monto_clp': 35000},
+                {'id': 'b', 'nombre': 'Alineación', 'monto_clp': 15000},
+            ],
+        }, mano_obra_clp=50000)
+        aplicar_mano_obra_en_edicion(cot, {'mano_obra_clp': 99999})
+        self.assertEqual(int(cot.mano_obra_clp), 50000)
+
+    def test_persistir_lineas_suma(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.mano_obra_lineas import (
+            persistir_mano_obra_lineas,
+        )
+        cot = self._cot(metadata={'servicios_lineas': [
+            {'id': 'a', 'nombre': 'Frenos', 'monto_clp': 10000, 'oferta_servicio_id': 7},
+        ]})
+        persistir_mano_obra_lineas(cot, [
+            {'id': 'a', 'nombre': 'Cambio de pastillas', 'monto_clp': 35000},
+            {'nombre': 'Rotación', 'monto_clp': 15000},
+        ])
+        self.assertEqual(int(cot.mano_obra_clp), 50000)
+        saved = cot.metadata['servicios_lineas']
+        self.assertEqual(saved[0]['oferta_servicio_id'], 7)
+        self.assertEqual(saved[0]['nombre'], 'Cambio de pastillas')
+        self.assertEqual(len(saved), 2)
+
+    def test_validar_nombre_vacio_con_monto(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.mano_obra_lineas import (
+            validar_nombres_mano_obra_para_enviar,
+        )
+        cot = self._cot(metadata={'servicios_lineas': [
+            {'nombre': '', 'monto_clp': 12000},
+        ]})
+        self.assertTrue(validar_nombres_mano_obra_para_enviar(cot))
+        cot_ok = self._cot(metadata={'servicios_lineas': [
+            {'nombre': 'Diagnóstico', 'monto_clp': 12000},
+        ]})
+        self.assertIsNone(validar_nombres_mano_obra_para_enviar(cot_ok))

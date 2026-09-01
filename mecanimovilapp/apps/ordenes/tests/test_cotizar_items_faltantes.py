@@ -322,6 +322,75 @@ class CotizarItemsIaAPITests(TestCase):
         )
         self.assertEqual(resp.status_code, 400)
 
+    def test_patch_mano_obra_lineas_suma_y_backfill_get(self):
+        resp = self.client.patch(
+            f'/api/ordenes/cotizaciones-canal/{self.cot.id}/',
+            {
+                'mano_obra_lineas': [
+                    {'nombre': 'Cambio de aceite', 'monto_clp': 35000},
+                    {'nombre': 'Rotación', 'monto_clp': 15000},
+                ],
+            },
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        data = resp.json()
+        self.assertEqual(int(data['mano_obra_clp']), 50000)
+        self.assertEqual(len(data['mano_obra_lineas']), 2)
+        self.assertEqual(data['mano_obra_lineas'][0]['nombre'], 'Cambio de aceite')
+
+        lump = self.client.patch(
+            f'/api/ordenes/cotizaciones-canal/{self.cot.id}/',
+            {'mano_obra_clp': 99999},
+            format='json',
+        )
+        self.assertEqual(lump.status_code, 200, lump.content)
+        self.assertEqual(int(lump.json()['mano_obra_clp']), 50000)
+
+    def test_cotizar_items_no_toca_mano_obra(self):
+        self.cot.metadata = {
+            'servicios_lineas': [
+                {'id': 'mo-1', 'nombre': 'Diagnóstico', 'monto_clp': 40000},
+            ],
+        }
+        self.cot.save(update_fields=['metadata'])
+
+        def _fake_enrich(repuestos, **_kwargs):
+            return [
+                {
+                    **r,
+                    'precio_unitario_clp': 8900 if 'filtro' in (r.get('nombre') or '').lower() else r.get('precio_unitario_clp', 0),
+                    'fuente_marketplace': 'web',
+                    'proveedor_nombre': 'AutoPlanet',
+                    'precio_estimado': True,
+                }
+                for r in repuestos
+            ]
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.cotizar_items_faltantes.enriquecer_repuestos_cotizacion',
+            side_effect=_fake_enrich,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web.disparar_busqueda_web_cotizacion',
+        ):
+            resp = self.client.post(
+                f'/api/ordenes/cotizaciones-canal/{self.cot.id}/cotizar-items/',
+                {'nombres': ['Filtro de aceite']},
+                format='json',
+            )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        data = resp.json()['cotizacion']
+        self.assertEqual(int(data['mano_obra_clp']), 40000)
+        self.assertEqual(data['mano_obra_lineas'][0]['nombre'], 'Diagnóstico')
+
+    def test_enviar_rechaza_linea_mo_sin_nombre(self):
+        self.cot.metadata = {'servicios_lineas': [{'nombre': '', 'monto_clp': 12000}]}
+        self.cot.cliente_nombre = 'Ana'
+        self.cot.save()
+        resp = self.client.post(f'/api/ordenes/cotizaciones-canal/{self.cot.id}/enviar/')
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('mano_obra_lineas', resp.json())
+
 
 class FusionarRepuestosEdicionTests(TestCase):
     def test_conserva_enriquecimiento_web_si_el_patch_trae_precio_vacio(self):

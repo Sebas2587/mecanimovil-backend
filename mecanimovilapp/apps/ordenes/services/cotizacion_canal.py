@@ -248,6 +248,7 @@ def snapshot_desde_cotizacion(cotizacion: CotizacionCanal) -> dict:
         'descuento_alcance': (cotizacion.descuento_alcance or 'mano_obra'),
         'descuento_valor': float(cotizacion.descuento_valor or 0),
         'descuento_clp': int(cotizacion.descuento_clp or 0),
+        'servicios_lineas': (cotizacion.metadata or {}).get('servicios_lineas') or [],
     }
 
 
@@ -447,8 +448,11 @@ def aplicar_edicion_cotizacion(cotizacion: CotizacionCanal, data: dict) -> Cotiz
             list(cotizacion.repuestos or []),
             data['repuestos'],
         )
-    if 'mano_obra_clp' in data:
-        cotizacion.mano_obra_clp = int(data['mano_obra_clp'] or 0)
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.mano_obra_lineas import (
+        aplicar_mano_obra_en_edicion,
+    )
+
+    aplicar_mano_obra_en_edicion(cotizacion, data)
     if 'duracion_minutos_estimada' in data:
         val = data['duracion_minutos_estimada']
         cotizacion.duracion_minutos_estimada = int(val) if val else None
@@ -489,7 +493,7 @@ def aplicar_edicion_cotizacion(cotizacion: CotizacionCanal, data: dict) -> Cotiz
         cotizacion.hora_propuesta = hora_p
     aplicar_totales_cotizacion(cotizacion)
 
-    if 'mano_obra_clp' in data:
+    if 'mano_obra_clp' in data or 'mano_obra_lineas' in data:
         meta = dict(cotizacion.metadata or {})
         recargo = int(meta.get('recargo_domicilio_aplicado_clp') or 0)
         catalogo = _suma_catalogo_metadata(cotizacion)

@@ -158,8 +158,9 @@ class CotizacionPublicaDocumentoTestCase(TestCase):
         self.assertEqual(int(data['total_clp']), 161500)
         self.assertIn('5%', data['descuento_etiqueta'])
         rows = _lineas(data)
-        self.assertEqual(rows[0]['nombre'], 'Mano de obra')
+        self.assertEqual(rows[0]['nombre'], 'Cambio de bomba de embrague')
         self.assertEqual(rows[0]['tipo'], 'Mano de obra')
+        self.assertEqual(len(data.get('mano_obra_lineas') or []), 1)
         pdf = generar_pdf_desde_payload(data)
         self.assertTrue(pdf.startswith(b'%PDF'))
         self.assertGreater(len(pdf), 15000)
@@ -246,3 +247,30 @@ class CotizacionPublicaDocumentoTestCase(TestCase):
         self.assertEqual(int(cot_data['descuento_clp']), 8500)
         self.assertEqual(int(cot_data['total_clp']), 161500)
         self.assertEqual(int(cot_data['dias_validez']), 21)
+
+    def test_mano_obra_lineas_publicas_y_pdf(self):
+        from mecanimovilapp.apps.ordenes.services.cotizacion_pdf import _lineas
+
+        self.cot.metadata = {
+            'servicios_lineas': [
+                {'nombre': 'Cambio de aceite y filtro', 'monto_clp': 35000},
+                {'nombre': 'Rotación de neumáticos', 'monto_clp': 15000},
+            ],
+        }
+        self.cot.mano_obra_clp = 50000
+        self.cot.save()
+        data = serializar_cotizacion_publica(self.cot)
+        self.assertEqual(
+            data['mano_obra_lineas'],
+            [
+                {'nombre': 'Cambio de aceite y filtro', 'monto_clp': 35000},
+                {'nombre': 'Rotación de neumáticos', 'monto_clp': 15000},
+            ],
+        )
+        rows = _lineas(data)
+        mo_rows = [r for r in rows if r['tipo'] == 'Mano de obra']
+        self.assertEqual([r['nombre'] for r in mo_rows], [
+            'Cambio de aceite y filtro',
+            'Rotación de neumáticos',
+        ])
+        self.assertEqual(int(data['mano_obra_clp']), 50000)

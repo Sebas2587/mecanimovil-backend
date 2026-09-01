@@ -41,6 +41,9 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
     permite_edicion_completa = serializers.SerializerMethodField()
     descuento_etiqueta = serializers.SerializerMethodField()
     servicio_principal_nombre = serializers.SerializerMethodField()
+    mano_obra_lineas = serializers.SerializerMethodField()
+    entrega_via = serializers.SerializerMethodField()
+    entrega_pendiente_compartir = serializers.SerializerMethodField()
     ejecucion_adicional = serializers.CharField(read_only=True)
     fecha_propuesta = serializers.DateField(read_only=True, allow_null=True)
     hora_propuesta = serializers.TimeField(read_only=True, allow_null=True, format='%H:%M')
@@ -130,6 +133,20 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             descuento_clp=int(obj.descuento_clp or 0),
         )
 
+    def get_mano_obra_lineas(self, obj) -> list[dict]:
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.mano_obra_lineas import (
+            resolver_mano_obra_lineas,
+        )
+        return resolver_mano_obra_lineas(obj)
+
+    def get_entrega_via(self, obj) -> str | None:
+        via = str(self._metadata_agente(obj).get('entrega_canal') or '').strip()
+        return via or None
+
+    def get_entrega_pendiente_compartir(self, obj) -> bool:
+        via = self.get_entrega_via(obj)
+        return via in ('link_publico', 'whatsapp_template')
+
     def get_servicio_principal_nombre(self, obj) -> str | None:
         if not obj.es_cotizacion_adicional:
             return None
@@ -159,6 +176,9 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             ref = rep.get('precio_referencia_ia')
             if ref is not None:
                 rep['precio_referencia_ia'] = int(ref)
+        for lin in data.get('mano_obra_lineas') or []:
+            if isinstance(lin, dict) and lin.get('monto_clp') is not None:
+                lin['monto_clp'] = int(lin['monto_clp'] or 0)
         return data
 
     class Meta:
@@ -195,7 +215,10 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             'servicio_nombre',
             'descripcion_problema',
             'repuestos',
+            'mano_obra_lineas',
             'mano_obra_clp',
+            'entrega_via',
+            'entrega_pendiente_compartir',
             'costo_repuestos_clp',
             'descuento_tipo',
             'descuento_alcance',
@@ -235,6 +258,9 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             'cita_origen_id',
             'tiene_horario_agendado',
             'permite_edicion_completa',
+            'mano_obra_lineas',
+            'entrega_via',
+            'entrega_pendiente_compartir',
             'token',
             'numero_publico',
             'url_publica',

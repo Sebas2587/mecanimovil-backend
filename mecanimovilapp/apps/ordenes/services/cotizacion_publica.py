@@ -14,6 +14,9 @@ from mecanimovilapp.apps.ordenes.models import (
     CitaAgendaPersonalDetalle,
     CotizacionCanal,
 )
+from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.mano_obra_lineas import (
+    mano_obra_lineas_publicas as _mano_obra_lineas_publicas,
+)
 from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
     descuento_visible_clp,
     etiqueta_descuento,
@@ -361,6 +364,7 @@ def serializar_cotizacion_publica(cotizacion: CotizacionCanal, request=None) -> 
         'vehiculo_cilindraje': cotizacion.vehiculo_cilindraje,
         'tipo_motor_label': cotizacion.tipo_motor_label,
         'repuestos': _repuestos_publicos(cotizacion.repuestos or []),
+        'mano_obra_lineas': _mano_obra_lineas_publicas(cotizacion),
         'mano_obra_clp': mano,
         'costo_repuestos_clp': reps,
         'descuento_tipo': (cotizacion.descuento_tipo or '').strip() or None,
@@ -436,6 +440,12 @@ def enviar_cotizacion_libre(cotizacion: CotizacionCanal) -> CotizacionCanal:
     validar_adicional_listo_para_enviar(cotizacion)
     if not cotizacion.servicio_nombre.strip():
         raise ValueError('Indica el nombre del servicio.')
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.mano_obra_lineas import (
+        validar_nombres_mano_obra_para_enviar,
+    )
+    mo_err = validar_nombres_mano_obra_para_enviar(cotizacion)
+    if mo_err:
+        raise ValueError(mo_err)
     if not cotizacion.cliente_nombre.strip():
         raise ValueError('Indica el nombre del cliente.')
 
