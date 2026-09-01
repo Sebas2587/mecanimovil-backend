@@ -74,6 +74,7 @@ def mano_obra_lineas_publicas(cotizacion) -> list[dict[str, Any]]:
     return [
         {'nombre': lin['nombre'], 'monto_clp': lin['monto_clp']}
         for lin in resolver_mano_obra_lineas(cotizacion)
+        if lin['monto_clp'] > 0
     ]
 
 

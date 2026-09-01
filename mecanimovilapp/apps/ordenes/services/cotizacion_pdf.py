@@ -134,12 +134,15 @@ def _initials(nombre: str) -> str:
 def _lineas(data: dict) -> list[dict]:
     rows: list[dict] = []
     mo_lineas = data.get('mano_obra_lineas') or []
+    added_mo = False
     if isinstance(mo_lineas, list) and mo_lineas:
         for lin in mo_lineas:
             if not isinstance(lin, dict):
                 continue
-            nombre = (lin.get('nombre') or '').strip() or 'Mano de obra'
             monto = int(lin.get('monto_clp') or 0)
+            if monto <= 0:
+                continue
+            nombre = (lin.get('nombre') or '').strip() or 'Mano de obra'
             rows.append({
                 'nombre': nombre,
                 'tipo': 'Mano de obra',
@@ -149,9 +152,10 @@ def _lineas(data: dict) -> list[dict]:
                 'subtotal': monto,
                 'meta': '',
             })
-    else:
+            added_mo = True
+    if not added_mo:
         mo = int(data.get('mano_obra_clp') or 0)
-        if mo > 0 or (data.get('servicio_nombre') or '').strip():
+        if mo > 0:
             titulo = (data.get('servicio_nombre') or '').strip() or 'Mano de obra'
             rows.append({
                 'nombre': titulo,
@@ -709,7 +713,8 @@ def _draw_bottom(pdf: DocumentoPDF, data: dict) -> None:
     lines = []
     if int(data.get('costo_repuestos_clp') or 0) > 0:
         lines.append(('Repuestos', _clp(data.get('costo_repuestos_clp')), False))
-    lines.append(('Mano de obra', _clp(data.get('mano_obra_clp')), False))
+    if int(data.get('mano_obra_clp') or 0) > 0:
+        lines.append(('Mano de obra', _clp(data.get('mano_obra_clp')), False))
     desc = int(data.get('descuento_clp') or 0)
     if desc <= 0:
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (

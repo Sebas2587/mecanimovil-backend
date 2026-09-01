@@ -652,7 +652,41 @@ class CotizacionCanalUtilTestCase(SimpleTestCase):
         self.assertIn('Marca: FIAT', texto)
         self.assertIn('Cilindraje: 1368', texto)
         self.assertIn('Mano de obra (IVA incl.):', texto)
+        self.assertIn('Diagnóstico', texto)
         self.assertIn('Condiciones:', texto)
+
+    def test_formatear_resumen_n_lineas_mano_obra(self):
+        class FakeCot:
+            servicio_nombre = 'Mantención 10.000 km'
+            modalidad = 'taller'
+            vehiculo_marca = 'CHEVROLET'
+            vehiculo_modelo = 'Sail'
+            vehiculo_anio = 2018
+            vehiculo_patente = ''
+            vehiculo_cilindraje = ''
+            tipo_motor_label = ''
+            descripcion_problema = ''
+            repuestos = []
+            costo_repuestos_clp = 0
+            mano_obra_clp = 70000
+            total_clp = 70000
+            duracion_minutos_estimada = None
+            advertencias = []
+            metadata = {
+                'servicios_lineas': [
+                    {'nombre': 'Cambio de aceite y filtro', 'monto_clp': 35000},
+                    {'nombre': 'Rotación de neumáticos', 'monto_clp': 15000},
+                    {'nombre': 'Inspección de frenos', 'monto_clp': 20000},
+                ],
+            }
+            url_publica = 'https://ejemplo.cl/c/abc'
+
+        texto = formatear_resumen_cotizacion(FakeCot())
+        self.assertIn('Cambio de aceite y filtro: $35.000', texto)
+        self.assertIn('Rotación de neumáticos: $15.000', texto)
+        self.assertIn('Inspección de frenos: $20.000', texto)
+        self.assertIn('Subtotal mano de obra: $70.000', texto)
+        self.assertNotIn('Mano de obra (IVA incl.): $70.000', texto)
 
 
 class ContextoCotizacionTestCase(SimpleTestCase):

@@ -70,6 +70,9 @@ def metadata_cotizacion_mensaje(cotizacion: CotizacionCanal, *, estado: str = 'e
             'precio_unitario_clp': max(0, precio),
         })
     advertencias = [str(a).strip() for a in (cotizacion.advertencias or []) if str(a).strip()]
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.mano_obra_lineas import (
+        mano_obra_lineas_publicas,
+    )
     return {
         'tipo': 'cotizacion_canal',
         'cotizacion_id': cotizacion.id,
@@ -83,6 +86,7 @@ def metadata_cotizacion_mensaje(cotizacion: CotizacionCanal, *, estado: str = 'e
         'vehiculo_cilindraje': cotizacion.vehiculo_cilindraje or '',
         'vehiculo_patente': cotizacion.vehiculo_patente or '',
         'tipo_motor_label': cotizacion.tipo_motor_label or '',
+        'mano_obra_lineas': mano_obra_lineas_publicas(cotizacion),
         'mano_obra_clp': int(cotizacion.mano_obra_clp or 0),
         'costo_repuestos_clp': int(cotizacion.costo_repuestos_clp or 0),
         'total_clp': int(cotizacion.total_clp or 0),
@@ -181,10 +185,28 @@ def formatear_resumen_cotizacion(cotizacion: CotizacionCanal) -> str:
             )
         lineas.append(f'Subtotal repuestos: {formatear_moneda_clp(cotizacion.costo_repuestos_clp)}')
 
-    lineas.extend([
-        '',
-        f'Mano de obra (IVA incl.): {formatear_moneda_clp(cotizacion.mano_obra_clp)}',
-    ])
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.mano_obra_lineas import (
+        resolver_mano_obra_lineas,
+    )
+    mo_lineas = [
+        lin for lin in resolver_mano_obra_lineas(cotizacion)
+        if lin.get('monto_clp', 0) > 0
+    ]
+    if mo_lineas:
+        lineas.extend(['', '*Mano de obra (IVA incl.):*'])
+        for lin in mo_lineas:
+            lineas.append(
+                f'• {lin["nombre"]}: {formatear_moneda_clp(lin["monto_clp"])}',
+            )
+        if len(mo_lineas) > 1:
+            lineas.append(
+                f'Subtotal mano de obra: {formatear_moneda_clp(cotizacion.mano_obra_clp)}',
+            )
+    elif int(cotizacion.mano_obra_clp or 0) > 0:
+        lineas.extend([
+            '',
+            f'Mano de obra (IVA incl.): {formatear_moneda_clp(cotizacion.mano_obra_clp)}',
+        ])
     desc = int(getattr(cotizacion, 'descuento_clp', 0) or 0)
     if desc > 0:
         etiqueta = etiqueta_descuento(
