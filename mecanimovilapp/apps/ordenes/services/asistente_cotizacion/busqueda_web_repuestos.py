@@ -1308,11 +1308,52 @@ def _buscar_repuestos_web_tavily(
             marca, url, tienda,
             acierto=compat == 'alta' or calce >= max(2, len(tokens_veh) // 2),
         )
+    # El modelo omite líneas cuando la ficha no menciona el auto. Una ficha de
+    # tienda chilena con monto legible ya es una referencia: vale más que dejar
+    # la línea en $0, así que se arma el hit sin pasar por el modelo.
+    rescatadas = 0
+    for nombre, candidatos in candidatos_por_nombre.items():
+        clave = _clave_fuzzy(nombre)
+        if not clave or clave in out:
+            continue
+        rescate = next(
+            (
+                (c, precio)
+                for c, precio in (
+                    (c, _precio_desde_texto(c.get('content') or '')) for c in candidatos
+                )
+                if _precio_en_rango(precio)
+            ),
+            None,
+        )
+        if not rescate:
+            continue
+        candidato, precio = rescate
+        host = _dominio_de_url(candidato['url'])
+        nombre_prod = str(candidato.get('title') or nombre)[:200]
+        calce = _calce_vehiculo(candidato, tokens_veh)
+        out[clave] = {
+            'nombre_buscado': nombre[:200],
+            'nombre_producto': nombre_prod,
+            'marca_repuesto': _marca_repuesto_valida(_inferir_marca_desde_nombre(nombre_prod)),
+            'precio_clp': precio,
+            'tienda': _tienda_por_dominio(host),
+            'dominio': host[:200],
+            'url': candidato['url'],
+            'compatibilidad': 'media' if calce >= 2 else 'baja',
+            'confianza': 0.7 if calce >= 2 else 0.6,
+        }
+        rescatadas += 1
+
+    sin_hit = [n for n in nombres_limpios if _clave_fuzzy(n) not in out]
     logger.info(
-        'busqueda_web_repuestos[tavily]: %s hits válidos de %s repuestos consultados (%s con candidatos)',
+        'busqueda_web_repuestos[tavily]: %s hits válidos de %s repuestos consultados '
+        '(%s con candidatos, %s rescatados del snippet) sin_hit=%s',
         len(out),
         len(nombres_limpios),
         len(candidatos_por_nombre),
+        rescatadas,
+        sin_hit,
     )
     return out
 

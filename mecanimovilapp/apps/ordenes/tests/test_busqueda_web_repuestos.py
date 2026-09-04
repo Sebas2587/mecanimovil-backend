@@ -698,6 +698,67 @@ class BuscarRepuestosWebTavilyTestCase(SimpleTestCase):
         self.assertEqual(hit['precio_clp'], 18990)
         self.assertEqual(hit['url'], 'https://articulo.mercadolibre.cl/MLC-123-termostato')
 
+    def test_rescata_del_snippet_la_linea_que_el_modelo_omitio(self):
+        """Con 2 repuestos y 1 solo en la respuesta, la otra línea no queda en $0."""
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        tavily_resp = self._fake_tavily_resp([
+            {
+                'title': 'Termostato Gates Fiat Bravo 1.4 T-Jet',
+                'url': 'https://articulo.mercadolibre.cl/MLC-123-termostato',
+                'content': 'Termostato Gates Fiat Bravo T-Jet $ 18.990',
+            },
+            {
+                'title': 'Disco de freno delantero Fiat Bravo',
+                'url': 'https://articulo.mercadolibre.cl/MLC-456-disco',
+                'content': 'Disco ventilado 284mm Fiat Bravo $ 32.500',
+            },
+        ])
+        # El modelo solo reporta el termostato y omite los discos.
+        gemini_resp = self._fake_gemini_resp([
+            {
+                'nombre_buscado': 'Termostato de refrigerante',
+                'encontrado': True,
+                'nombre_producto': 'Termostato Gates Fiat Bravo 1.4 T-Jet',
+                'marca_repuesto': 'Gates',
+                'precio_clp': 18990,
+                'tienda': 'Mercado Libre',
+                'url': 'https://articulo.mercadolibre.cl/MLC-123-termostato',
+                'compatibilidad': 'alta',
+            },
+        ])
+
+        extract_resp = MagicMock()
+        extract_resp.status_code = 200
+        extract_resp.json.return_value = {'results': []}
+
+        def fake_post(url, **kwargs):
+            if url.endswith('/extract'):
+                return extract_resp
+            return tavily_resp if 'tavily.com' in url else gemini_resp
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.requests.post',
+            side_effect=fake_post,
+        ):
+            out = bw._buscar_repuestos_web_tavily(
+                ['Termostato de refrigerante', 'Disco de freno delantero'],
+                marca='Fiat',
+                modelo='Bravo Sport TJet',
+                anio=2010,
+                cilindraje='1.4',
+                tipo_motor='bencinero',
+                servicio_nombre='cambio de termostato y discos de frenos',
+                timeout=20,
+            )
+
+        self.assertEqual(len(out), 2)
+        disco = out[bw._clave_fuzzy('Disco de freno delantero')]
+        self.assertGreater(disco['precio_clp'], 0)
+        self.assertEqual(disco['dominio'], 'articulo.mercadolibre.cl')
+        # Rescate sin verificación del modelo: no se declara compatibilidad alta.
+        self.assertIn(disco['compatibilidad'], ('media', 'baja'))
+
     def test_descarta_url_alucinada_que_tavily_no_devolvio(self):
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
 
