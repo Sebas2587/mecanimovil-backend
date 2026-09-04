@@ -276,6 +276,35 @@ class ValidarResultadoTestCase(SimpleTestCase):
             ),
         )
 
+    def test_solo_acepta_tiendas_chilenas(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+            _es_tienda_chilena,
+        )
+
+        wl = {'www.autoplanet.cl'}
+        self.assertTrue(_es_tienda_chilena('https://gmak.cl/products/pastillas', wl))
+        self.assertTrue(_es_tienda_chilena('https://www.autoplanet.cl/producto/x', wl))
+        # Misma tienda configurada con otro TLD.
+        with override_settings(BUSQUEDA_WEB_REPUESTOS_FUENTES=[{
+            'nombre': 'Mundo Repuestos',
+            'dominio': 'www.mundorepuestos.cl',
+            'plantilla': 'https://www.mundorepuestos.cl/buscar?q={q}',
+        }]):
+            self.assertTrue(_es_tienda_chilena('https://mundorepuestos.com/producto/x', wl))
+        # Un precio en euros o pesos colombianos no orienta al taller.
+        self.assertFalse(_es_tienda_chilena('https://www.autodoc.es/repuestos/x', wl))
+        self.assertFalse(_es_tienda_chilena('https://brakepak.com.co/tienda/x', wl))
+        self.assertFalse(_es_tienda_chilena('https://tienda.imfrisa.com.ec/frenos/x', wl))
+
+    def test_descarta_paginas_sin_ficha(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+            _es_pagina_sin_ficha,
+        )
+
+        self.assertTrue(_es_pagina_sin_ficha('https://www.repuestosboston.cl/blog/consumo-accent'))
+        self.assertTrue(_es_pagina_sin_ficha('https://www.mercadolibre.cl/pagina/zapatafrenos'))
+        self.assertFalse(_es_pagina_sin_ficha('https://gmak.cl/products/pastillas-fiat-uno'))
+
     def test_descarta_marca_placeholder(self):
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
             _validar_resultado,

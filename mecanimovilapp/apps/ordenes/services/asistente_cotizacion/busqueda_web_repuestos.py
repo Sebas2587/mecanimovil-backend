@@ -2,9 +2,10 @@
 
 Arquitectura (en orden de preferencia):
 1. Tavily Search API (free tier, 1000 créditos/mes, sin tarjeta) devuelve
-   resultados REALES (título, url, snippet) filtrados a tiendas chilenas
-   (`include_domains`). Gemini SOLO filtra compatibilidad y da formato al
-   JSON final (sin tool `url_context`, sin re-fetch de páginas).
+   resultados REALES (título, url, snippet) buscando en Chile (`country`), y
+   la validación se queda solo con tiendas .cl que no sean listados. Gemini
+   SOLO filtra compatibilidad y da formato al JSON final (sin tool
+   `url_context`, sin re-fetch de páginas).
 2. Fallback (si no hay `TAVILY_API_KEY`, o Tavily no devuelve nada): Gemini
    con `url_context` sobre URLs de tiendas construidas por nosotros. Es más
    frágil (Mercado Libre bloquea slugs con marca; tiendas tipo SPA como
@@ -283,6 +284,42 @@ def _es_fuente_listado(fuente: dict[str, str]) -> bool:
     )
 
 
+_RE_PATH_NO_FICHA = re.compile(r'/(blog|blogs|noticias|glossary|pagina)/', re.IGNORECASE)
+
+
+# ccTLD de la región: un precio en pesos colombianos o euros no orienta nada.
+_TLDS_FORANEOS = (
+    '.es', '.mx', '.co', '.ec', '.ar', '.pe', '.br', '.uy', '.py', '.bo',
+    '.ve', '.us', '.gt', '.cr', '.pa', '.do',
+)
+
+
+def _raiz_dominio(host: str) -> str:
+    return (host or '').lower().removeprefix('www.').split('.')[0]
+
+
+def _es_tienda_chilena(url: str, whitelist: set[str]) -> bool:
+    """Tienda .cl (o whitelist explícita). Un precio de otro país no orienta nada."""
+    if _dominio_permitido(url, whitelist):
+        return True
+    host = _dominio_de_url(url)
+    if not host or any(host.endswith(t) for t in _TLDS_FORANEOS):
+        return False
+    if host.endswith('.cl'):
+        return True
+    # Misma tienda con otro TLD (mundorepuestos.com ↔ mundorepuestos.cl).
+    return _raiz_dominio(host) in {_raiz_dominio(f['dominio']) for f in _fuentes()}
+
+
+def _es_pagina_sin_ficha(url: str) -> bool:
+    """Blog/landing: puede citar montos que no son el precio de la pieza."""
+    try:
+        path = urlparse(url).path or '/'
+    except Exception:
+        return True
+    return bool(_RE_PATH_NO_FICHA.search(path))
+
+
 def _es_listado_sin_vendedor(url: str) -> bool:
     """True si la URL agrega vendedores: no hay tienda a la que atribuir el precio."""
     host = _dominio_de_url(url)
@@ -459,7 +496,9 @@ def _tienda_por_dominio(dominio: str) -> str:
             return fuente['nombre']
     if 'mercadolibre' in host:
         return 'Mercado Libre'
-    return host[:200]
+    # Tienda fuera de la lista configurada: nombre legible desde el dominio.
+    raiz = host.removeprefix('www.').split('.')[0].replace('-', ' ').strip()
+    return (raiz.title() or host)[:200]
 
 
 def _construir_prompt(
@@ -632,23 +671,9 @@ def tavily_habilitada() -> bool:
     return bool((getattr(settings, 'TAVILY_API_KEY', '') or '').strip())
 
 
-def _tavily_dominios_incluidos() -> list[str]:
-    """Dominios whitelist + variantes (ML separa listado.* de articulo.*)."""
-    doms: set[str] = set()
-    for f in _fuentes():
-        doms |= _dominios_relacionados(f['dominio'])
-    if any('mercadolibre' in d for d in doms):
-        doms |= {
-            'mercadolibre.cl', 'www.mercadolibre.cl',
-            'listado.mercadolibre.cl', 'articulo.mercadolibre.cl',
-        }
-    return sorted(doms)[:300]
-
-
 def _tavily_buscar_uno(
     query: str,
     *,
-    include_domains: list[str],
     max_results: int = 4,
     timeout: int = 20,
 ) -> list[dict[str, str]]:
@@ -667,7 +692,9 @@ def _tavily_buscar_uno(
                 'query': query.strip()[:400],
                 'search_depth': 'basic',
                 'max_results': max(1, min(max_results, 10)),
-                'include_domains': include_domains,
+                # `country` + `include_domains` juntos devuelven 0 resultados, y
+                # restringir a un puñado de tiendas trae landings y blogs en vez
+                # de fichas: se busca Chile abierto y se filtra al validar.
                 'country': 'chile',
                 'include_answer': False,
                 'include_raw_content': False,
@@ -773,7 +800,10 @@ def _construir_prompt_tavily(
     bloques = []
     for nombre, candidatos in candidatos_por_nombre.items():
         lineas = '\n'.join(
-            f'  [{i}] título: {c["title"]}\n      url: {c["url"]}\n      texto: {c["content"][:400]}'
+            f'  [{i}] título: {c["title"]}\n      url: {c["url"]}'
+            # El texto se recorta, así que el monto detectado va explícito.
+            f'\n      precio detectado: {_precio_desde_texto(c.get("content") or "") or "ninguno"}'
+            f'\n      texto: {c["content"][:400]}'
             for i, c in enumerate(candidatos)
         ) or '  (sin resultados)'
         bloques.append(f'Repuesto: "{nombre}"\n{lineas}')
@@ -791,7 +821,8 @@ Para cada repuesto, elige el MEJOR candidato de su lista (por índice):
 1. Si algún candidato es de la categoría correcta, encontrado=true (aunque el título no mencione el modelo exacto).
 2. compatibilidad: alta si el título/texto menciona la marca/modelo del vehículo; media si es la categoría correcta; baja si es genérico.
 3. marca_repuesto = marca de la PIEZA visible en título/texto (Bosch, Gates, NGK, etc.). Si no aparece, "". NUNCA "Original", "GENÉRICO" ni la marca del auto.
-4. precio_clp = precio CLP visible en el texto (entero, sin puntos/símbolo). Si no aparece, 0.
+4. precio_clp = precio CLP del candidato elegido (entero, sin puntos/símbolo). Si el candidato trae "precio detectado", usa ese monto salvo que el texto muestre claramente otro precio de la pieza; si no hay ninguno, 0.
+4b. Entre candidatos de la misma categoría, PREFIERE el que tenga precio; uno sin monto solo si ninguno lo trae (una línea sin precio no le sirve al taller).
 5. url = EXACTAMENTE la url del candidato elegido (cópiala tal cual, no la modifiques).
 6. tienda = quién vende: el sitio según el dominio (AutoPlanet, Refax, etc.) o, si es una publicación de marketplace, el nombre del vendedor visible en el texto.
 7. Si NINGÚN candidato de la lista sirve, encontrado=false.
@@ -863,11 +894,21 @@ def _buscar_repuestos_web_tavily(
     timeout: int,
 ) -> dict[str, dict[str, Any]]:
     """Agregador Tavily (JSON real) + Gemini solo como filtro/formateador."""
-    include_domains = _tavily_dominios_incluidos()
+    whitelist = _dominios_whitelist()
     candidatos_por_nombre: dict[str, list[dict[str, str]]] = {}
     for nombre in nombres_limpios:
         query = ' '.join(p for p in [nombre, marca, _modelo_busqueda(modelo)] if p)
-        candidatos = _tavily_buscar_uno(query, include_domains=include_domains, max_results=4)
+        # Filtra antes del prompt: que el modelo solo vea fichas de tiendas .cl.
+        crudos = [
+            c for c in _tavily_buscar_uno(query, max_results=6)
+            if _es_tienda_chilena(c['url'], whitelist)
+            and not _es_listado_sin_vendedor(c['url'])
+            and not _es_pagina_sin_ficha(c['url'])
+        ]
+        # Las tiendas que cargan el precio por JS no lo muestran en el texto:
+        # primero las fichas donde el monto sí se puede leer (orden estable).
+        crudos.sort(key=lambda c: _precio_desde_texto(c.get('content') or '') == 0)
+        candidatos = crudos[:4]
         if candidatos:
             candidatos_por_nombre[nombre] = candidatos
 
@@ -875,14 +916,25 @@ def _buscar_repuestos_web_tavily(
         logger.info('busqueda_web_repuestos[tavily]: 0 candidatos para %s repuestos', len(nombres_limpios))
         return {}
 
-    # Ficha completa del mejor candidato de cada repuesto: la marca casi nunca
-    # aparece en el título del listado, pero sí en la descripción/specs.
-    top_urls = [candidatos[0]['url'] for candidatos in candidatos_por_nombre.values() if candidatos]
-    fichas = _tavily_extraer(top_urls)
+    # Ficha completa del mejor candidato: la marca casi nunca aparece en el
+    # título. Si ningún candidato del repuesto muestra monto, se piden dos más
+    # para rescatar el precio antes de dejar la línea sin nada.
+    urls_ficha: list[str] = []
+    for candidatos in candidatos_por_nombre.values():
+        if not candidatos:
+            continue
+        urls_ficha.append(candidatos[0]['url'])
+        if all(not _precio_desde_texto(c.get('content') or '') for c in candidatos):
+            urls_ficha.extend(c['url'] for c in candidatos[1:3])
+    fichas = _tavily_extraer(urls_ficha)
     if fichas:
-        for candidatos in candidatos_por_nombre.values():
-            if candidatos and candidatos[0]['url'] in fichas:
-                candidatos[0] = {**candidatos[0], 'content': fichas[candidatos[0]['url']]}
+        for nombre, candidatos in candidatos_por_nombre.items():
+            con_ficha = [
+                {**c, 'content': fichas[c['url']]} if c['url'] in fichas else c
+                for c in candidatos
+            ]
+            con_ficha.sort(key=lambda c: _precio_desde_texto(c.get('content') or '') == 0)
+            candidatos_por_nombre[nombre] = con_ficha
 
     prompt = _construir_prompt_tavily(
         candidatos_por_nombre=candidatos_por_nombre,
@@ -913,7 +965,6 @@ def _buscar_repuestos_web_tavily(
     for cands in candidatos_por_nombre.values():
         urls_reales |= {c['url'] for c in cands}
 
-    whitelist = _dominios_whitelist()
     out: dict[str, dict[str, Any]] = {}
     for raw in resultados:
         item = _normalizar_item_gemini(raw)
@@ -922,10 +973,10 @@ def _buscar_repuestos_web_tavily(
         url = str(item.get('url') or '').strip()
         if url not in urls_reales:
             continue
-        if not _dominio_permitido(url, whitelist):
+        if not _es_tienda_chilena(url, whitelist):
             continue
-        if _es_listado_sin_vendedor(url):
-            # Un listado no dice de qué tienda es el precio: no sirve como fuente.
+        if _es_listado_sin_vendedor(url) or _es_pagina_sin_ficha(url):
+            # Sin ficha de una tienda concreta no hay precio atribuible.
             continue
         host = _dominio_de_url(url)
         marca_it = _marca_repuesto_valida(item.get('marca_repuesto'))
