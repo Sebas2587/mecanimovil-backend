@@ -538,10 +538,21 @@ def aplicar_edicion_cotizacion(cotizacion: CotizacionCanal, data: dict) -> Cotiz
             dias=data.get('dias_validez'),
         )
     if 'repuestos' in data and isinstance(data['repuestos'], list):
-        cotizacion.repuestos = fusionar_repuestos_edicion(
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.familias_sensibles import (
+            anotar_familia_en_linea,
+        )
+
+        fusionadas = fusionar_repuestos_edicion(
             list(cotizacion.repuestos or []),
             data['repuestos'],
         )
+        # El editor no reenvía especificacion_pendiente y el serializer la
+        # completa en False: sin reanotar, la variante pendiente se pierde.
+        cotizacion.repuestos = [
+            anotar_familia_en_linea(rep, descartar_spec_invalida=False)
+            if isinstance(rep, dict) else rep
+            for rep in fusionadas
+        ]
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.mano_obra_lineas import (
         aplicar_mano_obra_en_edicion,
     )

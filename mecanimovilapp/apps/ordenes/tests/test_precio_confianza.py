@@ -8,6 +8,7 @@ from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.categoria_repuest
     clasificar_categoria,
 )
 from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.familias_sensibles import (
+    anotar_familia_en_linea,
     detectar_familia_sensible,
     especificacion_valida,
     linea_especificacion_pendiente,
@@ -52,6 +53,30 @@ class CategoriaYFamiliaTestCase(SimpleTestCase):
         for nombre in ('Filtro de aceite', 'Bomba de agua', 'Correa de distribución'):
             self.assertIsNone(detectar_familia_sensible(nombre), nombre)
             self.assertFalse(linea_especificacion_pendiente({'nombre': nombre}), nombre)
+
+    def test_reanotar_no_borra_lo_que_el_taller_escribio(self):
+        # En el editor la línea se reanota en cada guardado: la marca vuelve a
+        # calcularse, pero el texto a medio escribir no puede desaparecer.
+        linea = {
+            'nombre': 'Discos de freno delanteros',
+            'especificacion': 'Original o equivalente OEM',
+        }
+        editada = anotar_familia_en_linea(linea, descartar_spec_invalida=False)
+        self.assertEqual(editada['familia_sensible'], 'disco_freno')
+        self.assertTrue(editada['especificacion_pendiente'])
+        self.assertEqual(editada['especificacion'], 'Original o equivalente OEM')
+
+        # Con la variante ya elegida la marca se apaga, aunque venía en True.
+        elegida = anotar_familia_en_linea(
+            {**editada, 'especificacion': 'Ventilados 284mm'},
+            descartar_spec_invalida=False,
+        )
+        self.assertFalse(elegida['especificacion_pendiente'])
+
+        # El pipeline de la IA sí descarta la spec que no decide nada.
+        generada = anotar_familia_en_linea(linea)
+        self.assertTrue(generada['especificacion_pendiente'])
+        self.assertNotIn('especificacion', generada)
 
     def test_accesorio_no_hereda_la_familia_del_fluido(self):
         # "aceite" en el nombre no convierte un filtro o una bomba en lubricante.

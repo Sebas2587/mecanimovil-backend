@@ -105,8 +105,8 @@ def linea_necesita_busqueda_web(rep: Any) -> bool:
     if not nombre_repuesto_buscable(str(rep.get('nombre') or '')):
         return False
     fuente = str(rep.get('fuente_marketplace') or '').strip().lower()
-    if bool(rep.get('especificacion_pendiente')):
-        return False
+    # Sin variante decidida igual se busca: la banda sirve de orientación y
+    # resolver_precio_linea deja la línea en $0 hasta que el taller elija.
     if fuente in ('catalogo', 'historial', 'proveedor'):
         return False
     precio = _to_int_clp(rep.get('precio_unitario_clp'))
@@ -843,9 +843,7 @@ def enriquecer_repuestos_cotizacion(
         servicio_nombre=servicio_nombre,
     )
     nombres_lineas = [
-        str(r.get('nombre') or '')
-        for r in repuestos
-        if isinstance(r, dict) and not r.get('especificacion_pendiente')
+        str(r.get('nombre') or '') for r in repuestos if isinstance(r, dict)
     ]
     web_cands = (
         _candidatos_web_cache(

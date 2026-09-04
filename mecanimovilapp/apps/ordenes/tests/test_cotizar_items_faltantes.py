@@ -75,6 +75,15 @@ class CotizarItemsFaltantesServiceTests(TestCase):
         }))
         self.assertFalse(linea_necesita_busqueda_web({'nombre': 'Repuesto', 'precio_unitario_clp': 0}))
 
+    def test_linea_con_variante_pendiente_igual_se_busca(self):
+        """La banda web sirve de orientación aunque falte elegir el tipo."""
+        self.assertTrue(linea_necesita_busqueda_web({
+            'nombre': 'Discos de freno delanteros',
+            'precio_unitario_clp': 0,
+            'familia_sensible': 'disco_freno',
+            'especificacion_pendiente': True,
+        }))
+
     def test_agrega_item_y_usa_precio_de_catalogo(self):
         def _fake_enrich(repuestos, **_kwargs):
             out = []

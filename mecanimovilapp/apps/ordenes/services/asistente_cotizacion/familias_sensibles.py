@@ -130,8 +130,17 @@ def linea_especificacion_pendiente(rep: dict[str, Any] | None) -> bool:
     return not especificacion_valida(familia, spec)
 
 
-def anotar_familia_en_linea(rep: dict[str, Any]) -> dict[str, Any]:
-    """Rellena familia_sensible / especificacion_pendiente sobre una copia."""
+def anotar_familia_en_linea(
+    rep: dict[str, Any],
+    *,
+    descartar_spec_invalida: bool = True,
+) -> dict[str, Any]:
+    """Rellena familia_sensible / especificacion_pendiente sobre una copia.
+
+    Al reanotar una línea que el taller está editando conviene
+    `descartar_spec_invalida=False`: la marca se recalcula igual, pero no se
+    borra el texto que acaba de escribir.
+    """
     next_rep = dict(rep)
     nombre = str(next_rep.get('nombre') or '')
     familia = str(next_rep.get('familia_sensible') or '').strip() or detectar_familia_sensible(nombre)
@@ -143,7 +152,8 @@ def anotar_familia_en_linea(rep: dict[str, Any]) -> dict[str, Any]:
             next_rep['especificacion_pendiente'] = False
         else:
             next_rep['especificacion_pendiente'] = True
-            next_rep.pop('especificacion', None)
+            if descartar_spec_invalida:
+                next_rep.pop('especificacion', None)
     else:
         next_rep.pop('familia_sensible', None)
         if not str(next_rep.get('especificacion') or '').strip():

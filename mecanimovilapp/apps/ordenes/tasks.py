@@ -498,10 +498,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
 
         max_lineas = max(1, int(getattr(settings, 'BUSQUEDA_WEB_REPUESTOS_MAX_LINEAS', 6) or 6))
 
-        candidatos = [
-            rep for rep in reps
-            if linea_necesita_busqueda_web(rep) and not bool(rep.get('especificacion_pendiente'))
-        ]
+        candidatos = [rep for rep in reps if linea_necesita_busqueda_web(rep)]
         # Prioriza líneas sin precio (ítems que el taller acaba de agregar).
         candidatos.sort(key=lambda r: _to_int_clp(r.get('precio_unitario_clp')) > 0)
         candidatos = candidatos[:max_lineas]
