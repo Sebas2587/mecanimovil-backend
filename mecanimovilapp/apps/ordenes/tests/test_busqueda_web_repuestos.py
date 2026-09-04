@@ -52,7 +52,9 @@ class ConstruirUrlsTestCase(SimpleTestCase):
         joined = ' '.join(urls).lower()
         self.assertIn('hyundai', joined)
         self.assertIn('accent', joined)
-        self.assertTrue(any('mercadolibre' in u for u in urls))
+        # Un listado no dice de qué tienda es el precio: solo tiendas con producto.
+        self.assertFalse(any('mercadolibre' in u for u in urls))
+        self.assertTrue(any('autoplanet' in u for u in urls))
 
     def test_respeta_tope_max_urls(self):
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
@@ -86,11 +88,24 @@ class ConstruirUrlsTestCase(SimpleTestCase):
             )
         self.assertEqual(len(urls), 3)
         joined = ' '.join(urls).lower()
-        # Prioriza slugs de categoría ML con buen retrieval (no mashup de 3 piezas).
-        self.assertTrue(any('termostato-auto' in u.lower() for u in urls))
-        self.assertTrue(any('sensor-temperatura-agua' in u.lower() for u in urls))
+        # Una query por pieza, no un mashup de las tres.
+        self.assertTrue(any('termostato' in u.lower() for u in urls))
+        self.assertTrue(any('sensor' in u.lower() for u in urls))
         self.assertNotIn('termostato-de-refrigerante-sensor-de-temperatura', joined)
         self.assertNotIn('2017', joined)
+
+    def test_no_consulta_listados_de_marketplace(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+            construir_urls_busqueda,
+        )
+
+        # Solo ML configurado: sin tienda atribuible no hay nada que consultar.
+        with override_settings(BUSQUEDA_WEB_REPUESTOS_FUENTES=[{
+            'nombre': 'Mercado Libre',
+            'dominio': 'listado.mercadolibre.cl',
+            'plantilla': 'https://listado.mercadolibre.cl/{q}',
+        }]):
+            self.assertEqual(construir_urls_busqueda(['pastillas de freno'], marca='Fiat'), [])
 
 
 @override_settings(
@@ -228,6 +243,38 @@ class ValidarResultadoTestCase(SimpleTestCase):
         self.assertIsNotNone(out)
         self.assertEqual(out.get('marca_repuesto'), 'Gates')
         self.assertIn('mercadolibre', (out.get('dominio') or ''))
+
+    def test_descarta_listado_sin_vendedor(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+            _motivo_descarte,
+            _validar_resultado,
+        )
+
+        # Un listado agrega decenas de vendedores: el precio no tiene tienda.
+        item = {
+            'encontrado': True,
+            'nombre_buscado': 'termostato',
+            'nombre_producto': 'Termostato Gates Suzuki',
+            'marca_repuesto': 'Gates',
+            'precio_clp': 18990,
+            'tienda': 'Mercado Libre',
+            'url': 'https://listado.mercadolibre.cl/termostato-suzuki',
+            'compatibilidad': 'alta',
+        }
+        kwargs = {
+            'urls_ok': {'https://listado.mercadolibre.cl/termostato-suzuki'},
+            'whitelist': {'listado.mercadolibre.cl', 'www.autoplanet.cl'},
+            'dominios_solicitados': {'listado.mercadolibre.cl'},
+        }
+        self.assertIsNone(_validar_resultado(item, **kwargs))
+        self.assertIn('listado_sin_vendedor', _motivo_descarte(item, **kwargs) or '')
+        # La publicación del mismo marketplace sí tiene vendedor: se acepta.
+        self.assertIsNotNone(
+            _validar_resultado(
+                {**item, 'url': 'https://articulo.mercadolibre.cl/MLC-123-termostato'},
+                **kwargs,
+            ),
+        )
 
     def test_descarta_marca_placeholder(self):
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (

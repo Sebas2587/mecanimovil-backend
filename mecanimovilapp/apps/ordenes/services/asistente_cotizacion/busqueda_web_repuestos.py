@@ -203,7 +203,8 @@ def construir_urls_busqueda(
     nombres_limpios = [str(n).strip()[:120] for n in nombres if str(n).strip()]
     if not nombres_limpios:
         return []
-    fuentes = _fuentes()
+    # Los listados quedan fuera: su precio no se puede atribuir a una tienda.
+    fuentes = [f for f in _fuentes() if not _es_fuente_listado(f)]
     if not fuentes:
         return []
 
@@ -265,6 +266,37 @@ def _dominio_de_url(url: str) -> str:
         # Mantener www. si la whitelist lo tiene; también aceptar sin www.
         return host
     return host
+
+
+_HOSTS_LISTADO = ('listado.mercadolibre.cl',)
+# Publicación con vendedor: articulo.mercadolibre.cl/MLC-123, /p/MLC123.
+_RE_PUBLICACION_ML = re.compile(r'/(?:p/)?mlc-?\d', re.IGNORECASE)
+
+
+def _es_fuente_listado(fuente: dict[str, str]) -> bool:
+    """La fuente solo produce listados: no hay tienda a la que atribuir el precio."""
+    dom = str(fuente.get('dominio') or '').lower()
+    if not dom:
+        return False
+    return 'mercadolibre' in dom or any(
+        dom == h or dom.endswith('.' + h) for h in _HOSTS_LISTADO
+    )
+
+
+def _es_listado_sin_vendedor(url: str) -> bool:
+    """True si la URL agrega vendedores: no hay tienda a la que atribuir el precio."""
+    host = _dominio_de_url(url)
+    if not host:
+        return False
+    if any(host == h or host.endswith('.' + h) for h in _HOSTS_LISTADO):
+        return True
+    if 'mercadolibre' in host:
+        try:
+            path = urlparse(url).path or '/'
+        except Exception:
+            return True
+        return not _RE_PUBLICACION_ML.search(path)
+    return False
 
 
 def _dominio_permitido(url: str, whitelist: set[str]) -> bool:
@@ -463,7 +495,7 @@ Reglas:
 1. Si la página muestra un producto de la MISMA CATEGORÍA del repuesto, reporta encontrado=true con el mejor candidato visible (aunque no diga el modelo exacto).
 2. compatibilidad: alta si menciona marca/modelo del auto; media si es la categoría correcta; baja si es genérico del rubro. NO uses encontrado=false solo por duda de año.
 3. marca_repuesto = marca de la PIEZA (Bosch, Gates, Wahler, NGK, etc.). Si no aparece, "". NUNCA "GENÉRICO", "Original", "N/A" ni la marca del auto.
-4. tienda = nombre del sitio (Mercado Libre, AutoPlanet, …). url = link del producto o del listado leído (https).
+4. tienda = quién vende. En una tienda es el sitio (AutoPlanet, Refax, …); en una publicación de marketplace es el nombre del vendedor visible, no "Mercado Libre". url = link de la publicación o producto leído (https).
 5. precio_clp = entero CLP sin puntos ni símbolo.
 6. Solo encontrado=false si en las páginas NO hay ningún producto relacionado a ese repuesto.
 7. Responde SOLO JSON válido (sin markdown):
@@ -525,15 +557,15 @@ def _motivo_descarte(
     if not _dominio_permitido(url, whitelist):
         return f'dominio_fuera_whitelist:{_dominio_de_url(url)}'
     host = _dominio_de_url(url)
+    if _es_listado_sin_vendedor(url):
+        return f'listado_sin_vendedor:{host}'
     doms_req = dominios_solicitados or set()
     retrieval_ok = _host_relacionado_con(host, urls_ok) or (url in urls_ok)
     solicitado_ok = _host_relacionado_con(host, doms_req)
-    # Si hubo retrieval o pedimos leer tiendas whitelist, aceptar producto
-    # del mismo ecosistema (p. ej. articulo.mercadolibre.cl tras listado.*).
-    contexto_ok = bool(urls_ok or doms_req)
-    if not retrieval_ok and not solicitado_ok and not (
-        contexto_ok and _dominio_permitido(url, whitelist)
-    ):
+    # El host tiene que venir de una URL leída o pedida (así entra
+    # articulo.mercadolibre.cl tras leer listado.*). Estar en la whitelist no
+    # basta: el modelo reportaba productos de tiendas que nunca se leyeron.
+    if not retrieval_ok and not solicitado_ok:
         return f'dominio_sin_contexto:{host}'
     nombre_prod = str(item.get('nombre_producto') or item.get('nombre_buscado') or '').strip()
     if not nombre_prod:
@@ -761,7 +793,7 @@ Para cada repuesto, elige el MEJOR candidato de su lista (por índice):
 3. marca_repuesto = marca de la PIEZA visible en título/texto (Bosch, Gates, NGK, etc.). Si no aparece, "". NUNCA "Original", "GENÉRICO" ni la marca del auto.
 4. precio_clp = precio CLP visible en el texto (entero, sin puntos/símbolo). Si no aparece, 0.
 5. url = EXACTAMENTE la url del candidato elegido (cópiala tal cual, no la modifiques).
-6. tienda = nombre del sitio según el dominio de la url (Mercado Libre, AutoPlanet, etc.).
+6. tienda = quién vende: el sitio según el dominio (AutoPlanet, Refax, etc.) o, si es una publicación de marketplace, el nombre del vendedor visible en el texto.
 7. Si NINGÚN candidato de la lista sirve, encontrado=false.
 8. Responde SOLO JSON válido (sin markdown):
 {{
@@ -891,6 +923,9 @@ def _buscar_repuestos_web_tavily(
         if url not in urls_reales:
             continue
         if not _dominio_permitido(url, whitelist):
+            continue
+        if _es_listado_sin_vendedor(url):
+            # Un listado no dice de qué tienda es el precio: no sirve como fuente.
             continue
         host = _dominio_de_url(url)
         marca_it = _marca_repuesto_valida(item.get('marca_repuesto'))
