@@ -149,6 +149,16 @@ def _modelo_busqueda(modelo: str) -> str:
     return tokens[0] if tokens else str(modelo or '').strip()
 
 
+def _modelo_busqueda_completo(modelo: str) -> str:
+    """Modelo con su variante (BRAVO SPORT TJET → Bravo Sport Tjet).
+
+    La variante manda en el precio: un Bravo T-Jet 1.4 turbo no lleva los
+    mismos discos que un Bravo base.
+    """
+    tokens = [t for t in str(modelo or '').strip().split() if t and not t.replace('.', '').isdigit()]
+    return ' '.join(tokens[:3]).title() if tokens else str(modelo or '').strip()
+
+
 def _nombre_busqueda_corto(nombre: str) -> str:
     """'Termostato de refrigerante' → 'termostato refrigerante' (máx 3 tokens)."""
     raw = unicodedata.normalize('NFD', (nombre or '').lower())
@@ -270,8 +280,9 @@ def _dominio_de_url(url: str) -> str:
 
 
 _HOSTS_LISTADO = ('listado.mercadolibre.cl',)
-# Publicación con vendedor: articulo.mercadolibre.cl/MLC-123, /p/MLC123.
-_RE_PUBLICACION_ML = re.compile(r'/(?:p/)?mlc-?\d', re.IGNORECASE)
+# Publicación con vendedor: articulo.mercadolibre.cl/MLC-123, /p/MLC123 y las
+# fichas de catálogo /up/MLCU123 (muestran precio y vendedor del buy box).
+_RE_PUBLICACION_ML = re.compile(r'/(?:p|up)/mlc[a-z]?\d|/mlc-?\d', re.IGNORECASE)
 
 
 def _es_fuente_listado(fuente: dict[str, str]) -> bool:
@@ -294,11 +305,15 @@ _TLDS_FORANEOS = (
 )
 
 
+# Euros, dólares o pesos de otro país: la ficha no cotiza en CLP.
+_RE_MONEDA_FORANEA = re.compile(r'(€|EUR\b|US\s?\$|USD\b|MXN\b|COP\b|ARS\b|R\$)', re.IGNORECASE)
+
+
 def _raiz_dominio(host: str) -> str:
     return (host or '').lower().removeprefix('www.').split('.')[0]
 
 
-def _es_tienda_chilena(url: str, whitelist: set[str]) -> bool:
+def _es_tienda_chilena(url: str, whitelist: set[str], texto: str = '') -> bool:
     """Tienda .cl (o whitelist explícita). Un precio de otro país no orienta nada."""
     if _dominio_permitido(url, whitelist):
         return True
@@ -308,7 +323,11 @@ def _es_tienda_chilena(url: str, whitelist: set[str]) -> bool:
     if host.endswith('.cl'):
         return True
     # Misma tienda con otro TLD (mundorepuestos.com ↔ mundorepuestos.cl).
-    return _raiz_dominio(host) in {_raiz_dominio(f['dominio']) for f in _fuentes()}
+    if _raiz_dominio(host) in {_raiz_dominio(f['dominio']) for f in _fuentes()}:
+        return True
+    # TLD genérico (.shop, .com): la búsqueda ya viene acotada a Chile, así que
+    # basta con que la ficha cotice en pesos y no en otra moneda.
+    return bool(texto) and _precio_desde_texto(texto) > 0 and not _RE_MONEDA_FORANEA.search(texto)
 
 
 def _es_pagina_sin_ficha(url: str) -> bool:
@@ -897,11 +916,14 @@ def _buscar_repuestos_web_tavily(
     whitelist = _dominios_whitelist()
     candidatos_por_nombre: dict[str, list[dict[str, str]]] = {}
     for nombre in nombres_limpios:
-        query = ' '.join(p for p in [nombre, marca, _modelo_busqueda(modelo)] if p)
+        # Con la variante y la cilindrada la ficha corresponde a ESTE auto.
+        query = ' '.join(
+            p for p in [nombre, marca, _modelo_busqueda_completo(modelo), cilindraje] if p
+        )
         # Filtra antes del prompt: que el modelo solo vea fichas de tiendas .cl.
         crudos = [
             c for c in _tavily_buscar_uno(query, max_results=6)
-            if _es_tienda_chilena(c['url'], whitelist)
+            if _es_tienda_chilena(c['url'], whitelist, c.get('content') or '')
             and not _es_listado_sin_vendedor(c['url'])
             and not _es_pagina_sin_ficha(c['url'])
         ]
@@ -971,9 +993,8 @@ def _buscar_repuestos_web_tavily(
         if not item or not bool(item.get('encontrado')):
             continue
         url = str(item.get('url') or '').strip()
+        # Los candidatos ya pasaron el filtro de tienda antes del prompt.
         if url not in urls_reales:
-            continue
-        if not _es_tienda_chilena(url, whitelist):
             continue
         if _es_listado_sin_vendedor(url) or _es_pagina_sin_ficha(url):
             # Sin ficha de una tienda concreta no hay precio atribuible.
@@ -1258,7 +1279,8 @@ def hits_cache_vigentes_para_nombres(
         fuzzy = _clave_fuzzy(nombre)
         if not fuzzy:
             continue
-        claves_objetivo[fuzzy] = nombre
+        # Solo claves con vehículo: el precio de un Fiat Uno no sirve para un
+        # Bravo T-Jet, y la clave suelta por nombre los mezclaba.
         claves_objetivo[clave_cache_repuesto(
             nombre,
             marca_vehiculo=marca_vehiculo,

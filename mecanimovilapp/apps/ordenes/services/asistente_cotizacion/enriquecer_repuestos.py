@@ -664,7 +664,7 @@ def _candidatos_web_cache(
     """Hits vigentes desde PrecioRepuestoWeb (rellenado por Celery/Gemini URL Context)."""
     try:
         from mecanimovilapp.apps.ordenes.models import PrecioRepuestoWeb
-        from .busqueda_web_repuestos import clave_cache_repuesto
+        from .busqueda_web_repuestos import _es_listado_sin_vendedor, clave_cache_repuesto
 
         now = timezone.now()
         qs = PrecioRepuestoWeb.objects.filter(expira_en__gt=now)
@@ -673,7 +673,6 @@ def _candidatos_web_cache(
             for nom in nombres:
                 if not str(nom or '').strip():
                     continue
-                claves.append(_clave_fuzzy(nom)[:240])
                 claves.append(clave_cache_repuesto(
                     nom,
                     marca_vehiculo=marca_vehiculo,
@@ -696,7 +695,14 @@ def _candidatos_web_cache(
             if dominio in ('historial-taller', 'historial_taller'):
                 if not clave_historial_cubre_vehiculo(clave, marca_vehiculo, modelo_vehiculo):
                     continue
-            elif veh_norm and '|' in clave and veh_norm not in _norm(clave):
+            elif '|' not in clave:
+                # Fila legada sin vehículo en la clave: no se puede atribuir a
+                # este auto y mezclaba precios entre modelos.
+                continue
+            elif veh_norm and veh_norm not in _norm(clave):
+                continue
+            elif _es_listado_sin_vendedor(str(row.url or '') or f'https://{dominio}/'):
+                # Fila cacheada de un listado: no dice de qué tienda es el precio.
                 continue
             marca = _marca_repuesto_valida(row.marca_repuesto)
             clave_nombre = clave.split('|', 1)[0] if '|' in clave else clave

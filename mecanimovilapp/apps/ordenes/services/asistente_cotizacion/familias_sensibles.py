@@ -12,6 +12,7 @@ FAMILIAS_SENSIBLES: dict[str, dict[str, Any]] = {
         'label': 'Tipo de bujía',
         'opciones': ['Cobre', 'Platino', 'Iridio'],
         'keywords': ('bujia', 'bujias', 'spark plug'),
+        'excluye': ('cable', 'bobina', 'pozo', 'conector', 'llave'),
     },
     'pastilla_freno': {
         'categoria': 'frenos',
@@ -25,18 +26,22 @@ FAMILIAS_SENSIBLES: dict[str, dict[str, Any]] = {
         'opciones': ['Mineral', 'Semi-sintético', 'Sintético'],
         'requiere_viscosidad': True,
         'keywords': ('aceite', 'lubricante'),
+        # Un filtro o una bomba de aceite no se piden por viscosidad.
+        'excluye': ('filtro', 'bomba', 'carter', 'enfriador', 'sensor', 'tapa', 'reten'),
     },
     'amortiguador': {
         'categoria': 'suspension',
         'label': 'Tipo',
         'opciones': ['Hidráulico', 'Gas'],
         'keywords': ('amortiguador', 'amortiguadores'),
+        'excluye': ('soporte', 'base', 'goma', 'tope', 'buje', 'kit de montaje'),
     },
     'bateria': {
         'categoria': 'bateria',
         'label': 'Tecnología',
         'opciones': ['Convencional', 'EFB', 'AGM'],
         'keywords': ('bateria', 'baterias', 'acumulador'),
+        'excluye': ('cable', 'borne', 'porta', 'soporte', 'sensor'),
     },
     'neumatico': {
         'categoria': 'otros',
@@ -65,6 +70,8 @@ def detectar_familia_sensible(nombre: str) -> str | None:
     if not n:
         return None
     for clave, meta in FAMILIAS_SENSIBLES.items():
+        if any(ex in n for ex in meta.get('excluye') or ()):
+            continue
         for key in meta.get('keywords') or ():
             if key in n:
                 return clave
@@ -113,8 +120,11 @@ def linea_especificacion_pendiente(rep: dict[str, Any] | None) -> bool:
         return False
     if bool(rep.get('especificacion_pendiente')):
         return True
-    familia = str(rep.get('familia_sensible') or detectar_familia_sensible(str(rep.get('nombre') or '')))
-    if not familia:
+    familia = (
+        str(rep.get('familia_sensible') or '').strip()
+        or detectar_familia_sensible(str(rep.get('nombre') or ''))
+    )
+    if not familia or familia not in FAMILIAS_SENSIBLES:
         return False
     spec = str(rep.get('especificacion') or '').strip()
     return not especificacion_valida(familia, spec)

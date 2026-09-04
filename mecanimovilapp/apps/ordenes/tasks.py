@@ -589,29 +589,6 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
             )
             upserts += 1
 
-        # También indexar por clave fuzzy corta para match en enrich.
-        for clave_fuzzy, hit in (resultados or {}).items():
-            if not isinstance(hit, dict):
-                continue
-            dominio = str(hit.get('dominio') or '').strip()[:200]
-            if not dominio or not clave_fuzzy:
-                continue
-            # Shortcut: fila adicional solo con clave de nombre (match más fácil).
-            PrecioRepuestoWeb.objects.update_or_create(
-                clave=clave_fuzzy[:240],
-                dominio=dominio,
-                defaults={
-                    'nombre_producto': str(hit.get('nombre_producto') or '')[:200],
-                    'marca_repuesto': str(hit.get('marca_repuesto') or '')[:100],
-                    'precio_clp': int(hit.get('precio_clp') or 0),
-                    'tienda': str(hit.get('tienda') or '')[:200],
-                    'url': str(hit.get('url') or '')[:500],
-                    'compatibilidad': str(hit.get('compatibilidad') or '')[:20],
-                    'confianza': float(hit.get('confianza') or 0.8),
-                    'expira_en': expira,
-                },
-            )
-
         reps_enriquecidos = enriquecer_repuestos_cotizacion(
             reps,
             marca_vehiculo=cot.vehiculo_marca or '',

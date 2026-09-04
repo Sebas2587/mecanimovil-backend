@@ -47,6 +47,21 @@ class CategoriaYFamiliaTestCase(SimpleTestCase):
             'especificacion': 'Iridio',
         }))
 
+    def test_pieza_sin_familia_no_queda_pendiente(self):
+        # Sin familia sensible no hay variante que decidir: la línea cobra su precio.
+        for nombre in ('Filtro de aceite', 'Bomba de agua', 'Correa de distribución'):
+            self.assertIsNone(detectar_familia_sensible(nombre), nombre)
+            self.assertFalse(linea_especificacion_pendiente({'nombre': nombre}), nombre)
+
+    def test_accesorio_no_hereda_la_familia_del_fluido(self):
+        # "aceite" en el nombre no convierte un filtro o una bomba en lubricante.
+        self.assertIsNone(detectar_familia_sensible('Filtro de aceite'))
+        self.assertIsNone(detectar_familia_sensible('Bomba de aceite'))
+        self.assertIsNone(detectar_familia_sensible('Cable de bujía'))
+        self.assertIsNone(detectar_familia_sensible('Soporte de amortiguador'))
+        self.assertEqual(detectar_familia_sensible('Aceite de motor 5W-30'), 'aceite_motor')
+        self.assertEqual(detectar_familia_sensible('Amortiguador delantero'), 'amortiguador')
+
 
 class BackfillCertezaTestCase(SimpleTestCase):
     def test_catalogo_es_confirmado(self):
