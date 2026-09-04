@@ -965,7 +965,9 @@ def _tavily_extraer(urls: list[str], *, timeout: int = 25) -> dict[str, str]:
     return out
 
 
-_PRECIO_CLP_RE = re.compile(r'\$\s?([\d.,]{4,10})')
+# El `$` no puede venir pegado a letras: así "US$ 45.00" y "R$ 45,00" no entran
+# como pesos. "CLP" sí es prefijo válido, con o sin signo.
+_PRECIO_CLP_RE = re.compile(r'(?:(?<![A-Za-z])\$|CLP\s?\$?)\s?([\d.,]{4,10})')
 
 
 def _precio_desde_texto(texto: str) -> int:
@@ -1153,6 +1155,26 @@ def _ordenar_candidatos(
     return sorted(candidatos, key=rango)
 
 
+def _candidatos_de_linea(
+    candidatos_por_nombre: dict[str, list[dict[str, Any]]],
+    nombre_buscado: Any,
+) -> list[dict[str, Any]]:
+    """Candidatos de la línea tolerando que el modelo reescriba el nombre."""
+    nombre = str(nombre_buscado or '').strip()
+    if not nombre:
+        return []
+    exacto = candidatos_por_nombre.get(nombre)
+    if exacto is not None:
+        return exacto
+    clave = _clave_fuzzy(nombre)
+    if not clave:
+        return []
+    for original, candidatos in candidatos_por_nombre.items():
+        if _clave_fuzzy(original) == clave:
+            return candidatos
+    return []
+
+
 def _buscar_repuestos_web_tavily(
     nombres_limpios: list[str],
     *,
@@ -1255,7 +1277,9 @@ def _buscar_repuestos_web_tavily(
             continue
         if not marca_it:
             marca_it = _marca_repuesto_valida(_inferir_marca_desde_nombre(nombre_prod))
-        candidatos_linea = candidatos_por_nombre.get(item.get('nombre_buscado') or '', [])
+        # El modelo parafrasea el nombre buscado; con igualdad exacta la lista
+        # quedaba vacía y los dos rescates de abajo no hacían nada.
+        candidatos_linea = _candidatos_de_linea(candidatos_por_nombre, item.get('nombre_buscado'))
         precio = _to_int_clp(item.get('precio_clp'))
         if not _precio_en_rango(precio):
             # Backstop: intenta extraer el precio del snippet original.
@@ -1275,6 +1299,10 @@ def _buscar_repuestos_web_tavily(
                 host = _dominio_de_url(url)
                 nombre_prod = str(candidato_alt.get('title') or nombre_prod)[:200]
                 item['tienda'] = ''
+        if not _precio_en_rango(precio):
+            # Guardar la línea en $0 envenena el cache y la deja igual sin
+            # referencia; se descarta para que el rescate del snippet la tome.
+            continue
         tienda = str(item.get('tienda') or '').strip()[:200] or _tienda_por_dominio(host)
         compat = str(item.get('compatibilidad') or '').strip().lower()[:20]
         if compat not in ('alta', 'media', 'baja'):

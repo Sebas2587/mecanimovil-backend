@@ -698,6 +698,107 @@ class BuscarRepuestosWebTavilyTestCase(SimpleTestCase):
         self.assertEqual(hit['precio_clp'], 18990)
         self.assertEqual(hit['url'], 'https://articulo.mercadolibre.cl/MLC-123-termostato')
 
+    def test_no_guarda_el_hit_cuando_no_hay_monto_en_ninguna_parte(self):
+        """Una fila con precio 0 envenena el cache: mejor no dejar rastro."""
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        tavily_resp = self._fake_tavily_resp([
+            {
+                'title': 'Termostato Fiat Bravo',
+                'url': 'https://articulo.mercadolibre.cl/MLC-123-termostato',
+                'content': 'Termostato para Fiat Bravo. Consultar disponibilidad.',
+            },
+        ])
+        gemini_resp = self._fake_gemini_resp([
+            {
+                'nombre_buscado': 'Termostato de refrigerante',
+                'encontrado': True,
+                'nombre_producto': 'Termostato Fiat Bravo',
+                'marca_repuesto': 'Gates',
+                'precio_clp': 0,
+                'tienda': 'Mercado Libre',
+                'url': 'https://articulo.mercadolibre.cl/MLC-123-termostato',
+                'compatibilidad': 'alta',
+            },
+        ])
+
+        extract_resp = MagicMock()
+        extract_resp.status_code = 200
+        extract_resp.json.return_value = {'results': []}
+
+        def fake_post(url, **kwargs):
+            if url.endswith('/extract'):
+                return extract_resp
+            return tavily_resp if 'tavily.com' in url else gemini_resp
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.requests.post',
+            side_effect=fake_post,
+        ):
+            out = bw._buscar_repuestos_web_tavily(
+                ['Termostato de refrigerante'],
+                marca='Fiat',
+                modelo='Bravo Sport TJet',
+                anio=2010,
+                cilindraje='1.4',
+                tipo_motor='',
+                servicio_nombre='',
+                timeout=20,
+            )
+
+        self.assertEqual(out, {})
+
+    def test_recupera_el_precio_aunque_el_modelo_reescriba_el_nombre(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        tavily_resp = self._fake_tavily_resp([
+            {
+                'title': 'Termostato Gates Fiat Bravo',
+                'url': 'https://articulo.mercadolibre.cl/MLC-123-termostato',
+                'content': 'Termostato Gates Fiat Bravo $ 18.990',
+            },
+        ])
+        # El modelo devuelve el nombre con otra redacción y sin monto.
+        gemini_resp = self._fake_gemini_resp([
+            {
+                'nombre_buscado': 'termostato  de   refrigerante',
+                'encontrado': True,
+                'nombre_producto': 'Termostato Gates Fiat Bravo',
+                'marca_repuesto': 'Gates',
+                'precio_clp': None,
+                'tienda': 'Mercado Libre',
+                'url': 'https://articulo.mercadolibre.cl/MLC-123-termostato',
+                'compatibilidad': 'alta',
+            },
+        ])
+
+        extract_resp = MagicMock()
+        extract_resp.status_code = 200
+        extract_resp.json.return_value = {'results': []}
+
+        def fake_post(url, **kwargs):
+            if url.endswith('/extract'):
+                return extract_resp
+            return tavily_resp if 'tavily.com' in url else gemini_resp
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.requests.post',
+            side_effect=fake_post,
+        ):
+            out = bw._buscar_repuestos_web_tavily(
+                ['Termostato de refrigerante'],
+                marca='Fiat',
+                modelo='Bravo Sport TJet',
+                anio=2010,
+                cilindraje='1.4',
+                tipo_motor='',
+                servicio_nombre='',
+                timeout=20,
+            )
+
+        self.assertEqual(len(out), 1)
+        self.assertEqual(next(iter(out.values()))['precio_clp'], 18990)
+
     def test_rescata_del_snippet_la_linea_que_el_modelo_omitio(self):
         """Con 2 repuestos y 1 solo en la respuesta, la otra línea no queda en $0."""
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
@@ -972,3 +1073,29 @@ class BuscarRepuestosWebTavilyTestCase(SimpleTestCase):
 
         self.assertEqual(calls['tavily'], 1)
         self.assertEqual(calls['gemini_with_tools'], 1)
+
+
+class PrecioDesdeTextoTestCase(SimpleTestCase):
+    """El monto del snippet alimenta la cotización: no puede ser de otra moneda."""
+
+    def test_acepta_pesos_con_signo_o_prefijo_clp(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        self.assertEqual(bw._precio_desde_texto('Termostato $ 18.990 envío gratis'), 18990)
+        self.assertEqual(bw._precio_desde_texto('Disco ventilado 284mm $32.500'), 32500)
+        self.assertEqual(bw._precio_desde_texto('CLP 34.990'), 34990)
+        self.assertEqual(bw._precio_desde_texto('CLP$ 34.990'), 34990)
+
+    def test_ignora_montos_en_moneda_extranjera(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        self.assertEqual(bw._precio_desde_texto('US$ 45.00 shipping worldwide'), 0)
+        self.assertEqual(bw._precio_desde_texto('USD 45.00'), 0)
+        self.assertEqual(bw._precio_desde_texto('R$ 4.500'), 0)
+        self.assertEqual(bw._precio_desde_texto('€ 45.00'), 0)
+
+    def test_sin_monto_devuelve_cero(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        self.assertEqual(bw._precio_desde_texto('Consultar disponibilidad'), 0)
+        self.assertEqual(bw._precio_desde_texto(''), 0)
