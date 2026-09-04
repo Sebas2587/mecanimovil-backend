@@ -2289,6 +2289,11 @@ class CotizacionCanal(models.Model):
         ('cancelada', 'Cancelada'),
     ]
 
+    TIPO_DOCUMENTO_CHOICES = [
+        ('estimacion', 'Estimación'),
+        ('cotizacion', 'Cotización firme'),
+    ]
+
     MODALIDAD_CHOICES = [
         ('taller', 'En taller'),
         ('domicilio', 'A domicilio'),
@@ -2329,6 +2334,18 @@ class CotizacionCanal(models.Model):
         related_name='cotizaciones_canal_creadas',
     )
     estado = models.CharField(max_length=20, choices=ESTADO_CHOICES, default='borrador', db_index=True)
+    tipo_documento = models.CharField(
+        max_length=12,
+        choices=TIPO_DOCUMENTO_CHOICES,
+        default='estimacion',
+        help_text='Estimación preliminar o cotización firme.',
+    )
+    tipo_documento_emitido = models.CharField(
+        max_length=12,
+        blank=True,
+        default='',
+        help_text='Snapshot del tipo al enviar. No se reescribe.',
+    )
     modalidad = models.CharField(max_length=20, choices=MODALIDAD_CHOICES, default='taller')
     direccion_servicio = models.CharField(
         max_length=500,
@@ -2536,7 +2553,7 @@ class PrecioRepuestoWeb(models.Model):
     clave = models.CharField(
         max_length=240,
         db_index=True,
-        help_text='Clave normalizada nombre+marca+modelo+anio del vehículo.',
+        help_text='Clave normalizada nombre+spec+marca+modelo+anio+motor+cilindrada.',
     )
     nombre_producto = models.CharField(max_length=200, blank=True, default='')
     marca_repuesto = models.CharField(max_length=100, blank=True, default='')
@@ -2546,6 +2563,11 @@ class PrecioRepuestoWeb(models.Model):
     url = models.URLField(max_length=500, blank=True, default='')
     compatibilidad = models.CharField(max_length=20, blank=True, default='')
     confianza = models.FloatField(default=0.0)
+    especificacion = models.CharField(max_length=120, blank=True, default='')
+    codigo_parte = models.CharField(max_length=60, blank=True, default='')
+    tipo_motor = models.CharField(max_length=20, blank=True, default='')
+    cilindraje = models.CharField(max_length=20, blank=True, default='')
+    categoria = models.CharField(max_length=40, blank=True, default='')
     consultado_en = models.DateTimeField(auto_now=True)
     expira_en = models.DateTimeField(db_index=True)
 
@@ -2565,3 +2587,150 @@ class PrecioRepuestoWeb(models.Model):
 
     def __str__(self):
         return f'{self.clave} @ {self.dominio} (${self.precio_clp})'
+
+
+class FactorMercadoCategoria(models.Model):
+    """Multiplicador marketplace → mostrador por familia de pieza."""
+
+    categoria = models.CharField(max_length=40, unique=True)
+    factor = models.DecimalField(max_digits=4, decimal_places=2, default=Decimal('1.50'))
+    muestras = models.PositiveIntegerField(default=0)
+    actualizado_en = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _('factor mercado categoría')
+        verbose_name_plural = _('factores mercado categoría')
+
+    def __str__(self):
+        return f'{self.categoria} ×{self.factor}'
+
+
+def _norm_nombre_proveedor(nombre: str) -> str:
+    import re
+    import unicodedata
+
+    t = unicodedata.normalize('NFD', (nombre or '').strip().lower())
+    t = ''.join(c for c in t if unicodedata.category(c) != 'Mn')
+    t = re.sub(r'[^a-z0-9]+', ' ', t)
+    return re.sub(r'\s+', ' ', t).strip()[:120]
+
+
+class ProveedorRepuestos(models.Model):
+    """Casa de repuestos del taller (no es un marketplace global)."""
+
+    TIPO_CHOICES = (
+        ('mostrador', 'Casa de repuestos'),
+        ('distribuidor', 'Distribuidor'),
+        ('concesionario', 'Concesionario / oficial'),
+        ('marketplace', 'Marketplace / web'),
+    )
+    ENTREGA_CHOICES = (
+        ('retiro', 'Retiro'),
+        ('despacho', 'Despacho'),
+        ('ambos', 'Ambos'),
+    )
+
+    taller = models.ForeignKey(
+        'usuarios.Taller',
+        on_delete=models.CASCADE,
+        related_name='proveedores_repuestos',
+    )
+    nombre = models.CharField(max_length=120)
+    nombre_norm = models.CharField(max_length=120, db_index=True)
+    tipo = models.CharField(max_length=20, choices=TIPO_CHOICES, default='mostrador')
+    comuna = models.CharField(max_length=80, blank=True, default='')
+    telefono = models.CharField(max_length=32, blank=True, default='')
+    direccion = models.CharField(max_length=200, blank=True, default='')
+    dominio = models.CharField(max_length=200, blank=True, default='')
+    descuento_pct = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    dias_credito = models.PositiveSmallIntegerField(default=0)
+    entrega = models.CharField(max_length=12, choices=ENTREGA_CHOICES, default='retiro')
+    es_preferido = models.BooleanField(default=False)
+    activo = models.BooleanField(default=True)
+    notas = models.TextField(blank=True, default='')
+    creado_en = models.DateTimeField(auto_now_add=True)
+    actualizado_en = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _('proveedor de repuestos')
+        verbose_name_plural = _('proveedores de repuestos')
+        constraints = [
+            models.UniqueConstraint(
+                fields=['taller', 'nombre_norm'],
+                name='ordenes_provrep_taller_nombre_uniq',
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        self.nombre_norm = _norm_nombre_proveedor(self.nombre)
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f'{self.nombre} ({self.taller_id})'
+
+
+class PrecioProveedorTaller(models.Model):
+    """Precio que el taller pagó (costo) por una pieza, atado a un proveedor."""
+
+    ORIGEN_CHOICES = (
+        ('compra', 'Compra registrada'),
+        ('cotizacion_proveedor', 'Cotización del proveedor'),
+        ('lista_precios', 'Lista de precios'),
+        ('manual', 'Ingreso manual'),
+    )
+
+    taller = models.ForeignKey(
+        'usuarios.Taller',
+        on_delete=models.CASCADE,
+        related_name='precios_repuestos',
+    )
+    proveedor = models.ForeignKey(
+        ProveedorRepuestos,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='precios',
+    )
+    clave_fuzzy = models.CharField(max_length=200, db_index=True)
+    nombre_repuesto = models.CharField(max_length=200)
+    marca_repuesto = models.CharField(max_length=100, blank=True, default='')
+    codigo_parte = models.CharField(max_length=60, blank=True, default='', db_index=True)
+    especificacion = models.CharField(max_length=120, blank=True, default='')
+    categoria = models.CharField(max_length=40, blank=True, default='')
+    precio_clp = models.PositiveIntegerField()
+    precio_venta_clp = models.PositiveIntegerField(default=0)
+    iva_incluido = models.BooleanField(default=True)
+    vehiculo_marca = models.CharField(max_length=80, blank=True, default='')
+    vehiculo_modelo = models.CharField(max_length=80, blank=True, default='')
+    vehiculo_anio = models.PositiveSmallIntegerField(null=True, blank=True)
+    tipo_motor = models.CharField(max_length=20, blank=True, default='')
+    cilindraje = models.CharField(max_length=20, blank=True, default='')
+    origen = models.CharField(max_length=24, choices=ORIGEN_CHOICES, default='compra')
+    cotizacion_origen = models.ForeignKey(
+        CotizacionCanal,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='precios_proveedor_registrados',
+    )
+    precio_referencia_web_clp = models.PositiveIntegerField(default=0)
+    vigente_hasta = models.DateTimeField(null=True, blank=True)
+    registrado_en = models.DateTimeField(auto_now_add=True)
+    registrado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='precios_repuestos_registrados',
+    )
+
+    class Meta:
+        verbose_name = _('precio proveedor taller')
+        verbose_name_plural = _('precios proveedor taller')
+        indexes = [
+            models.Index(fields=['taller', 'clave_fuzzy', '-registrado_en']),
+            models.Index(fields=['taller', 'codigo_parte']),
+        ]
+
+    def __str__(self):
+        return f'{self.nombre_repuesto} ${self.precio_clp} ({self.taller_id})'

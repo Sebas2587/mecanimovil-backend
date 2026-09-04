@@ -9,6 +9,20 @@ from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.cotizar_items_fal
 )
 
 
+class AlternativaRepuestoSerializer(serializers.Serializer):
+    etiqueta = serializers.ChoiceField(
+        choices=('economica', 'equivalente', 'premium'),
+        required=False,
+        default='equivalente',
+    )
+    nombre = serializers.CharField(max_length=200, required=False, allow_blank=True, default='')
+    marca_repuesto = serializers.CharField(required=False, allow_blank=True, default='')
+    especificacion = serializers.CharField(required=False, allow_blank=True, default='')
+    precio_clp = serializers.IntegerField(required=False, min_value=0, default=0)
+    proveedor_nombre = serializers.CharField(required=False, allow_blank=True, default='')
+    url_producto = serializers.CharField(required=False, allow_blank=True, default='')
+
+
 class RepuestoCotizacionSerializer(serializers.Serializer):
     id = serializers.CharField(required=False, allow_blank=True)
     nombre = serializers.CharField(max_length=200)
@@ -25,6 +39,26 @@ class RepuestoCotizacionSerializer(serializers.Serializer):
     precio_estimado = serializers.BooleanField(required=False, default=True)
     precio_referencia_mercado = serializers.BooleanField(required=False, default=False)
     comentario = serializers.CharField(required=False, allow_blank=True, default='')
+    certeza = serializers.ChoiceField(
+        choices=('confirmado', 'asumido', 'referencial', 'sin_precio'),
+        required=False,
+        allow_blank=True,
+        default='',
+    )
+    precio_min_clp = serializers.IntegerField(required=False, min_value=0)
+    precio_max_clp = serializers.IntegerField(required=False, min_value=0)
+    fuentes_n = serializers.IntegerField(required=False, min_value=0)
+    precio_capturado_en = serializers.CharField(required=False, allow_blank=True, default='')
+    proveedor_id = serializers.IntegerField(required=False, allow_null=True)
+    precio_marketplace_clp = serializers.IntegerField(required=False, min_value=0)
+    factor_mercado = serializers.FloatField(required=False)
+    categoria = serializers.CharField(required=False, allow_blank=True, default='')
+    especificacion = serializers.CharField(required=False, allow_blank=True, default='')
+    especificacion_pendiente = serializers.BooleanField(required=False, default=False)
+    familia_sensible = serializers.CharField(required=False, allow_blank=True, default='')
+    codigo_parte = serializers.CharField(required=False, allow_blank=True, default='')
+    compatibilidad = serializers.CharField(required=False, allow_blank=True, default='')
+    alternativas = AlternativaRepuestoSerializer(many=True, required=False)
 
 
 class CotizacionCanalSerializer(serializers.ModelSerializer):
@@ -45,6 +79,14 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
     entrega_via = serializers.SerializerMethodField()
     entrega_pendiente_compartir = serializers.SerializerMethodField()
     emision_pendiente = serializers.SerializerMethodField()
+    tipo_documento = serializers.SerializerMethodField()
+    tipo_documento_emitido = serializers.SerializerMethodField()
+    repuestos_confirmados = serializers.SerializerMethodField()
+    repuestos_total = serializers.SerializerMethodField()
+    puede_enviar_firme = serializers.SerializerMethodField()
+    lineas_pendientes_precio = serializers.SerializerMethodField()
+    total_min_clp = serializers.SerializerMethodField()
+    total_max_clp = serializers.SerializerMethodField()
     ejecucion_adicional = serializers.CharField(read_only=True)
     fecha_propuesta = serializers.DateField(read_only=True, allow_null=True)
     hora_propuesta = serializers.TimeField(read_only=True, allow_null=True, format='%H:%M')
@@ -152,6 +194,72 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
         from mecanimovilapp.apps.ordenes.services.cotizacion_publica import emision_pendiente
         return emision_pendiente(obj)
 
+    def get_tipo_documento(self, obj) -> str:
+        val = str(getattr(obj, 'tipo_documento', '') or '').strip()
+        if val in ('estimacion', 'cotizacion'):
+            return val
+        return 'estimacion' if obj.estado == 'borrador' else 'cotizacion'
+
+    def get_tipo_documento_emitido(self, obj) -> str:
+        return str(getattr(obj, 'tipo_documento_emitido', '') or '').strip()
+
+    def _repuestos_list(self, obj) -> list:
+        raw = obj.repuestos if isinstance(getattr(obj, 'repuestos', None), list) else []
+        return [r for r in raw if isinstance(r, dict)]
+
+    def get_repuestos_total(self, obj) -> int:
+        return len(self._repuestos_list(obj))
+
+    def get_repuestos_confirmados(self, obj) -> int:
+        return sum(
+            1
+            for r in self._repuestos_list(obj)
+            if str(r.get('certeza') or '') in ('confirmado', 'asumido')
+        )
+
+    def get_lineas_pendientes_precio(self, obj) -> list[dict]:
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.resolver_precio import (
+            CERTEZA_ASUMIDO,
+            CERTEZA_CONFIRMADO,
+            backfill_certeza,
+        )
+
+        out: list[dict] = []
+        for r in self._repuestos_list(obj):
+            certeza = backfill_certeza(r)
+            if certeza in (CERTEZA_CONFIRMADO, CERTEZA_ASUMIDO):
+                continue
+            out.append({
+                'id': str(r.get('id') or ''),
+                'nombre': str(r.get('nombre') or ''),
+                'certeza': certeza,
+                'especificacion_pendiente': bool(r.get('especificacion_pendiente')),
+            })
+        return out
+
+    def get_puede_enviar_firme(self, obj) -> bool:
+        return not self.get_lineas_pendientes_precio(obj)
+
+    def get_total_min_clp(self, obj) -> int:
+        mo = int(obj.mano_obra_clp or 0)
+        desc = int(obj.descuento_clp or 0)
+        total_rep = 0
+        for r in self._repuestos_list(obj):
+            cant = max(1, int(r.get('cantidad') or 1))
+            unit = int(r.get('precio_min_clp') or r.get('precio_unitario_clp') or 0)
+            total_rep += cant * unit
+        return max(0, mo + total_rep - desc)
+
+    def get_total_max_clp(self, obj) -> int:
+        mo = int(obj.mano_obra_clp or 0)
+        desc = int(obj.descuento_clp or 0)
+        total_rep = 0
+        for r in self._repuestos_list(obj):
+            cant = max(1, int(r.get('cantidad') or 1))
+            unit = int(r.get('precio_max_clp') or r.get('precio_unitario_clp') or 0)
+            total_rep += cant * unit
+        return max(0, mo + total_rep - desc)
+
     def get_servicio_principal_nombre(self, obj) -> str | None:
         if not obj.es_cotizacion_adicional:
             return None
@@ -175,12 +283,21 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             except (TypeError, ValueError):
                 val = 0.0
             data['descuento_valor'] = int(val) if val == int(val) else val
+        for key in ('total_min_clp', 'total_max_clp'):
+            if data.get(key) is not None:
+                data[key] = int(data[key])
         for rep in data.get('repuestos') or []:
             if rep.get('precio_unitario_clp') is not None:
                 rep['precio_unitario_clp'] = int(rep['precio_unitario_clp'])
             ref = rep.get('precio_referencia_ia')
             if ref is not None:
                 rep['precio_referencia_ia'] = int(ref)
+            for extra in ('precio_min_clp', 'precio_max_clp', 'precio_marketplace_clp', 'fuentes_n'):
+                if rep.get(extra) is not None:
+                    try:
+                        rep[extra] = int(rep[extra])
+                    except (TypeError, ValueError):
+                        pass
         for lin in data.get('mano_obra_lineas') or []:
             if isinstance(lin, dict) and lin.get('monto_clp') is not None:
                 lin['monto_clp'] = int(lin['monto_clp'] or 0)
@@ -222,6 +339,14 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             'repuestos',
             'mano_obra_lineas',
             'mano_obra_clp',
+            'tipo_documento',
+            'tipo_documento_emitido',
+            'repuestos_confirmados',
+            'repuestos_total',
+            'puede_enviar_firme',
+            'lineas_pendientes_precio',
+            'total_min_clp',
+            'total_max_clp',
             'entrega_via',
             'entrega_pendiente_compartir',
             'emision_pendiente',
@@ -265,6 +390,14 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             'tiene_horario_agendado',
             'permite_edicion_completa',
             'mano_obra_lineas',
+            'tipo_documento',
+            'tipo_documento_emitido',
+            'repuestos_confirmados',
+            'repuestos_total',
+            'puede_enviar_firme',
+            'lineas_pendientes_precio',
+            'total_min_clp',
+            'total_max_clp',
             'entrega_via',
             'entrega_pendiente_compartir',
             'emision_pendiente',

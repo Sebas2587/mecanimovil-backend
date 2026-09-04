@@ -498,7 +498,10 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
 
         max_lineas = max(1, int(getattr(settings, 'BUSQUEDA_WEB_REPUESTOS_MAX_LINEAS', 6) or 6))
 
-        candidatos = [rep for rep in reps if linea_necesita_busqueda_web(rep)]
+        candidatos = [
+            rep for rep in reps
+            if linea_necesita_busqueda_web(rep) and not bool(rep.get('especificacion_pendiente'))
+        ]
         # Prioriza líneas sin precio (ítems que el taller acaba de agregar).
         candidatos.sort(key=lambda r: _to_int_clp(r.get('precio_unitario_clp')) > 0)
         candidatos = candidatos[:max_lineas]
@@ -513,6 +516,8 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
             marca_vehiculo=cot.vehiculo_marca or '',
             modelo_vehiculo=cot.vehiculo_modelo or '',
             anio=cot.vehiculo_anio or '',
+            tipo_motor=cot.tipo_motor or '',
+            cilindraje=cot.vehiculo_cilindraje or '',
         )
         resultados: dict = dict(cache_hits or {})
 
@@ -563,6 +568,8 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                 marca_vehiculo=cot.vehiculo_marca or '',
                 modelo_vehiculo=cot.vehiculo_modelo or '',
                 anio=cot.vehiculo_anio or '',
+                tipo_motor=cot.tipo_motor or '',
+                cilindraje=cot.vehiculo_cilindraje or '',
             )
             PrecioRepuestoWeb.objects.update_or_create(
                 clave=clave,
@@ -575,6 +582,8 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                     'url': str(hit.get('url') or '')[:500],
                     'compatibilidad': str(hit.get('compatibilidad') or '')[:20],
                     'confianza': float(hit.get('confianza') or 0.8),
+                    'tipo_motor': (cot.tipo_motor or '')[:20],
+                    'cilindraje': (cot.vehiculo_cilindraje or '')[:20],
                     'expira_en': expira,
                 },
             )
@@ -707,3 +716,41 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
         except Exception:
             pass
         return {'ok': False, 'error': str(exc)}
+
+
+@shared_task
+def calibrar_factores_mercado_task():
+    """Ajusta FactorMercadoCategoria con compras reales vs precio marketplace."""
+    from collections import defaultdict
+    from decimal import Decimal
+
+    from mecanimovilapp.apps.ordenes.models import FactorMercadoCategoria, PrecioProveedorTaller
+
+    min_muestras = max(1, int(getattr(settings, 'FACTOR_MERCADO_MIN_MUESTRAS', 8) or 8))
+    tope = Decimal(str(getattr(settings, 'FACTOR_MERCADO_MAX', 2.50) or 2.50))
+    qs = PrecioProveedorTaller.objects.filter(
+        origen='compra',
+        precio_clp__gt=0,
+        precio_referencia_web_clp__gt=0,
+    ).only('categoria', 'precio_clp', 'precio_referencia_web_clp')
+    buckets: dict[str, list[float]] = defaultdict(list)
+    for row in qs:
+        cat = (row.categoria or 'otros').strip() or 'otros'
+        ratio = float(row.precio_clp) / float(row.precio_referencia_web_clp)
+        if ratio < 0.5 or ratio > 4.0:
+            continue
+        buckets[cat].append(ratio)
+    actualizados = 0
+    for cat, ratios in buckets.items():
+        if len(ratios) < min_muestras:
+            continue
+        ratios_sorted = sorted(ratios)
+        mid = ratios_sorted[len(ratios_sorted) // 2]
+        factor = Decimal(str(round(mid, 2)))
+        factor = min(max(factor, Decimal('1.00')), tope)
+        FactorMercadoCategoria.objects.update_or_create(
+            categoria=cat,
+            defaults={'factor': factor, 'muestras': len(ratios)},
+        )
+        actualizados += 1
+    return {'ok': True, 'categorias': actualizados}

@@ -12,6 +12,7 @@ from .views_asistente_agendamiento import AsistenteAgendamientoViewSet
 from .views_cita_agenda_personal import CitaAgendaPersonalViewSet, ProveedorAgendaViewSet
 from .views_guias_reparacion import GuiaReparacionGuardadaViewSet
 from .views_cotizacion_canal import CotizacionCanalViewSet, CotizacionCanalPlantillaViewSet
+from .views_proveedor_repuestos import PrecioProveedorTallerViewSet, ProveedorRepuestosViewSet
 from .views_cotizacion_publica import (
     CotizacionPublicaAceptarView,
     CotizacionPublicaDetailView,
@@ -66,6 +67,16 @@ router.register(
     r'pipeline-comercial',
     PipelineComercialViewSet,
     basename='pipeline-comercial',
+)
+router.register(
+    r'proveedores-repuestos',
+    ProveedorRepuestosViewSet,
+    basename='proveedores-repuestos',
+)
+router.register(
+    r'mis-precios-repuestos',
+    PrecioProveedorTallerViewSet,
+    basename='mis-precios-repuestos',
 )
 
 # RUTAS DE DISPONIBILIDAD ELIMINADAS - REEMPLAZADAS POR ENDPOINTS EN USUARIOS APP

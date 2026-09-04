@@ -160,6 +160,11 @@ app.conf.beat_schedule = {
         'schedule': crontab(day_of_week=5, hour=6, minute=0),
         'options': {'queue': 'default'},
     },
+    'calibrar-factores-mercado-semanal': {
+        'task': 'mecanimovilapp.apps.ordenes.tasks.calibrar_factores_mercado_task',
+        'schedule': crontab(day_of_week=0, hour=7, minute=0),
+        'options': {'queue': 'default'},
+    },
     'agente-ia-aprendizaje-diario': {
         'task': 'agente_ia.aprendizaje_diario_talleres',
         'schedule': crontab(hour=4, minute=30),

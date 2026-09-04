@@ -9,6 +9,7 @@ from .models import (
     CarritoAgendamiento, ItemCarritoAgendamiento, AuditAccesoCliente,
     SolicitudServicioPublica, FotoSolicitudPublica, OfertaProveedor, DetalleServicioOferta, ChatSolicitud,
     PatronAprendizajeNecesidad,
+    FactorMercadoCategoria, ProveedorRepuestos, PrecioProveedorTaller,
 )
 
 # ADMIN PARA DISPONIBILIDAD ELIMINADO - REEMPLAZADO POR HorarioProveedor EN USUARIOS APP
@@ -713,3 +714,27 @@ class PatronAprendizajeNecesidadAdmin(admin.ModelAdmin):
     search_fields = ('fragmento', 'servicio__nombre', 'componente_slug')
     readonly_fields = ('ultima_vez',)
     ordering = ('-confirmaciones', '-ultima_vez')
+
+
+@admin.register(FactorMercadoCategoria)
+class FactorMercadoCategoriaAdmin(admin.ModelAdmin):
+    list_display = ('categoria', 'factor', 'muestras', 'actualizado_en')
+    search_fields = ('categoria',)
+    ordering = ('categoria',)
+
+
+@admin.register(ProveedorRepuestos)
+class ProveedorRepuestosAdmin(admin.ModelAdmin):
+    list_display = ('nombre', 'taller', 'tipo', 'comuna', 'es_preferido', 'activo')
+    list_filter = ('tipo', 'activo', 'es_preferido')
+    search_fields = ('nombre', 'comuna', 'telefono')
+
+
+@admin.register(PrecioProveedorTaller)
+class PrecioProveedorTallerAdmin(admin.ModelAdmin):
+    list_display = (
+        'nombre_repuesto', 'taller', 'proveedor', 'precio_clp',
+        'especificacion', 'origen', 'registrado_en',
+    )
+    list_filter = ('origen', 'categoria')
+    search_fields = ('nombre_repuesto', 'codigo_parte', 'clave_fuzzy')

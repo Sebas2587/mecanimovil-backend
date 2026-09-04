@@ -158,14 +158,16 @@ REGLAS:
 0b. PRECIOS POR VEHÍCULO (CRÍTICO): NUNCA copies mano de obra ni precios de piezas de otro marca/modelo (Toyota ≠ BAIC; Yaris ≠ Yaris Cross) aunque el servicio se llame igual. Si el bloque de historial no es de este marca+modelo exacto, ignóralo.
 1. Analiza el SERVICIO pedido + el VEHÍCULO concreto ({ctx.get('marca', '')} {ctx.get('modelo', '')} {ctx.get('anio', '')}, motor {efectivo}). Cada marca/modelo/año tiene piezas y cantidades distintas: no copies listas genéricas de otro auto.
 2. Precios en CLP enteros: son ESTIMADOS de mercado Chile (taller) para que el proveedor los revise. NO digas que vienen de un catálogo o tienda.
-3. CRÍTICO — IVA INCLUIDO: mano_obra_clp y precio_unitario_clp son precios FINALES al cliente con IVA 19% ya incluido. NO cotices neto ni agregues línea de IVA.
+3. CRÍTICO — IVA INCLUIDO: mano_obra_clp es precio FINAL al cliente con IVA 19% ya incluido. NO cotices neto ni agregues línea de IVA.
 4. El motor efectivo es {efectivo}. No mezcles repuestos diésel/bencina/híbrido.
 5. Incluye mano de obra separada de repuestos.
 6. REPUESTOS POR VEHÍCULO (CRÍTICO): SOLO piezas compatibles con marca/modelo/año/cilindrada/motor. Prefiere MENOS líneas correctas. Nombra la pieza con precisión (posición: delantero/trasero, lado, kit completo si aplica).
+6b. ESPECIFICACIÓN ANTES DE PRECIO (CRÍTICO): si la pieza tiene variantes que cambian el precio (bujía cobre/platino/iridio; pastilla orgánica/semi-metálica/cerámica; aceite mineral/sintético + viscosidad; batería convencional/EFB/AGM; amortiguador hidráulico/gas), declara "especificacion" con la variante correcta para ESTE vehículo. Si no puedes determinarla con certeza, deja especificacion="" y precio_unitario_clp=0. PROHIBIDO inventar un monto para una variante que no sabes.
 7. Volante bimasa: inclúyelo SOLO si el SERVICIO SOLICITADO es de embrague/clutch (no porque el chat mencionó vibración u otro auto).
 8. marca_repuesto, fuente_marketplace y tienda_ml: SIEMPRE "". NUNCA inventes marca (ni "GENÉRICO", ni Bosch/Mann "por costumbre"), ni tienda, ni "catálogo". El backend solo completa marca/proveedor si hay match real del taller o listing verificable.
-9. En advertencias incluye siempre que los precios de repuesto son estimados y deben confirmarse en taller antes de enviar al cliente.
-10. duracion_minutos_estimada razonable para el servicio en este vehículo.
+9. PRECIO DE REPUESTO: NO inventes un precio puntual. Usa precio_min_clp y precio_max_clp como orientación de mercado. Pon precio_unitario_clp=0 (el backend elige el techo o deja la línea sin precio).
+10. En advertencias incluye siempre que los precios de repuesto son estimados y deben confirmarse en taller antes de enviar al cliente.
+11. duracion_minutos_estimada razonable para el servicio en este vehículo.
 
 Responde SOLO JSON válido en español:
 {{
@@ -179,7 +181,10 @@ Responde SOLO JSON válido en español:
     {{
       "nombre": "...",
       "cantidad": 1,
-      "precio_unitario_clp": 65000,
+      "precio_unitario_clp": 0,
+      "precio_min_clp": 40000,
+      "precio_max_clp": 75000,
+      "especificacion": "",
       "marca_repuesto": "",
       "fuente_marketplace": "",
       "tienda_ml": "",

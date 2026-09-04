@@ -78,6 +78,14 @@ def _clp(value: Any) -> str:
     return f'${formatted}'
 
 
+def _rango_clp(minimo: Any, maximo: Any, fallback: Any = 0) -> str:
+    a = int(round(float(minimo or 0)))
+    b = int(round(float(maximo or 0)))
+    if a > 0 and b > 0 and a != b:
+        return f'{_clp(a)} – {_clp(b)}'
+    return _clp(b or a or fallback)
+
+
 def _fecha_larga(iso: str | None) -> str:
     if not iso:
         return ''
@@ -171,15 +179,20 @@ def _lineas(data: dict) -> list[dict]:
             continue
         qty = int(rep.get('cantidad') or 1) or 1
         unit = int(rep.get('precio_unitario_clp') or 0)
+        unit_min = int(rep.get('precio_min_clp') or 0)
+        unit_max = int(rep.get('precio_max_clp') or 0)
         marca = (rep.get('marca_repuesto') or '').strip()
         comentario = (rep.get('comentario') or '').strip()
-        meta = ' · '.join(p for p in (marca, comentario) if p)
+        especificacion = (rep.get('especificacion') or '').strip()
+        meta = ' · '.join(p for p in (especificacion, marca, comentario) if p)
         rows.append({
             'nombre': (rep.get('nombre') or 'Repuesto').strip(),
             'tipo': 'Repuesto',
             'qty': qty,
             'unit_label': 'und',
             'unitario': unit,
+            'unitario_min': unit_min,
+            'unitario_max': unit_max,
             'subtotal': unit * qty,
             'meta': meta,
         })
@@ -406,6 +419,9 @@ def _draw_header(pdf: DocumentoPDF, data: dict, taller: dict, logo: io.BytesIO |
     meta_h = 0.0
     if folio:
         meta_h += 6.8
+    tipo_doc = str(data.get('tipo_documento') or '').strip()
+    if tipo_doc in ('estimacion', 'cotizacion'):
+        meta_h += 5.8
     if estado_label:
         meta_h += 5.8
     if emitida:
@@ -439,6 +455,18 @@ def _draw_header(pdf: DocumentoPDF, data: dict, taller: dict, logo: io.BytesIO |
         pdf.set_xy(meta_x + meta_w - bw, my + 0.9)
         pdf.cell(bw, 4.1, f'#{folio}', align='C')
         my += 6.8
+    tipo_doc = str(data.get('tipo_documento') or '').strip()
+    if tipo_doc in ('estimacion', 'cotizacion'):
+        tipo_label = 'Estimación' if tipo_doc == 'estimacion' else 'Cotización firme'
+        tipo_ok = tipo_doc == 'cotizacion'
+        bg, fg = (PILL_OK_BG, MAGENTA) if tipo_ok else (TONAL, MUTED)
+        _font(pdf, 7, bold=True, color=fg)
+        bw = min(meta_w, pdf.get_string_width(tipo_label) + 5)
+        pdf.set_fill_color(*bg)
+        pdf.rect(meta_x + meta_w - bw, my, bw, 5.0, style='F', round_corners=True, corner_radius=1.1)
+        pdf.set_xy(meta_x + meta_w - bw, my + 0.6)
+        pdf.cell(bw, 3.7, tipo_label, align='C')
+        my += 5.8
     if estado_label:
         bg, fg = (PILL_OK_BG, MAGENTA) if estado_ok else (TONAL, MUTED)
         _font(pdf, 7, bold=True, color=fg)
@@ -642,12 +670,13 @@ def _draw_lineas(pdf: DocumentoPDF, rows: list[dict], data: dict | None = None) 
         cy = y + name_h + 0.2
         badge_w = _badge(pdf, x0 + PAD, cy, row['tipo'], badge_bg, badge_fg)
         qty = f"{row['qty']} {row['unit_label']}".strip()
+        unit_label = _rango_clp(row.get('unitario_min'), row.get('unitario_max'), row['unitario'])
         _text(
             pdf,
             x0 + PAD + badge_w + 2,
             cy + 0.2,
             desc_w - badge_w - 2,
-            f"{qty} × {_clp(row['unitario'])}",
+            f"{qty} × {unit_label}",
             3.8,
             7.5,
             color=MUTED,
@@ -658,7 +687,7 @@ def _draw_lineas(pdf: DocumentoPDF, rows: list[dict], data: dict | None = None) 
         mid_y = y + 0.4
         _text(
             pdf, x0 + PAD + desc_w, mid_y, amt_w,
-            _clp(row['unitario']), 4.6, 8.5, color=MUTED, align='R',
+            unit_label, 4.6, 8.5, color=MUTED, align='R',
         )
         _text(
             pdf, x0 + PAD + desc_w + amt_w, mid_y, amt_w + 6,
@@ -707,6 +736,11 @@ def _draw_bottom(pdf: DocumentoPDF, data: dict) -> None:
         note_parts.append(
             'El pago de mano de obra y repuestos se coordina directo con el taller. '
             'Mecanimovil no cobra este trabajo.'
+        )
+    if str(data.get('tipo_documento') or '') == 'estimacion':
+        note_parts.append(
+            'Valores de referencia. El taller confirma antes de comprar; '
+            'si el precio sube más de 10% te avisa.'
         )
     note = '\n\n'.join(note_parts)
 
@@ -768,8 +802,15 @@ def _draw_bottom(pdf: DocumentoPDF, data: dict) -> None:
     y += 0.4
     _rule(pdf, tx + PAD, y, tw - 2 * PAD)
     y += 1.6
-    _text(pdf, tx + PAD, y, label_w, 'Total a pagar', 5.6, 10.5, bold=True)
-    _text(pdf, tx + PAD + label_w, y, 28, _clp(total), 5.6, 12, bold=True, color=MAGENTA, align='R')
+    es_est = str(data.get('tipo_documento') or '') == 'estimacion'
+    total_label = 'Total estimado' if es_est else 'Total a pagar'
+    total_txt = (
+        _rango_clp(data.get('total_min_clp'), data.get('total_max_clp'), total)
+        if es_est
+        else _clp(total)
+    )
+    _text(pdf, tx + PAD, y, label_w, total_label, 5.6, 10.5, bold=True)
+    _text(pdf, tx + PAD + label_w, y, 28, total_txt, 5.6, 12, bold=True, color=MAGENTA, align='R')
     pdf.set_y(y0 + height + GAP)
 
 

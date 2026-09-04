@@ -66,8 +66,8 @@ _MIN_SCORE_WEB = 55
 
 # Fuentes "grounded": dato real y trazable del taller, web verificada o listing ML.
 # 'estimado' NUNCA es grounded.
-_FUENTES_GROUND = ('catalogo', 'historial', 'web', 'mercadolibre')
-_FUENTES_PRECIO_TALLER = ('catalogo', 'historial')
+_FUENTES_GROUND = ('proveedor', 'catalogo', 'historial', 'web', 'mercadolibre')
+_FUENTES_PRECIO_TALLER = ('proveedor', 'catalogo', 'historial')
 
 
 def _norm(texto: str) -> str:
@@ -105,7 +105,9 @@ def linea_necesita_busqueda_web(rep: Any) -> bool:
     if not nombre_repuesto_buscable(str(rep.get('nombre') or '')):
         return False
     fuente = str(rep.get('fuente_marketplace') or '').strip().lower()
-    if fuente in ('catalogo', 'historial'):
+    if bool(rep.get('especificacion_pendiente')):
+        return False
+    if fuente in ('catalogo', 'historial', 'proveedor'):
         return False
     precio = _to_int_clp(rep.get('precio_unitario_clp'))
     if precio <= 0:
@@ -655,13 +657,33 @@ def _candidatos_web_cache(
     marca_vehiculo: str = '',
     modelo_vehiculo: str = '',
     anio_vehiculo: str | int | None = '',
+    tipo_motor: str = '',
+    cilindraje: str = '',
+    nombres: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Hits vigentes desde PrecioRepuestoWeb (rellenado por Celery/Gemini URL Context)."""
     try:
         from mecanimovilapp.apps.ordenes.models import PrecioRepuestoWeb
+        from .busqueda_web_repuestos import clave_cache_repuesto
 
         now = timezone.now()
-        qs = PrecioRepuestoWeb.objects.filter(expira_en__gt=now).order_by('-confianza')[:400]
+        qs = PrecioRepuestoWeb.objects.filter(expira_en__gt=now)
+        if nombres:
+            claves: list[str] = []
+            for nom in nombres:
+                if not str(nom or '').strip():
+                    continue
+                claves.append(_clave_fuzzy(nom)[:240])
+                claves.append(clave_cache_repuesto(
+                    nom,
+                    marca_vehiculo=marca_vehiculo,
+                    modelo_vehiculo=modelo_vehiculo,
+                    anio=anio_vehiculo,
+                    tipo_motor=tipo_motor,
+                    cilindraje=cilindraje,
+                ))
+            qs = qs.filter(clave__in=[c for c in claves if c])
+        qs = qs.order_by('-confianza')[:400]
         out: list[dict[str, Any]] = []
         from .vehiculo_exacto import clave_historial_cubre_vehiculo
 
@@ -753,28 +775,17 @@ def _aplicar_hit_campos(next_rep: dict[str, Any], hit: dict[str, Any]) -> None:
     if hit.get('url_producto') and (not url_actual or puede_reemplazar):
         next_rep['url_producto'] = hit['url_producto']
 
+    if hit.get('proveedor_id') and (not next_rep.get('proveedor_id') or puede_reemplazar):
+        next_rep['proveedor_id'] = hit['proveedor_id']
+    if hit.get('especificacion') and (not str(next_rep.get('especificacion') or '').strip() or puede_reemplazar):
+        next_rep['especificacion'] = hit['especificacion']
+
 
 def _aplicar_precio(next_rep: dict[str, Any], hits: list[dict[str, Any]]) -> None:
-    """Prefiere catálogo → historial → web; ML solo si IA no tiene precio."""
-    precio_ia = _to_int_clp(next_rep.get('precio_unitario_clp'))
-    for fuente in ('catalogo', 'historial', 'web'):
-        for hit in hits:
-            if str(hit.get('fuente_marketplace') or '') != fuente:
-                continue
-            precio_hit = _to_int_clp(hit.get('precio_unitario_clp'))
-            if precio_hit > 0:
-                next_rep['precio_unitario_clp'] = precio_hit
-                if fuente == 'web':
-                    next_rep['precio_referencia_mercado'] = True
-                return
-    if precio_ia <= 0:
-        for hit in hits:
-            if str(hit.get('fuente_marketplace') or '') != 'mercadolibre':
-                continue
-            precio_hit = _to_int_clp(hit.get('precio_unitario_clp'))
-            if precio_hit > 0:
-                next_rep['precio_unitario_clp'] = precio_hit
-                return
+    """Delega a resolver_precio_linea (banda + certeza; flag apagado = legado)."""
+    from .resolver_precio import resolver_precio_linea
+
+    resolver_precio_linea(next_rep, hits)
 
 
 def enriquecer_repuestos_cotizacion(
@@ -799,6 +810,21 @@ def enriquecer_repuestos_cotizacion(
         return []
 
     # Solo ofertas del taller (marca/modelo). El maestro global NUNCA se mezcla aquí.
+    proveedor_cands: list[dict[str, Any]] = []
+    try:
+        from mecanimovilapp.apps.ordenes.services.precios_proveedor import (
+            candidatos_precio_proveedor,
+        )
+
+        proveedor_cands = candidatos_precio_proveedor(
+            taller,
+            marca_vehiculo=marca_vehiculo,
+            modelo_vehiculo=modelo_vehiculo,
+            tipo_motor=tipo_motor,
+        )
+    except Exception:
+        proveedor_cands = []
+
     catalogo = _candidatos_ofertas_taller(
         taller,
         marca_vehiculo,
@@ -810,17 +836,23 @@ def enriquecer_repuestos_cotizacion(
         modelo_vehiculo=modelo_vehiculo,
         servicio_nombre=servicio_nombre,
     )
+    nombres_lineas = [
+        str(r.get('nombre') or '')
+        for r in repuestos
+        if isinstance(r, dict) and not r.get('especificacion_pendiente')
+    ]
     web_cands = (
         _candidatos_web_cache(
             marca_vehiculo=marca_vehiculo,
             modelo_vehiculo=modelo_vehiculo,
             anio_vehiculo=anio_vehiculo,
+            tipo_motor=tipo_motor,
+            cilindraje=cilindraje,
+            nombres=nombres_lineas,
         )
         if usar_web
         else []
     )
-    # cilindraje/tipo_motor reservados para filtrado futuro de candidatos web.
-    _ = (cilindraje, tipo_motor)
 
     out: list[dict[str, Any]] = []
     for rep in repuestos:
@@ -849,13 +881,16 @@ def enriquecer_repuestos_cotizacion(
         nombre = str(next_rep.get('nombre') or '')
 
         hits: list[dict[str, Any]] = []
+        prov_hit = _mejor_hit(nombre, proveedor_cands, min_score=_MIN_SCORE_CATALOGO) if proveedor_cands else None
+        if prov_hit:
+            hits.append(prov_hit)
         cat_hit = _mejor_hit(nombre, catalogo, min_score=_MIN_SCORE_CATALOGO)
         if cat_hit:
             hits.append(cat_hit)
         hist_hit = _mejor_hit(nombre, historial, min_score=_MIN_SCORE_HISTORIAL)
         if hist_hit:
             hits.append(hist_hit)
-        grounded_taller = bool(cat_hit or hist_hit)
+        grounded_taller = bool(prov_hit or cat_hit or hist_hit)
 
         web_hit = None
         if usar_web and not grounded_taller and web_cands:

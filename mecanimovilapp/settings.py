@@ -749,10 +749,18 @@ BUSQUEDA_WEB_REPUESTOS_TIMEOUT = config('BUSQUEDA_WEB_REPUESTOS_TIMEOUT', defaul
 # Subir default: 1 URL por repuesto (ML) + extras de otras tiendas.
 BUSQUEDA_WEB_REPUESTOS_MAX_URLS = config('BUSQUEDA_WEB_REPUESTOS_MAX_URLS', default=8, cast=int)
 BUSQUEDA_WEB_REPUESTOS_MAX_LINEAS = config('BUSQUEDA_WEB_REPUESTOS_MAX_LINEAS', default=6, cast=int)
-BUSQUEDA_WEB_REPUESTOS_TTL_DIAS = config('BUSQUEDA_WEB_REPUESTOS_TTL_DIAS', default=14, cast=int)
+BUSQUEDA_WEB_REPUESTOS_TTL_DIAS = config('BUSQUEDA_WEB_REPUESTOS_TTL_DIAS', default=3, cast=int)
 BUSQUEDA_WEB_REPUESTOS_RPD = config('BUSQUEDA_WEB_REPUESTOS_RPD', default=200, cast=int)
 BUSQUEDA_WEB_REPUESTOS_PRECIO_MIN = config('BUSQUEDA_WEB_REPUESTOS_PRECIO_MIN', default=1000, cast=int)
 BUSQUEDA_WEB_REPUESTOS_PRECIO_MAX = config('BUSQUEDA_WEB_REPUESTOS_PRECIO_MAX', default=3_000_000, cast=int)
+# Confianza de precio de repuestos (PRD). Flags apagados = comportamiento actual.
+PRECIO_CONFIANZA_ENABLED = config('PRECIO_CONFIANZA_ENABLED', default=False, cast=bool)
+PRECIO_PROVEEDOR_TALLER_ENABLED = config('PRECIO_PROVEEDOR_TALLER_ENABLED', default=False, cast=bool)
+DOCUMENTO_FIRME_GATE_ENABLED = config('DOCUMENTO_FIRME_GATE_ENABLED', default=False, cast=bool)
+FACTOR_MERCADO_MAX = config('FACTOR_MERCADO_MAX', default=2.50, cast=float)
+FACTOR_MERCADO_MIN_MUESTRAS = config('FACTOR_MERCADO_MIN_MUESTRAS', default=8, cast=int)
+PRECIO_WEB_FRESCO_HORAS = config('PRECIO_WEB_FRESCO_HORAS', default=24, cast=int)
+PRECIO_PROVEEDOR_VIGENCIA_DIAS = config('PRECIO_PROVEEDOR_VIGENCIA_DIAS', default=90, cast=int)
 # Reservado: grounding con Google Search requiere billing (no Free Tier).
 BUSQUEDA_WEB_REPUESTOS_GROUNDING = config('BUSQUEDA_WEB_REPUESTOS_GROUNDING', default=False, cast=bool)
 

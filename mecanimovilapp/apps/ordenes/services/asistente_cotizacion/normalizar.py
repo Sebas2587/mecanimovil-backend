@@ -40,6 +40,8 @@ def normalizar_repuesto(item: Any, idx: int) -> dict[str, Any]:
             'precio_unitario_clp': 0,
             'precio_referencia_ia': 0,
             'comentario': '',
+            'certeza': 'sin_precio',
+            'precio_estimado': True,
         }
     nombre = str(item.get('nombre') or item.get('repuesto') or f'Repuesto {idx + 1}').strip()[:200]
     cantidad = max(1, _to_int_clp(item.get('cantidad'), 1))
@@ -57,20 +59,14 @@ def normalizar_repuesto(item: Any, idx: int) -> dict[str, Any]:
     tienda_ml = str(item.get('tienda_ml') or '').strip()[:200]
     proveedor_nombre = str(item.get('proveedor_nombre') or '').strip()[:200]
     url_producto = str(item.get('url_producto') or '').strip()[:500]
-    # IA siempre entrega estimados; el enrich marca False solo con precio de taller.
-    precio_estimado = item.get('precio_estimado')
-    if precio_estimado is None:
-        precio_estimado = True
-    precio_referencia_mercado = bool(item.get('precio_referencia_mercado'))
     out: dict[str, Any] = {
         'id': str(item.get('id') or f'rep-{idx}'),
         'nombre': nombre,
         'cantidad': cantidad,
         # Precio final al cliente (IVA 19% incluido).
         'precio_unitario_clp': precio,
-        'precio_referencia_ia': precio,
+        'precio_referencia_ia': _to_int_clp(item.get('precio_referencia_ia'), precio),
         'precio_iva_incluido': True,
-        'precio_estimado': bool(precio_estimado),
         'comentario': str(item.get('comentario') or '')[:500],
     }
     if fuente_marketplace:
@@ -83,8 +79,46 @@ def normalizar_repuesto(item: Any, idx: int) -> dict[str, Any]:
         out['proveedor_nombre'] = proveedor_nombre
     if url_producto:
         out['url_producto'] = url_producto
-    if precio_referencia_mercado:
-        out['precio_referencia_mercado'] = True
+
+    for key, caster in (
+        ('certeza', lambda v: str(v or '').strip()[:20]),
+        ('precio_min_clp', _to_int_clp),
+        ('precio_max_clp', _to_int_clp),
+        ('fuentes_n', _to_int_clp),
+        ('precio_capturado_en', lambda v: str(v or '').strip()[:40]),
+        ('proveedor_id', lambda v: int(v) if v not in (None, '') else None),
+        ('precio_marketplace_clp', _to_int_clp),
+        ('factor_mercado', lambda v: float(v) if v not in (None, '') else None),
+        ('categoria', lambda v: str(v or '').strip()[:40]),
+        ('especificacion', lambda v: str(v or '').strip()[:120]),
+        ('familia_sensible', lambda v: str(v or '').strip()[:40]),
+        ('codigo_parte', lambda v: str(v or '').strip()[:60]),
+        ('compatibilidad', lambda v: str(v or '').strip()[:20]),
+    ):
+        if key not in item or item.get(key) in (None, ''):
+            continue
+        try:
+            val = caster(item.get(key))
+        except (TypeError, ValueError):
+            continue
+        if val in (None, '', 0) and key not in ('proveedor_id', 'factor_mercado'):
+            continue
+        out[key] = val
+    if item.get('especificacion_pendiente') is True:
+        out['especificacion_pendiente'] = True
+    alts = item.get('alternativas')
+    if isinstance(alts, list) and alts:
+        out['alternativas'] = alts[:6]
+
+    from .familias_sensibles import anotar_familia_en_linea
+    from .resolver_precio import aplicar_derivados_certeza
+
+    out = anotar_familia_en_linea(out)
+    aplicar_derivados_certeza(out)
+    precio_out = _to_int_clp(out.get('precio_unitario_clp'))
+    if precio_out > 0:
+        out.setdefault('precio_min_clp', precio_out)
+        out.setdefault('precio_max_clp', precio_out)
     return out
 
 

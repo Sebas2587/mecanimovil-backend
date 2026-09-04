@@ -1100,10 +1100,24 @@ def clave_cache_repuesto(
     marca_vehiculo: str = '',
     modelo_vehiculo: str = '',
     anio: str | int | None = '',
+    especificacion: str = '',
+    tipo_motor: str = '',
+    cilindraje: str = '',
 ) -> str:
     base = _clave_fuzzy(nombre)
+    spec = _norm(especificacion)
     veh = _norm(' '.join(str(p) for p in (marca_vehiculo, modelo_vehiculo, anio or '') if p))
-    return f'{base}|{veh}'[:240]
+    motor = _norm(tipo_motor)
+    cil = _norm(cilindraje)
+    parts = [base]
+    if spec:
+        parts.append(spec)
+    parts.append(veh)
+    if motor:
+        parts.append(motor)
+    if cil:
+        parts.append(cil)
+    return '|'.join(p for p in parts if p)[:240]
 
 
 def hits_cache_vigentes_para_nombres(
@@ -1112,6 +1126,9 @@ def hits_cache_vigentes_para_nombres(
     marca_vehiculo: str = '',
     modelo_vehiculo: str = '',
     anio: str | int | None = '',
+    especificacion: str = '',
+    tipo_motor: str = '',
+    cilindraje: str = '',
 ) -> dict[str, dict[str, Any]]:
     """Devuelve mapa clave_fuzzy → hit vigente de PrecioRepuestoWeb (sin llamar Gemini)."""
     nombres_limpios = [str(n).strip() for n in nombres if str(n).strip()]
@@ -1135,6 +1152,9 @@ def hits_cache_vigentes_para_nombres(
             marca_vehiculo=marca_vehiculo,
             modelo_vehiculo=modelo_vehiculo,
             anio=anio,
+            especificacion=especificacion,
+            tipo_motor=tipo_motor,
+            cilindraje=cilindraje,
         )] = nombre
 
     if not claves_objetivo:
@@ -1186,6 +1206,9 @@ def nombres_sin_cache_vigente(
     marca_vehiculo: str = '',
     modelo_vehiculo: str = '',
     anio: str | int | None = '',
+    especificacion: str = '',
+    tipo_motor: str = '',
+    cilindraje: str = '',
 ) -> tuple[list[str], dict[str, dict[str, Any]]]:
     """Separa nombres que aún requieren Gemini vs hits ya cacheados."""
     cache_hits = hits_cache_vigentes_para_nombres(
@@ -1193,6 +1216,9 @@ def nombres_sin_cache_vigente(
         marca_vehiculo=marca_vehiculo,
         modelo_vehiculo=modelo_vehiculo,
         anio=anio,
+        especificacion=especificacion,
+        tipo_motor=tipo_motor,
+        cilindraje=cilindraje,
     )
     faltantes: list[str] = []
     for nombre in nombres:

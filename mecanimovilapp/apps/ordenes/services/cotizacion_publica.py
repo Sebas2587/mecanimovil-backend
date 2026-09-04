@@ -148,17 +148,48 @@ def marcar_visto(cotizacion: CotizacionCanal) -> CotizacionCanal:
     return cotizacion
 
 
+_REPUESTO_PUBLICO_KEYS = (
+    'id',
+    'nombre',
+    'cantidad',
+    'precio_unitario_clp',
+    'precio_iva_incluido',
+    'marca_repuesto',
+    'comentario',
+    'especificacion',
+    'precio_min_clp',
+    'precio_max_clp',
+)
+
+
+def _tipo_documento_publico(cotizacion: CotizacionCanal) -> str:
+    val = str(getattr(cotizacion, 'tipo_documento', '') or '').strip()
+    if val in ('estimacion', 'cotizacion'):
+        return val
+    return 'estimacion' if cotizacion.estado == 'borrador' else 'cotizacion'
+
+
+def _banda_totales_publica(cotizacion: CotizacionCanal) -> tuple[int, int]:
+    mo = int(cotizacion.mano_obra_clp or 0)
+    desc = int(cotizacion.descuento_clp or 0)
+    tmin = 0
+    tmax = 0
+    for r in cotizacion.repuestos or []:
+        if not isinstance(r, dict):
+            continue
+        cant = max(1, int(r.get('cantidad') or 1))
+        tmin += cant * int(r.get('precio_min_clp') or r.get('precio_unitario_clp') or 0)
+        tmax += cant * int(r.get('precio_max_clp') or r.get('precio_unitario_clp') or 0)
+    return max(0, mo + tmin - desc), max(0, mo + tmax - desc)
+
+
 def _repuestos_publicos(repuestos: list | None) -> list[dict]:
-    """Repuestos para vista pública del cliente (sin datos internos del taller)."""
+    """Repuestos para vista pública del cliente (lista blanca; sin datos internos)."""
     out: list[dict] = []
     for item in repuestos or []:
         if not isinstance(item, dict):
             continue
-        pub = {
-            k: v
-            for k, v in item.items()
-            if k not in ('tienda_ml', 'proveedor_nombre', 'url_producto')
-        }
+        pub = {k: item[k] for k in _REPUESTO_PUBLICO_KEYS if k in item}
         out.append(pub)
     return out
 
@@ -415,9 +446,14 @@ def _serializar_cotizacion_publica_live(cotizacion: CotizacionCanal, request=Non
     )
     if desc_clp > 0 and not desc_etiqueta:
         desc_etiqueta = f'Descuento ${desc_clp:,}'.replace(',', '.')
+    tipo_doc = _tipo_documento_publico(cotizacion)
+    total_min, total_max = _banda_totales_publica(cotizacion)
     return {
         'id': cotizacion.id,
         'numero_publico': (cotizacion.numero_publico or '').strip() or None,
+        'tipo_documento': tipo_doc,
+        'total_min_clp': total_min if tipo_doc == 'estimacion' else total,
+        'total_max_clp': total_max if tipo_doc == 'estimacion' else total,
         'estado': cotizacion.estado,
         'modalidad': cotizacion.modalidad,
         'direccion_servicio': cotizacion.direccion_servicio or '',

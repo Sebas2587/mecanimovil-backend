@@ -509,6 +509,163 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             payload['modo_actualizacion'] = modo
         return Response(payload)
 
+    def _persistir_repuestos_y_totales(self, cotizacion):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
+            aplicar_totales_cotizacion,
+        )
+
+        aplicar_totales_cotizacion(cotizacion)
+        cotizacion.save(update_fields=[
+            'repuestos',
+            'costo_repuestos_clp',
+            'descuento_clp',
+            'total_clp',
+            'actualizado_en',
+        ])
+
+    @action(detail=True, methods=['post'], url_path='confirmar-precio-repuesto')
+    def confirmar_precio_repuesto(self, request, pk=None):
+        from mecanimovilapp.apps.ordenes.serializers_proveedor_repuestos import (
+            ConfirmarPrecioRepuestoSerializer,
+        )
+        from mecanimovilapp.apps.ordenes.services.precios_proveedor import (
+            aplicar_confirmacion_linea,
+        )
+
+        cotizacion = self.get_object()
+        ser = ConfirmarPrecioRepuestoSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        data = ser.validated_data
+        try:
+            aplicar_confirmacion_linea(
+                cotizacion,
+                repuesto_id=data['repuesto_id'],
+                precio_clp=data['precio_clp'],
+                proveedor_id=data.get('proveedor_id'),
+                proveedor_nombre=data.get('proveedor_nombre') or '',
+                especificacion=data.get('especificacion') or '',
+                guardar_en_mis_precios=data.get('guardar_en_mis_precios', True),
+                usuario=request.user,
+            )
+        except ValueError as exc:
+            raise ValidationError({'repuesto_id': str(exc)}) from exc
+        self._persistir_repuestos_y_totales(cotizacion)
+        return Response({'cotizacion': CotizacionCanalSerializer(cotizacion).data})
+
+    @action(detail=True, methods=['post'], url_path='asumir-precio-repuesto')
+    def asumir_precio_repuesto(self, request, pk=None):
+        from mecanimovilapp.apps.ordenes.serializers_proveedor_repuestos import (
+            AsumirPrecioRepuestoSerializer,
+        )
+        from mecanimovilapp.apps.ordenes.services.precios_proveedor import aplicar_asumir_lineas
+
+        cotizacion = self.get_object()
+        ser = AsumirPrecioRepuestoSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        ids = ser.validated_data.get('repuesto_id') or []
+        aplicar_asumir_lineas(cotizacion, ids)
+        self._persistir_repuestos_y_totales(cotizacion)
+        return Response({'cotizacion': CotizacionCanalSerializer(cotizacion).data})
+
+    @action(detail=True, methods=['post'], url_path='definir-especificacion')
+    def definir_especificacion(self, request, pk=None):
+        from mecanimovilapp.apps.ordenes.serializers_proveedor_repuestos import (
+            DefinirEspecificacionSerializer,
+        )
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web import (
+            disparar_busqueda_web_cotizacion,
+            marcar_busqueda_web_pendiente,
+        )
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.familias_sensibles import (
+            anotar_familia_en_linea,
+        )
+
+        cotizacion = self.get_object()
+        ser = DefinirEspecificacionSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        rid = ser.validated_data['repuesto_id']
+        spec = ser.validated_data['especificacion']
+        reps = list(cotizacion.repuestos or [])
+        found = False
+        for i, r in enumerate(reps):
+            if not isinstance(r, dict) or str(r.get('id') or '') != str(rid):
+                continue
+            linea = dict(r)
+            linea['especificacion'] = spec
+            linea['especificacion_pendiente'] = False
+            linea['precio_unitario_clp'] = 0
+            linea['certeza'] = 'sin_precio'
+            linea.pop('precio_referencia_mercado', None)
+            linea.pop('fuente_marketplace', None)
+            reps[i] = anotar_familia_en_linea(linea)
+            found = True
+            break
+        if not found:
+            raise ValidationError({'repuesto_id': 'No se encontró el repuesto en la cotización.'})
+        cotizacion.repuestos = reps
+        meta = dict(cotizacion.metadata or {})
+        meta = marcar_busqueda_web_pendiente(meta)
+        cotizacion.metadata = meta
+        self._persistir_repuestos_y_totales(cotizacion)
+        cotizacion.save(update_fields=['metadata', 'actualizado_en'])
+        if meta.get('busqueda_web_estado') == 'pendiente':
+            disparar_busqueda_web_cotizacion(cotizacion.id, sync=False)
+        return Response({'cotizacion': CotizacionCanalSerializer(cotizacion).data})
+
+    @action(detail=True, methods=['post'], url_path='registrar-compra-repuestos')
+    def registrar_compra_repuestos(self, request, pk=None):
+        from mecanimovilapp.apps.ordenes.serializers_proveedor_repuestos import (
+            RegistrarCompraRepuestosSerializer,
+        )
+        from mecanimovilapp.apps.ordenes.services.precios_proveedor import (
+            get_or_create_proveedor,
+            upsert_precio_proveedor,
+        )
+
+        cotizacion = self.get_object()
+        ser = RegistrarCompraRepuestosSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        creados = 0
+        for item in ser.validated_data.get('items') or []:
+            linea = next(
+                (
+                    r for r in (cotizacion.repuestos or [])
+                    if isinstance(r, dict) and str(r.get('id') or '') == str(item['repuesto_id'])
+                ),
+                None,
+            )
+            if linea is None:
+                continue
+            proveedor = None
+            if item.get('proveedor_id'):
+                from mecanimovilapp.apps.ordenes.models import ProveedorRepuestos
+
+                proveedor = ProveedorRepuestos.objects.filter(
+                    pk=item['proveedor_id'], taller=cotizacion.taller,
+                ).first()
+            elif item.get('proveedor_nombre'):
+                proveedor = get_or_create_proveedor(cotizacion.taller, item['proveedor_nombre'])
+            upsert_precio_proveedor(
+                taller=cotizacion.taller,
+                nombre_repuesto=str(linea.get('nombre') or ''),
+                precio_clp=item['precio_clp'],
+                proveedor=proveedor,
+                especificacion=str(linea.get('especificacion') or ''),
+                marca_repuesto=str(linea.get('marca_repuesto') or ''),
+                codigo_parte=str(linea.get('codigo_parte') or ''),
+                categoria=str(linea.get('categoria') or ''),
+                origen='compra',
+                cotizacion=cotizacion,
+                precio_referencia_web_clp=int(linea.get('precio_marketplace_clp') or 0),
+                usuario=request.user,
+            )
+            creados += 1
+        meta = dict(cotizacion.metadata or {})
+        meta['compra_repuestos_registrada'] = True
+        cotizacion.metadata = meta
+        cotizacion.save(update_fields=['metadata', 'actualizado_en'])
+        return Response({'ok': True, 'creados': creados})
+
     def partial_update(self, request, *args, **kwargs):
         from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
             actualizar_cotizacion_aceptada_sin_iniciar,
@@ -571,10 +728,32 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def enviar(self, request, pk=None):
         cotizacion = self.get_object()
+        from django.conf import settings
         from mecanimovilapp.apps.ordenes.services.cotizacion_publica import (
             emision_pendiente,
             persistir_documento_emitido,
         )
+        from mecanimovilapp.apps.ordenes.services.precios_proveedor import (
+            lineas_pendientes_precio,
+        )
+
+        tipo_doc = str(request.data.get('tipo_documento') or '').strip()
+        if tipo_doc not in ('estimacion', 'cotizacion'):
+            tipo_doc = 'cotizacion' if not lineas_pendientes_precio(cotizacion) else 'estimacion'
+        if (
+            tipo_doc == 'cotizacion'
+            and bool(getattr(settings, 'DOCUMENTO_FIRME_GATE_ENABLED', False))
+        ):
+            pendientes = lineas_pendientes_precio(cotizacion)
+            if pendientes:
+                raise ValidationError({
+                    'error': 'Faltan precios por confirmar',
+                    'lineas_pendientes': pendientes,
+                })
+        cotizacion.tipo_documento = tipo_doc
+        if not cotizacion.tipo_documento_emitido:
+            cotizacion.tipo_documento_emitido = tipo_doc
+        cotizacion.save(update_fields=['tipo_documento', 'tipo_documento_emitido', 'actualizado_en'])
 
         if cotizacion.estado != 'borrador' and not emision_pendiente(cotizacion):
             raise ValidationError({'estado': 'La cotización ya fue enviada o cerrada.'})
