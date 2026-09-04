@@ -27,6 +27,14 @@ class CategoriaYFamiliaTestCase(SimpleTestCase):
         self.assertEqual(clasificar_categoria('Filtro de aceite'), 'filtros')
         self.assertEqual(clasificar_categoria('Algo desconocido'), 'otros')
 
+    def test_especificacion_ambigua_no_decide(self):
+        # "cerámica o semi-metálica" no es una decisión: el precio cambia según cuál.
+        self.assertFalse(especificacion_valida('pastilla_freno', 'Cerámicas o semi-metálicas'))
+        self.assertTrue(especificacion_valida('pastilla_freno', 'Cerámica'))
+        # Semi-sintético no debe leerse como dos variantes (sintético ⊂ semi-sintético).
+        self.assertTrue(especificacion_valida('aceite_motor', 'Semi-sintético 10W40'))
+        self.assertFalse(especificacion_valida('aceite_motor', 'Sintético o mineral 5W30'))
+
     def test_familia_sensible_bujia(self):
         self.assertEqual(detectar_familia_sensible('Bujías de encendido'), 'bujia')
         self.assertTrue(especificacion_valida('bujia', 'Iridio'))
@@ -105,6 +113,59 @@ class ResolverPrecioBandaTestCase(SimpleTestCase):
         self.assertTrue(linea.get('especificacion_pendiente'))
         self.assertEqual(linea['certeza'], 'sin_precio')
         self.assertEqual(linea['precio_unitario_clp'], 0)
+
+    @override_settings(PRECIO_CONFIANZA_ENABLED=True, FACTOR_MERCADO_MAX=2.50)
+    def test_sin_hits_marca_motivo_sin_referencia(self):
+        linea = {'nombre': 'Líquido de frenos', 'especificacion': 'DOT 4'}
+        resolver_precio_linea(linea, [], confianza_enabled=True)
+        self.assertEqual(linea['motivo_sin_precio'], 'sin_referencia')
+        self.assertNotIn('fuentes_detalle', linea)
+
+    @override_settings(PRECIO_CONFIANZA_ENABLED=True, FACTOR_MERCADO_MAX=2.50)
+    @patch(
+        'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.resolver_precio.factor_mercado_categoria',
+        return_value=1.5,
+    )
+    def test_especificacion_ambigua_conserva_banda_como_orientacion(self, _factor):
+        linea = {
+            'nombre': 'Pastillas de freno delanteras',
+            'especificacion': 'Cerámicas o semi-metálicas',
+        }
+        resolver_precio_linea(
+            linea,
+            [self._hit('web', 9990, proveedor_nombre='Mercado Libre')],
+            confianza_enabled=True,
+        )
+        self.assertTrue(linea['especificacion_pendiente'])
+        self.assertEqual(linea['certeza'], 'sin_precio')
+        self.assertEqual(linea['motivo_sin_precio'], 'especificacion')
+        self.assertEqual(linea['precio_unitario_clp'], 0)
+        # La banda sigue orientando al taller aunque no se cobre un monto.
+        self.assertEqual(linea['precio_min_clp'], 9990)
+        self.assertGreater(linea['precio_max_clp'], linea['precio_min_clp'])
+
+    @override_settings(PRECIO_CONFIANZA_ENABLED=True, FACTOR_MERCADO_MAX=2.50)
+    @patch(
+        'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.resolver_precio.factor_mercado_categoria',
+        return_value=1.5,
+    )
+    def test_fuentes_detalle_dice_de_donde_salio(self, _factor):
+        linea = {'nombre': 'Filtro de aceite'}
+        resolver_precio_linea(
+            linea,
+            [self._hit(
+                'web',
+                8000,
+                proveedor_nombre='AutoPlanet',
+                url_producto='https://www.autoplanet.cl/producto/123',
+            )],
+            confianza_enabled=True,
+        )
+        fuente = linea['fuentes_detalle'][0]
+        self.assertEqual(fuente['tienda'], 'AutoPlanet')
+        self.assertEqual(fuente['dominio'], 'autoplanet.cl')
+        self.assertEqual(fuente['precio_clp'], 8000)
+        self.assertTrue(fuente['url'].startswith('https://'))
 
     @override_settings(PRECIO_CONFIANZA_ENABLED=True, FACTOR_MERCADO_MAX=2.50)
     @patch(
@@ -212,6 +273,8 @@ class RepuestosPublicosWhitelistTestCase(SimpleTestCase):
             'certeza': 'referencial',
             'fuentes_n': 3,
             'alternativas': [{'etiqueta': 'economica', 'precio_clp': 3200}],
+            'motivo_sin_precio': 'sin_referencia',
+            'fuentes_detalle': [{'tienda': 'AutoPlanet', 'url': 'https://autoplanet.cl/x'}],
         }])
         self.assertEqual(len(pubs), 1)
         self.assertEqual(pubs[0]['especificacion'], 'Iridio')
@@ -219,7 +282,7 @@ class RepuestosPublicosWhitelistTestCase(SimpleTestCase):
         for secret in (
             'tienda_ml', 'proveedor_nombre', 'url_producto', 'proveedor_id',
             'precio_marketplace_clp', 'factor_mercado', 'certeza', 'fuentes_n',
-            'alternativas',
+            'alternativas', 'motivo_sin_precio', 'fuentes_detalle',
         ):
             self.assertNotIn(secret, pubs[0])
 

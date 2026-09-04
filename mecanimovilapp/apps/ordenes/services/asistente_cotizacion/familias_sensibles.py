@@ -76,15 +76,31 @@ def _opciones_norm(familia: str) -> list[str]:
     return [_norm(o) for o in (meta.get('opciones') or []) if o]
 
 
+def _opciones_en_spec(familia: str, spec: str) -> list[str]:
+    """Opciones que menciona el texto, sin contar las contenidas en otra más específica.
+
+    "semi sintetico 10w40" menciona semi-sintético (y no también sintético).
+    """
+    encontradas = [op for op in _opciones_norm(familia) if op in spec or spec in op]
+    return [
+        op for op in encontradas
+        if not any(otra != op and op in otra for otra in encontradas)
+    ]
+
+
 def especificacion_valida(familia: str, texto: str) -> bool:
-    """True si el texto cubre la variante de la familia (o la familia no exige opciones)."""
+    """True si el texto decide UNA variante de la familia (o la familia no exige opciones)."""
     spec = _norm(texto)
     if not spec:
         return False
     opciones = _opciones_norm(familia)
     if not opciones:
         return True
-    if any(op in spec or spec in op for op in opciones):
+    encontradas = _opciones_en_spec(familia, spec)
+    # Dos variantes ("cerámica o semi-metálica") no es una decisión: el precio cambia.
+    if len(encontradas) >= 2:
+        return False
+    if encontradas:
         return True
     meta = FAMILIAS_SENSIBLES.get(familia) or {}
     if meta.get('requiere_viscosidad') and re.search(r'\d+\s*w\s*\d+', spec):

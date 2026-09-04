@@ -237,6 +237,15 @@ def aplicar_confirmacion_linea(
         linea['proveedor_id'] = proveedor.id
         linea['proveedor_nombre'] = proveedor.nombre
     linea['precio_capturado_en'] = timezone.now().isoformat()
+    linea.pop('motivo_sin_precio', None)
+    linea['fuentes_n'] = 1
+    linea['fuentes_detalle'] = [{
+        'fuente': 'proveedor',
+        'tienda': (proveedor.nombre if proveedor is not None else proveedor_nombre) or 'Precio del taller',
+        'dominio': '',
+        'precio_clp': precio,
+        'url': '',
+    }]
     reps[idx] = linea
     cotizacion.repuestos = reps
     if guardar_en_mis_precios:
@@ -278,6 +287,7 @@ def aplicar_asumir_lineas(cotizacion, repuesto_ids: list[str]) -> int:
         linea['certeza'] = 'asumido'
         linea['precio_estimado'] = True
         linea['precio_capturado_en'] = now
+        linea.pop('motivo_sin_precio', None)
         reps[i] = linea
         n += 1
     cotizacion.repuestos = reps

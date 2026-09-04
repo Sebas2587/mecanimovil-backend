@@ -595,8 +595,11 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             linea['especificacion_pendiente'] = False
             linea['precio_unitario_clp'] = 0
             linea['certeza'] = 'sin_precio'
+            linea['motivo_sin_precio'] = 'sin_referencia'
             linea.pop('precio_referencia_mercado', None)
             linea.pop('fuente_marketplace', None)
+            linea.pop('fuentes_detalle', None)
+            linea.pop('fuentes_n', None)
             reps[i] = anotar_familia_en_linea(linea)
             found = True
             break

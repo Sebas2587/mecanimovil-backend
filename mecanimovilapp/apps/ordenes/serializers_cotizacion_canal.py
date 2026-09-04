@@ -23,6 +23,16 @@ class AlternativaRepuestoSerializer(serializers.Serializer):
     url_producto = serializers.CharField(required=False, allow_blank=True, default='')
 
 
+class FuenteRepuestoSerializer(serializers.Serializer):
+    """Trazabilidad del precio (solo app taller; nunca viaja al link público)."""
+
+    fuente = serializers.CharField(required=False, allow_blank=True, default='')
+    tienda = serializers.CharField(required=False, allow_blank=True, default='')
+    dominio = serializers.CharField(required=False, allow_blank=True, default='')
+    precio_clp = serializers.IntegerField(required=False, min_value=0, default=0)
+    url = serializers.CharField(required=False, allow_blank=True, default='')
+
+
 class RepuestoCotizacionSerializer(serializers.Serializer):
     id = serializers.CharField(required=False, allow_blank=True)
     nombre = serializers.CharField(max_length=200)
@@ -58,7 +68,9 @@ class RepuestoCotizacionSerializer(serializers.Serializer):
     familia_sensible = serializers.CharField(required=False, allow_blank=True, default='')
     codigo_parte = serializers.CharField(required=False, allow_blank=True, default='')
     compatibilidad = serializers.CharField(required=False, allow_blank=True, default='')
+    motivo_sin_precio = serializers.CharField(required=False, allow_blank=True, default='')
     alternativas = AlternativaRepuestoSerializer(many=True, required=False)
+    fuentes_detalle = FuenteRepuestoSerializer(many=True, required=False)
 
 
 class CotizacionCanalSerializer(serializers.ModelSerializer):

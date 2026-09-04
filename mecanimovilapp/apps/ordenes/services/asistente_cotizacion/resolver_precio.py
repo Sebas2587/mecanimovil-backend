@@ -16,6 +16,18 @@ _FUENTES_TALLER = ('proveedor', 'catalogo')
 _FUENTES_REFERENCIAL = ('historial', 'web', 'mercadolibre')
 _FUENTES_MERCADO = ('web', 'mercadolibre')
 
+MOTIVO_ESPECIFICACION = 'especificacion'
+MOTIVO_SIN_REFERENCIA = 'sin_referencia'
+
+_MAX_FUENTES_DETALLE = 3
+_ETIQUETA_FUENTE = {
+    'proveedor': 'Mis precios',
+    'catalogo': 'Catálogo del taller',
+    'historial': 'Historial del taller',
+    'web': 'Tienda web',
+    'mercadolibre': 'Mercado Libre',
+}
+
 
 def _to_int_clp(valor: Any, default: int = 0) -> int:
     if valor is None:
@@ -82,6 +94,33 @@ def _hits_con_precio(hits: list[dict[str, Any]], fuentes: tuple[str, ...]) -> li
     return out
 
 
+def _dominio_de_url(url: str) -> str:
+    try:
+        from urllib.parse import urlparse
+
+        host = (urlparse(url).hostname or '').lower()
+    except Exception:
+        return ''
+    return host[4:] if host.startswith('www.') else host
+
+
+def _detalle_fuentes(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fuentes que sostienen el precio, con nombre de tienda y link (solo taller)."""
+    out: list[dict[str, Any]] = []
+    for hit in hits[:_MAX_FUENTES_DETALLE]:
+        fuente = str(hit.get('fuente_marketplace') or '').strip()
+        tienda = str(hit.get('proveedor_nombre') or hit.get('tienda_ml') or '').strip()
+        url = str(hit.get('url_producto') or '').strip()[:500]
+        out.append({
+            'fuente': fuente[:40],
+            'tienda': (tienda or _ETIQUETA_FUENTE.get(fuente) or 'Referencia')[:120],
+            'dominio': _dominio_de_url(url)[:120],
+            'precio_clp': _to_int_clp(hit.get('precio_unitario_clp')),
+            'url': url,
+        })
+    return out
+
+
 def _aplicar_precio_legacy(next_rep: dict[str, Any], hits: list[dict[str, Any]]) -> None:
     """Comportamiento actual: catalogo → historial → web; ML solo si IA no tiene precio."""
     precio_ia = _to_int_clp(next_rep.get('precio_unitario_clp'))
@@ -121,15 +160,6 @@ def resolver_precio_linea(
     categoria = categoria_de_repuesto(next_rep)
     next_rep['categoria'] = categoria
 
-    if linea_especificacion_pendiente(next_rep) and enabled:
-        next_rep['especificacion_pendiente'] = True
-        next_rep['compatibilidad'] = next_rep.get('compatibilidad') or 'no_verificada'
-        next_rep['certeza'] = CERTEZA_SIN_PRECIO
-        next_rep['precio_unitario_clp'] = 0
-        next_rep['precio_estimado'] = True
-        next_rep.pop('precio_referencia_mercado', None)
-        return
-
     if not enabled:
         _aplicar_precio_legacy(next_rep, hits)
         precio = _to_int_clp(next_rep.get('precio_unitario_clp'))
@@ -139,7 +169,29 @@ def resolver_precio_linea(
         aplicar_derivados_certeza(next_rep)
         return
 
-    # Flag encendido: jerarquía proveedor → catalogo → historial → web/ML × factor → nada.
+    spec_pendiente = linea_especificacion_pendiente(next_rep)
+    _resolver_con_confianza(next_rep, hits, categoria)
+
+    if not spec_pendiente:
+        return
+
+    # Sin variante decidida no se cobra un monto, pero la banda queda como orientación.
+    next_rep['especificacion_pendiente'] = True
+    next_rep['compatibilidad'] = next_rep.get('compatibilidad') or 'no_verificada'
+    if next_rep.get('certeza') == CERTEZA_CONFIRMADO:
+        return
+    next_rep['precio_unitario_clp'] = 0
+    next_rep['certeza'] = CERTEZA_SIN_PRECIO
+    next_rep['motivo_sin_precio'] = MOTIVO_ESPECIFICACION
+    aplicar_derivados_certeza(next_rep)
+
+
+def _resolver_con_confianza(
+    next_rep: dict[str, Any],
+    hits: list[dict[str, Any]],
+    categoria: str,
+) -> None:
+    """Jerarquía proveedor → catalogo → historial → web/ML × factor → nada."""
     for fuente, certeza in (
         ('proveedor', CERTEZA_CONFIRMADO),
         ('catalogo', CERTEZA_CONFIRMADO),
@@ -153,6 +205,8 @@ def resolver_precio_linea(
             next_rep['fuentes_n'] = 1
             next_rep['certeza'] = certeza
             next_rep['factor_mercado'] = 1.0
+            next_rep['fuentes_detalle'] = _detalle_fuentes(taller_hits[:1])
+            next_rep.pop('motivo_sin_precio', None)
             aplicar_derivados_certeza(next_rep)
             return
 
@@ -162,6 +216,9 @@ def resolver_precio_linea(
     if not reales:
         next_rep['precio_unitario_clp'] = 0
         next_rep['certeza'] = CERTEZA_SIN_PRECIO
+        next_rep['motivo_sin_precio'] = MOTIVO_SIN_REFERENCIA
+        next_rep.pop('fuentes_detalle', None)
+        next_rep.pop('fuentes_n', None)
         min_ia = _to_int_clp(next_rep.get('precio_min_clp'))
         max_ia = _to_int_clp(next_rep.get('precio_max_clp'))
         if min_ia > 0 and max_ia > 0:
@@ -205,6 +262,8 @@ def resolver_precio_linea(
     next_rep['precio_unitario_clp'] = precio_max
     next_rep['fuentes_n'] = len(reales)
     next_rep['certeza'] = CERTEZA_REFERENCIAL
+    next_rep['fuentes_detalle'] = _detalle_fuentes(reales)
+    next_rep.pop('motivo_sin_precio', None)
     if crudo_ml:
         next_rep['precio_marketplace_clp'] = crudo_ml
         next_rep['factor_mercado'] = factor

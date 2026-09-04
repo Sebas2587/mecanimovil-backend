@@ -689,9 +689,20 @@ def _draw_lineas(pdf: DocumentoPDF, rows: list[dict], data: dict | None = None) 
             pdf, x0 + PAD + desc_w, mid_y, amt_w,
             unit_label, 4.6, 8.5, color=MUTED, align='R',
         )
+        # Sin monto cerrado el subtotal también es un rango: no imprimir $0.
+        qty_n = int(row.get('qty') or 1) or 1
+        subtotal_txt = (
+            _rango_clp(
+                int(row.get('unitario_min') or 0) * qty_n,
+                int(row.get('unitario_max') or 0) * qty_n,
+                row['subtotal'],
+            )
+            if not int(row.get('unitario') or 0)
+            else _clp(row['subtotal'])
+        )
         _text(
             pdf, x0 + PAD + desc_w + amt_w, mid_y, amt_w + 6,
-            _clp(row['subtotal']), 4.6, 10, bold=True, align='R',
+            subtotal_txt, 4.6, 10, bold=True, align='R',
         )
         y += rh
 
