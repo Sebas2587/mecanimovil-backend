@@ -73,7 +73,63 @@ def _fuentes() -> list[dict[str, str]]:
 
 
 def _dominios_whitelist() -> set[str]:
-    return {f['dominio'] for f in _fuentes()}
+    return {f['dominio'] for f in _fuentes()} | _dominios_especialistas()
+
+
+def _especialistas() -> list[dict[str, Any]]:
+    """Casas de repuestos especialistas configuradas."""
+    raw = getattr(settings, 'REPUESTOS_TIENDAS_ESPECIALISTAS', None) or []
+    out: list[dict[str, Any]] = []
+    if not isinstance(raw, list):
+        return out
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        alias = str(item.get('alias') or item.get('nombre') or '').strip()
+        if not alias:
+            continue
+        marcas = item.get('marcas') or []
+        out.append({
+            'nombre': str(item.get('nombre') or alias).strip(),
+            'alias': alias,
+            'dominio': str(item.get('dominio') or '').strip().lower(),
+            'marcas': [_norm(m) for m in marcas if str(m or '').strip()],
+        })
+    return out
+
+
+def _dominios_especialistas() -> set[str]:
+    return {e['dominio'] for e in _especialistas() if e['dominio']}
+
+
+def _especialistas_de_marca(marca: str) -> list[dict[str, Any]]:
+    """Casas que trabajan esa marca: se nombran en la búsqueda."""
+    m = _norm(marca)
+    if not m:
+        return []
+    return [e for e in _especialistas() if any(mk in m or m in mk for mk in e['marcas'])]
+
+
+def _es_generalista(url: str) -> bool:
+    """Retail que vende de todo: su ficha rara vez es del modelo exacto."""
+    host = _dominio_de_url(url)
+    if not host:
+        return False
+    dominios = getattr(settings, 'REPUESTOS_DOMINIOS_GENERALISTAS', None) or []
+    return any(host == d or host.endswith('.' + d) for d in dominios)
+
+
+def _es_de_especialista(candidato: dict[str, Any]) -> bool:
+    """Ficha de una casa especialista: por dominio propio o por su nombre en la ficha."""
+    host = _dominio_de_url(str(candidato.get('url') or ''))
+    texto = _norm(f"{candidato.get('title') or ''} {candidato.get('content') or ''}"[:600])
+    for esp in _especialistas():
+        dom = esp['dominio']
+        if dom and (host == dom or host.endswith('.' + dom.removeprefix('www.'))):
+            return True
+        if _norm(esp['alias']) in texto:
+            return True
+    return False
 
 
 def _slug_query(texto: str) -> str:
@@ -331,10 +387,12 @@ def _es_tienda_chilena(url: str, whitelist: set[str], texto: str = '') -> bool:
 
 
 def _es_pagina_sin_ficha(url: str) -> bool:
-    """Blog/landing: puede citar montos que no son el precio de la pieza."""
+    """Home/blog/landing: puede citar montos que no son el precio de la pieza."""
     try:
         path = urlparse(url).path or '/'
     except Exception:
+        return True
+    if path.strip('/') == '':
         return True
     return bool(_RE_PATH_NO_FICHA.search(path))
 
@@ -820,6 +878,7 @@ def _construir_prompt_tavily(
     for nombre, candidatos in candidatos_por_nombre.items():
         lineas = '\n'.join(
             f'  [{i}] título: {c["title"]}\n      url: {c["url"]}'
+            f'\n      casa especialista: {"sí" if _es_de_especialista(c) else "no"}'
             # El texto se recorta, así que el monto detectado va explícito.
             f'\n      precio detectado: {_precio_desde_texto(c.get("content") or "") or "ninguno"}'
             f'\n      texto: {c["content"][:400]}'
@@ -831,14 +890,14 @@ def _construir_prompt_tavily(
 Se te dan, por cada repuesto, resultados REALES de búsqueda (título/url/texto) de tiendas chilenas.
 NO inventes datos que no estén en el texto entregado. Usa SOLO la información de estos candidatos.
 
-Vehículo de referencia (orientativo): {vehiculo}
+Vehículo a cotizar: {vehiculo}
 Servicio: {servicio_nombre or 'N/A'}
 
 {cuerpo}
 
 Para cada repuesto, elige el MEJOR candidato de su lista (por índice):
-1. Si algún candidato es de la categoría correcta, encontrado=true (aunque el título no mencione el modelo exacto).
-2. compatibilidad: alta si el título/texto menciona la marca/modelo del vehículo; media si es la categoría correcta; baja si es genérico.
+1. Prioridad: (a) ficha que nombre el modelo y la variante/motor de ESTE vehículo, (b) ficha que nombre marca y modelo, (c) casa especialista por sobre retail generalista. Si ningún candidato nombra el vehículo, sirve uno de la categoría correcta (hay insumos universales).
+2. compatibilidad: alta si el título/texto nombra modelo y variante/motor/año; media si nombra la marca o es un insumo universal; baja si es genérico.
 3. marca_repuesto = marca de la PIEZA visible en título/texto (Bosch, Gates, NGK, etc.). Si no aparece, "". NUNCA "Original", "GENÉRICO" ni la marca del auto.
 4. precio_clp = precio CLP del candidato elegido (entero, sin puntos/símbolo). Si el candidato trae "precio detectado", usa ese monto salvo que el texto muestre claramente otro precio de la pieza; si no hay ninguno, 0.
 4b. Entre candidatos de la misma categoría, PREFIERE el que tenga precio; uno sin monto solo si ninguno lo trae (una línea sin precio no le sirve al taller).
@@ -901,6 +960,44 @@ def _gemini_generar(prompt: str, *, timeout: int, use_url_context: bool) -> dict
         return None
 
 
+def _candidatos_validos(query: str, whitelist: set[str]) -> list[dict[str, Any]]:
+    """Fichas de tienda chilena para la consulta, sin listados ni blogs."""
+    return [
+        c for c in _tavily_buscar_uno(query, max_results=6)
+        if _es_tienda_chilena(c['url'], whitelist, c.get('content') or '')
+        and not _es_listado_sin_vendedor(c['url'])
+        and not _es_pagina_sin_ficha(c['url'])
+    ]
+
+
+def _ordenar_candidatos(
+    crudos: list[dict[str, Any]],
+    *,
+    priorizar_precio: bool = False,
+) -> list[dict[str, Any]]:
+    """Casa especialista antes que retail; con la ficha ya leída manda el precio.
+
+    Antes de pedir la ficha conviene mirar primero a la casa especialista (es
+    la que tiene la pieza del modelo). Después, una ficha sin monto legible no
+    le sirve al taller, así que pasa al final.
+    """
+    unicos: dict[str, dict[str, Any]] = {}
+    for c in crudos:
+        unicos.setdefault(c['url'], c)
+    candidatos = list(unicos.values())
+    # El retail generalista solo se usa si no hay ninguna casa de repuestos.
+    especializados = [c for c in candidatos if not _es_generalista(c['url'])]
+    if especializados:
+        candidatos = especializados
+
+    def rango(c: dict[str, Any]) -> tuple[int, int]:
+        sin_precio = 0 if _precio_desde_texto(c.get('content') or '') else 1
+        no_esp = 0 if _es_de_especialista(c) else 1
+        return (sin_precio, no_esp) if priorizar_precio else (no_esp, sin_precio)
+
+    return sorted(candidatos, key=rango)
+
+
 def _buscar_repuestos_web_tavily(
     nombres_limpios: list[str],
     *,
@@ -914,27 +1011,26 @@ def _buscar_repuestos_web_tavily(
 ) -> dict[str, dict[str, Any]]:
     """Agregador Tavily (JSON real) + Gemini solo como filtro/formateador."""
     whitelist = _dominios_whitelist()
+    casas_marca = _especialistas_de_marca(marca)
     candidatos_por_nombre: dict[str, list[dict[str, str]]] = {}
+    consultas_abiertas: dict[str, str] = {}
     for nombre in nombres_limpios:
         # Con la variante y la cilindrada la ficha corresponde a ESTE auto.
-        query = ' '.join(
+        base = ' '.join(
             p for p in [nombre, marca, _modelo_busqueda_completo(modelo), cilindraje] if p
         )
-        # Filtra antes del prompt: que el modelo solo vea fichas de tiendas .cl.
-        crudos = [
-            c for c in _tavily_buscar_uno(query, max_results=6)
-            if _es_tienda_chilena(c['url'], whitelist, c.get('content') or '')
-            and not _es_listado_sin_vendedor(c['url'])
-            and not _es_pagina_sin_ficha(c['url'])
-        ]
-        # Las tiendas que cargan el precio por JS no lo muestran en el texto:
-        # primero las fichas donde el monto sí se puede leer (orden estable).
-        crudos.sort(key=lambda c: _precio_desde_texto(c.get('content') or '') == 0)
-        candidatos = crudos[:4]
+        # La casa especialista de la marca primero: su ficha ya viene filtrada
+        # por modelo y motor, cosa que el retail generalista no hace.
+        if casas_marca:
+            crudos = _candidatos_validos(f"{base} {casas_marca[0]['alias']}", whitelist)
+            consultas_abiertas[nombre] = base
+        else:
+            crudos = _candidatos_validos(base, whitelist)
+        candidatos = _ordenar_candidatos(crudos)[:4]
         if candidatos:
             candidatos_por_nombre[nombre] = candidatos
 
-    if not candidatos_por_nombre:
+    if not candidatos_por_nombre and not consultas_abiertas:
         logger.info('busqueda_web_repuestos[tavily]: 0 candidatos para %s repuestos', len(nombres_limpios))
         return {}
 
@@ -955,8 +1051,23 @@ def _buscar_repuestos_web_tavily(
                 {**c, 'content': fichas[c['url']]} if c['url'] in fichas else c
                 for c in candidatos
             ]
-            con_ficha.sort(key=lambda c: _precio_desde_texto(c.get('content') or '') == 0)
-            candidatos_por_nombre[nombre] = con_ficha
+            candidatos_por_nombre[nombre] = _ordenar_candidatos(con_ficha, priorizar_precio=True)
+
+    # Segunda oportunidad con búsqueda abierta: hay tiendas que bloquean la
+    # extracción, y una línea en $0 no le sirve al taller aunque la ficha sea
+    # la correcta.
+    for nombre, base in consultas_abiertas.items():
+        candidatos = candidatos_por_nombre.get(nombre) or []
+        if any(_precio_desde_texto(c.get('content') or '') for c in candidatos):
+            continue
+        extra = _candidatos_validos(base, whitelist)
+        if extra:
+            candidatos_por_nombre[nombre] = _ordenar_candidatos(
+                candidatos + extra, priorizar_precio=True,
+            )[:4]
+
+    if not candidatos_por_nombre:
+        return {}
 
     prompt = _construir_prompt_tavily(
         candidatos_por_nombre=candidatos_por_nombre,

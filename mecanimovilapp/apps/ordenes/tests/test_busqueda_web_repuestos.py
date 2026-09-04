@@ -743,6 +743,72 @@ class BuscarRepuestosWebTavilyTestCase(SimpleTestCase):
             )
         self.assertEqual(out, {})
 
+    def test_nombra_la_casa_especialista_de_la_marca_en_la_busqueda(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        tavily_resp = self._fake_tavily_resp([
+            {
+                'title': 'Pastillas Fiat Bravo Sport 1.4 T-Jet',
+                'url': 'https://indra.cl/producto/pastillas-bravo-tjet',
+                'content': 'Pastillas delanteras Fiat Bravo Sport T-Jet $ 24.990',
+            },
+        ])
+        queries: list[str] = []
+
+        def fake_post(url, **kwargs):
+            if url.endswith('/extract'):
+                resp = MagicMock()
+                resp.status_code = 200
+                resp.json.return_value = {'results': []}
+                return resp
+            if 'tavily.com' in url:
+                queries.append(kwargs['json']['query'])
+                return tavily_resp
+            return self._fake_gemini_resp([])
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.requests.post',
+            side_effect=fake_post,
+        ):
+            bw.buscar_repuestos_web(
+                ['Pastillas de freno delanteras'],
+                vehiculo={'marca': 'Fiat', 'modelo': 'BRAVO SPORT TJET', 'cilindraje': '1.4'},
+            )
+
+        self.assertEqual(len(queries), 1, 'con precio legible no se gasta una segunda búsqueda')
+        # La casa de la marca y la variante del auto van en la consulta.
+        self.assertIn('indra', queries[0].lower())
+        self.assertIn('Bravo Sport Tjet', queries[0])
+        self.assertIn('1.4', queries[0])
+
+    def test_retail_generalista_solo_si_no_hay_casa_de_repuestos(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        retail = {
+            'title': 'Pastillas de freno',
+            'url': 'https://www.sodimac.cl/sodimac-cl/articulo/123/Pastillas',
+            'content': 'Pastillas de freno $ 10.000',
+        }
+        casa = {
+            'title': 'Pastillas Fiat Bravo 1.4',
+            'url': 'https://frenosvergara.shop/products/pastillas-bravo',
+            'content': 'Pastillas Fiat Bravo 1.4 $ 24.990',
+        }
+        self.assertEqual(
+            [c['url'] for c in bw._ordenar_candidatos([retail, casa])],
+            [casa['url']],
+        )
+        # Sin alternativa, el retail sirve: mejor una referencia que ninguna.
+        self.assertEqual([c['url'] for c in bw._ordenar_candidatos([retail])], [retail['url']])
+
+    def test_descarta_home_de_la_tienda(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        # La portada no tiene ficha ni precio de la pieza.
+        self.assertTrue(bw._es_pagina_sin_ficha('https://indra.cl'))
+        self.assertTrue(bw._es_pagina_sin_ficha('https://indra.cl/'))
+        self.assertFalse(bw._es_pagina_sin_ficha('https://indra.cl/producto/pastillas-bravo'))
+
     def test_fallback_a_url_context_si_tavily_sin_candidatos(self):
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
 
@@ -774,7 +840,8 @@ class BuscarRepuestosWebTavilyTestCase(SimpleTestCase):
         ):
             bw.buscar_repuestos_web(
                 ['Pastillas de freno'],
-                vehiculo={'marca': 'Fiat', 'modelo': 'Bravo', 'anio': 2010},
+                # Marca sin casa especialista configurada: una sola búsqueda.
+                vehiculo={'marca': 'Toyota', 'modelo': 'Yaris', 'anio': 2010},
             )
 
         self.assertEqual(calls['tavily'], 1)

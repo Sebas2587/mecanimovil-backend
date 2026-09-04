@@ -803,6 +803,51 @@ def _parse_busqueda_web_fuentes_default():
 
 BUSQUEDA_WEB_REPUESTOS_FUENTES = _parse_busqueda_web_fuentes_default()
 
+
+def _parse_tiendas_especialistas_default():
+    """Casas de repuestos especialistas. Override con REPUESTOS_TIENDAS_ESPECIALISTAS (JSON).
+
+    'marcas' vacío = especialista general (solo pondera resultados). Con marcas
+    la casa se nombra en la búsqueda: sus fichas son del modelo exacto.
+    """
+    import json as _json
+
+    raw = (config('REPUESTOS_TIENDAS_ESPECIALISTAS', default='') or '').strip()
+    if raw:
+        try:
+            data = _json.loads(raw)
+            if isinstance(data, list) and data:
+                return data
+        except Exception:
+            pass
+    return [
+        {'nombre': 'Indra', 'alias': 'indra repuestos', 'dominio': 'indra.cl',
+         'marcas': ['fiat', 'alfa romeo', 'lancia']},
+        {'nombre': 'Suzukistore20', 'alias': 'suzukistore20', 'dominio': '',
+         'marcas': ['suzuki']},
+        {'nombre': 'Miktares', 'alias': 'miktares', 'dominio': '', 'marcas': []},
+        {'nombre': 'Frenos Vergara', 'alias': 'frenos vergara', 'dominio': 'frenosvergara.shop',
+         'marcas': []},
+        {'nombre': 'Mundo Repuestos', 'alias': 'mundo repuestos', 'dominio': 'mundorepuestos.cl',
+         'marcas': []},
+        {'nombre': 'Repuestos Ank', 'alias': 'repuestos ank', 'dominio': 'repuestosank.cl',
+         'marcas': []},
+        {'nombre': 'Emasa', 'alias': 'emasa', 'dominio': 'emasa.cl', 'marcas': []},
+    ]
+
+
+REPUESTOS_TIENDAS_ESPECIALISTAS = _parse_tiendas_especialistas_default()
+
+# Retail generalista: tiene algo de repuestos, pero no es casa de la marca.
+REPUESTOS_DOMINIOS_GENERALISTAS = [
+    d.strip().lower() for d in (
+        config(
+            'REPUESTOS_DOMINIOS_GENERALISTAS',
+            default='sodimac.cl,falabella.com,easy.cl,paris.cl,ripley.cl,lider.cl,construmart.cl',
+        ) or ''
+    ).split(',') if d.strip()
+]
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
