@@ -615,6 +615,161 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             disparar_busqueda_web_cotizacion(cotizacion.id, sync=False)
         return Response({'cotizacion': CotizacionCanalSerializer(cotizacion).data})
 
+    @action(detail=True, methods=['get'], url_path='opciones-repuesto')
+    def opciones_repuesto(self, request, pk=None):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.opciones_repuesto import (
+            MAX_OPCIONES_TALLER,
+            construir_opciones_linea,
+        )
+
+        cotizacion = self.get_object()
+        rid = str(request.query_params.get('repuesto_id') or '').strip()
+        if not rid:
+            raise ValidationError({'repuesto_id': 'Indica el repuesto.'})
+        linea = next(
+            (
+                r for r in (cotizacion.repuestos or [])
+                if isinstance(r, dict) and str(r.get('id') or '') == rid
+            ),
+            None,
+        )
+        if linea is None:
+            raise ValidationError({'repuesto_id': 'No se encontró el repuesto en la cotización.'})
+        opciones = construir_opciones_linea(
+            linea,
+            vehiculo={
+                'marca': cotizacion.vehiculo_marca or '',
+                'modelo': cotizacion.vehiculo_modelo or '',
+                'anio': cotizacion.vehiculo_anio or '',
+            },
+            taller=cotizacion.taller,
+            calidad=str(linea.get('calidad') or '') or None,
+            max_opciones=MAX_OPCIONES_TALLER,
+        )
+        return Response({
+            'opciones': opciones,
+            'calidad_cliente': str(linea.get('calidad') or ''),
+            'actualizado_en': cotizacion.actualizado_en,
+        })
+
+    @action(detail=True, methods=['post'], url_path='usar-opcion-repuesto')
+    def usar_opcion_repuesto(self, request, pk=None):
+        from mecanimovilapp.apps.ordenes.serializers_proveedor_repuestos import (
+            UsarOpcionRepuestoSerializer,
+        )
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.opciones_repuesto import (
+            aplicar_usar_opcion,
+        )
+
+        cotizacion = self.get_object()
+        ser = UsarOpcionRepuestoSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        data = ser.validated_data
+        try:
+            aplicar_usar_opcion(
+                cotizacion,
+                repuesto_id=data['repuesto_id'],
+                opcion_id=data['opcion_id'],
+                guardar_en_mis_precios=data.get('guardar_en_mis_precios', False),
+                usuario=request.user,
+            )
+        except ValueError as exc:
+            raise ValidationError({'opcion_id': str(exc)}) from exc
+        self._persistir_repuestos_y_totales(cotizacion)
+        return Response({'cotizacion': CotizacionCanalSerializer(cotizacion).data})
+
+    @action(detail=True, methods=['post'], url_path='definir-calidad')
+    def definir_calidad(self, request, pk=None):
+        from mecanimovilapp.apps.ordenes.serializers_proveedor_repuestos import (
+            DefinirCalidadSerializer,
+        )
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.calidad_repuesto import (
+            anotar_calidad_en_linea,
+        )
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web import (
+            disparar_busqueda_web_cotizacion,
+            marcar_busqueda_web_pendiente,
+        )
+
+        cotizacion = self.get_object()
+        ser = DefinirCalidadSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        rid = ser.validated_data['repuesto_id']
+        calidad = ser.validated_data['calidad']
+        reps = list(cotizacion.repuestos or [])
+        found = False
+        for i, r in enumerate(reps):
+            if not isinstance(r, dict) or str(r.get('id') or '') != str(rid):
+                continue
+            linea = dict(r)
+            linea['calidad'] = calidad
+            linea['calidad_pendiente'] = False
+            linea['precio_unitario_clp'] = 0
+            linea['certeza'] = 'sin_precio'
+            linea['motivo_sin_precio'] = 'sin_referencia'
+            linea.pop('precio_referencia_mercado', None)
+            linea.pop('fuente_marketplace', None)
+            linea.pop('fuentes_detalle', None)
+            linea.pop('fuentes_n', None)
+            linea.pop('opciones', None)
+            reps[i] = anotar_calidad_en_linea(linea)
+            found = True
+            break
+        if not found:
+            raise ValidationError({'repuesto_id': 'No se encontró el repuesto en la cotización.'})
+        cotizacion.repuestos = reps
+        meta = dict(cotizacion.metadata or {})
+        meta = marcar_busqueda_web_pendiente(meta)
+        cotizacion.metadata = meta
+        self._persistir_repuestos_y_totales(cotizacion)
+        cotizacion.save(update_fields=['metadata', 'actualizado_en'])
+        if meta.get('busqueda_web_estado') == 'pendiente':
+            disparar_busqueda_web_cotizacion(cotizacion.id, sync=False)
+        return Response({'cotizacion': CotizacionCanalSerializer(cotizacion).data})
+
+    @action(detail=True, methods=['post'], url_path='enviar-vitrina')
+    def enviar_vitrina(self, request, pk=None):
+        from mecanimovilapp.apps.agente_ia.models import AgenteConversacionSesion, TallerAgenteConfig
+        from mecanimovilapp.apps.agente_ia.services.orquestador import enviar_respuesta_agente
+        from mecanimovilapp.apps.ordenes.services.vitrina_repuestos import (
+            crear_vitrina,
+            texto_mensaje_vitrina,
+            vitrina_habilitada,
+        )
+
+        cotizacion = self.get_object()
+        config = TallerAgenteConfig.objects.filter(taller=cotizacion.taller).first()
+        if not vitrina_habilitada(config):
+            raise ValidationError({'vitrina': 'La vitrina no está habilitada para este taller.'})
+        ids = request.data.get('repuesto_ids') if isinstance(request.data, dict) else None
+        if ids is not None and not isinstance(ids, list):
+            raise ValidationError({'repuesto_ids': 'Debe ser una lista.'})
+        vit = crear_vitrina(
+            taller=cotizacion.taller,
+            cotizacion=cotizacion,
+            conversation=cotizacion.conversation,
+            muestra_bandas=bool(getattr(config, 'vitrina_muestra_bandas', True)),
+            repuesto_ids=[str(x) for x in ids] if ids else None,
+        )
+        if vit is None:
+            raise ValidationError({'vitrina': 'No hay suficientes opciones para enviar.'})
+        if cotizacion.conversation_id and cotizacion.creado_por_id:
+            enviar_respuesta_agente(
+                conversation=cotizacion.conversation,
+                proveedor_user_id=cotizacion.creado_por_id,
+                texto=texto_mensaje_vitrina(vit),
+            )
+        ses = AgenteConversacionSesion.objects.filter(conversation_id=cotizacion.conversation_id).first()
+        if ses is not None:
+            ses.vitrina_activa = vit
+            ses.estado = AgenteConversacionSesion.ESTADO_ELIGIENDO_REPUESTOS
+            ses.save(update_fields=['vitrina_activa', 'estado', 'actualizado_en'])
+        return Response({
+            'ok': True,
+            'token': vit.token,
+            'url': f'/repuestos/{vit.token}',
+        })
+
     @action(detail=True, methods=['post'], url_path='registrar-compra-repuestos')
     def registrar_compra_repuestos(self, request, pk=None):
         from mecanimovilapp.apps.ordenes.serializers_proveedor_repuestos import (

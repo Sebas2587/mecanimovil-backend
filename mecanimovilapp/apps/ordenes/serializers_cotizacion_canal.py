@@ -33,6 +33,28 @@ class FuenteRepuestoSerializer(serializers.Serializer):
     url = serializers.CharField(required=False, allow_blank=True, default='')
 
 
+class OpcionRepuestoSerializer(serializers.Serializer):
+    id = serializers.CharField(required=False, allow_blank=True, default='')
+    nombre = serializers.CharField(max_length=200, required=False, allow_blank=True, default='')
+    marca_repuesto = serializers.CharField(required=False, allow_blank=True, default='')
+    especificacion = serializers.CharField(required=False, allow_blank=True, default='')
+    calidad = serializers.CharField(required=False, allow_blank=True, default='')
+    precio_clp = serializers.IntegerField(required=False, min_value=0, default=0)
+    precio_min_clp = serializers.IntegerField(required=False, min_value=0)
+    precio_max_clp = serializers.IntegerField(required=False, min_value=0)
+    fuente = serializers.CharField(required=False, allow_blank=True, default='')
+    tienda = serializers.CharField(required=False, allow_blank=True, default='')
+    dominio = serializers.CharField(required=False, allow_blank=True, default='')
+    url = serializers.CharField(required=False, allow_blank=True, default='')
+    es_proveedor_taller = serializers.BooleanField(required=False, default=False)
+    proveedor_id = serializers.IntegerField(required=False, allow_null=True)
+    imagen_url = serializers.CharField(required=False, allow_blank=True, default='')
+    certeza = serializers.CharField(required=False, allow_blank=True, default='')
+    compatibilidad = serializers.CharField(required=False, allow_blank=True, default='')
+    confianza = serializers.FloatField(required=False)
+    posicion_relativa = serializers.CharField(required=False, allow_blank=True, default='')
+
+
 class RepuestoCotizacionSerializer(serializers.Serializer):
     id = serializers.CharField(required=False, allow_blank=True)
     nombre = serializers.CharField(max_length=200)
@@ -71,6 +93,12 @@ class RepuestoCotizacionSerializer(serializers.Serializer):
     motivo_sin_precio = serializers.CharField(required=False, allow_blank=True, default='')
     alternativas = AlternativaRepuestoSerializer(many=True, required=False)
     fuentes_detalle = FuenteRepuestoSerializer(many=True, required=False)
+    calidad = serializers.CharField(required=False, allow_blank=True, default='')
+    calidad_pendiente = serializers.BooleanField(required=False, default=False)
+    seleccion_cliente = serializers.BooleanField(required=False, default=False)
+    seleccion_cliente_en = serializers.CharField(required=False, allow_blank=True, default='')
+    imagen_url = serializers.CharField(required=False, allow_blank=True, default='')
+    opciones = OpcionRepuestoSerializer(many=True, required=False)
 
 
 class CotizacionCanalSerializer(serializers.ModelSerializer):

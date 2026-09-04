@@ -1577,15 +1577,19 @@ def clave_cache_repuesto(
     especificacion: str = '',
     tipo_motor: str = '',
     cilindraje: str = '',
+    calidad: str = '',
 ) -> str:
     base = _clave_fuzzy(nombre)
     spec = _norm(especificacion)
     veh = _norm(' '.join(str(p) for p in (marca_vehiculo, modelo_vehiculo, anio or '') if p))
     motor = _norm(tipo_motor)
     cil = _norm(cilindraje)
+    cal = _norm(calidad)
     parts = [base]
     if spec:
         parts.append(spec)
+    if cal in ('original', 'oem', 'alternativo'):
+        parts.append(cal)
     parts.append(veh)
     if motor:
         parts.append(motor)

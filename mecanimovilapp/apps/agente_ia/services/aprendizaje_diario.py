@@ -216,6 +216,16 @@ def ejecutar_aprendizaje_diario_taller(
         )
         resumen['hallazgos'] += 1
 
+    try:
+        from mecanimovilapp.apps.ordenes.services.seleccion_repuesto_aprendizaje import (
+            consolidar_aprendizaje_taller,
+        )
+
+        sel = consolidar_aprendizaje_taller(taller_id, fecha=dia)
+        resumen['hallazgos'] += int(sel.get('hallazgos') or 0)
+    except Exception:
+        logger.exception('Aprendizaje selección repuesto taller=%s', taller_id)
+
     refs_rag = _crear_chunks_patrones(
         taller_id=taller_id,
         dia=dia,

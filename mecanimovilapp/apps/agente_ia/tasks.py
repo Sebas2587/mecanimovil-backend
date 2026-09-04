@@ -176,6 +176,45 @@ def aprendizaje_diario_talleres_task() -> dict:
     return {'ok': True, 'talleres': encolados}
 
 
+@shared_task(name='agente_ia.retomar_tras_vitrina', queue='default')
+def retomar_tras_vitrina_task(vitrina_id: int) -> dict:
+    from mecanimovilapp.apps.agente_ia.models import AgenteConversacionSesion
+    from mecanimovilapp.apps.agente_ia.services.orquestador import enviar_respuestas_agente
+    from mecanimovilapp.apps.agente_ia.services.resumen_alcance import (
+        construir_resumen_alcance,
+        marcar_resumen_enviado,
+    )
+    from mecanimovilapp.apps.agente_ia.services.taller_resolver import (
+        resolver_taller_desde_conversation,
+    )
+    from mecanimovilapp.apps.ordenes.models import VitrinaRepuestos
+    from mecanimovilapp.apps.ordenes.services.vitrina_repuestos import (
+        aplicar_seleccion_a_cotizacion,
+    )
+
+    vit = VitrinaRepuestos.objects.select_related('cotizacion', 'conversation').filter(pk=vitrina_id).first()
+    if vit is None or not vit.conversation_id:
+        return {'ok': False, 'reason': 'missing'}
+    if vit.cotizacion_id:
+        aplicar_seleccion_a_cotizacion(vit, vit.cotizacion)
+    conversation = vit.conversation
+    taller, proveedor_user_id = resolver_taller_desde_conversation(conversation)
+    if not taller or not proveedor_user_id:
+        return {'ok': False, 'reason': 'sin_taller'}
+    sesion = AgenteConversacionSesion.objects.filter(conversation=conversation).first()
+    datos = dict(getattr(sesion, 'datos_capturados', None) or {})
+    if not datos.get('resumen_alcance_enviado'):
+        textos = construir_resumen_alcance(datos)
+        enviar_respuestas_agente(
+            conversation=conversation,
+            proveedor_user_id=proveedor_user_id,
+            textos=textos,
+        )
+        if sesion is not None:
+            marcar_resumen_enviado(sesion)
+    return {'ok': True, 'vitrina_id': vitrina_id}
+
+
 @shared_task(name='agente_ia.revisar_seguimiento_proactivo', queue='default')
 def revisar_seguimiento_proactivo_task() -> dict:
     from mecanimovilapp.apps.agente_ia.services.seguimiento_proactivo import (

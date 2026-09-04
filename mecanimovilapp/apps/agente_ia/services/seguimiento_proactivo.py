@@ -136,9 +136,22 @@ def _generar_mensaje_followup(
             f'de {servicio} para tu {vehiculo}. Si te quedó alguna duda, me comentas.'
         )
 
+    bloque_rep = ''
+    try:
+        from mecanimovilapp.apps.agente_ia.services.contexto_repuestos import (
+            bloque_prompt_repuestos,
+            contexto_repuestos_cliente,
+        )
+
+        ctx = contexto_repuestos_cliente(cotizacion.taller, patente=cotizacion.vehiculo_patente or '')
+        bloque_rep = bloque_prompt_repuestos(ctx)
+    except Exception:
+        bloque_rep = ''
+
     prompt = f"""Eres {agente_nombre} del taller "{taller_nombre}".
 Hace un tiempo enviaste al cliente el presupuesto de "{servicio}" para su {vehiculo} (monto {total_txt}).
 El cliente aún no ha respondido.
+{bloque_rep}
 Intención actual del lead: {"alta (quiere el servicio)" if alta else "baja (curioso / comparando / pensándolo)"}.
 
 Escribe UN mensaje de seguimiento personalizado para WhatsApp (1 a 2 frases cortas, máximo 40 palabras).
@@ -302,6 +315,50 @@ def revisar_seguimiento_proactivo() -> dict[str, Any]:
                     conv.id,
                     horas_transcurridas,
                 )
+
+    # Recordatorio único del link de vitrina (reusa el tope de 1 follow-up).
+    try:
+        from mecanimovilapp.apps.ordenes.models import VitrinaRepuestos
+        from mecanimovilapp.apps.ordenes.services.vitrina_repuestos import texto_mensaje_vitrina
+
+        vits = VitrinaRepuestos.objects.filter(
+            estado__in=[VitrinaRepuestos.ESTADO_ENVIADA, VitrinaRepuestos.ESTADO_ABIERTA],
+            recordatorio_enviado=False,
+            conversation__isnull=False,
+        ).select_related('conversation', 'taller')
+        for vit in vits.iterator(chunk_size=50):
+            if not vit.enviada_en:
+                continue
+            horas = (now - vit.enviada_en).total_seconds() / 3600
+            if horas < 4:
+                continue
+            conv = vit.conversation
+            if Message.objects.filter(conversation=conv, direction='inbound', timestamp__gt=vit.enviada_en).exists():
+                continue
+            sesion = AgenteConversacionSesion.objects.filter(conversation=conv).first()
+            if not sesion or not sesion.habilitado_en_chat or sesion.pausado_por_taller:
+                continue
+            taller, proveedor_user_id = resolver_taller_desde_conversation(conv)
+            if not taller or not proveedor_user_id:
+                continue
+            config = _obtener_o_crear_config(taller.id)
+            if not config.habilitado or not config.canal_habilitado(canal_conversacion(conv)):
+                continue
+            texto = (
+                f'Si te quedó pendiente elegir los repuestos, aquí está el link de nuevo: '
+                f'{texto_mensaje_vitrina(vit).rsplit(": ", 1)[-1]}'
+            )
+            enviados = enviar_respuestas_agente(
+                conversation=conv,
+                proveedor_user_id=proveedor_user_id,
+                textos=[texto],
+            )
+            if enviados:
+                vit.recordatorio_enviado = True
+                vit.save(update_fields=['recordatorio_enviado', 'actualizado_en'])
+                stats['followups_enviados'] = stats.get('followups_enviados', 0) + 1
+    except Exception:
+        logger.exception('Error recordatorio vitrina')
 
     logger.info('✅ revisar_seguimiento_proactivo completado: %s', stats)
     return stats

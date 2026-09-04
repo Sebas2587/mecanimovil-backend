@@ -315,14 +315,19 @@ class RepuestosPublicosWhitelistTestCase(SimpleTestCase):
             'alternativas': [{'etiqueta': 'economica', 'precio_clp': 3200}],
             'motivo_sin_precio': 'sin_referencia',
             'fuentes_detalle': [{'tienda': 'AutoPlanet', 'url': 'https://autoplanet.cl/x'}],
+            'opciones': [{'id': 'x', 'tienda': 'Refax', 'url': 'https://refax.cl'}],
+            'calidad': 'oem',
+            'imagen_url': 'https://cdn.mecanimovil.cl/x.jpg',
         }])
         self.assertEqual(len(pubs), 1)
         self.assertEqual(pubs[0]['especificacion'], 'Iridio')
         self.assertEqual(pubs[0]['precio_min_clp'], 18900)
+        self.assertEqual(pubs[0]['calidad'], 'oem')
+        self.assertEqual(pubs[0]['imagen_url'], 'https://cdn.mecanimovil.cl/x.jpg')
         for secret in (
             'tienda_ml', 'proveedor_nombre', 'url_producto', 'proveedor_id',
             'precio_marketplace_clp', 'factor_mercado', 'certeza', 'fuentes_n',
-            'alternativas', 'motivo_sin_precio', 'fuentes_detalle',
+            'alternativas', 'motivo_sin_precio', 'fuentes_detalle', 'opciones',
         ):
             self.assertNotIn(secret, pubs[0])
 

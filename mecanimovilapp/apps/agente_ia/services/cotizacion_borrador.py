@@ -1839,9 +1839,34 @@ def crear_cotizacion_borrador_desde_agente(
         marcar_busqueda_web_pendiente,
     )
 
+    calidad_pref = str(datos.get('calidad_preferida') or '').strip()
+    if calidad_pref or datos.get('alcance_repuestos'):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.calidad_repuesto import (
+            anotar_calidad_en_linea,
+        )
+
+        next_reps = []
+        for r in repuestos:
+            if not isinstance(r, dict):
+                continue
+            lin = dict(r)
+            if calidad_pref and not lin.get('calidad'):
+                lin['calidad'] = calidad_pref
+                lin['calidad_pendiente'] = False
+            lin.setdefault('seleccion_cliente', False)
+            lin.setdefault('opciones', lin.get('opciones') or lin.get('alternativas') or [])
+            next_reps.append(anotar_calidad_en_linea(lin, descartar_invalida=False))
+        repuestos = next_reps
+
     # Catálogo completo → no gastar Tavily/Gemini web; plantilla/IA parcial sí puede buscar.
+    # Tampoco buscar si la calidad de la pieza aún no está definida.
+    calidad_bloquea_web = any(
+        isinstance(r, dict) and r.get('calidad_pendiente') for r in repuestos
+    )
     if precio_desde_catalogo:
         metadata_cot['busqueda_web_estado'] = 'omitida_catalogo'
+    elif calidad_bloquea_web:
+        metadata_cot['busqueda_web_estado'] = 'omitida_calidad_pendiente'
     else:
         metadata_cot = marcar_busqueda_web_pendiente(metadata_cot)
 

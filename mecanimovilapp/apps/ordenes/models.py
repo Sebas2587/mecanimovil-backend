@@ -2568,6 +2568,9 @@ class PrecioRepuestoWeb(models.Model):
     tipo_motor = models.CharField(max_length=20, blank=True, default='')
     cilindraje = models.CharField(max_length=20, blank=True, default='')
     categoria = models.CharField(max_length=40, blank=True, default='')
+    calidad = models.CharField(max_length=16, blank=True, default='')
+    imagen_url = models.URLField(max_length=500, blank=True, default='')
+    imagen_estado = models.CharField(max_length=16, blank=True, default='pendiente')
     consultado_en = models.DateTimeField(auto_now=True)
     expira_en = models.DateTimeField(db_index=True)
 
@@ -2730,6 +2733,8 @@ class PrecioProveedorTaller(models.Model):
     codigo_parte = models.CharField(max_length=60, blank=True, default='', db_index=True)
     especificacion = models.CharField(max_length=120, blank=True, default='')
     categoria = models.CharField(max_length=40, blank=True, default='')
+    calidad = models.CharField(max_length=16, blank=True, default='')
+    imagen_url = models.URLField(max_length=500, blank=True, default='')
     precio_clp = models.PositiveIntegerField()
     precio_venta_clp = models.PositiveIntegerField(default=0)
     iva_incluido = models.BooleanField(default=True)
@@ -2767,3 +2772,132 @@ class PrecioProveedorTaller(models.Model):
 
     def __str__(self):
         return f'{self.nombre_repuesto} ${self.precio_clp} ({self.taller_id})'
+
+
+class VitrinaRepuestos(models.Model):
+    """Página pública de opciones de repuesto (token propio, TTL 72 h)."""
+
+    ESTADO_ENVIADA = 'enviada'
+    ESTADO_ABIERTA = 'abierta'
+    ESTADO_RESPONDIDA = 'respondida'
+    ESTADO_EXPIRADA = 'expirada'
+    ESTADO_CHOICES = [
+        (ESTADO_ENVIADA, 'Enviada'),
+        (ESTADO_ABIERTA, 'Abierta'),
+        (ESTADO_RESPONDIDA, 'Respondida'),
+        (ESTADO_EXPIRADA, 'Expirada'),
+    ]
+
+    taller = models.ForeignKey(
+        'usuarios.Taller',
+        on_delete=models.CASCADE,
+        related_name='vitrinas_repuestos',
+    )
+    cotizacion = models.ForeignKey(
+        CotizacionCanal,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='vitrinas_repuestos',
+    )
+    conversation = models.ForeignKey(
+        'chat.Conversation',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='vitrinas_repuestos',
+    )
+    token = models.CharField(max_length=64, unique=True, db_index=True)
+    lineas = models.JSONField(default=list, blank=True)
+    seleccion = models.JSONField(default=list, blank=True)
+    estado = models.CharField(
+        max_length=16,
+        choices=ESTADO_CHOICES,
+        default=ESTADO_ENVIADA,
+        db_index=True,
+    )
+    expira_en = models.DateTimeField(db_index=True)
+    enviada_en = models.DateTimeField(null=True, blank=True)
+    abierta_en = models.DateTimeField(null=True, blank=True)
+    respondida_en = models.DateTimeField(null=True, blank=True)
+    recordatorio_enviado = models.BooleanField(default=False)
+    creado_en = models.DateTimeField(auto_now_add=True)
+    actualizado_en = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _('vitrina de repuestos')
+        verbose_name_plural = _('vitrinas de repuestos')
+        indexes = [
+            models.Index(fields=['taller', '-creado_en'], name='ordenes_vitrina_taller_idx'),
+            models.Index(fields=['estado', 'expira_en'], name='ordenes_vitrina_estado_idx'),
+        ]
+
+    def __str__(self):
+        return f'Vitrina {self.token[:8]} ({self.estado})'
+
+
+class SeleccionRepuestoEvento(models.Model):
+    """Evento de aprendizaje: propuesta IA vs cliente vs taller."""
+
+    taller = models.ForeignKey(
+        'usuarios.Taller',
+        on_delete=models.CASCADE,
+        related_name='eventos_seleccion_repuesto',
+    )
+    cotizacion = models.ForeignKey(
+        CotizacionCanal,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='eventos_seleccion_repuesto',
+    )
+    linea_id = models.CharField(max_length=64, blank=True, default='')
+    familia = models.CharField(max_length=40, blank=True, default='')
+    propuesta_ia_calidad = models.CharField(max_length=16, blank=True, default='')
+    cliente_calidad = models.CharField(max_length=16, blank=True, default='')
+    taller_calidad = models.CharField(max_length=16, blank=True, default='')
+    propuesta_ia_opcion_id = models.CharField(max_length=64, blank=True, default='')
+    cliente_opcion_id = models.CharField(max_length=64, blank=True, default='')
+    taller_opcion_id = models.CharField(max_length=64, blank=True, default='')
+    cambio_calidad = models.BooleanField(default=False)
+    delta_precio_pct = models.FloatField(null=True, blank=True)
+    creado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = _('evento selección repuesto')
+        verbose_name_plural = _('eventos selección repuesto')
+        indexes = [
+            models.Index(fields=['taller', 'familia', '-creado_en'], name='ordenes_selrep_fam_idx'),
+        ]
+
+    def __str__(self):
+        return f'Selección {self.familia or self.linea_id} taller={self.taller_id}'
+
+
+class VehiculoPreferenciaRepuesto(models.Model):
+    """Preferencia de calidad por patente en un taller."""
+
+    taller = models.ForeignKey(
+        'usuarios.Taller',
+        on_delete=models.CASCADE,
+        related_name='preferencias_repuesto_vehiculo',
+    )
+    patente = models.CharField(max_length=12)
+    calidad_preferida = models.CharField(max_length=16, blank=True, default='')
+    muestras = models.PositiveIntegerField(default=0)
+    por_familia = models.JSONField(default=dict, blank=True)
+    actualizado_en = models.DateTimeField(auto_now=True)
+    creado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = _('preferencia repuesto vehículo')
+        verbose_name_plural = _('preferencias repuesto vehículo')
+        constraints = [
+            models.UniqueConstraint(
+                fields=['taller', 'patente'],
+                name='ordenes_vehpref_taller_patente_uniq',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.patente} → {self.calidad_preferida or "—"}'

@@ -175,6 +175,11 @@ app.conf.beat_schedule = {
         'schedule': crontab(minute='*/30'),  # Cada 30 minutos
         'options': {'queue': 'default'},
     },
+    'ordenes-expirar-vitrinas-vencidas': {
+        'task': 'ordenes.expirar_vitrinas_vencidas',
+        'schedule': crontab(minute=0, hour='*/6'),
+        'options': {'queue': 'default'},
+    },
 }
 
 @app.task(bind=True)

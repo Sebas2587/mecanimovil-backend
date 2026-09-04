@@ -13,12 +13,14 @@ FAMILIAS_SENSIBLES: dict[str, dict[str, Any]] = {
         'opciones': ['Cobre', 'Platino', 'Iridio'],
         'keywords': ('bujia', 'bujias', 'spark plug'),
         'excluye': ('cable', 'bobina', 'pozo', 'conector', 'llave'),
+        'eje_calidad': True,
     },
     'pastilla_freno': {
         'categoria': 'frenos',
         'label': 'Tipo de pastilla',
         'opciones': ['Orgánica', 'Semi-metálica', 'Cerámica'],
         'keywords': ('pastilla', 'pastillas', 'balata', 'balatas'),
+        'eje_calidad': True,
     },
     'aceite_motor': {
         'categoria': 'aceites',
@@ -28,6 +30,7 @@ FAMILIAS_SENSIBLES: dict[str, dict[str, Any]] = {
         'keywords': ('aceite', 'lubricante'),
         # Un filtro o una bomba de aceite no se piden por viscosidad.
         'excluye': ('filtro', 'bomba', 'carter', 'enfriador', 'sensor', 'tapa', 'reten'),
+        'eje_calidad': True,
     },
     'amortiguador': {
         'categoria': 'suspension',
@@ -35,6 +38,7 @@ FAMILIAS_SENSIBLES: dict[str, dict[str, Any]] = {
         'opciones': ['Hidráulico', 'Gas'],
         'keywords': ('amortiguador', 'amortiguadores'),
         'excluye': ('soporte', 'base', 'goma', 'tope', 'buje', 'kit de montaje'),
+        'eje_calidad': True,
     },
     'bateria': {
         'categoria': 'bateria',
@@ -42,18 +46,21 @@ FAMILIAS_SENSIBLES: dict[str, dict[str, Any]] = {
         'opciones': ['Convencional', 'EFB', 'AGM'],
         'keywords': ('bateria', 'baterias', 'acumulador'),
         'excluye': ('cable', 'borne', 'porta', 'soporte', 'sensor'),
+        'eje_calidad': True,
     },
     'neumatico': {
         'categoria': 'otros',
         'label': 'Índice/medida',
         'opciones': [],
         'keywords': ('neumatico', 'neumaticos', 'llanta', 'llantas'),
+        'eje_calidad': False,
     },
     'disco_freno': {
         'categoria': 'frenos',
         'label': 'Tipo',
         'opciones': ['Liso', 'Ventilado', 'Perforado'],
         'keywords': ('disco de freno', 'discos de freno', 'disco freno'),
+        'eje_calidad': True,
     },
 }
 
@@ -63,6 +70,14 @@ def _norm(texto: str) -> str:
     t = ''.join(c for c in t if unicodedata.category(c) != 'Mn')
     t = re.sub(r'[^a-z0-9]+', ' ', t)
     return re.sub(r'\s+', ' ', t).strip()
+
+
+def familia_tiene_eje_calidad(nombre: str, familia: str | None = None) -> bool:
+    fam = familia or detectar_familia_sensible(nombre)
+    if fam and fam in FAMILIAS_SENSIBLES:
+        return bool((FAMILIAS_SENSIBLES[fam] or {}).get('eje_calidad'))
+    n = _norm(nombre)
+    return any(k in n for k in ('filtro', 'embrague', 'clutch'))
 
 
 def detectar_familia_sensible(nombre: str) -> str | None:

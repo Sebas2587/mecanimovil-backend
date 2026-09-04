@@ -844,6 +844,13 @@ def enviar_cotizacion_canal(cotizacion: CotizacionCanal, user) -> Message:
     except Exception:
         pass
 
+    try:
+        from mecanimovilapp.apps.ordenes.tasks import registrar_eventos_seleccion_task
+
+        registrar_eventos_seleccion_task.delay(cotizacion.id)
+    except Exception:
+        pass
+
     from mecanimovilapp.apps.agente_ia.services.sesion_cotizacion import (
         liberar_sesiones_tras_cerrar_borrador,
     )

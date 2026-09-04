@@ -104,6 +104,8 @@ def linea_necesita_busqueda_web(rep: Any) -> bool:
         return False
     if not nombre_repuesto_buscable(str(rep.get('nombre') or '')):
         return False
+    if bool(rep.get('calidad_pendiente')):
+        return False
     fuente = str(rep.get('fuente_marketplace') or '').strip().lower()
     # Sin variante decidida igual se busca: la banda sirve de orientación y
     # resolver_precio_linea deja la línea en $0 hasta que el taller elija.
@@ -940,6 +942,11 @@ def enriquecer_repuestos_cotizacion(
             _aplicar_hit_campos(next_rep, hit)
         next_rep.pop('precio_referencia_mercado', None)
         _aplicar_precio(next_rep, hits)
+        from .calidad_repuesto import anotar_calidad_en_linea
+        from .opciones_repuesto import poblar_opciones_en_linea
+
+        next_rep = anotar_calidad_en_linea(next_rep, descartar_invalida=False)
+        poblar_opciones_en_linea(next_rep, hits)
 
         fuente_final = str(next_rep.get('fuente_marketplace') or '').strip()
         precio_de_taller = fuente_final in _FUENTES_PRECIO_TALLER and any(

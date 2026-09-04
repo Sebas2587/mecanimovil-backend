@@ -292,27 +292,51 @@ def send_meta_message(message_id: int):
         elif text:
             if (
                 meta.get('interactive')
-                and meta.get('tipo') == 'cotizacion_canal'
                 and connection.channel == 'WHATSAPP'
                 and connection.phone_number_id
             ):
-                cot_id = meta.get('cotizacion_id')
-                resp = client.send_whatsapp_interactive_buttons(
-                    connection.phone_number_id,
-                    external_id,
-                    text,
-                    [
-                        {
-                            'id': f'cotizacion_aceptar_{cot_id}',
-                            'title': 'Aceptar',
-                        },
-                        {
-                            'id': f'cotizacion_rechazar_{cot_id}',
-                            'title': 'Rechazar',
-                        },
-                    ],
-                    connection.access_token,
-                )
+                tipo_int = meta.get('tipo')
+                if tipo_int == 'pregunta_calidad':
+                    botones = list(meta.get('botones') or [])
+                    resp = client.send_whatsapp_interactive_buttons(
+                        connection.phone_number_id,
+                        external_id,
+                        text,
+                        [
+                            {
+                                'id': str(b.get('id') or ''),
+                                'title': str(b.get('title') or '')[:20],
+                            }
+                            for b in botones
+                            if b.get('id') and b.get('title')
+                        ][:3],
+                        connection.access_token,
+                    )
+                elif tipo_int == 'cotizacion_canal':
+                    cot_id = meta.get('cotizacion_id')
+                    resp = client.send_whatsapp_interactive_buttons(
+                        connection.phone_number_id,
+                        external_id,
+                        text,
+                        [
+                            {
+                                'id': f'cotizacion_aceptar_{cot_id}',
+                                'title': 'Aceptar',
+                            },
+                            {
+                                'id': f'cotizacion_rechazar_{cot_id}',
+                                'title': 'Rechazar',
+                            },
+                        ],
+                        connection.access_token,
+                    )
+                else:
+                    resp = client.send_whatsapp_text(
+                        connection.phone_number_id,
+                        external_id,
+                        text,
+                        connection.access_token,
+                    )
             elif connection.channel == 'WHATSAPP' and connection.phone_number_id:
                 resp = client.send_whatsapp_text(
                     connection.phone_number_id,

@@ -713,6 +713,13 @@ ASISTENTE_COTIZACION_IA_TIMEOUT = config('ASISTENTE_COTIZACION_IA_TIMEOUT', defa
 PLAN_CUOTAS_ENFORCEMENT_ENABLED = config('PLAN_CUOTAS_ENFORCEMENT_ENABLED', default=False, cast=bool)
 # Agente IA conversacional en chats (captura + cotización borrador). Default False hasta activar.
 AGENTE_IA_CHAT_ENABLED = config('AGENTE_IA_CHAT_ENABLED', default=False, cast=bool)
+AGENTE_IA_ALCANCE_REPUESTOS_ENABLED = config(
+    'AGENTE_IA_ALCANCE_REPUESTOS_ENABLED', default=False, cast=bool,
+)
+AGENTE_IA_BOTONES_CALIDAD_ENABLED = config(
+    'AGENTE_IA_BOTONES_CALIDAD_ENABLED', default=False, cast=bool,
+)
+VITRINA_REPUESTOS_ENABLED = config('VITRINA_REPUESTOS_ENABLED', default=False, cast=bool)
 AGENTE_IA_GEMINI_MODEL = config('AGENTE_IA_GEMINI_MODEL', default='')
 AGENTE_IA_EMBEDDING_MODEL = config('AGENTE_IA_EMBEDDING_MODEL', default='gemini-embedding-001')
 AGENTE_IA_TIMEOUT = config('AGENTE_IA_TIMEOUT', default=20, cast=int)

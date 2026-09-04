@@ -73,6 +73,18 @@ class TallerAgenteConfig(models.Model):
         default=False,
         help_text='Si está activo, el agente debe pedir dirección del cliente antes de armar borrador.',
     )
+    preguntar_calidad_repuestos = models.BooleanField(
+        default=True,
+        help_text='Si está activo, el agente puede preguntar calidad (original/OEM/alternativo).',
+    )
+    vitrina_repuestos_habilitada = models.BooleanField(
+        default=True,
+        help_text='Si el agente está activo, puede enviar la vitrina pública de opciones.',
+    )
+    vitrina_muestra_bandas = models.BooleanField(
+        default=True,
+        help_text='Si hay ≥2 fuentes, mostrar banda de referencia en la vitrina.',
+    )
     creado_en = models.DateTimeField(auto_now_add=True)
     actualizado_en = models.DateTimeField(auto_now=True)
 
@@ -212,6 +224,7 @@ class AgenteConversacionSesion(models.Model):
 
     ESTADO_CAPTURANDO = 'capturando'
     ESTADO_LISTO_COTIZAR = 'listo_para_cotizar'
+    ESTADO_ELIGIENDO_REPUESTOS = 'eligiendo_repuestos'
     ESTADO_ESPERANDO_REVISION = 'esperando_revision_taller'
     ESTADO_AGENDANDO = 'agendando'
     ESTADO_COORDINACION_TERRENO = 'coordinacion_terreno'
@@ -221,6 +234,7 @@ class AgenteConversacionSesion(models.Model):
     ESTADO_CHOICES = [
         (ESTADO_CAPTURANDO, 'Capturando información'),
         (ESTADO_LISTO_COTIZAR, 'Listo para cotizar'),
+        (ESTADO_ELIGIENDO_REPUESTOS, 'Eligiendo repuestos'),
         (ESTADO_ESPERANDO_REVISION, 'Esperando revisión del taller'),
         (ESTADO_AGENDANDO, 'Agendando cita'),
         (ESTADO_COORDINACION_TERRENO, 'Coordinación en terreno / en sitio'),
@@ -258,6 +272,13 @@ class AgenteConversacionSesion(models.Model):
         blank=True,
         on_delete=models.SET_NULL,
         related_name='agente_sesiones_negociacion',
+    )
+    vitrina_activa = models.ForeignKey(
+        'ordenes.VitrinaRepuestos',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='sesiones_agente',
     )
     # Opt-out por conversación: en chats nuevos el agente arranca activo.
     # El taller lo apaga solo si quiere intervenir a mano en ese chat.
@@ -433,6 +454,8 @@ class AgenteClienteMemoria(models.Model):
         blank=True,
         default='',
     )
+    calidad_preferida = models.CharField(max_length=16, blank=True, default='')
+    preferencias_repuestos = models.JSONField(default=dict, blank=True)
     ultima_conversacion = models.ForeignKey(
         'chat.Conversation',
         on_delete=models.SET_NULL,
@@ -467,12 +490,14 @@ class AgenteAprendizajeDiario(models.Model):
     TIPO_RESPUESTA_INSUFICIENTE = 'respuesta_insuficiente'
     TIPO_CORRECCION_SISTEMATICA = 'correccion_sistematica'
     TIPO_PATRON_ALTA_CONFIANZA = 'patron_alta_confianza'
+    TIPO_SELECCION_REPUESTO = 'seleccion_repuesto'
 
     TIPO_HALLAZGO_CHOICES = [
         (TIPO_LEAD_PERDIDO, 'Lead perdido'),
         (TIPO_RESPUESTA_INSUFICIENTE, 'Respuesta insuficiente'),
         (TIPO_CORRECCION_SISTEMATICA, 'Corrección sistemática'),
         (TIPO_PATRON_ALTA_CONFIANZA, 'Patrón alta confianza'),
+        (TIPO_SELECCION_REPUESTO, 'Selección de repuesto'),
     ]
 
     taller = models.ForeignKey(

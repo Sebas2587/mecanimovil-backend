@@ -19,6 +19,10 @@ from .views_cotizacion_publica import (
     CotizacionPublicaPdfView,
     CotizacionPublicaRechazarView,
 )
+from .views_vitrina_repuestos import (
+    VitrinaRepuestosDetailView,
+    VitrinaRepuestosSeleccionarView,
+)
 from .views_pipeline_comercial import PipelineComercialViewSet
 
 app_name = 'ordenes'
@@ -114,5 +118,15 @@ urlpatterns = [
         'cotizaciones-publicas/<str:token>/rechazar/',
         CotizacionPublicaRechazarView.as_view(),
         name='cotizacion-publica-rechazar',
+    ),
+    path(
+        'vitrinas-repuestos/<str:token>/',
+        VitrinaRepuestosDetailView.as_view(),
+        name='vitrina-repuestos-detail',
+    ),
+    path(
+        'vitrinas-repuestos/<str:token>/seleccionar/',
+        VitrinaRepuestosSeleccionarView.as_view(),
+        name='vitrina-repuestos-seleccionar',
     ),
 ] 

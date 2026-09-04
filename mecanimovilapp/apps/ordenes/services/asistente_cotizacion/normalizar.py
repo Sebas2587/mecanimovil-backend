@@ -95,6 +95,9 @@ def normalizar_repuesto(item: Any, idx: int) -> dict[str, Any]:
         ('codigo_parte', lambda v: str(v or '').strip()[:60]),
         ('compatibilidad', lambda v: str(v or '').strip()[:20]),
         ('motivo_sin_precio', lambda v: str(v or '').strip()[:40]),
+        ('calidad', lambda v: str(v or '').strip()[:16]),
+        ('imagen_url', lambda v: str(v or '').strip()[:500]),
+        ('seleccion_cliente_en', lambda v: str(v or '').strip()[:40]),
     ):
         if key not in item or item.get(key) in (None, ''):
             continue
@@ -107,17 +110,26 @@ def normalizar_repuesto(item: Any, idx: int) -> dict[str, Any]:
         out[key] = val
     if item.get('especificacion_pendiente') is True:
         out['especificacion_pendiente'] = True
+    if item.get('calidad_pendiente') is True:
+        out['calidad_pendiente'] = True
+    if item.get('seleccion_cliente') is True:
+        out['seleccion_cliente'] = True
     alts = item.get('alternativas')
     if isinstance(alts, list) and alts:
         out['alternativas'] = alts[:6]
     fuentes = item.get('fuentes_detalle')
     if isinstance(fuentes, list) and fuentes:
         out['fuentes_detalle'] = [f for f in fuentes[:3] if isinstance(f, dict)]
+    opciones = item.get('opciones')
+    if isinstance(opciones, list) and opciones:
+        out['opciones'] = [o for o in opciones[:8] if isinstance(o, dict)]
 
+    from .calidad_repuesto import anotar_calidad_en_linea
     from .familias_sensibles import anotar_familia_en_linea
     from .resolver_precio import aplicar_derivados_certeza
 
     out = anotar_familia_en_linea(out)
+    out = anotar_calidad_en_linea(out, descartar_invalida=False)
     aplicar_derivados_certeza(out)
     precio_out = _to_int_clp(out.get('precio_unitario_clp'))
     if precio_out > 0:

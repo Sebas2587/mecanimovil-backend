@@ -88,6 +88,17 @@ class DefinirEspecificacionSerializer(serializers.Serializer):
     especificacion = serializers.CharField(max_length=120)
 
 
+class DefinirCalidadSerializer(serializers.Serializer):
+    repuesto_id = serializers.CharField(max_length=64)
+    calidad = serializers.ChoiceField(choices=('original', 'oem', 'alternativo'))
+
+
+class UsarOpcionRepuestoSerializer(serializers.Serializer):
+    repuesto_id = serializers.CharField(max_length=64)
+    opcion_id = serializers.CharField(max_length=64)
+    guardar_en_mis_precios = serializers.BooleanField(required=False, default=False)
+
+
 class RegistrarCompraItemSerializer(serializers.Serializer):
     repuesto_id = serializers.CharField(max_length=64)
     precio_clp = serializers.IntegerField(min_value=1)

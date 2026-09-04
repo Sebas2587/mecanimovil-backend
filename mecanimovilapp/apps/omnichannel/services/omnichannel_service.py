@@ -370,13 +370,32 @@ class OmnichannelService:
                     btn = (event.get('interactive') or {}).get('button_reply') or {}
                     button_id = btn.get('id')
                     if button_id:
-                        from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
-                            procesar_respuesta_interactive_cotizacion,
-                        )
-                        procesar_respuesta_interactive_cotizacion(
-                            button_id=button_id,
-                            conversation=msg.conversation,
-                        )
+                        if str(button_id).startswith('calidad_'):
+                            from mecanimovilapp.apps.agente_ia.models import (
+                                AgenteConversacionSesion,
+                            )
+                            from mecanimovilapp.apps.agente_ia.services.pregunta_calidad import (
+                                parsear_respuesta_calidad,
+                            )
+
+                            calidad = parsear_respuesta_calidad(button_id)
+                            if calidad:
+                                ses = AgenteConversacionSesion.objects.filter(
+                                    conversation=msg.conversation,
+                                ).first()
+                                if ses is not None:
+                                    datos = dict(ses.datos_capturados or {})
+                                    datos['calidad_preferida'] = calidad
+                                    ses.datos_capturados = datos
+                                    ses.save(update_fields=['datos_capturados', 'actualizado_en'])
+                        else:
+                            from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
+                                procesar_respuesta_interactive_cotizacion,
+                            )
+                            procesar_respuesta_interactive_cotizacion(
+                                button_id=button_id,
+                                conversation=msg.conversation,
+                            )
                 processed += 1
         elif body.get('object') == 'page':
             events = cls.parse_messenger_payload(body, 'MESSENGER')

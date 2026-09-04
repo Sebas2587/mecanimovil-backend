@@ -1204,6 +1204,7 @@ def _construir_prompt_agente(
     nota_ubicacion: str = '',
     pedido_en_primer_mensaje: bool = False,
     es_coordinacion_terreno: bool = False,
+    contexto_repuestos: str = '',
 ) -> str:
     datos_json = json.dumps(datos_capturados or {}, ensure_ascii=False)
     tiene_contexto = bool((chunks_texto or '').strip())
@@ -1331,7 +1332,7 @@ Nombre del agente / vendedor (cómo debes presentarte; vacío = solo usar el nom
 Instrucciones del taller (guía de fondo; NO las conviertas en checklist del primer mensaje — aplica el ritmo natural de abajo):
 {instrucciones or 'Sé cordial, profesional y humano. Primero conversa; cotiza cuando el cliente lo pida o cuando el problema ya esté claro.'}
 
-{bloque_bienvenida}{bloque_ubicacion}{bloque_terreno}
+{bloque_bienvenida}{bloque_ubicacion}{bloque_terreno}{contexto_repuestos or ''}
 FICHA OPERATIVA DEL TALLER (verdad operativa en vivo: no inventes precios ni servicios fuera de catálogo/especialidades. Marcas fuera de lista: NO rechaces el lead. Categorías de servicio fuera de especialidad: no cotices ese tipo — primero diagnostica con datos reales y explica con sutileza):
 ---
 {contexto_operativo_taller or 'Sin datos operativos configurados todavía.'}
@@ -1487,6 +1488,34 @@ REGLAS DE CONVERSACIÓN:
 24. resumen_turno: una frase breve (máx. 120 caracteres) sobre lo esencial de ESTE turno para memoria futura (tema, disposición del cliente, acuerdos). Ej: "Preguntó por pastillas; quiere pensarlo; no pidió cotizar aún." Si no hay nada nuevo relevante, déjalo vacío "".
 25. APRENDIZAJE DE VENTAS: si el bloque RAG trae "conversaciones que resultaron en venta", aprende el TONO y los ARGUMENTOS que funcionaron (cómo explicaron repuestos, garantía, objeciones). NUNCA copies datos de otro cliente (nombre, patente, teléfono). Úsalo como inspiración de estilo, no como script literal.
 26. NO hables de tarifas ni de "armar borrador" si el cliente solo entregó un dato (patente/teléfono/síntoma) y NO pidió precio. Primero confirma/asesora y pide el siguiente dato.
+27. ALCANCE DE REPUESTOS (CRÍTICO): declara alcance_repuestos en cada turno donde haya
+    servicio identificado: "con_repuestos" | "solo_mano_obra" | "no_definido".
+    - Si el cliente dice "solo mano de obra", "yo pongo los repuestos", "ya tengo la pieza"
+      → "solo_mano_obra". NUNCA agregues piezas en ese caso.
+    - Si pide un cambio de pieza (pastillas, filtros, aceite, discos, batería,
+      amortiguadores) sin aclarar → "con_repuestos".
+    - Si solo pide diagnóstico o revisión → "no_definido". NO asumas piezas.
+    - PROHIBIDO dejar "no_definido" cuando el cliente ya nombró la pieza.
+28. CALIDAD DE LA PIEZA: si el bloque PREFERENCIA DE REPUESTOS ya trae una calidad
+    conocida para este cliente, ÚSALA y NO preguntes. Si no la trae y la pieza es de las
+    que cambian mucho de precio, el sistema enviará la pregunta con botones — tú solo
+    marcas calidad_preferida="" y sigues. NUNCA inventes marcas ni precios de una calidad.
+    - "original" = pieza de la marca del auto (concesionario). Suele no tener referencia
+      web: si el cliente la elige, la línea puede quedar sin precio y eso está BIEN.
+    - "oem" = misma fábrica que la original, sin la caja de la marca.
+    - "alternativo" = equivalente de otra marca, más económico.
+    - PROHIBIDO decir que una calidad es "mala" o "insegura". Se comparan precio y garantía.
+29. PIEZAS MENCIONADAS: llena piezas_mencionadas SOLO con lo que el cliente nombró
+    explícitamente en ESTE auto. No agregues piezas por asociación técnica
+    (pastillas ≠ discos), ni por lo que el taller ofrece, ni por el historial de la patente.
+30. RESUMEN DE ALCANCE: cuando el sistema te pida el resumen, lista la mano de obra y las
+    piezas que van al borrador, en viñetas cortas, SIN montos (salvo que el monto esté en
+    la FICHA OPERATIVA). Cierra con UNA pregunta: si quiere sumar algo o lo dejas así.
+    Una sola vez por cotización. Si el cliente ya dijo "mándame el precio ya" o equivalente,
+    NO resumas: avanza.
+31. VITRINA: cuando el sistema haya enviado el link de opciones, NO repitas las opciones en
+    texto ni describas fotos que no viste. Una frase para invitarlo a elegir y listo. Si el
+    cliente no la abre, NO insistas más de una vez.
 
 Responde SOLO JSON válido:
 {{
@@ -1494,6 +1523,9 @@ Responde SOLO JSON válido:
   "respuestas_cliente": ["...", "..."],
   "intencion": "saludo|asesoria|cotizacion|agenda|otro",
   "cliente_pide_cotizacion": false,
+  "alcance_repuestos": "no_definido",
+  "calidad_preferida": "",
+  "piezas_mencionadas": [],
   "repuestos_incluidos_ultimo_servicio": null,
   "senal_lead": "curioso",
   "resumen_turno": "",
@@ -1689,6 +1721,7 @@ def enviar_respuesta_agente(
     conversation: Conversation,
     proveedor_user_id: int,
     texto: str,
+    extra_metadata: dict | None = None,
 ) -> Message | None:
     """Crea mensaje saliente del agente y lo envía por el canal correspondiente."""
     texto = (texto or '').strip()
@@ -1710,12 +1743,16 @@ def enviar_respuesta_agente(
             )
             return None
 
+    meta_out = {'from_agente_ia': True}
+    if extra_metadata:
+        meta_out.update(extra_metadata)
+        meta_out['from_agente_ia'] = True
     message = Message.objects.create(
         conversation=conversation,
         sender_id=proveedor_user_id,
         content=texto,
         direction='outbound',
-        channel_metadata={'from_agente_ia': True},
+        channel_metadata=meta_out,
     )
     conversation.save()
 
@@ -1761,6 +1798,67 @@ def enviar_respuesta_agente(
                 },
             )
     return message
+
+
+def _intentar_flujo_repuestos_canal(
+    *,
+    sesion: AgenteConversacionSesion,
+    conversation: Conversation,
+    taller,
+    config,
+    proveedor_user_id: int,
+    datos: dict,
+    decision: dict,
+    texto_cliente: str,
+    listo_cotizar: bool,
+    respuestas: list[str],
+    ctx_repuestos: dict,
+    chunk_ids: list,
+    persistir_lead,
+    persistir_memoria,
+) -> dict | None:
+    """Calidad / resumen / vitrina. None = seguir el flujo normal."""
+    from mecanimovilapp.apps.agente_ia.services.contexto_repuestos import (
+        alcance_repuestos_habilitado,
+    )
+    from mecanimovilapp.apps.agente_ia.services.pregunta_calidad import (
+        enviar_pregunta_calidad,
+        pregunta_calidad_necesaria,
+    )
+    from mecanimovilapp.apps.agente_ia.services.resumen_alcance import (
+        construir_resumen_alcance,
+        debe_enviar_resumen,
+        marcar_resumen_enviado,
+    )
+
+    if not alcance_repuestos_habilitado(config):
+        return None
+
+    if pregunta_calidad_necesaria(datos=datos, config=config, ctx_repuestos=ctx_repuestos):
+        enviar_pregunta_calidad(
+            conversation=conversation,
+            proveedor_user_id=proveedor_user_id,
+            datos=datos,
+            sesion=sesion,
+        )
+        persistir_lead()
+        persistir_memoria()
+        return {'ok': True, 'accion': 'pregunta_calidad'}
+
+    if listo_cotizar and debe_enviar_resumen(sesion, decision, texto_cliente):
+        burbujas = construir_resumen_alcance(datos)
+        enviar_respuestas_agente(
+            conversation=conversation,
+            proveedor_user_id=proveedor_user_id,
+            textos=burbujas,
+        )
+        marcar_resumen_enviado(sesion)
+        sesion.estado = AgenteConversacionSesion.ESTADO_ELIGIENDO_REPUESTOS
+        sesion.save(update_fields=['estado', 'actualizado_en'])
+        persistir_lead()
+        persistir_memoria()
+        return {'ok': True, 'accion': 'resumen_alcance'}
+    return None
 
 
 def enviar_respuestas_agente(
@@ -2161,6 +2259,41 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         sesion.estado = AgenteConversacionSesion.ESTADO_COORDINACION_TERRENO
         sesion.save(update_fields=['estado', 'actualizado_en'])
 
+    bloque_rep_txt = ''
+    ctx_repuestos: dict = {}
+    try:
+        from mecanimovilapp.apps.agente_ia.services.contexto_repuestos import (
+            alcance_repuestos_habilitado,
+            bloque_prompt_repuestos,
+            contexto_repuestos_cliente,
+        )
+        from mecanimovilapp.apps.agente_ia.services.pregunta_calidad import (
+            parsear_respuesta_calidad,
+        )
+
+        if alcance_repuestos_habilitado(config):
+            veh_p = (datos_para_prompt.get('vehiculo') or {})
+            patente_ctx = (
+                (veh_p.get('patente') or '')
+                or (datos_para_prompt.get('patente_enriquecida') or '')
+            )
+            ctx_repuestos = contexto_repuestos_cliente(
+                taller,
+                external_contact=conversation.external_contact,
+                patente=patente_ctx,
+            )
+            bloque_rep_txt = bloque_prompt_repuestos(ctx_repuestos)
+            parsed_cal = parsear_respuesta_calidad(texto_cliente)
+            if parsed_cal and not datos_para_prompt.get('calidad_preferida'):
+                datos_para_prompt['calidad_preferida'] = parsed_cal
+                sesion.datos_capturados = {
+                    **(sesion.datos_capturados or {}),
+                    'calidad_preferida': parsed_cal,
+                }
+                sesion.save(update_fields=['datos_capturados', 'actualizado_en'])
+    except Exception:
+        logger.exception('contexto_repuestos prompt conv=%s', conversation.id)
+
     prompt = _construir_prompt_agente(
         nombre_taller=(taller.nombre or '').strip(),
         nombre_agente=(config.nombre_agente or '').strip(),
@@ -2183,6 +2316,7 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         nota_ubicacion=nota_ubic,
         pedido_en_primer_mensaje=pedido_inicial,
         es_coordinacion_terreno=es_terreno,
+        contexto_repuestos=bloque_rep_txt,
     )
 
     decision, error = _llamar_gemini_agente(prompt)
@@ -2225,9 +2359,23 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         and not _direccion_parece_basura(prev_dir)
     ):
         datos['direccion_servicio'] = prev_dir
-    rep_flag = decision.get('repuestos_incluidos_ultimo_servicio')
-    if rep_flag is not None:
-        datos['repuestos_incluidos_ultimo_servicio'] = rep_flag
+    try:
+        from mecanimovilapp.apps.agente_ia.services.contexto_repuestos import (
+            alcance_repuestos_habilitado,
+            aplicar_alcance_repuestos,
+        )
+
+        if alcance_repuestos_habilitado(config):
+            datos = aplicar_alcance_repuestos(datos, decision, texto_cliente)
+        else:
+            rep_flag = decision.get('repuestos_incluidos_ultimo_servicio')
+            if rep_flag is not None:
+                datos['repuestos_incluidos_ultimo_servicio'] = rep_flag
+    except Exception:
+        logger.exception('aplicar_alcance_repuestos conv=%s', conversation.id)
+        rep_flag = decision.get('repuestos_incluidos_ultimo_servicio')
+        if rep_flag is not None:
+            datos['repuestos_incluidos_ultimo_servicio'] = rep_flag
     resumen_turno = (decision.get('resumen_turno') or '').strip()
     if resumen_turno:
         datos['resumen_conversacion'] = _fusionar_resumen_conversacion(
@@ -2376,6 +2524,17 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
                 decision=decision,
                 sesion=sesion,
             )
+            cal = str(datos.get('calidad_preferida') or '').strip()
+            if cal and external_contact_id:
+                from mecanimovilapp.apps.agente_ia.models import AgenteClienteMemoria
+
+                mem, _ = AgenteClienteMemoria.objects.get_or_create(
+                    taller_id=taller.id,
+                    external_contact_id=external_contact_id,
+                )
+                if not mem.calidad_preferida:
+                    mem.calidad_preferida = cal
+                    mem.save(update_fields=['calidad_preferida', 'actualizado_en'])
         except Exception:
             logger.exception(
                 'Error actualizando calificación lead conv=%s taller=%s',
@@ -2527,6 +2686,35 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         _persistir_memoria_cliente()
         return {'ok': True, 'accion': 'escalar'}
 
+    try:
+        from mecanimovilapp.apps.agente_ia.services.resumen_alcance import (
+            cliente_confirma_resumen,
+        )
+
+        if datos.get('resumen_alcance_enviado') and cliente_confirma_resumen(texto_cliente):
+            listo_cotizar = True
+    except Exception:
+        pass
+
+    flujo_rep = _intentar_flujo_repuestos_canal(
+        sesion=sesion,
+        conversation=conversation,
+        taller=taller,
+        config=config,
+        proveedor_user_id=proveedor_user_id,
+        datos=datos,
+        decision=decision,
+        texto_cliente=texto_cliente,
+        listo_cotizar=listo_cotizar,
+        respuestas=respuestas,
+        ctx_repuestos=ctx_repuestos,
+        chunk_ids=chunk_ids,
+        persistir_lead=_persistir_calificacion_lead,
+        persistir_memoria=_persistir_memoria_cliente,
+    )
+    if flujo_rep is not None:
+        return flujo_rep
+
     if listo_cotizar:
         datos_cot = _asegurar_servicios_para_actualizar_cotizacion(
             sesion=sesion,
@@ -2561,6 +2749,30 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             'y te la envíe por este chat. Si necesitas agregar otro servicio al mismo auto, '
             'dímelo y lo sumo a la misma cotización.'
         ]
+        vitrina_txt = ''
+        if cotizacion:
+            try:
+                from mecanimovilapp.apps.ordenes.services.vitrina_repuestos import (
+                    crear_vitrina,
+                    texto_mensaje_vitrina,
+                    vitrina_habilitada,
+                )
+
+                if vitrina_habilitada(config):
+                    vit = crear_vitrina(
+                        taller=taller,
+                        cotizacion=cotizacion,
+                        conversation=conversation,
+                        muestra_bandas=bool(getattr(config, 'vitrina_muestra_bandas', True)),
+                    )
+                    if vit is not None:
+                        sesion.vitrina_activa = vit
+                        sesion.estado = AgenteConversacionSesion.ESTADO_ELIGIENDO_REPUESTOS
+                        sesion.save(update_fields=['vitrina_activa', 'estado', 'actualizado_en'])
+                        vitrina_txt = texto_mensaje_vitrina(vit)
+                        mensaje_cliente_parts = [vitrina_txt]
+            except Exception:
+                logger.exception('enviar vitrina conv=%s', conversation.id)
         mensaje_cliente = ' '.join(mensaje_cliente_parts).strip()
         if cotizacion:
             enviar_respuestas_agente(

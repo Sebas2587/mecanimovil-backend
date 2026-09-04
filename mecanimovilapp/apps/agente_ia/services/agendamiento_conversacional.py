@@ -813,7 +813,19 @@ def _prompt_match_slot(texto_cliente: str, slots_ctx: dict[str, Any]) -> str:
         },
     }
     slots_json = json.dumps(compacto, ensure_ascii=False)
+    bloque_rep = ''
+    try:
+        from mecanimovilapp.apps.agente_ia.services.contexto_repuestos import (
+            bloque_prompt_repuestos,
+            contexto_repuestos_cliente,
+        )
+
+        # Sin taller aquí: bloque neutro para no inventar preferencias.
+        bloque_rep = bloque_prompt_repuestos({})
+    except Exception:
+        bloque_rep = ''
     return f"""Eres un asistente de agendamiento de taller mecánico en Chile.
+{bloque_rep}
 El cliente debe elegir un horario REAL de la lista. NO inventes fechas ni horas fuera de la lista.
 
 Fecha de HOY (referencia para "mañana", "el miércoles", etc.): {hoy}

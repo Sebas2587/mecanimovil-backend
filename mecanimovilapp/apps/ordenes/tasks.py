@@ -560,6 +560,15 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
             dominio = str(hit.get('dominio') or '').strip()[:200]
             if not dominio:
                 continue
+            from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.calidad_repuesto import (
+                detectar_calidad,
+            )
+
+            calidad = str(hit.get('calidad') or '').strip().lower()
+            if calidad not in ('original', 'oem', 'alternativo'):
+                calidad = detectar_calidad(
+                    f"{hit.get('nombre_producto') or ''} {hit.get('tienda') or ''}",
+                ) or ''
             clave = clave_cache_repuesto(
                 hit.get('nombre_buscado') or hit.get('nombre_producto') or clave_fuzzy,
                 marca_vehiculo=cot.vehiculo_marca or '',
@@ -567,8 +576,9 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                 anio=cot.vehiculo_anio or '',
                 tipo_motor=cot.tipo_motor or '',
                 cilindraje=cot.vehiculo_cilindraje or '',
+                calidad=calidad,
             )
-            PrecioRepuestoWeb.objects.update_or_create(
+            row, _ = PrecioRepuestoWeb.objects.update_or_create(
                 clave=clave,
                 dominio=dominio,
                 defaults={
@@ -581,10 +591,16 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                     'confianza': float(hit.get('confianza') or 0.8),
                     'tipo_motor': (cot.tipo_motor or '')[:20],
                     'cilindraje': (cot.vehiculo_cilindraje or '')[:20],
+                    'calidad': calidad[:16],
                     'expira_en': expira,
                 },
             )
             upserts += 1
+            if not row.imagen_url and str(row.imagen_estado or '') in ('', 'pendiente'):
+                try:
+                    hidratar_imagen_precio_web.delay(row.id)
+                except Exception:
+                    pass
 
         reps_enriquecidos = enriquecer_repuestos_cotizacion(
             reps,
@@ -728,3 +744,73 @@ def calibrar_factores_mercado_task():
         )
         actualizados += 1
     return {'ok': True, 'categorias': actualizados}
+
+
+@shared_task(name='ordenes.hidratar_imagen_precio_web', max_retries=1)
+def hidratar_imagen_precio_web(precio_web_id: int):
+    """OpenGraph perezoso: no bloquea el turno del agente."""
+    from mecanimovilapp.apps.ordenes.models import PrecioRepuestoWeb
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.imagen_repuesto import (
+        ESTADO_ERROR,
+        hidratar_precio_web,
+    )
+
+    row = PrecioRepuestoWeb.objects.filter(pk=precio_web_id).first()
+    if row is None:
+        return {'ok': False, 'reason': 'missing'}
+    if str(row.imagen_estado or '') == ESTADO_ERROR:
+        return {'ok': False, 'reason': 'no_retry_error'}
+    estado = hidratar_precio_web(row)
+    return {'ok': True, 'estado': estado, 'id': precio_web_id}
+
+
+@shared_task(name='ordenes.hidratar_imagenes_vitrina', soft_time_limit=20, time_limit=25)
+def hidratar_imagenes_vitrina(vitrina_id: int):
+    """Best-effort: máx 9 fichas, 20 s. La vitrina se muestra aunque falten fotos."""
+    from django.utils import timezone
+
+    from mecanimovilapp.apps.ordenes.models import VitrinaRepuestos
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.imagen_repuesto import (
+        hidratar_opciones_en_memoria,
+    )
+
+    vit = VitrinaRepuestos.objects.filter(pk=vitrina_id).first()
+    if vit is None:
+        return {'ok': False, 'reason': 'missing'}
+    lineas = list(vit.lineas or [])
+    hidratadas = 0
+    for lin in lineas:
+        if not isinstance(lin, dict):
+            continue
+        ops = list(lin.get('opciones') or [])
+        hidratadas += hidratar_opciones_en_memoria(ops, max_n=3)
+        lin['opciones'] = ops
+    vit.lineas = lineas
+    vit.save(update_fields=['lineas', 'actualizado_en'] if hasattr(vit, 'actualizado_en') else ['lineas'])
+    return {'ok': True, 'hidratadas': hidratadas, 'vitrina_id': vitrina_id}
+
+
+@shared_task(name='ordenes.expirar_vitrinas_vencidas')
+def expirar_vitrinas_vencidas():
+    from django.utils import timezone
+
+    from mecanimovilapp.apps.ordenes.models import VitrinaRepuestos
+
+    n = VitrinaRepuestos.objects.filter(
+        estado__in=['enviada', 'abierta'],
+        expira_en__lt=timezone.now(),
+    ).update(estado='expirada')
+    return {'ok': True, 'expiradas': n}
+
+
+@shared_task(name='ordenes.registrar_eventos_seleccion')
+def registrar_eventos_seleccion_task(cotizacion_id: int):
+    from mecanimovilapp.apps.ordenes.models import CotizacionCanal
+    from mecanimovilapp.apps.ordenes.services.seleccion_repuesto_aprendizaje import (
+        registrar_eventos_seleccion,
+    )
+
+    cot = CotizacionCanal.objects.filter(pk=cotizacion_id).first()
+    if cot is None:
+        return {'ok': False}
+    return registrar_eventos_seleccion(cot)
