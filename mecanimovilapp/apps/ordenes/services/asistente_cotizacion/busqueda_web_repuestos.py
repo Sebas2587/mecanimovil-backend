@@ -107,14 +107,39 @@ _CATEGORY_SLUG_ML = {
     'amortiguadores': 'amortiguadores',
     'correa': 'correa-distribucion',
     'bomba': 'bomba-agua-auto',
+    'bateria': 'baterias-auto',
+    'baterias': 'baterias-auto',
+    'neumatico': 'neumaticos',
+    'neumaticos': 'neumaticos',
+    'radiador': 'radiador-auto',
+    'alternador': 'alternador-auto',
+    'bobina': 'bobina-encendido',
+    'inyector': 'inyectores',
+    'inyectores': 'inyectores',
+    'zapata': 'zapatas-freno',
+    'zapatas': 'zapatas-freno',
+    'balata': 'pastillas-de-freno',
+    'balatas': 'pastillas-de-freno',
+    'rotula': 'rotula-suspension',
+    'rotulas': 'rotula-suspension',
+    'homocinetica': 'homocinetica',
+    'caliper': 'caliper-freno',
 }
+
+# Cabezas que no describen la pieza por sí solas ("líquido", "aditivo").
+_HEADS_GENERICOS = frozenset({'liquido', 'aditivo', 'set', 'pack', 'repuesto'})
 
 
 def _slug_categoria_ml(nombre: str) -> str:
     tokens = _nombre_busqueda_corto(nombre).split()
     if not tokens:
         return ''
-    return _CATEGORY_SLUG_ML.get(tokens[0], tokens[0])
+    if tokens[0] not in _HEADS_GENERICOS:
+        mapeado = _CATEGORY_SLUG_ML.get(tokens[0])
+        if mapeado:
+            return mapeado
+    # Un token genérico o sin mapeo ("liquido") no busca nada: usa dos.
+    return ' '.join(tokens[:2])
 
 
 def _modelo_busqueda(modelo: str) -> str:
@@ -144,8 +169,9 @@ def _query_repuesto(
     if not nucleo:
         return ''
     if compact:
-        # ML falla con slugs largos. 1 token + marca recupera mejor (termostato-suzuki).
-        cabeza = nucleo.split()[0] if nucleo.split() else nucleo
+        # ML falla con slugs largos, pero un token suelto ("liquido") no busca nada:
+        # usa la categoría mapeada o dos tokens + marca (termostato-suzuki).
+        cabeza = _slug_categoria_ml(nombre) or nucleo
         return ' '.join(p for p in [cabeza, marca] if p).strip()
     extras = [marca, _modelo_busqueda(modelo)]
     return ' '.join(p for p in [nucleo, *extras] if p).strip()
