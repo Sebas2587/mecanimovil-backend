@@ -801,6 +801,71 @@ class BuscarRepuestosWebTavilyTestCase(SimpleTestCase):
         # Sin alternativa, el retail sirve: mejor una referencia que ninguna.
         self.assertEqual([c['url'] for c in bw._ordenar_candidatos([retail])], [retail['url']])
 
+    def test_calce_con_el_vehiculo_manda_sobre_la_ficha_generica(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        tokens = bw._tokens_vehiculo('Fiat', 'BRAVO SPORT TJET', 2010, '1.4')
+        exacta = {
+            'url': 'https://tiendaa.cl/p/1',
+            'title': 'Discos Delanteros Fiat Bravo 1.4 T-Jet 2004-2014',
+            'content': '$ 99.600',
+        }
+        generica = {'url': 'https://tiendab.cl/p/2', 'title': 'Discos de freno', 'content': '$ 40.000'}
+        otro_auto = {
+            'url': 'https://tiendac.cl/p/3',
+            'title': 'Discos Suzuki Grand Vitara 2.0',
+            'content': '$ 21.400',
+        }
+        # "TJET" calza con "T-Jet" y "1.4" con "1 4"; el monto de otro auto no cuenta.
+        self.assertEqual(bw._calce_vehiculo(exacta, tokens), 4)
+        self.assertEqual(bw._calce_vehiculo(generica, tokens), 0)
+        self.assertEqual(bw._calce_vehiculo(otro_auto, tokens), 0)
+        self.assertEqual(
+            [c['url'] for c in bw._ordenar_candidatos(
+                [generica, otro_auto, exacta], tokens_vehiculo=tokens,
+            )][0],
+            exacta['url'],
+        )
+
+    def test_escalera_de_consultas_no_pierde_el_modelo_numerico(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        # El 208 es el nombre del modelo; la cilindrada y el año no.
+        self.assertEqual(bw._modelo_busqueda_completo('208 ALLURE'), '208 Allure')
+        self.assertEqual(bw._modelo_busqueda_completo('RIO 5 EX'), 'Rio 5 Ex')
+        self.assertEqual(bw._modelo_busqueda_completo('CELERIO HB 1.0'), 'Celerio Hb')
+        self.assertEqual(bw._modelo_busqueda_completo('TUCSON GL 2018'), 'Tucson Gl')
+
+        consultas = bw._escalera_consultas(
+            'Pastillas', marca='Kia', modelo='RIO 5 EX', cilindraje='1.4', casas=[],
+        )
+        # Específica primero y modelo a secas como respaldo, sin repetir.
+        self.assertEqual(consultas, ['Pastillas Kia Rio 5 Ex 1.4', 'Pastillas Kia RIO'])
+        self.assertEqual(
+            bw._escalera_consultas('Pastillas', marca='Kia', modelo='RIO', cilindraje='', casas=[]),
+            ['Pastillas Kia Rio'],
+        )
+
+    def test_reintenta_gemini_si_esta_saturado(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        saturado = MagicMock()
+        saturado.status_code = 503
+        saturado.text = 'high demand'
+        ok = MagicMock()
+        ok.status_code = 200
+        ok.json.return_value = {'candidates': []}
+        respuestas = [saturado, ok]
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.requests.post',
+            side_effect=lambda *a, **k: respuestas.pop(0),
+        ), patch.object(bw, '_ESPERA_REINTENTO_GEMINI', 0):
+            body = bw._gemini_generar('prompt', timeout=5, use_url_context=False)
+
+        self.assertEqual(body, {'candidates': []})
+        self.assertEqual(respuestas, [])
+
     def test_descarta_home_de_la_tienda(self):
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
 

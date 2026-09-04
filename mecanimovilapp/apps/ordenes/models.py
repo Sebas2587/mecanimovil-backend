@@ -2589,6 +2589,39 @@ class PrecioRepuestoWeb(models.Model):
         return f'{self.clave} @ {self.dominio} (${self.precio_clp})'
 
 
+class TiendaEspecialistaMarca(models.Model):
+    """Casa de repuestos que rinde para una marca de auto.
+
+    No se mantiene a mano: cada búsqueda que devuelve una ficha del modelo
+    consultado suma un acierto, así el catálogo de especialistas crece solo y
+    cubre cualquier marca sin depender de una lista fija.
+    """
+
+    marca = models.CharField(max_length=80, db_index=True, help_text='Marca del vehículo, normalizada.')
+    dominio = models.CharField(max_length=200)
+    nombre = models.CharField(max_length=200, blank=True, default='')
+    aciertos = models.PositiveIntegerField(default=0, help_text='Fichas que nombraron el modelo consultado.')
+    apariciones = models.PositiveIntegerField(default=0)
+    ultimo_acierto = models.DateTimeField(null=True, blank=True)
+    actualizado_en = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _('tienda especialista por marca')
+        verbose_name_plural = _('tiendas especialistas por marca')
+        constraints = [
+            models.UniqueConstraint(
+                fields=['marca', 'dominio'],
+                name='ordenes_tiendaespmarca_marca_dominio_uniq',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['marca', '-aciertos'], name='ordenes_tem_marca_acierto_idx'),
+        ]
+
+    def __str__(self):
+        return f'{self.marca} → {self.dominio} ({self.aciertos})'
+
+
 class FactorMercadoCategoria(models.Model):
     """Multiplicador marketplace → mostrador por familia de pieza."""
 
