@@ -2,7 +2,7 @@
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from rest_framework.test import APIClient
 
 from mecanimovilapp.apps.ordenes.models import CotizacionCanal
@@ -401,7 +401,7 @@ class CotizarItemsIaAPITests(TestCase):
         self.assertIn('mano_obra_lineas', resp.json())
 
 
-class FusionarRepuestosEdicionTests(TestCase):
+class FusionarRepuestosEdicionTests(SimpleTestCase):
     def test_conserva_enriquecimiento_web_si_el_patch_trae_precio_vacio(self):
         from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
             fusionar_repuestos_edicion,
@@ -443,4 +443,67 @@ class FusionarRepuestosEdicionTests(TestCase):
         out = fusionar_repuestos_edicion(actuales, incoming)
         self.assertEqual(len(out), 2)
         self.assertEqual(out[1]['id'], 'rep-2')
+
+    def test_conserva_precio_confirmado_si_el_patch_trae_snapshot_debil(self):
+        from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
+            fusionar_repuestos_edicion,
+        )
+
+        actuales = [
+            {
+                'id': 'rep-0',
+                'nombre': 'Radiador',
+                'precio_unitario_clp': 93000,
+                'precio_min_clp': 93000,
+                'precio_max_clp': 93000,
+                'certeza': 'confirmado',
+                'fuente_marketplace': 'proveedor',
+                'fuentes_n': 1,
+            },
+        ]
+        incoming = [
+            {
+                'id': 'rep-0',
+                'nombre': 'Radiador aluminio',
+                'precio_unitario_clp': 45000,
+                'precio_min_clp': 40000,
+                'precio_max_clp': 50000,
+                'certeza': 'referencial',
+                'fuente_marketplace': 'web',
+            },
+        ]
+        out = fusionar_repuestos_edicion(actuales, incoming)
+        self.assertEqual(out[0]['nombre'], 'Radiador aluminio')
+        self.assertEqual(out[0]['precio_unitario_clp'], 93000)
+        self.assertEqual(out[0]['certeza'], 'confirmado')
+        self.assertEqual(out[0]['fuente_marketplace'], 'proveedor')
+        self.assertEqual(out[0]['precio_min_clp'], 93000)
+        self.assertEqual(out[0]['precio_max_clp'], 93000)
+
+    def test_permite_editar_precio_ya_confirmado(self):
+        from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
+            fusionar_repuestos_edicion,
+        )
+
+        actuales = [
+            {
+                'id': 'rep-0',
+                'nombre': 'Radiador',
+                'precio_unitario_clp': 93000,
+                'certeza': 'confirmado',
+                'fuente_marketplace': 'proveedor',
+            },
+        ]
+        incoming = [
+            {
+                'id': 'rep-0',
+                'nombre': 'Radiador',
+                'precio_unitario_clp': 88000,
+                'certeza': 'asumido',
+                'fuente_marketplace': 'proveedor',
+            },
+        ]
+        out = fusionar_repuestos_edicion(actuales, incoming)
+        self.assertEqual(out[0]['precio_unitario_clp'], 88000)
+        self.assertEqual(out[0]['certeza'], 'asumido')
 

@@ -443,6 +443,21 @@ def _persistir_correcciones_taller_al_enviar(cotizacion: CotizacionCanal) -> Non
 
 
 _FUENTES_VERIFICADAS_EDICION = frozenset({'catalogo', 'historial', 'web', 'mercadolibre'})
+_CERTEZAS_FIRMES_EDICION = frozenset({'confirmado', 'asumido'})
+_CAMPOS_PRECIO_CONFIRMADO = (
+    'precio_unitario_clp',
+    'precio_min_clp',
+    'precio_max_clp',
+    'certeza',
+    'fuente_marketplace',
+    'proveedor_nombre',
+    'proveedor_id',
+    'precio_estimado',
+    'precio_capturado_en',
+    'fuentes_n',
+    'fuentes_detalle',
+    'precio_referencia_mercado',
+)
 
 
 def _precio_clp(rep: dict) -> int:
@@ -459,7 +474,7 @@ def fusionar_repuestos_edicion(
     """Conserva precio/fuente ya enriquecidos si el PATCH trae un snapshot más débil.
 
     Evita que el autosave del editor pise líneas que la búsqueda web acaba de llenar
-    (ítems previos y los recién agregados con IA).
+    (ítems previos y los recién agregados con IA) o un precio ya confirmado/asumido.
     """
     by_id: dict[str, dict] = {}
     for rep in actuales:
@@ -479,13 +494,27 @@ def fusionar_repuestos_edicion(
 
         fuente_prev = str(prev.get('fuente_marketplace') or '').strip().lower()
         fuente_inc = str(inc.get('fuente_marketplace') or '').strip().lower()
+        certeza_prev = str(prev.get('certeza') or '').strip().lower()
+        certeza_inc = str(inc.get('certeza') or '').strip().lower()
         precio_prev = _precio_clp(prev)
         precio_inc = _precio_clp(inc)
+        keep_confirmado = (
+            certeza_prev in _CERTEZAS_FIRMES_EDICION
+            and precio_prev > 0
+            and (certeza_inc not in _CERTEZAS_FIRMES_EDICION or precio_inc <= 0)
+        )
         keep_enriquecido = (
             fuente_prev in _FUENTES_VERIFICADAS_EDICION
             and precio_prev > 0
             and (precio_inc <= 0 or fuente_inc not in _FUENTES_VERIFICADAS_EDICION)
         )
+        if keep_confirmado:
+            merged = dict(inc)
+            for key in _CAMPOS_PRECIO_CONFIRMADO:
+                if key in prev:
+                    merged[key] = prev[key]
+            out.append(merged)
+            continue
         if not keep_enriquecido:
             out.append(inc)
             continue
