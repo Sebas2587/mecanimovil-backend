@@ -496,6 +496,18 @@ class DispararBusquedaWebTestCase(SimpleTestCase):
 
         meta = marcar_busqueda_web_pendiente({'origen': 'ia'})
         self.assertEqual(meta.get('busqueda_web_estado'), 'pendiente')
+        self.assertTrue(meta.get('busqueda_web_en'))
+
+    @override_settings(BUSQUEDA_WEB_REPUESTOS_ENABLED=True, GEMINI_API_KEY='k')
+    def test_en_curso_si_marcado_recien(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web import (
+            busqueda_web_en_curso,
+            marcar_busqueda_web_pendiente,
+        )
+
+        meta = marcar_busqueda_web_pendiente({'origen': 'ia'})
+        self.assertTrue(busqueda_web_en_curso(meta))
+        self.assertFalse(busqueda_web_en_curso({'busqueda_web_estado': 'ok'}))
 
 
 @override_settings(

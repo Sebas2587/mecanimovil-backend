@@ -44,6 +44,44 @@ def _monto_clp(val) -> int | None:
         return None
 
 
+def _monto_positivo(val) -> int | None:
+    n = _monto_clp(val)
+    if n is None or n <= 0:
+        return None
+    return n
+
+
+def _monto_propio_cita(cita) -> int | None:
+    """Precio de la propia cita: referencia, cotización origen u oferta."""
+    if cita is None:
+        return None
+    det = getattr(cita, 'detalle', None)
+    if det is not None:
+        monto = _monto_positivo(getattr(det, 'precio_referencia', None))
+        if monto:
+            return monto
+        oferta = getattr(det, 'oferta_servicio', None)
+        if oferta is not None:
+            monto = (
+                _monto_positivo(getattr(oferta, 'precio_con_repuestos', None))
+                or _monto_positivo(getattr(oferta, 'precio_publicado_cliente', None))
+                or _monto_positivo(getattr(oferta, 'precio_sin_repuestos', None))
+            )
+            if monto:
+                return monto
+    cot = getattr(cita, 'cotizacion_canal_origen', None)
+    if cot is not None:
+        total = _monto_positivo(getattr(cot, 'total_clp', None))
+        if total:
+            return total
+        mo = _monto_clp(getattr(cot, 'mano_obra_clp', None)) or 0
+        reps = _monto_clp(getattr(cot, 'costo_repuestos_clp', None)) or 0
+        combo = mo + reps
+        if combo > 0:
+            return combo
+    return None
+
+
 def _fecha_iso(val) -> str | None:
     if val is None:
         return None
@@ -171,6 +209,8 @@ def _filas_informes(patente_norm: str, taller_id: int | None) -> list[dict[str, 
         .select_related(
             'checklist_instance__cita_personal__taller',
             'checklist_instance__cita_personal__detalle',
+            'checklist_instance__cita_personal__detalle__oferta_servicio',
+            'checklist_instance__cita_personal__cotizacion_canal_origen',
         )
         .annotate(_pat_c=_patente_compact_expr('vehiculo_patente'))
         .filter(_pat_c=patente_norm)
@@ -186,7 +226,7 @@ def _filas_informes(patente_norm: str, taller_id: int | None) -> list[dict[str, 
         if not servicio:
             servicio = ((informe.resumen_ia or '').split('\n')[0] or 'Servicio')[:120]
         fecha = informe.fecha_firma_cliente or informe.generado_en
-        monto = _monto_clp(getattr(det, 'precio_referencia', None)) if propio else None
+        monto = _monto_propio_cita(cita) if propio else None
         marca = (informe.vehiculo_marca or getattr(det, 'vehiculo_marca', '') or '') if det else (
             informe.vehiculo_marca or ''
         )
@@ -216,7 +256,12 @@ def _filas_citas(patente_norm: str, taller_id: int | None) -> list[dict[str, Any
             Q(checklist_instance__isnull=True)
             | Q(checklist_instance__informe_publico__isnull=True)
         )
-        .select_related('detalle', 'taller')
+        .select_related(
+            'detalle',
+            'detalle__oferta_servicio',
+            'taller',
+            'cotizacion_canal_origen',
+        )
         .annotate(_pat_c=_patente_compact_expr('detalle__vehiculo_patente'))
         .filter(_pat_c=patente_norm)
         .order_by('-fecha_servicio', '-fecha_creacion')[:LIMITE_EVENTOS]
@@ -237,7 +282,7 @@ def _filas_citas(patente_norm: str, taller_id: int | None) -> list[dict[str, Any
                 taller_es_propio=propio,
                 servicio_nombre=servicio,
                 kilometraje=None,
-                monto_clp=_monto_clp(det.precio_referencia),
+                monto_clp=_monto_propio_cita(cita) if propio else None,
                 fuente='cita_personal',
                 evento_id=f'cita:{cita.id}',
                 marca=det.vehiculo_marca or '',

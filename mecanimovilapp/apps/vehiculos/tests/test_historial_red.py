@@ -325,6 +325,33 @@ class HistorialRedPrivacidadTests(TestCase):
         self.assertEqual(propio['monto_clp'], 45000)
         self.assertIsNone(propio['rango_mercado_clp'])
 
+    def test_propio_usa_total_de_cotizacion_si_no_hay_precio_referencia(self):
+        from mecanimovilapp.apps.ordenes.models import CotizacionCanal
+
+        cot = CotizacionCanal.objects.create(
+            taller=self.taller_norte,
+            creado_por=self.user_norte,
+            es_libre=True,
+            servicio_nombre='Diagnóstico mecánico Diesel',
+            total_clp=89000,
+            estado='aceptada',
+        )
+        cita = self._cita(
+            taller=self.taller_norte,
+            user=self.user_norte,
+            estado='cerrada',
+            patente='CJXP98',
+            servicio='Diagnóstico mecánico Diesel',
+            precio=None,
+            fecha=date(2026, 7, 20),
+            cerrada=True,
+        )
+        cita.cotizacion_canal_origen = cot
+        cita.save(update_fields=['cotizacion_canal_origen'])
+        payload = consultar_historial_red(patente='CJXP98', taller_id=self.taller_norte.id)
+        propio = next(e for e in payload['eventos'] if e['taller_es_propio'])
+        self.assertEqual(propio['monto_clp'], 89000)
+
 
 class HistorialRedAPITests(TestCase):
     def setUp(self):

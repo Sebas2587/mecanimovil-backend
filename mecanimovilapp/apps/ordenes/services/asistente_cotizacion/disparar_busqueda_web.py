@@ -17,8 +17,33 @@ def marcar_busqueda_web_pendiente(metadata: dict[str, Any] | None) -> dict[str, 
         return meta
     if not (getattr(settings, 'GEMINI_API_KEY', '') or '').strip():
         return meta
+    from django.utils import timezone
+
     meta['busqueda_web_estado'] = 'pendiente'
+    meta['busqueda_web_en'] = timezone.now().isoformat()
     return meta
+
+
+def busqueda_web_en_curso(metadata: dict[str, Any] | None, *, gracia_s: int = 90) -> bool:
+    """True si el worker todavía está en la ventana de gracia (no re-disparar)."""
+    meta = dict(metadata or {})
+    if str(meta.get('busqueda_web_estado') or '') != 'pendiente':
+        return False
+    raw = str(meta.get('busqueda_web_en') or '').strip()
+    if not raw:
+        return False
+    try:
+        from django.utils import timezone
+        from django.utils.dateparse import parse_datetime
+
+        dt = parse_datetime(raw)
+        if dt is None:
+            return False
+        if timezone.is_naive(dt):
+            dt = timezone.make_aware(dt, timezone.get_current_timezone())
+        return (timezone.now() - dt).total_seconds() < max(15, int(gracia_s))
+    except Exception:
+        return False
 
 
 def _feature_listo() -> bool:

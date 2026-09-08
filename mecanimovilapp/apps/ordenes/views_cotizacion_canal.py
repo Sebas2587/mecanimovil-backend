@@ -85,14 +85,15 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
     def retrieve(self, request, *args, **kwargs):
         """Detalle; reintenta búsqueda web si el borrador quedó pendiente/sin marca."""
         instance = self.get_object()
-        instance = self._reintentar_busqueda_web_si_corresponde(instance)
+        if str(request.query_params.get('sin_retry') or '') != '1':
+            instance = self._reintentar_busqueda_web_si_corresponde(instance)
         serializer = self.get_serializer(instance)
         return Response(serializer.data)
 
     def _reintentar_busqueda_web_si_corresponde(self, cotizacion: CotizacionCanal) -> CotizacionCanal:
         """Reintenta búsqueda web en borradores trabados (worker muerto / validación).
 
-        - `pendiente` o `error`: reintenta con debounce 45s.
+        - `pendiente` o `error`: reintenta con debounce 45s, salvo que siga en gracia.
         - `sin_resultados`: un solo reintento (útil tras deploy de validación más permisiva).
         """
         if cotizacion.estado != 'borrador':
@@ -100,6 +101,13 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
         meta = dict(cotizacion.metadata or {})
         estado = str(meta.get('busqueda_web_estado') or '')
         retries = int(meta.get('busqueda_web_retry_count') or 0)
+        if estado == 'pendiente':
+            from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web import (
+                busqueda_web_en_curso,
+            )
+
+            if busqueda_web_en_curso(meta):
+                return cotizacion
         if estado in ('pendiente', 'error'):
             pass
         elif estado in ('sin_resultados', '') and retries < 1:
@@ -310,15 +318,31 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
                 'precio_desde_catalogo': bool(contenido.get('precio_desde_catalogo')),
             },
         )
+        from django.utils import timezone
+
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web import (
             disparar_busqueda_web_cotizacion,
             marcar_busqueda_web_pendiente,
         )
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            linea_necesita_busqueda_web,
+        )
 
-        cotizacion.metadata = marcar_busqueda_web_pendiente(cotizacion.metadata)
-        if cotizacion.metadata.get('busqueda_web_estado') == 'pendiente':
+        reps = cotizacion.repuestos if isinstance(cotizacion.repuestos, list) else []
+        necesita_web = any(
+            linea_necesita_busqueda_web(rep) for rep in reps if isinstance(rep, dict)
+        )
+        meta = dict(cotizacion.metadata or {})
+        if necesita_web:
+            cotizacion.metadata = marcar_busqueda_web_pendiente(meta)
+            if cotizacion.metadata.get('busqueda_web_estado') == 'pendiente':
+                cotizacion.save(update_fields=['metadata', 'actualizado_en'])
+                disparar_busqueda_web_cotizacion(cotizacion.id, sync=False)
+        else:
+            meta['busqueda_web_estado'] = 'ok'
+            meta['busqueda_web_en'] = timezone.now().isoformat()
+            cotizacion.metadata = meta
             cotizacion.save(update_fields=['metadata', 'actualizado_en'])
-            disparar_busqueda_web_cotizacion(cotizacion.id, sync=False)
         return Response({
             **resultado,
             'cotizacion': CotizacionCanalSerializer(cotizacion).data,

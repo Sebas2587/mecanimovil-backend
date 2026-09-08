@@ -1175,6 +1175,46 @@ def _candidatos_de_linea(
     return []
 
 
+def _hits_desde_candidatos(
+    candidatos_por_nombre: dict[str, list[dict[str, str]]],
+    tokens_veh,
+) -> dict[str, dict[str, Any]]:
+    """Arma hits desde snippet/ficha Tavily cuando el monto ya es legible."""
+    out: dict[str, dict[str, Any]] = {}
+    for nombre, candidatos in (candidatos_por_nombre or {}).items():
+        clave = _clave_fuzzy(nombre)
+        if not clave:
+            continue
+        rescate = next(
+            (
+                (c, precio)
+                for c, precio in (
+                    (c, _precio_desde_texto(c.get('content') or '')) for c in candidatos
+                )
+                if _precio_en_rango(precio)
+            ),
+            None,
+        )
+        if not rescate:
+            continue
+        candidato, precio = rescate
+        host = _dominio_de_url(candidato['url'])
+        nombre_prod = str(candidato.get('title') or nombre)[:200]
+        calce = _calce_vehiculo(candidato, tokens_veh)
+        out[clave] = {
+            'nombre_buscado': nombre[:200],
+            'nombre_producto': nombre_prod,
+            'marca_repuesto': _marca_repuesto_valida(_inferir_marca_desde_nombre(nombre_prod)),
+            'precio_clp': precio,
+            'tienda': _tienda_por_dominio(host),
+            'dominio': host[:200],
+            'url': candidato['url'],
+            'compatibilidad': 'media' if calce >= 2 else 'baja',
+            'confianza': 0.7 if calce >= 2 else 0.6,
+        }
+    return out
+
+
 def _buscar_repuestos_web_tavily(
     nombres_limpios: list[str],
     *,
@@ -1228,6 +1268,16 @@ def _buscar_repuestos_web_tavily(
             candidatos_por_nombre[nombre] = _ordenar_candidatos(
                 con_ficha, tokens_vehiculo=tokens_veh, priorizar_precio=True,
             )
+
+    preliminar = _hits_desde_candidatos(candidatos_por_nombre, tokens_veh)
+    if preliminar and all(
+        _clave_fuzzy(nombre) in preliminar for nombre in candidatos_por_nombre
+    ):
+        logger.info(
+            'busqueda_web_repuestos[tavily]: skip Gemini, snippets cubren %s líneas',
+            len(preliminar),
+        )
+        return preliminar
 
     prompt = _construir_prompt_tavily(
         candidatos_por_nombre=candidatos_por_nombre,
@@ -1340,37 +1390,10 @@ def _buscar_repuestos_web_tavily(
     # tienda chilena con monto legible ya es una referencia: vale más que dejar
     # la línea en $0, así que se arma el hit sin pasar por el modelo.
     rescatadas = 0
-    for nombre, candidatos in candidatos_por_nombre.items():
-        clave = _clave_fuzzy(nombre)
-        if not clave or clave in out:
+    for clave, hit in _hits_desde_candidatos(candidatos_por_nombre, tokens_veh).items():
+        if clave in out:
             continue
-        rescate = next(
-            (
-                (c, precio)
-                for c, precio in (
-                    (c, _precio_desde_texto(c.get('content') or '')) for c in candidatos
-                )
-                if _precio_en_rango(precio)
-            ),
-            None,
-        )
-        if not rescate:
-            continue
-        candidato, precio = rescate
-        host = _dominio_de_url(candidato['url'])
-        nombre_prod = str(candidato.get('title') or nombre)[:200]
-        calce = _calce_vehiculo(candidato, tokens_veh)
-        out[clave] = {
-            'nombre_buscado': nombre[:200],
-            'nombre_producto': nombre_prod,
-            'marca_repuesto': _marca_repuesto_valida(_inferir_marca_desde_nombre(nombre_prod)),
-            'precio_clp': precio,
-            'tienda': _tienda_por_dominio(host),
-            'dominio': host[:200],
-            'url': candidato['url'],
-            'compatibilidad': 'media' if calce >= 2 else 'baja',
-            'confianza': 0.7 if calce >= 2 else 0.6,
-        }
+        out[clave] = hit
         rescatadas += 1
 
     sin_hit = [n for n in nombres_limpios if _clave_fuzzy(n) not in out]
