@@ -20,6 +20,9 @@ CALIDAD_META: dict[str, dict[str, Any]] = {
         'keywords': (
             'original',
             'genuine',
+            'genuino',
+            'genuina',
+            'equipo original',
             'concesionario',
             'agencia',
             'de la marca',
@@ -44,6 +47,8 @@ CALIDAD_META: dict[str, dict[str, Any]] = {
             'alternativo',
             'alternativa',
             'aftermarket',
+            'after market',
+            'tipo alternativo',
             'generico',
             'generica',
             'economico',
@@ -92,6 +97,80 @@ def calidad_pendiente_en_texto(texto: str) -> bool:
 
 def label_calidad(calidad: str | None) -> str:
     return CALIDAD_LABEL.get(str(calidad or '').strip().lower(), '')
+
+
+# País de la pieza (no del auto ni de la tienda). Solo con contexto de origen.
+_PAISES_ORIGEN: tuple[tuple[str, str], ...] = (
+    ('estados unidos', 'Estados Unidos'),
+    ('united states', 'Estados Unidos'),
+    ('corea del sur', 'Corea del Sur'),
+    ('south korea', 'Corea del Sur'),
+    ('taiwan', 'Taiwán'),
+    ('tailandia', 'Tailandia'),
+    ('thailand', 'Tailandia'),
+    ('alemania', 'Alemania'),
+    ('germany', 'Alemania'),
+    ('brasil', 'Brasil'),
+    ('brazil', 'Brasil'),
+    ('japon', 'Japón'),
+    ('japan', 'Japón'),
+    ('italia', 'Italia'),
+    ('italy', 'Italia'),
+    ('francia', 'Francia'),
+    ('france', 'Francia'),
+    ('mexico', 'México'),
+    ('turquia', 'Turquía'),
+    ('turkey', 'Turquía'),
+    ('polonia', 'Polonia'),
+    ('espana', 'España'),
+    ('spain', 'España'),
+    ('indonesia', 'Indonesia'),
+    ('india', 'India'),
+    ('china', 'China'),
+    ('corea', 'Corea'),
+    ('korea', 'Corea'),
+    ('eeuu', 'Estados Unidos'),
+    ('ee uu', 'Estados Unidos'),
+    ('usa', 'Estados Unidos'),
+)
+
+_PAIS_CTX_RE = re.compile(
+    r'(?:hecho en|fabricado en|importado(?:\s+directamente)?\s+(?:desde|de)|'
+    r'pais de origen|procedencia|origen|made in)\s*[:\-]?\s*([a-z][a-z\s]{1,28})',
+)
+
+
+def _pais_desde_clave(texto_norm: str) -> str:
+    blob = (texto_norm or '').strip()
+    if not blob:
+        return ''
+    for clave, label in _PAISES_ORIGEN:
+        if blob == clave or blob.startswith(clave + ' '):
+            return label
+    return ''
+
+
+def normalizar_pais_origen(texto: str | None) -> str:
+    """Acepta 'china', 'China' o 'Japón'. Vacío si no es un país de pieza."""
+    n = _norm(texto or '')
+    if not n:
+        return ''
+    for clave, label in _PAISES_ORIGEN:
+        if n == clave or n == _norm(label):
+            return label
+    return ''
+
+
+def detectar_pais_origen(texto: str) -> str:
+    """País solo si el texto lo etiqueta (hecho en, importado de, origen…)."""
+    n = _norm(texto)
+    if not n:
+        return ''
+    for m in _PAIS_CTX_RE.finditer(n):
+        pais = _pais_desde_clave(_norm(m.group(1)))
+        if pais:
+            return pais
+    return ''
 
 
 def anotar_calidad_en_linea(

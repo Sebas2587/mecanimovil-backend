@@ -496,6 +496,8 @@ def fusionar_repuestos_edicion(
             'fuente_marketplace',
             'proveedor_nombre',
             'marca_repuesto',
+            'calidad',
+            'pais_origen',
             'url_producto',
             'tienda_ml',
             'precio_estimado',

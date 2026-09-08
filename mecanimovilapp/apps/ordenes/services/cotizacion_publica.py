@@ -160,6 +160,7 @@ _REPUESTO_PUBLICO_KEYS = (
     'precio_min_clp',
     'precio_max_clp',
     'calidad',
+    'pais_origen',
     'imagen_url',
 )
 

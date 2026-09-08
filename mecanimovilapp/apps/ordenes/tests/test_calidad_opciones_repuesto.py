@@ -5,6 +5,8 @@ from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.calidad_repuesto 
     anotar_calidad_en_linea,
     calidad_pendiente_en_texto,
     detectar_calidad,
+    detectar_pais_origen,
+    normalizar_pais_origen,
 )
 from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.familias_sensibles import (
     familia_tiene_eje_calidad,
@@ -22,6 +24,8 @@ class CalidadRepuestoTestCase(SimpleTestCase):
         self.assertEqual(detectar_calidad('quiero original de agencia'), 'original')
         self.assertEqual(detectar_calidad('equivalente OEM Bosch'), 'oem')
         self.assertEqual(detectar_calidad('alternativo más económico'), 'alternativo')
+        self.assertEqual(detectar_calidad('repuesto genuino de concesionario'), 'original')
+        self.assertEqual(detectar_calidad('Articulo Nuevo Alternativo, Importado de China'), 'alternativo')
 
     def test_ambiguo_queda_pendiente(self):
         self.assertIsNone(detectar_calidad('Original o equivalente OEM'))
@@ -46,6 +50,15 @@ class CalidadRepuestoTestCase(SimpleTestCase):
         self.assertTrue(familia_tiene_eje_calidad('Pastillas de freno'))
         self.assertTrue(familia_tiene_eje_calidad('Filtro de aire'))
         self.assertFalse(familia_tiene_eje_calidad('Neumático 205/55'))
+
+    def test_pais_origen_solo_con_contexto(self):
+        self.assertEqual(
+            detectar_pais_origen('Articulo Nuevo Alternativo, Importado directamente de China'),
+            'China',
+        )
+        self.assertEqual(detectar_pais_origen('Hecho en Alemania. Precio $ 18.990'), 'Alemania')
+        self.assertEqual(normalizar_pais_origen('japon'), 'Japón')
+        self.assertEqual(detectar_pais_origen('Tienda en Chile. Envío a todo Chile.'), '')
 
 
 class OpcionesPoolTestCase(SimpleTestCase):

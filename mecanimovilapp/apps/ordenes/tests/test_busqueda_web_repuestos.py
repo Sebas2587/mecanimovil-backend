@@ -702,7 +702,7 @@ class BuscarRepuestosWebTavilyTestCase(SimpleTestCase):
 
         self.assertEqual(calls['tavily_search'], 1)
         self.assertEqual(calls['tavily_extract'], 1)
-        self.assertEqual(calls['gemini'], 1)
+        self.assertEqual(calls['gemini'], 0)
         self.assertEqual(len(out), 1)
         hit = next(iter(out.values()))
         self.assertEqual(hit['marca_repuesto'], 'Gates')
@@ -1111,3 +1111,61 @@ class PrecioDesdeTextoTestCase(SimpleTestCase):
 
         self.assertEqual(bw._precio_desde_texto('Consultar disponibilidad'), 0)
         self.assertEqual(bw._precio_desde_texto(''), 0)
+
+
+class AtributosFichaTavilyTestCase(SimpleTestCase):
+    def test_hits_desde_candidatos_marca_calidad_y_origen(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        out = bw._hits_desde_candidatos(
+            {
+                'Termostato': [{
+                    'title': 'Termostato Gates Fiat Bravo',
+                    'url': 'https://articulo.mercadolibre.cl/MLC-1-termostato',
+                    'content': (
+                        'Tipo: ALTERNATIVO. Gates. '
+                        'Importado directamente de China. Precio $ 18.990'
+                    ),
+                }],
+            },
+            ['fiat', 'bravo'],
+            marca_vehiculo='Fiat',
+        )
+        self.assertEqual(len(out), 1)
+        hit = next(iter(out.values()))
+        self.assertEqual(hit['marca_repuesto'], 'Gates')
+        self.assertEqual(hit['calidad'], 'alternativo')
+        self.assertEqual(hit['pais_origen'], 'China')
+        self.assertEqual(hit['precio_clp'], 18990)
+
+    def test_no_usa_la_marca_del_auto_como_marca_de_pieza(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        attrs = bw._atributos_desde_texto(
+            'Marca: Fiat. Termostato para Bravo. $ 18.990',
+            marca_vehiculo='Fiat',
+        )
+        self.assertEqual(attrs['marca_repuesto'], '')
+
+    @override_settings(TAVILY_API_KEY='tvly-test')
+    def test_extract_pide_chunks_de_marca_calidad_y_origen(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        seen = {}
+
+        def fake_post(url, **kwargs):
+            seen.update(kwargs.get('json') or {})
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.json.return_value = {'results': []}
+            return resp
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.requests.post',
+            side_effect=fake_post,
+        ):
+            bw._tavily_extraer(['https://articulo.mercadolibre.cl/MLC-1'])
+
+        self.assertIn('marca', seen.get('query', '').lower())
+        self.assertIn('origen', seen.get('query', '').lower())
+        self.assertEqual(seen.get('chunks_per_source'), 4)

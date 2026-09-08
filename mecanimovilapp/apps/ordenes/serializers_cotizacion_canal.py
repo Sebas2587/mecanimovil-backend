@@ -95,6 +95,7 @@ class RepuestoCotizacionSerializer(serializers.Serializer):
     fuentes_detalle = FuenteRepuestoSerializer(many=True, required=False)
     calidad = serializers.CharField(required=False, allow_blank=True, default='')
     calidad_pendiente = serializers.BooleanField(required=False, default=False)
+    pais_origen = serializers.CharField(required=False, allow_blank=True, default='', max_length=40)
     seleccion_cliente = serializers.BooleanField(required=False, default=False)
     seleccion_cliente_en = serializers.CharField(required=False, allow_blank=True, default='')
     imagen_url = serializers.CharField(required=False, allow_blank=True, default='')

@@ -567,7 +567,8 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
             calidad = str(hit.get('calidad') or '').strip().lower()
             if calidad not in ('original', 'oem', 'alternativo'):
                 calidad = detectar_calidad(
-                    f"{hit.get('nombre_producto') or ''} {hit.get('tienda') or ''}",
+                    f"{hit.get('nombre_producto') or ''} {hit.get('tienda') or ''} "
+                    f"{hit.get('pais_origen') or ''}",
                 ) or ''
             clave = clave_cache_repuesto(
                 hit.get('nombre_buscado') or hit.get('nombre_producto') or clave_fuzzy,
@@ -656,6 +657,12 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                     next_rep['proveedor_nombre'] = str(hit['tienda'])[:200]
                 if hit.get('url'):
                     next_rep['url_producto'] = str(hit['url'])[:500]
+                cal_hit = str(hit.get('calidad') or '').strip().lower()
+                if cal_hit in ('original', 'oem', 'alternativo'):
+                    next_rep['calidad'] = cal_hit
+                    next_rep['calidad_pendiente'] = False
+                if hit.get('pais_origen'):
+                    next_rep['pais_origen'] = str(hit['pais_origen'])[:40]
                 precio = int(hit.get('precio_clp') or 0)
                 if precio > 0 and (
                     bool(next_rep.get('precio_estimado', True))

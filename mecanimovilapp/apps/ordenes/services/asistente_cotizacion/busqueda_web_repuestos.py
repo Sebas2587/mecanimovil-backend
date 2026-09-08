@@ -33,6 +33,7 @@ from django.core.cache import cache
 from .enriquecer_repuestos import (
     _clave_fuzzy,
     _inferir_marca_desde_nombre,
+    _marca_desde_etiqueta,
     _marca_repuesto_valida,
     _norm,
     _to_int_clp,
@@ -725,10 +726,12 @@ Reglas:
 1. Si la página muestra un producto de la MISMA CATEGORÍA del repuesto, reporta encontrado=true con el mejor candidato visible (aunque no diga el modelo exacto).
 2. compatibilidad: alta si menciona marca/modelo del auto; media si es la categoría correcta; baja si es genérico del rubro. NO uses encontrado=false solo por duda de año.
 3. marca_repuesto = marca de la PIEZA (Bosch, Gates, Wahler, NGK, etc.). Si no aparece, "". NUNCA "GENÉRICO", "Original", "N/A" ni la marca del auto.
-4. tienda = quién vende. En una tienda es el sitio (AutoPlanet, Refax, …); en una publicación de marketplace es el nombre del vendedor visible, no "Mercado Libre". url = link de la publicación o producto leído (https).
-5. precio_clp = entero CLP sin puntos ni símbolo.
-6. Solo encontrado=false si en las páginas NO hay ningún producto relacionado a ese repuesto.
-7. Responde SOLO JSON válido (sin markdown):
+4. calidad = original (genuino/agencia), oem (equivalente OEM) o alternativo (aftermarket). Solo si el texto lo decide. Si duda, "".
+5. pais_origen = país de la PIEZA (China, Japón, Alemania…) solo si dice hecho/fabricado/importado/origen. No uses Chile por ser la tienda.
+6. tienda = quién vende. En una tienda es el sitio (AutoPlanet, Refax, …); en una publicación de marketplace es el nombre del vendedor visible, no "Mercado Libre". url = link de la publicación o producto leído (https).
+7. precio_clp = entero CLP sin puntos ni símbolo.
+8. Solo encontrado=false si en las páginas NO hay ningún producto relacionado a ese repuesto.
+9. Responde SOLO JSON válido (sin markdown):
 {{
   "resultados": [
     {{
@@ -736,6 +739,8 @@ Reglas:
       "encontrado": true,
       "nombre_producto": "...",
       "marca_repuesto": "...",
+      "calidad": "original|oem|alternativo|",
+      "pais_origen": "",
       "precio_clp": 0,
       "tienda": "...",
       "url": "https://...",
@@ -829,8 +834,15 @@ def _validar_resultado(
     if not precio_ok:
         precio = 0
     nombre_prod = str(item.get('nombre_producto') or item.get('nombre_buscado') or '').strip()[:200]
+    attrs = _atributos_desde_texto(
+        nombre_prod,
+        item.get('marca_repuesto'),
+        item.get('calidad'),
+        item.get('pais_origen'),
+    )
     if not marca:
-        marca = _marca_repuesto_valida(_inferir_marca_desde_nombre(nombre_prod))
+        marca = attrs['marca_repuesto']
+    calidad, pais = _calidad_pais_de_item(item, attrs)
     tienda = str(item.get('tienda') or '').strip()[:200] or _tienda_por_dominio(host)
     if not marca and not tienda and not precio_ok:
         return None
@@ -842,7 +854,7 @@ def _validar_resultado(
         conf = min(conf, 0.65)
     if not precio_ok:
         conf = min(conf, 0.55)
-    return {
+    out = {
         'nombre_buscado': str(item.get('nombre_buscado') or '').strip()[:200],
         'nombre_producto': nombre_prod,
         'marca_repuesto': marca,
@@ -853,6 +865,53 @@ def _validar_resultado(
         'compatibilidad': compat,
         'confianza': conf,
     }
+    if calidad:
+        out['calidad'] = calidad
+    if pais:
+        out['pais_origen'] = pais
+    return out
+
+
+TAVILY_EXTRACT_QUERY = (
+    'marca tipo original OEM alternativo genuino '
+    'procedencia país origen fabricado hecho en importado precio CLP'
+)
+TAVILY_SCORE_MIN = 0.35
+
+
+def _atributos_desde_texto(*partes: Any, marca_vehiculo: str = '') -> dict[str, str]:
+    """Marca de la pieza, calidad y país solo si el texto los nombra."""
+    from .calidad_repuesto import (
+        CALIDADES,
+        detectar_calidad,
+        detectar_pais_origen,
+        normalizar_pais_origen,
+    )
+
+    blob = ' '.join(str(p or '') for p in partes if p not in (None, ''))
+    marca = _marca_repuesto_valida(_inferir_marca_desde_nombre(blob))
+    if not marca:
+        marca = _marca_desde_etiqueta(blob, marca_vehiculo)
+    if marca and _norm(marca) == _norm(marca_vehiculo):
+        marca = ''
+    cal = detectar_calidad(blob) or ''
+    if cal not in CALIDADES:
+        cal = ''
+    pais = detectar_pais_origen(blob) or normalizar_pais_origen(blob)
+    return {
+        'marca_repuesto': marca,
+        'calidad': cal,
+        'pais_origen': pais,
+    }
+
+
+def _calidad_pais_de_item(item: dict[str, Any], attrs: dict[str, str]) -> tuple[str, str]:
+    from .calidad_repuesto import CALIDADES, normalizar_pais_origen
+
+    cal_item = str(item.get('calidad') or '').strip().lower()
+    calidad = cal_item if cal_item in CALIDADES else (attrs.get('calidad') or '')
+    pais = normalizar_pais_origen(item.get('pais_origen')) or (attrs.get('pais_origen') or '')
+    return calidad, pais
 
 
 TAVILY_SEARCH_ENDPOINT = 'https://api.tavily.com/search'
@@ -868,7 +927,11 @@ def _tavily_buscar_uno(
     max_results: int = 4,
     timeout: int = 20,
 ) -> list[dict[str, str]]:
-    """1 crédito Tavily (search_depth=basic). Devuelve [{title, url, content}]."""
+    """1 crédito Tavily (search_depth=basic). Devuelve [{title, url, content}].
+
+    Post-filtro por `score` (best practice Tavily): el score mide relevancia
+    semántica, no certeza de ficha; el corte es bajo para no perder .cl.
+    """
     api_key = (getattr(settings, 'TAVILY_API_KEY', '') or '').strip()
     if not api_key or not query.strip():
         return []
@@ -909,10 +972,16 @@ def _tavily_buscar_uno(
         url = str(r.get('url') or '').strip()
         if not url:
             continue
+        try:
+            score = float(r.get('score') or 0)
+        except (TypeError, ValueError):
+            score = 0.0
+        if score and score < TAVILY_SCORE_MIN:
+            continue
         out.append({
             'title': str(r.get('title') or '')[:200],
             'url': url[:500],
-            'content': str(r.get('content') or '')[:700],
+            'content': str(r.get('content') or '')[:900],
         })
     return out
 
@@ -921,10 +990,10 @@ TAVILY_EXTRACT_ENDPOINT = 'https://api.tavily.com/extract'
 
 
 def _tavily_extraer(urls: list[str], *, timeout: int = 25) -> dict[str, str]:
-    """Ficha completa del producto (specs/descripción) para rescatar marca/precio.
+    """Ficha de producto: marca, calidad, origen y precio.
 
-    Barato: ~1 crédito cada 5 URLs exitosas (basic). Se llama 1 vez por
-    cotización con el mejor candidato de cada repuesto (máx 20 URLs).
+    Search + extract (no raw_content en search). `query` + chunks recorta la
+    ficha a specs útiles (~1 crédito cada 5 URLs, basic).
     """
     api_key = (getattr(settings, 'TAVILY_API_KEY', '') or '').strip()
     urls_unicas = [u for u in dict.fromkeys(urls) if u][:20]
@@ -941,6 +1010,8 @@ def _tavily_extraer(urls: list[str], *, timeout: int = 25) -> dict[str, str]:
                 'urls': urls_unicas,
                 'extract_depth': 'basic',
                 'format': 'text',
+                'query': TAVILY_EXTRACT_QUERY,
+                'chunks_per_source': 4,
             },
             timeout=timeout,
         )
@@ -1015,12 +1086,14 @@ Para cada repuesto, elige el MEJOR candidato de su lista (por índice):
 1. Prioridad: (a) ficha que nombre el modelo y la variante/motor de ESTE vehículo, (b) ficha que nombre marca y modelo, (c) casa especialista por sobre retail generalista. Si ningún candidato nombra el vehículo, sirve uno de la categoría correcta (hay insumos universales).
 2. compatibilidad: alta si el título/texto nombra modelo y variante/motor/año; media si nombra la marca o es un insumo universal; baja si es genérico.
 3. marca_repuesto = marca de la PIEZA visible en título/texto (Bosch, Gates, NGK, etc.). Si no aparece, "". NUNCA "Original", "GENÉRICO" ni la marca del auto.
-4. precio_clp = precio CLP del candidato elegido (entero, sin puntos/símbolo). Si el candidato trae "precio detectado", usa ese monto salvo que el texto muestre claramente otro precio de la pieza; si no hay ninguno, 0.
-4b. Entre candidatos de la misma categoría, PREFIERE el que tenga precio; uno sin monto solo si ninguno lo trae (una línea sin precio no le sirve al taller).
-5. url = EXACTAMENTE la url del candidato elegido (cópiala tal cual, no la modifiques).
-6. tienda = quién vende: el sitio según el dominio (AutoPlanet, Refax, etc.) o, si es una publicación de marketplace, el nombre del vendedor visible en el texto.
-7. Si NINGÚN candidato de la lista sirve, encontrado=false.
-8. Responde SOLO JSON válido (sin markdown):
+4. calidad = original (genuino/agencia), oem (equivalente OEM) o alternativo (aftermarket / tipo alternativo). Solo si el texto lo decide. Si duda o nombra dos, "".
+5. pais_origen = país de fabricación/procedencia de la pieza solo si el texto lo dice (hecho en, importado de, origen). No uses Chile por ser la tienda.
+6. precio_clp = precio CLP del candidato elegido (entero, sin puntos/símbolo). Si el candidato trae "precio detectado", usa ese monto salvo que el texto muestre claramente otro precio de la pieza; si no hay ninguno, 0.
+6b. Entre candidatos de la misma categoría, PREFIERE el que tenga precio; uno sin monto solo si ninguno lo trae (una línea sin precio no le sirve al taller).
+7. url = EXACTAMENTE la url del candidato elegido (cópiala tal cual, no la modifiques).
+8. tienda = quién vende: el sitio según el dominio (AutoPlanet, Refax, etc.) o, si es una publicación de marketplace, el nombre del vendedor visible en el texto.
+9. Si NINGÚN candidato de la lista sirve, encontrado=false.
+10. Responde SOLO JSON válido (sin markdown):
 {{
   "resultados": [
     {{
@@ -1028,6 +1101,8 @@ Para cada repuesto, elige el MEJOR candidato de su lista (por índice):
       "encontrado": true,
       "nombre_producto": "...",
       "marca_repuesto": "...",
+      "calidad": "original|oem|alternativo|",
+      "pais_origen": "",
       "precio_clp": 0,
       "tienda": "...",
       "url": "https://...",
@@ -1178,6 +1253,8 @@ def _candidatos_de_linea(
 def _hits_desde_candidatos(
     candidatos_por_nombre: dict[str, list[dict[str, str]]],
     tokens_veh,
+    *,
+    marca_vehiculo: str = '',
 ) -> dict[str, dict[str, Any]]:
     """Arma hits desde snippet/ficha Tavily cuando el monto ya es legible."""
     out: dict[str, dict[str, Any]] = {}
@@ -1200,11 +1277,16 @@ def _hits_desde_candidatos(
         candidato, precio = rescate
         host = _dominio_de_url(candidato['url'])
         nombre_prod = str(candidato.get('title') or nombre)[:200]
+        attrs = _atributos_desde_texto(
+            nombre_prod,
+            candidato.get('content'),
+            marca_vehiculo=marca_vehiculo,
+        )
         calce = _calce_vehiculo(candidato, tokens_veh)
-        out[clave] = {
+        hit = {
             'nombre_buscado': nombre[:200],
             'nombre_producto': nombre_prod,
-            'marca_repuesto': _marca_repuesto_valida(_inferir_marca_desde_nombre(nombre_prod)),
+            'marca_repuesto': attrs['marca_repuesto'],
             'precio_clp': precio,
             'tienda': _tienda_por_dominio(host),
             'dominio': host[:200],
@@ -1212,6 +1294,11 @@ def _hits_desde_candidatos(
             'compatibilidad': 'media' if calce >= 2 else 'baja',
             'confianza': 0.7 if calce >= 2 else 0.6,
         }
+        if attrs['calidad']:
+            hit['calidad'] = attrs['calidad']
+        if attrs['pais_origen']:
+            hit['pais_origen'] = attrs['pais_origen']
+        out[clave] = hit
     return out
 
 
@@ -1269,7 +1356,9 @@ def _buscar_repuestos_web_tavily(
                 con_ficha, tokens_vehiculo=tokens_veh, priorizar_precio=True,
             )
 
-    preliminar = _hits_desde_candidatos(candidatos_por_nombre, tokens_veh)
+    preliminar = _hits_desde_candidatos(
+        candidatos_por_nombre, tokens_veh, marca_vehiculo=marca,
+    )
     if preliminar and all(
         _clave_fuzzy(nombre) in preliminar for nombre in candidatos_por_nombre
     ):
@@ -1325,15 +1414,21 @@ def _buscar_repuestos_web_tavily(
         nombre_prod = str(item.get('nombre_producto') or item.get('nombre_buscado') or '').strip()[:200]
         if not nombre_prod:
             continue
-        if not marca_it:
-            marca_it = _marca_repuesto_valida(_inferir_marca_desde_nombre(nombre_prod))
-        # El modelo parafrasea el nombre buscado; con igualdad exacta la lista
-        # quedaba vacía y los dos rescates de abajo no hacían nada.
         candidatos_linea = _candidatos_de_linea(candidatos_por_nombre, item.get('nombre_buscado'))
+        snippet = next((c.get('content') or '' for c in candidatos_linea if c['url'] == url), '')
+        attrs = _atributos_desde_texto(
+            nombre_prod,
+            snippet,
+            item.get('marca_repuesto'),
+            item.get('calidad'),
+            item.get('pais_origen'),
+            marca_vehiculo=marca,
+        )
+        if not marca_it:
+            marca_it = attrs['marca_repuesto']
+        calidad_it, pais_it = _calidad_pais_de_item(item, attrs)
         precio = _to_int_clp(item.get('precio_clp'))
         if not _precio_en_rango(precio):
-            # Backstop: intenta extraer el precio del snippet original.
-            snippet = next((c['content'] for c in candidatos_linea if c['url'] == url), '')
             precio = _precio_desde_texto(snippet)
         if not _precio_en_rango(precio):
             # El modelo eligió una ficha sin monto habiendo otra con precio:
@@ -1364,7 +1459,7 @@ def _buscar_repuestos_web_tavily(
         prev = out.get(clave)
         if prev and float(prev.get('confianza') or 0) >= conf:
             continue
-        out[clave] = {
+        hit_out = {
             'nombre_buscado': str(item.get('nombre_buscado') or '').strip()[:200],
             'nombre_producto': nombre_prod,
             'marca_repuesto': marca_it,
@@ -1375,6 +1470,11 @@ def _buscar_repuestos_web_tavily(
             'compatibilidad': compat,
             'confianza': conf,
         }
+        if calidad_it:
+            hit_out['calidad'] = calidad_it
+        if pais_it:
+            hit_out['pais_origen'] = pais_it
+        out[clave] = hit_out
         # Aprendizaje: si la ficha nombraba al auto, esa casa sirve para la
         # marca y en la próxima cotización se la consulta primero.
         candidato = next(
@@ -1390,7 +1490,9 @@ def _buscar_repuestos_web_tavily(
     # tienda chilena con monto legible ya es una referencia: vale más que dejar
     # la línea en $0, así que se arma el hit sin pasar por el modelo.
     rescatadas = 0
-    for clave, hit in _hits_desde_candidatos(candidatos_por_nombre, tokens_veh).items():
+    for clave, hit in _hits_desde_candidatos(
+        candidatos_por_nombre, tokens_veh, marca_vehiculo=marca,
+    ).items():
         if clave in out:
             continue
         out[clave] = hit

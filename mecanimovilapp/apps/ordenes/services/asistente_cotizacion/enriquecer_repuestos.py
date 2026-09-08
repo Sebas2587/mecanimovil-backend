@@ -38,11 +38,23 @@ logger = logging.getLogger(__name__)
 _MARCAS_REPUESTO_CONOCIDAS = (
     'Vimasa', 'Sachs', 'LuK', 'Luk', 'Bosch', 'Mann', 'Mahle', 'Valeo', 'TRW',
     'Brembo', 'Gates', 'Dayco', 'Contitech', 'SKF', 'INA', 'FAG', 'KYB', 'Monroe',
-    'NGK', 'Denso', 'Delphi', 'ACDelco', 'Philips', 'Osram', 'Hella', 'Febi',
-    'Lemforder', 'Lemförder', 'Moog', 'Textar', 'Ferodo', 'Jurid', 'Pagid',
+    'NGK', 'Denso', 'Delphi', 'ACDelco', 'AC Delco', 'Philips', 'Osram', 'Hella',
+    'Febi', 'Lemforder', 'Lemförder', 'Moog', 'Textar', 'Ferodo', 'Jurid', 'Pagid',
     'Wix', 'Fram', 'Purflux', 'Hengst', 'Corteco', 'Elring', 'Victor Reinz',
     'ATE', 'Zimmermann', 'Pilenga', 'SNR', 'Ruville', 'Optimal',
+    'Magneti Marelli', 'Champion', 'Mobis', 'Motorcraft', 'Febest', 'Nakata',
+    'Cofap', 'Mando', 'TISS', 'Walker', 'CTR',
 )
+
+_MARCA_ETIQUETA_RE = re.compile(
+    r'(?:marca(?!\s*veh[ií]culo)(?:\s+del\s+producto)?|fabricante|brand)\s*[:\-]\s*'
+    r'([A-Za-z][A-Za-z0-9.\-]{1,39})',
+    re.I,
+)
+_MARCA_ETIQUETA_BASURA = frozenset({
+    'image', 'slider', 'logo', 'icon', 'foto', 'photo', 'vehiculo', 'auto',
+    'producto', 'repuesto', 'original', 'oem', 'generico',
+})
 
 # Placeholders del maestro / JSON que NUNCA deben mostrarse como marca verificada.
 _MARCAS_INVALIDAS = frozenset({
@@ -131,6 +143,19 @@ def _inferir_marca_desde_nombre(nombre: str) -> str:
     return ''
 
 
+def _marca_desde_etiqueta(texto: str, marca_vehiculo: str = '') -> str:
+    """Lee 'Marca: Bosch' / 'Fabricante: NGK' y descarta la marca del auto."""
+    veh = _norm(marca_vehiculo)
+    for match in _MARCA_ETIQUETA_RE.finditer(texto or ''):
+        cand = _marca_repuesto_valida(match.group(1))
+        if not cand or _norm(cand) in _MARCA_ETIQUETA_BASURA:
+            continue
+        if veh and (_norm(cand) == veh or veh in _norm(cand)):
+            continue
+        return cand
+    return ''
+
+
 def _nombre_con_marca(nombre: str, marca: str | None) -> str:
     """Incluye la marca en el nombre visible al cliente si aún no está.
 
@@ -200,8 +225,10 @@ def _hit(
     url_producto: str = '',
     confianza: float = 0.0,
     clave: str = '',
+    calidad: str = '',
+    pais_origen: str = '',
 ) -> dict[str, Any]:
-    return {
+    out = {
         'nombre': nombre,
         'marca_repuesto': (marca_repuesto or '').strip()[:100],
         'precio_unitario_clp': max(0, int(precio_unitario_clp or 0)),
@@ -212,6 +239,13 @@ def _hit(
         'confianza': float(confianza or 0),
         'clave': clave or _clave_fuzzy(nombre),
     }
+    cal = str(calidad or '').strip().lower()
+    if cal in ('original', 'oem', 'alternativo'):
+        out['calidad'] = cal
+    pais = str(pais_origen or '').strip()[:40]
+    if pais:
+        out['pais_origen'] = pais
+    return out
 
 
 def _mejor_hit(nombre: str, candidatos: list[dict[str, Any]], *, min_score: int = 50) -> dict[str, Any] | None:
@@ -727,6 +761,7 @@ def _candidatos_web_cache(
                 url_producto=str(row.url or '')[:500],
                 confianza=conf if conf > 0 else (_CONF_HISTORIAL if fuente == 'historial' else _CONF_WEB),
                 clave=clave_nombre or _clave_fuzzy(str(row.nombre_producto or '')),
+                calidad=str(row.calidad or ''),
             )
             out.append(hit)
         return out
@@ -787,6 +822,19 @@ def _aplicar_hit_campos(next_rep: dict[str, Any], hit: dict[str, Any]) -> None:
         next_rep['proveedor_id'] = hit['proveedor_id']
     if hit.get('especificacion') and (not str(next_rep.get('especificacion') or '').strip() or puede_reemplazar):
         next_rep['especificacion'] = hit['especificacion']
+
+    cal_hit = str(hit.get('calidad') or '').strip().lower()
+    cal_actual = str(next_rep.get('calidad') or '').strip().lower()
+    if cal_hit in ('original', 'oem', 'alternativo') and (
+        cal_actual not in ('original', 'oem', 'alternativo') or puede_reemplazar
+    ):
+        next_rep['calidad'] = cal_hit
+        next_rep['calidad_pendiente'] = False
+
+    pais_hit = str(hit.get('pais_origen') or '').strip()[:40]
+    pais_actual = str(next_rep.get('pais_origen') or '').strip()
+    if pais_hit and (not pais_actual or puede_reemplazar):
+        next_rep['pais_origen'] = pais_hit
 
 
 def _aplicar_precio(next_rep: dict[str, Any], hits: list[dict[str, Any]]) -> None:

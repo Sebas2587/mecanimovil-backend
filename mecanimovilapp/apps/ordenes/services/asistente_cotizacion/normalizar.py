@@ -96,6 +96,7 @@ def normalizar_repuesto(item: Any, idx: int) -> dict[str, Any]:
         ('compatibilidad', lambda v: str(v or '').strip()[:20]),
         ('motivo_sin_precio', lambda v: str(v or '').strip()[:40]),
         ('calidad', lambda v: str(v or '').strip()[:16]),
+        ('pais_origen', lambda v: str(v or '').strip()[:40]),
         ('imagen_url', lambda v: str(v or '').strip()[:500]),
         ('seleccion_cliente_en', lambda v: str(v or '').strip()[:40]),
     ):
