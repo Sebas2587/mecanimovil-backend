@@ -10,7 +10,88 @@ from django.db import transaction
 logger = logging.getLogger(__name__)
 
 
-def marcar_busqueda_web_pendiente(metadata: dict[str, Any] | None) -> dict[str, Any]:
+def construir_progreso_busqueda(
+    *,
+    paso: str,
+    detalle: str,
+    fuentes: list[str] | None = None,
+    lineas: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Snapshot que el taller ve en el riel mientras corre la búsqueda."""
+    return {
+        'paso': str(paso or '')[:40],
+        'detalle': str(detalle or '')[:240],
+        'fuentes': [str(f).strip()[:80] for f in (fuentes or []) if str(f).strip()][:8],
+        'lineas': list(lineas or [])[:20],
+    }
+
+
+def lineas_progreso_desde_repuestos(
+    repuestos: list | None,
+    *,
+    resultados: dict | None = None,
+    buscando: str = '',
+    terminado: bool = False,
+) -> list[dict[str, Any]]:
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+        _clave_fuzzy,
+        _to_int_clp,
+    )
+
+    hits = resultados or {}
+    buscando_clave = _clave_fuzzy(buscando)
+    out: list[dict[str, Any]] = []
+    for raw in repuestos or []:
+        if not isinstance(raw, dict):
+            continue
+        nombre = str(raw.get('nombre') or '').strip()
+        if not nombre:
+            continue
+        clave = _clave_fuzzy(nombre)
+        hit = hits.get(clave) if clave else None
+        if not isinstance(hit, dict):
+            hit = None
+        precio_hit = _to_int_clp((hit or {}).get('precio_clp'))
+        precio_linea = _to_int_clp(raw.get('precio_unitario_clp'))
+        fuente_linea = str(
+            raw.get('proveedor_nombre') or raw.get('fuente_marketplace') or '',
+        ).strip()
+        if precio_hit > 0:
+            estado = 'ok'
+            fuente = str((hit or {}).get('tienda') or fuente_linea)[:80]
+            precio = precio_hit
+        elif precio_linea > 0 and str(raw.get('fuente_marketplace') or '') in (
+            'catalogo', 'historial', 'proveedor', 'web', 'mercadolibre',
+        ):
+            estado = 'ok'
+            fuente = fuente_linea[:80]
+            precio = precio_linea
+        elif buscando_clave and clave == buscando_clave:
+            estado = 'buscando'
+            fuente = ''
+            precio = 0
+        elif terminado:
+            estado = 'sin_precio'
+            fuente = ''
+            precio = 0
+        else:
+            estado = 'buscando'
+            fuente = ''
+            precio = 0
+        out.append({
+            'nombre': nombre[:80],
+            'estado': estado,
+            'fuente': fuente,
+            'precio_clp': precio or None,
+        })
+    return out
+
+
+def marcar_busqueda_web_pendiente(
+    metadata: dict[str, Any] | None,
+    *,
+    repuestos: list | None = None,
+) -> dict[str, Any]:
     """Devuelve metadata con busqueda_web_estado=pendiente si el feature está ON."""
     meta = dict(metadata or {})
     if not getattr(settings, 'BUSQUEDA_WEB_REPUESTOS_ENABLED', True):
@@ -21,6 +102,12 @@ def marcar_busqueda_web_pendiente(metadata: dict[str, Any] | None) -> dict[str, 
 
     meta['busqueda_web_estado'] = 'pendiente'
     meta['busqueda_web_en'] = timezone.now().isoformat()
+    meta['busqueda_web_progreso'] = construir_progreso_busqueda(
+        paso='casas',
+        detalle='En cola: catálogo del taller, historial y tiendas de Chile',
+        fuentes=['Catálogo del taller', 'Historial del taller', 'Tiendas .cl'],
+        lineas=lineas_progreso_desde_repuestos(repuestos),
+    )
     return meta
 
 

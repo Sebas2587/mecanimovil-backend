@@ -462,9 +462,14 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
         cuota_diaria_disponible,
         nombres_sin_cache_vigente,
     )
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web import (
+        construir_progreso_busqueda,
+        lineas_progreso_desde_repuestos,
+    )
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
         enriquecer_repuestos_cotizacion,
         linea_necesita_busqueda_web,
+        min_score_web_para,
         _clave_fuzzy,
         _mejor_hit,
         _nombre_con_marca,
@@ -478,6 +483,12 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
         meta = dict(cot.metadata or {})
         meta['busqueda_web_estado'] = estado
         meta['busqueda_web_en'] = timezone.now().isoformat()
+        cot.metadata = meta
+        cot.save(update_fields=['metadata', 'actualizado_en'])
+
+    def _set_progreso(cot: CotizacionCanal, **kwargs) -> None:
+        meta = dict(cot.metadata or {})
+        meta['busqueda_web_progreso'] = construir_progreso_busqueda(**kwargs)
         cot.metadata = meta
         cot.save(update_fields=['metadata', 'actualizado_en'])
 
@@ -496,7 +507,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
             _set_estado(cot, 'sin_resultados')
             return {'ok': True, 'reason': 'sin_repuestos'}
 
-        max_lineas = max(1, int(getattr(settings, 'BUSQUEDA_WEB_REPUESTOS_MAX_LINEAS', 6) or 6))
+        max_lineas = max(1, int(getattr(settings, 'BUSQUEDA_WEB_REPUESTOS_MAX_LINEAS', 12) or 12))
 
         candidatos = [rep for rep in reps if linea_necesita_busqueda_web(rep)]
         # Prioriza líneas sin precio (ítems que el taller acaba de agregar).
@@ -506,6 +517,14 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
         if not candidatos:
             _set_estado(cot, 'sin_resultados')
             return {'ok': True, 'reason': 'nada_que_buscar'}
+
+        _set_progreso(
+            cot,
+            paso='casas',
+            detalle='Revisa catálogo del taller, historial y casas de Chile',
+            fuentes=['Catálogo del taller', 'Historial del taller', 'Tiendas .cl'],
+            lineas=lineas_progreso_desde_repuestos(reps),
+        )
 
         nombres = [str(r.get('nombre') or '').strip() for r in candidatos if str(r.get('nombre') or '').strip()]
         faltantes, cache_hits = nombres_sin_cache_vigente(
@@ -531,6 +550,25 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                     _set_estado(cot, 'error')
                     return {'ok': False, 'reason': 'rpd'}
             else:
+                def _on_progreso(evento: dict) -> None:
+                    try:
+                        cot_vivo = CotizacionCanal.objects.filter(pk=cotizacion_id).first()
+                        if cot_vivo is None or cot_vivo.estado != 'borrador':
+                            return
+                        _set_progreso(
+                            cot_vivo,
+                            paso=str(evento.get('paso') or 'web'),
+                            detalle=str(evento.get('detalle') or 'Consultando tiendas de Chile'),
+                            fuentes=list(evento.get('fuentes') or ['Tiendas .cl']),
+                            lineas=lineas_progreso_desde_repuestos(
+                                reps,
+                                resultados=resultados,
+                                buscando=str(evento.get('nombre_actual') or ''),
+                            ),
+                        )
+                    except Exception:
+                        return
+
                 nuevos = buscar_repuestos_web(
                     faltantes,
                     vehiculo={
@@ -541,6 +579,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                         'tipo_motor': cot.tipo_motor or '',
                     },
                     servicio_nombre=cot.servicio_nombre or '',
+                    on_progreso=_on_progreso,
                 )
                 if nuevos:
                     resultados.update(nuevos)
@@ -637,7 +676,11 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                         for k, v in resultados.items()
                         if isinstance(v, dict)
                     ]
-                    best = _mejor_hit(str(rep.get('nombre') or ''), cands, min_score=55)
+                    best = _mejor_hit(
+                        str(rep.get('nombre') or ''),
+                        cands,
+                        min_score=min_score_web_para(str(rep.get('nombre') or '')),
+                    )
                     if not best:
                         continue
                     hit = {
@@ -680,6 +723,23 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
         meta['valores_estimativos'] = any(
             bool(r.get('precio_estimado', True)) for r in reps_enriquecidos
         ) if reps_enriquecidos else True
+        meta['busqueda_web_progreso'] = construir_progreso_busqueda(
+            paso='listo',
+            detalle=(
+                'Precios listos. Revisa las líneas sin referencia antes de enviar.'
+                if any(
+                    _to_int_clp(r.get('precio_unitario_clp')) <= 0
+                    for r in reps_enriquecidos
+                )
+                else 'Cada pieza quedó con casa y monto de referencia.'
+            ),
+            fuentes=['Catálogo del taller', 'Historial del taller', 'Tiendas .cl'],
+            lineas=lineas_progreso_desde_repuestos(
+                reps_enriquecidos,
+                resultados=resultados,
+                terminado=True,
+            ),
+        )
 
         cot.repuestos = reps_enriquecidos
         aplicar_totales_cotizacion(cot)

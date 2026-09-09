@@ -1173,9 +1173,17 @@ def _escalera_consultas(
     la línea sin ninguna referencia).
     """
     completo = _modelo_busqueda_completo(modelo)
+    nucleo = _nombre_busqueda_corto(nombre)
     base = ' '.join(p for p in [nombre, marca, completo, cilindraje] if p)
     corta = ' '.join(p for p in [nombre, marca, _modelo_busqueda(modelo)] if p)
-    consultas = [f"{base} {casa['alias']}" for casa in casas[:1]] + [base, corta]
+    # Último peldaño: solo la pieza. Un refrigerante o un filtro a menudo
+    # se publica sin el modelo y esa ficha igual sirve de referencia.
+    consultas = (
+        [f"{base} {casa['alias']}" for casa in casas[:1]]
+        + [base, corta]
+        + ([f'{nucleo} {marca}'.strip()] if nucleo and marca else [])
+        + ([nucleo] if nucleo else [])
+    )
     vistas: set[str] = set()
     out: list[str] = []
     for q in consultas:
@@ -1312,13 +1320,28 @@ def _buscar_repuestos_web_tavily(
     tipo_motor: str,
     servicio_nombre: str,
     timeout: int,
+    on_progreso=None,
 ) -> dict[str, dict[str, Any]]:
     """Agregador Tavily (JSON real) + Gemini solo como filtro/formateador."""
     whitelist = _dominios_whitelist()
     casas_marca = _especialistas_de_marca(marca)
     tokens_veh = _tokens_vehiculo(marca, modelo, anio, cilindraje)
+    fuentes_vivo = [c['nombre'] for c in casas_marca[:3] if c.get('nombre')]
+    if not fuentes_vivo:
+        fuentes_vivo = ['Tiendas .cl', 'Mercado Libre']
+    elif 'Mercado Libre' not in fuentes_vivo:
+        fuentes_vivo.append('Mercado Libre')
     candidatos_por_nombre: dict[str, list[dict[str, str]]] = {}
-    for nombre in nombres_limpios:
+    for i, nombre in enumerate(nombres_limpios):
+        if callable(on_progreso):
+            on_progreso({
+                'paso': 'web',
+                'detalle': f'Consultando {", ".join(fuentes_vivo[:3])} por {nombre}',
+                'fuentes': fuentes_vivo,
+                'nombre_actual': nombre,
+                'indice': i,
+                'total': len(nombres_limpios),
+            })
         crudos: list[dict[str, Any]] = []
         for query in _escalera_consultas(
             nombre, marca=marca, modelo=modelo, cilindraje=cilindraje, casas=casas_marca,
@@ -1379,7 +1402,11 @@ def _buscar_repuestos_web_tavily(
     )
     body = _gemini_generar(prompt, timeout=timeout, use_url_context=False)
     if not body:
-        return {}
+        logger.info(
+            'busqueda_web_repuestos[tavily]: Gemini vacío; se entregan %s hits de snippet',
+            len(preliminar),
+        )
+        return preliminar
 
     text = ''
     try:
@@ -1389,8 +1416,12 @@ def _buscar_repuestos_web_tavily(
         return {}
     parsed = _parse_json(text) or {}
     resultados = parsed.get('resultados') or []
-    if not isinstance(resultados, list):
-        return {}
+    if not isinstance(resultados, list) or not resultados:
+        logger.info(
+            'busqueda_web_repuestos[tavily]: Gemini sin JSON usable; se entregan %s hits de snippet',
+            len(preliminar),
+        )
+        return preliminar
 
     # URLs válidas = las que Tavily realmente devolvió (anti-alucinación).
     urls_reales: set[str] = set()
@@ -1516,6 +1547,7 @@ def buscar_repuestos_web(
     *,
     vehiculo: dict[str, Any] | None = None,
     servicio_nombre: str = '',
+    on_progreso=None,
 ) -> dict[str, dict[str, Any]]:
     """Punto de entrada único: Tavily (si hay API key) y luego url_context para lo faltante."""
     nombres_limpios = [str(n).strip()[:200] for n in nombres if str(n).strip()]
@@ -1544,6 +1576,7 @@ def buscar_repuestos_web(
                 tipo_motor=tipo_motor,
                 servicio_nombre=servicio_nombre,
                 timeout=timeout,
+                on_progreso=on_progreso,
             )
         except Exception as exc:
             logger.warning('busqueda_web_repuestos[tavily]: fallo inesperado: %s', exc)

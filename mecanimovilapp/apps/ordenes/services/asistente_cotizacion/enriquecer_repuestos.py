@@ -75,6 +75,12 @@ _HIST_MESES = 6
 _MIN_SCORE_CATALOGO = 70
 _MIN_SCORE_HISTORIAL = 60
 _MIN_SCORE_WEB = 55
+# Piezas de taller diario: el nombre IA suele ser más largo que el de la ficha.
+_PIEZAS_COMUNES = (
+    'filtro', 'aceite', 'refrigerante', 'anticongelante', 'bujia', 'pastilla',
+    'disco', 'correa', 'bateria', 'amortiguador', 'termostato', 'bomba',
+    'radiador', 'liquido', 'balata', 'sensor', 'bujias', 'pastillas',
+)
 
 # Fuentes "grounded": dato real y trazable del taller, web verificada o listing ML.
 # 'estimado' NUNCA es grounded.
@@ -183,6 +189,14 @@ def _marca_repuesto_valida(marca: str | None) -> str:
     return m[:100]
 
 
+def min_score_web_para(nombre: str) -> int:
+    """Umbral más bajo en consumibles: 'Filtro de aceite Rexton' vs 'filtro aceite'."""
+    n = _norm(nombre)
+    if any(p in n for p in _PIEZAS_COMUNES):
+        return 40
+    return _MIN_SCORE_WEB
+
+
 def _match_score(query_key: str, candidate_key: str) -> int:
     if not query_key or not candidate_key:
         return 0
@@ -194,6 +208,12 @@ def _match_score(query_key: str, candidate_key: str) -> int:
     c_tokens = set(candidate_key.split())
     if not q_tokens or not c_tokens:
         return 0
+    q_core = set(query_key.split()[:2])
+    c_core = set(candidate_key.split()[:2])
+    if q_core and q_core <= c_tokens:
+        return 70
+    if c_core and c_core <= q_tokens:
+        return 70
     inter = q_tokens & c_tokens
     if not inter:
         return 0
@@ -948,7 +968,7 @@ def enriquecer_repuestos_cotizacion(
 
         web_hit = None
         if usar_web and not grounded_taller and web_cands:
-            web_hit = _mejor_hit(nombre, web_cands, min_score=_MIN_SCORE_WEB)
+            web_hit = _mejor_hit(nombre, web_cands, min_score=min_score_web_para(nombre))
             if web_hit:
                 hits.append(web_hit)
 

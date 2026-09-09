@@ -435,6 +435,7 @@ class CacheSkipGeminiTestCase(SimpleTestCase):
             'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.buscar_repuestos_web',
         ) as buscar, patch(
             'mecanimovilapp.apps.ordenes.models.PrecioRepuestoWeb.objects.update_or_create',
+            return_value=(MagicMock(), False),
         ), patch(
             'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos.enriquecer_repuestos_cotizacion',
             side_effect=lambda reps, **kw: [{
@@ -494,9 +495,16 @@ class DispararBusquedaWebTestCase(SimpleTestCase):
             marcar_busqueda_web_pendiente,
         )
 
-        meta = marcar_busqueda_web_pendiente({'origen': 'ia'})
+        meta = marcar_busqueda_web_pendiente(
+            {'origen': 'ia'},
+            repuestos=[{'nombre': 'Filtro de aceite', 'precio_unitario_clp': 0}],
+        )
         self.assertEqual(meta.get('busqueda_web_estado'), 'pendiente')
         self.assertTrue(meta.get('busqueda_web_en'))
+        progreso = meta.get('busqueda_web_progreso') or {}
+        self.assertEqual(progreso.get('paso'), 'casas')
+        self.assertEqual(progreso['lineas'][0]['nombre'], 'Filtro de aceite')
+        self.assertIn('Catálogo del taller', progreso.get('fuentes') or [])
 
     @override_settings(BUSQUEDA_WEB_REPUESTOS_ENABLED=True, GEMINI_API_KEY='k')
     def test_en_curso_si_marcado_recien(self):
@@ -1013,11 +1021,13 @@ class BuscarRepuestosWebTavilyTestCase(SimpleTestCase):
         consultas = bw._escalera_consultas(
             'Pastillas', marca='Kia', modelo='RIO 5 EX', cilindraje='1.4', casas=[],
         )
-        # Específica primero y modelo a secas como respaldo, sin repetir.
-        self.assertEqual(consultas, ['Pastillas Kia Rio 5 Ex 1.4', 'Pastillas Kia RIO'])
+        # Específica primero, modelo a secas y al final solo la pieza.
+        self.assertEqual(consultas[0], 'Pastillas Kia Rio 5 Ex 1.4')
+        self.assertEqual(consultas[1], 'Pastillas Kia RIO')
+        self.assertIn('pastillas', [bw._norm(q) for q in consultas])
         self.assertEqual(
-            bw._escalera_consultas('Pastillas', marca='Kia', modelo='RIO', cilindraje='', casas=[]),
-            ['Pastillas Kia Rio'],
+            bw._escalera_consultas('Pastillas', marca='Kia', modelo='RIO', cilindraje='', casas=[])[0],
+            'Pastillas Kia Rio',
         )
 
     def test_reintenta_gemini_si_esta_saturado(self):
@@ -1083,7 +1093,7 @@ class BuscarRepuestosWebTavilyTestCase(SimpleTestCase):
                 vehiculo={'marca': 'Toyota', 'modelo': 'Yaris', 'anio': 2010},
             )
 
-        self.assertEqual(calls['tavily'], 1)
+        self.assertGreaterEqual(calls['tavily'], 1)
         self.assertEqual(calls['gemini_with_tools'], 1)
 
 
@@ -1169,3 +1179,65 @@ class AtributosFichaTavilyTestCase(SimpleTestCase):
         self.assertIn('marca', seen.get('query', '').lower())
         self.assertIn('origen', seen.get('query', '').lower())
         self.assertEqual(seen.get('chunks_per_source'), 4)
+
+
+class CoberturaPreciosComunesTests(SimpleTestCase):
+    def test_escalera_termina_en_el_nombre_corto_sin_auto(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        qs = bw._escalera_consultas(
+            'Filtro de aceite',
+            marca='Ssangyong',
+            modelo='Rexton',
+            cilindraje='',
+            casas=[],
+        )
+        normas = [bw._norm(q) for q in qs]
+        self.assertIn('filtro aceite', normas)
+
+    def test_match_nucleo_de_pieza_comun(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            _match_score,
+            min_score_web_para,
+        )
+
+        self.assertGreaterEqual(
+            _match_score('filtro aceite motor rexton', 'filtro aceite mann'),
+            70,
+        )
+        self.assertLessEqual(min_score_web_para('Filtro de aceite Ssangyong'), 40)
+
+    @override_settings(TAVILY_API_KEY='tvly-test', GEMINI_API_KEY='k')
+    def test_si_gemini_falla_conserva_el_precio_del_snippet(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        def fake_cands(query, _whitelist):
+            q = query.lower()
+            if 'filtro' in q:
+                return [{
+                    'title': 'Filtro aceite',
+                    'url': 'https://www.autoplanet.cl/p/filtro',
+                    'content': 'Filtro de aceite para motor. Stock en Chile.',
+                }]
+            return [{
+                'title': 'Termostato Gates',
+                'url': 'https://www.autoplanet.cl/p/termostato',
+                'content': 'Termostato Gates. Precio $ 18.990. Envío Chile.',
+            }]
+
+        with patch.object(bw, '_candidatos_validos', side_effect=fake_cands), patch.object(
+            bw, '_tavily_extraer', return_value={},
+        ), patch.object(bw, '_gemini_generar', return_value=None):
+            out = bw._buscar_repuestos_web_tavily(
+                ['Termostato', 'Filtro de aceite'],
+                marca='Fiat',
+                modelo='Bravo',
+                anio=2010,
+                cilindraje='',
+                tipo_motor='',
+                servicio_nombre='Mantención',
+                timeout=10,
+            )
+
+        self.assertIn(bw._clave_fuzzy('Termostato'), out)
+        self.assertEqual(out[bw._clave_fuzzy('Termostato')]['precio_clp'], 18990)

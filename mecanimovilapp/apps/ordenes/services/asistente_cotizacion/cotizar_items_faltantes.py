@@ -139,7 +139,7 @@ def cotizar_items_faltantes(
             marcar_busqueda_web_pendiente,
         )
 
-        meta = marcar_busqueda_web_pendiente(meta)
+        meta = marcar_busqueda_web_pendiente(meta, repuestos=enriquecidos)
         disparo_web = meta.get('busqueda_web_estado') == 'pendiente'
         cotizacion.metadata = meta
         cotizacion.save(update_fields=[

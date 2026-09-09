@@ -128,7 +128,7 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             return cotizacion
 
         meta['busqueda_web_retry_count'] = retries + 1
-        cotizacion.metadata = marcar_busqueda_web_pendiente(meta)
+        cotizacion.metadata = marcar_busqueda_web_pendiente(meta, repuestos=cotizacion.repuestos)
         if cotizacion.metadata.get('busqueda_web_estado') == 'pendiente':
             cotizacion.save(update_fields=['metadata', 'actualizado_en'])
             cotizacion = disparar_y_refrescar_cotizacion(cotizacion)
@@ -334,7 +334,7 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
         )
         meta = dict(cotizacion.metadata or {})
         if necesita_web:
-            cotizacion.metadata = marcar_busqueda_web_pendiente(meta)
+            cotizacion.metadata = marcar_busqueda_web_pendiente(meta, repuestos=reps)
             if cotizacion.metadata.get('busqueda_web_estado') == 'pendiente':
                 cotizacion.save(update_fields=['metadata', 'actualizado_en'])
                 disparar_busqueda_web_cotizacion(cotizacion.id, sync=False)
@@ -631,7 +631,7 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             raise ValidationError({'repuesto_id': 'No se encontró el repuesto en la cotización.'})
         cotizacion.repuestos = reps
         meta = dict(cotizacion.metadata or {})
-        meta = marcar_busqueda_web_pendiente(meta)
+        meta = marcar_busqueda_web_pendiente(meta, repuestos=reps)
         cotizacion.metadata = meta
         self._persistir_repuestos_y_totales(cotizacion)
         cotizacion.save(update_fields=['metadata', 'actualizado_en'])
@@ -743,7 +743,7 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             raise ValidationError({'repuesto_id': 'No se encontró el repuesto en la cotización.'})
         cotizacion.repuestos = reps
         meta = dict(cotizacion.metadata or {})
-        meta = marcar_busqueda_web_pendiente(meta)
+        meta = marcar_busqueda_web_pendiente(meta, repuestos=reps)
         cotizacion.metadata = meta
         self._persistir_repuestos_y_totales(cotizacion)
         cotizacion.save(update_fields=['metadata', 'actualizado_en'])
