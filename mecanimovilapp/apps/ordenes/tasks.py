@@ -444,10 +444,11 @@ def revisar_seguimiento_pipeline_comercial_task():
 
 @shared_task(bind=True, max_retries=1, default_retry_delay=30)
 def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
-    """Enriquece borrador con precios/marcas/tiendas vía Gemini URL Context.
+    """Enriquece cotización con precios/marcas/tiendas vía Gemini URL Context.
 
-    Solo modifica cotizaciones en estado=borrador. Upsert en PrecioRepuestoWeb,
-    re-enriquece líneas y actualiza metadata.busqueda_web_estado.
+    Corre sobre borrador, aceptada o enviada (ítems extra pueden reabrir o
+    pasar de aceptada→enviada mientras el worker está en cola). Upsert en
+    PrecioRepuestoWeb, re-enriquece líneas y actualiza busqueda_web_estado.
     """
     from datetime import timedelta
 
@@ -499,8 +500,8 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
         cot = CotizacionCanal.objects.filter(pk=cotizacion_id).first()
         if cot is None:
             return {'ok': False, 'reason': 'not_found'}
-        if cot.estado != 'borrador':
-            return {'ok': False, 'reason': 'not_borrador', 'estado': cot.estado}
+        if cot.estado not in ('borrador', 'aceptada', 'enviada'):
+            return {'ok': False, 'reason': 'estado', 'estado': cot.estado}
 
         reps = list(cot.repuestos or [])
         if not isinstance(reps, list) or not reps:
@@ -553,7 +554,9 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                 def _on_progreso(evento: dict) -> None:
                     try:
                         cot_vivo = CotizacionCanal.objects.filter(pk=cotizacion_id).first()
-                        if cot_vivo is None or cot_vivo.estado != 'borrador':
+                        if cot_vivo is None or cot_vivo.estado not in (
+                            'borrador', 'aceptada', 'enviada',
+                        ):
                             return
                         _set_progreso(
                             cot_vivo,

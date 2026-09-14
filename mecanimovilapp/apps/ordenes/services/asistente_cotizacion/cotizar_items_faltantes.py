@@ -56,10 +56,11 @@ def cotizar_items_faltantes(
     nombres: list[str] | None = None,
     repuestos_locales: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Agrega nombres nuevos, enriquece precios/fuente y dispara búsqueda web si falta.
+    """Agrega nombres nuevos, enriquece cache y dispara la misma búsqueda web que generar-ia.
 
-    No pisa líneas con precio de catálogo/historial. Las líneas con monto 0
-    (recién agregadas o escritas a mano) son la prioridad de la búsqueda web.
+    El HTTP no espera Tavily/Gemini: marca pendiente y encola el worker. El
+    taller ve el riel de progreso. No pisa líneas con precio de catálogo/
+    historial. Las líneas a $0 (recién agregadas) son la prioridad.
     """
     estado = getattr(cotizacion, 'estado', '') if cotizacion is not None else ''
     if cotizacion is None or estado not in ('borrador', 'aceptada'):

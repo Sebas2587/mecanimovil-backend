@@ -122,16 +122,17 @@ def linea_necesita_busqueda_web(rep: Any) -> bool:
         return False
     if not nombre_repuesto_buscable(str(rep.get('nombre') or '')):
         return False
-    if bool(rep.get('calidad_pendiente')):
-        return False
     fuente = str(rep.get('fuente_marketplace') or '').strip().lower()
     # Sin variante decidida igual se busca: la banda sirve de orientación y
     # resolver_precio_linea deja la línea en $0 hasta que el taller elija.
     if fuente in ('catalogo', 'historial', 'proveedor'):
         return False
     precio = _to_int_clp(rep.get('precio_unitario_clp'))
+    # Pieza nueva o a $0: hay que buscar aunque falte calidad/variante.
     if precio <= 0:
         return True
+    if bool(rep.get('calidad_pendiente')):
+        return False
     if fuente in ('web', 'mercadolibre') and str(rep.get('proveedor_nombre') or '').strip():
         return False
     return (

@@ -74,6 +74,18 @@ class CotizarItemsFaltantesServiceTests(TestCase):
             'fuente_marketplace': 'historial',
         }))
         self.assertFalse(linea_necesita_busqueda_web({'nombre': 'Repuesto', 'precio_unitario_clp': 0}))
+        self.assertTrue(linea_necesita_busqueda_web({
+            'nombre': 'Rodamiento piloto',
+            'precio_unitario_clp': 0,
+            'calidad_pendiente': True,
+        }))
+        self.assertFalse(linea_necesita_busqueda_web({
+            'nombre': 'Kit de embrague',
+            'precio_unitario_clp': 220000,
+            'calidad_pendiente': True,
+            'fuente_marketplace': 'web',
+            'proveedor_nombre': 'AutoPlanet',
+        }))
 
     def test_linea_con_variante_pendiente_igual_se_busca(self):
         """La banda web sirve de orientación aunque falte elegir el tipo."""
@@ -126,7 +138,7 @@ class CotizarItemsFaltantesServiceTests(TestCase):
             side_effect=_fake_enrich,
         ), patch(
             'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web.marcar_busqueda_web_pendiente',
-            side_effect=lambda meta: {**(meta or {}), 'busqueda_web_estado': 'pendiente'},
+            side_effect=lambda meta, **_kwargs: {**(meta or {}), 'busqueda_web_estado': 'pendiente'},
         ), patch(
             'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web.disparar_busqueda_web_cotizacion',
         ) as mock_disparo:
@@ -140,6 +152,37 @@ class CotizarItemsFaltantesServiceTests(TestCase):
         mock_disparo.assert_called_once()
         self.cot.refresh_from_db()
         self.assertEqual(self.cot.metadata.get('busqueda_web_estado'), 'pendiente')
+
+    def test_cotiza_lineas_locales_sin_nombres_nuevos(self):
+        def _fake_enrich(repuestos, **_kwargs):
+            return [dict(r) for r in repuestos]
+
+        locales = list(self.cot.repuestos) + [{
+            'id': 'rep-nuevo',
+            'nombre': 'Rodamiento piloto',
+            'cantidad': 1,
+            'precio_unitario_clp': 0,
+        }]
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.cotizar_items_faltantes.enriquecer_repuestos_cotizacion',
+            side_effect=_fake_enrich,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web.marcar_busqueda_web_pendiente',
+            side_effect=lambda meta, **_kwargs: {**(meta or {}), 'busqueda_web_estado': 'pendiente'},
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web.disparar_busqueda_web_cotizacion',
+        ) as mock_disparo:
+            resultado = cotizar_items_faltantes(
+                self.cot,
+                nombres=[],
+                repuestos_locales=locales,
+            )
+
+        self.assertEqual(resultado['agregados'], [])
+        self.assertTrue(resultado['busqueda_web'])
+        mock_disparo.assert_called_once()
+        nombres = [r['nombre'] for r in self.cot.repuestos]
+        self.assertIn('Rodamiento piloto', nombres)
 
     def test_rechaza_si_no_hay_nada_que_cotizar(self):
         with self.assertRaises(ValueError):

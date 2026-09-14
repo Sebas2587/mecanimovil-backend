@@ -525,11 +525,11 @@ class DispararBusquedaWebTestCase(SimpleTestCase):
     BUSQUEDA_WEB_REPUESTOS_MAX_LINEAS=6,
 )
 class BuscarPreciosWebTaskTestCase(SimpleTestCase):
-    def test_no_toca_cotizacion_no_borrador(self):
+    def test_no_toca_cotizacion_cancelada(self):
         from mecanimovilapp.apps.ordenes.tasks import buscar_precios_web_cotizacion_task
 
         cot = MagicMock()
-        cot.estado = 'enviada'
+        cot.estado = 'cancelada'
         cot.pk = 99
         with patch(
             'mecanimovilapp.apps.ordenes.models.CotizacionCanal.objects.filter',
@@ -541,8 +541,48 @@ class BuscarPreciosWebTaskTestCase(SimpleTestCase):
             ):
                 result = buscar_precios_web_cotizacion_task.run(99)
         self.assertFalse(result.get('ok'))
-        self.assertEqual(result.get('reason'), 'not_borrador')
+        self.assertEqual(result.get('reason'), 'estado')
         cot.save.assert_not_called()
+
+    def test_si_busca_en_cotizacion_aceptada(self):
+        from mecanimovilapp.apps.ordenes.tasks import buscar_precios_web_cotizacion_task
+
+        cot = MagicMock()
+        cot.estado = 'aceptada'
+        cot.pk = 3
+        cot.id = 3
+        cot.repuestos = [{
+            'nombre': 'Bujias',
+            'precio_estimado': True,
+            'cantidad': 1,
+            'precio_unitario_clp': 0,
+        }]
+        cot.mano_obra_clp = 10000
+        cot.vehiculo_marca = 'Fiat'
+        cot.vehiculo_modelo = 'Bravo'
+        cot.vehiculo_anio = 2010
+        cot.vehiculo_cilindraje = ''
+        cot.tipo_motor = ''
+        cot.servicio_nombre = 'Bujias'
+        cot.taller = MagicMock()
+        cot.metadata = {'busqueda_web_estado': 'pendiente'}
+        with patch(
+            'mecanimovilapp.apps.ordenes.models.CotizacionCanal.objects.filter',
+        ) as filt, patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.busqueda_web_habilitada',
+            return_value=True,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.nombres_sin_cache_vigente',
+            return_value=(['Bujias'], {}),
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.cuota_diaria_disponible',
+            return_value=False,
+        ):
+            filt.return_value.first.return_value = cot
+            result = buscar_precios_web_cotizacion_task.run(3)
+        self.assertFalse(result.get('ok'))
+        self.assertEqual(result.get('reason'), 'rpd')
+        self.assertEqual(cot.metadata.get('busqueda_web_estado'), 'error')
 
     def test_gemini_falla_deja_estado_error(self):
         from mecanimovilapp.apps.ordenes.tasks import buscar_precios_web_cotizacion_task
