@@ -471,10 +471,11 @@ def fusionar_repuestos_edicion(
     actuales: list,
     incoming: list,
 ) -> list:
-    """Conserva precio/fuente ya enriquecidos si el PATCH trae un snapshot más débil.
+    """Conserva precio/fuente enriquecidos si el PATCH trae un snapshot más débil.
 
-    Evita que el autosave del editor pise líneas que la búsqueda web acaba de llenar
-    (ítems previos y los recién agregados con IA) o un precio ya confirmado/asumido.
+    Evita que el autosave pise líneas que la búsqueda web acaba de llenar.
+    Un PATCH con certeza confirmado/asumido y precio > 0 es edición del taller
+    y gana sobre la ficha web.
     """
     by_id: dict[str, dict] = {}
     for rep in actuales:
@@ -498,13 +499,19 @@ def fusionar_repuestos_edicion(
         certeza_inc = str(inc.get('certeza') or '').strip().lower()
         precio_prev = _precio_clp(prev)
         precio_inc = _precio_clp(inc)
+        # El taller escribió o confirmó un monto: no restaurar la ficha web.
+        edicion_firme = (
+            certeza_inc in _CERTEZAS_FIRMES_EDICION and precio_inc > 0
+        )
         keep_confirmado = (
-            certeza_prev in _CERTEZAS_FIRMES_EDICION
+            not edicion_firme
+            and certeza_prev in _CERTEZAS_FIRMES_EDICION
             and precio_prev > 0
             and (certeza_inc not in _CERTEZAS_FIRMES_EDICION or precio_inc <= 0)
         )
         keep_enriquecido = (
-            fuente_prev in _FUENTES_VERIFICADAS_EDICION
+            not edicion_firme
+            and fuente_prev in _FUENTES_VERIFICADAS_EDICION
             and precio_prev > 0
             and (precio_inc <= 0 or fuente_inc not in _FUENTES_VERIFICADAS_EDICION)
         )

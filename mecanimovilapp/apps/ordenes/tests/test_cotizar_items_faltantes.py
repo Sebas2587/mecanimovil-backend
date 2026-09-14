@@ -507,3 +507,69 @@ class FusionarRepuestosEdicionTests(SimpleTestCase):
         self.assertEqual(out[0]['precio_unitario_clp'], 88000)
         self.assertEqual(out[0]['certeza'], 'asumido')
 
+    def test_edicion_manual_gana_sobre_enriquecimiento_web(self):
+        from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
+            fusionar_repuestos_edicion,
+        )
+
+        actuales = [
+            {
+                'id': 'rep-0',
+                'nombre': 'Radiador',
+                'cantidad': 1,
+                'precio_unitario_clp': 93000,
+                'certeza': 'confirmado',
+                'fuente_marketplace': 'web',
+                'proveedor_nombre': 'Ssangyong Chile',
+                'fuentes_detalle': [{'tienda': 'Ssangyong Chile', 'precio_clp': 93000}],
+            },
+        ]
+        incoming = [
+            {
+                'id': 'rep-0',
+                'nombre': 'Radiador',
+                'cantidad': 1,
+                'precio_unitario_clp': 80000,
+                'precio_min_clp': 80000,
+                'precio_max_clp': 80000,
+                'certeza': 'asumido',
+                'fuente_marketplace': '',
+                'proveedor_nombre': '',
+                'fuentes_detalle': [],
+            },
+        ]
+        out = fusionar_repuestos_edicion(actuales, incoming)
+        self.assertEqual(out[0]['precio_unitario_clp'], 80000)
+        self.assertEqual(out[0]['certeza'], 'asumido')
+        self.assertEqual(out[0]['fuente_marketplace'], '')
+        self.assertEqual(out[0]['proveedor_nombre'], '')
+        self.assertEqual(out[0]['fuentes_detalle'], [])
+
+    def test_cambia_cantidad_sin_pisar_precio_web_si_el_monto_no_viene(self):
+        from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
+            fusionar_repuestos_edicion,
+        )
+
+        actuales = [
+            {
+                'id': 'rep-0',
+                'nombre': 'Pastillas',
+                'cantidad': 1,
+                'precio_unitario_clp': 45000,
+                'fuente_marketplace': 'web',
+            },
+        ]
+        incoming = [
+            {
+                'id': 'rep-0',
+                'nombre': 'Pastillas',
+                'cantidad': 2,
+                'precio_unitario_clp': 0,
+                'fuente_marketplace': '',
+            },
+        ]
+        out = fusionar_repuestos_edicion(actuales, incoming)
+        self.assertEqual(out[0]['cantidad'], 2)
+        self.assertEqual(out[0]['precio_unitario_clp'], 45000)
+        self.assertEqual(out[0]['fuente_marketplace'], 'web')
+
