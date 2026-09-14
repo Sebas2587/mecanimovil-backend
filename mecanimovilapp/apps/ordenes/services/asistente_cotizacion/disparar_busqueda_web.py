@@ -87,10 +87,38 @@ def lineas_progreso_desde_repuestos(
     return out
 
 
+def _ids_busqueda(ids: list | None) -> list[str]:
+    out: list[str] = []
+    vistos: set[str] = set()
+    for raw in ids or []:
+        val = str(raw or '').strip()
+        if not val or val in vistos:
+            continue
+        vistos.add(val)
+        out.append(val)
+    return out
+
+
+def _repuestos_para_progreso(repuestos: list | None, ids: list[str] | None) -> list:
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+        linea_necesita_busqueda_web,
+    )
+
+    rows = [r for r in (repuestos or []) if isinstance(r, dict)]
+    if ids:
+        wanted = set(ids)
+        filtrados = [r for r in rows if str(r.get('id') or '') in wanted]
+        if filtrados:
+            return filtrados
+    pendientes = [r for r in rows if linea_necesita_busqueda_web(r)]
+    return pendientes
+
+
 def marcar_busqueda_web_pendiente(
     metadata: dict[str, Any] | None,
     *,
     repuestos: list | None = None,
+    ids: list | None = None,
 ) -> dict[str, Any]:
     """Devuelve metadata con busqueda_web_estado=pendiente si el feature está ON."""
     meta = dict(metadata or {})
@@ -100,13 +128,21 @@ def marcar_busqueda_web_pendiente(
         return meta
     from django.utils import timezone
 
+    solo_ids = _ids_busqueda(ids)
+    if solo_ids:
+        meta['busqueda_web_ids'] = solo_ids
+    else:
+        meta.pop('busqueda_web_ids', None)
+
     meta['busqueda_web_estado'] = 'pendiente'
     meta['busqueda_web_en'] = timezone.now().isoformat()
     meta['busqueda_web_progreso'] = construir_progreso_busqueda(
         paso='casas',
         detalle='En cola: catálogo del taller, historial y tiendas de Chile',
         fuentes=['Catálogo del taller', 'Historial del taller', 'Tiendas .cl'],
-        lineas=lineas_progreso_desde_repuestos(repuestos),
+        lineas=lineas_progreso_desde_repuestos(
+            _repuestos_para_progreso(repuestos, solo_ids),
+        ),
     )
     return meta
 

@@ -484,6 +484,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
         meta = dict(cot.metadata or {})
         meta['busqueda_web_estado'] = estado
         meta['busqueda_web_en'] = timezone.now().isoformat()
+        meta.pop('busqueda_web_ids', None)
         cot.metadata = meta
         cot.save(update_fields=['metadata', 'actualizado_en'])
 
@@ -511,6 +512,19 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
         max_lineas = max(1, int(getattr(settings, 'BUSQUEDA_WEB_REPUESTOS_MAX_LINEAS', 12) or 12))
 
         candidatos = [rep for rep in reps if linea_necesita_busqueda_web(rep)]
+        solo_ids = [
+            str(x).strip()
+            for x in (dict(cot.metadata or {}).get('busqueda_web_ids') or [])
+            if str(x).strip()
+        ]
+        if solo_ids:
+            wanted = set(solo_ids)
+            filtrados = [
+                rep for rep in candidatos
+                if str(rep.get('id') or '') in wanted
+            ]
+            if filtrados:
+                candidatos = filtrados
         # Prioriza líneas sin precio (ítems que el taller acaba de agregar).
         candidatos.sort(key=lambda r: _to_int_clp(r.get('precio_unitario_clp')) > 0)
         candidatos = candidatos[:max_lineas]
@@ -524,7 +538,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
             paso='casas',
             detalle='Revisa catálogo del taller, historial y casas de Chile',
             fuentes=['Catálogo del taller', 'Historial del taller', 'Tiendas .cl'],
-            lineas=lineas_progreso_desde_repuestos(reps),
+            lineas=lineas_progreso_desde_repuestos(candidatos),
         )
 
         nombres = [str(r.get('nombre') or '').strip() for r in candidatos if str(r.get('nombre') or '').strip()]
@@ -564,7 +578,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                             detalle=str(evento.get('detalle') or 'Consultando tiendas de Chile'),
                             fuentes=list(evento.get('fuentes') or ['Tiendas .cl']),
                             lineas=lineas_progreso_desde_repuestos(
-                                reps,
+                                candidatos,
                                 resultados=resultados,
                                 buscando=str(evento.get('nombre_actual') or ''),
                             ),
@@ -645,21 +659,44 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                 except Exception:
                     pass
 
-        reps_enriquecidos = enriquecer_repuestos_cotizacion(
-            reps,
-            marca_vehiculo=cot.vehiculo_marca or '',
-            modelo_vehiculo=cot.vehiculo_modelo or '',
-            anio_vehiculo=cot.vehiculo_anio or '',
-            cilindraje=cot.vehiculo_cilindraje or '',
-            tipo_motor=cot.tipo_motor or '',
-            taller=cot.taller,
-            usar_ml=False,
-            usar_web=True,
-        )
+        cand_ids = {
+            str(r.get('id') or '')
+            for r in candidatos
+            if isinstance(r, dict) and r.get('id')
+        }
+        reps_enriquecidos = [dict(r) if isinstance(r, dict) else r for r in reps]
+        if candidatos:
+            enriquecidos_cands = enriquecer_repuestos_cotizacion(
+                candidatos,
+                marca_vehiculo=cot.vehiculo_marca or '',
+                modelo_vehiculo=cot.vehiculo_modelo or '',
+                anio_vehiculo=cot.vehiculo_anio or '',
+                cilindraje=cot.vehiculo_cilindraje or '',
+                tipo_motor=cot.tipo_motor or '',
+                taller=cot.taller,
+                usar_ml=False,
+                usar_web=True,
+            )
+            by_cand = {
+                str(r.get('id')): r
+                for r in enriquecidos_cands
+                if isinstance(r, dict) and r.get('id')
+            }
+            for i, rep in enumerate(reps_enriquecidos):
+                if not isinstance(rep, dict):
+                    continue
+                rid = str(rep.get('id') or '')
+                if rid and rid in by_cand:
+                    reps_enriquecidos[i] = by_cand[rid]
 
         # Si el enrich por cache no matcheó, aplicar hits directos por clave fuzzy.
         if resultados:
             for i, rep in enumerate(reps_enriquecidos):
+                if not isinstance(rep, dict):
+                    continue
+                rid = str(rep.get('id') or '')
+                if cand_ids and rid not in cand_ids:
+                    continue
                 if str(rep.get('fuente_marketplace') or '') in ('catalogo', 'historial', 'web'):
                     continue
                 q = _clave_fuzzy(str(rep.get('nombre') or ''))
@@ -722,9 +759,14 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                 next_rep['fuente_marketplace'] = 'web'
                 reps_enriquecidos[i] = next_rep
 
+        progreso_lineas = [
+            r for r in reps_enriquecidos
+            if isinstance(r, dict) and (not cand_ids or str(r.get('id') or '') in cand_ids)
+        ] or list(candidatos)
         meta = dict(cot.metadata or {})
         meta['busqueda_web_estado'] = 'ok' if (resultados or upserts) else 'sin_resultados'
         meta['busqueda_web_en'] = timezone.now().isoformat()
+        meta.pop('busqueda_web_ids', None)
         meta['valores_estimativos'] = any(
             bool(r.get('precio_estimado', True)) for r in reps_enriquecidos
         ) if reps_enriquecidos else True
@@ -734,13 +776,13 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                 'Precios listos. Revisa las líneas sin referencia antes de enviar.'
                 if any(
                     _to_int_clp(r.get('precio_unitario_clp')) <= 0
-                    for r in reps_enriquecidos
+                    for r in progreso_lineas
                 )
                 else 'Cada pieza quedó con casa y monto de referencia.'
             ),
             fuentes=['Catálogo del taller', 'Historial del taller', 'Tiendas .cl'],
             lineas=lineas_progreso_desde_repuestos(
-                reps_enriquecidos,
+                progreso_lineas,
                 resultados=resultados,
                 terminado=True,
             ),

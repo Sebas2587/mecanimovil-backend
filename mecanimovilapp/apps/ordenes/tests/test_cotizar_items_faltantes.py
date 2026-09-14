@@ -87,6 +87,23 @@ class CotizarItemsFaltantesServiceTests(TestCase):
             'proveedor_nombre': 'AutoPlanet',
         }))
 
+    def test_linea_con_precio_estimado_no_se_recotiza(self):
+        self.assertFalse(linea_necesita_busqueda_web({
+            'nombre': 'Refrigerante orgánico',
+            'precio_unitario_clp': 38990,
+            'precio_estimado': True,
+            'fuente_marketplace': 'web',
+        }))
+
+    def test_linea_con_rango_no_se_recotiza(self):
+        self.assertFalse(linea_necesita_busqueda_web({
+            'nombre': 'Aceite motor',
+            'precio_unitario_clp': 0,
+            'precio_min_clp': 18000,
+            'precio_max_clp': 42000,
+            'especificacion_pendiente': True,
+        }))
+
     def test_linea_con_variante_pendiente_igual_se_busca(self):
         """La banda web sirve de orientación aunque falte elegir el tipo."""
         self.assertTrue(linea_necesita_busqueda_web({
@@ -183,6 +200,93 @@ class CotizarItemsFaltantesServiceTests(TestCase):
         mock_disparo.assert_called_once()
         nombres = [r['nombre'] for r in self.cot.repuestos]
         self.assertIn('Rodamiento piloto', nombres)
+
+    def test_cotiza_solo_la_linea_pedida(self):
+        def _fake_enrich(repuestos, **_kwargs):
+            return [dict(r) for r in repuestos]
+
+        locales = list(self.cot.repuestos) + [
+            {
+                'id': 'rep-refri',
+                'nombre': 'Refrigerante orgánico',
+                'cantidad': 1,
+                'precio_unitario_clp': 0,
+            },
+            {
+                'id': 'rep-aceite',
+                'nombre': 'Aceite motor',
+                'cantidad': 1,
+                'precio_unitario_clp': 0,
+            },
+        ]
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.cotizar_items_faltantes.enriquecer_repuestos_cotizacion',
+            side_effect=_fake_enrich,
+        ) as mock_enrich, patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web.marcar_busqueda_web_pendiente',
+            side_effect=lambda meta, **kwargs: {
+                **(meta or {}),
+                'busqueda_web_estado': 'pendiente',
+                'busqueda_web_ids': kwargs.get('ids') or [],
+            },
+        ) as mock_marcar, patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web.disparar_busqueda_web_cotizacion',
+        ):
+            resultado = cotizar_items_faltantes(
+                self.cot,
+                nombres=[],
+                repuestos_locales=locales,
+                repuesto_ids=['rep-aceite'],
+            )
+
+        self.assertTrue(resultado['busqueda_web'])
+        self.assertEqual(mock_marcar.call_args.kwargs.get('ids'), ['rep-aceite'])
+        enriquecidos = mock_enrich.call_args.args[0]
+        self.assertEqual([r['id'] for r in enriquecidos], ['rep-aceite'])
+        nombres = [r['nombre'] for r in self.cot.repuestos]
+        self.assertIn('Refrigerante orgánico', nombres)
+        self.assertIn('Aceite motor', nombres)
+
+    def test_ids_fuerzan_busqueda_aunque_haya_rango(self):
+        """Buscar precio en una línea a $0 recotiza esa pieza, aunque tenga banda vieja."""
+        def _fake_enrich(repuestos, **_kwargs):
+            return [dict(r) for r in repuestos]
+
+        locales = list(self.cot.repuestos) + [{
+            'id': 'rep-aceite',
+            'nombre': 'Aceite motor',
+            'cantidad': 1,
+            'precio_unitario_clp': 0,
+            'precio_min_clp': 18000,
+            'precio_max_clp': 42000,
+            'especificacion_pendiente': True,
+            'familia_sensible': 'aceite_motor',
+        }]
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.cotizar_items_faltantes.enriquecer_repuestos_cotizacion',
+            side_effect=_fake_enrich,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web.marcar_busqueda_web_pendiente',
+            side_effect=lambda meta, **kwargs: {
+                **(meta or {}),
+                'busqueda_web_estado': 'pendiente',
+                'busqueda_web_ids': kwargs.get('ids') or [],
+            },
+        ) as mock_marcar, patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web.disparar_busqueda_web_cotizacion',
+        ):
+            resultado = cotizar_items_faltantes(
+                self.cot,
+                nombres=[],
+                repuestos_locales=locales,
+                repuesto_ids=['rep-aceite'],
+            )
+
+        self.assertTrue(resultado['busqueda_web'])
+        self.assertEqual(mock_marcar.call_args.kwargs.get('ids'), ['rep-aceite'])
+        aceite = next(r for r in self.cot.repuestos if r['id'] == 'rep-aceite')
+        self.assertEqual(aceite.get('precio_min_clp') or 0, 0)
+        self.assertTrue(aceite.get('especificacion_pendiente'))
 
     def test_rechaza_si_no_hay_nada_que_cotizar(self):
         with self.assertRaises(ValueError):

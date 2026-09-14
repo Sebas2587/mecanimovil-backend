@@ -117,29 +117,48 @@ def nombre_repuesto_buscable(nombre: str | None) -> bool:
 
 
 def linea_necesita_busqueda_web(rep: Any) -> bool:
-    """True si la línea aún no tiene precio/fuente verificable para el taller."""
+    """True si la línea no tiene monto ni banda: hay que buscar en la web.
+
+    No recotiza una pieza que ya tiene unitario o rango de una búsqueda
+    anterior. Para forzar otra (variante/calidad nueva) hay que borrar
+    min/max y fuente antes de disparar.
+    """
     if not isinstance(rep, dict):
         return False
     if not nombre_repuesto_buscable(str(rep.get('nombre') or '')):
         return False
     fuente = str(rep.get('fuente_marketplace') or '').strip().lower()
-    # Sin variante decidida igual se busca: la banda sirve de orientación y
-    # resolver_precio_linea deja la línea en $0 hasta que el taller elija.
     if fuente in ('catalogo', 'historial', 'proveedor'):
         return False
-    precio = _to_int_clp(rep.get('precio_unitario_clp'))
-    # Pieza nueva o a $0: hay que buscar aunque falte calidad/variante.
-    if precio <= 0:
-        return True
-    if bool(rep.get('calidad_pendiente')):
+    if _to_int_clp(rep.get('precio_unitario_clp')) > 0:
         return False
-    if fuente in ('web', 'mercadolibre') and str(rep.get('proveedor_nombre') or '').strip():
+    if _to_int_clp(rep.get('precio_min_clp')) > 0 or _to_int_clp(rep.get('precio_max_clp')) > 0:
         return False
-    return (
-        bool(rep.get('precio_estimado', True))
-        or not str(rep.get('marca_repuesto') or '').strip()
-        or not str(rep.get('proveedor_nombre') or '').strip()
-    )
+    return True
+
+
+def limpiar_precio_para_nueva_busqueda(rep: dict) -> dict:
+    """Quita monto, banda y fuente para que la línea vuelva a cotizarse."""
+    next_rep = dict(rep)
+    next_rep['precio_unitario_clp'] = 0
+    next_rep['precio_min_clp'] = 0
+    next_rep['precio_max_clp'] = 0
+    next_rep['certeza'] = 'sin_precio'
+    next_rep['motivo_sin_precio'] = 'sin_referencia'
+    for key in (
+        'precio_referencia_mercado',
+        'fuente_marketplace',
+        'fuentes_detalle',
+        'fuentes_n',
+        'url_producto',
+        'nombre_producto',
+        'proveedor_nombre',
+        'proveedor_id',
+        'precio_marketplace_clp',
+        'tienda_ml',
+    ):
+        next_rep.pop(key, None)
+    return next_rep
 
 
 def _inferir_marca_desde_nombre(nombre: str) -> str:

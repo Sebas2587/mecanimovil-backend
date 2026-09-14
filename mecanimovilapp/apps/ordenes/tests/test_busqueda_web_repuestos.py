@@ -507,6 +507,32 @@ class DispararBusquedaWebTestCase(SimpleTestCase):
         self.assertIn('Catálogo del taller', progreso.get('fuentes') or [])
 
     @override_settings(BUSQUEDA_WEB_REPUESTOS_ENABLED=True, GEMINI_API_KEY='k')
+    def test_progreso_omite_lineas_ya_cotizadas(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web import (
+            marcar_busqueda_web_pendiente,
+        )
+
+        meta = marcar_busqueda_web_pendiente(
+            {'origen': 'ia'},
+            repuestos=[
+                {
+                    'id': '1',
+                    'nombre': 'Radiador de refrigeración',
+                    'precio_unitario_clp': 93000,
+                    'fuente_marketplace': 'web',
+                    'proveedor_nombre': 'Casa Chile',
+                },
+                {
+                    'id': '2',
+                    'nombre': 'Aceite motor',
+                    'precio_unitario_clp': 0,
+                },
+            ],
+        )
+        nombres = [l['nombre'] for l in (meta.get('busqueda_web_progreso') or {}).get('lineas') or []]
+        self.assertEqual(nombres, ['Aceite motor'])
+
+    @override_settings(BUSQUEDA_WEB_REPUESTOS_ENABLED=True, GEMINI_API_KEY='k')
     def test_en_curso_si_marcado_recien(self):
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web import (
             busqueda_web_en_curso,

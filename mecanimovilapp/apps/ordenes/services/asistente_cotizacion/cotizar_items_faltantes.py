@@ -7,7 +7,9 @@ from typing import Any
 
 from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
     _clave_fuzzy,
+    _to_int_clp,
     enriquecer_repuestos_cotizacion,
+    limpiar_precio_para_nueva_busqueda,
     linea_necesita_busqueda_web,
     nombre_repuesto_buscable,
 )
@@ -55,6 +57,7 @@ def cotizar_items_faltantes(
     *,
     nombres: list[str] | None = None,
     repuestos_locales: list[dict[str, Any]] | None = None,
+    repuesto_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Agrega nombres nuevos, enriquece cache y dispara la misma búsqueda web que generar-ia.
 
@@ -91,10 +94,26 @@ def cotizar_items_faltantes(
         base.append(linea)
         agregados.append(nombre)
 
+    ids_objetivo = [str(x).strip() for x in (repuesto_ids or []) if str(x).strip()]
+    wanted = set(ids_objetivo)
+
+    def _es_objetivo(rep: dict[str, Any]) -> bool:
+        if not wanted:
+            return True
+        return str(rep.get('id') or '') in wanted
+
+    if wanted:
+        base = [
+            limpiar_precio_para_nueva_busqueda(r)
+            if _es_objetivo(r) and _to_int_clp(r.get('precio_unitario_clp')) <= 0
+            else r
+            for r in base
+        ]
+
     pendientes_antes = [
         str(r.get('nombre') or '').strip()
         for r in base
-        if linea_necesita_busqueda_web(r)
+        if _es_objetivo(r) and linea_necesita_busqueda_web(r)
     ]
     if not agregados and not pendientes_antes:
         raise ValueError(
@@ -102,18 +121,42 @@ def cotizar_items_faltantes(
         )
 
     try:
-        enriquecidos = enriquecer_repuestos_cotizacion(
-            base,
-            marca_vehiculo=cotizacion.vehiculo_marca or '',
-            modelo_vehiculo=cotizacion.vehiculo_modelo or '',
-            anio_vehiculo=cotizacion.vehiculo_anio or '',
-            cilindraje=cotizacion.vehiculo_cilindraje or '',
-            tipo_motor=cotizacion.tipo_motor or '',
-            servicio_nombre=cotizacion.servicio_nombre or '',
-            taller=cotizacion.taller,
-            usar_ml=False,
-            usar_web=True,
-        )
+        if wanted:
+            objetivos = [r for r in base if str(r.get('id') or '') in wanted]
+            enriquecidos_obj = enriquecer_repuestos_cotizacion(
+                objetivos or base,
+                marca_vehiculo=cotizacion.vehiculo_marca or '',
+                modelo_vehiculo=cotizacion.vehiculo_modelo or '',
+                anio_vehiculo=cotizacion.vehiculo_anio or '',
+                cilindraje=cotizacion.vehiculo_cilindraje or '',
+                tipo_motor=cotizacion.tipo_motor or '',
+                servicio_nombre=cotizacion.servicio_nombre or '',
+                taller=cotizacion.taller,
+                usar_ml=False,
+                usar_web=True,
+            )
+            by_obj = {
+                str(r.get('id')): r
+                for r in enriquecidos_obj
+                if isinstance(r, dict) and r.get('id')
+            }
+            enriquecidos = []
+            for r in base:
+                rid = str(r.get('id') or '')
+                enriquecidos.append(by_obj[rid] if rid in by_obj else r)
+        else:
+            enriquecidos = enriquecer_repuestos_cotizacion(
+                base,
+                marca_vehiculo=cotizacion.vehiculo_marca or '',
+                modelo_vehiculo=cotizacion.vehiculo_modelo or '',
+                anio_vehiculo=cotizacion.vehiculo_anio or '',
+                cilindraje=cotizacion.vehiculo_cilindraje or '',
+                tipo_motor=cotizacion.tipo_motor or '',
+                servicio_nombre=cotizacion.servicio_nombre or '',
+                taller=cotizacion.taller,
+                usar_ml=False,
+                usar_web=True,
+            )
     except Exception as exc:
         logger.warning(
             'cotizar_items_faltantes(%s): enrich falló, se guardan líneas sin precio: %s',
@@ -132,7 +175,10 @@ def cotizar_items_faltantes(
     )
     meta['valores_estimativos'] = valores_estimativos and not bool(meta.get('precio_desde_catalogo'))
 
-    pendientes = [r for r in enriquecidos if linea_necesita_busqueda_web(r)]
+    pendientes = [
+        r for r in enriquecidos
+        if _es_objetivo(r) and linea_necesita_busqueda_web(r)
+    ]
     disparo_web = False
     if pendientes:
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web import (
@@ -140,7 +186,11 @@ def cotizar_items_faltantes(
             marcar_busqueda_web_pendiente,
         )
 
-        meta = marcar_busqueda_web_pendiente(meta, repuestos=enriquecidos)
+        meta = marcar_busqueda_web_pendiente(
+            meta,
+            repuestos=pendientes,
+            ids=[str(r.get('id') or '') for r in pendientes if r.get('id')],
+        )
         disparo_web = meta.get('busqueda_web_estado') == 'pendiente'
         cotizacion.metadata = meta
         cotizacion.save(update_fields=[

@@ -512,6 +512,7 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
                 cotizacion,
                 nombres=data.get('nombres') or [],
                 repuestos_locales=data.get('repuestos'),
+                repuesto_ids=data.get('repuesto_ids') or [],
             )
         except ValueError as exc:
             raise ValidationError({'nombres': str(exc)}) from exc
@@ -604,6 +605,9 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             disparar_busqueda_web_cotizacion,
             marcar_busqueda_web_pendiente,
         )
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            limpiar_precio_para_nueva_busqueda,
+        )
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.familias_sensibles import (
             anotar_familia_en_linea,
         )
@@ -615,27 +619,22 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
         spec = ser.validated_data['especificacion']
         reps = list(cotizacion.repuestos or [])
         found = False
+        idx = 0
         for i, r in enumerate(reps):
             if not isinstance(r, dict) or str(r.get('id') or '') != str(rid):
                 continue
-            linea = dict(r)
+            linea = limpiar_precio_para_nueva_busqueda(r)
             linea['especificacion'] = spec
             linea['especificacion_pendiente'] = False
-            linea['precio_unitario_clp'] = 0
-            linea['certeza'] = 'sin_precio'
-            linea['motivo_sin_precio'] = 'sin_referencia'
-            linea.pop('precio_referencia_mercado', None)
-            linea.pop('fuente_marketplace', None)
-            linea.pop('fuentes_detalle', None)
-            linea.pop('fuentes_n', None)
             reps[i] = anotar_familia_en_linea(linea)
             found = True
+            idx = i
             break
         if not found:
             raise ValidationError({'repuesto_id': 'No se encontró el repuesto en la cotización.'})
         cotizacion.repuestos = reps
         meta = dict(cotizacion.metadata or {})
-        meta = marcar_busqueda_web_pendiente(meta, repuestos=reps)
+        meta = marcar_busqueda_web_pendiente(meta, repuestos=[reps[idx]], ids=[str(rid)])
         cotizacion.metadata = meta
         self._persistir_repuestos_y_totales(cotizacion)
         cotizacion.save(update_fields=['metadata', 'actualizado_en'])
@@ -718,6 +717,9 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             disparar_busqueda_web_cotizacion,
             marcar_busqueda_web_pendiente,
         )
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            limpiar_precio_para_nueva_busqueda,
+        )
 
         cotizacion = self.get_object()
         ser = DefinirCalidadSerializer(data=request.data)
@@ -726,28 +728,23 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
         calidad = ser.validated_data['calidad']
         reps = list(cotizacion.repuestos or [])
         found = False
+        idx = 0
         for i, r in enumerate(reps):
             if not isinstance(r, dict) or str(r.get('id') or '') != str(rid):
                 continue
-            linea = dict(r)
+            linea = limpiar_precio_para_nueva_busqueda(r)
             linea['calidad'] = calidad
             linea['calidad_pendiente'] = False
-            linea['precio_unitario_clp'] = 0
-            linea['certeza'] = 'sin_precio'
-            linea['motivo_sin_precio'] = 'sin_referencia'
-            linea.pop('precio_referencia_mercado', None)
-            linea.pop('fuente_marketplace', None)
-            linea.pop('fuentes_detalle', None)
-            linea.pop('fuentes_n', None)
             linea.pop('opciones', None)
             reps[i] = anotar_calidad_en_linea(linea)
             found = True
+            idx = i
             break
         if not found:
             raise ValidationError({'repuesto_id': 'No se encontró el repuesto en la cotización.'})
         cotizacion.repuestos = reps
         meta = dict(cotizacion.metadata or {})
-        meta = marcar_busqueda_web_pendiente(meta, repuestos=reps)
+        meta = marcar_busqueda_web_pendiente(meta, repuestos=[reps[idx]], ids=[str(rid)])
         cotizacion.metadata = meta
         self._persistir_repuestos_y_totales(cotizacion)
         cotizacion.save(update_fields=['metadata', 'actualizado_en'])

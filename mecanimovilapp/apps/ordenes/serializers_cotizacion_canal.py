@@ -632,6 +632,12 @@ class CotizarItemsIaSerializer(serializers.Serializer):
         max_length=MAX_ITEMS_POR_REQUEST,
     )
     repuestos = RepuestoCotizacionSerializer(many=True, required=False)
+    repuesto_ids = serializers.ListField(
+        child=serializers.CharField(max_length=64, allow_blank=False),
+        required=False,
+        allow_empty=True,
+        max_length=MAX_ITEMS_POR_REQUEST,
+    )
 
     def validate_nombres(self, value):
         limpios = []
