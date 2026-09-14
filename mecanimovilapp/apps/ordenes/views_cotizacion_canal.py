@@ -587,7 +587,11 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
         ser = AsumirPrecioRepuestoSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         ids = ser.validated_data.get('repuesto_id') or []
-        aplicar_asumir_lineas(cotizacion, ids)
+        aplicar_asumir_lineas(
+            cotizacion,
+            ids,
+            modo=ser.validated_data.get('modo') or 'techo',
+        )
         self._persistir_repuestos_y_totales(cotizacion)
         return Response({'cotizacion': CotizacionCanalSerializer(cotizacion).data})
 

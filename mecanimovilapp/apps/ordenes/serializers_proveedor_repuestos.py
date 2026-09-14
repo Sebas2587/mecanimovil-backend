@@ -81,6 +81,11 @@ class AsumirPrecioRepuestoSerializer(serializers.Serializer):
         required=False,
         allow_empty=True,
     )
+    modo = serializers.ChoiceField(
+        choices=('techo', 'ficha'),
+        required=False,
+        default='techo',
+    )
 
 
 class DefinirEspecificacionSerializer(serializers.Serializer):

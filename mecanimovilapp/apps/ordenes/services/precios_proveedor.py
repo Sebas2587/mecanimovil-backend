@@ -266,8 +266,10 @@ def aplicar_confirmacion_linea(
     return linea
 
 
-def aplicar_asumir_lineas(cotizacion, repuesto_ids: list[str]) -> int:
+def aplicar_asumir_lineas(cotizacion, repuesto_ids: list[str], *, modo: str = 'techo') -> int:
+    """Fija el unitario. `ficha` = precio publicado; `techo` = tope de mostrador."""
     ids = {str(i) for i in (repuesto_ids or []) if i}
+    usar_ficha = str(modo or 'techo').strip().lower() == 'ficha'
     reps = list(cotizacion.repuestos or [])
     n = 0
     now = timezone.now().isoformat()
@@ -278,12 +280,20 @@ def aplicar_asumir_lineas(cotizacion, repuesto_ids: list[str]) -> int:
             continue
         if str(r.get('certeza') or '') in ('confirmado', 'asumido'):
             continue
-        techo = _to_int_clp(r.get('precio_max_clp') or r.get('precio_unitario_clp'))
-        if techo <= 0:
+        if usar_ficha:
+            monto = _to_int_clp(
+                r.get('precio_marketplace_clp')
+                or r.get('precio_min_clp')
+                or r.get('precio_unitario_clp'),
+            )
+        else:
+            monto = _to_int_clp(r.get('precio_max_clp') or r.get('precio_unitario_clp'))
+        if monto <= 0:
             continue
         linea = dict(r)
-        linea['precio_unitario_clp'] = techo
-        linea['precio_max_clp'] = techo
+        linea['precio_unitario_clp'] = monto
+        if not usar_ficha:
+            linea['precio_max_clp'] = monto
         linea['certeza'] = 'asumido'
         linea['precio_estimado'] = True
         linea['precio_capturado_en'] = now

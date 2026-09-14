@@ -129,3 +129,27 @@ class DocumentoFirmeGateTests(TestCase):
         self.cot.refresh_from_db()
         self.assertEqual(self.cot.repuestos[0]['certeza'], 'asumido')
         self.assertEqual(self.cot.repuestos[0]['precio_unitario_clp'], 12000)
+
+    @override_settings(DOCUMENTO_FIRME_GATE_ENABLED=True)
+    def test_asumir_ficha_usa_precio_publicado(self):
+        self.cot.repuestos = [{
+            'id': 'rep-1',
+            'nombre': 'Filtro de aceite',
+            'cantidad': 1,
+            'precio_unitario_clp': 9000,
+            'precio_min_clp': 9000,
+            'precio_max_clp': 12000,
+            'precio_marketplace_clp': 9000,
+            'certeza': 'referencial',
+        }]
+        self.cot.save(update_fields=['repuestos'])
+        asum = self.client.post(
+            f'/api/ordenes/cotizaciones-canal/{self.cot.id}/asumir-precio-repuesto/',
+            {'repuesto_id': ['rep-1'], 'modo': 'ficha'},
+            format='json',
+        )
+        self.assertEqual(asum.status_code, 200, asum.content)
+        self.cot.refresh_from_db()
+        self.assertEqual(self.cot.repuestos[0]['certeza'], 'asumido')
+        self.assertEqual(self.cot.repuestos[0]['precio_unitario_clp'], 9000)
+        self.assertEqual(self.cot.repuestos[0]['precio_max_clp'], 12000)

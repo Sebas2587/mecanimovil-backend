@@ -746,7 +746,24 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
             ),
         )
 
-        cot.repuestos = reps_enriquecidos
+        cot.refresh_from_db(fields=['repuestos'])
+        actuales = list(cot.repuestos or [])
+        by_id = {
+            str(r.get('id')): r
+            for r in reps_enriquecidos
+            if isinstance(r, dict) and r.get('id')
+        }
+        merged_save = []
+        for i, rep in enumerate(actuales):
+            if not isinstance(rep, dict):
+                merged_save.append(rep)
+                continue
+            rid = str(rep.get('id') or '')
+            src = by_id.get(rid) if rid else (
+                reps_enriquecidos[i] if i < len(reps_enriquecidos) else None
+            )
+            merged_save.append(src if isinstance(src, dict) else rep)
+        cot.repuestos = merged_save
         aplicar_totales_cotizacion(cot)
         cot.metadata = meta
         cot.save(update_fields=[

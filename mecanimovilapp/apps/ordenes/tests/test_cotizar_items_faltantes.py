@@ -616,3 +616,19 @@ class FusionarRepuestosEdicionTests(SimpleTestCase):
         self.assertEqual(out[0]['precio_unitario_clp'], 45000)
         self.assertEqual(out[0]['fuente_marketplace'], 'web')
 
+    def test_elimina_linea_ausente_en_el_patch(self):
+        from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
+            fusionar_repuestos_edicion,
+        )
+
+        actuales = [
+            {'id': 'rep-1', 'nombre': 'Filtro', 'precio_unitario_clp': 0},
+            {'id': 'rep-2', 'nombre': 'Bujía', 'precio_unitario_clp': 0},
+        ]
+        incoming = [
+            {'id': 'rep-2', 'nombre': 'Bujía', 'precio_unitario_clp': 0},
+        ]
+        out = fusionar_repuestos_edicion(actuales, incoming)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]['id'], 'rep-2')
+
