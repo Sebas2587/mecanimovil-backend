@@ -149,7 +149,7 @@ class ResolverPrecioBandaTestCase(SimpleTestCase):
             'nombre': 'Bujía de encendido',
             'precio_unitario_clp': 3200,
         }
-        resolver_precio_linea(linea, [self._hit('web', 3200)], confianza_enabled=True)
+        resolver_precio_linea(linea, [self._hit('web', 3200, url_producto='https://www.autoplanet.cl/p/bujia')], confianza_enabled=True)
         self.assertTrue(linea.get('especificacion_pendiente'))
         self.assertEqual(linea['certeza'], 'sin_precio')
         self.assertEqual(linea['precio_unitario_clp'], 0)
@@ -173,7 +173,7 @@ class ResolverPrecioBandaTestCase(SimpleTestCase):
         }
         resolver_precio_linea(
             linea,
-            [self._hit('web', 9990, proveedor_nombre='Mercado Libre')],
+            [self._hit('web', 9990, proveedor_nombre='Mercado Libre', url_producto='https://articulo.mercadolibre.cl/MLC-1')],
             confianza_enabled=True,
         )
         self.assertTrue(linea['especificacion_pendiente'])
@@ -218,14 +218,15 @@ class ResolverPrecioBandaTestCase(SimpleTestCase):
             'especificacion': 'Iridio',
             'precio_unitario_clp': 0,
         }
-        resolver_precio_linea(linea, [self._hit('web', 10000)], confianza_enabled=True)
+        resolver_precio_linea(linea, [self._hit('web', 10000, url_producto='https://www.autoplanet.cl/p/bujia')], confianza_enabled=True)
         self.assertEqual(linea['certeza'], 'referencial')
         self.assertEqual(linea['precio_min_clp'], 10000)
         self.assertEqual(linea['precio_max_clp'], 20000)
-        self.assertEqual(linea['precio_unitario_clp'], 20000)
+        self.assertEqual(linea['precio_unitario_clp'], 10000)
         self.assertEqual(linea['precio_marketplace_clp'], 10000)
         self.assertEqual(linea['factor_mercado'], 2.0)
         self.assertEqual(linea['fuentes_n'], 1)
+        self.assertEqual(linea['url_producto'], 'https://www.autoplanet.cl/p/bujia')
 
     @override_settings(PRECIO_CONFIANZA_ENABLED=True, FACTOR_MERCADO_MAX=2.50)
     @patch(
@@ -238,13 +239,13 @@ class ResolverPrecioBandaTestCase(SimpleTestCase):
             'precio_unitario_clp': 0,
         }
         hits = [
-            self._hit('web', 8000),
-            self._hit('web', 12000, proveedor_nombre='AutoPlanet'),
+            self._hit('web', 8000, url_producto='https://www.refax.cl/p/1'),
+            self._hit('web', 12000, proveedor_nombre='AutoPlanet', url_producto='https://www.autoplanet.cl/p/2'),
             self._hit('historial', 14000),
         ]
         resolver_precio_linea(linea, hits, confianza_enabled=True)
         self.assertEqual(linea['fuentes_n'], 3)
-        self.assertEqual(linea['precio_unitario_clp'], linea['precio_max_clp'])
+        self.assertEqual(linea['precio_unitario_clp'], 14000)
         self.assertGreaterEqual(linea['precio_max_clp'], linea['precio_min_clp'])
         self.assertEqual(linea['certeza'], 'referencial')
 
@@ -258,7 +259,7 @@ class ResolverPrecioBandaTestCase(SimpleTestCase):
             'nombre': 'Filtro de aire',
             'precio_unitario_clp': 0,
         }
-        resolver_precio_linea(linea, [self._hit('web', 10000)], confianza_enabled=True)
+        resolver_precio_linea(linea, [self._hit('web', 10000, url_producto='https://www.autoplanet.cl/p/aire')], confianza_enabled=True)
         self.assertEqual(linea['factor_mercado'], 2.50)
         self.assertEqual(linea['precio_max_clp'], 25000)
 
@@ -274,6 +275,51 @@ class ResolverPrecioBandaTestCase(SimpleTestCase):
         )
         self.assertEqual(linea['precio_unitario_clp'], 38000)
         self.assertEqual(linea['certeza'], 'referencial')
+
+    @override_settings(PRECIO_CONFIANZA_ENABLED=True, FACTOR_MERCADO_MAX=2.50)
+    def test_web_sin_url_no_atribuye_precio(self):
+        linea = {'nombre': 'Filtro de aceite', 'precio_unitario_clp': 0}
+        resolver_precio_linea(
+            linea,
+            [self._hit('web', 8900, proveedor_nombre='Ciper')],
+            confianza_enabled=True,
+        )
+        self.assertEqual(linea['certeza'], 'sin_precio')
+        self.assertEqual(linea['precio_unitario_clp'], 0)
+        self.assertEqual(linea['motivo_sin_precio'], 'sin_referencia')
+
+    @override_settings(PRECIO_CONFIANZA_ENABLED=True, FACTOR_MERCADO_MAX=2.50)
+    @patch(
+        'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.resolver_precio.factor_mercado_categoria',
+        return_value=1.4,
+    )
+    def test_ciper_prensa_no_infla_unitario_con_factor(self, _factor):
+        linea = {
+            'nombre': 'Kit de embrague (disco, prensa y rodamiento de empuje)',
+            'precio_unitario_clp': 0,
+        }
+        resolver_precio_linea(
+            linea,
+            [self._hit(
+                'web',
+                447000,
+                proveedor_nombre='Ciper',
+                url_producto='https://www.ciper.cl/prensa-embrague-hyundai-gran-i10-12-2017-2019-861864-2/p',
+                nombre_producto='PRENSA EMBRAGUE HYUNDAI GRAN I10 1.2 2017-2019',
+            )],
+            confianza_enabled=True,
+        )
+        self.assertEqual(linea['precio_unitario_clp'], 447000)
+        self.assertEqual(linea['precio_marketplace_clp'], 447000)
+        self.assertEqual(linea['precio_max_clp'], 625800)
+        self.assertEqual(
+            linea['url_producto'],
+            'https://www.ciper.cl/prensa-embrague-hyundai-gran-i10-12-2017-2019-861864-2/p',
+        )
+        self.assertEqual(
+            linea['nombre_producto'],
+            'PRENSA EMBRAGUE HYUNDAI GRAN I10 1.2 2017-2019',
+        )
 
 
 class FactorTopeTestCase(TestCase):
@@ -307,6 +353,7 @@ class RepuestosPublicosWhitelistTestCase(SimpleTestCase):
             'tienda_ml': 'seller',
             'proveedor_nombre': 'Refax',
             'url_producto': 'https://ml.cl/x',
+            'nombre_producto': 'Bujía iridio aviso',
             'proveedor_id': 9,
             'precio_marketplace_clp': 12250,
             'factor_mercado': 2.0,
@@ -325,7 +372,8 @@ class RepuestosPublicosWhitelistTestCase(SimpleTestCase):
         self.assertEqual(pubs[0]['calidad'], 'oem')
         self.assertEqual(pubs[0]['imagen_url'], 'https://cdn.mecanimovil.cl/x.jpg')
         for secret in (
-            'tienda_ml', 'proveedor_nombre', 'url_producto', 'proveedor_id',
+            'tienda_ml', 'proveedor_nombre', 'url_producto', 'nombre_producto',
+            'proveedor_id',
             'precio_marketplace_clp', 'factor_mercado', 'certeza', 'fuentes_n',
             'alternativas', 'motivo_sin_precio', 'fuentes_detalle', 'opciones',
         ):

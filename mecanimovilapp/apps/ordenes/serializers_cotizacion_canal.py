@@ -31,6 +31,7 @@ class FuenteRepuestoSerializer(serializers.Serializer):
     dominio = serializers.CharField(required=False, allow_blank=True, default='')
     precio_clp = serializers.IntegerField(required=False, min_value=0, default=0)
     url = serializers.CharField(required=False, allow_blank=True, default='')
+    nombre = serializers.CharField(required=False, allow_blank=True, default='')
 
 
 class OpcionRepuestoSerializer(serializers.Serializer):
@@ -68,6 +69,7 @@ class RepuestoCotizacionSerializer(serializers.Serializer):
     tienda_ml = serializers.CharField(required=False, allow_blank=True, default='')
     proveedor_nombre = serializers.CharField(required=False, allow_blank=True, default='')
     url_producto = serializers.CharField(required=False, allow_blank=True, default='')
+    nombre_producto = serializers.CharField(required=False, allow_blank=True, default='')
     precio_estimado = serializers.BooleanField(required=False, default=True)
     precio_referencia_mercado = serializers.BooleanField(required=False, default=False)
     comentario = serializers.CharField(required=False, allow_blank=True, default='')

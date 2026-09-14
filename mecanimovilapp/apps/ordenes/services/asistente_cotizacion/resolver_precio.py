@@ -110,15 +110,32 @@ def _detalle_fuentes(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for hit in hits[:_MAX_FUENTES_DETALLE]:
         fuente = str(hit.get('fuente_marketplace') or '').strip()
         tienda = str(hit.get('proveedor_nombre') or hit.get('tienda_ml') or '').strip()
-        url = str(hit.get('url_producto') or '').strip()[:500]
-        out.append({
+        url = str(hit.get('url_producto') or hit.get('url') or '').strip()[:500]
+        nombre = str(hit.get('nombre_producto') or hit.get('nombre') or '').strip()[:200]
+        row = {
             'fuente': fuente[:40],
             'tienda': (tienda or _ETIQUETA_FUENTE.get(fuente) or 'Referencia')[:120],
             'dominio': _dominio_de_url(url)[:120],
-            'precio_clp': _to_int_clp(hit.get('precio_unitario_clp')),
+            'precio_clp': _to_int_clp(hit.get('precio_unitario_clp') or hit.get('precio_clp')),
             'url': url,
-        })
+        }
+        if nombre:
+            row['nombre'] = nombre
+        out.append(row)
     return out
+
+
+def _anotar_ficha_en_linea(next_rep: dict[str, Any], hit: dict[str, Any]) -> None:
+    """Deja en la línea el título y el link de la ficha que sostiene el monto."""
+    url = str(hit.get('url_producto') or hit.get('url') or '').strip()[:500]
+    if url:
+        next_rep['url_producto'] = url
+    nombre_prod = str(hit.get('nombre_producto') or hit.get('nombre') or '').strip()[:200]
+    if nombre_prod:
+        next_rep['nombre_producto'] = nombre_prod
+    tienda = str(hit.get('proveedor_nombre') or hit.get('tienda') or hit.get('tienda_ml') or '').strip()[:200]
+    if tienda and not str(next_rep.get('proveedor_nombre') or '').strip():
+        next_rep['proveedor_nombre'] = tienda
 
 
 def _aplicar_precio_legacy(next_rep: dict[str, Any], hits: list[dict[str, Any]]) -> None:
@@ -207,11 +224,15 @@ def _resolver_con_confianza(
             next_rep['factor_mercado'] = 1.0
             next_rep['fuentes_detalle'] = _detalle_fuentes(taller_hits[:1])
             next_rep.pop('motivo_sin_precio', None)
+            _anotar_ficha_en_linea(next_rep, taller_hits[0])
             aplicar_derivados_certeza(next_rep)
             return
 
     hist_hits = _hits_con_precio(hits, ('historial',))
-    mercado_hits = _hits_con_precio(hits, _FUENTES_MERCADO)
+    mercado_hits = [
+        h for h in _hits_con_precio(hits, _FUENTES_MERCADO)
+        if str(h.get('url_producto') or h.get('url') or '').strip()
+    ]
     reales = hist_hits + mercado_hits
     if not reales:
         next_rep['precio_unitario_clp'] = 0
@@ -254,16 +275,19 @@ def _resolver_con_confianza(
     precio_min = min(precios_ajustados)
     precio_max = max(precios_ajustados)
     if len(mercado_hits) == 1 and not hist_hits:
-        # 1 hit web: min = crudo, max = crudo × factor
+        # 1 hit web: min = crudo de ficha, max = crudo × factor (techo sugerido).
         precio_min = crudo_ml or precios_crudos[0]
         precio_max = precios_ajustados[0]
     next_rep['precio_min_clp'] = precio_min
     next_rep['precio_max_clp'] = precio_max
-    next_rep['precio_unitario_clp'] = precio_max
+    # El unitario es el de la ficha, no el techo con factor. El taller ve el
+    # link y decide si cobra más.
+    next_rep['precio_unitario_clp'] = precios_crudos[0]
     next_rep['fuentes_n'] = len(reales)
     next_rep['certeza'] = CERTEZA_REFERENCIAL
     next_rep['fuentes_detalle'] = _detalle_fuentes(reales)
     next_rep.pop('motivo_sin_precio', None)
+    _anotar_ficha_en_linea(next_rep, reales[0])
     if crudo_ml:
         next_rep['precio_marketplace_clp'] = crudo_ml
         next_rep['factor_mercado'] = factor

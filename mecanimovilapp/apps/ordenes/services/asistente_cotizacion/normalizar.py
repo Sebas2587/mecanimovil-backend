@@ -98,6 +98,7 @@ def normalizar_repuesto(item: Any, idx: int) -> dict[str, Any]:
         ('calidad', lambda v: str(v or '').strip()[:16]),
         ('pais_origen', lambda v: str(v or '').strip()[:40]),
         ('imagen_url', lambda v: str(v or '').strip()[:500]),
+        ('nombre_producto', lambda v: str(v or '').strip()[:200]),
         ('seleccion_cliente_en', lambda v: str(v or '').strip()[:40]),
     ):
         if key not in item or item.get(key) in (None, ''):

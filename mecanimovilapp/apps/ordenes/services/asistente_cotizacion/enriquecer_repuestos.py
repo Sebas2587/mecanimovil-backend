@@ -259,6 +259,9 @@ def _hit(
         'confianza': float(confianza or 0),
         'clave': clave or _clave_fuzzy(nombre),
     }
+    listing = (nombre or '').strip()[:200]
+    if listing:
+        out['nombre_producto'] = listing
     cal = str(calidad or '').strip().lower()
     if cal in ('original', 'oem', 'alternativo'):
         out['calidad'] = cal
@@ -781,7 +784,7 @@ def _candidatos_web_cache(
                 url_producto=str(row.url or '')[:500],
                 confianza=conf if conf > 0 else (_CONF_HISTORIAL if fuente == 'historial' else _CONF_WEB),
                 clave=clave_nombre or _clave_fuzzy(str(row.nombre_producto or '')),
-                calidad=str(row.calidad or ''),
+                calidad=str(getattr(row, 'calidad', '') or ''),
             )
             out.append(hit)
         return out
@@ -837,6 +840,11 @@ def _aplicar_hit_campos(next_rep: dict[str, Any], hit: dict[str, Any]) -> None:
     url_actual = str(next_rep.get('url_producto') or '').strip()
     if hit.get('url_producto') and (not url_actual or puede_reemplazar):
         next_rep['url_producto'] = hit['url_producto']
+
+    listing = str(hit.get('nombre_producto') or '').strip()[:200]
+    listing_actual = str(next_rep.get('nombre_producto') or '').strip()
+    if listing and (not listing_actual or puede_reemplazar):
+        next_rep['nombre_producto'] = listing
 
     if hit.get('proveedor_id') and (not next_rep.get('proveedor_id') or puede_reemplazar):
         next_rep['proveedor_id'] = hit['proveedor_id']
@@ -968,7 +976,21 @@ def enriquecer_repuestos_cotizacion(
 
         web_hit = None
         if usar_web and not grounded_taller and web_cands:
-            web_hit = _mejor_hit(nombre, web_cands, min_score=min_score_web_para(nombre))
+            from .busqueda_web_repuestos import _candidato_sirve_linea
+
+            web_ok = [
+                c for c in web_cands
+                if _candidato_sirve_linea(
+                    nombre,
+                    {
+                        'title': str(c.get('nombre_producto') or c.get('nombre') or ''),
+                        'content': '',
+                        'url': str(c.get('url_producto') or ''),
+                    },
+                    anio=anio_vehiculo,
+                )
+            ]
+            web_hit = _mejor_hit(nombre, web_ok, min_score=min_score_web_para(nombre))
             if web_hit:
                 hits.append(web_hit)
 

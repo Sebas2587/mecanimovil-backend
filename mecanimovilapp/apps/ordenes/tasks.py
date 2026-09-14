@@ -700,6 +700,8 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                     next_rep['proveedor_nombre'] = str(hit['tienda'])[:200]
                 if hit.get('url'):
                     next_rep['url_producto'] = str(hit['url'])[:500]
+                if hit.get('nombre_producto'):
+                    next_rep['nombre_producto'] = str(hit['nombre_producto'])[:200]
                 cal_hit = str(hit.get('calidad') or '').strip().lower()
                 if cal_hit in ('original', 'oem', 'alternativo'):
                     next_rep['calidad'] = cal_hit

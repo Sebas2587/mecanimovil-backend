@@ -457,6 +457,8 @@ _CAMPOS_PRECIO_CONFIRMADO = (
     'fuentes_n',
     'fuentes_detalle',
     'precio_referencia_mercado',
+    'url_producto',
+    'nombre_producto',
 )
 
 
@@ -535,9 +537,16 @@ def fusionar_repuestos_edicion(
             'calidad',
             'pais_origen',
             'url_producto',
+            'nombre_producto',
             'tienda_ml',
             'precio_estimado',
             'precio_referencia_mercado',
+            'fuentes_detalle',
+            'opciones',
+            'precio_marketplace_clp',
+            'precio_min_clp',
+            'precio_max_clp',
+            'factor_mercado',
         ):
             if key in prev:
                 merged[key] = prev[key]

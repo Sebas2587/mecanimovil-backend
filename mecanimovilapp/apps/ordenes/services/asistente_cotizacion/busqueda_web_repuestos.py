@@ -680,6 +680,96 @@ def _precio_en_rango(precio: int) -> bool:
     return minimo <= precio <= maximo
 
 
+_ANIO_RANGO_RE = re.compile(
+    r'\b((?:19|20)\d{2})\s*(?:-|–|/|a)\s*((?:19|20)\d{2})\b',
+    re.I,
+)
+_ANIO_SOLO_RE = re.compile(r'\b((?:19|20)\d{2})\b')
+_KIT_RE = re.compile(r'\b(kit|juego|set)\b')
+_COMPONENTE_EMBRAGUE = frozenset({
+    'prensa', 'plato', 'disco', 'collarin',
+    'rodamiento', 'empuje', 'piloto',
+})
+
+
+def _anio_vehiculo_int(anio: Any) -> int | None:
+    try:
+        y = int(str(anio).strip()[:4])
+    except (TypeError, ValueError):
+        return None
+    if 1980 <= y <= 2035:
+        return y
+    return None
+
+
+def _ficha_cubre_anio(texto: str, anio: Any) -> bool | None:
+    """True/False si la ficha declara años; None si no se puede saber."""
+    y = _anio_vehiculo_int(anio)
+    if y is None:
+        return None
+    raw = texto or ''
+    rangos: list[tuple[int, int]] = []
+    for match in _ANIO_RANGO_RE.finditer(raw):
+        a, b = int(match.group(1)), int(match.group(2))
+        if a > b:
+            a, b = b, a
+        if 1980 <= a <= 2035 and 1980 <= b <= 2035:
+            rangos.append((a, b))
+    if rangos:
+        return any(lo <= y <= hi for lo, hi in rangos)
+    solos = [
+        int(m.group(1)) for m in _ANIO_SOLO_RE.finditer(raw)
+        if 1980 <= int(m.group(1)) <= 2035
+    ]
+    if not solos:
+        return None
+    return y in solos
+
+
+def _pieza_exige_compatibilidad(nombre_linea: str) -> bool:
+    n = _norm(nombre_linea)
+    return any(k in n for k in (
+        'embrague', 'clutch', 'volante', 'inyector', 'turbo',
+        'kit distribucion', 'kit de distribucion',
+    ))
+
+
+def _linea_es_kit(nombre_linea: str) -> bool:
+    n = _norm(nombre_linea)
+    return bool(_KIT_RE.search(n)) or (
+        'embrague' in n and 'disco' in n and 'prensa' in n
+    )
+
+
+def _ficha_cubre_pieza(nombre_linea: str, titulo_ficha: str) -> bool:
+    """Un kit no se cotiza con la ficha de un solo componente (prensa ≠ kit)."""
+    linea = _norm(nombre_linea)
+    ficha = _norm(titulo_ficha)
+    if not linea or not ficha:
+        return True
+    ficha_kit = bool(_KIT_RE.search(ficha))
+    if _linea_es_kit(nombre_linea) and not ficha_kit:
+        if any(c in ficha for c in _COMPONENTE_EMBRAGUE):
+            return False
+    return True
+
+
+def _candidato_sirve_linea(
+    nombre_linea: str,
+    candidato: dict[str, Any],
+    *,
+    anio: Any = None,
+) -> bool:
+    titulo = str(candidato.get('title') or '')
+    texto = f'{titulo} {candidato.get("content") or ""}'
+    if not _ficha_cubre_pieza(nombre_linea, titulo):
+        return False
+    cubre_anio = _ficha_cubre_anio(texto, anio)
+    if cubre_anio is False and _pieza_exige_compatibilidad(nombre_linea):
+        return False
+    return True
+
+
 def _tienda_por_dominio(dominio: str) -> str:
     host = (dominio or '').lower()
     for fuente in _fuentes():
@@ -723,14 +813,14 @@ URLs:
 {lista_urls}
 
 Reglas:
-1. Si la página muestra un producto de la MISMA CATEGORÍA del repuesto, reporta encontrado=true con el mejor candidato visible (aunque no diga el modelo exacto).
-2. compatibilidad: alta si menciona marca/modelo del auto; media si es la categoría correcta; baja si es genérico del rubro. NO uses encontrado=false solo por duda de año.
+1. encontrado=true SOLO si la ficha es LA MISMA PIEZA. Kit de embrague ≠ prensa, disco o collarín sueltos. Un componente no cotiza el kit.
+2. compatibilidad: alta si nombra marca+modelo y el año del auto entra en el rango de la ficha; media si nombra el modelo sin año; baja si es genérico. Si la ficha declara años y el auto queda fuera, encontrado=false.
 3. marca_repuesto = marca de la PIEZA (Bosch, Gates, Wahler, NGK, etc.). Si no aparece, "". NUNCA "GENÉRICO", "Original", "N/A" ni la marca del auto.
 4. calidad = original (genuino/agencia), oem (equivalente OEM) o alternativo (aftermarket). Solo si el texto lo decide. Si duda, "".
 5. pais_origen = país de la PIEZA (China, Japón, Alemania…) solo si dice hecho/fabricado/importado/origen. No uses Chile por ser la tienda.
 6. tienda = quién vende. En una tienda es el sitio (AutoPlanet, Refax, …); en una publicación de marketplace es el nombre del vendedor visible, no "Mercado Libre". url = link de la publicación o producto leído (https).
-7. precio_clp = entero CLP sin puntos ni símbolo.
-8. Solo encontrado=false si en las páginas NO hay ningún producto relacionado a ese repuesto.
+7. precio_clp = entero CLP sin puntos ni símbolo: el "Precio:" de ESA ficha, no relacionados ni cuotas. Si el monto es irreal para la pieza (kit 3 piezas ~35.000–280.000, prensa suelta ~8.000–120.000), encontrado=false para ese candidato.
+8. Solo encontrado=false si en las páginas NO hay ningún producto de la misma pieza.
 9. Responde SOLO JSON válido (sin markdown):
 {{
   "resultados": [
@@ -814,6 +904,7 @@ def _validar_resultado(
     urls_ok: set[str],
     whitelist: set[str],
     dominios_solicitados: set[str] | None = None,
+    anio: Any = None,
 ) -> dict[str, Any] | None:
     motivo = _motivo_descarte(
         item,
@@ -834,6 +925,20 @@ def _validar_resultado(
     if not precio_ok:
         precio = 0
     nombre_prod = str(item.get('nombre_producto') or item.get('nombre_buscado') or '').strip()[:200]
+    nombre_linea = str(item.get('nombre_buscado') or nombre_prod)
+    if not _candidato_sirve_linea(
+        nombre_linea,
+        {
+            'title': nombre_prod,
+            'content': str(item.get('content') or ''),
+            'url': url,
+        },
+        anio=anio,
+    ):
+        return None
+    if precio and not _precio_plausible_para_linea(nombre_linea, precio):
+        precio = 0
+        precio_ok = False
     attrs = _atributos_desde_texto(
         nombre_prod,
         item.get('marca_repuesto'),
@@ -873,8 +978,9 @@ def _validar_resultado(
 
 
 TAVILY_EXTRACT_QUERY = (
+    'Precio de venta Precio $ CLP oferta '
     'marca tipo original OEM alternativo genuino '
-    'procedencia país origen fabricado hecho en importado precio CLP'
+    'procedencia país origen fabricado hecho en importado'
 )
 TAVILY_SCORE_MIN = 0.35
 
@@ -1011,7 +1117,7 @@ def _tavily_extraer(urls: list[str], *, timeout: int = 25) -> dict[str, str]:
                 'extract_depth': 'basic',
                 'format': 'text',
                 'query': TAVILY_EXTRACT_QUERY,
-                'chunks_per_source': 4,
+                'chunks_per_source': 6,
             },
             timeout=timeout,
         )
@@ -1039,15 +1145,80 @@ def _tavily_extraer(urls: list[str], *, timeout: int = 25) -> dict[str, str]:
 # El `$` no puede venir pegado a letras: así "US$ 45.00" y "R$ 45,00" no entran
 # como pesos. "CLP" sí es prefijo válido, con o sin signo.
 _PRECIO_CLP_RE = re.compile(r'(?:(?<![A-Za-z])\$|CLP\s?\$?)\s?([\d.,]{4,10})')
+_PRECIO_ETIQUETA_RE = re.compile(
+    r'(?:precio(?:\s+(?:habitual|de\s+oferta|oferta|ahora|web|exclusivo))?)\s*:?\s*'
+    r'(?:CLP\s*)?\$?\s*([\d.,]{3,12})',
+    re.I,
+)
+_CUOTA_RE = re.compile(r'\d+\s*cuotas?\s+de\s+\$?\s*[\d.]+', re.I)
+
+# Bandas de mercado Chile (aftermarket). Evitan SKU, id de ficha o un kit de
+# camioneta colado en el snippet de una prensa de auto chico.
+_BANDA_DEFAULT = (1_000, 3_000_000)
+_BANDAS_CATEGORIA = {
+    'filtros': (2_000, 90_000),
+    'bujias': (1_200, 50_000),
+    'aceites': (3_000, 90_000),
+    'frenos': (6_000, 200_000),
+    'refrigeracion': (4_000, 250_000),
+    'bateria': (30_000, 250_000),
+    'suspension': (15_000, 250_000),
+    'distribucion': (20_000, 400_000),
+    'electrico': (8_000, 500_000),
+    'embrague': (8_000, 280_000),
+    'otros': _BANDA_DEFAULT,
+}
+_BANDA_KIT_EMBRAGUE = (35_000, 280_000)
+_BANDA_COMPONENTE_EMBRAGUE = (8_000, 120_000)
 
 
-def _precio_desde_texto(texto: str) -> int:
-    """Extrae el primer precio CLP plausible de un snippet ('$ 18.990 ...')."""
-    for m in _PRECIO_CLP_RE.finditer(texto or ''):
+def _banda_precio_linea(nombre: str) -> tuple[int, int]:
+    n = _norm(nombre)
+    if not n:
+        return _BANDA_DEFAULT
+    if any(k in n for k in ('embrague', 'clutch')):
+        if _linea_es_kit(nombre):
+            return _BANDA_KIT_EMBRAGUE
+        if any(c in n for c in _COMPONENTE_EMBRAGUE):
+            return _BANDA_COMPONENTE_EMBRAGUE
+        return _BANDA_KIT_EMBRAGUE
+    from .categoria_repuesto import clasificar_categoria
+
+    return _BANDAS_CATEGORIA.get(clasificar_categoria(nombre), _BANDA_DEFAULT)
+
+
+def _precio_plausible_para_linea(nombre: str, precio: int) -> bool:
+    if not _precio_en_rango(precio):
+        return False
+    lo, hi = _banda_precio_linea(nombre)
+    return lo <= precio <= hi
+
+
+def _precio_desde_texto(texto: str, nombre_linea: str = '') -> int:
+    """Precio de VENTA de la ficha. No el primer `$` del snippet (relacionados/cuotas)."""
+    raw = texto or ''
+    for m in _PRECIO_ETIQUETA_RE.finditer(raw):
         val = _to_int_clp(m.group(1))
-        if _precio_en_rango(val):
+        if _precio_plausible_para_linea(nombre_linea, val):
             return val
-    return 0
+    limpio = _CUOTA_RE.sub(' ', raw)
+    en_banda: list[int] = []
+    for m in _PRECIO_CLP_RE.finditer(limpio):
+        val = _to_int_clp(m.group(1))
+        if _precio_plausible_para_linea(nombre_linea, val):
+            en_banda.append(val)
+    if not en_banda:
+        return 0
+    if len(en_banda) == 1:
+        return en_banda[0]
+    lo, hi = min(en_banda), max(en_banda)
+    if hi > lo * 3:
+        # Relacionados mezclados: el de esta ficha suele ser el etiquetado; si
+        # no hubo etiqueta, el de la banda de la línea (no el kit de camioneta).
+        piso, techo = _banda_precio_linea(nombre_linea)
+        centro = (piso + techo) / 2
+        return min(en_banda, key=lambda v: abs(v - centro))
+    return en_banda[0]
 
 
 def _construir_prompt_tavily(
@@ -1067,7 +1238,7 @@ def _construir_prompt_tavily(
             f'  [{i}] título: {c["title"]}\n      url: {c["url"]}'
             f'\n      casa especialista: {"sí" if _es_de_especialista(c) else "no"}'
             # El texto se recorta, así que el monto detectado va explícito.
-            f'\n      precio detectado: {_precio_desde_texto(c.get("content") or "") or "ninguno"}'
+            f'\n      precio detectado: {_precio_desde_texto(c.get("content") or "", nombre) or "ninguno"}'
             f'\n      texto: {c["content"][:400]}'
             for i, c in enumerate(candidatos)
         ) or '  (sin resultados)'
@@ -1083,13 +1254,15 @@ Servicio: {servicio_nombre or 'N/A'}
 {cuerpo}
 
 Para cada repuesto, elige el MEJOR candidato de su lista (por índice):
-1. Prioridad: (a) ficha que nombre el modelo y la variante/motor de ESTE vehículo, (b) ficha que nombre marca y modelo, (c) casa especialista por sobre retail generalista. Si ningún candidato nombra el vehículo, sirve uno de la categoría correcta (hay insumos universales).
-2. compatibilidad: alta si el título/texto nombra modelo y variante/motor/año; media si nombra la marca o es un insumo universal; baja si es genérico.
+1. encontrado=true SOLO si la ficha es LA MISMA PIEZA. Kit de embrague ≠ prensa, disco o collarín sueltos. Un componente no cotiza el kit. Prioridad: (a) ficha que nombre el modelo y la variante/motor de ESTE vehículo, (b) ficha que nombre marca y modelo, (c) casa especialista por sobre retail generalista. Insumos universales (filtro, aceite) sí pueden ser de la categoría sin el modelo.
+2. compatibilidad: alta si el título/texto nombra modelo y el año del auto entra en el rango de la ficha; media si nombra la marca o es un insumo universal; baja si es genérico. Si la ficha declara años y el auto queda fuera, encontrado=false.
 3. marca_repuesto = marca de la PIEZA visible en título/texto (Bosch, Gates, NGK, etc.). Si no aparece, "". NUNCA "Original", "GENÉRICO" ni la marca del auto.
 4. calidad = original (genuino/agencia), oem (equivalente OEM) o alternativo (aftermarket / tipo alternativo). Solo si el texto lo decide. Si duda o nombra dos, "".
 5. pais_origen = país de fabricación/procedencia de la pieza solo si el texto lo dice (hecho en, importado de, origen). No uses Chile por ser la tienda.
-6. precio_clp = precio CLP del candidato elegido (entero, sin puntos/símbolo). Si el candidato trae "precio detectado", usa ese monto salvo que el texto muestre claramente otro precio de la pieza; si no hay ninguno, 0.
-6b. Entre candidatos de la misma categoría, PREFIERE el que tenga precio; uno sin monto solo si ninguno lo trae (una línea sin precio no le sirve al taller).
+6. precio_clp = el precio de VENTA de ESA ficha, el que está junto a "Precio:". Entero CLP sin puntos ni símbolo. NO uses precios de productos relacionados, cuotas, REF, EAN ni SKU. Si el candidato trae "precio detectado", úsalo solo si coincide con "Precio:" o es el único monto creíble de esa ficha.
+6b. Entre candidatos de la misma pieza, PREFIERE el que tenga precio; uno sin monto solo si ninguno lo trae.
+6c. Si el monto es irreal para esa pieza (prensa/disco/collarín de auto liviano fuera de 8.000–120.000, kit de 3 piezas fuera de 35.000–280.000), descarta ese candidato.
+6d. Si la línea es un KIT y hay un candidato "kit … 3 piezas" compatible con el auto, elígelo. Un componente no cotiza el kit.
 7. url = EXACTAMENTE la url del candidato elegido (cópiala tal cual, no la modifiques).
 8. tienda = quién vende: el sitio según el dominio (AutoPlanet, Refax, etc.) o, si es una publicación de marketplace, el nombre del vendedor visible en el texto.
 9. Si NINGÚN candidato de la lista sirve, encontrado=false.
@@ -1184,6 +1357,13 @@ def _escalera_consultas(
         + ([f'{nucleo} {marca}'.strip()] if nucleo and marca else [])
         + ([nucleo] if nucleo else [])
     )
+    if _linea_es_kit(nombre):
+        kit_nucleo = 'kit embrague' if 'embrague' in _norm(nombre) else nucleo or nombre
+        kit_qs = [
+            ' '.join(p for p in [kit_nucleo, '3 piezas', marca, completo, cilindraje] if p),
+            ' '.join(p for p in [kit_nucleo, marca, _modelo_busqueda(modelo)] if p),
+        ]
+        consultas = kit_qs + consultas
     vistas: set[str] = set()
     out: list[str] = []
     for q in consultas:
@@ -1209,6 +1389,8 @@ def _ordenar_candidatos(
     *,
     tokens_vehiculo: list[str] | None = None,
     priorizar_precio: bool = False,
+    nombre_linea: str = '',
+    anio: Any = None,
 ) -> list[dict[str, Any]]:
     """Manda la ficha que nombra a ESTE auto; después la casa y el precio.
 
@@ -1228,12 +1410,14 @@ def _ordenar_candidatos(
     tokens = tokens_vehiculo or []
 
     def rango(c: dict[str, Any]) -> tuple[int, ...]:
+        no_sirve = 0 if _candidato_sirve_linea(nombre_linea, c, anio=anio) else 1
         calce = -_calce_vehiculo(c, tokens)
-        sin_precio = 0 if _precio_desde_texto(c.get('content') or '') else 1
+        precio = _precio_desde_texto(c.get('content') or '', nombre_linea)
+        sin_precio = 0 if precio else 1
         no_esp = 0 if _es_de_especialista(c) else 1
         if priorizar_precio:
-            return (sin_precio, calce, no_esp)
-        return (calce, no_esp, sin_precio)
+            return (no_sirve, sin_precio, calce, no_esp)
+        return (no_sirve, calce, no_esp, sin_precio)
 
     return sorted(candidatos, key=rango)
 
@@ -1263,6 +1447,7 @@ def _hits_desde_candidatos(
     tokens_veh,
     *,
     marca_vehiculo: str = '',
+    anio: Any = None,
 ) -> dict[str, dict[str, Any]]:
     """Arma hits desde snippet/ficha Tavily cuando el monto ya es legible."""
     out: dict[str, dict[str, Any]] = {}
@@ -1274,9 +1459,10 @@ def _hits_desde_candidatos(
             (
                 (c, precio)
                 for c, precio in (
-                    (c, _precio_desde_texto(c.get('content') or '')) for c in candidatos
+                    (c, _precio_desde_texto(c.get('content') or '', nombre)) for c in candidatos
                 )
-                if _precio_en_rango(precio)
+                if _precio_plausible_para_linea(nombre, precio)
+                and _candidato_sirve_linea(nombre, c, anio=anio)
             ),
             None,
         )
@@ -1347,10 +1533,16 @@ def _buscar_repuestos_web_tavily(
             nombre, marca=marca, modelo=modelo, cilindraje=cilindraje, casas=casas_marca,
         ):
             crudos += _candidatos_validos(query, whitelist)
-            # Basta una ficha con monto legible: no se gastan más búsquedas.
-            if any(_precio_desde_texto(c.get('content') or '') for c in crudos):
+            # Sigue buscando hasta una ficha de LA MISMA pieza con monto creíble.
+            if any(
+                _candidato_sirve_linea(nombre, c, anio=anio)
+                and _precio_desde_texto(c.get('content') or '', nombre) > 0
+                for c in crudos
+            ):
                 break
-        candidatos = _ordenar_candidatos(crudos, tokens_vehiculo=tokens_veh)[:4]
+        candidatos = _ordenar_candidatos(
+            crudos, tokens_vehiculo=tokens_veh, nombre_linea=nombre, anio=anio,
+        )[:4]
         if candidatos:
             candidatos_por_nombre[nombre] = candidatos
 
@@ -1362,12 +1554,12 @@ def _buscar_repuestos_web_tavily(
     # título. Si ningún candidato del repuesto muestra monto, se piden dos más
     # para rescatar el precio antes de dejar la línea sin nada.
     urls_ficha: list[str] = []
-    for candidatos in candidatos_por_nombre.values():
+    for nombre, candidatos in candidatos_por_nombre.items():
         if not candidatos:
             continue
-        urls_ficha.append(candidatos[0]['url'])
-        if all(not _precio_desde_texto(c.get('content') or '') for c in candidatos):
-            urls_ficha.extend(c['url'] for c in candidatos[1:3])
+        servir = [c for c in candidatos if _candidato_sirve_linea(nombre, c, anio=anio)]
+        pool = servir or candidatos
+        urls_ficha.extend(c['url'] for c in pool[:3])
     fichas = _tavily_extraer(urls_ficha)
     if fichas:
         for nombre, candidatos in candidatos_por_nombre.items():
@@ -1376,11 +1568,15 @@ def _buscar_repuestos_web_tavily(
                 for c in candidatos
             ]
             candidatos_por_nombre[nombre] = _ordenar_candidatos(
-                con_ficha, tokens_vehiculo=tokens_veh, priorizar_precio=True,
+                con_ficha,
+                tokens_vehiculo=tokens_veh,
+                priorizar_precio=True,
+                nombre_linea=nombre,
+                anio=anio,
             )
 
     preliminar = _hits_desde_candidatos(
-        candidatos_por_nombre, tokens_veh, marca_vehiculo=marca,
+        candidatos_por_nombre, tokens_veh, marca_vehiculo=marca, anio=anio,
     )
     if preliminar and all(
         _clave_fuzzy(nombre) in preliminar for nombre in candidatos_por_nombre
@@ -1445,8 +1641,15 @@ def _buscar_repuestos_web_tavily(
         nombre_prod = str(item.get('nombre_producto') or item.get('nombre_buscado') or '').strip()[:200]
         if not nombre_prod:
             continue
+        nombre_linea = str(item.get('nombre_buscado') or '')
         candidatos_linea = _candidatos_de_linea(candidatos_por_nombre, item.get('nombre_buscado'))
         snippet = next((c.get('content') or '' for c in candidatos_linea if c['url'] == url), '')
+        if not _candidato_sirve_linea(
+            nombre_linea,
+            {'title': nombre_prod, 'content': snippet, 'url': url},
+            anio=anio,
+        ):
+            continue
         attrs = _atributos_desde_texto(
             nombre_prod,
             snippet,
@@ -1459,23 +1662,30 @@ def _buscar_repuestos_web_tavily(
             marca_it = attrs['marca_repuesto']
         calidad_it, pais_it = _calidad_pais_de_item(item, attrs)
         precio = _to_int_clp(item.get('precio_clp'))
-        if not _precio_en_rango(precio):
-            precio = _precio_desde_texto(snippet)
-        if not _precio_en_rango(precio):
-            # El modelo eligió una ficha sin monto habiendo otra con precio:
+        if not _precio_plausible_para_linea(nombre_linea, precio):
+            precio = _precio_desde_texto(snippet, nombre_linea)
+        if not _precio_plausible_para_linea(nombre_linea, precio):
+            # El modelo eligió una ficha sin monto creíble habiendo otra:
             # se cambia de candidato, porque una línea en $0 no sirve.
             with_precio = [
-                (c, _precio_desde_texto(c.get('content') or ''))
+                (c, _precio_desde_texto(c.get('content') or '', nombre_linea))
                 for c in candidatos_linea if c['url'] != url
             ]
-            alternativa = next(((c, p) for c, p in with_precio if _precio_en_rango(p)), None)
+            alternativa = next(
+                (
+                    (c, p) for c, p in with_precio
+                    if _precio_plausible_para_linea(nombre_linea, p)
+                    and _candidato_sirve_linea(nombre_linea, c, anio=anio)
+                ),
+                None,
+            )
             if alternativa:
                 candidato_alt, precio = alternativa
                 url = candidato_alt['url']
                 host = _dominio_de_url(url)
                 nombre_prod = str(candidato_alt.get('title') or nombre_prod)[:200]
                 item['tienda'] = ''
-        if not _precio_en_rango(precio):
+        if not _precio_plausible_para_linea(nombre_linea, precio):
             # Guardar la línea en $0 envenena el cache y la deja igual sin
             # referencia; se descarta para que el rescate del snippet la tome.
             continue
@@ -1522,7 +1732,7 @@ def _buscar_repuestos_web_tavily(
     # la línea en $0, así que se arma el hit sin pasar por el modelo.
     rescatadas = 0
     for clave, hit in _hits_desde_candidatos(
-        candidatos_por_nombre, tokens_veh, marca_vehiculo=marca,
+        candidatos_por_nombre, tokens_veh, marca_vehiculo=marca, anio=anio,
     ).items():
         if clave in out:
             continue
@@ -1691,6 +1901,7 @@ def _buscar_repuestos_web_url_context(
             urls_ok=urls_ok,
             whitelist=whitelist,
             dominios_solicitados=dominios_solicitados,
+            anio=anio,
         )
         if not validado:
             motivo = _motivo_descarte(

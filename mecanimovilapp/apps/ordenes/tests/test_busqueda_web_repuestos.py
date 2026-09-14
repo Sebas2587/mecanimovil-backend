@@ -1108,6 +1108,48 @@ class PrecioDesdeTextoTestCase(SimpleTestCase):
         self.assertEqual(bw._precio_desde_texto('CLP 34.990'), 34990)
         self.assertEqual(bw._precio_desde_texto('CLP$ 34.990'), 34990)
 
+    def test_usa_precio_etiquetado_no_el_de_un_relacionado(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        snippet = (
+            'KIT EMBRAGUE 5 PIEZAS CHEVROLET LUV 3.2 $447.000 Ver compatibilidad '
+            'PRENSA EMBRAGUE HYUNDAI GRAN I10 1.2 2017-2019 Precio: $23.170'
+        )
+        self.assertEqual(
+            bw._precio_desde_texto(snippet, 'Prensa embrague Hyundai Grand i10'),
+            23170,
+        )
+
+    def test_kit_no_acepta_precio_de_prensa_ni_outlier(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        kit = 'Kit de embrague (disco, prensa y rodamiento de empuje)'
+        self.assertFalse(bw._precio_plausible_para_linea(kit, 23170))
+        self.assertFalse(bw._precio_plausible_para_linea(kit, 447000))
+        self.assertTrue(bw._precio_plausible_para_linea(kit, 89900))
+        self.assertEqual(
+            bw._precio_desde_texto('Precio: $89.900 En Stock', kit),
+            89900,
+        )
+        self.assertEqual(
+            bw._precio_desde_texto(
+                'KIT EMBRAGUE 5 PIEZAS LUV $447.000 Precio: $23.170',
+                kit,
+            ),
+            0,
+        )
+
+    def test_ignora_cuotas_y_toma_el_precio_de_lista(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        self.assertEqual(
+            bw._precio_desde_texto(
+                'Kit De Embrague Hyundai I10 Grand 1.2 $107.500 6 cuotas de $17.917 sin interés',
+                'Kit de embrague',
+            ),
+            107500,
+        )
+
     def test_ignora_montos_en_moneda_extranjera(self):
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
 
@@ -1148,6 +1190,57 @@ class AtributosFichaTavilyTestCase(SimpleTestCase):
         self.assertEqual(hit['pais_origen'], 'China')
         self.assertEqual(hit['precio_clp'], 18990)
 
+    def test_kit_embrague_no_toma_ficha_de_prensa(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        linea = 'Kit de embrague (disco, prensa y rodamiento de empuje)'
+        titulo = 'PRENSA EMBRAGUE HYUNDAI GRAN I10 1.2 2017-2019'
+        self.assertFalse(bw._ficha_cubre_pieza(linea, titulo))
+        self.assertFalse(bw._ficha_cubre_anio(titulo, 2016))
+        self.assertTrue(bw._ficha_cubre_anio(titulo, 2018))
+        self.assertTrue(bw._ficha_cubre_pieza(
+            linea,
+            'KIT EMBRAGUE HYUNDAI GRAND I10 1.2 2014-2017',
+        ))
+
+        out = bw._hits_desde_candidatos(
+            {
+                linea: [{
+                    'title': titulo,
+                    'url': 'https://www.ciper.cl/prensa-embrague-hyundai-gran-i10-12-2017-2019-861864-2/p',
+                    'content': 'PRENSA EMBRAGUE HYUNDAI GRAN I10 1.2 2017-2019 $447.000',
+                }],
+            },
+            ['hyundai', 'grand', 'i10'],
+            marca_vehiculo='Hyundai',
+            anio=2016,
+        )
+        self.assertEqual(out, {})
+
+    def test_kit_ciper_tres_piezas_llena_la_linea(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        linea = 'Kit de embrague (disco, prensa y rodamiento de empuje)'
+        out = bw._hits_desde_candidatos(
+            {
+                linea: [{
+                    'title': 'KIT EMBRAGUE 3 PIEZAS HYUNDAI GRAN I10 1.2 2014-2018',
+                    'url': 'https://www.ciper.cl/kit-embrague-3-piezas-hyundai-gran-i10-12-2014-2018-866844/p',
+                    'content': (
+                        'KIT EMBRAGUE 5 PIEZAS CHEVROLET LUV $447.000 '
+                        'Precio: $89.900 En Stock GRAN I10 2016'
+                    ),
+                }],
+            },
+            ['hyundai', 'grand', 'i10'],
+            marca_vehiculo='Hyundai',
+            anio=2016,
+        )
+        self.assertEqual(len(out), 1)
+        hit = next(iter(out.values()))
+        self.assertEqual(hit['precio_clp'], 89900)
+        self.assertIn('kit-embrague-3-piezas', hit['url'])
+
     def test_no_usa_la_marca_del_auto_como_marca_de_pieza(self):
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
 
@@ -1178,7 +1271,7 @@ class AtributosFichaTavilyTestCase(SimpleTestCase):
 
         self.assertIn('marca', seen.get('query', '').lower())
         self.assertIn('origen', seen.get('query', '').lower())
-        self.assertEqual(seen.get('chunks_per_source'), 4)
+        self.assertEqual(seen.get('chunks_per_source'), 6)
 
 
 class CoberturaPreciosComunesTests(SimpleTestCase):
@@ -1194,6 +1287,20 @@ class CoberturaPreciosComunesTests(SimpleTestCase):
         )
         normas = [bw._norm(q) for q in qs]
         self.assertIn('filtro aceite', normas)
+
+    def test_escalera_kit_busca_tres_piezas_primero(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        qs = bw._escalera_consultas(
+            'Kit de embrague',
+            marca='Hyundai',
+            modelo='Grand i10',
+            cilindraje='1.2',
+            casas=[],
+        )
+        self.assertTrue(qs)
+        self.assertIn('3 piezas', qs[0].lower())
+        self.assertIn('hyundai', qs[0].lower())
 
     def test_match_nucleo_de_pieza_comun(self):
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
