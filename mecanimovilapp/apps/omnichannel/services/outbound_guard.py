@@ -58,6 +58,11 @@ CHANNEL_DISCONNECTED_MESSAGE = (
     'para enviar mensajes. Mientras tanto puedes compartir el link de la cotización.'
 )
 
+CLIENTE_SIN_CANAL_MESSAGE = (
+    'El cliente no está en un canal conectado. '
+    'Comparte el link por WhatsApp o cópialo para enviarlo después.'
+)
+
 ENTREGA_APP = 'app'
 ENTREGA_SESION_META = 'sesion_meta'
 ENTREGA_WHATSAPP_TEMPLATE = 'whatsapp_template'
@@ -143,6 +148,17 @@ def validate_omnichannel_outbound(conversation) -> None:
         return
     code, message = _window_copy(conversation.source_channel, bool(last_inbound))
     raise OutboundBlockedError(code, message)
+
+
+def plan_entrega_cotizacion_libre() -> EntregaPlan:
+    """Cliente nuevo / sin conversación: no hay entrega automática."""
+    return EntregaPlan(
+        via=ENTREGA_LINK_PUBLICO,
+        should_send_meta=False,
+        use_template=False,
+        code='sin_canal',
+        message=CLIENTE_SIN_CANAL_MESSAGE,
+    )
 
 
 def plan_entrega_cotizacion(conversation) -> EntregaPlan:

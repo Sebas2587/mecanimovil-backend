@@ -300,3 +300,60 @@ class VentanaAtencionEntregaTests(TestCase):
         resp = client.post(f'/api/chat/conversations/{self.conversation.id}/enviar-aviso/')
         self.assertEqual(resp.status_code, 403)
         mock_delay.assert_not_called()
+
+    def test_enviar_cotizacion_libre_entrega_link_y_pendiente_compartir(self):
+        cot = CotizacionCanal.objects.create(
+            es_libre=True,
+            taller=self.taller,
+            creado_por=self.user,
+            estado='borrador',
+            modalidad='taller',
+            cliente_nombre='Sebastián',
+            cliente_telefono='+56911112222',
+            servicio_nombre='Diagnóstico',
+            mano_obra_clp=35000,
+            total_clp=35000,
+        )
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+        resp = client.post(f'/api/ordenes/cotizaciones-canal/{cot.id}/enviar/')
+        self.assertEqual(resp.status_code, 200, resp.content)
+        data = resp.json()
+        self.assertEqual(data['entrega_via'], ENTREGA_LINK_PUBLICO)
+        self.assertTrue(data['share_url'])
+        self.assertTrue(data['entrega_mensaje'])
+        self.assertEqual(data['cotizacion']['entrega_via'], ENTREGA_LINK_PUBLICO)
+        self.assertTrue(data['cotizacion']['entrega_pendiente_compartir'])
+        cot.refresh_from_db()
+        self.assertEqual(cot.estado, 'enviada')
+        self.assertEqual((cot.metadata or {}).get('entrega_canal'), ENTREGA_LINK_PUBLICO)
+        self.assertEqual((cot.metadata or {}).get('entrega_canal_motivo'), 'sin_canal')
+
+    def test_cotizacion_libre_vieja_sin_metadata_sigue_pendiente_hasta_visto(self):
+        from mecanimovilapp.apps.ordenes.serializers_cotizacion_canal import (
+            CotizacionCanalSerializer,
+        )
+
+        cot = CotizacionCanal.objects.create(
+            es_libre=True,
+            taller=self.taller,
+            creado_por=self.user,
+            estado='enviada',
+            modalidad='taller',
+            cliente_nombre='Ana',
+            servicio_nombre='Alineación',
+            mano_obra_clp=20000,
+            total_clp=20000,
+            token='tok-libre-vieja',
+            enviada_en=timezone.now(),
+            metadata={},
+        )
+        data = CotizacionCanalSerializer(cot).data
+        self.assertEqual(data['entrega_via'], ENTREGA_LINK_PUBLICO)
+        self.assertTrue(data['entrega_pendiente_compartir'])
+        self.assertTrue(data['share_url'])
+
+        cot.visto_en = timezone.now()
+        cot.save(update_fields=['visto_en'])
+        data_vista = CotizacionCanalSerializer(cot).data
+        self.assertFalse(data_vista['entrega_pendiente_compartir'])

@@ -948,6 +948,17 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             if cotizacion.conversation_id:
                 message = crear_mensaje_actualizacion_cotizacion(cotizacion, request.user)
                 plan = entregar_mensaje_cotizacion_meta(cotizacion, message)
+            else:
+                from mecanimovilapp.apps.omnichannel.services.outbound_guard import (
+                    plan_entrega_cotizacion_libre,
+                )
+                from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
+                    aplicar_plan_entrega_cotizacion,
+                )
+
+                plan = plan_entrega_cotizacion_libre()
+                aplicar_plan_entrega_cotizacion(cotizacion, plan)
+                cotizacion.refresh_from_db()
             serialized = CotizacionCanalSerializer(cotizacion).data
             return Response({
                 'cotizacion': serialized,
@@ -975,10 +986,18 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
                     actualizar_calificacion_desde_cotizacion,
                 )
                 actualizar_calificacion_desde_cotizacion(cotizacion, evento='enviada')
+            from mecanimovilapp.apps.omnichannel.services.outbound_guard import (
+                plan_entrega_cotizacion_libre,
+            )
+
+            serialized = CotizacionCanalSerializer(cotizacion).data
+            plan = plan_entrega_cotizacion_libre()
             return Response({
-                'cotizacion': CotizacionCanalSerializer(cotizacion).data,
+                'cotizacion': serialized,
                 'message_id': None,
-                'share_url': cotizacion.url_publica,
+                'share_url': serialized.get('share_url') or cotizacion.url_publica,
+                'entrega_via': serialized.get('entrega_via') or plan.via,
+                'entrega_mensaje': plan.message,
             })
 
         try:

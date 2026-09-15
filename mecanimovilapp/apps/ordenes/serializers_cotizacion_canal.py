@@ -148,7 +148,7 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
     def get_share_url(self, obj) -> str | None:
         if obj.url_publica:
             return obj.url_publica
-        if obj.token and obj.es_libre:
+        if obj.token:
             from mecanimovilapp.apps.ordenes.services.cotizacion_publica import construir_url_publica_cotizacion
             return construir_url_publica_cotizacion(obj.token)
         return None
@@ -227,9 +227,17 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
 
     def get_entrega_via(self, obj) -> str | None:
         via = str(self._metadata_agente(obj).get('entrega_canal') or '').strip()
-        return via or None
+        if via:
+            return via
+        if obj.estado in ('enviada', 'aceptada', 'rechazada', 'expirada') and (
+            obj.es_libre or obj.conversation_id is None
+        ):
+            return 'link_publico'
+        return None
 
     def get_entrega_pendiente_compartir(self, obj) -> bool:
+        if obj.estado != 'enviada' or obj.visto_en:
+            return False
         via = self.get_entrega_via(obj)
         return via in ('link_publico', 'whatsapp_template')
 

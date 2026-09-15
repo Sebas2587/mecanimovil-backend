@@ -572,6 +572,18 @@ def enviar_cotizacion_libre(cotizacion: CotizacionCanal) -> CotizacionCanal:
 
     cerrar_reapertura_taller(cotizacion)
     persistir_documento_emitido(cotizacion)
+    from mecanimovilapp.apps.omnichannel.services.outbound_guard import (
+        plan_entrega_cotizacion_libre,
+    )
+
+    plan = plan_entrega_cotizacion_libre()
+    meta = dict(cotizacion.metadata or {})
+    meta['entrega_canal'] = plan.via
+    if plan.code:
+        meta['entrega_canal_motivo'] = plan.code
+    else:
+        meta.pop('entrega_canal_motivo', None)
+    cotizacion.metadata = meta
     cotizacion.save(
         update_fields=[
             'costo_repuestos_clp',
