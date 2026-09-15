@@ -17,6 +17,18 @@ logger = logging.getLogger(__name__)
 
 _JSON_FENCE = re.compile(r'```(?:json)?\s*([\s\S]*?)\s*```', re.IGNORECASE)
 
+MSG_GEMINI_TIMEOUT = (
+    'Gemini tardó demasiado en armar la cotización. Espera unos segundos e intenta de nuevo.'
+)
+MSG_GEMINI_CONEXION = 'Error de conexión con Gemini. Intenta de nuevo.'
+MSG_GEMINI_CUOTA = 'Gemini alcanzó el límite de consultas. Espera unos minutos.'
+MSG_GEMINI_SATURADO = 'Gemini está saturado en este momento. Espera unos segundos e intenta de nuevo.'
+MSG_GEMINI_FORMATO = 'Gemini respondió en un formato inesperado.'
+MSG_GEMINI_GENERICO = 'No se pudo generar la cotización en este momento.'
+MSG_GEMINI_TOKENS = (
+    'Gemini cortó la respuesta por límite de salida. Intenta con un servicio más específico.'
+)
+
 
 def asistente_cotizacion_habilitado() -> bool:
     return bool(getattr(settings, 'ASISTENTE_COTIZACION_IA_ENABLED', False)) or bool(
@@ -45,6 +57,62 @@ def _parse_json(text: str) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+def timeout_http_gemini(read_s: int) -> tuple[int, int]:
+    """Connect corto, read largo: la generación JSON no es un hang de red."""
+    return (8, max(10, int(read_s or 10)))
+
+
+def generation_config_gemini(
+    *,
+    temperature: float,
+    max_output: int,
+    response_json: bool = False,
+    thinking: bool = True,
+) -> dict[str, Any]:
+    cfg: dict[str, Any] = {
+        'temperature': temperature,
+        'maxOutputTokens': max_output,
+    }
+    if response_json:
+        cfg['responseMimeType'] = 'application/json'
+    # Gemini 3.x piensa por defecto; sin "minimal" una cotización JSON
+    # supera el timeout de 15s y el cliente ve "Error de conexión".
+    if thinking:
+        cfg['thinkingConfig'] = {'thinkingLevel': 'minimal'}
+    return cfg
+
+
+def texto_candidato_gemini(body: dict[str, Any] | None) -> str | None:
+    """Junta el texto útil y omite partes `thought` (Gemini 3)."""
+    if not isinstance(body, dict):
+        return None
+    cands = body.get('candidates') or []
+    if not cands or not isinstance(cands[0], dict):
+        return None
+    parts = (cands[0].get('content') or {}).get('parts') or []
+    textos: list[str] = []
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        if part.get('thought') is True:
+            continue
+        text = part.get('text')
+        if isinstance(text, str) and text.strip():
+            textos.append(text)
+    if textos:
+        return ''.join(textos)
+    return None
+
+
+def finish_reason_gemini(body: dict[str, Any] | None) -> str:
+    if not isinstance(body, dict):
+        return ''
+    cands = body.get('candidates') or []
+    if not cands or not isinstance(cands[0], dict):
+        return ''
+    return str(cands[0].get('finishReason') or cands[0].get('finish_reason') or '')
+
+
 def _llamar_gemini(prompt: str) -> tuple[dict[str, Any] | None, dict[str, int | str], str | None]:
     api_key = (getattr(settings, 'GEMINI_API_KEY', '') or '').strip()
     model = (
@@ -62,44 +130,82 @@ def _llamar_gemini(prompt: str) -> tuple[dict[str, Any] | None, dict[str, int | 
     if not api_key:
         return None, uso_vacio, 'El asistente IA no está configurado en el servidor (falta GEMINI_API_KEY).'
 
-    timeout = int(getattr(settings, 'ASISTENTE_COTIZACION_IA_TIMEOUT', 15) or 15)
+    timeout = int(getattr(settings, 'ASISTENTE_COTIZACION_IA_TIMEOUT', 45) or 45)
     max_retries = max(0, min(int(getattr(settings, 'GEMINI_RETRY_MAX', 2) or 2), 4))
     url = (
         f'https://generativelanguage.googleapis.com/v1beta/models/{model}:'
         f'generateContent?key={api_key}'
     )
-    payload = {
-        'contents': [{'parts': [{'text': prompt}]}],
-        'generationConfig': {
-            'temperature': 0.3,
-            'maxOutputTokens': 1800,
-            'responseMimeType': 'application/json',
-        },
-    }
+    usar_thinking = True
+
+    logger.info(
+        'Gemini cotización POST model=%s prompt_chars=%s timeout_read=%ss',
+        model,
+        len(prompt or ''),
+        timeout,
+    )
 
     for intento in range(max_retries + 1):
+        payload = {
+            'contents': [{'parts': [{'text': prompt}]}],
+            'generationConfig': generation_config_gemini(
+                temperature=0.3,
+                max_output=4096,
+                response_json=True,
+                thinking=usar_thinking,
+            ),
+        }
         try:
-            resp = requests.post(url, json=payload, timeout=timeout)
-        except requests.RequestException as exc:
-            # Timeout/red intermitente: reintentar. Fallar al primer intento gastaba
-            # tokens en el cliente (retry manual) sin reusar la misma llamada.
+            resp = requests.post(url, json=payload, timeout=timeout_http_gemini(timeout))
+        except requests.ConnectTimeout as exc:
             if intento < max_retries:
                 logger.warning(
-                    'Gemini cotización intento %s/%s falló (%s); reintenta',
+                    'Gemini cotización connect timeout intento %s/%s (%s); reintenta',
                     intento + 1,
                     max_retries + 1,
                     exc,
                 )
                 time.sleep(min(4, max(1, 2 ** intento)))
                 continue
-            return None, uso_vacio, 'Error de conexión con Gemini. Intenta de nuevo.'
+            return None, uso_vacio, MSG_GEMINI_CONEXION
+        except (requests.ReadTimeout, requests.Timeout) as exc:
+            # Cortar a los 15s y reintentar 3 veces nunca deja terminar la generación.
+            logger.warning(
+                'Gemini cotización read timeout (%ss) intento %s/%s: %s',
+                timeout,
+                intento + 1,
+                max_retries + 1,
+                exc,
+            )
+            return None, uso_vacio, MSG_GEMINI_TIMEOUT
+        except requests.RequestException as exc:
+            if intento < max_retries:
+                logger.warning(
+                    'Gemini cotización red intento %s/%s falló (%s); reintenta',
+                    intento + 1,
+                    max_retries + 1,
+                    exc,
+                )
+                time.sleep(min(4, max(1, 2 ** intento)))
+                continue
+            return None, uso_vacio, MSG_GEMINI_CONEXION
 
         if resp.status_code == 200:
             try:
                 body = resp.json()
-                text = body['candidates'][0]['content']['parts'][0]['text']
-            except (KeyError, IndexError, TypeError, ValueError):
-                return None, uso_vacio, 'Gemini respondió en un formato inesperado.'
+            except ValueError:
+                return None, uso_vacio, MSG_GEMINI_FORMATO
+            text = texto_candidato_gemini(body)
+            if not text:
+                reason = finish_reason_gemini(body)
+                logger.warning(
+                    'Gemini cotización sin texto finish=%s body=%s',
+                    reason,
+                    str(body)[:400],
+                )
+                if 'MAX_TOKEN' in reason.upper():
+                    return None, uso_vacio, MSG_GEMINI_TOKENS
+                return None, uso_vacio, MSG_GEMINI_FORMATO
 
             meta = body.get('usageMetadata') or {}
             uso = {
@@ -108,17 +214,35 @@ def _llamar_gemini(prompt: str) -> tuple[dict[str, Any] | None, dict[str, int | 
                 'tokens_total': int(meta.get('totalTokenCount') or 0),
                 'modelo': model,
             }
-            return _parse_json(text), uso, None
+            parsed = _parse_json(text)
+            if parsed is None:
+                logger.warning('Gemini cotización JSON inválido chars=%s', len(text))
+                return None, uso, MSG_GEMINI_FORMATO
+            logger.info(
+                'Gemini cotización ok tokens_in=%s tokens_out=%s',
+                uso['tokens_entrada'],
+                uso['tokens_salida'],
+            )
+            return parsed, uso, None
 
-        if resp.status_code == 429 and intento < max_retries:
+        logger.warning(
+            'Gemini cotización HTTP %s body=%s',
+            resp.status_code,
+            (resp.text or '')[:400],
+        )
+        if resp.status_code == 400 and usar_thinking:
+            usar_thinking = False
+            continue
+        if resp.status_code in (429, 503) and intento < max_retries:
             time.sleep(min(10, max(2, 2 ** intento)))
             continue
-
         if resp.status_code == 429:
-            return None, uso_vacio, 'Gemini alcanzó el límite de consultas. Espera unos minutos.'
-        return None, uso_vacio, 'No se pudo generar la cotización en este momento.'
+            return None, uso_vacio, MSG_GEMINI_CUOTA
+        if resp.status_code == 503:
+            return None, uso_vacio, MSG_GEMINI_SATURADO
+        return None, uso_vacio, MSG_GEMINI_GENERICO
 
-    return None, uso_vacio, 'No se pudo generar la cotización en este momento.'
+    return None, uso_vacio, MSG_GEMINI_GENERICO
 
 
 def _construir_prompt(ctx: dict[str, Any]) -> str:

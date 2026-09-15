@@ -226,6 +226,8 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
                 'desde_plantilla': True,
             }, status=status.HTTP_201_CREATED)
 
+        from django.core.cache import cache
+
         from mecanimovilapp.apps.suscripciones.cuotas_services import (
             CuotaAgotadaError,
             SinSuscripcionError,
@@ -233,16 +235,31 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
         )
         from mecanimovilapp.apps.suscripciones.models import ConsumoFeatureMensual
 
-        resultado = generar_cotizacion_ia(
-            conversation=conversation,
-            servicio_nombre=data.get('servicio_nombre', ''),
-            descripcion_problema=data.get('descripcion_problema', ''),
-            modalidad=data.get('modalidad', 'taller'),
-            vehiculo=data.get('vehiculo') or {},
-            taller=taller,
-            enriquecer_ml=False,
-        )
+        lock_key = f'generar_ia:{taller.id}:{request.user.id}'
+        if not cache.add(lock_key, '1', timeout=90):
+            return Response({
+                'disponible': False,
+                'error': (
+                    'Ya hay una cotización IA en curso. '
+                    'Espera a que termine antes de volver a intentar.'
+                ),
+            }, status=status.HTTP_200_OK)
+
+        try:
+            resultado = generar_cotizacion_ia(
+                conversation=conversation,
+                servicio_nombre=data.get('servicio_nombre', ''),
+                descripcion_problema=data.get('descripcion_problema', ''),
+                modalidad=data.get('modalidad', 'taller'),
+                vehiculo=data.get('vehiculo') or {},
+                taller=taller,
+                enriquecer_ml=False,
+            )
+        except Exception:
+            cache.delete(lock_key)
+            raise
         if not resultado.get('disponible'):
+            cache.delete(lock_key)
             return Response(resultado, status=status.HTTP_200_OK)
 
         try:
@@ -251,6 +268,7 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
                 ConsumoFeatureMensual.FEATURE_COTIZACION_IA,
             )
         except (CuotaAgotadaError, SinSuscripcionError) as exc:
+            cache.delete(lock_key)
             return Response(exc.to_dict(), status=status.HTTP_403_FORBIDDEN)
 
         contenido = resultado['contenido'] or {}
@@ -343,6 +361,7 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             meta['busqueda_web_en'] = timezone.now().isoformat()
             cotizacion.metadata = meta
             cotizacion.save(update_fields=['metadata', 'actualizado_en'])
+        cache.delete(lock_key)
         return Response({
             **resultado,
             'cotizacion': CotizacionCanalSerializer(cotizacion).data,

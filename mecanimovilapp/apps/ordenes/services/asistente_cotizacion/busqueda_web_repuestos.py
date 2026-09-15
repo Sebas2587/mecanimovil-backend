@@ -38,7 +38,7 @@ from .enriquecer_repuestos import (
     _norm,
     _to_int_clp,
 )
-from .generador import _parse_json
+from .generador import generation_config_gemini, _parse_json, texto_candidato_gemini, timeout_http_gemini
 
 logger = logging.getLogger(__name__)
 
@@ -1105,27 +1105,47 @@ def _tavily_extraer(urls: list[str], *, timeout: int = 25) -> dict[str, str]:
     urls_unicas = [u for u in dict.fromkeys(urls) if u][:20]
     if not api_key or not urls_unicas:
         return {}
+    headers = {
+        'Authorization': f'Bearer {api_key}',
+        'Content-Type': 'application/json',
+    }
+    payload: dict[str, Any] = {
+        'urls': urls_unicas,
+        'extract_depth': 'basic',
+        'format': 'text',
+        'query': TAVILY_EXTRACT_QUERY,
+        'chunks_per_source': 6,
+    }
     try:
         resp = requests.post(
             TAVILY_EXTRACT_ENDPOINT,
-            headers={
-                'Authorization': f'Bearer {api_key}',
-                'Content-Type': 'application/json',
-            },
-            json={
-                'urls': urls_unicas,
-                'extract_depth': 'basic',
-                'format': 'text',
-                'query': TAVILY_EXTRACT_QUERY,
-                'chunks_per_source': 6,
-            },
+            headers=headers,
+            json=payload,
             timeout=timeout,
         )
+        # `query`/`chunks_per_source` no existen en todos los planes: 400 → extract plano.
+        if resp.status_code == 400:
+            logger.warning(
+                'tavily_extraer: status=400 body=%s; reintenta sin query',
+                (resp.text or '')[:300],
+            )
+            payload.pop('query', None)
+            payload.pop('chunks_per_source', None)
+            resp = requests.post(
+                TAVILY_EXTRACT_ENDPOINT,
+                headers=headers,
+                json=payload,
+                timeout=timeout,
+            )
     except requests.RequestException as exc:
         logger.warning('tavily_extraer: error de red: %s', exc)
         return {}
     if resp.status_code != 200:
-        logger.info('tavily_extraer: status=%s (se sigue con snippets de búsqueda)', resp.status_code)
+        logger.info(
+            'tavily_extraer: status=%s body=%s (se sigue con snippets de búsqueda)',
+            resp.status_code,
+            (resp.text or '')[:300],
+        )
         return {}
     try:
         data = resp.json()
@@ -1298,22 +1318,36 @@ def _gemini_generar(prompt: str, *, timeout: int, use_url_context: bool) -> dict
         f'https://generativelanguage.googleapis.com/v1beta/models/{model}:'
         f'generateContent?key={api_key}'
     )
-    payload: dict[str, Any] = {
-        'contents': [{'parts': [{'text': prompt}]}],
-        'generationConfig': {'temperature': 0.2, 'maxOutputTokens': 4096},
-    }
-    if use_url_context:
-        payload['tools'] = [{'url_context': {}}]
-        if getattr(settings, 'BUSQUEDA_WEB_REPUESTOS_GROUNDING', False):
-            payload['tools'].append({'google_search': {}})
-    # El modelo saturado (503) o con cuota momentánea (429) dejaba la cotización
-    # entera sin precios: se reintenta una vez antes de rendirse.
-    for intento in (1, 2):
+    usar_thinking = True
+    # 503/429/red: reintentar. Read timeout no: abortar una generación lenta la mata.
+    for intento in (1, 2, 3):
+        payload: dict[str, Any] = {
+            'contents': [{'parts': [{'text': prompt}]}],
+            'generationConfig': generation_config_gemini(
+                temperature=0.2,
+                max_output=4096,
+                thinking=usar_thinking,
+            ),
+        }
+        if use_url_context:
+            payload['tools'] = [{'url_context': {}}]
+            if getattr(settings, 'BUSQUEDA_WEB_REPUESTOS_GROUNDING', False):
+                payload['tools'].append({'google_search': {}})
         try:
-            resp = requests.post(endpoint, json=payload, timeout=timeout)
+            resp = requests.post(endpoint, json=payload, timeout=timeout_http_gemini(timeout))
+        except (requests.ReadTimeout, requests.Timeout) as exc:
+            if isinstance(exc, requests.ConnectTimeout) and intento < 3:
+                logger.warning('busqueda_web_repuestos: connect timeout Gemini: %s', exc)
+                time.sleep(_ESPERA_REINTENTO_GEMINI)
+                continue
+            logger.warning('busqueda_web_repuestos: timeout Gemini: %s', exc)
+            return None
         except requests.RequestException as exc:
             logger.warning('busqueda_web_repuestos: error de red Gemini: %s', exc)
-            return None
+            if intento == 3:
+                return None
+            time.sleep(_ESPERA_REINTENTO_GEMINI)
+            continue
         if resp.status_code == 200:
             try:
                 return resp.json()
@@ -1324,7 +1358,10 @@ def _gemini_generar(prompt: str, *, timeout: int, use_url_context: bool) -> dict
             resp.status_code,
             resp.text[:300],
         )
-        if resp.status_code not in (429, 503) or intento == 2:
+        if resp.status_code == 400 and usar_thinking:
+            usar_thinking = False
+            continue
+        if resp.status_code not in (429, 503) or intento == 3:
             return None
         time.sleep(_ESPERA_REINTENTO_GEMINI)
     return None
@@ -1604,12 +1641,13 @@ def _buscar_repuestos_web_tavily(
         )
         return preliminar
 
-    text = ''
-    try:
-        parts = body['candidates'][0]['content']['parts']
-        text = ''.join(str(p.get('text') or '') for p in parts if isinstance(p, dict) and p.get('text'))
-    except (KeyError, IndexError, TypeError):
-        return {}
+    text = texto_candidato_gemini(body) or ''
+    if not text:
+        logger.info(
+            'busqueda_web_repuestos[tavily]: Gemini vacío; se entregan %s hits de snippet',
+            len(preliminar),
+        )
+        return preliminar
     parsed = _parse_json(text) or {}
     resultados = parsed.get('resultados') or []
     if not isinstance(resultados, list) or not resultados:
@@ -1868,15 +1906,9 @@ def _buscar_repuestos_web_url_context(
             'busqueda_web_repuestos: sin url_context_metadata; fallback a dominios solicitados=%s',
             sorted(dominios_solicitados),
         )
-    text = ''
-    try:
-        parts = body['candidates'][0]['content']['parts']
-        text = ''.join(
-            str(p.get('text') or '')
-            for p in parts
-            if isinstance(p, dict) and p.get('text')
-        )
-    except (KeyError, IndexError, TypeError):
+    text = texto_candidato_gemini(body) or ''
+    if not text:
+        logger.info('busqueda_web_repuestos: respuesta sin texto descartada')
         return {}
 
     parsed = _parse_json(text)

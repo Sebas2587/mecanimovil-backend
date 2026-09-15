@@ -708,7 +708,8 @@ ASISTENTE_COTIZACION_GEMINI_MODEL = config(
     default='',
 )
 ASISTENTE_COTIZACION_IA_ENABLED = config('ASISTENTE_COTIZACION_IA_ENABLED', default=False, cast=bool)
-ASISTENTE_COTIZACION_IA_TIMEOUT = config('ASISTENTE_COTIZACION_IA_TIMEOUT', default=15, cast=int)
+# 45s: Gemini 3.x con prompt de catálogo/RAG supera los 15s y el cliente ve timeout.
+ASISTENTE_COTIZACION_IA_TIMEOUT = config('ASISTENTE_COTIZACION_IA_TIMEOUT', default=45, cast=int)
 # Cuotas mensuales por plan (IA, patente, mensajería). Default False hasta activar en prod.
 PLAN_CUOTAS_ENFORCEMENT_ENABLED = config('PLAN_CUOTAS_ENFORCEMENT_ENABLED', default=False, cast=bool)
 # Agente IA conversacional en chats (captura + cotización borrador). Default False hasta activar.

@@ -1339,6 +1339,39 @@ class AtributosFichaTavilyTestCase(SimpleTestCase):
         self.assertIn('origen', seen.get('query', '').lower())
         self.assertEqual(seen.get('chunks_per_source'), 6)
 
+    @override_settings(TAVILY_API_KEY='tvly-test')
+    def test_extract_reintenta_sin_query_si_tavily_400(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        payloads = []
+
+        def fake_post(url, **kwargs):
+            payloads.append(kwargs.get('json') or {})
+            resp = MagicMock()
+            if len(payloads) == 1:
+                resp.status_code = 400
+                resp.text = '{"error":"query not supported"}'
+                return resp
+            resp.status_code = 200
+            resp.json.return_value = {
+                'results': [{
+                    'url': 'https://articulo.mercadolibre.cl/MLC-1',
+                    'raw_content': 'Pastillas Bosch Precio $ 45990',
+                }],
+            }
+            return resp
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.requests.post',
+            side_effect=fake_post,
+        ):
+            out = bw._tavily_extraer(['https://articulo.mercadolibre.cl/MLC-1'])
+
+        self.assertEqual(len(payloads), 2)
+        self.assertIn('query', payloads[0])
+        self.assertNotIn('query', payloads[1])
+        self.assertIn('https://articulo.mercadolibre.cl/MLC-1', out)
+
 
 class CoberturaPreciosComunesTests(SimpleTestCase):
     def test_escalera_termina_en_el_nombre_corto_sin_auto(self):

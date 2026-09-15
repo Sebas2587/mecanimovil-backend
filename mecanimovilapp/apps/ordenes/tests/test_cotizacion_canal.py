@@ -1004,7 +1004,31 @@ class HistorialCacheNoCruzaModelosTestCase(SimpleTestCase):
         self.assertIn('Cambio de aceite', prompt)
         self.assertIn('Toyota ≠ BAIC', prompt)
 
-    def test_gemini_reintenta_timeout_de_red(self):
+    def test_gemini_no_reintenta_read_timeout(self):
+        from unittest.mock import patch
+
+        import requests
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import generador
+
+        with patch.object(generador.settings, 'GEMINI_API_KEY', 'k'), patch.object(
+            generador.settings, 'GEMINI_RETRY_MAX', 2,
+        ), patch.object(
+            generador.settings, 'ASISTENTE_COTIZACION_IA_TIMEOUT', 45,
+        ), patch.object(generador.time, 'sleep') as sleep_mock, patch.object(
+            generador.requests,
+            'post',
+            side_effect=requests.ReadTimeout('read timed out'),
+        ) as post_mock:
+            data, _uso, err = generador._llamar_gemini('prompt')
+        self.assertIsNone(data)
+        self.assertIn('tardó demasiado', err)
+        self.assertEqual(post_mock.call_count, 1)
+        sleep_mock.assert_not_called()
+        timeout = post_mock.call_args.kwargs.get('timeout')
+        self.assertEqual(timeout, (8, 45))
+
+    def test_gemini_reintenta_connect_timeout(self):
         from unittest.mock import MagicMock, patch
 
         import requests
@@ -1022,12 +1046,62 @@ class HistorialCacheNoCruzaModelosTestCase(SimpleTestCase):
         ), patch.object(generador.time, 'sleep'), patch.object(
             generador.requests,
             'post',
-            side_effect=[requests.Timeout('read timed out'), ok],
+            side_effect=[requests.ConnectTimeout('connect'), ok],
         ) as post_mock:
             data, _uso, err = generador._llamar_gemini('prompt')
         self.assertIsNone(err)
         self.assertEqual(data.get('servicio_nombre'), 'X')
         self.assertEqual(post_mock.call_count, 2)
+
+    def test_gemini_mensaje_cuota_y_saturado(self):
+        from unittest.mock import MagicMock, patch
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import generador
+
+        resp_429 = MagicMock()
+        resp_429.status_code = 429
+        resp_429.text = 'quota'
+        resp_503 = MagicMock()
+        resp_503.status_code = 503
+        resp_503.text = 'overloaded'
+        with patch.object(generador.settings, 'GEMINI_API_KEY', 'k'), patch.object(
+            generador.settings, 'GEMINI_RETRY_MAX', 0,
+        ), patch.object(generador.requests, 'post', return_value=resp_429):
+            _d, _u, err = generador._llamar_gemini('prompt')
+        self.assertIn('límite de consultas', err)
+
+        with patch.object(generador.settings, 'GEMINI_API_KEY', 'k'), patch.object(
+            generador.settings, 'GEMINI_RETRY_MAX', 0,
+        ), patch.object(generador.requests, 'post', return_value=resp_503):
+            _d, _u, err = generador._llamar_gemini('prompt')
+        self.assertIn('saturado', err)
+
+    def test_gemini_omite_partes_thought_y_pide_thinking_minimal(self):
+        from unittest.mock import MagicMock, patch
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import generador
+
+        ok = MagicMock()
+        ok.status_code = 200
+        ok.json.return_value = {
+            'candidates': [{
+                'content': {'parts': [
+                    {'thought': True, 'text': 'razonando...'},
+                    {'text': '{"servicio_nombre":"Frenos"}'},
+                ]},
+            }],
+            'usageMetadata': {'promptTokenCount': 10, 'candidatesTokenCount': 20},
+        }
+        with patch.object(generador.settings, 'GEMINI_API_KEY', 'k'), patch.object(
+            generador.requests, 'post', return_value=ok,
+        ) as post_mock:
+            data, uso, err = generador._llamar_gemini('prompt')
+        self.assertIsNone(err)
+        self.assertEqual(data.get('servicio_nombre'), 'Frenos')
+        self.assertEqual(uso.get('tokens_entrada'), 10)
+        cfg = post_mock.call_args.kwargs['json']['generationConfig']
+        self.assertEqual(cfg['thinkingConfig']['thinkingLevel'], 'minimal')
+        self.assertEqual(cfg['maxOutputTokens'], 4096)
 
 
 class FuenteWebEnrichTestCase(SimpleTestCase):

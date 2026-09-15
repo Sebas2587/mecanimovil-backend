@@ -80,7 +80,7 @@ services:
       - key: ASISTENTE_COTIZACION_IA_ENABLED
         value: "True"
       - key: ASISTENTE_COTIZACION_IA_TIMEOUT
-        value: "15"
+        value: "45"
       - key: ASISTENTE_COTIZACION_GEMINI_MODEL
         value: "gemini-3.1-flash-lite"
       # Agente IA conversacional en chats (captura + cotización borrador). Activar tras migración pgvector.
@@ -179,6 +179,8 @@ services:
         value: "45"
       - key: ASISTENTE_COTIZACION_IA_ENABLED
         value: "True"
+      - key: ASISTENTE_COTIZACION_IA_TIMEOUT
+        value: "45"
       - key: ASISTENTE_COTIZACION_GEMINI_MODEL
         value: "gemini-3.1-flash-lite"
       - key: GEMINI_MODEL
