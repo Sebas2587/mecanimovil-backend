@@ -707,6 +707,11 @@ ASISTENTE_COTIZACION_GEMINI_MODEL = config(
     'ASISTENTE_COTIZACION_GEMINI_MODEL',
     default='',
 )
+# Si flash-lite responde 503 (high demand), cotizar con este modelo.
+ASISTENTE_COTIZACION_GEMINI_FALLBACKS = config(
+    'ASISTENTE_COTIZACION_GEMINI_FALLBACKS',
+    default='gemini-2.5-flash',
+)
 ASISTENTE_COTIZACION_IA_ENABLED = config('ASISTENTE_COTIZACION_IA_ENABLED', default=False, cast=bool)
 # 45s: Gemini 3.x con prompt de catálogo/RAG supera los 15s y el cliente ve timeout.
 ASISTENTE_COTIZACION_IA_TIMEOUT = config('ASISTENTE_COTIZACION_IA_TIMEOUT', default=45, cast=int)
@@ -733,6 +738,8 @@ AGENTE_IA_THINK_DELAY_SECONDS = config('AGENTE_IA_THINK_DELAY_SECONDS', default=
 AGENTE_IA_MULTIMODAL_MODEL = config('AGENTE_IA_MULTIMODAL_MODEL', default='gemini-2.5-flash')
 AGENTE_IA_MULTIMODAL_TIMEOUT = config('AGENTE_IA_MULTIMODAL_TIMEOUT', default=45, cast=int)
 GEMINI_RETRY_MAX = config('GEMINI_RETRY_MAX', default=2, cast=int)
+# Reintentos extra solo para 503 UNAVAILABLE (picos de demanda de Google).
+GEMINI_503_RETRY_MAX = config('GEMINI_503_RETRY_MAX', default=3, cast=int)
 # Cuota mensual de referencia para alertas de uso Gemini (Google AI Studio renueva cada mes calendario)
 GEMINI_LIMITE_TOKENS_MENSUAL = config('GEMINI_LIMITE_TOKENS_MENSUAL', default=1_000_000, cast=int)
 

@@ -328,12 +328,15 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             tokens_salida=resultado.get('tokens_salida') or 0,
             modelo_ia=resultado.get('modelo') or '',
             metadata={
-                'origen': 'ia',
+                'origen': 'respaldo' if resultado.get('respaldo_sin_gemini') else 'ia',
+                'respaldo_sin_gemini': bool(resultado.get('respaldo_sin_gemini')),
                 'valores_estimativos': bool(
                     resultado.get('valores_estimativos')
                     or contenido.get('valores_estimativos', True)
                 ) and not bool(contenido.get('precio_desde_catalogo')),
                 'precio_desde_catalogo': bool(contenido.get('precio_desde_catalogo')),
+                'precio_parcial_catalogo': bool(contenido.get('precio_parcial_catalogo')),
+                'servicios_lineas': contenido.get('servicios_lineas') or [],
             },
         )
         from django.utils import timezone

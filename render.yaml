@@ -83,6 +83,10 @@ services:
         value: "45"
       - key: ASISTENTE_COTIZACION_GEMINI_MODEL
         value: "gemini-3.1-flash-lite"
+      - key: ASISTENTE_COTIZACION_GEMINI_FALLBACKS
+        value: "gemini-2.5-flash"
+      - key: GEMINI_503_RETRY_MAX
+        value: "3"
       # Agente IA conversacional en chats (captura + cotización borrador). Activar tras migración pgvector.
       - key: AGENTE_IA_CHAT_ENABLED
         value: "True"
@@ -183,6 +187,8 @@ services:
         value: "45"
       - key: ASISTENTE_COTIZACION_GEMINI_MODEL
         value: "gemini-3.1-flash-lite"
+      - key: ASISTENTE_COTIZACION_GEMINI_FALLBACKS
+        value: "gemini-2.5-flash"
       - key: GEMINI_MODEL
         value: "gemini-3.1-flash-lite"
       # Misma clave que mecanimovil-api — sin esto el worker no genera respuestas del agente

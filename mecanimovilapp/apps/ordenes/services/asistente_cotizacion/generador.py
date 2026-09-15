@@ -113,14 +113,57 @@ def finish_reason_gemini(body: dict[str, Any] | None) -> str:
     return str(cands[0].get('finishReason') or cands[0].get('finish_reason') or '')
 
 
-def _llamar_gemini(prompt: str) -> tuple[dict[str, Any] | None, dict[str, int | str], str | None]:
-    api_key = (getattr(settings, 'GEMINI_API_KEY', '') or '').strip()
-    model = (
+def _modelo_gemini_primario() -> str:
+    return (
         getattr(settings, 'ASISTENTE_COTIZACION_GEMINI_MODEL', '')
         or getattr(settings, 'ASISTENTE_DIAGNOSTICO_GEMINI_MODEL', '')
         or getattr(settings, 'GEMINI_MODEL', 'gemini-3.1-flash-lite')
         or 'gemini-3.1-flash-lite'
     ).strip()
+
+
+def modelos_gemini_cotizacion(primario: str | None = None) -> list[str]:
+    """Modelo principal + respaldos si Google responde 503 high demand."""
+    primario = (primario or _modelo_gemini_primario()).strip()
+    raw = getattr(settings, 'ASISTENTE_COTIZACION_GEMINI_FALLBACKS', None)
+    if raw is None:
+        extra = (
+            getattr(settings, 'AGENTE_IA_MULTIMODAL_MODEL', '') or 'gemini-2.5-flash'
+        ).strip()
+        extras = [extra] if extra else []
+    elif isinstance(raw, (list, tuple)):
+        extras = [str(x).strip() for x in raw if str(x).strip()]
+    else:
+        extras = [p.strip() for p in str(raw).replace(';', ',').split(',') if p.strip()]
+    seen: set[str] = set()
+    out: list[str] = []
+    for nombre in [primario, *extras]:
+        if nombre and nombre not in seen:
+            seen.add(nombre)
+            out.append(nombre)
+    return out or [primario or 'gemini-3.1-flash-lite']
+
+
+def _modelo_admite_thinking_level(model: str) -> bool:
+    return 'gemini-3' in (model or '').lower()
+
+
+def _url_generate_content(model: str, api_key: str) -> str:
+    return (
+        f'https://generativelanguage.googleapis.com/v1beta/models/{model}:'
+        f'generateContent?key={api_key}'
+    )
+
+
+def _backoff_503_s(intento: int) -> float:
+    """Picos 503 de Google duran más que 2s; el cliente de cotización espera 90s."""
+    return min(12.0, max(3.0, 3.0 * (2 ** intento)))
+
+
+def _llamar_gemini(prompt: str) -> tuple[dict[str, Any] | None, dict[str, int | str], str | None]:
+    api_key = (getattr(settings, 'GEMINI_API_KEY', '') or '').strip()
+    modelos = modelos_gemini_cotizacion()
+    model = modelos[0]
     uso_vacio: dict[str, int | str] = {
         'tokens_entrada': 0,
         'tokens_salida': 0,
@@ -132,117 +175,160 @@ def _llamar_gemini(prompt: str) -> tuple[dict[str, Any] | None, dict[str, int | 
 
     timeout = int(getattr(settings, 'ASISTENTE_COTIZACION_IA_TIMEOUT', 45) or 45)
     max_retries = max(0, min(int(getattr(settings, 'GEMINI_RETRY_MAX', 2) or 2), 4))
-    url = (
-        f'https://generativelanguage.googleapis.com/v1beta/models/{model}:'
-        f'generateContent?key={api_key}'
-    )
-    usar_thinking = True
+    try:
+        retries_503 = int(getattr(settings, 'GEMINI_503_RETRY_MAX', 3))
+    except (TypeError, ValueError):
+        retries_503 = 3
+    retries_503 = max(0, min(retries_503, 6))
+    ultimo_error = MSG_GEMINI_GENERICO
 
-    logger.info(
-        'Gemini cotización POST model=%s prompt_chars=%s timeout_read=%ss',
-        model,
-        len(prompt or ''),
-        timeout,
-    )
-
-    for intento in range(max_retries + 1):
-        payload = {
-            'contents': [{'parts': [{'text': prompt}]}],
-            'generationConfig': generation_config_gemini(
-                temperature=0.3,
-                max_output=4096,
-                response_json=True,
-                thinking=usar_thinking,
-            ),
-        }
-        try:
-            resp = requests.post(url, json=payload, timeout=timeout_http_gemini(timeout))
-        except requests.ConnectTimeout as exc:
-            if intento < max_retries:
-                logger.warning(
-                    'Gemini cotización connect timeout intento %s/%s (%s); reintenta',
-                    intento + 1,
-                    max_retries + 1,
-                    exc,
-                )
-                time.sleep(min(4, max(1, 2 ** intento)))
-                continue
-            return None, uso_vacio, MSG_GEMINI_CONEXION
-        except (requests.ReadTimeout, requests.Timeout) as exc:
-            # Cortar a los 15s y reintentar 3 veces nunca deja terminar la generación.
-            logger.warning(
-                'Gemini cotización read timeout (%ss) intento %s/%s: %s',
-                timeout,
-                intento + 1,
-                max_retries + 1,
-                exc,
-            )
-            return None, uso_vacio, MSG_GEMINI_TIMEOUT
-        except requests.RequestException as exc:
-            if intento < max_retries:
-                logger.warning(
-                    'Gemini cotización red intento %s/%s falló (%s); reintenta',
-                    intento + 1,
-                    max_retries + 1,
-                    exc,
-                )
-                time.sleep(min(4, max(1, 2 ** intento)))
-                continue
-            return None, uso_vacio, MSG_GEMINI_CONEXION
-
-        if resp.status_code == 200:
-            try:
-                body = resp.json()
-            except ValueError:
-                return None, uso_vacio, MSG_GEMINI_FORMATO
-            text = texto_candidato_gemini(body)
-            if not text:
-                reason = finish_reason_gemini(body)
-                logger.warning(
-                    'Gemini cotización sin texto finish=%s body=%s',
-                    reason,
-                    str(body)[:400],
-                )
-                if 'MAX_TOKEN' in reason.upper():
-                    return None, uso_vacio, MSG_GEMINI_TOKENS
-                return None, uso_vacio, MSG_GEMINI_FORMATO
-
-            meta = body.get('usageMetadata') or {}
-            uso = {
-                'tokens_entrada': int(meta.get('promptTokenCount') or 0),
-                'tokens_salida': int(meta.get('candidatesTokenCount') or 0),
-                'tokens_total': int(meta.get('totalTokenCount') or 0),
-                'modelo': model,
-            }
-            parsed = _parse_json(text)
-            if parsed is None:
-                logger.warning('Gemini cotización JSON inválido chars=%s', len(text))
-                return None, uso, MSG_GEMINI_FORMATO
-            logger.info(
-                'Gemini cotización ok tokens_in=%s tokens_out=%s',
-                uso['tokens_entrada'],
-                uso['tokens_salida'],
-            )
-            return parsed, uso, None
-
-        logger.warning(
-            'Gemini cotización HTTP %s body=%s',
-            resp.status_code,
-            (resp.text or '')[:400],
+    for mi, modelo_actual in enumerate(modelos):
+        uso_vacio['modelo'] = modelo_actual
+        url = _url_generate_content(modelo_actual, api_key)
+        usar_thinking = _modelo_admite_thinking_level(modelo_actual)
+        intentos_modelo = retries_503 if mi == 0 else max(0, min(max_retries, 2))
+        timeout_modelo = timeout if mi == 0 else min(22, timeout)
+        logger.info(
+            'Gemini cotización POST model=%s prompt_chars=%s timeout_read=%ss intento_modelo=%s/%s',
+            modelo_actual,
+            len(prompt or ''),
+            timeout_modelo,
+            mi + 1,
+            len(modelos),
         )
-        if resp.status_code == 400 and usar_thinking:
-            usar_thinking = False
-            continue
-        if resp.status_code in (429, 503) and intento < max_retries:
-            time.sleep(min(10, max(2, 2 ** intento)))
-            continue
-        if resp.status_code == 429:
-            return None, uso_vacio, MSG_GEMINI_CUOTA
-        if resp.status_code == 503:
-            return None, uso_vacio, MSG_GEMINI_SATURADO
-        return None, uso_vacio, MSG_GEMINI_GENERICO
+        for intento in range(intentos_modelo + 1):
+            payload = {
+                'contents': [{'parts': [{'text': prompt}]}],
+                'generationConfig': generation_config_gemini(
+                    temperature=0.3,
+                    max_output=4096,
+                    response_json=True,
+                    thinking=usar_thinking,
+                ),
+            }
+            try:
+                resp = requests.post(url, json=payload, timeout=timeout_http_gemini(timeout_modelo))
+            except requests.ConnectTimeout as exc:
+                if intento < intentos_modelo:
+                    logger.warning(
+                        'Gemini cotización connect timeout model=%s intento %s/%s (%s); reintenta',
+                        modelo_actual,
+                        intento + 1,
+                        intentos_modelo + 1,
+                        exc,
+                    )
+                    time.sleep(min(4, max(1, 2 ** intento)))
+                    continue
+                ultimo_error = MSG_GEMINI_CONEXION
+                break
+            except (requests.ReadTimeout, requests.Timeout) as exc:
+                logger.warning(
+                    'Gemini cotización read timeout (%ss) model=%s intento %s/%s: %s',
+                    timeout_modelo,
+                    modelo_actual,
+                    intento + 1,
+                    intentos_modelo + 1,
+                    exc,
+                )
+                ultimo_error = MSG_GEMINI_TIMEOUT
+                break
+            except requests.RequestException as exc:
+                if intento < intentos_modelo:
+                    logger.warning(
+                        'Gemini cotización red model=%s intento %s/%s falló (%s); reintenta',
+                        modelo_actual,
+                        intento + 1,
+                        intentos_modelo + 1,
+                        exc,
+                    )
+                    time.sleep(min(4, max(1, 2 ** intento)))
+                    continue
+                ultimo_error = MSG_GEMINI_CONEXION
+                break
 
-    return None, uso_vacio, MSG_GEMINI_GENERICO
+            if resp.status_code == 200:
+                try:
+                    body = resp.json()
+                except ValueError:
+                    return None, uso_vacio, MSG_GEMINI_FORMATO
+                text = texto_candidato_gemini(body)
+                if not text:
+                    reason = finish_reason_gemini(body)
+                    logger.warning(
+                        'Gemini cotización sin texto model=%s finish=%s body=%s',
+                        modelo_actual,
+                        reason,
+                        str(body)[:400],
+                    )
+                    if 'MAX_TOKEN' in reason.upper():
+                        return None, uso_vacio, MSG_GEMINI_TOKENS
+                    return None, uso_vacio, MSG_GEMINI_FORMATO
+
+                meta = body.get('usageMetadata') or {}
+                uso = {
+                    'tokens_entrada': int(meta.get('promptTokenCount') or 0),
+                    'tokens_salida': int(meta.get('candidatesTokenCount') or 0),
+                    'tokens_total': int(meta.get('totalTokenCount') or 0),
+                    'modelo': modelo_actual,
+                }
+                parsed = _parse_json(text)
+                if parsed is None:
+                    logger.warning('Gemini cotización JSON inválido chars=%s', len(text))
+                    return None, uso, MSG_GEMINI_FORMATO
+                logger.info(
+                    'Gemini cotización ok model=%s tokens_in=%s tokens_out=%s',
+                    modelo_actual,
+                    uso['tokens_entrada'],
+                    uso['tokens_salida'],
+                )
+                return parsed, uso, None
+
+            logger.warning(
+                'Gemini cotización HTTP %s model=%s body=%s',
+                resp.status_code,
+                modelo_actual,
+                (resp.text or '')[:400],
+            )
+            if resp.status_code == 400 and usar_thinking:
+                usar_thinking = False
+                continue
+            if resp.status_code in (429, 503) and intento < intentos_modelo:
+                espera = (
+                    _backoff_503_s(intento)
+                    if resp.status_code == 503
+                    else min(10, max(2, 2 ** intento))
+                )
+                logger.warning(
+                    'Gemini cotización HTTP %s model=%s; espera %.0fs y reintenta',
+                    resp.status_code,
+                    modelo_actual,
+                    espera,
+                )
+                time.sleep(espera)
+                continue
+            if resp.status_code == 429:
+                ultimo_error = MSG_GEMINI_CUOTA
+                break
+            if resp.status_code == 503:
+                ultimo_error = MSG_GEMINI_SATURADO
+                break
+            return None, uso_vacio, MSG_GEMINI_GENERICO
+        if ultimo_error in (
+            MSG_GEMINI_SATURADO,
+            MSG_GEMINI_CUOTA,
+            MSG_GEMINI_CONEXION,
+            MSG_GEMINI_TIMEOUT,
+        ) and mi < len(modelos) - 1:
+            logger.warning(
+                'Gemini cotización %s en %s; prueba respaldo %s',
+                ultimo_error,
+                modelo_actual,
+                modelos[mi + 1],
+            )
+            continue
+        return None, uso_vacio, ultimo_error
+
+    return None, uso_vacio, ultimo_error
 
 
 def _construir_prompt(ctx: dict[str, Any]) -> str:
@@ -448,14 +534,57 @@ def generar_cotizacion_ia(
     latencia_ms = int((time.monotonic() - inicio) * 1000)
 
     if not crudo:
+        try:
+            from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.respaldo_cotizacion import (
+                contenido_respaldo_sin_gemini,
+            )
+
+            contenido = contenido_respaldo_sin_gemini(
+                ctx=ctx,
+                servicio_nombre=servicio_nombre,
+                descripcion_problema=descripcion_problema,
+                taller=taller,
+            )
+        except Exception as exc:
+            logger.warning('respaldo_sin_gemini falló: %s', exc, exc_info=True)
+            return {
+                'disponible': False,
+                'contenido': None,
+                'error': error or 'No se pudo generar la cotización.',
+                'latencia_ms': latencia_ms,
+                'tokens_entrada': int(uso.get('tokens_entrada') or 0),
+                'tokens_salida': int(uso.get('tokens_salida') or 0),
+                'modelo': str(uso.get('modelo') or ''),
+            }
+        logger.warning(
+            'Gemini no entregó cotización (%s); se abre borrador de respaldo marca=%s modelo=%s',
+            error,
+            ctx.get('marca'),
+            ctx.get('modelo'),
+        )
+        adv = list(contenido.get('advertencias') or [])
         return {
-            'disponible': False,
-            'contenido': None,
-            'error': error or 'No se pudo generar la cotización.',
+            'disponible': True,
+            'contenido': contenido,
+            'contenido_ia': {'origen': 'respaldo', 'motivo': error or 'gemini_unavailable'},
+            'contexto': {
+                'vehiculo_marca': ctx.get('marca', ''),
+                'vehiculo_modelo': ctx.get('modelo', ''),
+                'vehiculo_anio': ctx.get('anio', ''),
+                'vehiculo_patente': ctx.get('patente', ''),
+                'vehiculo_cilindraje': ctx.get('cilindraje', ''),
+                'tipo_motor': ctx.get('tipo_motor_efectivo', ''),
+                'tipo_motor_label': ctx.get('tipo_motor_efectivo_label', ''),
+                'aviso_motor': ctx.get('tipo_motor_conflicto_detalle', ''),
+            },
+            'error': None,
+            'aviso_respaldo': adv[0] if adv else None,
+            'respaldo_sin_gemini': True,
             'latencia_ms': latencia_ms,
             'tokens_entrada': int(uso.get('tokens_entrada') or 0),
             'tokens_salida': int(uso.get('tokens_salida') or 0),
-            'modelo': str(uso.get('modelo') or ''),
+            'modelo': 'respaldo',
+            'valores_estimativos': bool(contenido.get('valores_estimativos', True)),
         }
 
     contenido = normalizar_cotizacion_ia(crudo, ctx)

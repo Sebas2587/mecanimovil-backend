@@ -524,6 +524,42 @@ class NormalizarCotizacionTestCase(SimpleTestCase):
         self.assertIsNotNone(result.get('contenido'))
         self.assertEqual(result['contenido']['servicio_nombre'], 'Cambio filtro')
 
+    def test_generar_ia_abre_borrador_si_gemini_esta_caido(self):
+        from unittest.mock import MagicMock, patch
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import generador
+
+        with patch.object(generador, 'asistente_cotizacion_habilitado', return_value=True), patch.object(
+            generador,
+            'armar_contexto_cotizacion',
+            return_value={'marca': 'KIA', 'modelo': 'MORNING', 'servicio_nombre': 'Kit de embrague'},
+        ), patch.object(
+            generador, '_construir_prompt', return_value='prompt',
+        ), patch.object(
+            generador,
+            '_llamar_gemini',
+            return_value=(None, {'tokens_entrada': 0, 'tokens_salida': 0, 'modelo': 'x'}, 'saturado'),
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.aprendizaje_cotizacion.buscar_plantilla_reutilizable',
+            return_value=None,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.aplicar_catalogo.fusionar_contenido_con_catalogo_taller',
+            side_effect=lambda contenido, **_k: contenido,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos.enriquecer_repuestos_cotizacion',
+            side_effect=lambda reps, **_k: reps,
+        ):
+            result = generador.generar_cotizacion_ia(
+                taller=MagicMock(),
+                servicio_nombre='Kit de embrague y piola',
+                enriquecer_marketplace=False,
+            )
+        self.assertTrue(result.get('disponible'))
+        self.assertTrue(result.get('respaldo_sin_gemini'))
+        self.assertIsNone(result.get('error'))
+        self.assertIn('embrague', (result['contenido'].get('servicio_nombre') or '').lower())
+        self.assertGreaterEqual(len(result['contenido'].get('repuestos') or []), 1)
+
     def test_recalcular_totales(self):
         rep, mo, total = recalcular_totales(
             [{'cantidad': 2, 'precio_unitario_clp': 10000}],
@@ -1185,6 +1221,10 @@ class HistorialCacheNoCruzaModelosTestCase(SimpleTestCase):
         with patch.object(generador.settings, 'GEMINI_API_KEY', 'k'), patch.object(
             generador.settings, 'GEMINI_RETRY_MAX', 2,
         ), patch.object(
+            generador.settings, 'GEMINI_503_RETRY_MAX', 0,
+        ), patch.object(
+            generador.settings, 'ASISTENTE_COTIZACION_GEMINI_FALLBACKS', '',
+        ), patch.object(
             generador.settings, 'ASISTENTE_COTIZACION_IA_TIMEOUT', 45,
         ), patch.object(generador.time, 'sleep') as sleep_mock, patch.object(
             generador.requests,
@@ -1237,15 +1277,57 @@ class HistorialCacheNoCruzaModelosTestCase(SimpleTestCase):
         resp_503.text = 'overloaded'
         with patch.object(generador.settings, 'GEMINI_API_KEY', 'k'), patch.object(
             generador.settings, 'GEMINI_RETRY_MAX', 0,
+        ), patch.object(
+            generador.settings, 'GEMINI_503_RETRY_MAX', 0,
+        ), patch.object(
+            generador.settings, 'ASISTENTE_COTIZACION_GEMINI_FALLBACKS', '',
         ), patch.object(generador.requests, 'post', return_value=resp_429):
             _d, _u, err = generador._llamar_gemini('prompt')
         self.assertIn('límite de consultas', err)
 
         with patch.object(generador.settings, 'GEMINI_API_KEY', 'k'), patch.object(
             generador.settings, 'GEMINI_RETRY_MAX', 0,
+        ), patch.object(
+            generador.settings, 'GEMINI_503_RETRY_MAX', 0,
+        ), patch.object(
+            generador.settings, 'ASISTENTE_COTIZACION_GEMINI_FALLBACKS', '',
         ), patch.object(generador.requests, 'post', return_value=resp_503):
             _d, _u, err = generador._llamar_gemini('prompt')
         self.assertIn('saturado', err)
+
+    def test_gemini_503_usa_modelo_respaldo(self):
+        from unittest.mock import MagicMock, patch
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import generador
+
+        resp_503 = MagicMock()
+        resp_503.status_code = 503
+        resp_503.text = 'high demand'
+        ok = MagicMock()
+        ok.status_code = 200
+        ok.json.return_value = {
+            'candidates': [{'content': {'parts': [{'text': '{"servicio_nombre":"Kit embrague"}'}]}}],
+            'usageMetadata': {'promptTokenCount': 4, 'candidatesTokenCount': 8},
+        }
+        with patch.object(generador.settings, 'GEMINI_API_KEY', 'k'), patch.object(
+            generador.settings, 'ASISTENTE_COTIZACION_GEMINI_MODEL', 'gemini-3.1-flash-lite',
+        ), patch.object(
+            generador.settings, 'ASISTENTE_COTIZACION_GEMINI_FALLBACKS', 'gemini-2.5-flash',
+        ), patch.object(
+            generador.settings, 'GEMINI_RETRY_MAX', 0,
+        ), patch.object(
+            generador.settings, 'GEMINI_503_RETRY_MAX', 0,
+        ), patch.object(generador.time, 'sleep'), patch.object(
+            generador.requests, 'post', side_effect=[resp_503, ok],
+        ) as post_mock:
+            data, uso, err = generador._llamar_gemini('prompt')
+        self.assertIsNone(err)
+        self.assertEqual(data.get('servicio_nombre'), 'Kit embrague')
+        self.assertEqual(uso.get('modelo'), 'gemini-2.5-flash')
+        self.assertEqual(post_mock.call_count, 2)
+        urls = [c.args[0] for c in post_mock.call_args_list]
+        self.assertIn('gemini-3.1-flash-lite', urls[0])
+        self.assertIn('gemini-2.5-flash', urls[1])
 
     def test_gemini_omite_partes_thought_y_pide_thinking_minimal(self):
         from unittest.mock import MagicMock, patch
