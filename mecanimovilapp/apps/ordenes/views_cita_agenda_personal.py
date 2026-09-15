@@ -3,6 +3,7 @@ API de citas de agenda personal del proveedor.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -23,6 +24,7 @@ from mecanimovilapp.apps.ordenes.serializers_cita_agenda_personal import (
     CitaAgendaPersonalUpdateSerializer,
     EventoAgendaUnificadoSerializer,
 )
+from mecanimovilapp.apps.ordenes.services.aviso_cita_cliente import avisar_cliente_cita_agendada
 from mecanimovilapp.apps.ordenes.services.cita_agenda_personal import (
     actualizar_cita_personal,
     crear_cita_personal,
@@ -30,6 +32,8 @@ from mecanimovilapp.apps.ordenes.services.cita_agenda_personal import (
     validar_cita_personal_slot,
     _categorias_de_oferta,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class IsCitaAgendaPersonalOwner(permissions.BasePermission):
@@ -164,6 +168,7 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
         ser = CitaAgendaPersonalUpdateSerializer(data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
+        era_placeholder = bool(cita.horario_por_confirmar)
         try:
             cita = actualizar_cita_personal(
                 cita,
@@ -172,6 +177,14 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
             )
         except DjangoValidationError as e:
             raise ValidationError(e.message_dict if hasattr(e, 'message_dict') else str(e))
+        if era_placeholder and not cita.horario_por_confirmar:
+            try:
+                avisar_cliente_cita_agendada(cita, user=request.user)
+            except Exception:
+                logger.exception(
+                    'No se pudo avisar al cliente la cita %s tras confirmar horario',
+                    cita.id,
+                )
         return Response(CitaAgendaPersonalSerializer(cita).data)
 
     def destroy(self, request, pk=None):

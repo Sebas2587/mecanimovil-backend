@@ -16,6 +16,7 @@ WEB_PUSH_ALWAYS_TYPES = frozenset({
     'agente_ia_cotizacion_aceptada',
     'agente_ia_cotizacion_rechazada',
     'agente_ia_cita_confirmada',
+    'cita_agendada',
     'agente_ia_escalamiento',
     'agente_ia_procesando',
     'nueva_solicitud',
