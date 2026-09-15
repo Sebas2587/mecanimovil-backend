@@ -1008,6 +1008,7 @@ def enriquecer_repuestos_cotizacion(
                         'url': str(c.get('url_producto') or ''),
                     },
                     anio=anio_vehiculo,
+                    cilindraje=cilindraje,
                 )
             ]
             web_hit = _mejor_hit(nombre, web_ok, min_score=min_score_web_para(nombre))

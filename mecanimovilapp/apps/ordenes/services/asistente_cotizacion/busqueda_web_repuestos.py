@@ -6,12 +6,11 @@ Arquitectura (en orden de preferencia):
    la validación se queda solo con tiendas .cl que no sean listados. Gemini
    SOLO filtra compatibilidad y da formato al JSON final (sin tool
    `url_context`, sin re-fetch de páginas).
-2. Fallback (si no hay `TAVILY_API_KEY`, o Tavily no devuelve nada): Gemini
-   con `url_context` sobre URLs de tiendas construidas por nosotros. Es más
-   frágil (Mercado Libre bloquea slugs con marca; tiendas tipo SPA como
-   AutoPlanet no muestran productos en el HTML crudo, y el modelo a veces
-   "confirma" haber leído una URL que en realidad fue bloqueada), por eso
-   Tavily es la ruta preferida cuando hay API key configurada.
+2. Fallback (solo si no hay `TAVILY_API_KEY`): Gemini con `url_context` sobre
+   URLs de tiendas construidas por nosotros. Si Tavily ya corrió y no halló
+   ficha, un segundo round de Gemini no inventa el kit y suma 45–135s. Es más
+   frágil (Mercado Libre bloquea slugs; SPA como AutoPlanet no muestran el
+   producto en el HTML), por eso Tavily es la ruta cuando hay API key.
 
 `TAVILY_API_KEY` se obtiene gratis (sin tarjeta) en https://app.tavily.com
 """
@@ -44,6 +43,14 @@ logger = logging.getLogger(__name__)
 
 _CACHE_RPD_PREFIX = 'busqueda_web_repuestos_rpd:'
 _ESPERA_REINTENTO_GEMINI = 3.0
+_GEMINI_INTENTOS = 2
+# Un kit (Morning, i10, …) dispara 6–8 queries. Cada search Tavily puede irse
+# a 20s: eso solo ya supera los 3 min del overlay. Tres consultas bastan:
+# extract lee el precio aunque el snippet no lo traiga.
+_MAX_CONSULTAS_TAVILY_POR_LINEA = 3
+_TAVILY_SEARCH_TIMEOUT = 12
+_TAVILY_EXTRACT_TIMEOUT = 18
+_GEMINI_FORMATEO_TIMEOUT = 22
 _URL_RETRIEVAL_OK = frozenset({
     'URL_RETRIEVAL_STATUS_SUCCESS',
     'url_retrieval_status_success',
@@ -466,7 +473,15 @@ def _es_fuente_listado(fuente: dict[str, str]) -> bool:
     )
 
 
-_RE_PATH_NO_FICHA = re.compile(r'/(blog|blogs|noticias|glossary|pagina)/', re.IGNORECASE)
+_RE_PATH_NO_FICHA = re.compile(
+    r'/(blog|blogs|noticias|glossary|pagina|busqueda|buscar|search|listado|'
+    r'collections|categorias?|category)(/|$|\?)',
+    re.I,
+)
+_HOSTS_SOCIAL = (
+    'tiktok.com', 'facebook.com', 'instagram.com', 'youtube.com', 'youtu.be',
+    'x.com', 'twitter.com', 'pinterest.com',
+)
 
 
 # ccTLD de la región: un precio en pesos colombianos o euros no orienta nada.
@@ -502,14 +517,29 @@ def _es_tienda_chilena(url: str, whitelist: set[str], texto: str = '') -> bool:
 
 
 def _es_pagina_sin_ficha(url: str) -> bool:
-    """Home/blog/landing: puede citar montos que no son el precio de la pieza."""
+    """Home/blog/listado/red social: puede citar montos que no son el precio de la pieza."""
+    host = _dominio_de_url(url)
+    if host and any(host == h or host.endswith('.' + h) for h in _HOSTS_SOCIAL):
+        return True
     try:
-        path = urlparse(url).path or '/'
+        parsed = urlparse(url)
     except Exception:
         return True
+    path = parsed.path or '/'
     if path.strip('/') == '':
         return True
-    return bool(_RE_PATH_NO_FICHA.search(path))
+    if _RE_PATH_NO_FICHA.search(path):
+        return True
+    query = (parsed.query or '').lower()
+    # Filtro de catálogo (Boston, etc.): no es la ficha de un SKU.
+    if 'marca_vehiculo=' in query or 'modelo_vehiculo=' in query:
+        return True
+    path_l = path.lower()
+    if re.search(r'/marca/[^/]+/[^/]+/', path_l) and not re.search(
+        r'/(producto|product|products|p)/', path_l,
+    ):
+        return True
+    return False
 
 
 def _es_listado_sin_vendedor(url: str) -> bool:
@@ -702,11 +732,15 @@ def _anio_vehiculo_int(anio: Any) -> int | None:
     return None
 
 
-def _ficha_cubre_anio(texto: str, anio: Any) -> bool | None:
-    """True/False si la ficha declara años; None si no se puede saber."""
+def _ficha_cubre_anio(texto: str, anio: Any, *, holgura: int = 0) -> bool | None:
+    """True/False si la ficha declara años; None si no se puede saber.
+
+    `holgura`: años de borde (un Morning 2011 vs ficha 2012-2016). 0 = estricto.
+    """
     y = _anio_vehiculo_int(anio)
     if y is None:
         return None
+    extra = max(0, int(holgura or 0))
     raw = texto or ''
     rangos: list[tuple[int, int]] = []
     for match in _ANIO_RANGO_RE.finditer(raw):
@@ -716,14 +750,60 @@ def _ficha_cubre_anio(texto: str, anio: Any) -> bool | None:
         if 1980 <= a <= 2035 and 1980 <= b <= 2035:
             rangos.append((a, b))
     if rangos:
-        return any(lo <= y <= hi for lo, hi in rangos)
+        return any(lo - extra <= y <= hi + extra for lo, hi in rangos)
     solos = [
         int(m.group(1)) for m in _ANIO_SOLO_RE.finditer(raw)
         if 1980 <= int(m.group(1)) <= 2035
     ]
     if not solos:
         return None
-    return y in solos
+    if y in solos:
+        return True
+    if extra and any(abs(s - y) <= extra for s in solos):
+        return True
+    return False
+
+
+_CILINDRAJE_RE = re.compile(r'(?<!\d)([1-4])[.,\-]([0-9])(?!\d)')
+_MOTOR_CODE_RE = re.compile(r'\bg[0-9][a-z0-9]{2,4}\b', re.I)
+
+
+def _cilindraje_litros(raw: Any) -> str | None:
+    s = str(raw or '').strip().lower().replace(',', '.')
+    if not s:
+        return None
+    m = re.search(r'\b([1-4]\.[0-9])\b', s)
+    if m:
+        return m.group(1)
+    m = re.search(r'\b([1-4])([0-9])00(?:\s*cc)?\b', s)
+    if m:
+        return f'{m.group(1)}.{m.group(2)}'
+    return None
+
+
+def _ficha_cubre_cilindraje(texto: str, cilindraje: Any) -> bool | None:
+    """True/False si la ficha declara litros; None si no se puede saber.
+
+    Un kit Morning 1.2 no cotiza un 1.1 G4HG.
+    """
+    y = _cilindraje_litros(cilindraje)
+    if not y:
+        return None
+    found = {
+        f'{m.group(1)}.{m.group(2)}' for m in _CILINDRAJE_RE.finditer(texto or '')
+    }
+    if not found:
+        return None
+    return y in found
+
+
+def _codigo_motor_query(tipo_motor: str) -> str:
+    """G4HG sí va a la búsqueda; GASOLINA no."""
+    t = (tipo_motor or '').strip()
+    if _MOTOR_CODE_RE.fullmatch(t):
+        return t.upper()
+    m = _MOTOR_CODE_RE.search(t)
+    return m.group(0).upper() if m else ''
 
 
 def _pieza_exige_compatibilidad(nombre_linea: str) -> bool:
@@ -759,13 +839,18 @@ def _candidato_sirve_linea(
     candidato: dict[str, Any],
     *,
     anio: Any = None,
+    cilindraje: Any = None,
 ) -> bool:
     titulo = str(candidato.get('title') or '')
-    texto = f'{titulo} {candidato.get("content") or ""}'
+    texto = f'{titulo} {candidato.get("content") or ""} {candidato.get("url") or ""}'
     if not _ficha_cubre_pieza(nombre_linea, titulo):
         return False
-    cubre_anio = _ficha_cubre_anio(texto, anio)
-    if cubre_anio is False and _pieza_exige_compatibilidad(nombre_linea):
+    if not _pieza_exige_compatibilidad(nombre_linea):
+        return True
+    holgura = 1 if _linea_es_kit(nombre_linea) else 0
+    if _ficha_cubre_anio(texto, anio, holgura=holgura) is False:
+        return False
+    if _ficha_cubre_cilindraje(texto, cilindraje) is False:
         return False
     return True
 
@@ -778,6 +863,10 @@ def _tienda_por_dominio(dominio: str) -> str:
             return fuente['nombre']
     if 'mercadolibre' in host:
         return 'Mercado Libre'
+    for esp in _especialistas():
+        d = (esp.get('dominio') or '').lower().removeprefix('www.')
+        if d and (host == d or host.endswith('.' + d) or d in host):
+            return esp.get('nombre') or d
     # Tienda fuera de la lista configurada: nombre legible desde el dominio.
     raiz = host.removeprefix('www.').split('.')[0].replace('-', ' ').strip()
     return (raiz.title() or host)[:200]
@@ -905,6 +994,7 @@ def _validar_resultado(
     whitelist: set[str],
     dominios_solicitados: set[str] | None = None,
     anio: Any = None,
+    cilindraje: Any = None,
 ) -> dict[str, Any] | None:
     motivo = _motivo_descarte(
         item,
@@ -934,6 +1024,7 @@ def _validar_resultado(
             'url': url,
         },
         anio=anio,
+        cilindraje=cilindraje,
     ):
         return None
     if precio and not _precio_plausible_para_linea(nombre_linea, precio):
@@ -1031,7 +1122,7 @@ def _tavily_buscar_uno(
     query: str,
     *,
     max_results: int = 4,
-    timeout: int = 20,
+    timeout: int = _TAVILY_SEARCH_TIMEOUT,
 ) -> list[dict[str, str]]:
     """1 crédito Tavily (search_depth=basic). Devuelve [{title, url, content}].
 
@@ -1095,7 +1186,12 @@ def _tavily_buscar_uno(
 TAVILY_EXTRACT_ENDPOINT = 'https://api.tavily.com/extract'
 
 
-def _tavily_extraer(urls: list[str], *, timeout: int = 25) -> dict[str, str]:
+def _tavily_extraer(
+    urls: list[str],
+    *,
+    timeout: int = _TAVILY_EXTRACT_TIMEOUT,
+    extract_depth: str = 'basic',
+) -> dict[str, str]:
     """Ficha de producto: marca, calidad, origen y precio.
 
     Search + extract (no raw_content en search). `query` + chunks recorta la
@@ -1109,9 +1205,10 @@ def _tavily_extraer(urls: list[str], *, timeout: int = 25) -> dict[str, str]:
         'Authorization': f'Bearer {api_key}',
         'Content-Type': 'application/json',
     }
+    profundidad = 'advanced' if str(extract_depth).lower() == 'advanced' else 'basic'
     payload: dict[str, Any] = {
         'urls': urls_unicas,
-        'extract_depth': 'basic',
+        'extract_depth': profundidad,
         'format': 'text',
         'query': TAVILY_EXTRACT_QUERY,
         'chunks_per_source': 6,
@@ -1129,12 +1226,15 @@ def _tavily_extraer(urls: list[str], *, timeout: int = 25) -> dict[str, str]:
                 'tavily_extraer: status=400 body=%s; reintenta sin query',
                 (resp.text or '')[:300],
             )
-            payload.pop('query', None)
-            payload.pop('chunks_per_source', None)
+            plano = {
+                'urls': urls_unicas,
+                'extract_depth': profundidad,
+                'format': 'text',
+            }
             resp = requests.post(
                 TAVILY_EXTRACT_ENDPOINT,
                 headers=headers,
-                json=payload,
+                json=plano,
                 timeout=timeout,
             )
     except requests.RequestException as exc:
@@ -1319,8 +1419,9 @@ def _gemini_generar(prompt: str, *, timeout: int, use_url_context: bool) -> dict
         f'generateContent?key={api_key}'
     )
     usar_thinking = True
-    # 503/429/red: reintentar. Read timeout no: abortar una generación lenta la mata.
-    for intento in (1, 2, 3):
+    # 503/429/red: un reintento. El tercero (antes 3×45s) dejaba el taller 2 min
+    # pegado y igual devolvía vacío cuando Google seguía saturado.
+    for intento in range(1, _GEMINI_INTENTOS + 1):
         payload: dict[str, Any] = {
             'contents': [{'parts': [{'text': prompt}]}],
             'generationConfig': generation_config_gemini(
@@ -1336,7 +1437,7 @@ def _gemini_generar(prompt: str, *, timeout: int, use_url_context: bool) -> dict
         try:
             resp = requests.post(endpoint, json=payload, timeout=timeout_http_gemini(timeout))
         except (requests.ReadTimeout, requests.Timeout) as exc:
-            if isinstance(exc, requests.ConnectTimeout) and intento < 3:
+            if isinstance(exc, requests.ConnectTimeout) and intento < _GEMINI_INTENTOS:
                 logger.warning('busqueda_web_repuestos: connect timeout Gemini: %s', exc)
                 time.sleep(_ESPERA_REINTENTO_GEMINI)
                 continue
@@ -1344,7 +1445,7 @@ def _gemini_generar(prompt: str, *, timeout: int, use_url_context: bool) -> dict
             return None
         except requests.RequestException as exc:
             logger.warning('busqueda_web_repuestos: error de red Gemini: %s', exc)
-            if intento == 3:
+            if intento == _GEMINI_INTENTOS:
                 return None
             time.sleep(_ESPERA_REINTENTO_GEMINI)
             continue
@@ -1361,7 +1462,7 @@ def _gemini_generar(prompt: str, *, timeout: int, use_url_context: bool) -> dict
         if resp.status_code == 400 and usar_thinking:
             usar_thinking = False
             continue
-        if resp.status_code not in (429, 503) or intento == 3:
+        if resp.status_code not in (429, 503) or intento == _GEMINI_INTENTOS:
             return None
         time.sleep(_ESPERA_REINTENTO_GEMINI)
     return None
@@ -1374,20 +1475,18 @@ def _escalera_consultas(
     modelo: str,
     cilindraje: str,
     casas: list[dict[str, Any]],
+    tipo_motor: str = '',
 ) -> list[str]:
-    """Consultas de la más específica a la más tolerante, sin repetir.
+    """Consultas como las haría un humano en Google, de más específica a más corta.
 
-    Se recorre hasta encontrar precio: primero la casa que trabaja la marca,
-    después la búsqueda abierta con la variante, y por último el modelo a secas
-    (hay equipamientos como "RIO 5 EX" que no existen en las fichas y dejarían
-    la línea sin ninguna referencia).
+    Un kit de embrague se publica como "kit embrague kia morning 1.1 g4hg", no
+    como "3 piezas". Esa frase mandaba al agente a listados y a kits de otro motor.
     """
     completo = _modelo_busqueda_completo(modelo)
     nucleo = _nombre_busqueda_corto(nombre)
-    base = ' '.join(p for p in [nombre, marca, completo, cilindraje] if p)
+    motor = _codigo_motor_query(tipo_motor)
+    base = ' '.join(p for p in [nombre, marca, completo, cilindraje, motor] if p)
     corta = ' '.join(p for p in [nombre, marca, _modelo_busqueda(modelo)] if p)
-    # Último peldaño: solo la pieza. Un refrigerante o un filtro a menudo
-    # se publica sin el modelo y esa ficha igual sirve de referencia.
     consultas = (
         [f"{base} {casa['alias']}" for casa in casas[:1]]
         + [base, corta]
@@ -1397,7 +1496,11 @@ def _escalera_consultas(
     if _linea_es_kit(nombre):
         kit_nucleo = 'kit embrague' if 'embrague' in _norm(nombre) else nucleo or nombre
         kit_qs = [
-            ' '.join(p for p in [kit_nucleo, '3 piezas', marca, completo, cilindraje] if p),
+            ' '.join(
+                p for p in [kit_nucleo, marca, _modelo_busqueda(modelo), cilindraje, motor]
+                if p
+            ),
+            ' '.join(p for p in [kit_nucleo, marca, _modelo_busqueda(modelo), cilindraje] if p),
             ' '.join(p for p in [kit_nucleo, marca, _modelo_busqueda(modelo)] if p),
         ]
         consultas = kit_qs + consultas
@@ -1414,7 +1517,7 @@ def _escalera_consultas(
 def _candidatos_validos(query: str, whitelist: set[str]) -> list[dict[str, Any]]:
     """Fichas de tienda chilena para la consulta, sin listados ni blogs."""
     return [
-        c for c in _tavily_buscar_uno(query, max_results=6)
+        c for c in _tavily_buscar_uno(query, max_results=8)
         if _es_tienda_chilena(c['url'], whitelist, c.get('content') or '')
         and not _es_listado_sin_vendedor(c['url'])
         and not _es_pagina_sin_ficha(c['url'])
@@ -1428,6 +1531,7 @@ def _ordenar_candidatos(
     priorizar_precio: bool = False,
     nombre_linea: str = '',
     anio: Any = None,
+    cilindraje: Any = None,
 ) -> list[dict[str, Any]]:
     """Manda la ficha que nombra a ESTE auto; después la casa y el precio.
 
@@ -1447,7 +1551,9 @@ def _ordenar_candidatos(
     tokens = tokens_vehiculo or []
 
     def rango(c: dict[str, Any]) -> tuple[int, ...]:
-        no_sirve = 0 if _candidato_sirve_linea(nombre_linea, c, anio=anio) else 1
+        no_sirve = 0 if _candidato_sirve_linea(
+            nombre_linea, c, anio=anio, cilindraje=cilindraje,
+        ) else 1
         calce = -_calce_vehiculo(c, tokens)
         precio = _precio_desde_texto(c.get('content') or '', nombre_linea)
         sin_precio = 0 if precio else 1
@@ -1485,6 +1591,7 @@ def _hits_desde_candidatos(
     *,
     marca_vehiculo: str = '',
     anio: Any = None,
+    cilindraje: Any = None,
 ) -> dict[str, dict[str, Any]]:
     """Arma hits desde snippet/ficha Tavily cuando el monto ya es legible."""
     out: dict[str, dict[str, Any]] = {}
@@ -1499,7 +1606,7 @@ def _hits_desde_candidatos(
                     (c, _precio_desde_texto(c.get('content') or '', nombre)) for c in candidatos
                 )
                 if _precio_plausible_para_linea(nombre, precio)
-                and _candidato_sirve_linea(nombre, c, anio=anio)
+                and _candidato_sirve_linea(nombre, c, anio=anio, cilindraje=cilindraje)
             ),
             None,
         )
@@ -1549,36 +1656,63 @@ def _buscar_repuestos_web_tavily(
     whitelist = _dominios_whitelist()
     casas_marca = _especialistas_de_marca(marca)
     tokens_veh = _tokens_vehiculo(marca, modelo, anio, cilindraje)
-    fuentes_vivo = [c['nombre'] for c in casas_marca[:3] if c.get('nombre')]
-    if not fuentes_vivo:
-        fuentes_vivo = ['Tiendas .cl', 'Mercado Libre']
-    elif 'Mercado Libre' not in fuentes_vivo:
+    fuentes_vivo = ['Tiendas de Chile']
+    fuentes_vivo += [c['nombre'] for c in casas_marca[:2] if c.get('nombre')]
+    if 'Mercado Libre' not in fuentes_vivo:
         fuentes_vivo.append('Mercado Libre')
     candidatos_por_nombre: dict[str, list[dict[str, str]]] = {}
     for i, nombre in enumerate(nombres_limpios):
         if callable(on_progreso):
             on_progreso({
                 'paso': 'web',
-                'detalle': f'Consultando {", ".join(fuentes_vivo[:3])} por {nombre}',
+                'detalle': f'Buscando {nombre} en tiendas de Chile',
                 'fuentes': fuentes_vivo,
                 'nombre_actual': nombre,
                 'indice': i,
                 'total': len(nombres_limpios),
             })
         crudos: list[dict[str, Any]] = []
-        for query in _escalera_consultas(
-            nombre, marca=marca, modelo=modelo, cilindraje=cilindraje, casas=casas_marca,
-        ):
+        consultas = _escalera_consultas(
+            nombre,
+            marca=marca,
+            modelo=modelo,
+            cilindraje=cilindraje,
+            casas=casas_marca,
+            tipo_motor=tipo_motor,
+        )
+        n_consultas = 0
+        for i_query, query in enumerate(consultas):
+            if i_query >= _MAX_CONSULTAS_TAVILY_POR_LINEA:
+                break
+            n_consultas += 1
             crudos += _candidatos_validos(query, whitelist)
-            # Sigue buscando hasta una ficha de LA MISMA pieza con monto creíble.
+            # Ficha de LA MISMA pieza con monto: listo, extract no hace falta más search.
             if any(
-                _candidato_sirve_linea(nombre, c, anio=anio)
+                _candidato_sirve_linea(nombre, c, anio=anio, cilindraje=cilindraje)
                 and _precio_desde_texto(c.get('content') or '', nombre) > 0
                 for c in crudos
             ):
                 break
+            # Dos URLs de kit/pieza ya alcanzan: el extract saca el $ del HTML.
+            urls_servibles = {
+                c['url'] for c in crudos
+                if _candidato_sirve_linea(nombre, c, anio=anio, cilindraje=cilindraje)
+            }
+            if len(urls_servibles) >= 2:
+                break
+        logger.info(
+            'busqueda_web_repuestos[tavily]: %s consultas=%s/%s candidatos=%s',
+            nombre[:80],
+            n_consultas,
+            len(consultas),
+            len({c['url'] for c in crudos}),
+        )
         candidatos = _ordenar_candidatos(
-            crudos, tokens_vehiculo=tokens_veh, nombre_linea=nombre, anio=anio,
+            crudos,
+            tokens_vehiculo=tokens_veh,
+            nombre_linea=nombre,
+            anio=anio,
+            cilindraje=cilindraje,
         )[:4]
         if candidatos:
             candidatos_por_nombre[nombre] = candidatos
@@ -1594,10 +1728,16 @@ def _buscar_repuestos_web_tavily(
     for nombre, candidatos in candidatos_por_nombre.items():
         if not candidatos:
             continue
-        servir = [c for c in candidatos if _candidato_sirve_linea(nombre, c, anio=anio)]
+        servir = [c for c in candidatos if _candidato_sirve_linea(
+            nombre, c, anio=anio, cilindraje=cilindraje,
+        )]
         pool = servir or candidatos
         urls_ficha.extend(c['url'] for c in pool[:3])
-    fichas = _tavily_extraer(urls_ficha)
+    hay_kit = any(_linea_es_kit(n) for n in candidatos_por_nombre)
+    fichas = _tavily_extraer(
+        urls_ficha,
+        extract_depth='advanced' if hay_kit else 'basic',
+    )
     if fichas:
         for nombre, candidatos in candidatos_por_nombre.items():
             con_ficha = [
@@ -1610,10 +1750,11 @@ def _buscar_repuestos_web_tavily(
                 priorizar_precio=True,
                 nombre_linea=nombre,
                 anio=anio,
+                cilindraje=cilindraje,
             )
 
     preliminar = _hits_desde_candidatos(
-        candidatos_por_nombre, tokens_veh, marca_vehiculo=marca, anio=anio,
+        candidatos_por_nombre, tokens_veh, marca_vehiculo=marca, anio=anio, cilindraje=cilindraje,
     )
     if preliminar and all(
         _clave_fuzzy(nombre) in preliminar for nombre in candidatos_por_nombre
@@ -1633,7 +1774,11 @@ def _buscar_repuestos_web_tavily(
         tipo_motor=tipo_motor,
         servicio_nombre=servicio_nombre,
     )
-    body = _gemini_generar(prompt, timeout=timeout, use_url_context=False)
+    body = _gemini_generar(
+        prompt,
+        timeout=min(max(int(timeout), 8), _GEMINI_FORMATEO_TIMEOUT),
+        use_url_context=False,
+    )
     if not body:
         logger.info(
             'busqueda_web_repuestos[tavily]: Gemini vacío; se entregan %s hits de snippet',
@@ -1686,6 +1831,7 @@ def _buscar_repuestos_web_tavily(
             nombre_linea,
             {'title': nombre_prod, 'content': snippet, 'url': url},
             anio=anio,
+            cilindraje=cilindraje,
         ):
             continue
         attrs = _atributos_desde_texto(
@@ -1713,7 +1859,9 @@ def _buscar_repuestos_web_tavily(
                 (
                     (c, p) for c, p in with_precio
                     if _precio_plausible_para_linea(nombre_linea, p)
-                    and _candidato_sirve_linea(nombre_linea, c, anio=anio)
+                    and _candidato_sirve_linea(
+                        nombre_linea, c, anio=anio, cilindraje=cilindraje,
+                    )
                 ),
                 None,
             )
@@ -1770,7 +1918,7 @@ def _buscar_repuestos_web_tavily(
     # la línea en $0, así que se arma el hit sin pasar por el modelo.
     rescatadas = 0
     for clave, hit in _hits_desde_candidatos(
-        candidatos_por_nombre, tokens_veh, marca_vehiculo=marca, anio=anio,
+        candidatos_por_nombre, tokens_veh, marca_vehiculo=marca, anio=anio, cilindraje=cilindraje,
     ).items():
         if clave in out:
             continue
@@ -1797,7 +1945,7 @@ def buscar_repuestos_web(
     servicio_nombre: str = '',
     on_progreso=None,
 ) -> dict[str, dict[str, Any]]:
-    """Punto de entrada único: Tavily (si hay API key) y luego url_context para lo faltante."""
+    """Tavily si hay API key. url_context solo si Tavily no está configurada."""
     nombres_limpios = [str(n).strip()[:200] for n in nombres if str(n).strip()]
     if not nombres_limpios:
         return {}
@@ -1812,6 +1960,7 @@ def buscar_repuestos_web(
 
     resultados: dict[str, dict[str, Any]] = {}
     pendientes = list(nombres_limpios)
+    tavily_listo = False
 
     if tavily_habilitada() and (getattr(settings, 'GEMINI_API_KEY', '') or '').strip():
         try:
@@ -1826,6 +1975,7 @@ def buscar_repuestos_web(
                 timeout=timeout,
                 on_progreso=on_progreso,
             )
+            tavily_listo = True
         except Exception as exc:
             logger.warning('busqueda_web_repuestos[tavily]: fallo inesperado: %s', exc)
             resultados = {}
@@ -1835,6 +1985,16 @@ def buscar_repuestos_web(
         pendientes = [n for n in nombres_limpios if _clave_fuzzy(n) not in claves_resueltas] or (
             [] if resultados else nombres_limpios
         )
+
+    # Tavily ya recorrió Chile. url_context sobre URLs inventadas no encuentra
+    # el kit del Morning y deja al worker 45–135s extra (Gemini 503).
+    if tavily_listo:
+        if pendientes:
+            logger.info(
+                'busqueda_web_repuestos: Tavily sin hit para %s; se omite url_context',
+                pendientes,
+            )
+        return resultados
 
     if not pendientes or not busqueda_web_habilitada():
         return resultados

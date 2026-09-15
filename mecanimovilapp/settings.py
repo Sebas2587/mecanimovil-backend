@@ -848,6 +848,11 @@ def _parse_tiendas_especialistas_default():
         {'nombre': 'Repuestos Ank', 'alias': 'repuestos ank', 'dominio': 'repuestosank.cl',
          'marcas': []},
         {'nombre': 'Emasa', 'alias': 'emasa', 'dominio': 'emasa.cl', 'marcas': []},
+        {'nombre': 'Todo Embragues', 'alias': 'todo embragues', 'dominio': 'todoembragues.cl',
+         'marcas': []},
+        {'nombre': 'Casa del Embrague', 'alias': 'casa del embrague',
+         'dominio': 'casadelembrague.cl', 'marcas': []},
+        {'nombre': 'Ciper', 'alias': 'ciper', 'dominio': 'ciper.cl', 'marcas': []},
     ]
 
 

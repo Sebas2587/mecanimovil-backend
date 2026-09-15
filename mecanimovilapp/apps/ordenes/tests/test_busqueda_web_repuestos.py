@@ -303,7 +303,18 @@ class ValidarResultadoTestCase(SimpleTestCase):
 
         self.assertTrue(_es_pagina_sin_ficha('https://www.repuestosboston.cl/blog/consumo-accent'))
         self.assertTrue(_es_pagina_sin_ficha('https://www.mercadolibre.cl/pagina/zapatafrenos'))
+        self.assertTrue(_es_pagina_sin_ficha('https://www.autoplanet.cl/busqueda/kit-embrague-kia-morning'))
+        self.assertTrue(_es_pagina_sin_ficha(
+            'https://www.repuestosboston.cl/repuestos-boston/embrague/kit-de-embragues.html'
+            '?marca_vehiculo=Kia&modelo_vehiculo=Morning',
+        ))
+        self.assertTrue(_es_pagina_sin_ficha(
+            'https://www.tiktok.com/@x/video/7575996897500990727',
+        ))
         self.assertFalse(_es_pagina_sin_ficha('https://gmak.cl/products/pastillas-fiat-uno'))
+        self.assertFalse(_es_pagina_sin_ficha(
+            'https://www.todoembragues.cl/kit-embrague-para-kia-morning-1-1-g4hg',
+        ))
 
     def test_descarta_marca_placeholder(self):
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
@@ -1127,7 +1138,7 @@ class BuscarRepuestosWebTavilyTestCase(SimpleTestCase):
     def test_fallback_a_url_context_si_tavily_sin_candidatos(self):
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
 
-        tavily_resp = self._fake_tavily_resp([])  # Sin resultados → debe caer a url_context.
+        tavily_resp = self._fake_tavily_resp([])  # Sin resultados: no se llama url_context.
         gemini_url_context_resp = MagicMock()
         gemini_url_context_resp.status_code = 200
         gemini_url_context_resp.json.return_value = {
@@ -1160,7 +1171,80 @@ class BuscarRepuestosWebTavilyTestCase(SimpleTestCase):
             )
 
         self.assertGreaterEqual(calls['tavily'], 1)
-        self.assertEqual(calls['gemini_with_tools'], 1)
+        # Tavily ya buscó en Chile: url_context no recupera el kit y suma minutos.
+        self.assertEqual(calls['gemini_with_tools'], 0)
+
+    def test_tavily_no_recorre_toda_la_escalera_del_kit(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        calls = {'n': 0}
+
+        def fake_buscar(query, **kwargs):
+            calls['n'] += 1
+            return []
+
+        escalera = bw._escalera_consultas(
+            'Kit de embrague',
+            marca='Kia',
+            modelo='Morning',
+            cilindraje='',
+            casas=[],
+        )
+        self.assertGreater(len(escalera), bw._MAX_CONSULTAS_TAVILY_POR_LINEA)
+
+        with patch.object(bw, '_tavily_buscar_uno', side_effect=fake_buscar), patch.object(
+            bw, '_tavily_extraer', return_value={},
+        ), patch.object(bw, '_gemini_generar', return_value=None):
+            bw._buscar_repuestos_web_tavily(
+                ['Kit de embrague'],
+                marca='Kia',
+                modelo='Morning',
+                anio=2011,
+                cilindraje='',
+                tipo_motor='',
+                servicio_nombre='Cambio de kit de embrague',
+                timeout=5,
+            )
+
+        self.assertEqual(calls['n'], bw._MAX_CONSULTAS_TAVILY_POR_LINEA)
+
+    def test_tavily_corta_cuando_hay_dos_fichas_de_kit_sin_precio(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        calls = {'n': 0}
+
+        def fake_buscar(query, **kwargs):
+            calls['n'] += 1
+            return [
+                {
+                    'title': 'KIT EMBRAGUE KIA MORNING 2012-2016',
+                    'url': 'https://articulo.mercadolibre.cl/MLC-111-kit',
+                    'content': 'Consultar precio',
+                    'score': 0.9,
+                },
+                {
+                    'title': 'KIT EMBRAGUE 3 PIEZAS KIA MORNING',
+                    'url': 'https://www.refax.cl/producto/kit-morning',
+                    'content': 'Stock disponible',
+                    'score': 0.8,
+                },
+            ]
+
+        with patch.object(bw, '_tavily_buscar_uno', side_effect=fake_buscar), patch.object(
+            bw, '_tavily_extraer', return_value={},
+        ), patch.object(bw, '_gemini_generar', return_value=None):
+            bw._buscar_repuestos_web_tavily(
+                ['Kit de embrague'],
+                marca='Kia',
+                modelo='Morning',
+                anio=2011,
+                cilindraje='',
+                tipo_motor='',
+                servicio_nombre='Cambio de kit de embrague',
+                timeout=5,
+            )
+
+        self.assertEqual(calls['n'], 1)
 
 
 class PrecioDesdeTextoTestCase(SimpleTestCase):
@@ -1283,6 +1367,55 @@ class AtributosFichaTavilyTestCase(SimpleTestCase):
         )
         self.assertEqual(out, {})
 
+    def test_kit_morning_acepta_ficha_con_anio_contiguo(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        linea = 'Kit de embrague'
+        cand = {
+            'title': 'KIT EMBRAGUE KIA MORNING 2012-2016',
+            'content': 'Precio $89.900',
+            'url': 'https://articulo.mercadolibre.cl/MLC-1-kit-morning',
+        }
+        self.assertTrue(bw._candidato_sirve_linea(linea, cand, anio=2011))
+        self.assertFalse(bw._candidato_sirve_linea(linea, cand, anio=2008))
+        prensa = {
+            'title': 'PRENSA EMBRAGUE KIA MORNING 2012-2016',
+            'content': 'Precio $23.170',
+            'url': 'https://www.ciper.cl/prensa-morning/p',
+        }
+        self.assertFalse(bw._candidato_sirve_linea(linea, prensa, anio=2011))
+
+    def test_kit_1_2_no_sirve_para_morning_1_1(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        linea = 'Kit de embrague'
+        kit_12 = {
+            'title': 'Kit de Embrague SECO Kia Morning 1.2 (3 piezas)',
+            'content': 'Precio $89.900',
+            'url': 'https://www.autoplanet.cl/producto/kit_de_embrague_seco_kia_morning_12_3_piezas/456966',
+        }
+        kit_11 = {
+            'title': 'Kit Embrague Para Kia Morning 1.1 G4hg',
+            'content': 'Prensa Disco Rodamiento $82.900 CLP',
+            'url': 'https://www.todoembragues.cl/kit-embrague-para-kia-morning-1-1-g4hg',
+        }
+        self.assertFalse(bw._candidato_sirve_linea(linea, kit_12, anio=2008, cilindraje='1.1'))
+        self.assertTrue(bw._candidato_sirve_linea(linea, kit_11, anio=2008, cilindraje='1.1'))
+
+    def test_precio_todoembragues_toma_el_de_la_ficha(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        texto = (
+            'Kit Embrague Para Kia Morning 1.1 G4hg\n'
+            '$82.900 CLP\n'
+            'Kit Embrague Para Kia Morning 1.0 G3la Kappa C\n'
+            '$61.800 CLP'
+        )
+        self.assertEqual(
+            bw._precio_desde_texto(texto, 'Kit de embrague'),
+            82900,
+        )
+
     def test_kit_ciper_tres_piezas_llena_la_linea(self):
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
 
@@ -1387,7 +1520,7 @@ class CoberturaPreciosComunesTests(SimpleTestCase):
         normas = [bw._norm(q) for q in qs]
         self.assertIn('filtro aceite', normas)
 
-    def test_escalera_kit_busca_tres_piezas_primero(self):
+    def test_escalera_kit_busca_como_google(self):
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
 
         qs = bw._escalera_consultas(
@@ -1398,8 +1531,25 @@ class CoberturaPreciosComunesTests(SimpleTestCase):
             casas=[],
         )
         self.assertTrue(qs)
-        self.assertIn('3 piezas', qs[0].lower())
+        self.assertNotIn('3 piezas', qs[0].lower())
         self.assertIn('hyundai', qs[0].lower())
+        self.assertIn('1.2', qs[0])
+
+    def test_escalera_kit_morning_incluye_motor(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        qs = bw._escalera_consultas(
+            'Kit de embrague',
+            marca='Kia',
+            modelo='Morning',
+            cilindraje='1.1',
+            casas=[],
+            tipo_motor='G4HG',
+        )
+        self.assertIn('morning', qs[0].lower())
+        self.assertIn('1.1', qs[0])
+        self.assertIn('g4hg', qs[0].lower())
+        self.assertNotIn('3 piezas', qs[0].lower())
 
     def test_match_nucleo_de_pieza_comun(self):
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
