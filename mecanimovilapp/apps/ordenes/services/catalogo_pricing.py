@@ -24,6 +24,52 @@ _MODALIDAD_SUFIJO_RE = re.compile(
 _STOP_TOKENS = frozenset(
     {'de', 'del', 'la', 'el', 'los', 'las', 'y', 'para', 'con', 'sin', 'a', 'e', 'un', 'una'}
 )
+_GENERIC_TOKENS = frozenset(
+    {
+        'cambio',
+        'cambios',
+        'servicio',
+        'servicios',
+        'mantencion',
+        'mantenimiento',
+        'revision',
+        'reparacion',
+        'trabajo',
+        'trabajos',
+        'kit',
+        'repuesto',
+        'repuestos',
+        'completo',
+        'general',
+        'preventivo',
+        'seguro',
+    }
+)
+# Familias de trabajo: un SKU de aceite no puede ganar un pedido de embrague
+# solo porque ambos dicen "cambio" o aparece la palabra "aceite" en una lista.
+_FAMILIAS_SERVICIO: tuple[frozenset[str], ...] = (
+    frozenset({'embrague', 'embragues', 'clutch', 'collarin', 'collarines'}),
+    frozenset({'piola', 'piolas'}),
+    frozenset({'aceite', 'aceites', 'lubricante', 'lubricantes'}),
+    frozenset({'freno', 'frenos', 'pastilla', 'pastillas', 'caliper'}),
+    frozenset({'bujia', 'bujias', 'bobina', 'bobinas', 'encendido'}),
+    frozenset({'correa', 'correas', 'tensor', 'tensores', 'distribucion'}),
+    frozenset({'amortiguador', 'amortiguadores', 'suspension'}),
+    frozenset({'rodamiento', 'rodamientos', 'ruleman', 'rulemanes', 'balinera'}),
+    frozenset({'radiador', 'refrigerante', 'termostato'}),
+    frozenset({'bateria', 'baterias', 'alternador'}),
+    frozenset({'alineacion', 'balanceo'}),
+    frozenset({'scanner', 'diagnostico', 'diagnosticos'}),
+)
+_ACEITE_MOTOR = frozenset({'motor', 'engine'})
+_ACEITE_CAJA = frozenset({'caja', 'transmision', 'atf', 'diferencial'})
+_OIL_PACK_TOKENS = frozenset(
+    {'aceite', 'filtro', 'motor', 'gasolina', 'diesel', 'bencina'}
+)
+_PREFIJO_SERVICIO_RE = re.compile(
+    r'^(?:servicio\s+(?:para|de)\s+|servicios?\s+:?\s*)',
+    re.IGNORECASE,
+)
 # En packs de aceite, gasolina/diesel/bencina = tipo de motor del SKU, no "filtro de combustible".
 _ENGINE_NAME_TOKENS = frozenset({'gasolina', 'diesel', 'bencina', 'motor'})
 _FILTER_TYPE_TOKENS = frozenset(
@@ -37,13 +83,107 @@ def normalizar_nombre_servicio(texto: str) -> str:
 
 
 def _sin_sufijo_modalidad(texto: str) -> str:
-    """Quita coletillas de modalidad ("a domicilio", "en taller") del nombre de servicio."""
     limpio = _MODALIDAD_SUFIJO_RE.sub('', (texto or '').strip()).strip()
     return limpio or (texto or '').strip()
 
 
+def texto_servicio_canonico(texto: str) -> str:
+    """Nombre comparable: minúsculas, sin modalidad ni prefijo 'servicio para'."""
+    t = normalizar_nombre_servicio(_sin_sufijo_modalidad(texto))
+    t = _PREFIJO_SERVICIO_RE.sub('', t).strip()
+    return t or normalizar_nombre_servicio(texto)
+
+
 def _tokens_servicio(nombre_norm: str) -> set[str]:
-    return {t for t in re.split(r'\s+', nombre_norm or '') if t and t not in _STOP_TOKENS}
+    limpio = re.sub(r'[^a-z0-9\s]', ' ', nombre_norm or '')
+    return {
+        t
+        for t in re.split(r'\s+', limpio)
+        if t and t not in _STOP_TOKENS and len(t) > 1
+    }
+
+
+def _familias_de(tokens: set[str]) -> set[int]:
+    hits: set[int] = set()
+    for i, fam in enumerate(_FAMILIAS_SERVICIO):
+        if tokens & fam:
+            hits.add(i)
+    return hits
+
+
+def _conflicto_subtipo_aceite(query_tokens: set[str], serv_tokens: set[str]) -> bool:
+    """Aceite de caja ≠ aceite motor / filtro de gasolina."""
+    if 'aceite' not in query_tokens and 'aceite' not in serv_tokens:
+        return False
+    q_caja = bool(query_tokens & _ACEITE_CAJA)
+    s_caja = bool(serv_tokens & _ACEITE_CAJA)
+    s_motor = bool(serv_tokens & _ACEITE_MOTOR) or bool(
+        serv_tokens & {'gasolina', 'bencina', 'diesel'}
+    )
+    q_motor = bool(query_tokens & _ACEITE_MOTOR)
+    if q_caja and not s_caja and (s_motor or 'filtro' in serv_tokens):
+        return True
+    if q_motor and s_caja and not s_motor:
+        return True
+    return False
+
+
+def oferta_nombre_compatible_con_pedido(pedido: str, nombre_catalogo: str) -> bool:
+    """True si el SKU del catálogo es el mismo trabajo que el texto pedido.
+
+    Evita que 'cambio' + 'aceite' dentro de una lista (kit embrague, aceite caja,
+    piola…) se tome como 'Cambio de aceite motor y filtro de gasolina'.
+    """
+    nombre_norm = texto_servicio_canonico(pedido)
+    serv_norm = texto_servicio_canonico(nombre_catalogo)
+    if not nombre_norm or not serv_norm:
+        return False
+
+    query_tokens = _tokens_servicio(nombre_norm)
+    serv_tokens = _tokens_servicio(serv_norm)
+    q_fam = _familias_de(query_tokens)
+    s_fam = _familias_de(serv_tokens)
+    if q_fam and s_fam and q_fam.isdisjoint(s_fam):
+        return False
+    if q_fam - s_fam:
+        return False
+    if _conflicto_subtipo_aceite(query_tokens, serv_tokens):
+        return False
+
+    if nombre_norm in serv_norm or serv_norm in nombre_norm:
+        return True
+
+    core_q = query_tokens - _GENERIC_TOKENS
+    core_s = serv_tokens - _GENERIC_TOKENS
+    overlap_core = core_q & core_s if core_q and core_s else set()
+    overlap_all = query_tokens & serv_tokens if query_tokens and serv_tokens else set()
+
+    if overlap_core:
+        return True
+    if len(overlap_all) == 1 and overlap_all & {
+        'diagnostico',
+        'alineacion',
+        'balanceo',
+        'scanner',
+    }:
+        return True
+    if 'aceite' in overlap_all and core_q <= _OIL_PACK_TOKENS:
+        return True
+    return False
+
+
+def pedido_familias_cubiertas_por_catalogos(
+    pedido: str,
+    nombres_catalogo: list[str],
+) -> bool:
+    """False si el pedido pide trabajos (embrague, piola…) que ningún SKU cubre."""
+    q_fam = _familias_de(_tokens_servicio(texto_servicio_canonico(pedido)))
+    if not q_fam:
+        return True
+    s_fam: set[int] = set()
+    for nombre in nombres_catalogo:
+        s_fam |= _familias_de(_tokens_servicio(texto_servicio_canonico(nombre)))
+    return q_fam <= s_fam
 
 
 def oferta_compatible_con_vehiculo(
@@ -89,7 +229,7 @@ def buscar_oferta_exacta(
     del cliente ya tiene esos datos. Solo acepta coincidencia exacta o
     cobertura general (campos vacíos en la oferta).
     """
-    nombre_norm = normalizar_nombre_servicio(_sin_sufijo_modalidad(servicio_nombre))
+    nombre_norm = texto_servicio_canonico(servicio_nombre)
     if not nombre_norm:
         return None
     query_tokens = _tokens_servicio(nombre_norm)
@@ -101,21 +241,8 @@ def buscar_oferta_exacta(
 
     candidatas: list[OfertaServicio] = []
     for oferta in qs:
-        serv_norm = normalizar_nombre_servicio(getattr(oferta.servicio, 'nombre', '') or '')
-        if not serv_norm:
-            continue
-        serv_tokens = _tokens_servicio(serv_norm)
-        # Substring clásico O overlap de tokens significativo (evita perder packs cercanos).
-        substring_ok = nombre_norm in serv_norm or serv_norm in nombre_norm
-        overlap = query_tokens & serv_tokens if query_tokens and serv_tokens else set()
-        token_ok = bool(overlap) and (
-            len(overlap) >= 2
-            or (
-                len(overlap) == 1
-                and overlap & {'aceite', 'diagnostico', 'alineacion', 'balanceo', 'scanner'}
-            )
-        )
-        if not substring_ok and not token_ok:
+        serv_nombre = getattr(oferta.servicio, 'nombre', '') or ''
+        if not oferta_nombre_compatible_con_pedido(servicio_nombre, serv_nombre):
             continue
         if not oferta_compatible_con_vehiculo(
             oferta,
@@ -148,7 +275,7 @@ def buscar_oferta_exacta(
             s += 2
         elif not tm:
             s += 1
-        serv_norm = normalizar_nombre_servicio(oferta.servicio.nombre)
+        serv_norm = texto_servicio_canonico(oferta.servicio.nombre)
         serv_tokens = _tokens_servicio(serv_norm)
         if serv_norm == nombre_norm:
             s += 5

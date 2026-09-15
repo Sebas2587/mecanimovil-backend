@@ -26,6 +26,7 @@ from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import
 from mecanimovilapp.apps.ordenes.services.catalogo_pricing import (
     buscar_oferta_exacta,
     normalizar_nombre_servicio,
+    pedido_familias_cubiertas_por_catalogos,
     precio_publico_oferta,
 )
 from mecanimovilapp.apps.suscripciones.cuotas_services import CuotaAgotadaError, SinSuscripcionError, verificar_y_consumir_cuota
@@ -510,6 +511,9 @@ def _intentar_contenido_solo_catalogo(
             getattr(getattr(oferta, 'servicio', None), 'nombre', None) or nombre
         )
 
+    if not pedido_familias_cubiertas_por_catalogos(servicio_prompt, nombres_catalogo):
+        return None
+
     costo_rep, mo, total = recalcular_totales(reps_total, mano_total)
     return {
         'disponible': True,
@@ -590,7 +594,9 @@ def _desglose_oferta_catalogo(oferta, *, con_repuestos: bool) -> tuple[int, list
                 nombre = (item.get('nombre') or item.get('repuesto') or f'Repuesto {i + 1}').strip()
                 serv = getattr(getattr(oferta, 'servicio', None), 'nombre', '') or ''
                 if serv and nombre and serv.lower() not in nombre.lower():
-                    nombre = f'{nombre} ({serv})'
+                    pack = (' y ' in serv.lower()) or (',' in serv)
+                    if not pack:
+                        nombre = f'{nombre} ({serv})'
                 marca_rep = (
                     str(item.get('marca_repuesto') or item.get('marca') or '').strip()
                 )

@@ -908,6 +908,177 @@ class SplitServiciosCatalogoTestCase(SimpleTestCase):
         self.assertIn('Cambio de aceite y filtro', parts[0])
         self.assertIn('aire', parts[1].lower())
 
+    def test_parte_lista_con_comas_embrague(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.aplicar_catalogo import (
+            _split_servicios,
+        )
+
+        parts = _split_servicios(
+            'Servicio para cambio de kit de embrague, aceite caja de cambios, '
+            'seguro de rodamientos, piola de embrague'
+        )
+        self.assertGreaterEqual(len(parts), 4)
+        joined = ' '.join(parts).lower()
+        self.assertIn('embrague', parts[0].lower())
+        self.assertIn('aceite', joined)
+        self.assertIn('piola', joined)
+        self.assertNotIn('servicio para', parts[0].lower())
+
+
+class CatalogoNoRobaPedidoEmbragueTestCase(SimpleTestCase):
+    PEDIDO = (
+        'Servicio para cambio de kit de embrague, aceite caja de cambios, '
+        'seguro de rodamientos, piola de embrague'
+    )
+    ACEITE = 'Cambio de aceite motor y filtro de gasolina'
+    KIT = 'Cambio de kit de embrague'
+
+    def test_aceite_motor_no_cubre_lista_de_embrague(self):
+        from mecanimovilapp.apps.ordenes.services.catalogo_pricing import (
+            oferta_nombre_compatible_con_pedido,
+            pedido_familias_cubiertas_por_catalogos,
+        )
+
+        self.assertFalse(oferta_nombre_compatible_con_pedido(self.PEDIDO, self.ACEITE))
+        self.assertFalse(
+            oferta_nombre_compatible_con_pedido(
+                'cambio de kit de embrague',
+                self.ACEITE,
+            )
+        )
+        self.assertFalse(
+            oferta_nombre_compatible_con_pedido(
+                'aceite caja de cambios',
+                self.ACEITE,
+            )
+        )
+        self.assertTrue(oferta_nombre_compatible_con_pedido(self.KIT, self.KIT))
+        self.assertTrue(
+            oferta_nombre_compatible_con_pedido(
+                'Cambio de aceite',
+                self.ACEITE,
+            )
+        )
+        self.assertFalse(
+            pedido_familias_cubiertas_por_catalogos(self.PEDIDO, [self.ACEITE])
+        )
+
+    def test_fusion_no_reemplaza_embrague_por_aceite_del_catalogo(self):
+        from unittest.mock import MagicMock, patch
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.aplicar_catalogo import (
+            fusionar_contenido_con_catalogo_taller,
+        )
+
+        contenido = {
+            'servicio_nombre': self.PEDIDO,
+            'mano_obra_clp': 180000,
+            'repuestos': [{
+                'nombre': 'Kit de embrague Valeo',
+                'cantidad': 1,
+                'precio_unitario_clp': 220000,
+                'precio_estimado': True,
+            }, {
+                'nombre': 'Piola de embrague',
+                'cantidad': 1,
+                'precio_unitario_clp': 25000,
+                'precio_estimado': True,
+            }],
+            'advertencias': ['Precios de repuestos estimados: revisa'],
+        }
+        oferta_aceite = MagicMock()
+        oferta_aceite.id = 9
+        oferta_aceite.servicio.nombre = self.ACEITE
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.catalogo_pricing.buscar_oferta_exacta',
+            return_value=oferta_aceite,
+        ), patch(
+            'mecanimovilapp.apps.agente_ia.services.cotizacion_borrador._desglose_oferta_catalogo',
+            return_value=(35000, [{
+                'id': 'cat-aceite',
+                'nombre': 'Aceite motor 5W30',
+                'cantidad': 1,
+                'precio_unitario_clp': 18000,
+            }, {
+                'id': 'cat-filtro',
+                'nombre': 'Filtro de gasolina',
+                'cantidad': 1,
+                'precio_unitario_clp': 9000,
+            }]),
+        ):
+            out = fusionar_contenido_con_catalogo_taller(
+                contenido,
+                taller=MagicMock(),
+                servicio_nombre=self.PEDIDO,
+                marca='KIA',
+                modelo='MORNING',
+            )
+        nombres = [str(r.get('nombre') or '').lower() for r in (out.get('repuestos') or [])]
+        self.assertTrue(any('embrague' in n for n in nombres))
+        self.assertTrue(any('piola' in n for n in nombres))
+        self.assertFalse(any('gasolina' in n for n in nombres))
+        self.assertFalse(any('5w30' in n for n in nombres))
+        self.assertFalse(out.get('precio_desde_catalogo'))
+        self.assertEqual(out.get('mano_obra_clp'), 180000)
+        self.assertEqual(len(out.get('repuestos') or []), 2)
+
+    def test_fusion_parcial_conserva_ia_si_catalogo_solo_cubre_kit(self):
+        from unittest.mock import MagicMock, patch
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.aplicar_catalogo import (
+            fusionar_contenido_con_catalogo_taller,
+        )
+
+        contenido = {
+            'servicio_nombre': self.PEDIDO,
+            'mano_obra_clp': 180000,
+            'repuestos': [{
+                'nombre': 'Kit de embrague Valeo',
+                'cantidad': 1,
+                'precio_unitario_clp': 220000,
+            }, {
+                'nombre': 'Piola de embrague',
+                'cantidad': 1,
+                'precio_unitario_clp': 25000,
+            }],
+        }
+        oferta_kit = MagicMock()
+        oferta_kit.id = 3
+        oferta_kit.servicio.nombre = self.KIT
+
+        def _buscar(*, servicio_nombre, **_kwargs):
+            if 'kit' in (servicio_nombre or '').lower() and 'piola' not in (
+                servicio_nombre or ''
+            ).lower():
+                return oferta_kit
+            return None
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.catalogo_pricing.buscar_oferta_exacta',
+            side_effect=_buscar,
+        ), patch(
+            'mecanimovilapp.apps.agente_ia.services.cotizacion_borrador._desglose_oferta_catalogo',
+            return_value=(80000, [{
+                'id': 'cat-kit',
+                'nombre': 'Kit de embrague Sachs',
+                'cantidad': 1,
+                'precio_unitario_clp': 190000,
+            }]),
+        ):
+            out = fusionar_contenido_con_catalogo_taller(
+                contenido,
+                taller=MagicMock(),
+                servicio_nombre=self.PEDIDO,
+                marca='KIA',
+                modelo='MORNING',
+            )
+        nombres = [str(r.get('nombre') or '').lower() for r in (out.get('repuestos') or [])]
+        self.assertTrue(any('sachs' in n for n in nombres))
+        self.assertTrue(any('piola' in n for n in nombres))
+        self.assertTrue(out.get('precio_parcial_catalogo'))
+        self.assertEqual(out.get('mano_obra_clp'), 180000)
+
 
 class NormalizarMantieneServicioPedidoTestCase(SimpleTestCase):
     def test_pin_servicio_del_contexto_aunque_ia_expanda(self):
