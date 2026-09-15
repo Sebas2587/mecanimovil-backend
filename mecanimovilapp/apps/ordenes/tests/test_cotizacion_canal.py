@@ -1317,7 +1317,7 @@ class HistorialCacheNoCruzaModelosTestCase(SimpleTestCase):
             generador.settings, 'GEMINI_RETRY_MAX', 0,
         ), patch.object(
             generador.settings, 'GEMINI_503_RETRY_MAX', 0,
-        ), patch.object(generador.time, 'sleep'), patch.object(
+        ), patch.object(generador.time, 'sleep') as sleep_mock, patch.object(
             generador.requests, 'post', side_effect=[resp_503, ok],
         ) as post_mock:
             data, uso, err = generador._llamar_gemini('prompt')
@@ -1328,6 +1328,36 @@ class HistorialCacheNoCruzaModelosTestCase(SimpleTestCase):
         urls = [c.args[0] for c in post_mock.call_args_list]
         self.assertIn('gemini-3.1-flash-lite', urls[0])
         self.assertIn('gemini-2.5-flash', urls[1])
+        sleep_mock.assert_not_called()
+
+    def test_gemini_503_no_espera_en_flash_lite_si_hay_respaldo(self):
+        from unittest.mock import MagicMock, patch
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import generador
+
+        resp_503 = MagicMock()
+        resp_503.status_code = 503
+        resp_503.text = 'high demand'
+        ok = MagicMock()
+        ok.status_code = 200
+        ok.json.return_value = {
+            'candidates': [{'content': {'parts': [{'text': '{"servicio_nombre":"X"}'}]}}],
+            'usageMetadata': {},
+        }
+        with patch.object(generador.settings, 'GEMINI_API_KEY', 'k'), patch.object(
+            generador.settings, 'ASISTENTE_COTIZACION_GEMINI_MODEL', 'gemini-3.1-flash-lite',
+        ), patch.object(
+            generador.settings, 'ASISTENTE_COTIZACION_GEMINI_FALLBACKS', 'gemini-2.5-flash',
+        ), patch.object(
+            generador.settings, 'GEMINI_503_RETRY_MAX', 3,
+        ), patch.object(generador.time, 'sleep') as sleep_mock, patch.object(
+            generador.requests, 'post', side_effect=[resp_503, ok],
+        ) as post_mock:
+            data, uso, err = generador._llamar_gemini('prompt')
+        self.assertIsNone(err)
+        self.assertEqual(uso.get('modelo'), 'gemini-2.5-flash')
+        self.assertEqual(post_mock.call_count, 2)
+        sleep_mock.assert_not_called()
 
     def test_gemini_omite_partes_thought_y_pide_thinking_minimal(self):
         from unittest.mock import MagicMock, patch

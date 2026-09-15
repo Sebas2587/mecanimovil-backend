@@ -176,9 +176,9 @@ def _llamar_gemini(prompt: str) -> tuple[dict[str, Any] | None, dict[str, int | 
     timeout = int(getattr(settings, 'ASISTENTE_COTIZACION_IA_TIMEOUT', 45) or 45)
     max_retries = max(0, min(int(getattr(settings, 'GEMINI_RETRY_MAX', 2) or 2), 4))
     try:
-        retries_503 = int(getattr(settings, 'GEMINI_503_RETRY_MAX', 3))
+        retries_503 = int(getattr(settings, 'GEMINI_503_RETRY_MAX', 0))
     except (TypeError, ValueError):
-        retries_503 = 3
+        retries_503 = 0
     retries_503 = max(0, min(retries_503, 6))
     ultimo_error = MSG_GEMINI_GENERICO
 
@@ -292,15 +292,10 @@ def _llamar_gemini(prompt: str) -> tuple[dict[str, Any] | None, dict[str, int | 
             if resp.status_code == 400 and usar_thinking:
                 usar_thinking = False
                 continue
-            if resp.status_code in (429, 503) and intento < intentos_modelo:
-                espera = (
-                    _backoff_503_s(intento)
-                    if resp.status_code == 503
-                    else min(10, max(2, 2 ** intento))
-                )
+            if resp.status_code == 429 and intento < intentos_modelo:
+                espera = min(10, max(2, 2 ** intento))
                 logger.warning(
-                    'Gemini cotización HTTP %s model=%s; espera %.0fs y reintenta',
-                    resp.status_code,
+                    'Gemini cotización HTTP 429 model=%s; espera %.0fs y reintenta',
                     modelo_actual,
                     espera,
                 )
@@ -311,6 +306,26 @@ def _llamar_gemini(prompt: str) -> tuple[dict[str, Any] | None, dict[str, int | 
                 break
             if resp.status_code == 503:
                 ultimo_error = MSG_GEMINI_SATURADO
+                # High demand de Google (UNAVAILABLE), no es la cuota de la API key.
+                # Reintentar flash-lite 3–12s deja la búsqueda de repuestos pegada;
+                # 2.5-flash está en otro pool y responde ya.
+                if mi < len(modelos) - 1:
+                    logger.warning(
+                        'Gemini cotización HTTP 503 model=%s (Google saturado, no es la cuota); '
+                        'pasa a %s sin esperar',
+                        modelo_actual,
+                        modelos[mi + 1],
+                    )
+                    break
+                if intento < intentos_modelo:
+                    espera = _backoff_503_s(intento)
+                    logger.warning(
+                        'Gemini cotización HTTP 503 model=%s; espera %.0fs y reintenta',
+                        modelo_actual,
+                        espera,
+                    )
+                    time.sleep(espera)
+                    continue
                 break
             return None, uso_vacio, MSG_GEMINI_GENERICO
         if ultimo_error in (

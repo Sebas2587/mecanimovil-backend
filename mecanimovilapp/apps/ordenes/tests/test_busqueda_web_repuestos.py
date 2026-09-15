@@ -1107,7 +1107,7 @@ class BuscarRepuestosWebTavilyTestCase(SimpleTestCase):
             'Pastillas Kia Rio',
         )
 
-    def test_reintenta_gemini_si_esta_saturado(self):
+    def test_gemini_503_usa_modelo_respaldo(self):
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
 
         saturado = MagicMock()
@@ -1116,16 +1116,24 @@ class BuscarRepuestosWebTavilyTestCase(SimpleTestCase):
         ok = MagicMock()
         ok.status_code = 200
         ok.json.return_value = {'candidates': []}
-        respuestas = [saturado, ok]
+        urls = []
+
+        def fake_post(url, **kwargs):
+            urls.append(url)
+            return saturado if 'flash-lite' in url else ok
 
         with patch(
             'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.requests.post',
-            side_effect=lambda *a, **k: respuestas.pop(0),
-        ), patch.object(bw, '_ESPERA_REINTENTO_GEMINI', 0):
+            side_effect=fake_post,
+        ), patch.object(
+            bw, 'modelos_gemini_cotizacion', return_value=['gemini-3.1-flash-lite', 'gemini-2.5-flash'],
+        ):
             body = bw._gemini_generar('prompt', timeout=5, use_url_context=False)
 
         self.assertEqual(body, {'candidates': []})
-        self.assertEqual(respuestas, [])
+        self.assertEqual(len(urls), 2)
+        self.assertIn('gemini-3.1-flash-lite', urls[0])
+        self.assertIn('gemini-2.5-flash', urls[1])
 
     def test_descarta_home_de_la_tienda(self):
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw

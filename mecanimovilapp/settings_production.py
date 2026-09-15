@@ -58,7 +58,7 @@ ASISTENTE_COTIZACION_GEMINI_FALLBACKS = os.environ.get(
     'gemini-2.5-flash',
 )
 GEMINI_RETRY_MAX = int(os.environ.get('GEMINI_RETRY_MAX', '2'))
-GEMINI_503_RETRY_MAX = int(os.environ.get('GEMINI_503_RETRY_MAX', '3'))
+GEMINI_503_RETRY_MAX = int(os.environ.get('GEMINI_503_RETRY_MAX', '0'))
 HUGGINGFACE_API_TOKEN = os.environ.get('HUGGINGFACE_API_TOKEN', '')
 HUGGINGFACE_MODEL = os.environ.get('HUGGINGFACE_MODEL', 'Qwen/Qwen2.5-1.5B-Instruct')
 OLLAMA_BASE_URL = os.environ.get('OLLAMA_BASE_URL', '')

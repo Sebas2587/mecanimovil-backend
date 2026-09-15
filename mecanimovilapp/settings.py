@@ -738,8 +738,9 @@ AGENTE_IA_THINK_DELAY_SECONDS = config('AGENTE_IA_THINK_DELAY_SECONDS', default=
 AGENTE_IA_MULTIMODAL_MODEL = config('AGENTE_IA_MULTIMODAL_MODEL', default='gemini-2.5-flash')
 AGENTE_IA_MULTIMODAL_TIMEOUT = config('AGENTE_IA_MULTIMODAL_TIMEOUT', default=45, cast=int)
 GEMINI_RETRY_MAX = config('GEMINI_RETRY_MAX', default=2, cast=int)
-# Reintentos extra solo para 503 UNAVAILABLE (picos de demanda de Google).
-GEMINI_503_RETRY_MAX = config('GEMINI_503_RETRY_MAX', default=3, cast=int)
+# Reintentos extra de 503 en el MISMO modelo. 0: si flash-lite está saturado
+# (UNAVAILABLE de Google, no es la cuota) pasa ya a ASISTENTE_COTIZACION_GEMINI_FALLBACKS.
+GEMINI_503_RETRY_MAX = config('GEMINI_503_RETRY_MAX', default=0, cast=int)
 # Cuota mensual de referencia para alertas de uso Gemini (Google AI Studio renueva cada mes calendario)
 GEMINI_LIMITE_TOKENS_MENSUAL = config('GEMINI_LIMITE_TOKENS_MENSUAL', default=1_000_000, cast=int)
 

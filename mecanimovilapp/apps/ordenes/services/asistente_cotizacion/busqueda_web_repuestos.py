@@ -19,7 +19,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import time
 import unicodedata
 from datetime import date
 from typing import Any
@@ -37,13 +36,17 @@ from .enriquecer_repuestos import (
     _norm,
     _to_int_clp,
 )
-from .generador import generation_config_gemini, _parse_json, texto_candidato_gemini, timeout_http_gemini
+from .generador import (
+    generation_config_gemini,
+    _parse_json,
+    modelos_gemini_cotizacion,
+    texto_candidato_gemini,
+    timeout_http_gemini,
+)
 
 logger = logging.getLogger(__name__)
 
 _CACHE_RPD_PREFIX = 'busqueda_web_repuestos_rpd:'
-_ESPERA_REINTENTO_GEMINI = 3.0
-_GEMINI_INTENTOS = 2
 # Un kit (Morning, i10, …) dispara 6–8 queries. Cada search Tavily puede irse
 # a 20s: eso solo ya supera los 3 min del overlay. Tres consultas bastan:
 # extract lee el precio aunque el snippet no lo traiga.
@@ -1409,19 +1412,17 @@ Incluye un ítem por cada repuesto listado arriba.
 
 def _gemini_generar(prompt: str, *, timeout: int, use_url_context: bool) -> dict[str, Any] | None:
     api_key = (getattr(settings, 'GEMINI_API_KEY', '') or '').strip()
-    model = (
-        getattr(settings, 'BUSQUEDA_WEB_REPUESTOS_MODEL', '')
-        or getattr(settings, 'GEMINI_MODEL', 'gemini-3.1-flash-lite')
-        or 'gemini-3.1-flash-lite'
-    ).strip()
-    endpoint = (
-        f'https://generativelanguage.googleapis.com/v1beta/models/{model}:'
-        f'generateContent?key={api_key}'
-    )
-    usar_thinking = True
-    # 503/429/red: un reintento. El tercero (antes 3×45s) dejaba el taller 2 min
-    # pegado y igual devolvía vacío cuando Google seguía saturado.
-    for intento in range(1, _GEMINI_INTENTOS + 1):
+    override = (getattr(settings, 'BUSQUEDA_WEB_REPUESTOS_MODEL', '') or '').strip()
+    modelos = modelos_gemini_cotizacion(override or None)
+    if not api_key or not modelos:
+        return None
+    timeout_http = timeout_http_gemini(timeout)
+    for mi, model in enumerate(modelos):
+        endpoint = (
+            f'https://generativelanguage.googleapis.com/v1beta/models/{model}:'
+            f'generateContent?key={api_key}'
+        )
+        usar_thinking = True
         payload: dict[str, Any] = {
             'contents': [{'parts': [{'text': prompt}]}],
             'generationConfig': generation_config_gemini(
@@ -1434,37 +1435,43 @@ def _gemini_generar(prompt: str, *, timeout: int, use_url_context: bool) -> dict
             payload['tools'] = [{'url_context': {}}]
             if getattr(settings, 'BUSQUEDA_WEB_REPUESTOS_GROUNDING', False):
                 payload['tools'].append({'google_search': {}})
-        try:
-            resp = requests.post(endpoint, json=payload, timeout=timeout_http_gemini(timeout))
-        except (requests.ReadTimeout, requests.Timeout) as exc:
-            if isinstance(exc, requests.ConnectTimeout) and intento < _GEMINI_INTENTOS:
-                logger.warning('busqueda_web_repuestos: connect timeout Gemini: %s', exc)
-                time.sleep(_ESPERA_REINTENTO_GEMINI)
-                continue
-            logger.warning('busqueda_web_repuestos: timeout Gemini: %s', exc)
-            return None
-        except requests.RequestException as exc:
-            logger.warning('busqueda_web_repuestos: error de red Gemini: %s', exc)
-            if intento == _GEMINI_INTENTOS:
-                return None
-            time.sleep(_ESPERA_REINTENTO_GEMINI)
-            continue
-        if resp.status_code == 200:
+        for thinking_pass in (1, 2):
             try:
-                return resp.json()
-            except ValueError:
-                return None
-        logger.warning(
-            'busqueda_web_repuestos: Gemini status=%s body=%s',
-            resp.status_code,
-            resp.text[:300],
-        )
-        if resp.status_code == 400 and usar_thinking:
-            usar_thinking = False
-            continue
-        if resp.status_code not in (429, 503) or intento == _GEMINI_INTENTOS:
-            return None
-        time.sleep(_ESPERA_REINTENTO_GEMINI)
+                resp = requests.post(endpoint, json=payload, timeout=timeout_http)
+            except (requests.ReadTimeout, requests.Timeout) as exc:
+                logger.warning('busqueda_web_repuestos: timeout Gemini model=%s: %s', model, exc)
+                break
+            except requests.RequestException as exc:
+                logger.warning('busqueda_web_repuestos: error de red Gemini model=%s: %s', model, exc)
+                break
+            if resp.status_code == 200:
+                try:
+                    return resp.json()
+                except ValueError:
+                    return None
+            logger.warning(
+                'busqueda_web_repuestos: Gemini status=%s model=%s body=%s',
+                resp.status_code,
+                model,
+                resp.text[:300],
+            )
+            if resp.status_code == 400 and usar_thinking:
+                usar_thinking = False
+                payload['generationConfig'] = generation_config_gemini(
+                    temperature=0.2,
+                    max_output=4096,
+                    thinking=False,
+                )
+                continue
+            if resp.status_code in (429, 503) and mi < len(modelos) - 1:
+                logger.warning(
+                    'busqueda_web_repuestos: Gemini %s model=%s (Google saturado, no es la cuota); '
+                    'pasa a %s',
+                    resp.status_code,
+                    model,
+                    modelos[mi + 1],
+                )
+            break
     return None
 
 
