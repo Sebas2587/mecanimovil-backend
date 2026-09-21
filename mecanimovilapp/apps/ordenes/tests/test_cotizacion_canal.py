@@ -1547,6 +1547,19 @@ class ManoObraLineasTestCase(SimpleTestCase):
         lineas = resolver_mano_obra_lineas(cot)
         self.assertEqual([l['monto_clp'] for l in lineas], [20000, 15000])
 
+    def test_backfill_cuando_lineas_sin_monto(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.mano_obra_lineas import (
+            resolver_mano_obra_lineas,
+        )
+        cot = self._cot(
+            metadata={'servicios_lineas': [{'nombre': 'Diagnóstico de soportes de motor'}]},
+            mano_obra_clp=125000,
+        )
+        lineas = resolver_mano_obra_lineas(cot)
+        self.assertEqual(len(lineas), 1)
+        self.assertEqual(lineas[0]['nombre'], 'Diagnóstico de soportes de motor')
+        self.assertEqual(lineas[0]['monto_clp'], 125000)
+
     def test_lineas_ganan_sobre_lump(self):
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.mano_obra_lineas import (
             aplicar_mano_obra_en_edicion,

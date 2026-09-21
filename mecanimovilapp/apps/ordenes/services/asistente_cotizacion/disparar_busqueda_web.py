@@ -242,11 +242,11 @@ def disparar_busqueda_web_cotizacion(
     return False
 
 
-def disparar_y_refrescar_cotizacion(cotizacion: Any) -> Any:
-    """Dispara búsqueda (sync por default) y refresca la instancia desde BD.
+def disparar_y_refrescar_cotizacion(cotizacion: Any, *, sync: bool | None = None) -> Any:
+    """Dispara búsqueda y refresca la instancia desde BD.
 
-    Si historial/plantilla/cache ya cubren el mismo modelo+servicio, omite Tavily
-    (`busqueda_web_estado=omitida_*`) para no gastar créditos.
+    sync=True corre en el proceso actual (borrador del agente: el taller no
+    debe abrir el editor a mitad de Tavily).
     """
     if cotizacion is None or not getattr(cotizacion, 'id', None):
         return cotizacion
@@ -272,7 +272,7 @@ def disparar_y_refrescar_cotizacion(cotizacion: Any) -> Any:
             exc,
         )
 
-    ran_sync = disparar_busqueda_web_cotizacion(cotizacion.id)
+    ran_sync = disparar_busqueda_web_cotizacion(cotizacion.id, sync=sync)
     if ran_sync:
         try:
             cotizacion.refresh_from_db()

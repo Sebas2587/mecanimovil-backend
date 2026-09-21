@@ -896,6 +896,117 @@ def _titulo_servicios(lineas: list[dict[str, Any]]) -> str:
     return f'{nombres[0]} + {nombres[1]} (+{len(nombres) - 2} más)'
 
 
+def _aplicar_montos_contenido_ia(
+    lineas: list[dict[str, Any]],
+    contenido: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Copia montos de Gemini/respaldo a líneas que aún no tienen tarifa."""
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.mano_obra_lineas import (
+        monto_linea_mo,
+    )
+
+    ia_raw = (contenido or {}).get('servicios_lineas') or []
+    if not isinstance(ia_raw, list) or not ia_raw:
+        return lineas
+    ia_lineas = [lin for lin in ia_raw if isinstance(lin, dict)]
+    if not ia_lineas:
+        return lineas
+    out: list[dict[str, Any]] = []
+    for lin in lineas or []:
+        row = dict(lin)
+        if monto_linea_mo(row) > 0:
+            out.append(row)
+            continue
+        nombre = str(row.get('nombre') or '')
+        match = next(
+            (
+                ia
+                for ia in ia_lineas
+                if _servicios_equivalentes(nombre, str(ia.get('nombre') or ''))
+            ),
+            None,
+        )
+        if match is None and len(ia_lineas) == 1 and len(lineas) == 1:
+            match = ia_lineas[0]
+        monto = monto_linea_mo(match) if match else 0
+        if monto > 0:
+            row['monto_clp'] = monto
+            row['precio_mano_obra_clp'] = monto
+        out.append(row)
+    return out
+
+
+def _asegurar_montos_en_lineas(
+    lineas: list[dict[str, Any]],
+    mano_obra: int,
+) -> list[dict[str, Any]]:
+    """El taller lee servicios_lineas; el lump mano_obra_clp no basta si hay líneas en $0."""
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.mano_obra_lineas import (
+        monto_linea_mo,
+    )
+
+    out = [dict(lin) for lin in (lineas or [])]
+    if not out:
+        return out
+    for lin in out:
+        monto = monto_linea_mo(lin)
+        if monto > 0:
+            lin['monto_clp'] = monto
+            lin['precio_mano_obra_clp'] = monto
+    asignado = sum(monto_linea_mo(lin) for lin in out)
+    vacias = [lin for lin in out if monto_linea_mo(lin) <= 0]
+    if not vacias:
+        return out
+    faltante = max(0, int(mano_obra or 0) - asignado)
+    if faltante <= 0:
+        return out
+    n = len(vacias)
+    base = faltante // n
+    resto = faltante - base * n
+    for i, lin in enumerate(vacias):
+        monto = base + (resto if i == 0 else 0)
+        lin['monto_clp'] = monto
+        lin['precio_mano_obra_clp'] = monto
+    return out
+
+
+def _finalizar_precios_borrador_agente(cotizacion: CotizacionCanal) -> CotizacionCanal:
+    """Tras la búsqueda: techo IA en piezas sin ficha y cierra el estado pendiente."""
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
+        aplicar_totales_cotizacion,
+    )
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.resolver_precio import (
+        aplicar_techo_ia_en_repuestos,
+    )
+
+    try:
+        cotizacion.refresh_from_db()
+    except Exception:
+        pass
+    cotizacion.repuestos = aplicar_techo_ia_en_repuestos(list(cotizacion.repuestos or []))
+    aplicar_totales_cotizacion(cotizacion)
+    meta = dict(cotizacion.metadata or {})
+    if str(meta.get('busqueda_web_estado') or '') == 'pendiente':
+        tiene_precio = any(
+            int(r.get('precio_unitario_clp') or 0) > 0
+            for r in (cotizacion.repuestos or [])
+            if isinstance(r, dict)
+        )
+        meta['busqueda_web_estado'] = 'ok' if tiene_precio else 'sin_resultados'
+        meta.pop('busqueda_web_progreso', None)
+        cotizacion.metadata = meta
+    cotizacion.save(update_fields=[
+        'repuestos',
+        'costo_repuestos_clp',
+        'mano_obra_clp',
+        'descuento_clp',
+        'total_clp',
+        'metadata',
+        'actualizado_en',
+    ])
+    return cotizacion
+
+
 def _merge_linea_servicio(
     existentes: list[dict[str, Any]],
     nueva: dict[str, Any],
@@ -1332,6 +1443,7 @@ def crear_cotizacion_borrador_desde_agente(
             vehiculo=vehiculo,
             contexto_rag_extra=datos.get('contexto_rag') or '',
             taller=taller,
+            usar_web=False,
         )
     if not resultado.get('disponible'):
         logger.warning(
@@ -1341,15 +1453,17 @@ def crear_cotizacion_borrador_desde_agente(
             sesion.id,
             servicios_turno,
         )
-        resultado = {
-            'disponible': False,
-            'contenido': {},
-            'contenido_ia': {},
-            'contexto': {},
-            'tokens_entrada': 0,
-            'tokens_salida': 0,
-            'modelo': '',
-        }
+        contenido_prev = resultado.get('contenido') if isinstance(resultado, dict) else None
+        if not isinstance(contenido_prev, dict) or not contenido_prev:
+            resultado = {
+                'disponible': False,
+                'contenido': {},
+                'contenido_ia': {},
+                'contexto': {},
+                'tokens_entrada': 0,
+                'tokens_salida': 0,
+                'modelo': '',
+            }
 
     contenido = resultado.get('contenido') or {}
     ctx = resultado.get('contexto') or {}
@@ -1718,7 +1832,9 @@ def crear_cotizacion_borrador_desde_agente(
         elif recargo_aplicado > 0:
             mano_obra += recargo_aplicado
 
+    lineas = _aplicar_montos_contenido_ia(lineas, contenido)
     costo_rep, mano_obra, total = recalcular_totales(repuestos, mano_obra)
+    lineas = _asegurar_montos_en_lineas(lineas, mano_obra)
 
     contact = conversation.external_contact
     cliente_nombre = (datos.get('cliente_nombre') or '').strip()
@@ -2038,7 +2154,8 @@ def crear_cotizacion_borrador_desde_agente(
     sesion.save(update_fields=['cotizacion_borrador', 'estado', 'datos_capturados', 'actualizado_en'])
 
     if (cotizacion.metadata or {}).get('busqueda_web_estado') == 'pendiente':
-        cotizacion = disparar_y_refrescar_cotizacion(cotizacion)
+        cotizacion = disparar_y_refrescar_cotizacion(cotizacion, sync=True)
+    cotizacion = _finalizar_precios_borrador_agente(cotizacion)
 
     notificar_cotizacion_borrador_agente(
         proveedor_user_id=proveedor_user_id,

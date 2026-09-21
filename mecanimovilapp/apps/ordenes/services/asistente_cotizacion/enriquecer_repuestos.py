@@ -117,11 +117,11 @@ def nombre_repuesto_buscable(nombre: str | None) -> bool:
 
 
 def linea_necesita_busqueda_web(rep: Any) -> bool:
-    """True si la línea no tiene monto ni banda: hay que buscar en la web.
+    """True si falta un precio de ficha/tienda. El rango de Gemini no cuenta.
 
-    No recotiza una pieza que ya tiene unitario o rango de una búsqueda
-    anterior. Para forzar otra (variante/calidad nueva) hay que borrar
-    min/max y fuente antes de disparar.
+    Gemini deja min/max y unitario 0 a propósito; eso no es una búsqueda previa.
+    No recotiza catálogo/historial/proveedor ni una línea que ya tiene unitario
+    o una banda con fuente de tienda.
     """
     if not isinstance(rep, dict):
         return False
@@ -132,7 +132,9 @@ def linea_necesita_busqueda_web(rep: Any) -> bool:
         return False
     if _to_int_clp(rep.get('precio_unitario_clp')) > 0:
         return False
-    if _to_int_clp(rep.get('precio_min_clp')) > 0 or _to_int_clp(rep.get('precio_max_clp')) > 0:
+    if fuente in ('web', 'ml', 'mercadolibre') and (
+        _to_int_clp(rep.get('precio_min_clp')) > 0 or _to_int_clp(rep.get('precio_max_clp')) > 0
+    ):
         return False
     return True
 

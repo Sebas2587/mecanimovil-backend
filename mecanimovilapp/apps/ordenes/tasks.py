@@ -530,7 +530,28 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
         candidatos = candidatos[:max_lineas]
 
         if not candidatos:
-            _set_estado(cot, 'sin_resultados')
+            from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.resolver_precio import (
+                aplicar_techo_ia_en_repuestos,
+            )
+
+            reps_techo = aplicar_techo_ia_en_repuestos(reps)
+            if reps_techo != reps:
+                cot.repuestos = reps_techo
+                aplicar_totales_cotizacion(cot)
+                cot.save(update_fields=[
+                    'repuestos',
+                    'costo_repuestos_clp',
+                    'mano_obra_clp',
+                    'descuento_clp',
+                    'total_clp',
+                    'actualizado_en',
+                ])
+            tiene_precio = any(
+                _to_int_clp(r.get('precio_unitario_clp')) > 0
+                for r in (cot.repuestos or [])
+                if isinstance(r, dict)
+            )
+            _set_estado(cot, 'ok' if tiene_precio else 'sin_resultados')
             return {'ok': True, 'reason': 'nada_que_buscar'}
 
         _set_progreso(
@@ -806,6 +827,11 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
             )
             merged_save.append(src if isinstance(src, dict) else rep)
         cot.repuestos = merged_save
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.resolver_precio import (
+            aplicar_techo_ia_en_repuestos,
+        )
+
+        cot.repuestos = aplicar_techo_ia_en_repuestos(list(cot.repuestos or []))
         aplicar_totales_cotizacion(cot)
         cot.metadata = meta
         cot.save(update_fields=[

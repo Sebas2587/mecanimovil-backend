@@ -84,6 +84,42 @@ def aplicar_derivados_certeza(rep: dict[str, Any]) -> None:
         rep.pop('precio_referencia_mercado', None)
 
 
+def aplicar_techo_ia_si_falta_unitario(rep: dict[str, Any]) -> dict[str, Any]:
+    """Si no hay ficha, cobra el techo del rango que Gemini ya entregó."""
+    next_rep = dict(rep)
+    if _to_int_clp(next_rep.get('precio_unitario_clp')) > 0:
+        return next_rep
+    techo = _to_int_clp(next_rep.get('precio_max_clp'))
+    piso = _to_int_clp(next_rep.get('precio_min_clp'))
+    if techo <= 0 and piso <= 0:
+        return next_rep
+    if techo <= 0:
+        techo = piso
+    if piso <= 0:
+        piso = techo
+    if piso > techo:
+        piso, techo = techo, piso
+    next_rep['precio_unitario_clp'] = techo
+    next_rep['precio_min_clp'] = piso
+    next_rep['precio_max_clp'] = techo
+    if _to_int_clp(next_rep.get('precio_referencia_ia')) <= 0:
+        next_rep['precio_referencia_ia'] = techo
+    next_rep['certeza'] = CERTEZA_ASUMIDO
+    next_rep.pop('motivo_sin_precio', None)
+    aplicar_derivados_certeza(next_rep)
+    return next_rep
+
+
+def aplicar_techo_ia_en_repuestos(repuestos: list | None) -> list:
+    out: list = []
+    for row in repuestos or []:
+        if isinstance(row, dict):
+            out.append(aplicar_techo_ia_si_falta_unitario(row))
+        else:
+            out.append(row)
+    return out
+
+
 def _hits_con_precio(hits: list[dict[str, Any]], fuentes: tuple[str, ...]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for hit in hits:

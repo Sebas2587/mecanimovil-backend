@@ -431,6 +431,7 @@ def generar_cotizacion_ia(
     taller=None,
     enriquecer_marketplace: bool = True,
     enriquecer_ml: bool = True,
+    usar_web: bool = True,
 ) -> dict[str, Any]:
     if not asistente_cotizacion_habilitado():
         return {
@@ -622,7 +623,7 @@ def generar_cotizacion_ia(
                 servicio_nombre=servicio_nombre or str(contenido.get('servicio_nombre') or ''),
                 taller=taller,
                 usar_ml=enriquecer_ml,
-                usar_web=True,
+                usar_web=usar_web,
             )
             costo_rep, mo, total = recalcular_totales(reps, int(contenido.get('mano_obra_clp') or 0))
             contenido['repuestos'] = reps

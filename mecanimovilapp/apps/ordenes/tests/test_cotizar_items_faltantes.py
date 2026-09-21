@@ -95,13 +95,24 @@ class CotizarItemsFaltantesServiceTests(TestCase):
             'fuente_marketplace': 'web',
         }))
 
-    def test_linea_con_rango_no_se_recotiza(self):
-        self.assertFalse(linea_necesita_busqueda_web({
+    def test_linea_con_rango_ia_igual_se_busca(self):
+        """Gemini deja min/max y unitario 0; eso no es una búsqueda web previa."""
+        self.assertTrue(linea_necesita_busqueda_web({
             'nombre': 'Aceite motor',
             'precio_unitario_clp': 0,
             'precio_min_clp': 18000,
             'precio_max_clp': 42000,
             'especificacion_pendiente': True,
+        }))
+
+    def test_linea_con_rango_web_no_se_recotiza(self):
+        self.assertFalse(linea_necesita_busqueda_web({
+            'nombre': 'Aceite motor',
+            'precio_unitario_clp': 0,
+            'precio_min_clp': 18000,
+            'precio_max_clp': 42000,
+            'fuente_marketplace': 'web',
+            'proveedor_nombre': 'AutoPlanet',
         }))
 
     def test_linea_con_variante_pendiente_igual_se_busca(self):
@@ -735,4 +746,79 @@ class FusionarRepuestosEdicionTests(SimpleTestCase):
         out = fusionar_repuestos_edicion(actuales, incoming)
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]['id'], 'rep-2')
+
+
+class TechoIaYLineasAgenteTests(SimpleTestCase):
+    def test_linea_con_rango_ia_igual_se_busca(self):
+        self.assertTrue(linea_necesita_busqueda_web({
+            'nombre': 'Aceite motor',
+            'precio_unitario_clp': 0,
+            'precio_min_clp': 18000,
+            'precio_max_clp': 42000,
+        }))
+
+    def test_linea_con_rango_web_no_se_recotiza(self):
+        self.assertFalse(linea_necesita_busqueda_web({
+            'nombre': 'Aceite motor',
+            'precio_unitario_clp': 0,
+            'precio_min_clp': 18000,
+            'precio_max_clp': 42000,
+            'fuente_marketplace': 'web',
+        }))
+
+    def test_techo_ia_usa_precio_max_si_unitario_es_cero(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.resolver_precio import (
+            aplicar_techo_ia_si_falta_unitario,
+        )
+
+        out = aplicar_techo_ia_si_falta_unitario({
+            'nombre': 'Soporte de motor',
+            'precio_unitario_clp': 0,
+            'precio_min_clp': 45000,
+            'precio_max_clp': 89000,
+            'certeza': 'sin_precio',
+        })
+        self.assertEqual(out['precio_unitario_clp'], 89000)
+        self.assertEqual(out['certeza'], 'asumido')
+        self.assertEqual(out['precio_referencia_ia'], 89000)
+
+    def test_techo_ia_no_pisa_unitario_existente(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.resolver_precio import (
+            aplicar_techo_ia_si_falta_unitario,
+        )
+
+        out = aplicar_techo_ia_si_falta_unitario({
+            'nombre': 'Filtro de aceite',
+            'precio_unitario_clp': 12500,
+            'precio_max_clp': 18000,
+            'fuente_marketplace': 'web',
+        })
+        self.assertEqual(out['precio_unitario_clp'], 12500)
+
+    def test_asegurar_montos_reparte_lump_en_lineas_vacias(self):
+        from mecanimovilapp.apps.agente_ia.services.cotizacion_borrador import (
+            _asegurar_montos_en_lineas,
+        )
+
+        out = _asegurar_montos_en_lineas(
+            [{'nombre': 'Diagnóstico de soportes de motor'}],
+            125000,
+        )
+        self.assertEqual(out[0]['monto_clp'], 125000)
+        self.assertEqual(out[0]['precio_mano_obra_clp'], 125000)
+
+    def test_asegurar_montos_no_pisa_catalogo(self):
+        from mecanimovilapp.apps.agente_ia.services.cotizacion_borrador import (
+            _asegurar_montos_en_lineas,
+        )
+
+        out = _asegurar_montos_en_lineas(
+            [
+                {'nombre': 'Alineación', 'precio_mano_obra_clp': 25000},
+                {'nombre': 'Diagnóstico'},
+            ],
+            80000,
+        )
+        self.assertEqual(out[0]['monto_clp'], 25000)
+        self.assertEqual(out[1]['monto_clp'], 55000)
 

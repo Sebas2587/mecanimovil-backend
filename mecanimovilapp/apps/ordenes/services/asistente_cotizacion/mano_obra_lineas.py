@@ -56,6 +56,16 @@ def resolver_mano_obra_lineas(cotizacion, *, backfill: bool = True) -> list[dict
         if len(out) >= MAX_MANO_OBRA_LINEAS:
             break
     if out:
+        if sum(lin['monto_clp'] for lin in out) > 0 or not backfill:
+            return out
+        mo = _to_int_clp(getattr(cotizacion, 'mano_obra_clp', 0))
+        if mo <= 0:
+            return out
+        n = len(out)
+        base = mo // n
+        resto = mo - base * n
+        for i, lin in enumerate(out):
+            lin['monto_clp'] = base + (resto if i == 0 else 0)
         return out
     if not backfill:
         return []
