@@ -436,6 +436,7 @@ class ConversationViewSet(DestroyModelMixin, viewsets.ReadOnlyModelViewSet):
                 if message.attachment
                 else None
             ),
+            'channel_metadata': message.channel_metadata or {},
         }
         
         print(f"🔵 [CHAT BACKEND] Payload prepared: {payload}")

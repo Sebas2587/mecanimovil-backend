@@ -6,6 +6,7 @@ import logging
 import re
 import time
 import unicodedata
+from datetime import timedelta
 from typing import Any
 
 import requests
@@ -1986,6 +1987,44 @@ def _intentar_flujo_repuestos_canal(
     return None
 
 
+_AVISO_IA_OCUPADA_MINUTOS = 15
+_AVISO_IA_OCUPADA_TEXTO = (
+    'Recibí tu mensaje. Dame un momento y te respondo con el detalle.'
+)
+
+
+def _avisar_cliente_agente_ocupado(
+    *,
+    conversation,
+    proveedor_user_id: int,
+    sesion: AgenteConversacionSesion,
+) -> None:
+    """Un aviso corto si Gemini no pudo responder, sin spamear el chat."""
+    datos = dict(sesion.datos_capturados or {})
+    last = datos.get('aviso_ia_ocupada_en')
+    if last:
+        try:
+            from django.utils.dateparse import parse_datetime
+
+            dt = parse_datetime(str(last))
+            if dt and timezone.is_naive(dt):
+                dt = timezone.make_aware(dt, timezone.get_current_timezone())
+            if dt and timezone.now() - dt < timedelta(minutes=_AVISO_IA_OCUPADA_MINUTOS):
+                return
+        except Exception:
+            pass
+    enviados = enviar_respuestas_agente(
+        conversation=conversation,
+        proveedor_user_id=proveedor_user_id,
+        textos=[_AVISO_IA_OCUPADA_TEXTO],
+    )
+    if not enviados:
+        return
+    datos['aviso_ia_ocupada_en'] = timezone.now().isoformat()
+    sesion.datos_capturados = datos
+    sesion.save(update_fields=['datos_capturados', 'actualizado_en'])
+
+
 def enviar_respuestas_agente(
     *,
     conversation: Conversation,
@@ -2446,6 +2485,11 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             respuesta_generada='',
             accion=AgenteMensajeLog.ACCION_IGNORAR,
             metadata={'error': error},
+        )
+        _avisar_cliente_agente_ocupado(
+            conversation=conversation,
+            proveedor_user_id=proveedor_user_id,
+            sesion=sesion,
         )
         return {'ok': False, 'error': error}
 

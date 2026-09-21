@@ -351,3 +351,25 @@ class OmnichannelServiceTests(TestCase):
         }
         count = OmnichannelService.process_webhook_body(body)
         self.assertEqual(count, 1)
+
+
+class MetaSendRetryTests(SimpleTestCase):
+    def test_reintenta_error_131000_y_5xx(self):
+        from unittest.mock import MagicMock
+
+        from mecanimovilapp.apps.omnichannel.tasks import _meta_reintenta
+
+        resp_131000 = MagicMock()
+        resp_131000.status_code = 400
+        resp_131000.json.return_value = {'error': {'code': 131000, 'message': 'Something went wrong'}}
+        resp_500 = MagicMock()
+        resp_500.status_code = 500
+        resp_500.json.return_value = {}
+        resp_perm = MagicMock()
+        resp_perm.status_code = 400
+        resp_perm.json.return_value = {'error': {'code': 131047, 'message': 're-engagement'}}
+
+        self.assertTrue(_meta_reintenta(resp_131000))
+        self.assertTrue(_meta_reintenta(resp_500))
+        self.assertFalse(_meta_reintenta(resp_perm))
+        self.assertFalse(_meta_reintenta(None))

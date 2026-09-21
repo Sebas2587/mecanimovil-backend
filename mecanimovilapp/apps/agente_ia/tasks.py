@@ -13,8 +13,8 @@ logger = logging.getLogger(__name__)
     bind=True,
     name='agente_ia.procesar_mensaje_entrante',
     queue='default',
-    max_retries=1,
-    default_retry_delay=8,
+    max_retries=2,
+    default_retry_delay=12,
 )
 def procesar_mensaje_entrante_task(self, message_id: int) -> dict:
     from mecanimovilapp.apps.agente_ia.services.orquestador import procesar_mensaje_entrante_ia
@@ -28,7 +28,9 @@ def procesar_mensaje_entrante_task(self, message_id: int) -> dict:
     err = str((result or {}).get('error') or '')
     reintenta = (result or {}).get('ok') is False and any(
         token in err.lower()
-        for token in ('503', 'saturad', 'conexión', 'conexion', 'timed out', 'timeout')
+        for token in (
+            '429', '503', 'saturad', 'quota', 'conexión', 'conexion', 'timed out', 'timeout',
+        )
     )
     if reintenta and self.request.retries < (self.max_retries or 0):
         logger.warning(

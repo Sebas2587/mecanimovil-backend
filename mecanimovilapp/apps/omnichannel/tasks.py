@@ -149,8 +149,54 @@ def _meta_attachment_type(kind: str) -> str:
     return 'file'
 
 
-@shared_task(name='omnichannel.send_meta_message', queue='default')
-def send_meta_message(message_id: int):
+def _codigo_error_meta(resp) -> int | None:
+    try:
+        return int((resp.json().get('error') or {}).get('code'))
+    except Exception:
+        return None
+
+
+def _meta_reintenta(resp) -> bool:
+    """Errores transitorios de Cloud API: vale un segundo intento."""
+    if resp is None:
+        return False
+    if resp.status_code >= 500:
+        return True
+    return _codigo_error_meta(resp) in (131000, 130429, 131048, 133016)
+
+
+def _broadcast_estado_envio(message: Message) -> None:
+    conversation = message.conversation
+    contact = getattr(conversation, 'external_contact', None)
+    connection = contact.connection if contact else None
+    channel = connection.channel if connection else conversation.source_channel
+    sender = getattr(message, 'sender', None)
+    sender_name = ''
+    if sender is not None:
+        sender_name = (
+            getattr(sender, 'get_full_name', lambda: '')()
+            or getattr(sender, 'username', '')
+            or ''
+        ).strip()
+    payload = build_chat_payload(
+        conversation=conversation,
+        message=message,
+        channel_slug=channel_to_api_slug(channel),
+        es_proveedor=True,
+        sender_name=sender_name or 'Taller',
+        external_contact=contact,
+    )
+    broadcast_to_participants(conversation, payload)
+
+
+@shared_task(
+    bind=True,
+    name='omnichannel.send_meta_message',
+    queue='default',
+    max_retries=3,
+    default_retry_delay=12,
+)
+def send_meta_message(self, message_id: int):
     message = Message.objects.select_related(
         'conversation',
         'conversation__external_contact',
@@ -166,7 +212,7 @@ def send_meta_message(message_id: int):
         logger.error('No connection for outbound message %s', message_id)
         return {'error': 'no_connection'}
 
-    if connection.usuario_id:
+    if connection.usuario_id and int(getattr(self.request, 'retries', 0) or 0) == 0:
         from mecanimovilapp.apps.suscripciones.cuotas_services import (
             CuotaAgotadaError,
             SinSuscripcionError,
@@ -198,6 +244,8 @@ def send_meta_message(message_id: int):
                     'code': exc.code,
                 },
             )
+            message.refresh_from_db()
+            _broadcast_estado_envio(message)
             return {'error': 'quota_exceeded', 'code': exc.code}
 
     client = MetaGraphClient(connection.access_token)
@@ -239,6 +287,8 @@ def send_meta_message(message_id: int):
                 tpl = payload_plantilla_whatsapp_cotizacion(cotizacion) if cotizacion else None
             if not tpl or not tpl.get('name'):
                 _guardar_error_envio('template_sin_nombre')
+                message.refresh_from_db()
+                _broadcast_estado_envio(message)
                 return {'error': 'template_sin_nombre'}
             resp = client.send_whatsapp_template(
                 connection.phone_number_id,
@@ -365,7 +415,11 @@ def send_meta_message(message_id: int):
 
         if resp is not None and resp.status_code >= 400:
             logger.error('Meta send failed: %s', resp.text)
+            if _meta_reintenta(resp) and self.request.retries < (self.max_retries or 0):
+                raise self.retry(countdown=10 * (self.request.retries + 1))
             _guardar_error_envio(resp.text)
+            message.refresh_from_db()
+            _broadcast_estado_envio(message)
             return {'error': resp.text}
 
         ext_id = None
@@ -375,10 +429,19 @@ def send_meta_message(message_id: int):
                 ext_id = body.get('messages', [{}])[0].get('id') or body.get('message_id')
             except Exception:
                 ext_id = None
+        merged = dict(message.channel_metadata or {})
+        merged.pop('send_error', None)
+        merged.pop('quota_blocked', None)
+        update = {'channel_metadata': merged}
         if ext_id:
-            Message.objects.filter(pk=message_id).update(external_message_id=ext_id)
+            update['external_message_id'] = ext_id
+        Message.objects.filter(pk=message_id).update(**update)
 
         return {'ok': True, 'channel': channel_to_api_slug(connection.channel)}
     except Exception as exc:
+        from celery.exceptions import Retry
+
+        if isinstance(exc, Retry):
+            raise
         logger.exception('send_meta_message error: %s', exc)
         raise

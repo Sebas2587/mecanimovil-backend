@@ -130,7 +130,7 @@ def modelos_gemini_cotizacion(primario: str | None = None) -> list[str]:
         extra = (
             getattr(settings, 'AGENTE_IA_MULTIMODAL_MODEL', '') or 'gemini-2.5-flash'
         ).strip()
-        extras = [extra] if extra else []
+        extras = [p for p in (extra, 'gemini-2.5-flash-lite') if p]
     elif isinstance(raw, (list, tuple)):
         extras = [str(x).strip() for x in raw if str(x).strip()]
     else:

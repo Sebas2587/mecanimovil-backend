@@ -710,7 +710,7 @@ ASISTENTE_COTIZACION_GEMINI_MODEL = config(
 # Si flash-lite responde 503 (high demand), cotizar con este modelo.
 ASISTENTE_COTIZACION_GEMINI_FALLBACKS = config(
     'ASISTENTE_COTIZACION_GEMINI_FALLBACKS',
-    default='gemini-2.5-flash',
+    default='gemini-2.5-flash,gemini-2.5-flash-lite',
 )
 ASISTENTE_COTIZACION_IA_ENABLED = config('ASISTENTE_COTIZACION_IA_ENABLED', default=False, cast=bool)
 # 45s: Gemini 3.x con prompt de catálogo/RAG supera los 15s y el cliente ve timeout.
