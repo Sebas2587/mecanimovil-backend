@@ -28,6 +28,7 @@ from mecanimovilapp.apps.ordenes.services.catalogo_pricing import (
     normalizar_nombre_servicio,
     pedido_familias_cubiertas_por_catalogos,
     precio_publico_oferta,
+    repuesto_compatible_con_servicios,
 )
 from mecanimovilapp.apps.suscripciones.cuotas_services import CuotaAgotadaError, SinSuscripcionError, verificar_y_consumir_cuota
 from mecanimovilapp.apps.suscripciones.models import ConsumoFeatureMensual
@@ -1375,6 +1376,7 @@ def crear_cotizacion_borrador_desde_agente(
             from mecanimovilapp.apps.ordenes.models import CotizacionCanalPlantilla
             from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.aprendizaje_cotizacion import (
                 buscar_plantilla_reutilizable,
+                plantilla_es_mismo_trabajo,
                 plantilla_tiene_cobertura_precios,
             )
             from django.db.models import F
@@ -1386,7 +1388,11 @@ def crear_cotizacion_borrador_desde_agente(
                 servicio_nombre=servicio_prompt,
                 cilindraje=str(vehiculo.get('cilindraje') or ''),
             )
-            if plantilla is not None and plantilla_tiene_cobertura_precios(plantilla):
+            if (
+                plantilla is not None
+                and plantilla_tiene_cobertura_precios(plantilla)
+                and plantilla_es_mismo_trabajo(plantilla, servicio_prompt)
+            ):
                 snap = plantilla.snapshot if isinstance(plantilla.snapshot, dict) else {}
                 CotizacionCanalPlantilla.objects.filter(pk=plantilla.pk).update(
                     uso_count=F('uso_count') + 1,
@@ -1672,6 +1678,11 @@ def crear_cotizacion_borrador_desde_agente(
     ref_reps = [
         normalizar_repuesto(r, i) if isinstance(r, dict) else normalizar_repuesto({'nombre': r}, i)
         for i, r in enumerate(ref_reps_raw[:12])
+    ]
+    ref_reps = [
+        r
+        for r in ref_reps
+        if repuesto_compatible_con_servicios(str(r.get('nombre') or ''), servicios_turno)
     ]
     for r in ref_reps:
         r['comentario'] = (r.get('comentario') or '') or 'Estimación de mercado (IA, IVA incl.)'

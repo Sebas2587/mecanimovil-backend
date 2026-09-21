@@ -14,7 +14,13 @@ from django.conf import settings
 from django.db.models import Q
 from django.utils import timezone
 
-from .enriquecer_repuestos import _marca_repuesto_valida, _norm, _to_int_clp
+from mecanimovilapp.apps.ordenes.services.catalogo_pricing import (
+    repuesto_compatible_con_servicios,
+    servicios_mismo_trabajo,
+    textos_tienen_trabajo_ajeno,
+)
+
+from .enriquecer_repuestos import _marca_repuesto_valida, _to_int_clp
 from .vehiculo_exacto import vehiculo_historial_identico
 
 logger = logging.getLogger(__name__)
@@ -23,18 +29,47 @@ _DOMINIO_HISTORIAL = 'historial-taller'
 _TTL_HISTORIAL_DIAS = 90
 
 
-def _servicio_tokens(nombre: str) -> set[str]:
-    return {t for t in _norm(nombre).split() if len(t) > 2}
-
-
 def _servicios_similares(a: str, b: str) -> bool:
-    ta, tb = _servicio_tokens(a), _servicio_tokens(b)
-    if not ta or not tb:
+    """Mismo trabajo. 'Cambio de embrague' ≠ 'Cambio de amortiguadores'."""
+    return servicios_mismo_trabajo(a, b)
+
+
+def _textos_alcance_plantilla(snap: dict[str, Any], titulo: str = '') -> list[str]:
+    out: list[str] = []
+    sn = str((snap or {}).get('servicio_nombre') or '').strip()
+    if sn:
+        out.append(sn)
+    for lin in (snap or {}).get('servicios_lineas') or []:
+        if not isinstance(lin, dict):
+            continue
+        nombre = str(lin.get('nombre') or '').strip()
+        if nombre:
+            out.append(nombre)
+    for raw in (snap or {}).get('repuestos') or []:
+        if not isinstance(raw, dict):
+            continue
+        nombre = str(raw.get('nombre') or '').strip()
+        if nombre:
+            out.append(nombre)
+    if (titulo or '').startswith('Auto:'):
+        partes = titulo.split('—', 1)
+        if len(partes) == 2 and partes[1].strip():
+            out.append(partes[1].strip())
+    return out
+
+
+def plantilla_es_mismo_trabajo(plantilla, servicio_nombre: str) -> bool:
+    """False si la plantilla mezcló otro trabajo (p. ej. amortiguadores en un embrague)."""
+    if plantilla is None or not (servicio_nombre or '').strip():
         return False
-    if ta == tb:
-        return True
-    inter = ta & tb
-    return len(inter) >= max(1, min(len(ta), len(tb)) // 2)
+    snap = plantilla.snapshot if isinstance(getattr(plantilla, 'snapshot', None), dict) else {}
+    textos = _textos_alcance_plantilla(snap, getattr(plantilla, 'titulo', '') or '')
+    if textos_tienen_trabajo_ajeno(servicio_nombre, textos):
+        return False
+    serv_p = str(snap.get('servicio_nombre') or getattr(plantilla, 'titulo', '') or '')
+    return _servicios_similares(serv_p, servicio_nombre) or any(
+        _servicios_similares(t, servicio_nombre) for t in textos[:4]
+    )
 
 
 def _modelo_coincide(a: str, b: str) -> bool:
@@ -125,6 +160,14 @@ def _upsert_plantilla_auto(cotizacion) -> Any | None:
         return None
 
     snap = snapshot_desde_cotizacion(cotizacion)
+    nombres_lineas = [
+        str(lin.get('nombre') or '').strip()
+        for lin in (snap.get('servicios_lineas') or [])
+        if isinstance(lin, dict) and str(lin.get('nombre') or '').strip()
+    ]
+    if nombres_lineas and textos_tienen_trabajo_ajeno(servicio, nombres_lineas):
+        servicio = ' + '.join(nombres_lineas)
+        snap['servicio_nombre'] = servicio
     snap['aprendizaje_auto'] = True
     snap['cotizacion_origen_id'] = cotizacion.id
     titulo = _titulo_plantilla_auto(marca=marca, modelo=modelo, servicio=servicio)
@@ -147,7 +190,7 @@ def _upsert_plantilla_auto(cotizacion) -> Any | None:
             snap_c.get('vehiculo_modelo'),
         ):
             continue
-        if not _servicios_similares(str(snap_c.get('servicio_nombre') or ''), servicio):
+        if not plantilla_es_mismo_trabajo(cand, servicio):
             continue
         # Solo reusar plantillas de aprendizaje auto (no pisar plantillas manuales).
         if snap_c.get('aprendizaje_auto') or (cand.titulo or '').startswith('Auto:'):
@@ -264,6 +307,11 @@ def buscar_plantilla_reutilizable(
             if len(partes) == 2:
                 serv_p = partes[1].strip()
         if not _servicios_similares(serv_p, servicio_nombre):
+            continue
+        if textos_tienen_trabajo_ajeno(
+            servicio_nombre,
+            _textos_alcance_plantilla(snap, p.titulo or ''),
+        ):
             continue
         reps = snap.get('repuestos') or []
         if not isinstance(reps, list) or not reps:
@@ -425,12 +473,21 @@ def construir_bloque_historial_prompt(
         if servicio_nombre and not _servicios_similares(cot.servicio_nombre or '', servicio_nombre):
             # Si no hay servicio pedido, igual listamos; si hay y no match, skip.
             continue
+        meta_cot = cot.metadata if isinstance(getattr(cot, 'metadata', None), dict) else {}
+        textos_cot = [cot.servicio_nombre or '']
+        for lin in meta_cot.get('servicios_lineas') or []:
+            if isinstance(lin, dict) and lin.get('nombre'):
+                textos_cot.append(str(lin.get('nombre')))
+        if servicio_nombre and textos_tienen_trabajo_ajeno(servicio_nombre, textos_cot):
+            continue
         reps_txt = []
         for raw in (cot.repuestos or [])[:8]:
             if not isinstance(raw, dict):
                 continue
             rn = str(raw.get('nombre') or '').strip()
             if not rn:
+                continue
+            if servicio_nombre and not repuesto_compatible_con_servicios(rn, [servicio_nombre]):
                 continue
             rm = _marca_repuesto_valida(raw.get('marca_repuesto'))
             rp = _to_int_clp(raw.get('precio_unitario_clp'))
@@ -451,6 +508,6 @@ def construir_bloque_historial_prompt(
         return ''
     return (
         'HISTORIAL DEL TALLER SOLO PARA ESTE MARCA+MODELO EXACTO (no copies montos de otro auto; '
-        'Toyota ≠ BAIC; Yaris ≠ Yaris Cross). Reutiliza piezas/precios si el servicio es el pedido:\n'
+        'Toyota ≠ BAIC; Yaris ≠ Yaris Cross). Reutiliza piezas/precios SOLO si el servicio es el mismo trabajo pedido (no copies amortiguadores u otros ítems de otra cotización del mismo modelo):\n'
         + '\n'.join(lineas)
     )

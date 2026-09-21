@@ -999,6 +999,55 @@ class CatalogoNoRobaPedidoEmbragueTestCase(SimpleTestCase):
             pedido_familias_cubiertas_por_catalogos(self.PEDIDO, [self.ACEITE])
         )
 
+    def test_no_mezcla_amortiguadores_en_embrague(self):
+        from mecanimovilapp.apps.ordenes.services.catalogo_pricing import (
+            repuesto_compatible_con_servicios,
+            servicios_mismo_trabajo,
+            textos_tienen_trabajo_ajeno,
+        )
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.aprendizaje_cotizacion import (
+            plantilla_es_mismo_trabajo,
+        )
+
+        self.assertTrue(servicios_mismo_trabajo('Cambio de embrague', 'Embrague completo'))
+        self.assertFalse(servicios_mismo_trabajo('Cambio de embrague', 'Cambio de amortiguadores'))
+        self.assertTrue(
+            textos_tienen_trabajo_ajeno(
+                'Cambio de embrague',
+                ['Amortiguadores delanteros', 'Cazoletas amortiguadores con rodamiento'],
+            )
+        )
+        self.assertTrue(
+            repuesto_compatible_con_servicios(
+                'Kit de embrague (disco, prensa y rodamiento)',
+                ['Cambio de embrague'],
+            )
+        )
+        self.assertFalse(
+            repuesto_compatible_con_servicios(
+                'Amortiguadores delanteros',
+                ['Cambio de embrague'],
+            )
+        )
+
+        class _P:
+            titulo = 'Auto: RENAULT DUSTER — Servicio cambio kit de embrague'
+            snapshot = {
+                'servicio_nombre': 'Servicio cambio kit de embrague',
+                'servicios_lineas': [{
+                    'nombre': (
+                        'Servicio cambio kit de embrague, cambio de amortiguadores '
+                        'delanteros y servicio de diagnostico eléctrico'
+                    ),
+                }],
+                'repuestos': [
+                    {'nombre': 'Amortiguadores delanteros'},
+                    {'nombre': 'Kit de embrague (disco, prensa y rodamiento)'},
+                ],
+            }
+
+        self.assertFalse(plantilla_es_mismo_trabajo(_P(), 'Cambio de embrague'))
+
     def test_fusion_no_reemplaza_embrague_por_aceite_del_catalogo(self):
         from unittest.mock import MagicMock, patch
 

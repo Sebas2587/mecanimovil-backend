@@ -8,7 +8,11 @@ from __future__ import annotations
 import re
 import unicodedata
 
-from mecanimovilapp.apps.ordenes.services.catalogo_pricing import normalizar_nombre_servicio
+from mecanimovilapp.apps.ordenes.services.catalogo_pricing import (
+    normalizar_nombre_servicio,
+    servicios_mismo_trabajo,
+    textos_tienen_trabajo_ajeno,
+)
 
 _SERVICIO_PAREN_RE = re.compile(
     r'\s*\([^)]*(?:repuesto|sin repuesto|con repuesto|incluye|no incluye)[^)]*\)\s*',
@@ -62,7 +66,12 @@ _SERVICIO_MENCION_RE = re.compile(
     r'scanne?r|'
     r'carga\s+de\s+aire\s+acondicionado|'
     r'cambio\s+de\s+buj[ií]as|'
-    r'cambio\s+de\s+correa(?:\s+de\s+distribuci[oó]n)?'
+    r'cambio\s+de\s+correa(?:\s+de\s+distribuci[oó]n)?|'
+    r'cambio\s+de\s+(?:kit\s+de\s+)?embrague|'
+    r'kit\s+de\s+embrague|'
+    r'embrague|'
+    r'cambio\s+de\s+amortiguadores|'
+    r'amortiguadores'
     r')\b',
     re.IGNORECASE,
 )
@@ -199,6 +208,52 @@ def _aplicar_poda_servicios(datos: dict, texto_cliente: str) -> dict:
     return datos
 
 
+def _ancla_servicios_pedido(
+    *,
+    previos: dict,
+    datos: dict,
+    texto_cliente: str,
+    add: bool,
+) -> list[str]:
+    menciones = _extraer_servicios_mencionados_en_texto(texto_cliente)
+    prev = [str(s).strip() for s in (previos.get('servicios') or []) if str(s or '').strip()]
+    if add:
+        return prev + [m for m in menciones if m]
+    if menciones:
+        return menciones
+    if prev:
+        return prev
+    sn = (datos.get('servicio_nombre') or '').strip()
+    if sn and ' + ' not in sn and ',' not in sn:
+        return [sn]
+    return []
+
+
+def _filtrar_servicios_al_ancla(lista: list, ancla: list[str]) -> list:
+    """Saca trabajos de otra familia (amortiguadores en un pedido de embrague)."""
+    if not ancla:
+        return list(lista or [])
+    pedido = ' + '.join(ancla)
+    out: list[str] = []
+    vistos: set[str] = set()
+    for s in lista or []:
+        nombre = str(s or '').strip()
+        if not nombre:
+            continue
+        clave = _clave_servicio_dedup(nombre)
+        if clave in vistos:
+            continue
+        if textos_tienen_trabajo_ajeno(pedido, [nombre]):
+            continue
+        if not any(servicios_mismo_trabajo(a, nombre) for a in ancla):
+            continue
+        if any(servicios_mismo_trabajo(nombre, existing) for existing in out):
+            continue
+        vistos.add(clave)
+        out.append(nombre)
+    return out or list(ancla)
+
+
 def _acotar_servicios_al_pedido(
     *,
     previos: dict,
@@ -225,21 +280,35 @@ def _acotar_servicios_al_pedido(
     pide_cotizar = bool(_CLIENTE_PIDE_PRECIO_RE.search(_sin_tildes(texto_cliente))) and not (
         _cliente_niega_pedir_precio(texto_cliente)
     )
+    ancla = _ancla_servicios_pedido(
+        previos=previos,
+        datos=datos,
+        texto_cliente=texto_cliente,
+        add=add,
+    )
     if add or (pide_cotizar and _extraer_servicios_mencionados_en_texto(texto_cliente)):
         menciones = _extraer_servicios_mencionados_en_texto(texto_cliente)
         lista = list(datos.get('servicios') or [])
         vistos = {_clave_servicio_dedup(str(x)) for x in lista if x}
         for nombre in menciones:
             clave = _clave_servicio_dedup(nombre)
-            if nombre and clave and clave not in vistos:
-                lista.append(nombre)
-                vistos.add(clave)
+            if not nombre or not clave or clave in vistos:
+                continue
+            if any(servicios_mismo_trabajo(nombre, str(x)) for x in lista):
+                continue
+            lista.append(nombre)
+            vistos.add(clave)
         if lista:
             datos['servicios'] = lista
-        return datos
-    if not add and not quitar and prev_servicios:
+    elif not add and not quitar and prev_servicios:
         datos['servicios'] = prev_servicios
         prev_sn = (previos.get('servicio_nombre') or '').strip()
         if prev_sn:
             datos['servicio_nombre'] = prev_sn
+    if ancla:
+        filtrada = _filtrar_servicios_al_ancla(list(datos.get('servicios') or []), ancla)
+        if filtrada:
+            datos['servicios'] = filtrada
+            if len(filtrada) == 1:
+                datos['servicio_nombre'] = filtrada[0]
     return datos

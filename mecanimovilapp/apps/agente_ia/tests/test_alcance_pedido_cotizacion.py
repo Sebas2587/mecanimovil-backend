@@ -88,6 +88,25 @@ class PedidoExplicitoVsMencionTestCase(SimpleTestCase):
         self.assertTrue(any('aceite' in str(s).lower() for s in out.get('servicios') or []))
         self.assertFalse(any('pastilla' in str(s).lower() for s in out.get('servicios') or []))
 
+    def test_no_suma_amortiguadores_en_pedido_de_embrague(self):
+        previos = {}
+        datos = {
+            'servicios': [
+                'Cambio de embrague',
+                'Cambio de amortiguadores delanteros',
+            ],
+            'servicio_nombre': 'Cambio de embrague',
+        }
+        out = _acotar_servicios_al_pedido(
+            previos=previos,
+            datos=datos,
+            texto_cliente='quiero cotizar el embrague del duster',
+        )
+        claves = ' '.join(str(s).lower() for s in out.get('servicios') or [])
+        self.assertIn('embrague', claves)
+        self.assertNotIn('amortiguador', claves)
+        self.assertEqual(len(out['servicios']), 1)
+
     def test_extraer_menciones_no_se_usa_como_pedido(self):
         nombres = _extraer_servicios_mencionados_en_texto(
             'el cambio de aceite lo hice; ¿hacen diagnóstico?',

@@ -186,6 +186,54 @@ def pedido_familias_cubiertas_por_catalogos(
     return q_fam <= s_fam
 
 
+def _familias_texto(texto: str) -> set[int]:
+    return _familias_de(_tokens_servicio(texto_servicio_canonico(texto)))
+
+
+def servicios_mismo_trabajo(pedido: str, candidato: str) -> bool:
+    """Mismo tipo de trabajo. False si el candidato mete otro (embrague ≠ amortiguadores).
+
+    'Cambio' no cuenta: dos 'cambio de X' distintos no son el mismo servicio.
+    """
+    fam_p = _familias_texto(pedido)
+    fam_c = _familias_texto(candidato)
+    if fam_p and fam_c:
+        if fam_c - fam_p:
+            return False
+        if fam_p.isdisjoint(fam_c):
+            return False
+        return True
+    return oferta_nombre_compatible_con_pedido(pedido, candidato)
+
+
+def textos_tienen_trabajo_ajeno(pedido: str, textos: list[str] | None) -> bool:
+    """True si algún texto trae una familia que el pedido no pidió."""
+    fam_p = _familias_texto(pedido)
+    if not fam_p:
+        return False
+    for raw in textos or []:
+        fam_t = _familias_texto(str(raw or ''))
+        if fam_t and fam_t.isdisjoint(fam_p):
+            return True
+    return False
+
+
+def repuesto_compatible_con_servicios(nombre_rep: str, servicios: list[str] | None) -> bool:
+    """Pieza con familia ajena (amortiguador en un embrague) no entra."""
+    pedidos = [str(s).strip() for s in (servicios or []) if str(s or '').strip()]
+    if not pedidos:
+        return True
+    fam_serv: set[int] = set()
+    for s in pedidos:
+        fam_serv |= _familias_texto(s)
+    if not fam_serv:
+        return True
+    fam_r = _familias_texto(nombre_rep)
+    if not fam_r:
+        return True
+    return bool(fam_r & fam_serv)
+
+
 def oferta_compatible_con_vehiculo(
     oferta: OfertaServicio,
     *,

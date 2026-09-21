@@ -463,13 +463,11 @@ def _servicio_tokens_hist(nombre: str) -> set[str]:
 
 
 def _servicios_similares_hist(a: str, b: str) -> bool:
-    ta, tb = _servicio_tokens_hist(a), _servicio_tokens_hist(b)
-    if not ta or not tb:
-        return True  # sin filtro de servicio → aceptar
-    if ta == tb:
-        return True
-    inter = ta & tb
-    return len(inter) >= max(1, min(len(ta), len(tb)) // 2)
+    from mecanimovilapp.apps.ordenes.services.catalogo_pricing import servicios_mismo_trabajo
+
+    if not (a or '').strip() or not (b or '').strip():
+        return False
+    return servicios_mismo_trabajo(a, b)
 
 
 def _candidatos_historial_taller(
@@ -531,10 +529,16 @@ def _candidatos_historial_taller(
             if servicio_req and (cot.servicio_nombre or '').strip():
                 if not _servicios_similares_hist(cot.servicio_nombre, servicio_req):
                     continue
+            from mecanimovilapp.apps.ordenes.services.catalogo_pricing import (
+                repuesto_compatible_con_servicios,
+            )
+
             for raw in (cot.repuestos or []):
                 if not isinstance(raw, dict):
                     continue
                 nombre = str(raw.get('nombre') or '').strip()
+                if servicio_req and not repuesto_compatible_con_servicios(nombre, [servicio_req]):
+                    continue
                 clave = _clave_fuzzy(nombre)
                 if not clave:
                     continue

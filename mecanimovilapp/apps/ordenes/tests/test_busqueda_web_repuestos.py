@@ -488,6 +488,13 @@ class AprendizajeCotizacionTestCase(SimpleTestCase):
 
         self.assertTrue(_servicios_similares('Cambio de embrague', 'Embrague completo'))
         self.assertFalse(_servicios_similares('Cambio de aceite', 'Alineación'))
+        self.assertFalse(_servicios_similares('Cambio de embrague', 'Cambio de amortiguadores'))
+        self.assertFalse(
+            _servicios_similares(
+                'Cambio de embrague',
+                'Servicio cambio kit de embrague, cambio de amortiguadores delanteros y diagnóstico eléctrico',
+            )
+        )
 
 
 class DispararBusquedaWebTestCase(SimpleTestCase):
