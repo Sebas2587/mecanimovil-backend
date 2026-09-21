@@ -95,7 +95,7 @@ services:
       - key: AGENTE_IA_EMBEDDING_MODEL
         value: "gemini-embedding-001"
       - key: AGENTE_IA_THINK_DELAY_SECONDS
-        value: "6"
+        value: "0"
       - key: AGENTE_IA_MULTIMODAL_MODEL
         value: "gemini-2.5-flash"
       - key: AGENTE_IA_MULTIMODAL_TIMEOUT
@@ -176,7 +176,7 @@ services:
       - key: AGENTE_IA_EMBEDDING_MODEL
         value: "gemini-embedding-001"
       - key: AGENTE_IA_THINK_DELAY_SECONDS
-        value: "6"
+        value: "0"
       - key: AGENTE_IA_MULTIMODAL_MODEL
         value: "gemini-2.5-flash"
       - key: AGENTE_IA_MULTIMODAL_TIMEOUT

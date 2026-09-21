@@ -10,6 +10,7 @@ from typing import Any
 
 import requests
 from django.conf import settings
+from django.db.models import Q
 from django.utils import timezone
 
 from mecanimovilapp.apps.agente_ia.models import (
@@ -101,6 +102,30 @@ def _mensajes_recientes(conversation: Conversation, limite: int = _MENSAJES_RECI
         if texto:
             lineas.append(f'{quien}: {texto[:700]}')
     return '\n'.join(lineas) or 'Sin mensajes.'
+
+
+def _cotizaciones_de_la_conversacion(conversation_id: int) -> str:
+    """Resumen de cotizaciones de este chat para no reinventar al reactivar."""
+    from mecanimovilapp.apps.ordenes.models import CotizacionCanal
+
+    rows = list(
+        CotizacionCanal.objects.filter(conversation_id=conversation_id)
+        .exclude(estado='cancelada')
+        .order_by('-actualizado_en', '-id')[:8]
+        .values('estado', 'servicio_nombre', 'total_clp', 'numero_publico', 'es_cotizacion_adicional')
+    )
+    if not rows:
+        return ''
+    lineas = ['Cotizaciones ya armadas en ESTE chat (no las anuncies de nuevo salvo que el cliente pregunte o pida cambio):']
+    for row in rows:
+        extra = ' adicional' if row.get('es_cotizacion_adicional') else ''
+        monto = row.get('total_clp')
+        monto_txt = f' ${int(monto)}' if monto else ''
+        folio = (row.get('numero_publico') or '').strip()
+        folio_txt = f' [{folio}]' if folio else ''
+        servicio = (row.get('servicio_nombre') or 'servicio').strip()
+        lineas.append(f'- {row.get("estado")}{extra}: {servicio}{monto_txt}{folio_txt}')
+    return '\n'.join(lineas)
 
 
 def _fusionar_resumen_conversacion(previo: str, turno: str) -> str:
@@ -1673,6 +1698,26 @@ def activar_agente_en_conversacion(
     return sesion
 
 
+def reactivar_chats_tras_encender_master(taller_id: int) -> int:
+    """
+    El interruptor general no debe dejar chats viejos mudos.
+    Reactiva sesiones apagadas/pausadas por el master; no toca las cerradas por el cliente.
+    """
+    qs = AgenteConversacionSesion.objects.filter(taller_id=taller_id).exclude(
+        estado=AgenteConversacionSesion.ESTADO_CERRADO,
+    )
+    return qs.filter(
+        Q(habilitado_en_chat=False)
+        | Q(pausado_por_taller=True, pausado_hasta__isnull=True)
+        | Q(estado=AgenteConversacionSesion.ESTADO_PAUSADO)
+    ).update(
+        habilitado_en_chat=True,
+        pausado_por_taller=False,
+        pausado_hasta=None,
+        estado=AgenteConversacionSesion.ESTADO_CAPTURANDO,
+    )
+
+
 _CANALES_TODOS = ('WHATSAPP', 'MESSENGER', 'INSTAGRAM', 'APP')
 
 
@@ -1866,7 +1911,7 @@ def enviar_respuestas_agente(
     conversation: Conversation,
     proveedor_user_id: int,
     textos: list[str],
-    pausa_segundos: float = 0.85,
+    pausa_segundos: float = 0,
 ) -> list[Message]:
     """Envía 1-N burbujas como mensajes separados (ritmo conversacional tipo WhatsApp)."""
     import time
@@ -1955,18 +2000,6 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
     if _mensaje_cliente_superado(message):
         return {'skipped': True, 'reason': 'superseded_by_newer_message'}
 
-    # Espera breve si Meta aún está bajando el adjunto.
-    media_meta = (message.channel_metadata or {}).get('media')
-    if media_meta and not message.attachment:
-        for _ in range(6):
-            time.sleep(1.0)
-            message.refresh_from_db(fields=['attachment', 'content', 'channel_metadata'])
-            if message.attachment:
-                break
-        # Revisa de nuevo: durante la espera pudo llegar otro mensaje del cliente.
-        if _mensaje_cliente_superado(message):
-            return {'skipped': True, 'reason': 'superseded_by_newer_message'}
-
     from mecanimovilapp.apps.agente_ia.services.media_analisis import (
         analizar_adjunto_mensaje,
         texto_cliente_enriquecido,
@@ -2007,7 +2040,7 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
                 message.save(update_fields=['channel_metadata'])
                 from mecanimovilapp.apps.agente_ia.tasks import procesar_mensaje_entrante_task
 
-                procesar_mensaje_entrante_task.apply_async(args=[message.id], countdown=8)
+                procesar_mensaje_entrante_task.apply_async(args=[message.id], countdown=1)
                 return {'skipped': True, 'reason': 'media_pendiente_reintento'}
 
     texto_cliente = texto_cliente_enriquecido(message, analisis_media)
@@ -2300,7 +2333,12 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
         instrucciones=config.instrucciones_personalizadas,
         chunks_texto=chunks_texto,
         datos_capturados=datos_para_prompt,
-        chat_reciente=_mensajes_recientes(conversation),
+        chat_reciente='\n\n'.join(
+            part for part in (
+                _cotizaciones_de_la_conversacion(conversation.id),
+                _mensajes_recientes(conversation),
+            ) if part
+        ),
         mensaje_cliente=texto_cliente,
         mensaje_bienvenida=config.mensaje_bienvenida,
         contexto_patente=contexto_patente_txt,

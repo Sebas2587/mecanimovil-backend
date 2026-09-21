@@ -733,7 +733,7 @@ AGENTE_IA_EMBEDDING_TIMEOUT = config('AGENTE_IA_EMBEDDING_TIMEOUT', default=15, 
 # Tras intervención manual del taller, la IA se reanuda sola en este chat (minutos).
 AGENTE_IA_PAUSA_MANUAL_MINUTOS = config('AGENTE_IA_PAUSA_MANUAL_MINUTOS', default=120, cast=int)
 # Pausa de “pensamiento” antes de responder (debounce + más contexto). Segundos.
-AGENTE_IA_THINK_DELAY_SECONDS = config('AGENTE_IA_THINK_DELAY_SECONDS', default=6, cast=int)
+AGENTE_IA_THINK_DELAY_SECONDS = config('AGENTE_IA_THINK_DELAY_SECONDS', default=0, cast=int)
 # Modelo multimodal para audio/imagen/video del chat (visión + STT).
 AGENTE_IA_MULTIMODAL_MODEL = config('AGENTE_IA_MULTIMODAL_MODEL', default='gemini-2.5-flash')
 AGENTE_IA_MULTIMODAL_TIMEOUT = config('AGENTE_IA_MULTIMODAL_TIMEOUT', default=45, cast=int)

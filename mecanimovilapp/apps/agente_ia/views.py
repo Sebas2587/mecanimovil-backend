@@ -20,8 +20,8 @@ from mecanimovilapp.apps.agente_ia.serializers import (
 from mecanimovilapp.apps.agente_ia.services.orquestador import (
     activar_agente_en_conversacion,
     desactivar_agente_en_chats_de_canal,
-    desactivar_agente_en_todos_los_chats,
     pausar_sesion_por_mensaje_taller,
+    reactivar_chats_tras_encender_master,
 )
 from mecanimovilapp.apps.agente_ia.services.aprendizaje_score import calcular_aprendizaje_taller
 from mecanimovilapp.apps.agente_ia.services.rag import reindexar_conocimiento_taller
@@ -64,12 +64,13 @@ class AgenteIaViewSet(viewsets.ViewSet):
         ser.save()
         config.refresh_from_db()
 
-        # Master OFF → apaga el agente en todos los chats del taller.
+        # Master OFF: no tocar flags por chat. El orquestador ya salta si
+        # config.habilitado es False; apagar sesiones deja chats viejos mudos
+        # cuando se vuelve a encender (los nuevos sí contestan).
         chats_apagados = 0
+        chats_reactivados = 0
         reindex_encolado = False
-        if prev_habilitado and not config.habilitado:
-            chats_apagados = desactivar_agente_en_todos_los_chats(taller.id)
-        else:
+        if config.habilitado:
             # Canal(es) deshabilitado(s) → apaga solo los chats de esos canales.
             todos = {'WHATSAPP', 'MESSENGER', 'INSTAGRAM', 'APP'}
             prev_set = set(prev_canales) if prev_canales else set(todos)
@@ -78,12 +79,19 @@ class AgenteIaViewSet(viewsets.ViewSet):
             for canal in prev_set - new_set:
                 chats_apagados += desactivar_agente_en_chats_de_canal(taller.id, canal)
 
-        # Al activar el agente, indexa catálogo/docs/instrucciones para que el RAG
-        # no quede vacío (talleres con ofertas previas al módulo agente_ia).
+        # Al encender el master, reanima chats que quedaron apagados por un toggle previo.
         if (not prev_habilitado) and config.habilitado:
+            chats_reactivados = reactivar_chats_tras_encender_master(taller.id)
             try:
-                reindexar_conocimiento_taller(taller.id)
-                reindex_encolado = True
+                from mecanimovilapp.apps.agente_ia.models import TallerConocimientoChunk
+
+                ya_indexado = TallerConocimientoChunk.objects.filter(
+                    taller_id=taller.id,
+                    embedding__isnull=False,
+                ).exists()
+                if not ya_indexado:
+                    reindexar_conocimiento_taller(taller.id)
+                    reindex_encolado = True
             except Exception:
                 # No bloquear el PATCH si Celery falla; el taller puede reindexar a mano.
                 import logging
@@ -96,6 +104,7 @@ class AgenteIaViewSet(viewsets.ViewSet):
         data['reindex_encolado'] = reindex_encolado
         data['agente_ia_disponible_en_plan'] = agente_ia_incluido_en_plan(request.user)
         data['chats_desactivados'] = chats_apagados
+        data['chats_reactivados'] = chats_reactivados
         return Response(data)
 
     @action(detail=False, methods=['get', 'post'], url_path='documentos')
@@ -181,20 +190,7 @@ class AgenteIaViewSet(viewsets.ViewSet):
                 participants=request.user,
             ).first()
             if conversation:
-                config_taller, _ = TallerAgenteConfig.objects.get_or_create(taller=taller)
                 sesion = _obtener_o_crear_sesion(conversation, taller.id)
-                if not config_taller.habilitado and sesion.habilitado_en_chat:
-                    sesion.habilitado_en_chat = False
-                    sesion.pausado_por_taller = True
-                    sesion.estado = AgenteConversacionSesion.ESTADO_PAUSADO
-                    sesion.save(
-                        update_fields=[
-                            'habilitado_en_chat',
-                            'pausado_por_taller',
-                            'estado',
-                            'actualizado_en',
-                        ]
-                    )
 
         if not sesion:
             return Response({
@@ -208,9 +204,11 @@ class AgenteIaViewSet(viewsets.ViewSet):
         from mecanimovilapp.apps.agente_ia.services.orquestador import _reanudar_si_pausa_expiro
 
         sesion = _reanudar_si_pausa_expiro(sesion)
+        config_taller, _ = TallerAgenteConfig.objects.get_or_create(taller=taller)
         data = AgenteSesionSerializer(sesion).data
         data['activa'] = bool(
-            sesion.habilitado_en_chat
+            config_taller.habilitado
+            and sesion.habilitado_en_chat
             and not sesion.pausado_por_taller
             and sesion.estado not in (
                 AgenteConversacionSesion.ESTADO_PAUSADO,
