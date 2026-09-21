@@ -401,3 +401,37 @@ class DocumentoPublicoTipoTestCase(SimpleTestCase):
 
         self.assertEqual(_tipo_documento_publico(_C()), 'estimacion')
         self.assertEqual(_banda_totales_publica(_C()), (82000, 106000))
+
+    def test_banda_ficha_techo_aunque_min_colapse(self):
+        from mecanimovilapp.apps.ordenes.services.cotizacion_publica import (
+            _banda_totales_publica,
+            _repuestos_publicos,
+            rango_publico_repuesto,
+        )
+
+        item = {
+            'nombre': 'Disco embrague',
+            'cantidad': 2,
+            'precio_unitario_clp': 24000,
+            'precio_min_clp': 24000,
+            'precio_max_clp': 24000,
+            'precio_marketplace_clp': 18000,
+        }
+        self.assertEqual(rango_publico_repuesto(item), (18000, 24000))
+        pubs = _repuestos_publicos([item], como_estimacion=True)
+        self.assertEqual(pubs[0]['precio_min_clp'], 18000)
+        self.assertEqual(pubs[0]['precio_max_clp'], 24000)
+        self.assertEqual(pubs[0]['precio_unitario_clp'], 24000)
+        self.assertNotIn('precio_marketplace_clp', pubs[0])
+        self.assertEqual(item['precio_unitario_clp'], 24000)
+        self.assertEqual(item['precio_min_clp'], 24000)
+        self.assertEqual(item['precio_max_clp'], 24000)
+
+        class _C:
+            tipo_documento = 'estimacion'
+            estado = 'enviada'
+            mano_obra_clp = 10000
+            descuento_clp = 0
+            repuestos = [item]
+
+        self.assertEqual(_banda_totales_publica(_C()), (46000, 58000))

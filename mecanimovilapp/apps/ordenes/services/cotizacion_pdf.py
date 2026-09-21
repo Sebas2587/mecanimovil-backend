@@ -174,13 +174,14 @@ def _lineas(data: dict) -> list[dict]:
                 'subtotal': mo,
                 'meta': '',
             })
+    es_est = str(data.get('tipo_documento') or '').strip() == 'estimacion'
     for rep in data.get('repuestos') or []:
         if not isinstance(rep, dict):
             continue
         qty = int(rep.get('cantidad') or 1) or 1
         unit = int(rep.get('precio_unitario_clp') or 0)
-        unit_min = int(rep.get('precio_min_clp') or 0)
-        unit_max = int(rep.get('precio_max_clp') or 0)
+        unit_min = int(rep.get('precio_min_clp') or 0) if es_est else 0
+        unit_max = int(rep.get('precio_max_clp') or 0) if es_est else 0
         marca = (rep.get('marca_repuesto') or '').strip()
         comentario = (rep.get('comentario') or '').strip()
         especificacion = (rep.get('especificacion') or '').strip()
@@ -689,15 +690,12 @@ def _draw_lineas(pdf: DocumentoPDF, rows: list[dict], data: dict | None = None) 
             pdf, x0 + PAD + desc_w, mid_y, amt_w,
             unit_label, 4.6, 8.5, color=MUTED, align='R',
         )
-        # Sin monto cerrado el subtotal también es un rango: no imprimir $0.
         qty_n = int(row.get('qty') or 1) or 1
+        lo = int(row.get('unitario_min') or 0) * qty_n
+        hi = int(row.get('unitario_max') or 0) * qty_n
         subtotal_txt = (
-            _rango_clp(
-                int(row.get('unitario_min') or 0) * qty_n,
-                int(row.get('unitario_max') or 0) * qty_n,
-                row['subtotal'],
-            )
-            if not int(row.get('unitario') or 0)
+            _rango_clp(lo, hi, row['subtotal'])
+            if lo > 0 and hi > 0 and lo != hi
             else _clp(row['subtotal'])
         )
         _text(
@@ -777,8 +775,12 @@ def _draw_bottom(pdf: DocumentoPDF, data: dict) -> None:
     if desc > 0:
         etiqueta = (data.get('descuento_etiqueta') or 'Descuento').strip() or 'Descuento'
         lines.append((etiqueta, f'-{_clp(desc)}', False))
-    lines.append(('Neto', _clp(neto), False))
-    lines.append(('IVA 19%', _clp(iva), False))
+    es_est = str(data.get('tipo_documento') or '') == 'estimacion'
+    tmin = int(data.get('total_min_clp') or 0)
+    tmax = int(data.get('total_max_clp') or 0)
+    if not (es_est and tmin > 0 and tmax > 0 and tmin != tmax):
+        lines.append(('Neto', _clp(neto), False))
+        lines.append(('IVA 19%', _clp(iva), False))
     tx = x0 + (note_w + gap if note else 0)
     tw = totals_w if note else cw
     label_w = tw - 2 * PAD - 28

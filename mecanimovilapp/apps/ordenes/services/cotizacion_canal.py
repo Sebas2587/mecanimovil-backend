@@ -33,10 +33,19 @@ def payload_plantilla_whatsapp_cotizacion(cotizacion: CotizacionCanal) -> dict:
     taller = getattr(cotizacion, 'taller', None)
     if taller is not None:
         taller_nombre = (getattr(taller, 'nombre', '') or '').strip()
+    total_txt = formatear_moneda_clp(cotizacion.total_clp)
+    if str(getattr(cotizacion, 'tipo_documento', '') or '').strip() == 'estimacion':
+        from mecanimovilapp.apps.ordenes.services.cotizacion_publica import (
+            _banda_totales_publica,
+        )
+
+        tmin, tmax = _banda_totales_publica(cotizacion)
+        if tmin > 0 and tmax > 0 and tmin != tmax:
+            total_txt = f'{formatear_moneda_clp(tmin)} – {formatear_moneda_clp(tmax)}'
     return payload_cotizacion(
         taller=taller_nombre,
         servicio=(cotizacion.servicio_nombre or '').strip() or 'tu servicio',
-        total=formatear_moneda_clp(cotizacion.total_clp),
+        total=total_txt,
         url=(cotizacion.url_publica or '').strip() or '—',
         token=(cotizacion.token or '').strip(),
     )
@@ -198,10 +207,25 @@ def formatear_teaser_cotizacion(
         if url:
             return f'{cabeza} Revísalo y responde (aceptar o rechazar) en este enlace: {url}'
         return f'{cabeza} Revisa los detalles y respóndenos cuando puedas.'
+    es_est = str(getattr(cotizacion, 'tipo_documento', '') or '').strip() == 'estimacion'
+    doc_txt = 'estimación' if es_est else 'cotización'
+    rango_txt = ''
+    if es_est:
+        from mecanimovilapp.apps.ordenes.services.cotizacion_publica import (
+            _banda_totales_publica,
+        )
+
+        tmin, tmax = _banda_totales_publica(cotizacion)
+        if tmin > 0 and tmax > 0 and tmin != tmax:
+            rango_txt = (
+                f' Referencia {formatear_moneda_clp(tmin)} – {formatear_moneda_clp(tmax)}.'
+            )
+        elif int(cotizacion.total_clp or 0) > 0:
+            rango_txt = f' Referencia {formatear_moneda_clp(cotizacion.total_clp)}.'
     if actualizada:
         cabeza = (
-            f'Actualizamos tu cotización{folio_txt} para {servicio} ({vehiculo}).'
-            f'{incluye}'
+            f'Actualizamos tu {doc_txt}{folio_txt} para {servicio} ({vehiculo}).'
+            f'{incluye}{rango_txt}'
         )
         if url:
             return (
@@ -210,11 +234,11 @@ def formatear_teaser_cotizacion(
         return f'{cabeza} Revisa los detalles actualizados y respóndenos cuando puedas.'
     if url:
         return (
-            f'¡Tu cotización{folio_txt} para {servicio} ({vehiculo}) está lista! '
+            f'¡Tu {doc_txt}{folio_txt} para {servicio} ({vehiculo}) está lista!{rango_txt} '
             f'Revísala y responde (aceptar o rechazar) en este enlace: {url}'
         )
     return (
-        f'¡Tu cotización{folio_txt} para {servicio} ({vehiculo}) está lista! '
+        f'¡Tu {doc_txt}{folio_txt} para {servicio} ({vehiculo}) está lista!{rango_txt} '
         'Revisa los detalles y respóndenos cuando puedas.'
         )
 
@@ -245,12 +269,28 @@ def formatear_resumen_cotizacion(cotizacion: CotizacionCanal) -> str:
         lineas.extend(['', f'*Detalle del servicio:*', cotizacion.descripcion_problema[:400]])
 
     repuestos = cotizacion.repuestos or []
+    es_est = str(getattr(cotizacion, 'tipo_documento', '') or '').strip() == 'estimacion'
     if repuestos:
         lineas.extend(['', '*Repuestos estimados:*'])
+        rango_rep = None
+        if es_est:
+            from mecanimovilapp.apps.ordenes.services.cotizacion_publica import (
+                rango_publico_repuesto,
+            )
+
+            rango_rep = rango_publico_repuesto
         for rep in repuestos:
             nombre = rep.get('nombre', 'Repuesto')
             cant = int(rep.get('cantidad') or 1)
             precio = int(rep.get('precio_unitario_clp') or 0)
+            if rango_rep:
+                lo, hi = rango_rep(rep)
+                if lo > 0 and hi > 0 and lo != hi:
+                    lineas.append(
+                        f'• {nombre} x{cant} '
+                        f'({formatear_moneda_clp(lo)} – {formatear_moneda_clp(hi)} c/u)',
+                    )
+                    continue
             sub = cant * precio
             lineas.append(
                 f'• {nombre} x{cant} ({formatear_moneda_clp(precio)} c/u): {formatear_moneda_clp(sub)}',
@@ -288,9 +328,23 @@ def formatear_resumen_cotizacion(cotizacion: CotizacionCanal) -> str:
             descuento_clp=desc,
         )
         lineas.append(f'{etiqueta}: -{formatear_moneda_clp(desc)}')
-    lineas.append(
-        f'*Total estimado (IVA incluido): {formatear_moneda_clp(cotizacion.total_clp)}*',
-    )
+    if es_est:
+        from mecanimovilapp.apps.ordenes.services.cotizacion_publica import (
+            _banda_totales_publica,
+        )
+
+        tmin, tmax = _banda_totales_publica(cotizacion)
+        if tmin > 0 and tmax > 0 and tmin != tmax:
+            total_txt = (
+                f'{formatear_moneda_clp(tmin)} – {formatear_moneda_clp(tmax)}'
+            )
+        else:
+            total_txt = formatear_moneda_clp(cotizacion.total_clp)
+        lineas.append(f'*Total estimado (IVA incluido): {total_txt}*')
+    else:
+        lineas.append(
+            f'*Total estimado (IVA incluido): {formatear_moneda_clp(cotizacion.total_clp)}*',
+        )
     if cotizacion.duracion_minutos_estimada:
         lineas.append(f'Duración estimada: {cotizacion.duracion_minutos_estimada} min')
 

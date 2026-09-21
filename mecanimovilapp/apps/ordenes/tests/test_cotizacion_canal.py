@@ -754,6 +754,36 @@ class CotizacionCanalUtilTestCase(SimpleTestCase):
         self.assertIn('está lista', primero)
         self.assertNotIn('Actualizamos', primero)
 
+    def test_teaser_estimacion_muestra_rango_sin_cambiar_total(self):
+        class FakeCot:
+            servicio_nombre = 'Cambio de embrague'
+            vehiculo_marca = 'RENAULT'
+            vehiculo_modelo = 'Duster'
+            numero_publico = 'MM-000138'
+            url_publica = 'https://ejemplo.cl/c/abc'
+            es_cotizacion_adicional = False
+            cotizacion_original = None
+            cita_origen = None
+            tipo_documento = 'estimacion'
+            mano_obra_clp = 10000
+            descuento_clp = 0
+            total_clp = 106000
+            metadata = {}
+            repuestos = [{
+                'nombre': 'Kit embrague',
+                'cantidad': 4,
+                'precio_unitario_clp': 24000,
+                'precio_min_clp': 24000,
+                'precio_max_clp': 24000,
+                'precio_marketplace_clp': 18000,
+            }]
+
+        texto = formatear_teaser_cotizacion(FakeCot())
+        self.assertIn('estimación', texto)
+        self.assertIn('$82.000', texto)
+        self.assertIn('$106.000', texto)
+        self.assertEqual(FakeCot.total_clp, 106000)
+
     def test_es_reenvio_si_ya_tiene_folio(self):
         class FakeCot:
             numero_publico = 'MM-1'

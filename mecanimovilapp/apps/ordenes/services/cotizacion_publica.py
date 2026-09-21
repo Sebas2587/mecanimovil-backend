@@ -172,6 +172,30 @@ def _tipo_documento_publico(cotizacion: CotizacionCanal) -> str:
     return 'estimacion' if cotizacion.estado == 'borrador' else 'cotizacion'
 
 
+def _clp_linea(valor) -> int:
+    try:
+        return max(0, int(round(float(valor or 0))))
+    except (TypeError, ValueError):
+        return 0
+
+
+def rango_publico_repuesto(item: dict | None) -> tuple[int, int]:
+    """Banda ficha–techo para la vista. No pisa el unitario guardado."""
+    if not isinstance(item, dict):
+        return 0, 0
+    unit = _clp_linea(item.get('precio_unitario_clp'))
+    stored_min = _clp_linea(item.get('precio_min_clp'))
+    stored_max = _clp_linea(item.get('precio_max_clp'))
+    ficha = _clp_linea(item.get('precio_marketplace_clp')) or stored_min
+    techo = stored_max or unit
+    if ficha > 0 and techo > 0 and ficha != techo:
+        return (ficha, techo) if ficha <= techo else (techo, ficha)
+    if stored_min > 0 and stored_max > 0 and stored_min != stored_max:
+        return min(stored_min, stored_max), max(stored_min, stored_max)
+    valor = unit or ficha or techo or stored_min or stored_max
+    return valor, valor
+
+
 def _banda_totales_publica(cotizacion: CotizacionCanal) -> tuple[int, int]:
     mo = int(cotizacion.mano_obra_clp or 0)
     desc = int(cotizacion.descuento_clp or 0)
@@ -181,18 +205,27 @@ def _banda_totales_publica(cotizacion: CotizacionCanal) -> tuple[int, int]:
         if not isinstance(r, dict):
             continue
         cant = max(1, int(r.get('cantidad') or 1))
-        tmin += cant * int(r.get('precio_min_clp') or r.get('precio_unitario_clp') or 0)
-        tmax += cant * int(r.get('precio_max_clp') or r.get('precio_unitario_clp') or 0)
+        lo, hi = rango_publico_repuesto(r)
+        tmin += cant * lo
+        tmax += cant * hi
     return max(0, mo + tmin - desc), max(0, mo + tmax - desc)
 
 
-def _repuestos_publicos(repuestos: list | None) -> list[dict]:
+def _repuestos_publicos(
+    repuestos: list | None,
+    *,
+    como_estimacion: bool = False,
+) -> list[dict]:
     """Repuestos para vista pública del cliente (lista blanca; sin datos internos)."""
     out: list[dict] = []
     for item in repuestos or []:
         if not isinstance(item, dict):
             continue
         pub = {k: item[k] for k in _REPUESTO_PUBLICO_KEYS if k in item}
+        if como_estimacion:
+            lo, hi = rango_publico_repuesto(item)
+            pub['precio_min_clp'] = lo
+            pub['precio_max_clp'] = hi
         out.append(pub)
     return out
 
@@ -473,7 +506,10 @@ def _serializar_cotizacion_publica_live(cotizacion: CotizacionCanal, request=Non
         'vehiculo_patente': cotizacion.vehiculo_patente,
         'vehiculo_cilindraje': cotizacion.vehiculo_cilindraje,
         'tipo_motor_label': cotizacion.tipo_motor_label,
-        'repuestos': _repuestos_publicos(cotizacion.repuestos or []),
+        'repuestos': _repuestos_publicos(
+            cotizacion.repuestos or [],
+            como_estimacion=tipo_doc == 'estimacion',
+        ),
         'mano_obra_lineas': _mano_obra_lineas_publicas(cotizacion),
         'mano_obra_clp': mano,
         'costo_repuestos_clp': reps,

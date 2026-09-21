@@ -292,24 +292,18 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
         return not self.get_lineas_pendientes_precio(obj)
 
     def get_total_min_clp(self, obj) -> int:
-        mo = int(obj.mano_obra_clp or 0)
-        desc = int(obj.descuento_clp or 0)
-        total_rep = 0
-        for r in self._repuestos_list(obj):
-            cant = max(1, int(r.get('cantidad') or 1))
-            unit = int(r.get('precio_min_clp') or r.get('precio_unitario_clp') or 0)
-            total_rep += cant * unit
-        return max(0, mo + total_rep - desc)
+        from mecanimovilapp.apps.ordenes.services.cotizacion_publica import (
+            _banda_totales_publica,
+        )
+
+        return _banda_totales_publica(obj)[0]
 
     def get_total_max_clp(self, obj) -> int:
-        mo = int(obj.mano_obra_clp or 0)
-        desc = int(obj.descuento_clp or 0)
-        total_rep = 0
-        for r in self._repuestos_list(obj):
-            cant = max(1, int(r.get('cantidad') or 1))
-            unit = int(r.get('precio_max_clp') or r.get('precio_unitario_clp') or 0)
-            total_rep += cant * unit
-        return max(0, mo + total_rep - desc)
+        from mecanimovilapp.apps.ordenes.services.cotizacion_publica import (
+            _banda_totales_publica,
+        )
+
+        return _banda_totales_publica(obj)[1]
 
     def get_servicio_principal_nombre(self, obj) -> str | None:
         if not obj.es_cotizacion_adicional:
