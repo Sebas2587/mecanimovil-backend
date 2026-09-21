@@ -675,7 +675,9 @@ def _telefono_desde_cotizacion(cotizacion: CotizacionCanal) -> str:
 @transaction.atomic
 def crear_cita_desde_cotizacion_aceptada(cotizacion: CotizacionCanal) -> CitaAgendaPersonal:
     """Crea cita personal placeholder tras aceptación (horario por confirmar vía agente IA)."""
-    duracion = cotizacion.duracion_minutos_estimada or 60
+    from mecanimovilapp.apps.agente_ia.services.duracion_trabajo import resolver_duracion_trabajo
+
+    duracion = resolver_duracion_trabajo(cotizacion) or cotizacion.duracion_minutos_estimada or 60
     tipo_servicio = 'domicilio' if cotizacion.modalidad == 'domicilio' else 'taller'
     direccion = (cotizacion.direccion_servicio or '').strip()[:500]
     tel_efectivo = _telefono_desde_cotizacion(cotizacion)

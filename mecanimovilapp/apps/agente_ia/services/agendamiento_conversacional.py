@@ -214,6 +214,7 @@ def _obtener_slots_dia(
         'fecha': fecha,
         'oferta_servicio_id': oferta_servicio_id,
         'modalidad': modalidad_tecnico,
+        'duracion_minutos': duracion_minutos or None,
     }
     data = disponibilidad_con_duracion(
         **kwargs_base,
@@ -233,10 +234,15 @@ def _obtener_slots_dia(
             oferta_servicio_id=oferta_servicio_id,
             modalidad=None,
             requiere_especialidad=False,
+            duracion_minutos=duracion_minutos or None,
         )
         slots = data.get('slots_disponibles') or []
     if not data.get('proveedor_disponible') and not slots:
         return []
+    if fecha == timezone.localdate():
+        limite = timezone.localtime() + timedelta(minutes=30)
+        limite_txt = limite.strftime('%H:%M')
+        slots = [s for s in slots if (s.get('hora') or '') >= limite_txt]
     return [
         {
             'fecha': fecha_iso,
@@ -317,10 +323,17 @@ def iniciar_agendamiento(
         sesion = AgenteConversacionSesion.objects.filter(conversation=conversation).first()
     if sesion is None:
         return {'ok': False, 'error': 'sin_sesion'}
+    if not sesion.habilitado_en_chat or sesion.pausado_por_taller:
+        return {'ok': False, 'error': 'agente_off'}
 
     modalidad = cita.tipo_servicio or 'taller'
-    duracion = cita.duracion_minutos or 60
     cotizacion = getattr(cita, 'cotizacion_canal_origen', None)
+    from mecanimovilapp.apps.agente_ia.services.duracion_trabajo import resolver_duracion_trabajo
+
+    duracion = resolver_duracion_trabajo(cotizacion) or cita.duracion_minutos or 60
+    if cita.duracion_minutos != duracion:
+        cita.duracion_minutos = duracion
+        cita.save(update_fields=['duracion_minutos'])
     oferta_servicio_id = _oferta_servicio_id_desde_cotizacion(cotizacion)
     categorias_req = _categorias_desde_cotizacion(cotizacion)
     oferta = _recopilar_slots_ofrecidos(
@@ -369,7 +382,7 @@ def iniciar_agendamiento(
                 )
                 tecnico = getattr(miembro, 'nombre', None) or preferencias.get('tecnico_nombre') or 'nuestro equipo'
                 texto_ok = (
-                    f'¡Tu cotización fue aprobada! Confirmé la cita para '
+                    f'Tu cotización quedó aceptada. Confirmé la cita para '
                     f'{_formatear_fecha_legible(fecha_pref)} a las {hora_pref} con {tecnico}. '
                     'Te esperamos.'
                 )
@@ -423,19 +436,19 @@ def iniciar_agendamiento(
     mejor = _mejor_slot_proximo(oferta, preferencias)
     if not oferta.get('fechas'):
         texto = (
-            '¡Tu cotización fue aprobada! Por ahora no veo cupos en los próximos días. '
+            'Tu cotización quedó aceptada. Por ahora no veo cupos en los próximos días. '
             '¿Qué día u horario te acomodaría? Te busco alternativas.'
         )
     elif mejor:
         fecha_prop, hora_prop = mejor
         fecha_legible = _formatear_fecha_legible(fecha_prop)
         texto = (
-            f'¡Tu cotización fue aprobada! Te propongo el {fecha_legible} a las {hora_prop}. '
+            f'Tu cotización quedó aceptada. Te propongo el {fecha_legible} a las {hora_prop}. '
             f'¿Te acomoda? Si prefieres otro día u hora, dímelo.{pref_txt}'
         ).replace('  ', ' ')
     else:
         texto = (
-            f'¡Tu cotización fue aprobada! Tengo estos días disponibles: {resumen}.{pref_txt} '
+            f'Tu cotización quedó aceptada. Tengo estos días disponibles: {resumen}.{pref_txt} '
             '¿Cuál te acomoda y a qué hora?'
         ).replace('  ', ' ')
 

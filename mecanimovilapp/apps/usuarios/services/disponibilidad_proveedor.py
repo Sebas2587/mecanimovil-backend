@@ -58,6 +58,17 @@ def _minutos_ventana_jornada(hora_inicio: time, hora_fin: time) -> int:
     return fin - ini
 
 
+def _duraciones_efectivas(
+    oferta: OfertaServicio | None,
+    duracion_minutos: int | None = None,
+) -> tuple[int, int]:
+    """(min, max) de la oferta, o un override estricto desde la cotización."""
+    if duracion_minutos and int(duracion_minutos) > 0:
+        d = int(duracion_minutos)
+        return d, d
+    return duracion_rango_oferta(oferta)
+
+
 def duracion_rango_oferta(oferta: OfertaServicio | None) -> tuple[int, int]:
     """Retorna (minutos_min, minutos_max) para bloqueo de agenda y etiqueta UI."""
     if oferta is None:
@@ -485,6 +496,7 @@ def _slots_libres_miembro(
     fecha: date,
     dia_semana: int,
     max_dur: int,
+    truncar_a_jornada: bool = True,
 ) -> list[dict[str, Any]]:
     """Genera los slots donde el mecánico está libre en el día (vacío si no atiende)."""
     horario = _horario_config_miembro(miembro, taller, dia_semana)
@@ -499,7 +511,7 @@ def _slots_libres_miembro(
     libres = ventanas_libres(horario.hora_inicio, horario.hora_fin, fecha, ocupados)
     ventana_jornada = _minutos_ventana_jornada(horario.hora_inicio, horario.hora_fin)
     duracion_slot = int(max_dur)
-    if ventana_jornada > 0:
+    if truncar_a_jornada and ventana_jornada > 0:
         duracion_slot = min(duracion_slot, ventana_jornada)
     return slots_en_ventanas(libres, duracion_slot)
 
@@ -638,12 +650,14 @@ def _disponibilidad_union_equipo(
     dia_semana: int,
     oferta: OfertaServicio | None,
     aptos: list[MiembroTaller],
+    duracion_minutos: int | None = None,
 ) -> dict[str, Any]:
     """
     Disponibilidad pública del taller = UNIÓN de los slots libres de cada mecánico apto.
     Un slot se ofrece si al menos un mecánico apto cabe el servicio completo en ese inicio.
     """
-    min_dur, max_dur = duracion_rango_oferta(oferta)
+    min_dur, max_dur = _duraciones_efectivas(oferta, duracion_minutos)
+    truncar = not (duracion_minutos and int(duracion_minutos) > 0)
 
     estado_actual = estado_actual_proveedor(taller=taller, duracion_fallback=max_dur)
 
@@ -678,6 +692,7 @@ def _disponibilidad_union_equipo(
             fecha=fecha,
             dia_semana=dia_semana,
             max_dur=max_dur,
+            truncar_a_jornada=truncar,
         ):
             slots_por_hora[slot['hora']] = slot
 
@@ -744,6 +759,7 @@ def disponibilidad_con_duracion(
     modalidad: str | None = None,
     miembro_taller_id: int | None = None,
     requiere_especialidad: bool = True,
+    duracion_minutos: int | None = None,
 ) -> dict[str, Any]:
     dia_semana = fecha.weekday()
 
@@ -780,7 +796,7 @@ def disponibilidad_con_duracion(
                 activo=True,
             ).first()
             if not miembro:
-                min_dur, max_dur = duracion_rango_oferta(oferta)
+                min_dur, max_dur = _duraciones_efectivas(oferta, duracion_minutos)
                 return _with_servicio_meta({
                     'fecha': fecha.isoformat(),
                     'proveedor_disponible': False,
@@ -795,7 +811,7 @@ def disponibilidad_con_duracion(
                     'total_slots': 0,
                 }, oferta)
             if modalidad and not miembro.modalidad_compatible(modalidad):
-                min_dur, max_dur = duracion_rango_oferta(oferta)
+                min_dur, max_dur = _duraciones_efectivas(oferta, duracion_minutos)
                 return _with_servicio_meta({
                     'fecha': fecha.isoformat(),
                     'proveedor_disponible': False,
@@ -815,6 +831,7 @@ def disponibilidad_con_duracion(
                 dia_semana=dia_semana,
                 oferta=oferta,
                 aptos=[miembro],
+                duracion_minutos=duracion_minutos,
             )
         tiene_equipo = MiembroTaller.objects.filter(
             taller=taller, rol='mecanico', activo=True
@@ -826,6 +843,7 @@ def disponibilidad_con_duracion(
                 dia_semana=dia_semana,
                 oferta=oferta,
                 aptos=aptos,
+                duracion_minutos=duracion_minutos,
             )
             if result.get('proveedor_disponible') and result.get('slots_disponibles'):
                 return result
@@ -848,6 +866,7 @@ def disponibilidad_con_duracion(
                         dia_semana=dia_semana,
                         oferta=oferta,
                         aptos=aptos_relajados,
+                        duracion_minutos=duracion_minutos,
                     )
                     if (
                         result_relajado.get('proveedor_disponible')
@@ -883,7 +902,7 @@ def disponibilidad_con_duracion(
             dia_semana,
         )
 
-    min_dur, max_dur = duracion_rango_oferta(oferta)
+    min_dur, max_dur = _duraciones_efectivas(oferta, duracion_minutos)
     ocupados = intervalos_ocupados_dia(
         taller=taller,
         mecanico=mecanico,
@@ -902,7 +921,8 @@ def disponibilidad_con_duracion(
         horario_config.hora_fin,
     )
     duracion_slot = int(max_dur)
-    if ventana_jornada > 0:
+    truncar = not (duracion_minutos and int(duracion_minutos) > 0)
+    if truncar and ventana_jornada > 0:
         duracion_slot = min(duracion_slot, ventana_jornada)
     slots = slots_en_ventanas(libres, duracion_slot)
 
@@ -947,6 +967,7 @@ def dias_con_slots(
     modalidad: str | None = None,
     miembro_taller_id: int | None = None,
     requiere_especialidad: bool = True,
+    duracion_minutos: int | None = None,
 ) -> list[str]:
     """Fechas YYYY-MM-DD con al menos un slot en los próximos N días."""
     hoy = timezone.localdate()
@@ -962,6 +983,7 @@ def dias_con_slots(
                 modalidad=modalidad,
                 miembro_taller_id=miembro_taller_id,
                 requiere_especialidad=requiere_especialidad,
+                duracion_minutos=duracion_minutos,
             )
         except Exception:
             logger.exception(

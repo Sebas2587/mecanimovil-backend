@@ -1556,7 +1556,7 @@ REGLAS DE CONVERSACIÓN:
     - Respuesta estratégica (parafraseable): reconoce que sí hacen el servicio, aclara que para su marca/modelo el valor exacto lo confirma el taller en la cotización, y ofrece armar el borrador. NO inventes un "precio aproximado" a partir de otra cobertura.
 15d. REPUESTOS Y GARANTÍA (proactivo): si la FICHA OPERATIVA indica repuestos con marca/calidad (Original, OEM, Alternativo) y/o días de garantía para un servicio, menciónalo al explicar ese servicio o cuando el cliente pregunte por repuestos ("¿con qué pieza queda?", "¿es original?"). Ofrece la opción configurada en catálogo con naturalidad (ej. "trabajamos con disco marca X, calidad OEM, con garantía de N días"). PROHIBIDO inventar marcas, calidades o plazos de garantía que no figuren en la ficha.{regla_15e}
 16. ENVÍO: TÚ NO envías la cotización por WhatsApp ni confirmas precios finales. Solo preparas el borrador; un humano del taller la revisa en "Cotizar con IA" y la envía. Dile al cliente que el taller le enviará la cotización.
-17. Si el cliente menciona preferencia de día/hora/técnico para la visita, guárdalo en preferencias_agenda (fecha ISO si puedes, hora HH:MM, tecnico_nombre, nota). Si el día/hora propuesto cae dentro del horario del taller en la FICHA OPERATIVA, confirma verbalmente de forma proactiva (ej. "perfecto, tráelo el jueves a primera hora") y marca confirmado_verbal=true. Esto NO reserva un cupo formal; el agendamiento real ocurre al aceptar la cotización. Si el día cae fuera de horario, indícalo con amabilidad y sugiere el horario más cercano disponible.
+17. PREFERENCIA DE AGENDA (no reserva): si el cliente menciona día/hora/técnico, guárdalo en preferencias_agenda (fecha ISO si puedes, hora HH:MM, tecnico_nombre, nota) y marca confirmado_verbal=false. PROHIBIDO decir "quedamos listos", "tenemos disponibilidad", "mañana martes nos acomoda" o confirmar una visita como si ya estuviera reservada. Si en el bloque de cotizaciones hay una en estado enviada, NO confirmes día/hora: dile que para reservar debe aceptar la cotización (en el detalle o diciéndotelo). El cupo real se confirma solo en modo agendando, después de aceptada. Si aún no hay cotización enviada, puedes anotar la preferencia sin prometer el cupo.
 18. MODALIDAD Y DIRECCIÓN (CRÍTICO — CERO INVENCIÓN): modalidad debe ser "taller" o "domicilio" según lo que pida el cliente Y lo que permita la FICHA OPERATIVA. Pídela solo cuando sea relevante — nunca en un saludo vacío.
     - Si la FICHA dice SOLO a domicilio: PROHIBIDO inventar local/sucursal. Si pregunta por dirección del taller, aclara que trabajan a domicilio.
     - Para BORRADOR a domicilio basta COMUNA o sector en direccion_servicio (ej. "Vitacura"). NO exijas calle/número para armar cotización.
@@ -2173,6 +2173,12 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
     if es_respuesta_perdida_competencia(texto_cliente):
         documentar_lead_perdido(conversation.id, taller.id, motivo='competencia')
 
+    from mecanimovilapp.apps.agente_ia.services.sesion_cotizacion import (
+        promover_sesion_si_cotizacion_enviada,
+    )
+
+    sesion = promover_sesion_si_cotizacion_enviada(sesion)
+
     if sesion.estado == AgenteConversacionSesion.ESTADO_AGENDANDO:
         from mecanimovilapp.apps.agente_ia.services.agendamiento_conversacional import (
             procesar_turno_agendamiento,
@@ -2186,6 +2192,20 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             taller=taller,
             proveedor_user_id=proveedor_user_id,
         )
+
+    if sesion.estado == AgenteConversacionSesion.ESTADO_ESPERANDO_ACEPTACION:
+        from mecanimovilapp.apps.agente_ia.services.aceptacion_conversacional import (
+            procesar_turno_esperando_aceptacion,
+        )
+
+        resultado_acept = procesar_turno_esperando_aceptacion(
+            sesion=sesion,
+            texto_cliente=texto_cliente,
+            conversation=conversation,
+            proveedor_user_id=proveedor_user_id,
+        )
+        if resultado_acept.get('accion') != 'fallthrough':
+            return resultado_acept
 
     contexto_media_txt = ''
     if analisis_media and not analisis_media.get('pendiente') and not analisis_media.get('error'):

@@ -121,6 +121,10 @@ def iniciar_agendamiento_task(cotizacion_id: int) -> dict:
             return {'ok': False, 'reason': 'sin_taller'}
 
         sesion = AgenteConversacionSesion.objects.filter(conversation=conversation).first()
+        if sesion is None:
+            return {'ok': False, 'reason': 'sin_sesion'}
+        if not sesion.habilitado_en_chat or sesion.pausado_por_taller:
+            return {'ok': False, 'reason': 'agente_off'}
         return iniciar_agendamiento(
             cita=cita,
             conversation=conversation,

@@ -2092,6 +2092,13 @@ def crear_cotizacion_borrador_desde_agente(
         + (resultado.get('tokens_salida') or 0),
         'modelo_ia': resultado.get('modelo') or '',
     }
+    if not campos.get('duracion_minutos_estimada'):
+        from mecanimovilapp.apps.agente_ia.services.duracion_trabajo import resolver_duracion_trabajo
+
+        campos['duracion_minutos_estimada'] = resolver_duracion_trabajo(
+            servicio_nombre=campos.get('servicio_nombre') or '',
+            lineas=lineas,
+        )
     if not es_update or not (getattr(cotizacion_existente, 'politicas_cotizacion', None) or '').strip():
         from mecanimovilapp.apps.ordenes.services.cotizacion_publica import resolver_politicas_cotizacion
         campos['politicas_cotizacion'] = resolver_politicas_cotizacion(taller=taller)

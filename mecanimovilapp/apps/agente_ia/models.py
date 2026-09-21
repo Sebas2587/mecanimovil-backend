@@ -226,6 +226,7 @@ class AgenteConversacionSesion(models.Model):
     ESTADO_LISTO_COTIZAR = 'listo_para_cotizar'
     ESTADO_ELIGIENDO_REPUESTOS = 'eligiendo_repuestos'
     ESTADO_ESPERANDO_REVISION = 'esperando_revision_taller'
+    ESTADO_ESPERANDO_ACEPTACION = 'esperando_aceptacion'
     ESTADO_AGENDANDO = 'agendando'
     ESTADO_COORDINACION_TERRENO = 'coordinacion_terreno'
     ESTADO_PAUSADO = 'pausado_por_taller'
@@ -236,6 +237,7 @@ class AgenteConversacionSesion(models.Model):
         (ESTADO_LISTO_COTIZAR, 'Listo para cotizar'),
         (ESTADO_ELIGIENDO_REPUESTOS, 'Eligiendo repuestos'),
         (ESTADO_ESPERANDO_REVISION, 'Esperando revisión del taller'),
+        (ESTADO_ESPERANDO_ACEPTACION, 'Esperando aceptación de cotización'),
         (ESTADO_AGENDANDO, 'Agendando cita'),
         (ESTADO_COORDINACION_TERRENO, 'Coordinación en terreno / en sitio'),
         (ESTADO_PAUSADO, 'Pausado por taller'),
