@@ -7097,12 +7097,14 @@ def desactivar_push_token(request):
 
 
 @api_view(['GET'])
+@authentication_classes([])
 @permission_classes([permissions.AllowAny])
 def vapid_public_key(request):
     """
     Devuelve la VAPID public key para que el frontend pueda suscribirse a Web Push.
     GET /api/usuarios/vapid-public-key/
-    No requiere autenticacion (debe ser accesible antes del login para suscribirse).
+    Pública: sin TokenAuthentication, para que un header Authorization inválido
+    no convierta el AllowAny en 401 (típico en Expo web al hidratar sesión).
     """
     from django.conf import settings
     key = getattr(settings, 'VAPID_PUBLIC_KEY', None)

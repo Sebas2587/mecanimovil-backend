@@ -3,8 +3,11 @@ from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.mixins import DestroyModelMixin
+from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.contrib.contenttypes.models import ContentType
+from django.core.exceptions import ObjectDoesNotExist
+from django.utils import timezone
 from .models import Conversation, Message
 from .serializers import ConversationSerializer, MessageSerializer
 from .purge import purge_conversation
@@ -58,6 +61,67 @@ class ConversationViewSet(DestroyModelMixin, viewsets.ReadOnlyModelViewSet):
             return viewset.lista_chats(request)
         data = build_unified_inbox(request.user, request)
         return Response(data)
+
+    @action(detail=False, methods=['post'], url_path='mark_all_read')
+    def mark_all_read(self, request):
+        """Marca como leídos todos los mensajes del inbox del usuario actual."""
+        conversation_ids = self.filter_queryset(self.get_queryset()).values('pk')
+        es_proveedor = hasattr(request.user, 'mecanicodomicilio') or hasattr(request.user, 'taller')
+
+        with transaction.atomic():
+            omni_count = (
+                Message.objects.filter(
+                    conversation_id__in=conversation_ids,
+                    is_read=False,
+                    direction='inbound',
+                )
+                .exclude(conversation__source_channel='APP')
+                .update(is_read=True)
+            )
+            app_count = (
+                Message.objects.filter(
+                    conversation_id__in=conversation_ids,
+                    conversation__source_channel='APP',
+                    is_read=False,
+                )
+                .exclude(sender=request.user)
+                .update(is_read=True)
+            )
+
+            from mecanimovilapp.apps.ordenes.models import ChatSolicitud
+
+            now = timezone.now()
+            if es_proveedor:
+                legacy_count = ChatSolicitud.objects.filter(
+                    oferta__proveedor=request.user,
+                    leido=False,
+                    es_proveedor=False,
+                ).update(leido=True, fecha_lectura=now)
+            else:
+                try:
+                    cliente = request.user.cliente
+                except ObjectDoesNotExist:
+                    cliente = None
+                if cliente is not None:
+                    legacy_count = ChatSolicitud.objects.filter(
+                        oferta__solicitud__cliente=cliente,
+                        leido=False,
+                        es_proveedor=True,
+                    ).update(leido=True, fecha_lectura=now)
+                else:
+                    legacy_count = 0
+
+        marked = omni_count + app_count
+        logger.info(
+            'mark_all_read user=%s marked=%s legacy=%s',
+            request.user.id,
+            marked,
+            legacy_count,
+        )
+        return Response({
+            'marked_read': marked,
+            'legacy_marked_read': legacy_count,
+        })
 
     @action(detail=True, methods=['post'], url_path='vincular-solicitud')
     def vincular_solicitud(self, request, pk=None):
