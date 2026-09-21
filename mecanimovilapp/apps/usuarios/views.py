@@ -7202,6 +7202,8 @@ def push_status(request):
     user = request.user
     token = user.expo_push_token
     push_tokens_activos = PushToken.objects.filter(usuario=user, activo=True).count()
+    from .models import WebPushSubscription
+    web_subs_activas = WebPushSubscription.objects.filter(usuario=user, activo=True).count()
 
     token_preview = None
     if token:
@@ -7209,9 +7211,10 @@ def push_status(request):
         token_preview = token[:22] + '...' + token[-6:] if len(token) > 30 else token
 
     return Response({
-        'has_token': bool(token),
+        'has_token': bool(token) or push_tokens_activos > 0,
         'token_preview': token_preview,
         'push_tokens_activos': push_tokens_activos,
+        'web_subs_activas': web_subs_activas,
         'user_id': user.id,
         'username': user.username,
     }, status=status.HTTP_200_OK)
@@ -7242,58 +7245,65 @@ def test_push(request):
     except Usuario.DoesNotExist:
         return Response({'error': f'Usuario {user_id} no encontrado'}, status=status.HTTP_404_NOT_FOUND)
 
-    token = user.expo_push_token
-    push_tokens_activos = PushToken.objects.filter(usuario=user, activo=True).count()
+    from .tasks import _iter_native_tokens, _invalidate_native_token, _send_web_push_to_user
+    from .models import WebPushSubscription
 
-    if not token:
+    tokens = _iter_native_tokens(user)
+    push_tokens_activos = PushToken.objects.filter(usuario=user, activo=True).count()
+    web_subs = WebPushSubscription.objects.filter(usuario=user, activo=True).count()
+
+    if not tokens and web_subs == 0:
         return Response({
-            'error': 'El usuario no tiene expo_push_token registrado',
+            'error': 'El usuario no tiene token Expo ni suscripción Web Push',
             'push_tokens_activos': push_tokens_activos,
-            'sugerencia': 'Inicia sesion en Expo Go o en la app y el token se registrara automaticamente.',
+            'web_subs_activas': web_subs,
+            'sugerencia': 'Inicia sesión en un build nativo (no Expo Go) o activa alertas en el navegador.',
         }, status=status.HTTP_400_BAD_REQUEST)
 
     # Enviar directamente (sin pasar por Celery delay) para ver el resultado inmediato
     try:
         from exponent_server_sdk import PushClient, PushMessage, PushServerError, PushTicketError
-        message = PushMessage(
-            to=token,
-            title=title,
-            body=body,
-            data={k: str(v) for k, v in (data or {}).items()},
-            sound='default',
-            channel_id='default',
-            priority='high',
-        )
-        ticket = PushClient().publish(message)
-        ticket_status = 'ok'
+        ticket_status = 'skipped'
         ticket_detail = None
-        try:
-            ticket.validate_response()
-            logger.info(f"✅ [test-push] Push Expo aceptada por usuario {user_id} (token: {token[:20]}…)")
-        except PushTicketError as t_err:
-            ticket_status = 'error'
-            ticket_detail = str(t_err)
-            logger.error(f"❌ [test-push] Ticket error usuario {user_id}: {t_err}")
-            if 'devicenotregistered' in str(t_err).lower():
-                user.expo_push_token = None
-                user.save(update_fields=['expo_push_token'])
+        token_preview = None
+        if tokens:
+            client = PushClient()
+            ticket_status = 'ok'
+            for token in tokens:
+                token_preview = token[:22] + '...' + token[-6:] if len(token) > 30 else token
+                message = PushMessage(
+                    to=token,
+                    title=title,
+                    body=body,
+                    data={k: str(v) for k, v in (data or {}).items()},
+                    sound='default',
+                    channel_id='default',
+                    priority='high',
+                )
+                ticket = client.publish(message)
+                try:
+                    ticket.validate_response()
+                    logger.info(f"✅ [test-push] Push Expo aceptada por usuario {user_id} (token: {token[:20]}…)")
+                except PushTicketError as t_err:
+                    ticket_status = 'error'
+                    ticket_detail = str(t_err)
+                    logger.error(f"❌ [test-push] Ticket error usuario {user_id}: {t_err}")
+                    if 'devicenotregistered' in str(t_err).lower() or 'invalid' in str(t_err).lower():
+                        _invalidate_native_token(user, token)
 
-        # Tambien enviar web push si hay suscripciones activas
-        from .tasks import _send_web_push_to_user
-        from .models import WebPushSubscription
-        web_subs = WebPushSubscription.objects.filter(usuario=user, activo=True).count()
         try:
             _send_web_push_to_user(user, title, body, data)
         except Exception as web_exc:
             logger.warning(f"[test-push] Web push error (no critico): {web_exc}")
 
         return Response({
-            'ok': ticket_status == 'ok',
+            'ok': ticket_status in ('ok', 'skipped'),
             'ticket_status': ticket_status,
             'ticket_detail': ticket_detail,
             'mensaje': f'Push enviada a usuario {user_id}',
-            'token_preview': token[:22] + '...' + token[-6:],
-            'push_tokens_activos': push_tokens_activos,
+            'token_preview': token_preview,
+            'tokens_enviados': len(tokens),
+            'push_tokens_activos': PushToken.objects.filter(usuario=user, activo=True).count(),
             'web_subs_activas': web_subs,
         }, status=status.HTTP_200_OK)
     except PushServerError as exc:

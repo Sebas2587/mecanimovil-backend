@@ -95,20 +95,35 @@ def send_chat_push(
     conversation_id: str,
     oferta_id: str = '',
     solicitud_id: str = '',
+    sender_id: str = '',
+    is_new_contact: bool = False,
 ):
     from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
 
+    raw = channel_code or 'APP'
+    channel_code = str(raw).upper()
     label = CHANNEL_LABELS.get(channel_code, channel_code)
-    title = f'{label} · {sender_name}' if channel_code != 'APP' else f'💬 {sender_name}'
+    channel_slug = channel_code.lower() if channel_code else 'app'
+    if is_new_contact:
+        title = f'Nuevo contacto · {label}'
+        body = f'{sender_name}: {preview[:120]}' if preview else f'{sender_name} escribió por {label}.'
+        notif_type = 'nuevo_contacto_canal'
+    else:
+        title = f'{label} · {sender_name}' if channel_code != 'APP' else f'💬 {sender_name}'
+        body = preview[:140] or 'Nuevo mensaje'
+        notif_type = 'chat_message'
+
     send_expo_push_notification.delay(
         recipient_user_id,
         title,
-        preview[:140] or 'Nuevo mensaje',
+        body,
         {
-            'type': 'chat_message',
-            'channel': channel_code.lower() if channel_code else 'app',
+            'type': notif_type,
+            'channel': channel_slug,
             'conversation_id': conversation_id,
             'oferta_id': oferta_id or '',
             'solicitud_id': solicitud_id or '',
+            'sender_id': str(sender_id or ''),
+            'nuevo_contacto': 'true' if is_new_contact else 'false',
         },
     )

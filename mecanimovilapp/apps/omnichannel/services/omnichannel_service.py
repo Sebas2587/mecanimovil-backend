@@ -166,7 +166,7 @@ class OmnichannelService:
     def get_or_create_conversation(
         connection: ProviderChannelConnection,
         contact: ExternalContact,
-    ) -> Conversation:
+    ) -> tuple:
         conversation, created = Conversation.objects.get_or_create(
             source_channel=connection.channel,
             external_contact=contact,
@@ -174,7 +174,7 @@ class OmnichannelService:
         )
         if created or not conversation.participants.filter(id=connection.usuario_id).exists():
             conversation.participants.add(connection.usuario)
-        return conversation
+        return conversation, created
 
     @classmethod
     @transaction.atomic
@@ -200,7 +200,7 @@ class OmnichannelService:
             phone=phone,
         )
         contact = cls.maybe_enrich_messenger_contact_profile(connection, contact)
-        conversation = cls.get_or_create_conversation(connection, contact)
+        conversation, is_new_contact = cls.get_or_create_conversation(connection, contact)
 
         if not external_message_id:
             ts = (metadata or {}).get('timestamp') or ''
@@ -235,6 +235,7 @@ class OmnichannelService:
             sender_name=sender_name,
             preview=text[:140] or 'Nuevo mensaje',
             conversation_id=str(conversation.id),
+            is_new_contact=is_new_contact,
         )
         media = (metadata or {}).get('media')
         if media:

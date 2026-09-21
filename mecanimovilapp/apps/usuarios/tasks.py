@@ -6,58 +6,123 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-NATIVE_PUSH_RECENCY_DAYS = 30
-
-WEB_PUSH_ALWAYS_TYPES = frozenset({
+CHAT_CHANNEL_TYPES = frozenset({
     'chat_message',
     'nuevo_mensaje_chat',
+    'nuevo_contacto_canal',
+    'agente_ia_escalamiento',
+})
+
+SERVICIOS_CHANNEL_TYPES = frozenset({
+    'recordatorio_pago',
+    'cambio_estado',
+    'nueva_oferta',
+    'solicitud_adjudicada',
+    'new_offer',
+    'solicitud_cancelada_cliente',
+    'nueva_solicitud',
+    'catalog_assignment',
+    'solicitud_por_vencer',
+    'checklist_pendiente',
+    'orden_asignada_mecanico',
     'agente_ia_cotizacion_borrador',
     'agente_ia_cotizacion_enviada',
     'agente_ia_cotizacion_aceptada',
     'agente_ia_cotizacion_rechazada',
     'agente_ia_cita_confirmada',
-    'cita_agendada',
-    'agente_ia_escalamiento',
     'agente_ia_procesando',
-    'nueva_solicitud',
-    'solicitud_por_vencer',
-    'checklist_pendiente',
-    'orden_asignada_mecanico',
+    'cita_agendada',
+    'pipeline_borrador_listo_sin_enviar',
+    'pipeline_cotizacion_sin_respuesta_24h',
+    'pipeline_cotizacion_demorada_48h',
+    'pipeline_agenda_pendiente_confirmacion',
+    'pipeline_cotizacion_adicional_borrador',
 })
 
+SUSCRIPCION_CHANNEL_TYPES = frozenset({
+    'suscripcion_por_vencer',
+    'suscripcion_vencida',
+    'suscripcion_pago_fallido',
+    'creditos_agotados',
+})
 
-def _user_has_active_native_push(user_id) -> bool:
-    """True si el usuario tiene token Expo nativo activo reciente (evita duplicar con web)."""
-    from datetime import timedelta
-    from django.utils import timezone
+HIGH_PRIORITY_TYPES = (
+    CHAT_CHANNEL_TYPES
+    | SERVICIOS_CHANNEL_TYPES
+    | SUSCRIPCION_CHANNEL_TYPES
+    | frozenset({
+        'health_alert',
+        'global_health_alert',
+        'salud_actualizada',
+    })
+)
+
+
+def _iter_native_tokens(user):
+    """Todos los tokens Expo activos del usuario (iOS + Android), sin duplicar."""
     from .models import PushToken
 
-    cutoff = timezone.now() - timedelta(days=NATIVE_PUSH_RECENCY_DAYS)
-    return PushToken.objects.filter(
-        usuario_id=user_id,
-        activo=True,
-        plataforma__in=('ios', 'android'),
-        fecha_registro__gte=cutoff,
-    ).exists()
+    seen = set()
+    tokens = []
+    qs = PushToken.objects.filter(usuario_id=user.id, activo=True).order_by('-fecha_actualizacion')
+    for pt in qs:
+        token = (pt.token or '').strip()
+        if token and token not in seen:
+            seen.add(token)
+            tokens.append(token)
+    legacy = (getattr(user, 'expo_push_token', None) or '').strip()
+    if legacy and legacy not in seen:
+        tokens.append(legacy)
+    return tokens
+
+
+def _invalidate_native_token(user, token: str) -> None:
+    from .models import PushToken
+
+    token = (token or '').strip()
+    if not token:
+        return
+    PushToken.objects.filter(usuario=user, token=token).update(activo=False)
+    if getattr(user, 'expo_push_token', None) == token:
+        user.expo_push_token = None
+        user.save(update_fields=['expo_push_token'])
+        logger.warning('🗑️ Token Expo inválido, desactivado para usuario %s', user.id)
+
+
+def _push_operativo_permitido(user) -> bool:
+    from django.core.exceptions import ObjectDoesNotExist
+
+    try:
+        prefs = user.preferencias_notificacion
+    except ObjectDoesNotExist:
+        return True
+    if prefs is None:
+        return True
+    return bool(getattr(prefs, 'push_operativo', True))
+
+
+def _channel_for_type(notif_type: str) -> str:
+    if notif_type in ('health_alert', 'global_health_alert', 'salud_actualizada'):
+        return 'salud'
+    if notif_type == 'viaje_registrado':
+        return 'viajes'
+    if notif_type in CHAT_CHANNEL_TYPES or notif_type.startswith('agente_ia_escalamiento'):
+        return 'chat'
+    if notif_type in SERVICIOS_CHANNEL_TYPES or notif_type.startswith(('agente_ia_', 'pipeline_')):
+        return 'servicios'
+    if notif_type in SUSCRIPCION_CHANNEL_TYPES:
+        return 'suscripciones'
+    return 'default'
 
 
 def _send_web_push_to_user(user, title, body, data=None):
     """
     Enviar Web Push (VAPID/RFC 8030) a todas las suscripciones web activas del usuario.
     Desactiva automaticamente los endpoints que devuelvan 410 Gone (suscripcion expirada).
-    Omite envío si hay push nativo activo (mismo usuario, app instalada).
+    Siempre intenta web: el taller usa teléfono y navegador a la vez, y un token
+    nativo inválido no debe silenciar Chrome/Safari.
     """
     from .models import WebPushSubscription
-
-    notif_type = (data or {}).get('type', '')
-    # Eventos comerciales críticos y agente IA siempre llegan al navegador activo.
-    if _user_has_active_native_push(user.id) and notif_type not in WEB_PUSH_ALWAYS_TYPES:
-        if not notif_type.startswith('agente_ia_'):
-            logger.debug(
-                '[web-push] Usuario %s tiene PushToken nativo activo; omitiendo web push no prioritario.',
-                user.id,
-            )
-            return
 
     vapid_private = getattr(settings, 'VAPID_PRIVATE_KEY', None)
     vapid_public = getattr(settings, 'VAPID_PUBLIC_KEY', None)
@@ -125,9 +190,23 @@ THROTTLE_WINDOWS = {
     'nueva_oferta':              120,
     'new_offer':                 120,
     'chat_message':              4,    # 4s solo para evitar dobles envíos por race condition
+    'nuevo_mensaje_chat':        4,
+    'nuevo_contacto_canal':      3600,
     'solicitud_adjudicada':      60,
     'solicitud_por_vencer':      3600,
     'checklist_pendiente':       300,
+    'agente_ia_cotizacion_borrador': 20,
+    'agente_ia_cotizacion_enviada': 30,
+    'agente_ia_cotizacion_aceptada': 60,
+    'agente_ia_cotizacion_rechazada': 60,
+    'agente_ia_cita_confirmada': 60,
+    'agente_ia_escalamiento':    20,
+    'cita_agendada':             60,
+    'pipeline_borrador_listo_sin_enviar': 3600 * 6,
+    'pipeline_cotizacion_sin_respuesta_24h': 3600 * 10,
+    'pipeline_cotizacion_demorada_48h': 3600 * 10,
+    'pipeline_agenda_pendiente_confirmacion': 3600 * 10,
+    'pipeline_cotizacion_adicional_borrador': 300,
     # Suscripciones
     'suscripcion_por_vencer':    3600 * 12,
     'suscripcion_vencida':       3600 * 12,
@@ -163,21 +242,28 @@ def _should_throttle(user_id, data):
     Para 'chat_message' se incluye el sender_id en el key para que mensajes
     de distintos remitentes en la misma conversación no se bloqueen entre sí.
     """
-    notif_type = (data or {}).get('type', 'generic')
-    vehicle_id = (data or {}).get('vehicle_id', '')
-    solicitud_id = (data or {}).get('solicitud_id', '')
-    conversation_id = (data or {}).get('conversation_id', '')
-    unique_suffix = conversation_id or vehicle_id or solicitud_id or ''
+    payload = data or {}
+    notif_type = str(payload.get('type') or 'generic')
 
-    # Incluir oferta_id si viene (evita silenciar ofertas distintas en la misma solicitud)
-    oferta_id = (data or {}).get('oferta_id', '')
+    def _part(key):
+        val = payload.get(key, '')
+        return '' if val is None else str(val)
+
+    unique_suffix = (
+        _part('conversation_id')
+        or _part('cotizacion_id')
+        or _part('cita_id')
+        or _part('vehicle_id')
+        or _part('solicitud_id')
+        or ''
+    )
+
+    oferta_id = _part('oferta_id')
     if oferta_id:
         unique_suffix = f"{unique_suffix}:{oferta_id}"
 
-    # Para chat: incluir sender_id para que mensajes de distintos remitentes
-    # en la misma conversación no compartan el mismo throttle bucket.
-    if notif_type == 'chat_message':
-        sender_id = (data or {}).get('sender_id', '')
+    if notif_type in ('chat_message', 'nuevo_mensaje_chat', 'nuevo_contacto_canal'):
+        sender_id = _part('sender_id')
         if sender_id:
             unique_suffix = f"{unique_suffix}:{sender_id}"
 
@@ -195,8 +281,9 @@ def _should_throttle(user_id, data):
 @shared_task(bind=True, max_retries=2, default_retry_delay=30)
 def send_expo_push_notification(self, user_id, title, body, data=None):
     """
-    Tarea de Celery para enviar notificaciones push usando Expo.
-    Incluye throttling por tipo de evento y reintentos automáticos.
+    Tarea de Celery para enviar notificaciones push usando Expo (iOS/Android)
+    y Web Push (navegador). Entrega a *todos* los tokens nativos activos y
+    a las suscripciones web; un token muerto no silencia el resto.
     """
     from .models import Usuario
     from exponent_server_sdk import (
@@ -206,111 +293,76 @@ def send_expo_push_notification(self, user_id, title, body, data=None):
         PushTicketError,
     )
 
-    if _should_throttle(user_id, data):
+    if not getattr(self.request, 'retries', 0) and _should_throttle(user_id, data):
         return
 
     try:
-        user = Usuario.objects.get(pk=user_id)
-        token = user.expo_push_token
-
-        # Fallback: si el usuario no tiene expo_push_token en el campo principal
-        # (común en proveedores que registran via PushToken), buscar en PushToken.
-        if not token:
-            from .models import PushToken as PushTokenModel
-            pt = PushTokenModel.objects.filter(
-                usuario_id=user_id, activo=True
-            ).order_by('-fecha_registro').first()
-            if pt:
-                token = pt.token
-                logger.debug(
-                    f"ℹ️ [push] Usuario {user_id} usando token PushToken fallback"
-                )
-
-        data = _normalize_expo_push_data(data)
-
-        if not token:
-            # Sin Expo/native: igual intentar Web Push (navegador).
-            logger.warning(
-                f"⚠️ [push] Usuario {user_id} sin token Expo; intentando solo web push"
-            )
-            try:
-                _send_web_push_to_user(user, title, body, data)
-            except Exception as web_exc:
-                logger.error(f"❌ Error en web push para usuario {user_id}: {web_exc}")
-            return
-
-        notif_type = data.get('type', 'generic')
-        channel_id = 'default'
-        if notif_type in ('health_alert', 'global_health_alert', 'salud_actualizada'):
-            channel_id = 'salud'
-        elif notif_type == 'viaje_registrado':
-            channel_id = 'viajes'
-        elif notif_type == 'chat_message':
-            channel_id = 'chat'
-        elif notif_type in (
-            'recordatorio_pago',
-            'cambio_estado',
-            'nueva_oferta',
-            'solicitud_adjudicada',
-            'new_offer',
-            'solicitud_cancelada_cliente',
-            'nueva_solicitud',
-            'catalog_assignment',
-            'solicitud_por_vencer',
-            'checklist_pendiente',
-        ):
-            channel_id = 'servicios'
-        elif notif_type in ('suscripcion_por_vencer', 'suscripcion_vencida', 'suscripcion_pago_fallido', 'creditos_agotados'):
-            channel_id = 'suscripciones'
-
-        message = PushMessage(
-            to=token,
-            title=title,
-            body=body,
-            data=data,
-            sound='default',
-            channel_id=channel_id,
-            priority='high' if notif_type in (
-                'health_alert', 'global_health_alert', 'salud_actualizada', 'cambio_estado',
-                'chat_message', 'new_offer', 'nueva_oferta', 'nueva_solicitud', 'catalog_assignment',
-                'solicitud_por_vencer', 'checklist_pendiente',
-            ) else 'default',
-        )
-
-        try:
-            response = PushClient().publish(message)
-            # Verificar si el ticket reporta error (DeviceNotRegistered, etc.)
-            try:
-                response.validate_response()
-                logger.info(f"✅ Push [{notif_type}] enviada a usuario {user_id} | token={token[:30]}…")
-            except PushTicketError as ticket_err:
-                err_msg = str(ticket_err).lower()
-                logger.error(f"❌ Ticket error push usuario {user_id}: {ticket_err}")
-                if 'devicenotregistered' in err_msg or 'invalid' in err_msg:
-                    logger.warning(f"🗑️ Token inválido, limpiando para usuario {user_id}")
-                    user.expo_push_token = None
-                    user.save(update_fields=['expo_push_token'])
-        except PushServerError as exc:
-            logger.error(f"❌ Expo server error para usuario {user_id}: {exc}")
-            raise self.retry(exc=exc)
-        except (ValueError, Exception) as exc:
-            exc_str = str(exc).lower()
-            logger.error(f"❌ Error enviando push a usuario {user_id}: {exc}")
-            if 'devicenotregistered' in exc_str or 'invalid' in exc_str:
-                user.expo_push_token = None
-                user.save(update_fields=['expo_push_token'])
-
-        # Enviar tambien a suscripciones Web Push activas del usuario (canal web)
-        try:
-            _send_web_push_to_user(user, title, body, data)
-        except Exception as web_exc:
-            logger.error(f"❌ Error en web push para usuario {user_id}: {web_exc}")
-
+        user = Usuario.objects.select_related('preferencias_notificacion').get(pk=user_id)
     except Usuario.DoesNotExist:
         logger.error(f"❌ [push] Usuario {user_id} no encontrado")
-    except Exception as e:
-        logger.error(f"❌ Error crítico en push: {str(e)}", exc_info=True)
-        raise self.retry(exc=e)
+        return
+
+    if not _push_operativo_permitido(user):
+        logger.info('[push] Usuario %s tiene push operativo desactivado', user_id)
+        return
+
+    data = _normalize_expo_push_data(data)
+    notif_type = data.get('type', 'generic')
+    channel_id = _channel_for_type(notif_type)
+    priority = 'high' if notif_type in HIGH_PRIORITY_TYPES or notif_type.startswith(('agente_ia_', 'pipeline_')) else 'default'
+    tokens = _iter_native_tokens(user)
+
+    native_sent = False
+    should_retry_server = False
+    last_server_exc = None
+
+    if tokens:
+        client = PushClient()
+        for token in tokens:
+            message = PushMessage(
+                to=token,
+                title=title,
+                body=body,
+                data=data,
+                sound='default',
+                channel_id=channel_id,
+                priority=priority,
+            )
+            try:
+                response = client.publish(message)
+                try:
+                    response.validate_response()
+                    native_sent = True
+                    logger.info(
+                        f"✅ Push [{notif_type}] enviada a usuario {user_id} | token={token[:30]}…"
+                    )
+                except PushTicketError as ticket_err:
+                    err_msg = str(ticket_err).lower()
+                    logger.error(f"❌ Ticket error push usuario {user_id}: {ticket_err}")
+                    if 'devicenotregistered' in err_msg or 'invalid' in err_msg:
+                        _invalidate_native_token(user, token)
+            except PushServerError as exc:
+                logger.error(f"❌ Expo server error para usuario {user_id}: {exc}")
+                should_retry_server = True
+                last_server_exc = exc
+            except (ValueError, Exception) as exc:
+                exc_str = str(exc).lower()
+                logger.error(f"❌ Error enviando push a usuario {user_id}: {exc}")
+                if 'devicenotregistered' in exc_str or 'invalid' in exc_str:
+                    _invalidate_native_token(user, token)
+    else:
+        logger.warning(
+            f"⚠️ [push] Usuario {user_id} sin token Expo; intentando web push"
+        )
+
+    try:
+        _send_web_push_to_user(user, title, body, data)
+    except Exception as web_exc:
+        logger.error(f"❌ Error en web push para usuario {user_id}: {web_exc}")
+
+    if should_retry_server and not native_sent:
+        raise self.retry(exc=last_server_exc)
+
 
 
 @shared_task(bind=True, max_retries=1, default_retry_delay=60)

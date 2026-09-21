@@ -132,33 +132,24 @@ class ChatConsumer(AsyncWebsocketConsumer):
         de send_expo_push_notification.
         """
         try:
-            from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
+            from mecanimovilapp.apps.omnichannel.services.broadcast import send_chat_push
 
             conversation = Conversation.objects.prefetch_related('participants').get(
                 pk=conversation_id
             )
 
             sender_name = f"{sender.first_name} {sender.last_name}".strip() or sender.email
-
-            # Acortar el texto para la notificación push
             preview = message_content[:80] + "…" if len(message_content) > 80 else message_content
+            channel_code = getattr(conversation, 'source_channel', None) or 'APP'
 
             for participant in conversation.participants.exclude(pk=sender.pk):
-                if not getattr(participant, 'expo_push_token', None):
-                    continue
-
-                title = f"💬 Mensaje de {sender_name}"
-                body = preview
-
-                send_expo_push_notification.delay(
+                send_chat_push(
                     participant.id,
-                    title,
-                    body,
-                    {
-                        'type': 'chat_message',
-                        'conversation_id': str(conversation_id),
-                        'sender_id': str(sender.id),
-                    },
+                    channel_code=channel_code,
+                    sender_name=sender_name,
+                    preview=preview,
+                    conversation_id=str(conversation_id),
+                    sender_id=str(sender.id),
                 )
         except Exception as exc:
             import logging
