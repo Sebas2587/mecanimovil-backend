@@ -1165,9 +1165,37 @@ def _sanitizar_muletillas_robot(textos: list[str]) -> list[str]:
 
 
 
+def _generation_config_agente(model: str, *, thinking: bool) -> dict[str, Any]:
+    """El chat razona; el cotizador usa 'minimal' para no pasarse de timeout JSON."""
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador import (
+        _modelo_admite_thinking_level,
+    )
+
+    cfg: dict[str, Any] = {
+        'temperature': 0.55,
+        'maxOutputTokens': 4096,
+        'responseMimeType': 'application/json',
+    }
+    if not thinking:
+        return cfg
+    if _modelo_admite_thinking_level(model):
+        cfg['thinkingConfig'] = {'thinkingLevel': 'low'}
+    else:
+        cfg['thinkingConfig'] = {'thinkingBudget': 2048}
+    return cfg
+
+
 def _llamar_gemini_agente(prompt: str) -> tuple[dict[str, Any] | None, str | None]:
+    """3.1-flash-lite primero; si Google lo satura (503), 2.5-flash con thinking propio."""
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador import (
+        _url_generate_content,
+        modelos_gemini_cotizacion,
+        texto_candidato_gemini,
+        timeout_http_gemini,
+    )
+
     api_key = (getattr(settings, 'GEMINI_API_KEY', '') or '').strip()
-    model = (
+    primario = (
         getattr(settings, 'AGENTE_IA_GEMINI_MODEL', '')
         or getattr(settings, 'ASISTENTE_COTIZACION_GEMINI_MODEL', '')
         or getattr(settings, 'GEMINI_MODEL', 'gemini-3.1-flash-lite')
@@ -1176,34 +1204,66 @@ def _llamar_gemini_agente(prompt: str) -> tuple[dict[str, Any] | None, str | Non
     if not api_key:
         return None, 'GEMINI_API_KEY no configurada.'
 
+    modelos = modelos_gemini_cotizacion(primario)
     timeout = int(getattr(settings, 'AGENTE_IA_TIMEOUT', 20) or 20)
-    url = (
-        f'https://generativelanguage.googleapis.com/v1beta/models/{model}:'
-        f'generateContent?key={api_key}'
-    )
-    payload = {
-        'contents': [{'parts': [{'text': prompt}]}],
-        'generationConfig': {
-            'temperature': 0.55,
-            'maxOutputTokens': 2000,
-            'responseMimeType': 'application/json',
-        },
-    }
-    try:
-        resp = requests.post(url, json=payload, timeout=timeout)
-    except requests.RequestException:
-        return None, 'Error de conexión con Gemini.'
+    ultimo_error = 'Error de conexión con Gemini.'
 
-    if resp.status_code != 200:
-        return None, f'Gemini HTTP {resp.status_code}'
+    for mi, modelo in enumerate(modelos):
+        usar_thinking = True
+        url = _url_generate_content(modelo, api_key)
+        timeout_modelo = timeout if mi == 0 else min(40, max(timeout, 32))
+        while True:
+            payload = {
+                'contents': [{'parts': [{'text': prompt}]}],
+                'generationConfig': _generation_config_agente(modelo, thinking=usar_thinking),
+            }
+            try:
+                resp = requests.post(url, json=payload, timeout=timeout_http_gemini(timeout_modelo))
+            except (requests.ReadTimeout, requests.Timeout):
+                ultimo_error = 'Error de conexión con Gemini.'
+                logger.warning('Gemini agente timeout model=%s', modelo)
+                break
+            except requests.RequestException:
+                ultimo_error = 'Error de conexión con Gemini.'
+                logger.warning('Gemini agente red model=%s', modelo)
+                break
 
-    try:
-        body = resp.json()
-        text = body['candidates'][0]['content']['parts'][0]['text']
-    except (KeyError, IndexError, TypeError, ValueError):
-        return None, 'Respuesta Gemini inesperada.'
+            if resp.status_code == 200:
+                try:
+                    body = resp.json()
+                except ValueError:
+                    ultimo_error = 'Respuesta Gemini inesperada.'
+                    break
+                parsed = _parse_json(texto_candidato_gemini(body) or '')
+                if parsed:
+                    if mi > 0:
+                        logger.info('Gemini agente ok con respaldo model=%s', modelo)
+                    return parsed, None
+                ultimo_error = 'Respuesta Gemini inesperada.'
+                break
 
-    return _parse_json(text), None
+            if resp.status_code == 400 and usar_thinking:
+                logger.warning('Gemini agente HTTP 400 model=%s; reintenta sin thinking', modelo)
+                usar_thinking = False
+                continue
+
+            ultimo_error = f'Gemini HTTP {resp.status_code}'
+            logger.warning(
+                'Gemini agente HTTP %s model=%s body=%s',
+                resp.status_code,
+                modelo,
+                (resp.text or '')[:300],
+            )
+            if resp.status_code in (429, 503) and mi < len(modelos) - 1:
+                logger.warning(
+                    'Gemini agente HTTP %s model=%s; pasa a %s sin esperar',
+                    resp.status_code,
+                    modelo,
+                    modelos[mi + 1],
+                )
+            break
+
+    return None, ultimo_error
 
 
 def _construir_prompt_agente(

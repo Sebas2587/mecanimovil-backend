@@ -9,15 +9,36 @@ from django.utils import timezone
 logger = logging.getLogger(__name__)
 
 
-@shared_task(name='agente_ia.procesar_mensaje_entrante', queue='default')
-def procesar_mensaje_entrante_task(message_id: int) -> dict:
+@shared_task(
+    bind=True,
+    name='agente_ia.procesar_mensaje_entrante',
+    queue='default',
+    max_retries=1,
+    default_retry_delay=8,
+)
+def procesar_mensaje_entrante_task(self, message_id: int) -> dict:
     from mecanimovilapp.apps.agente_ia.services.orquestador import procesar_mensaje_entrante_ia
 
     try:
-        return procesar_mensaje_entrante_ia(message_id)
+        result = procesar_mensaje_entrante_ia(message_id)
     except Exception:
         logger.exception('Error procesando mensaje agente IA %s', message_id)
         return {'ok': False, 'error': 'internal'}
+
+    err = str((result or {}).get('error') or '')
+    reintenta = (result or {}).get('ok') is False and any(
+        token in err.lower()
+        for token in ('503', 'saturad', 'conexión', 'conexion', 'timed out', 'timeout')
+    )
+    if reintenta and self.request.retries < (self.max_retries or 0):
+        logger.warning(
+            'Reintenta agente IA msg=%s error=%s retry=%s',
+            message_id,
+            err,
+            self.request.retries,
+        )
+        raise self.retry(countdown=8)
+    return result
 
 
 @shared_task(name='agente_ia.procesar_documento_conocimiento', queue='default')
