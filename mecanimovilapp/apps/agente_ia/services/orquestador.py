@@ -1092,6 +1092,25 @@ def _sanitizar_respuesta_sin_precio_catalogo(
     return limpio
 
 
+_RE_LINK_VITRINA = re.compile(r'https?://\S*?/repuestos/[A-Za-z0-9_-]+', re.I)
+_RE_INVITA_ELEGIR_PIEZA = re.compile(
+    r'elige.{0,80}(repuesto|opci[oó]n)|opciones que encontr[eé]',
+    re.I,
+)
+
+
+def _textos_sin_link_vitrina(textos: list[str] | None) -> list[str]:
+    """Quita links/invitaciones a elegir SKUs. El cliente elige calidad, no piezas."""
+    out: list[str] = []
+    for texto in textos or []:
+        t = _RE_LINK_VITRINA.sub('', str(texto or ''))
+        t = re.sub(r'\s{2,}', ' ', t).strip(' :')
+        if not t or _RE_INVITA_ELEGIR_PIEZA.search(t):
+            continue
+        out.append(t)
+    return out
+
+
 def _extraer_respuestas_cliente(decision: dict[str, Any] | None) -> list[str]:
     """Normaliza respuestas_cliente[] o respuesta_cliente a lista de burbujas cortas."""
     if not isinstance(decision, dict):
@@ -1598,9 +1617,10 @@ REGLAS DE CONVERSACIÓN:
     la FICHA OPERATIVA). Cierra con UNA pregunta: si quiere sumar algo o lo dejas así.
     Una sola vez por cotización. Si el cliente ya dijo "mándame el precio ya" o equivalente,
     NO resumas: avanza.
-31. VITRINA: cuando el sistema haya enviado el link de opciones, NO repitas las opciones en
-    texto ni describas fotos que no viste. Una frase para invitarlo a elegir y listo. Si el
-    cliente no la abre, NO insistas más de una vez.
+31. COTIZACIÓN AL CLIENTE: NUNCA envíes ni menciones un link para elegir repuestos,
+    SKUs, fotos de piezas ni "opciones encontradas". El cliente solo elige calidad
+    (original / OEM / alternativo). El taller arma el borrador y le envía la cotización
+    por este chat. Tú confirmas que el taller la está revisando; no pidas que escoja piezas.
 
 Responde SOLO JSON válido:
 {{
@@ -1922,7 +1942,7 @@ def _intentar_flujo_repuestos_canal(
     persistir_lead,
     persistir_memoria,
 ) -> dict | None:
-    """Calidad / resumen / vitrina. None = seguir el flujo normal."""
+    """Calidad (original/OEM/alternativo) y resumen de alcance. None = seguir."""
     from mecanimovilapp.apps.agente_ia.services.contexto_repuestos import (
         alcance_repuestos_habilitado,
     )
@@ -2842,35 +2862,13 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
             proveedor_user_id=proveedor_user_id,
             datos=datos_cot,
         )
-        mensaje_cliente_parts = respuestas or [
+        # El cliente ya eligió calidad (original/OEM/alternativo). No mandar vitrina
+        # de SKUs: no sabe qué pieza comprar y el taller envía la cotización después.
+        mensaje_cliente_parts = _textos_sin_link_vitrina(respuestas) or [
             'Ya tengo lo necesario: estoy armando tu cotización para que el taller la revise '
             'y te la envíe por este chat. Si necesitas agregar otro servicio al mismo auto, '
             'dímelo y lo sumo a la misma cotización.'
         ]
-        vitrina_txt = ''
-        if cotizacion:
-            try:
-                from mecanimovilapp.apps.ordenes.services.vitrina_repuestos import (
-                    crear_vitrina,
-                    texto_mensaje_vitrina,
-                    vitrina_habilitada,
-                )
-
-                if vitrina_habilitada(config):
-                    vit = crear_vitrina(
-                        taller=taller,
-                        cotizacion=cotizacion,
-                        conversation=conversation,
-                        muestra_bandas=bool(getattr(config, 'vitrina_muestra_bandas', True)),
-                    )
-                    if vit is not None:
-                        sesion.vitrina_activa = vit
-                        sesion.estado = AgenteConversacionSesion.ESTADO_ELIGIENDO_REPUESTOS
-                        sesion.save(update_fields=['vitrina_activa', 'estado', 'actualizado_en'])
-                        vitrina_txt = texto_mensaje_vitrina(vit)
-                        mensaje_cliente_parts = [vitrina_txt]
-            except Exception:
-                logger.exception('enviar vitrina conv=%s', conversation.id)
         mensaje_cliente = ' '.join(mensaje_cliente_parts).strip()
         if cotizacion:
             enviar_respuestas_agente(
@@ -2879,11 +2877,13 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
                 textos=mensaje_cliente_parts,
             )
         elif respuestas:
-            enviar_respuestas_agente(
-                conversation=conversation,
-                proveedor_user_id=proveedor_user_id,
-                textos=respuestas,
-            )
+            textos_ok = _textos_sin_link_vitrina(respuestas)
+            if textos_ok:
+                enviar_respuestas_agente(
+                    conversation=conversation,
+                    proveedor_user_id=proveedor_user_id,
+                    textos=textos_ok,
+                )
 
         AgenteMensajeLog.objects.create(
             sesion=sesion,

@@ -329,6 +329,10 @@ def revisar_seguimiento_proactivo() -> dict[str, Any]:
         for vit in vits.iterator(chunk_size=50):
             if not vit.enviada_en:
                 continue
+            cot = vit.cotizacion
+            if cot is not None and str(getattr(cot, 'estado', '') or '') == 'borrador':
+                # El cliente no elige piezas mientras el taller aún no envía la cotización.
+                continue
             horas = (now - vit.enviada_en).total_seconds() / 3600
             if horas < 4:
                 continue

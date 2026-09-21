@@ -16,6 +16,7 @@ from mecanimovilapp.apps.agente_ia.services.resumen_alcance import (
     debe_enviar_resumen,
     urgencia_explicita,
 )
+from mecanimovilapp.apps.agente_ia.services.orquestador import _textos_sin_link_vitrina
 from mecanimovilapp.apps.ordenes.services.cotizacion_canal import metadata_cotizacion_mensaje
 
 
@@ -115,3 +116,24 @@ class CotizacionInteractiveRegressionTest(SimpleTestCase):
         meta = metadata_cotizacion_mensaje(_Cot())
         self.assertFalse(meta.get('interactive'))
         self.assertEqual(meta.get('tipo'), 'cotizacion_canal')
+
+
+class SinVitrinaAlCotizarTest(SimpleTestCase):
+    def test_descarta_link_e_invitacion_a_elegir_pieza(self):
+        url = (
+            'https://mecanimovil-usuarios.vercel.app/repuestos/'
+            'qUnXBmgECInnbyN2JKC6frGuN30bkXLpsnlcJc-cVvSV0DkPh3pe8mA4Z2X1h-Od'
+        )
+        self.assertEqual(
+            _textos_sin_link_vitrina([
+                f'Estas son las opciones que encontré para tu RENAULT DUSTER. '
+                f'Elige la que te acomode y el taller te confirma el valor: {url}',
+            ]),
+            [],
+        )
+        self.assertEqual(
+            _textos_sin_link_vitrina([
+                'Ya tengo lo necesario: estoy armando tu cotización para que el taller la revise.',
+            ]),
+            ['Ya tengo lo necesario: estoy armando tu cotización para que el taller la revise.'],
+        )

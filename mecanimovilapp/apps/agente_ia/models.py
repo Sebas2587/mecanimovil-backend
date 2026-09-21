@@ -79,7 +79,7 @@ class TallerAgenteConfig(models.Model):
     )
     vitrina_repuestos_habilitada = models.BooleanField(
         default=True,
-        help_text='Si el agente está activo, puede enviar la vitrina pública de opciones.',
+        help_text='Permite que el taller envíe a mano una vitrina de opciones. El agente no la manda al cotizar.',
     )
     vitrina_muestra_bandas = models.BooleanField(
         default=True,
