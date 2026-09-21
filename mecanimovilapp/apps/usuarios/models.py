@@ -1681,7 +1681,10 @@ class ConsentimientoUsuario(models.Model):
         verbose_name_plural = _('consentimientos de usuario')
         ordering = ['-fecha_aceptacion']
         indexes = [
-            models.Index(fields=['usuario', 'tipo', '-fecha_aceptacion']),
+            models.Index(
+                fields=['usuario', 'tipo', '-fecha_aceptacion'],
+                name='usuarios_co_usuario_c66b23_idx',
+            ),
         ]
 
     def __str__(self):
