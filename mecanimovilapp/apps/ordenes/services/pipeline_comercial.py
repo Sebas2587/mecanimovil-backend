@@ -1095,6 +1095,10 @@ def _fusionar_filas_mismo_caso(a: dict[str, Any], b: dict[str, Any]) -> dict[str
             if rank_cita > rank_cot:
                 merged['estado_normalizado'] = cita['estado_normalizado']
                 merged['estado_raw'] = cita.get('estado_raw') or merged.get('estado_raw')
+        if merged.get('estado_normalizado') != 'cotizacion_enviada':
+            merged['esperando_respuesta_24h'] = False
+            merged['demorado_48h'] = False
+            merged['visto_sin_respuesta'] = False
         return merged
     p_a = _DEDUPE_TIPO_PRIORITY.get(str(a.get('tipo_entidad')), 9)
     p_b = _DEDUPE_TIPO_PRIORITY.get(str(b.get('tipo_entidad')), 9)

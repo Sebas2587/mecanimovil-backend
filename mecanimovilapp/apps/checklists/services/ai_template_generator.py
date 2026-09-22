@@ -246,6 +246,12 @@ def generar_template_checklist_ia(
         .first()
     )
     if existing:
+        if existing.generado_por_ia and not existing.items.exists():
+            _agregar_items_fallback(existing)
+            logger.warning(
+                'ChecklistTemplate IA %s sin ítems; se completó con fallback',
+                existing.id,
+            )
         return existing
 
     if asistente_habilitado():
@@ -254,7 +260,11 @@ def generar_template_checklist_ia(
             descripcion_extra=descripcion_extra,
             vehiculo_contexto=vehiculo_contexto,
         )
-        data, _uso, error = _llamar_gemini(prompt)
+        data, _uso, error = _llamar_gemini(
+            prompt,
+            max_output_tokens=4096,
+            timeout_seconds=40,
+        )
         if not error and data:
             try:
                 template = _persistir_template_desde_ia(servicio, data)

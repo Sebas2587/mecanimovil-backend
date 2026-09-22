@@ -201,71 +201,95 @@ def analizar_adjunto_mensaje(
     if not api_key:
         return {'error': 'GEMINI_API_KEY no configurada'}
 
-    model = (
-        getattr(settings, 'AGENTE_IA_MULTIMODAL_MODEL', '')
-        or getattr(settings, 'AGENTE_IA_GEMINI_MODEL', '')
-        or 'gemini-2.5-flash'
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador import (
+        generation_config_gemini,
+        modelos_gemini_cotizacion,
+        texto_candidato_gemini,
+        timeout_http_gemini,
+    )
+
+    primario = (
+        getattr(settings, 'AGENTE_IA_GEMINI_MODEL', '')
+        or getattr(settings, 'GEMINI_MODEL', '')
+        or 'gemini-3.1-flash-lite'
     ).strip()
+    modelos = modelos_gemini_cotizacion(primario)
     timeout = int(getattr(settings, 'AGENTE_IA_MULTIMODAL_TIMEOUT', 45) or 45)
     caption = (message.content or '').strip()
     prompt = _prompt_analisis(vehiculo=vehiculo or {}, caption=caption, kind=kind or 'adjunto')
 
     mime = _normalizar_mime(mime)
     b64 = base64.b64encode(raw).decode('ascii')
-    url = (
-        f'https://generativelanguage.googleapis.com/v1beta/models/{model}:'
-        f'generateContent?key={api_key}'
-    )
-    payload = {
-        'contents': [
-            {
-                'parts': [
-                    {'text': prompt},
-                    {'inline_data': {'mime_type': mime, 'data': b64}},
-                ]
-            }
-        ],
-        'generationConfig': {
-            'temperature': 0.2,
-            'maxOutputTokens': 2048,
-            'responseMimeType': 'application/json',
-        },
-    }
-
-    try:
-        resp = requests.post(url, json=payload, timeout=timeout)
-    except requests.RequestException as exc:
-        logger.warning('Error multimodal Gemini msg=%s: %s', message.id, exc)
-        return {'error': 'conexion_gemini'}
-
-    if resp.status_code != 200:
-        logger.warning(
-            'Gemini multimodal HTTP %s msg=%s: %s',
-            resp.status_code,
-            message.id,
-            (resp.text or '')[:300],
+    text = ''
+    ultimo_error = 'conexion_gemini'
+    for modelo in modelos:
+        url = (
+            f'https://generativelanguage.googleapis.com/v1beta/models/{modelo}:'
+            f'generateContent?key={api_key}'
         )
-        return {'error': f'http_{resp.status_code}'}
-
-    try:
-        body = resp.json()
-        candidates = body.get('candidates') or []
-        if not candidates:
-            # Bloqueo de seguridad / prompt vacío: mismo efecto que análisis vacío.
-            block = (body.get('promptFeedback') or {}).get('blockReason')
-            return {
-                'error': f'gemini_sin_candidatos:{block}' if block else 'gemini_sin_candidatos',
-                'kind': kind or 'adjunto',
+        usar_thinking = True
+        while True:
+            payload = {
+                'contents': [
+                    {
+                        'parts': [
+                            {'text': prompt},
+                            {'inline_data': {'mime_type': mime, 'data': b64}},
+                        ]
+                    }
+                ],
+                'generationConfig': generation_config_gemini(
+                    temperature=0.2,
+                    max_output=2048,
+                    response_json=True,
+                    thinking=usar_thinking,
+                ),
             }
-        parts = candidates[0].get('content', {}).get('parts') or []
-        text = ''
-        for part in parts:
-            if isinstance(part, dict) and part.get('text'):
-                text += part['text']
-        if not (text or '').strip():
-            return {'error': 'respuesta_inesperada', 'kind': kind or 'adjunto'}
-    except (KeyError, IndexError, TypeError, ValueError):
-        return {'error': 'respuesta_inesperada', 'kind': kind or 'adjunto'}
+            try:
+                resp = requests.post(url, json=payload, timeout=timeout_http_gemini(timeout))
+            except requests.RequestException as exc:
+                logger.warning('Error multimodal Gemini msg=%s model=%s: %s', message.id, modelo, exc)
+                ultimo_error = 'conexion_gemini'
+                break
+
+            if resp.status_code == 400 and usar_thinking:
+                logger.warning('Gemini multimodal HTTP 400 model=%s; reintenta sin thinking', modelo)
+                usar_thinking = False
+                continue
+
+            if resp.status_code != 200:
+                logger.warning(
+                    'Gemini multimodal HTTP %s msg=%s model=%s: %s',
+                    resp.status_code,
+                    message.id,
+                    modelo,
+                    (resp.text or '')[:300],
+                )
+                ultimo_error = f'http_{resp.status_code}'
+                break
+
+            try:
+                body = resp.json()
+            except ValueError:
+                ultimo_error = 'respuesta_inesperada'
+                break
+            candidates = body.get('candidates') or []
+            if not candidates:
+                block = (body.get('promptFeedback') or {}).get('blockReason')
+                ultimo_error = f'gemini_sin_candidatos:{block}' if block else 'gemini_sin_candidatos'
+                break
+            text = (texto_candidato_gemini(body) or '').strip()
+            if text:
+                logger.info('Análisis multimodal ok msg=%s model=%s', message.id, modelo)
+                break
+            ultimo_error = 'respuesta_inesperada'
+            text = ''
+            break
+        if text:
+            break
+
+    if not text:
+        return {'error': ultimo_error, 'kind': kind or 'adjunto'}
 
     data = _parse_json(text) or {}
     resumen = (data.get('resumen_para_chat') or data.get('sintoma_sintetizado') or '').strip()

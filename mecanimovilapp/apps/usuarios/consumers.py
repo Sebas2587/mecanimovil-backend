@@ -8,7 +8,11 @@ from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.tokens import AccessToken
 from rest_framework_simplejwt.exceptions import TokenError
 from .models import MecanicoDomicilio, MiembroTaller, Taller, ConnectionStatus
-from .connection_throttle import reserve_ws_heartbeat_db_write
+from .connection_throttle import (
+    register_ws_socket,
+    release_ws_socket,
+    reserve_ws_heartbeat_db_write,
+)
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
@@ -82,6 +86,7 @@ class ConnectionConsumer(AsyncWebsocketConsumer):
         
         # Aceptar la conexión
         await self.accept()
+        await self._registrar_socket()
         
         # Inicializar contador de heartbeats para optimización de DB writes
         self.heartbeat_counter = 0
@@ -114,8 +119,7 @@ class ConnectionConsumer(AsyncWebsocketConsumer):
                 proveedor_info = await self.get_proveedor_info()
                 
                 if proveedor_info and proveedor_info['id']:
-                    # Marcar como desconectado
-                    await self.marcar_desconectado()
+                    quedan = await self._liberar_socket()
                     
                     # Remover de los grupos
                     await self.channel_layer.group_discard(
@@ -129,18 +133,25 @@ class ConnectionConsumer(AsyncWebsocketConsumer):
                     
                     logger.info(f"🔌 WebSocket desconectado: {proveedor_info['nombre']}")
                     
-                    # Notificar a todos los clientes sobre el cambio de estado
-                    await self.channel_layer.group_send(
-                        "clientes",
-                        {
-                            'type': 'connection_status_update',
-                            'proveedor_id': proveedor_info['id'],
-                            'usuario_id': proveedor_info.get('usuario_id'),  # ID del Usuario para comparar con otra_persona.id
-                            'tipo_proveedor': self.tipo_proveedor,
-                            'esta_conectado': False,
-                            'nombre_proveedor': proveedor_info['nombre']
-                        }
-                    )
+                    if quedan == 0:
+                        await self.marcar_desconectado()
+                        await self.channel_layer.group_send(
+                            "clientes",
+                            {
+                                'type': 'connection_status_update',
+                                'proveedor_id': proveedor_info['id'],
+                                'usuario_id': proveedor_info.get('usuario_id'),
+                                'tipo_proveedor': self.tipo_proveedor,
+                                'esta_conectado': False,
+                                'nombre_proveedor': proveedor_info['nombre']
+                            }
+                        )
+                    else:
+                        logger.info(
+                            "Proveedor %s sigue en línea por otro socket (%s)",
+                            proveedor_info['nombre'],
+                            quedan,
+                        )
             except Exception as e:
                 logger.error(f"❌ Error en disconnect: {e}", exc_info=True)
     
@@ -463,6 +474,18 @@ class ConnectionConsumer(AsyncWebsocketConsumer):
             return {'id': None, 'nombre': 'Proveedor', 'usuario_id': None}
     
     @database_sync_to_async
+    def _registrar_socket(self):
+        if not getattr(self, 'proveedor', None) or not getattr(self, 'tipo_proveedor', None):
+            return 0
+        return register_ws_socket(self.tipo_proveedor, self.proveedor.pk, self.channel_name)
+
+    @database_sync_to_async
+    def _liberar_socket(self):
+        if not getattr(self, 'proveedor', None) or not getattr(self, 'tipo_proveedor', None):
+            return 0
+        return release_ws_socket(self.tipo_proveedor, self.proveedor.pk, self.channel_name)
+
+    @database_sync_to_async
     def marcar_conectado(self):
         """
         Marca al proveedor como conectado
@@ -520,6 +543,7 @@ class ConnectionConsumer(AsyncWebsocketConsumer):
         Actualiza el heartbeat del proveedor
         """
         try:
+            register_ws_socket(self.tipo_proveedor, self.proveedor.pk, self.channel_name)
             if not reserve_ws_heartbeat_db_write(self.tipo_proveedor, self.proveedor.pk):
                 return
             # Crear filtro según el tipo de proveedor
@@ -720,6 +744,7 @@ class MechanicStatusConsumer(AsyncWebsocketConsumer):
             }))
             
             logger.info(f"🔗 MechanicStatusConsumer conectado: {proveedor_info['nombre']}")
+            await self._registrar_socket()
             
             # Notificar a clientes sobre el cambio de estado
             await self.broadcast_status_update('online', proveedor_info)
@@ -740,8 +765,7 @@ class MechanicStatusConsumer(AsyncWebsocketConsumer):
                 proveedor_info = await self.get_proveedor_info()
                 
                 if proveedor_info and proveedor_info['id']:
-                    # Actualizar estado a 'offline'
-                    await self.update_provider_status('offline')
+                    quedan = await self._liberar_socket()
                     
                     # Remover de grupos usando la información obtenida
                     await self.channel_layer.group_discard(
@@ -761,8 +785,15 @@ class MechanicStatusConsumer(AsyncWebsocketConsumer):
                     
                     logger.info(f"🔌 MechanicStatusConsumer desconectado: {proveedor_info['nombre']}")
                     
-                    # Notificar a clientes sobre el cambio de estado
-                    await self.broadcast_status_update('offline', proveedor_info)
+                    if quedan == 0:
+                        await self.update_provider_status('offline')
+                        await self.broadcast_status_update('offline', proveedor_info)
+                    else:
+                        logger.info(
+                            "Proveedor %s sigue en línea por otro socket (%s)",
+                            proveedor_info['nombre'],
+                            quedan,
+                        )
             except Exception as e:
                 logger.error(f"❌ Error en disconnect: {e}", exc_info=True)
     
@@ -1102,6 +1133,18 @@ class MechanicStatusConsumer(AsyncWebsocketConsumer):
             return None
     
     @database_sync_to_async
+    def _registrar_socket(self):
+        if not getattr(self, 'proveedor', None) or not getattr(self, 'tipo_proveedor', None):
+            return 0
+        return register_ws_socket(self.tipo_proveedor, self.proveedor.pk, self.channel_name)
+
+    @database_sync_to_async
+    def _liberar_socket(self):
+        if not getattr(self, 'proveedor', None) or not getattr(self, 'tipo_proveedor', None):
+            return 0
+        return release_ws_socket(self.tipo_proveedor, self.proveedor.pk, self.channel_name)
+
+    @database_sync_to_async
     def update_provider_status(self, status):
         """
         Actualiza el estado del proveedor
@@ -1141,6 +1184,7 @@ class MechanicStatusConsumer(AsyncWebsocketConsumer):
         """
         try:
             tipo = 'mecanico' if isinstance(self.proveedor, MecanicoDomicilio) else 'taller'
+            register_ws_socket(tipo, self.proveedor.pk, self.channel_name)
             if not reserve_ws_heartbeat_db_write(tipo, self.proveedor.pk):
                 return
             # Crear filtro según el tipo de proveedor

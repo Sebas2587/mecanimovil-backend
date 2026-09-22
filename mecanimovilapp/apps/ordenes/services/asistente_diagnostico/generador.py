@@ -237,7 +237,12 @@ def _armar_contexto(
     }
 
 
-def _llamar_gemini(prompt: str) -> tuple[dict[str, Any] | None, dict[str, int | str], str | None]:
+def _llamar_gemini(
+    prompt: str,
+    *,
+    max_output_tokens: int | None = None,
+    timeout_seconds: int | None = None,
+) -> tuple[dict[str, Any] | None, dict[str, int | str], str | None]:
     """
     Llama a Gemini. Retorna (json_parseado, uso_tokens, mensaje_error_usuario).
     """
@@ -256,7 +261,16 @@ def _llamar_gemini(prompt: str) -> tuple[dict[str, Any] | None, dict[str, int | 
     if not api_key:
         return None, uso_vacio, 'El asistente IA no está configurado en el servidor (falta GEMINI_API_KEY).'
 
-    timeout = int(getattr(settings, 'ASISTENTE_DIAGNOSTICO_IA_TIMEOUT', 12) or 12)
+    timeout = int(
+        timeout_seconds
+        if timeout_seconds is not None
+        else (getattr(settings, 'ASISTENTE_DIAGNOSTICO_IA_TIMEOUT', 25) or 25)
+    )
+    output_tokens = int(
+        max_output_tokens
+        if max_output_tokens is not None
+        else (getattr(settings, 'ASISTENTE_DIAGNOSTICO_MAX_OUTPUT_TOKENS', 4096) or 4096)
+    )
     max_retries = max(0, min(int(getattr(settings, 'GEMINI_RETRY_MAX', 2) or 2), 4))
     url = (
         f'https://generativelanguage.googleapis.com/v1beta/models/{model}:'
@@ -266,7 +280,7 @@ def _llamar_gemini(prompt: str) -> tuple[dict[str, Any] | None, dict[str, int | 
         'contents': [{'parts': [{'text': prompt}]}],
         'generationConfig': {
             'temperature': 0.25,
-            'maxOutputTokens': 1400,
+            'maxOutputTokens': output_tokens,
             'responseMimeType': 'application/json',
         },
     }
@@ -297,7 +311,20 @@ def _llamar_gemini(prompt: str) -> tuple[dict[str, Any] | None, dict[str, int | 
                 'tokens_total': tokens_total,
                 'modelo': model,
             }
-            return _parse_json(text), uso, None
+            finish = ''
+            try:
+                finish = str(body['candidates'][0].get('finishReason') or '')
+            except (KeyError, IndexError, TypeError, AttributeError):
+                finish = ''
+            parsed = _parse_json(text)
+            if parsed is None:
+                if finish == 'MAX_TOKENS':
+                    logger.warning('Asistente IA: respuesta truncada (MAX_TOKENS, límite %s)', output_tokens)
+                    return None, uso, 'La respuesta de la IA quedó incompleta. Intenta de nuevo.'
+                return None, uso, 'Gemini respondió en un formato inesperado. Intenta más tarde.'
+            if finish == 'MAX_TOKENS':
+                logger.warning('Asistente IA: JSON parcial por MAX_TOKENS (límite %s)', output_tokens)
+            return parsed, uso, None
 
         if resp.status_code == 429 and intento < max_retries:
             retry_after_hdr = resp.headers.get('Retry-After')
@@ -479,7 +506,8 @@ def _generar_guia_desde_contexto(ctx: dict[str, Any]) -> dict[str, Any]:
 
     prompt = _construir_prompt(ctx)
     inicio = time.monotonic()
-    crudo, uso, error_usuario = _llamar_gemini(prompt)
+    timeout_guia = max(int(getattr(settings, 'ASISTENTE_DIAGNOSTICO_IA_TIMEOUT', 30) or 30), 30)
+    crudo, uso, error_usuario = _llamar_gemini(prompt, timeout_seconds=timeout_guia)
     latencia_ms = int((time.monotonic() - inicio) * 1000)
 
     if not crudo:
