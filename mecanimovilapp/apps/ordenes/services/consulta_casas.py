@@ -539,7 +539,7 @@ def procesar_respuesta_casa(message, contact: ExternalContact, taller, proveedor
 def _texto_con_adjunto(message, texto: str) -> str:
     try:
         from mecanimovilapp.apps.agente_ia.services.media_analisis import analizar_adjunto_mensaje
-        analisis = analizar_adjunto_mensaje(message) or {}
+        analisis = analizar_adjunto_mensaje(message, proposito='proveedor') or {}
         resumen = str(analisis.get('resumen_para_chat') or '').strip()
         if resumen and resumen not in texto:
             texto = f'{texto}\n{resumen}'.strip()

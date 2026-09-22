@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+from django.db.models import Q
 from django.utils import timezone
 from rest_framework.exceptions import APIException
 
@@ -28,14 +29,18 @@ def contactos_por_telefono(taller, telefono: str):
     objetivo = normalizar_telefono(telefono)
     if not objetivo:
         return []
+    sufijo = objetivo[-8:]
     encontrados = []
-    for contact in _contactos_del_taller(taller):
-        candidatos = (
+    candidatos = _contactos_del_taller(taller).filter(
+        Q(phone__icontains=sufijo) | Q(external_id__icontains=sufijo)
+    )
+    for contact in candidatos:
+        numeros = (
             contact.phone or '',
             contact.telefono_efectivo() or '',
             contact.external_id or '',
         )
-        if any(telefonos_coinciden(objetivo, raw) for raw in candidatos):
+        if any(telefonos_coinciden(objetivo, raw) for raw in numeros):
             encontrados.append(contact)
     return encontrados
 

@@ -138,6 +138,27 @@ def _leer_adjunto_bytes(message) -> tuple[bytes | None, str, str]:
     return None, media.get('mime_type') or '', kind
 
 
+def _prompt_proveedor(*, caption: str, kind: str) -> str:
+    return f"""Eres un asistente de un taller mecánico en Chile. El adjunto ({kind}) lo envió una casa de repuestos, no un cliente.
+
+Texto/caption del mensaje: {caption or '(sin texto)'}
+
+Extrae solo lo que se ve o se escucha, sin inventar:
+- Nombre de la pieza
+- Precio en pesos chilenos, escrito en el resumen como $ y solo dígitos (ejemplo $45000). Si hay varios precios, lístalos así.
+- Stock (hay / no hay), plazo y condiciones si aparecen
+- Si es audio o video, transcribe lo dicho
+- Si es PDF o foto de cotización, lee la tabla
+
+Responde SOLO JSON:
+{{
+  "tipo_medio": "{kind}",
+  "transcripcion_voz": "texto o null",
+  "resumen_para_chat": "pieza, precio como $45000, stock y plazo, en español",
+  "confianza": 0.0
+}}"""
+
+
 def _prompt_analisis(*, vehiculo: dict[str, Any], caption: str, kind: str) -> str:
     marca = (vehiculo.get('marca') or '').strip() or 'desconocida'
     modelo = (vehiculo.get('modelo') or '').strip() or 'desconocido'
@@ -160,6 +181,9 @@ Si es IMAGEN:
 Si es VIDEO:
 - Resume qué se ve/oye y el síntoma probable.
 
+Si es DOCUMENTO o PDF:
+- Transcribe pieza, precio y condiciones que se lean. No inventes montos.
+
 Responde SOLO JSON:
 {{
   "tipo_medio": "{kind}",
@@ -178,15 +202,19 @@ def analizar_adjunto_mensaje(
     message,
     *,
     vehiculo: dict[str, Any] | None = None,
+    proposito: str = 'cliente',
 ) -> dict[str, Any]:
     """
     Analiza attachment del mensaje con Gemini multimodal.
-    Idempotente: si channel_metadata ya tiene media_analisis, lo reutiliza.
+    Idempotente: si channel_metadata ya tiene media_analisis del mismo propósito, lo reutiliza.
+    proposito='proveedor' lee cotizaciones de casas (precio, stock), no fallas del auto.
     """
     meta = dict(message.channel_metadata or {})
     cached = meta.get('media_analisis')
     if isinstance(cached, dict) and cached.get('resumen_para_chat'):
-        return cached
+        cache_proposito = cached.get('proposito') or 'cliente'
+        if cache_proposito == proposito:
+            return cached
 
     media = meta.get('media') or {}
     if not message.attachment and not media:
@@ -216,7 +244,10 @@ def analizar_adjunto_mensaje(
     modelos = modelos_gemini_cotizacion(primario)
     timeout = int(getattr(settings, 'AGENTE_IA_MULTIMODAL_TIMEOUT', 45) or 45)
     caption = (message.content or '').strip()
-    prompt = _prompt_analisis(vehiculo=vehiculo or {}, caption=caption, kind=kind or 'adjunto')
+    if proposito == 'proveedor':
+        prompt = _prompt_proveedor(caption=caption, kind=kind or 'adjunto')
+    else:
+        prompt = _prompt_analisis(vehiculo=vehiculo or {}, caption=caption, kind=kind or 'adjunto')
 
     mime = _normalizar_mime(mime)
     b64 = base64.b64encode(raw).decode('ascii')
@@ -316,6 +347,7 @@ def analizar_adjunto_mensaje(
         }
 
     resultado = {
+        'proposito': proposito,
         'tipo_medio': kind_final,
         'tipo_imagen_detectada': data.get('tipo_imagen_detectada'),
         'transcripcion_voz': transcripcion or None,

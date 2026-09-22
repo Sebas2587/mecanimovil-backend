@@ -1,9 +1,12 @@
 """Construcción del inbox unificado para proveedores."""
 from django.contrib.contenttypes.models import ContentType
+from django.db.models import Count, OuterRef, Subquery
 
 from mecanimovilapp.apps.chat.models import Conversation, Message
 from mecanimovilapp.apps.omnichannel.utils import channel_to_api_slug
 from mecanimovilapp.apps.ordenes.models import ChatSolicitud, CotizacionCanal, OfertaProveedor
+
+CANALES_OMNI = ('WHATSAPP', 'MESSENGER', 'INSTAGRAM')
 
 
 def _cotizaciones_por_conversacion(conversation_ids: list[int]) -> dict[int, CotizacionCanal]:
@@ -121,21 +124,51 @@ def build_legacy_provider_chats(user, request=None):
 
 
 def build_omnichannel_chats(user):
+    last_id = (
+        Message.objects.filter(conversation_id=OuterRef('pk'))
+        .order_by('-timestamp')
+        .values('id')[:1]
+    )
     conversations = list(
         Conversation.objects.filter(
             participants=user,
-            source_channel__in=['WHATSAPP', 'MESSENGER', 'INSTAGRAM'],
-        ).select_related('external_contact', 'lead_calificacion').prefetch_related('messages').order_by('-updated_at')
+            source_channel__in=CANALES_OMNI,
+        ).select_related(
+            'external_contact',
+            'external_contact__connection',
+            'lead_calificacion',
+        ).annotate(
+            last_message_id=Subquery(last_id),
+        ).order_by('-updated_at')
     )
-    cot_map = _cotizaciones_por_conversacion([c.id for c in conversations])
+    last_ids = [c.last_message_id for c in conversations if c.last_message_id]
+    mensajes = {
+        msg.id: msg
+        for msg in Message.objects.filter(id__in=last_ids)
+    } if last_ids else {}
+    conv_ids = [c.id for c in conversations]
+    no_leidos: dict[int, int] = {}
+    if conv_ids:
+        for conv_id, total in (
+            Message.objects.filter(
+                conversation_id__in=conv_ids,
+                direction='inbound',
+                is_read=False,
+            )
+            .values('conversation_id')
+            .annotate(total=Count('id'))
+            .values_list('conversation_id', 'total')
+        ):
+            no_leidos[conv_id] = total
+    cot_map = _cotizaciones_por_conversacion(conv_ids)
 
     items = []
     for conv in conversations:
-        last_msg = conv.messages.order_by('-timestamp').first()
+        last_msg = mensajes.get(conv.last_message_id)
         if not last_msg:
             continue
         contact = conv.external_contact
-        unread = conv.messages.filter(direction='inbound', is_read=False).count()
+        unread = no_leidos.get(conv.id, 0)
         solicitud_id = None
         if conv.content_type and conv.object_id:
             model = conv.content_type.model_class()

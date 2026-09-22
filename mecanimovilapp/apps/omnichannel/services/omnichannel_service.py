@@ -1,5 +1,6 @@
 """Lógica de negocio omnicanal."""
 import logging
+from datetime import datetime, timedelta, timezone as dt_timezone
 from typing import Any
 
 from django.db import transaction
@@ -25,6 +26,78 @@ logger = logging.getLogger(__name__)
 _META_IG_TEST_ENTRY_ID = '0'
 _META_IG_TEST_RECIPIENT_ID = '23245'
 _META_IG_TEST_SENDER_ID = '12334'
+
+
+_HISTORIAL_WHATSAPP = frozenset({
+    'history',
+    'smb_app_state_sync',
+    'smb_message_echoes',
+})
+
+
+def _registrar_alerta_entrante(
+    recipient_user_id: int,
+    *,
+    channel_code: str,
+    sender_name: str,
+    preview: str,
+    conversation_id: str,
+    message_id: int,
+    is_new_contact: bool,
+) -> None:
+    """Deja la alerta en el centro de notificaciones, además del push."""
+    try:
+        from django.contrib.auth import get_user_model
+
+        from mecanimovilapp.apps.usuarios.models import Notificacion
+        from mecanimovilapp.apps.omnichannel.services.broadcast import CHANNEL_LABELS
+    except Exception:
+        logger.exception('No se pudo importar alertas de canal')
+        return
+    usuario = get_user_model().objects.filter(pk=recipient_user_id).first()
+    if usuario is None:
+        return
+    label = CHANNEL_LABELS.get(str(channel_code or '').upper(), channel_code or 'Canal')
+    if is_new_contact:
+        titulo = f'Nuevo contacto · {label}'
+        notif_type = 'nuevo_contacto_canal'
+    else:
+        titulo = f'{label} · {sender_name}'
+        notif_type = 'chat_message'
+    try:
+        Notificacion.crear_unica(
+            usuario,
+            tipo='system',
+            titulo=titulo,
+            mensaje=f'{sender_name}: {preview}' if preview else f'{sender_name} escribió por {label}.',
+            data={
+                'type': notif_type,
+                'channel': str(channel_code or '').lower(),
+                'conversation_id': conversation_id,
+                'message_id': message_id,
+            },
+            ventana_horas=6,
+            dedup_key={'type': notif_type, 'message_id': message_id},
+        )
+    except Exception:
+        logger.exception('No se pudo registrar alerta de mensaje entrante')
+
+
+def mensaje_posterior_a_conexion(connection: ProviderChannelConnection, raw_ts: Any) -> bool:
+    """False si el mensaje de Meta es anterior a la conexión del canal.
+
+    Sin marca de tiempo se acepta: el webhook en vivo no trae historial.
+    """
+    if not connection.connected_at or raw_ts in (None, ''):
+        return True
+    try:
+        ts = int(raw_ts)
+    except (TypeError, ValueError):
+        return True
+    if ts > 10_000_000_000:
+        ts = ts // 1000
+    momento = datetime.fromtimestamp(ts, tz=dt_timezone.utc)
+    return momento >= connection.connected_at - timedelta(minutes=2)
 
 
 def normalize_meta_id(value: Any) -> str:
@@ -234,12 +307,22 @@ class OmnichannelService:
             external_contact=contact,
         )
         broadcast_to_participants(conversation, payload)
+        preview = text[:140] or 'Nuevo mensaje'
         send_chat_push(
             connection.usuario_id,
             channel_code=connection.channel,
             sender_name=sender_name,
-            preview=text[:140] or 'Nuevo mensaje',
+            preview=preview,
             conversation_id=str(conversation.id),
+            is_new_contact=is_new_contact,
+        )
+        _registrar_alerta_entrante(
+            connection.usuario_id,
+            channel_code=connection.channel,
+            sender_name=sender_name,
+            preview=preview,
+            conversation_id=str(conversation.id),
+            message_id=message.id,
             is_new_contact=is_new_contact,
         )
         media = (metadata or {}).get('media')
@@ -259,6 +342,13 @@ class OmnichannelService:
         events = []
         for entry in body.get('entry', []):
             for change in entry.get('changes', []):
+                field = change.get('field') or 'messages'
+                if field in _HISTORIAL_WHATSAPP:
+                    logger.info(
+                        'WhatsApp %s ignorado: solo entran mensajes nuevos desde la conexión',
+                        field,
+                    )
+                    continue
                 value = change.get('value', {})
                 metadata = value.get('metadata', {})
                 phone_number_id = metadata.get('phone_number_id')
@@ -287,6 +377,7 @@ class OmnichannelService:
                         'media': media,
                         'interactive': msg.get('interactive') if msg.get('type') == 'interactive' else None,
                         'message_type': msg.get('type'),
+                        'provider_timestamp': msg.get('timestamp'),
                     })
         return events
 
@@ -319,6 +410,7 @@ class OmnichannelService:
             'display_name': '',
             'media': media,
             'timestamp': item.get('timestamp'),
+            'provider_timestamp': item.get('timestamp'),
         }
 
     @staticmethod
@@ -362,6 +454,12 @@ class OmnichannelService:
                     )
                     continue
                 if not event.get('text') and not event.get('media') and not event.get('interactive'):
+                    continue
+                if not mensaje_posterior_a_conexion(conn, event.get('provider_timestamp')):
+                    logger.info(
+                        'Mensaje WhatsApp anterior a la conexión, ignorado id=%s',
+                        event.get('external_message_id'),
+                    )
                     continue
                 msg = cls.ingest_inbound_message(
                     conn,
@@ -429,6 +527,12 @@ class OmnichannelService:
                     continue
                 if not event.get('text') and not event.get('media'):
                     continue
+                if not mensaje_posterior_a_conexion(conn, event.get('provider_timestamp')):
+                    logger.info(
+                        'Mensaje Page anterior a la conexión, ignorado id=%s',
+                        event.get('external_message_id'),
+                    )
+                    continue
                 logger.info(
                     'Ingesting Page webhook event as %s page_id=%s recipient_id=%s',
                     channel_label,
@@ -485,6 +589,12 @@ class OmnichannelService:
                     )
                     continue
                 if not event.get('text') and not event.get('media'):
+                    continue
+                if not mensaje_posterior_a_conexion(conn, event.get('provider_timestamp')):
+                    logger.info(
+                        'Mensaje Instagram anterior a la conexión, ignorado id=%s',
+                        event.get('external_message_id'),
+                    )
                     continue
                 cls.ingest_inbound_message(
                     conn,
