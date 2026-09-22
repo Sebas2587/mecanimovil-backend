@@ -2702,6 +2702,14 @@ class ProveedorRepuestos(models.Model):
     es_preferido = models.BooleanField(default=False)
     activo = models.BooleanField(default=True)
     notas = models.TextField(blank=True, default='')
+    telefono_norm = models.CharField(max_length=20, blank=True, default='', db_index=True)
+    external_contact = models.ForeignKey(
+        'omnichannel.ExternalContact',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='casas_repuestos',
+    )
     creado_en = models.DateTimeField(auto_now_add=True)
     actualizado_en = models.DateTimeField(auto_now=True)
 
@@ -2716,11 +2724,110 @@ class ProveedorRepuestos(models.Model):
         ]
 
     def save(self, *args, **kwargs):
+        from mecanimovilapp.apps.ordenes.services.telefono_cl import normalizar_telefono
+
         self.nombre_norm = _norm_nombre_proveedor(self.nombre)
+        self.telefono_norm = normalizar_telefono(self.telefono)
         super().save(*args, **kwargs)
 
     def __str__(self):
         return f'{self.nombre} ({self.taller_id})'
+
+
+class ConsultaRepuesto(models.Model):
+    """Consulta de una pieza a una casa de repuestos del taller."""
+
+    ESTADO_ESPERANDO = 'esperando'
+    ESTADO_RECORDADA = 'recordada'
+    ESTADO_RESPONDIDA = 'respondida'
+    ESTADO_POR_REVISAR = 'por_revisar'
+    ESTADO_SIN_RESPUESTA = 'sin_respuesta'
+    ESTADO_SIN_STOCK = 'sin_stock'
+    ESTADO_FALLIDA = 'fallida'
+    ESTADO_CANCELADA = 'cancelada'
+    ESTADOS_ABIERTOS = (ESTADO_ESPERANDO, ESTADO_RECORDADA)
+    ESTADO_CHOICES = [
+        (ESTADO_ESPERANDO, 'Esperando'),
+        (ESTADO_RECORDADA, 'Recordada'),
+        (ESTADO_RESPONDIDA, 'Respondida'),
+        (ESTADO_POR_REVISAR, 'Por revisar'),
+        (ESTADO_SIN_RESPUESTA, 'Sin respuesta'),
+        (ESTADO_SIN_STOCK, 'Sin stock'),
+        (ESTADO_FALLIDA, 'No se pudo enviar'),
+        (ESTADO_CANCELADA, 'Cancelada'),
+    ]
+
+    taller = models.ForeignKey(
+        'usuarios.Taller',
+        on_delete=models.CASCADE,
+        related_name='consultas_repuesto',
+    )
+    proveedor = models.ForeignKey(
+        ProveedorRepuestos,
+        on_delete=models.CASCADE,
+        related_name='consultas',
+    )
+    cotizacion = models.ForeignKey(
+        'ordenes.CotizacionCanal',
+        on_delete=models.CASCADE,
+        related_name='consultas_repuesto',
+    )
+    conversation = models.ForeignKey(
+        'chat.Conversation',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='consultas_repuesto',
+    )
+    repuesto_id = models.CharField(max_length=64, db_index=True)
+    pieza_nombre = models.CharField(max_length=200)
+    vehiculo_snapshot = models.JSONField(default=dict, blank=True)
+    estado = models.CharField(
+        max_length=20,
+        choices=ESTADO_CHOICES,
+        default=ESTADO_ESPERANDO,
+        db_index=True,
+    )
+    origen = models.CharField(max_length=16, default='manual')
+    unica = models.BooleanField(default=False)
+    extraccion = models.JSONField(default=dict, blank=True)
+    confianza = models.FloatField(default=0)
+    recordatorio_en = models.DateTimeField(null=True, blank=True)
+    cierra_en = models.DateTimeField(null=True, blank=True)
+    recordatorio_enviado = models.BooleanField(default=False)
+    mensaje_saliente = models.ForeignKey(
+        'chat.Message',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='consultas_repuesto_salida',
+    )
+    mensaje_respuesta = models.ForeignKey(
+        'chat.Message',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='consultas_repuesto_respuesta',
+    )
+    creado_en = models.DateTimeField(auto_now_add=True)
+    actualizado_en = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _('consulta de repuesto')
+        verbose_name_plural = _('consultas de repuesto')
+        constraints = [
+            models.UniqueConstraint(
+                fields=['cotizacion', 'repuesto_id', 'proveedor'],
+                condition=models.Q(estado__in=['esperando', 'recordada']),
+                name='ordenes_consulta_repuesto_abierta_uniq',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['estado', 'cierra_en'], name='ordenes_consulta_cierre_idx'),
+        ]
+
+    def __str__(self):
+        return f'{self.pieza_nombre} → {self.proveedor_id} ({self.estado})'
 
 
 class PrecioProveedorTaller(models.Model):

@@ -1120,6 +1120,35 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
         ).order_by('-creado_en')[:20]
         return Response(CotizacionCanalSerializer(qs, many=True).data)
 
+    @action(detail=True, methods=['post'], url_path='consultar-casas')
+    def consultar_casas(self, request, pk=None):
+        from mecanimovilapp.apps.ordenes.services.consulta_casas import abrir_consultas
+
+        cotizacion = self.get_object()
+        if cotizacion.estado != 'borrador':
+            raise ValidationError({'estado': 'Solo un borrador en espera puede consultar casas.'})
+        repuesto_id = str(request.data.get('repuesto_id') or '').strip()
+        if not repuesto_id:
+            raise ValidationError({'repuesto_id': 'Indica la pieza.'})
+        proveedor_id = request.data.get('proveedor_id')
+        try:
+            proveedor_id = int(proveedor_id) if proveedor_id else None
+        except (TypeError, ValueError):
+            proveedor_id = None
+        solo_restantes = bool(request.data.get('solo_restantes'))
+        resultado = abrir_consultas(
+            cotizacion,
+            repuesto_id,
+            origen='manual',
+            proveedor_id=proveedor_id,
+            solo_restantes=solo_restantes,
+        )
+        cotizacion.refresh_from_db()
+        return Response({
+            'resultado': resultado,
+            'cotizacion': CotizacionCanalSerializer(cotizacion).data,
+        })
+
 
 class CotizacionCanalPlantillaViewSet(viewsets.ModelViewSet):
     serializer_class = CotizacionCanalPlantillaSerializer

@@ -39,4 +39,4 @@ class ProviderChannelConnectionToggleSerializer(serializers.ModelSerializer):
 class ExternalContactMiniSerializer(serializers.ModelSerializer):
     class Meta:
         model = ExternalContact
-        fields = ('id', 'display_name', 'phone', 'channel', 'external_id')
+        fields = ('id', 'display_name', 'phone', 'channel', 'external_id', 'rol', 'rol_sugerido')

@@ -174,6 +174,8 @@ def build_omnichannel_chats(user):
             ),
             'lead_categoria': lead.categoria if lead else 'sin_calificar',
             'lead_score': lead.score if lead else 0,
+            'contacto_rol': contact.rol if contact else 'sin_clasificar',
+            'rol_sugerido': contact.rol_sugerido if contact else '',
             'sort_at': last_msg.timestamp,
         })
     return items

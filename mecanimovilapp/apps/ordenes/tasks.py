@@ -843,6 +843,13 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
             'metadata',
             'actualizado_en',
         ])
+        try:
+            from mecanimovilapp.apps.ordenes.services.consulta_casas import (
+                consultar_lineas_sin_precio_si_automatico,
+            )
+            consultar_lineas_sin_precio_si_automatico(cot)
+        except Exception:
+            logger.exception('consulta automática de casas cot=%s', cotizacion_id)
         return {
             'ok': True,
             'estado': meta['busqueda_web_estado'],

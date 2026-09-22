@@ -823,6 +823,12 @@ def on_cotizacion_respondida(
     conversation_id = conv.id if conv else cotizacion.conversation_id
 
     if accion == 'aceptar':
+        try:
+            from mecanimovilapp.apps.ordenes.services.rol_contacto import refrescar_rol_por_historial
+            if conv is not None and conv.external_contact_id:
+                refrescar_rol_por_historial(conv.external_contact)
+        except Exception:
+            pass
         from mecanimovilapp.apps.agente_ia.services.notificaciones import (
             notificar_cotizacion_aceptada_agente,
         )

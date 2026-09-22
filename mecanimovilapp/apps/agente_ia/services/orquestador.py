@@ -115,9 +115,14 @@ def _cotizaciones_de_la_conversacion(conversation_id: int) -> str:
         .order_by('-actualizado_en', '-id')[:8]
         .values('estado', 'servicio_nombre', 'total_clp', 'numero_publico', 'es_cotizacion_adicional')
     )
-    if not rows:
+    from mecanimovilapp.apps.ordenes.services.consulta_casas import nota_para_agente_comercial
+
+    nota_casas = nota_para_agente_comercial(conversation_id)
+    contacto = Conversation.objects.filter(pk=conversation_id).select_related('external_contact').first()
+    rol = getattr(getattr(contacto, 'external_contact', None), 'rol', '') if contacto else ''
+    if not rows and not nota_casas and rol != 'solo_consulta':
         return ''
-    lineas = ['Cotizaciones ya armadas en ESTE chat (no las anuncies de nuevo salvo que el cliente pregunte o pida cambio):']
+    lineas = ['Cotizaciones ya armadas en ESTE chat (no las anuncies de nuevo salvo que el cliente pregunte o pida cambio):'] if rows else []
     for row in rows:
         extra = ' adicional' if row.get('es_cotizacion_adicional') else ''
         monto = row.get('total_clp')
@@ -126,6 +131,13 @@ def _cotizaciones_de_la_conversacion(conversation_id: int) -> str:
         folio_txt = f' [{folio}]' if folio else ''
         servicio = (row.get('servicio_nombre') or 'servicio').strip()
         lineas.append(f'- {row.get("estado")}{extra}: {servicio}{monto_txt}{folio_txt}')
+    if nota_casas:
+        lineas.append(nota_casas)
+    if rol == 'solo_consulta':
+        lineas.append(
+            'Este contacto solo consulta y no concreta. Responde la duda con insistencia baja. '
+            'No empujes agenda ni seguimiento.'
+        )
     return '\n'.join(lineas)
 
 
@@ -2077,6 +2089,32 @@ def procesar_mensaje_entrante_ia(message_id: int) -> dict[str, Any]:
     else:
         if message.sender_id == proveedor_user_id:
             return {'skipped': True, 'reason': 'taller_message'}
+
+    contacto = conversation.external_contact
+    if contacto is not None:
+        from mecanimovilapp.apps.ordenes.services.rol_contacto import (
+            asegurar_rol_reservado,
+            marcar_sugerencia_casa,
+            parece_texto_de_proveedor,
+            refrescar_rol_por_historial,
+        )
+        from mecanimovilapp.apps.omnichannel.models import ExternalContact
+
+        contacto = asegurar_rol_reservado(contacto)
+        if contacto.rol == ExternalContact.ROL_CASA_REPUESTOS:
+            from mecanimovilapp.apps.ordenes.services.consulta_casas import procesar_respuesta_casa
+
+            return procesar_respuesta_casa(message, contacto, taller, proveedor_user_id)
+        if contacto.rol == ExternalContact.ROL_OTRO:
+            return {'skipped': True, 'reason': 'rol_otro', 'handled': True}
+        if (
+            contacto.rol in ('', ExternalContact.ROL_SIN_CLASIFICAR)
+            and not contacto.rol_manual
+            and parece_texto_de_proveedor(message.content or '')
+        ):
+            marcar_sugerencia_casa(contacto, proveedor_user_id)
+            return {'skipped': True, 'reason': 'guardia_proveedor', 'handled': True}
+        refrescar_rol_por_historial(contacto)
 
     config = _obtener_o_crear_config(taller.id)
     # Master switch del taller: si está apagado, no responde en ningún chat.

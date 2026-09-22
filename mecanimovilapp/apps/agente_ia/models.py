@@ -85,6 +85,13 @@ class TallerAgenteConfig(models.Model):
         default=True,
         help_text='Si hay ≥2 fuentes, mostrar banda de referencia en la vitrina.',
     )
+    consulta_casas_automatica = models.BooleanField(
+        default=False,
+        help_text=(
+            'Si está activo, una línea sin precio consulta por WhatsApp a las casas '
+            'de repuestos del taller. Apagado, solo sale si el taller lo pide.'
+        ),
+    )
     creado_en = models.DateTimeField(auto_now_add=True)
     actualizado_en = models.DateTimeField(auto_now=True)
 

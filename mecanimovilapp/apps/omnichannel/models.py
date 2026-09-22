@@ -120,6 +120,31 @@ class ExternalContact(models.Model):
         blank=True,
         related_name='external_contacts',
     )
+    ROL_SIN_CLASIFICAR = 'sin_clasificar'
+    ROL_CLIENTE_NUEVO = 'cliente_nuevo'
+    ROL_CLIENTE_RECURRENTE = 'cliente_recurrente'
+    ROL_SOLO_CONSULTA = 'solo_consulta'
+    ROL_CASA_REPUESTOS = 'casa_repuestos'
+    ROL_OTRO = 'otro'
+    ROL_CHOICES = [
+        (ROL_SIN_CLASIFICAR, 'Sin clasificar'),
+        (ROL_CLIENTE_NUEVO, 'Cliente nuevo'),
+        (ROL_CLIENTE_RECURRENTE, 'Cliente recurrente'),
+        (ROL_SOLO_CONSULTA, 'Solo consulta'),
+        (ROL_CASA_REPUESTOS, 'Casa de repuestos'),
+        (ROL_OTRO, 'Otro'),
+    ]
+    rol = models.CharField(
+        max_length=24,
+        choices=ROL_CHOICES,
+        default=ROL_SIN_CLASIFICAR,
+        db_index=True,
+    )
+    rol_manual = models.BooleanField(
+        default=False,
+        help_text='Si el taller fijó el rol, el sistema no lo pisa.',
+    )
+    rol_sugerido = models.CharField(max_length=24, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

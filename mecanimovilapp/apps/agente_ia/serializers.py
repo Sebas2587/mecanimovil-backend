@@ -28,6 +28,7 @@ class TallerAgenteConfigSerializer(serializers.ModelSerializer):
             'preguntar_calidad_repuestos',
             'vitrina_repuestos_habilitada',
             'vitrina_muestra_bandas',
+            'consulta_casas_automatica',
             'actualizado_en',
         ]
         read_only_fields = ['actualizado_en']

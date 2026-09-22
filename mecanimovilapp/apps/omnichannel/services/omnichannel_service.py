@@ -200,6 +200,11 @@ class OmnichannelService:
             phone=phone,
         )
         contact = cls.maybe_enrich_messenger_contact_profile(connection, contact)
+        try:
+            from mecanimovilapp.apps.ordenes.services.rol_contacto import asegurar_rol_reservado
+            contact = asegurar_rol_reservado(contact)
+        except Exception:
+            logger.exception('No se pudo aplicar rol reservado contact=%s', contact.id)
         conversation, is_new_contact = cls.get_or_create_conversation(connection, contact)
 
         if not external_message_id:

@@ -37,12 +37,71 @@ class ProveedorRepuestosViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(taller=_taller_mandante(self.request))
 
+    def create(self, request, *args, **kwargs):
+        from rest_framework import status
+        from rest_framework.response import Response
+
+        from mecanimovilapp.apps.ordenes.services.rol_contacto import (
+            aplicar_marca_casa,
+            assert_puede_marcar_telefono,
+        )
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        taller = _taller_mandante(request)
+        assert_puede_marcar_telefono(
+            taller,
+            serializer.validated_data.get('telefono') or '',
+            confirmar=bool(request.data.get('confirmar_rol_cliente')),
+        )
+        self.perform_create(serializer)
+        aplicar_marca_casa(serializer.instance)
+        headers = self.get_success_headers(serializer.data)
+        return Response(self.get_serializer(serializer.instance).data, status=status.HTTP_201_CREATED, headers=headers)
+
+    def update(self, request, *args, **kwargs):
+        from rest_framework.response import Response
+
+        from mecanimovilapp.apps.ordenes.services.rol_contacto import (
+            aplicar_marca_casa,
+            assert_puede_marcar_telefono,
+            soltar_telefono,
+        )
+
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        anterior = instance.telefono_norm
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        taller = _taller_mandante(request)
+        telefono = serializer.validated_data.get('telefono', instance.telefono)
+        assert_puede_marcar_telefono(
+            taller,
+            telefono or '',
+            confirmar=bool(request.data.get('confirmar_rol_cliente')),
+            excluir_id=instance.id,
+        )
+        serializer.save()
+        instance.refresh_from_db()
+        if anterior and anterior != instance.telefono_norm:
+            soltar_telefono(taller, anterior, excepto_proveedor_id=instance.id)
+        if instance.activo and instance.telefono_norm:
+            aplicar_marca_casa(instance)
+        elif anterior and not instance.telefono_norm:
+            soltar_telefono(taller, anterior, excepto_proveedor_id=instance.id)
+        return Response(self.get_serializer(instance).data)
+
     def perform_destroy(self, instance):
+        from mecanimovilapp.apps.ordenes.services.rol_contacto import soltar_telefono
+
+        taller = instance.taller
+        telefono = instance.telefono_norm
         if instance.precios.exists():
             instance.activo = False
             instance.save(update_fields=['activo', 'actualizado_en'])
-            return
-        instance.delete()
+        else:
+            instance.delete()
+        soltar_telefono(taller, telefono)
 
 
 class PrecioProveedorTallerViewSet(viewsets.ModelViewSet):

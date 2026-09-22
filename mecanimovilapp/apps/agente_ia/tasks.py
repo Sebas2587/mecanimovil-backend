@@ -254,3 +254,25 @@ def revisar_seguimiento_proactivo_task() -> dict:
         logger.exception('Error en revisión de seguimiento proactivo del agente IA')
         return {'ok': False, 'error': 'internal'}
 
+
+@shared_task(name='agente_ia.recordatorio_consulta_repuesto', queue='default')
+def recordatorio_consulta_repuesto_task(consulta_id: int) -> dict:
+    from mecanimovilapp.apps.ordenes.services.consulta_casas import recordar_consulta
+
+    try:
+        return recordar_consulta(consulta_id)
+    except Exception:
+        logger.exception('Recordatorio consulta repuesto %s', consulta_id)
+        return {'ok': False}
+
+
+@shared_task(name='agente_ia.cierre_consulta_repuesto', queue='default')
+def cierre_consulta_repuesto_task(consulta_id: int) -> dict:
+    from mecanimovilapp.apps.ordenes.services.consulta_casas import cerrar_por_silencio
+
+    try:
+        return cerrar_por_silencio(consulta_id)
+    except Exception:
+        logger.exception('Cierre consulta repuesto %s', consulta_id)
+        return {'ok': False}
+
