@@ -150,7 +150,18 @@ class ConversationViewSet(DestroyModelMixin, viewsets.ReadOnlyModelViewSet):
         Paginated by default from settings.
         """
         conversation = self.get_object()
-        messages = conversation.messages.all().order_by('timestamp')
+        from mecanimovilapp.apps.omnichannel.services.omnichannel_service import (
+            corte_bandeja,
+            mensaje_visible_en_bandeja,
+        )
+
+        contact = conversation.external_contact
+        corte = corte_bandeja(contact.connection if contact else None)
+        recientes = list(conversation.messages.order_by('-timestamp')[:800])
+        messages = [
+            msg for msg in reversed(recientes)
+            if mensaje_visible_en_bandeja(msg, corte)
+        ]
 
         page_size = request.query_params.get('page_size')
         if page_size:

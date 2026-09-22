@@ -1,8 +1,13 @@
 """Construcción del inbox unificado para proveedores."""
-from django.contrib.contenttypes.models import ContentType
-from django.db.models import Count, OuterRef, Subquery
+from datetime import timedelta
+
+from django.utils import timezone
 
 from mecanimovilapp.apps.chat.models import Conversation, Message
+from mecanimovilapp.apps.omnichannel.services.omnichannel_service import (
+    corte_bandeja,
+    mensaje_visible_en_bandeja,
+)
 from mecanimovilapp.apps.omnichannel.utils import channel_to_api_slug
 from mecanimovilapp.apps.ordenes.models import ChatSolicitud, CotizacionCanal, OfertaProveedor
 
@@ -123,12 +128,46 @@ def build_legacy_provider_chats(user, request=None):
     return chats_list
 
 
-def build_omnichannel_chats(user):
-    last_id = (
-        Message.objects.filter(conversation_id=OuterRef('pk'))
-        .order_by('-timestamp')
-        .values('id')[:1]
+def _ultimos_visibles(conversations: list) -> tuple[dict[int, Message], dict[int, int]]:
+    """Último mensaje vigente y no leídos, sin el historial anterior al canal."""
+    conv_ids = [c.id for c in conversations]
+    if not conv_ids:
+        return {}, {}
+    cortes = {}
+    for conv in conversations:
+        contact = conv.external_contact
+        connection = contact.connection if contact else None
+        cortes[conv.id] = corte_bandeja(connection)
+    desde = timezone.now() - timedelta(days=120)
+    filas = Message.objects.filter(
+        conversation_id__in=conv_ids,
+        timestamp__gte=desde,
+    ).only(
+        'id',
+        'conversation_id',
+        'content',
+        'direction',
+        'timestamp',
+        'is_read',
+        'channel_metadata',
     )
+    por_chat: dict[int, list[Message]] = {}
+    for msg in filas:
+        if not mensaje_visible_en_bandeja(msg, cortes.get(msg.conversation_id)):
+            continue
+        por_chat.setdefault(msg.conversation_id, []).append(msg)
+    ultimos: dict[int, Message] = {}
+    no_leidos: dict[int, int] = {}
+    for conv_id, msgs in por_chat.items():
+        msgs.sort(key=lambda m: (m.timestamp, m.id))
+        ultimos[conv_id] = msgs[-1]
+        no_leidos[conv_id] = sum(
+            1 for m in msgs if m.direction == 'inbound' and not m.is_read
+        )
+    return ultimos, no_leidos
+
+
+def build_omnichannel_chats(user):
     conversations = list(
         Conversation.objects.filter(
             participants=user,
@@ -137,34 +176,15 @@ def build_omnichannel_chats(user):
             'external_contact',
             'external_contact__connection',
             'lead_calificacion',
-        ).annotate(
-            last_message_id=Subquery(last_id),
         ).order_by('-updated_at')
     )
-    last_ids = [c.last_message_id for c in conversations if c.last_message_id]
-    mensajes = {
-        msg.id: msg
-        for msg in Message.objects.filter(id__in=last_ids)
-    } if last_ids else {}
+    ultimos, no_leidos = _ultimos_visibles(conversations)
     conv_ids = [c.id for c in conversations]
-    no_leidos: dict[int, int] = {}
-    if conv_ids:
-        for conv_id, total in (
-            Message.objects.filter(
-                conversation_id__in=conv_ids,
-                direction='inbound',
-                is_read=False,
-            )
-            .values('conversation_id')
-            .annotate(total=Count('id'))
-            .values_list('conversation_id', 'total')
-        ):
-            no_leidos[conv_id] = total
     cot_map = _cotizaciones_por_conversacion(conv_ids)
 
     items = []
     for conv in conversations:
-        last_msg = mensajes.get(conv.last_message_id)
+        last_msg = ultimos.get(conv.id)
         if not last_msg:
             continue
         contact = conv.external_contact

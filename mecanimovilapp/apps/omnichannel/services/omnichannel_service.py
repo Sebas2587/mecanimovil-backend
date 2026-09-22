@@ -83,6 +83,18 @@ def _registrar_alerta_entrante(
         logger.exception('No se pudo registrar alerta de mensaje entrante')
 
 
+def _epoch_meta(raw_ts: Any) -> datetime | None:
+    if raw_ts in (None, ''):
+        return None
+    try:
+        ts = int(raw_ts)
+    except (TypeError, ValueError):
+        return None
+    if ts > 10_000_000_000:
+        ts = ts // 1000
+    return datetime.fromtimestamp(ts, tz=dt_timezone.utc)
+
+
 def mensaje_posterior_a_conexion(connection: ProviderChannelConnection, raw_ts: Any) -> bool:
     """False si el mensaje de Meta es anterior a la conexión del canal.
 
@@ -90,14 +102,34 @@ def mensaje_posterior_a_conexion(connection: ProviderChannelConnection, raw_ts: 
     """
     if not connection.connected_at or raw_ts in (None, ''):
         return True
-    try:
-        ts = int(raw_ts)
-    except (TypeError, ValueError):
+    momento = _epoch_meta(raw_ts)
+    if momento is None:
         return True
-    if ts > 10_000_000_000:
-        ts = ts // 1000
-    momento = datetime.fromtimestamp(ts, tz=dt_timezone.utc)
     return momento >= connection.connected_at - timedelta(minutes=2)
+
+
+def corte_bandeja(connection: ProviderChannelConnection | None) -> datetime | None:
+    """Piso estable: alta del canal, no el último reconnect."""
+    if connection is None or connection.created_at is None:
+        return None
+    return connection.created_at
+
+
+def mensaje_visible_en_bandeja(message: Message, corte: datetime | None) -> bool:
+    """El historial importado trae timestamp de Meta viejo aunque se haya guardado hoy."""
+    if corte is None:
+        return True
+    piso = corte - timedelta(minutes=2)
+    meta = message.channel_metadata or {}
+    raw = meta.get('provider_timestamp')
+    if raw in (None, ''):
+        crudo = meta.get('timestamp')
+        if not isinstance(crudo, (dict, list)):
+            raw = crudo
+    momento = _epoch_meta(raw)
+    if momento is not None:
+        return momento >= piso
+    return message.timestamp >= piso
 
 
 def normalize_meta_id(value: Any) -> str:
