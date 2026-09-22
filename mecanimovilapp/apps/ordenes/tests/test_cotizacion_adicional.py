@@ -353,59 +353,61 @@ class CotizacionAdicionalFlujoTestCase(TestCase):
 
     def test_actualizar_aceptada_sin_iniciar_total_igual(self):
         from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
+            MSG_ACEPTADA_CERRADA,
             actualizar_cotizacion_aceptada_sin_iniciar,
         )
 
         self.cita.horario_por_confirmar = True
         self.cita.save(update_fields=['horario_por_confirmar'])
+        total_antes = int(self.cot_principal.total_clp or 0)
 
-        cot, modo = actualizar_cotizacion_aceptada_sin_iniciar(
-            self.cot_principal,
-            {
-                'servicio_nombre': 'Cambio de kit de embrague (ajustado)',
-                'mano_obra_clp': 180000,
-                'repuestos': [
-                    {
-                        'nombre': 'Kit embrague',
-                        'cantidad': 1,
-                        'precio_unitario_clp': 220000,
-                    }
-                ],
-            },
-        )
-        self.assertEqual(modo, 'actualizada')
-        self.assertEqual(cot.estado, 'aceptada')
-        self.assertEqual(int(cot.total_clp), 400000)
-        self.cita.detalle.refresh_from_db()
-        self.assertEqual(int(self.cita.detalle.precio_referencia), 400000)
+        with self.assertRaises(ValueError) as ctx:
+            actualizar_cotizacion_aceptada_sin_iniciar(
+                self.cot_principal,
+                {
+                    'servicio_nombre': 'Cambio de kit de embrague (ajustado)',
+                    'mano_obra_clp': 180000,
+                    'repuestos': [
+                        {
+                            'nombre': 'Kit embrague',
+                            'cantidad': 1,
+                            'precio_unitario_clp': 220000,
+                        }
+                    ],
+                },
+            )
+        self.assertEqual(str(ctx.exception), MSG_ACEPTADA_CERRADA)
+        self.cot_principal.refresh_from_db()
+        self.assertEqual(self.cot_principal.estado, 'aceptada')
+        self.assertEqual(int(self.cot_principal.total_clp), total_antes)
 
     def test_actualizar_aceptada_sin_iniciar_total_sube_a_enviada(self):
         from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
+            MSG_ACEPTADA_CERRADA,
             actualizar_cotizacion_aceptada_sin_iniciar,
         )
 
         self.cita.horario_por_confirmar = True
         self.cita.save(update_fields=['horario_por_confirmar'])
 
-        cot, modo = actualizar_cotizacion_aceptada_sin_iniciar(
-            self.cot_principal,
-            {
-                'servicio_nombre': 'Cambio de kit de embrague + disco',
-                'mano_obra_clp': 250000,
-                'repuestos': [
-                    {
-                        'nombre': 'Kit embrague',
-                        'cantidad': 1,
-                        'precio_unitario_clp': 220000,
-                    }
-                ],
-            },
-        )
-        self.assertEqual(modo, 'requiere_confirmacion')
-        self.assertEqual(cot.estado, 'enviada')
-        self.assertEqual(int(cot.total_clp), 470000)
-        self.cita.detalle.refresh_from_db()
-        self.assertEqual(int(self.cita.detalle.precio_referencia), 400000)
+        with self.assertRaises(ValueError) as ctx:
+            actualizar_cotizacion_aceptada_sin_iniciar(
+                self.cot_principal,
+                {
+                    'servicio_nombre': 'Cambio de kit de embrague + disco',
+                    'mano_obra_clp': 250000,
+                    'repuestos': [
+                        {
+                            'nombre': 'Kit embrague',
+                            'cantidad': 1,
+                            'precio_unitario_clp': 220000,
+                        }
+                    ],
+                },
+            )
+        self.assertEqual(str(ctx.exception), MSG_ACEPTADA_CERRADA)
+        self.cot_principal.refresh_from_db()
+        self.assertEqual(self.cot_principal.estado, 'aceptada')
 
     def test_actualizada_por_taller_por_metadata_y_timestamp(self):
         self.cot_principal.estado = 'enviada'
@@ -449,7 +451,7 @@ class CotizacionAdicionalFlujoTestCase(TestCase):
 
     def test_actualizar_aceptada_con_horario_agendado_rechaza(self):
         from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
-            MSG_EDICION_CON_HORARIO,
+            MSG_ACEPTADA_CERRADA,
             actualizar_cotizacion_aceptada_sin_iniciar,
         )
 
@@ -458,35 +460,38 @@ class CotizacionAdicionalFlujoTestCase(TestCase):
                 self.cot_principal,
                 {'mano_obra_clp': 200000},
             )
-        self.assertIn('horario agendado', str(ctx.exception))
-        self.assertIn('adicional', MSG_EDICION_CON_HORARIO.lower())
+        self.assertEqual(str(ctx.exception), MSG_ACEPTADA_CERRADA)
+        self.assertIn('adicional', MSG_ACEPTADA_CERRADA.lower())
 
     def test_actualizar_aceptada_sin_cita(self):
         from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
+            MSG_ACEPTADA_CERRADA,
             actualizar_cotizacion_aceptada_sin_iniciar,
         )
 
         self.cita.delete()
-        cot, modo = actualizar_cotizacion_aceptada_sin_iniciar(
-            self.cot_principal,
-            {
-                'mano_obra_clp': 180000,
-                'repuestos': [
-                    {
-                        'nombre': 'Kit embrague',
-                        'cantidad': 1,
-                        'precio_unitario_clp': 220000,
-                    },
-                    {
-                        'nombre': 'Filtro de aceite',
-                        'cantidad': 1,
-                        'precio_unitario_clp': 12000,
-                    },
-                ],
-            },
-        )
-        self.assertEqual(modo, 'requiere_confirmacion')
-        self.assertEqual(cot.estado, 'enviada')
+        with self.assertRaises(ValueError) as ctx:
+            actualizar_cotizacion_aceptada_sin_iniciar(
+                self.cot_principal,
+                {
+                    'mano_obra_clp': 180000,
+                    'repuestos': [
+                        {
+                            'nombre': 'Kit embrague',
+                            'cantidad': 1,
+                            'precio_unitario_clp': 220000,
+                        },
+                        {
+                            'nombre': 'Filtro de aceite',
+                            'cantidad': 1,
+                            'precio_unitario_clp': 12000,
+                        },
+                    ],
+                },
+            )
+        self.assertEqual(str(ctx.exception), MSG_ACEPTADA_CERRADA)
+        self.cot_principal.refresh_from_db()
+        self.assertEqual(self.cot_principal.estado, 'aceptada')
         self.assertEqual(int(cot.total_clp), 412000)
 
     def test_serializar_publico_expone_descuento(self):

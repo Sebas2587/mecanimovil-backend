@@ -873,7 +873,6 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
 
     def partial_update(self, request, *args, **kwargs):
         from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
-            actualizar_cotizacion_aceptada_sin_iniciar,
             asegurar_cotizacion_editable_para_items,
         )
 
@@ -889,18 +888,6 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             cotizacion = asegurar_cotizacion_editable_para_items(cotizacion)
         except ValueError as exc:
             raise ValidationError({'estado': str(exc)}) from exc
-        if cotizacion.estado == 'aceptada':
-            try:
-                cotizacion, modo = actualizar_cotizacion_aceptada_sin_iniciar(
-                    cotizacion, request.data,
-                )
-            except ValueError as exc:
-                raise ValidationError({'estado': str(exc)}) from exc
-            marcar_emision_pendiente(cotizacion)
-            cotizacion.save(update_fields=['metadata', 'actualizado_en'])
-            data = CotizacionCanalSerializer(cotizacion).data
-            data['modo_actualizacion'] = modo
-            return Response(data)
         aplicar_edicion_cotizacion(cotizacion, request.data)
         marcar_emision_pendiente(cotizacion)
         cotizacion.save()

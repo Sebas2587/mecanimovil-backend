@@ -200,13 +200,10 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
         return bool(getattr(cita, 'fecha_servicio', None) and getattr(cita, 'hora_servicio', None))
 
     def get_permite_edicion_completa(self, obj) -> bool:
-        if obj.es_cotizacion_adicional:
-            return obj.estado == 'borrador'
-        if obj.estado in ('borrador', 'enviada'):
-            return True
-        if obj.estado == 'aceptada':
-            return not self.get_tiene_horario_agendado(obj)
-        return False
+        from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
+            cotizacion_permite_edicion_completa,
+        )
+        return cotizacion_permite_edicion_completa(obj)
 
     def get_descuento_etiqueta(self, obj) -> str:
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (

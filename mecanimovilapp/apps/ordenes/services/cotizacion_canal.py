@@ -715,6 +715,11 @@ MSG_EDICION_CON_HORARIO = (
     'sin modificar la cotización original.'
 )
 
+MSG_ACEPTADA_CERRADA = (
+    'Esta cotización ya fue aceptada y no se modifica. '
+    'Para sumar o cambiar trabajo, crea una cotización adicional.'
+)
+
 
 def cita_activa_de_cotizacion(cotizacion: CotizacionCanal):
     """Cita activa más reciente generada por esta cotización, o None."""
@@ -747,24 +752,18 @@ def cotizacion_tiene_horario_agendado(cotizacion: CotizacionCanal) -> bool:
 
 
 def cotizacion_permite_edicion_completa(cotizacion: CotizacionCanal) -> bool:
-    """Misma cotización editable (ítems IA o manual) si aún no hay horario agendado."""
-    if cotizacion.es_cotizacion_adicional:
-        return cotizacion.estado == 'borrador'
-    if cotizacion.estado in ('borrador', 'enviada'):
-        return True
-    if cotizacion.estado == 'aceptada':
-        return not cotizacion_tiene_horario_agendado(cotizacion)
-    return False
+    """Solo el borrador se edita. Enviada se corrige reabriéndola. Aceptada queda cerrada."""
+    return cotizacion.estado == 'borrador'
 
 
 def asegurar_cotizacion_editable_para_items(cotizacion: CotizacionCanal) -> CotizacionCanal:
-    """Valida edición y, si está enviada, la reabre a borrador (mismo token)."""
-    if not cotizacion_permite_edicion_completa(cotizacion):
-        if cotizacion_tiene_horario_agendado(cotizacion):
-            raise ValueError(MSG_EDICION_CON_HORARIO)
-        raise ValueError('Esta cotización ya no se puede editar.')
-    if cotizacion.estado == 'enviada' and not cotizacion.es_cotizacion_adicional:
+    """Valida edición. Enviada vuelve a borrador (mismo token). Aceptada no se toca."""
+    if cotizacion.estado == 'aceptada':
+        raise ValueError(MSG_ACEPTADA_CERRADA)
+    if cotizacion.estado == 'enviada':
         return reabrir_cotizacion_enviada(cotizacion)
+    if not cotizacion_permite_edicion_completa(cotizacion):
+        raise ValueError('Esta cotización ya no se puede editar.')
     return cotizacion
 
 
@@ -819,8 +818,6 @@ def reabrir_cotizacion_enviada(cotizacion: CotizacionCanal) -> CotizacionCanal:
     """enviada → borrador (mismo token). El cliente deja de poder aceptar hasta reenviar."""
     if cotizacion.estado != 'enviada':
         raise ValueError('Solo se puede reabrir una cotización enviada pendiente de respuesta.')
-    if cotizacion.es_cotizacion_adicional:
-        raise ValueError('Usa el flujo de hallazgo para trabajos adicionales.')
     meta = dict(cotizacion.metadata or {})
     meta['reabierta_por_taller'] = True
     meta['reabierta_en'] = timezone.now().isoformat()
@@ -830,34 +827,13 @@ def reabrir_cotizacion_enviada(cotizacion: CotizacionCanal) -> CotizacionCanal:
     return cotizacion
 
 
-@transaction.atomic
 def actualizar_cotizacion_aceptada_sin_iniciar(
     cotizacion: CotizacionCanal,
     data: dict,
 ) -> tuple[CotizacionCanal, str]:
-    """
-    Actualiza cotización aceptada sin horario agendado (o con horario aún por confirmar).
-    Si ya hay día/hora confirmados, hay que usar un trabajo adicional.
-    - Si el total sube: pasa a enviada para que el cliente confirme el delta (mismo link).
-    - Si no: mantiene aceptada y actualiza precio de referencia de la cita, si existe.
-    Retorna (cotizacion, modo) donde modo es 'requiere_confirmacion' | 'actualizada'.
-    """
-    if cotizacion.estado != 'aceptada':
-        raise ValueError('Solo aplica a cotizaciones aceptadas.')
-    if cotizacion.es_cotizacion_adicional:
-        raise ValueError('Los hallazgos usan cotizaciones adicionales.')
-    if cotizacion_tiene_horario_agendado(cotizacion):
-        raise ValueError(MSG_EDICION_CON_HORARIO)
-    cita = _cita_activa_no_iniciada_de_cotizacion(cotizacion)
-
-    total_previo = int(cotizacion.total_clp or 0)
-    aplicar_edicion_cotizacion(cotizacion, data)
-    modo = aplicar_efecto_edicion_aceptada(
-        cotizacion,
-        total_previo=total_previo,
-        cita=cita,
-    )
-    return cotizacion, modo
+    """La cotización aceptada no se reescribe. El trabajo nuevo va en una adicional."""
+    del cotizacion, data
+    raise ValueError(MSG_ACEPTADA_CERRADA)
 
 
 @transaction.atomic
