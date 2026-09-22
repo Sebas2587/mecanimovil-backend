@@ -59,10 +59,13 @@ def construir_reglas_comerciales(config: TallerAgenteConfig | None) -> str:
 
     if config.requiere_direccion_antes_de_cotizar:
         partes.append(
-            '- DIRECCIÓN ANTES DE COTIZAR (este taller): para armar borrador a domicilio basta COMUNA/sector '
-            'en direccion_servicio (no exijas calle/número). Si el cliente pide cotización primero y dirección '
-            'después, respeta eso y marca listo_para_cotizar con lo que ya tengas (patente+teléfono+servicio). '
-            'NO insistas en la calle exacta ni vuelvas a pedir una comuna ya capturada.'
+            '- DIRECCIÓN ANTES DE COTIZAR (este taller): a domicilio NO marques listo_para_cotizar ni armes '
+            'borrador hasta tener calle y número (o calle + comuna) en direccion_servicio. Una sola comuna '
+            'no alcanza. Pide la dirección antes de cotizar. En modalidad taller no la exijas.'
+        )
+    else:
+        partes.append(
+            '- DIRECCIÓN: no bloquees el borrador por falta de calle. Para domicilio basta comuna o sector.'
         )
 
     return '\n'.join(partes)

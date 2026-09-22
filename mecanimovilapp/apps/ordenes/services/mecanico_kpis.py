@@ -14,6 +14,7 @@ Métricas (flujo completo del taller = Mecanimovil + agenda personal):
 from __future__ import annotations
 
 from calendar import monthrange
+from collections import Counter
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -80,6 +81,66 @@ def _ventana_cita_personal_q(fecha_desde: date, fecha_hasta: date) -> Q:
         Q(fecha_servicio__gte=fecha_desde, fecha_servicio__lte=fecha_hasta)
         | Q(cerrada_en__gte=inicio_dt, cerrada_en__lte=fin_dt)
     )
+
+
+def _top_conteo(counter: Counter, limit: int = 4) -> list[dict[str, Any]]:
+    return [
+        {'nombre': nombre, 'total': total}
+        for nombre, total in counter.most_common(limit)
+        if nombre
+    ]
+
+
+def _control_operativo(base_qs, personal_qs) -> dict[str, Any]:
+    """Marcas, modelos, clientes y modalidad sobre las órdenes del periodo."""
+    marcas: Counter = Counter()
+    modelos: Counter = Counter()
+    clientes: set[str] = set()
+    domicilio = 0
+    taller = 0
+
+    for tipo, cliente_id, marca, modelo in base_qs.values_list(
+        'tipo_servicio',
+        'cliente_id',
+        'vehiculo__marca__nombre',
+        'vehiculo__modelo__nombre',
+    ):
+        if tipo == 'domicilio':
+            domicilio += 1
+        elif tipo == 'taller':
+            taller += 1
+        if cliente_id:
+            clientes.add(f'c:{cliente_id}')
+        if marca and str(marca).strip():
+            marcas[str(marca).strip()] += 1
+        if modelo and str(modelo).strip():
+            modelos[str(modelo).strip()] += 1
+
+    for tipo, telefono, marca, modelo in personal_qs.values_list(
+        'tipo_servicio',
+        'detalle__cliente_telefono',
+        'detalle__vehiculo_marca',
+        'detalle__vehiculo_modelo',
+    ):
+        if tipo == 'domicilio':
+            domicilio += 1
+        elif tipo == 'taller':
+            taller += 1
+        digitos = ''.join(c for c in (telefono or '') if c.isdigit())
+        if len(digitos) >= 8:
+            clientes.add(f't:{digitos[-8:]}')
+        if marca and str(marca).strip():
+            marcas[str(marca).strip()] += 1
+        if modelo and str(modelo).strip():
+            modelos[str(modelo).strip()] += 1
+
+    return {
+        'servicios_domicilio': domicilio,
+        'servicios_taller': taller,
+        'clientes_atendidos': len(clientes),
+        'marcas_top': _top_conteo(marcas),
+        'modelos_top': _top_conteo(modelos),
+    }
 
 
 def _precio_oferta_servicio(oferta) -> float:
@@ -405,6 +466,11 @@ def _metricas_periodo(
         score_parts.append(score_calificacion)
 
     score_global = _merge_score_global(score_parts)
+    control = _control_operativo(base_qs, personal_base.exclude(estado='cancelada'))
+    checklist_en_curso = base_qs.filter(
+        estado__in=('checklist_en_progreso', 'servicio_iniciado', 'en_proceso'),
+    ).count()
+    sin_checklist = max(0, servicios_completados_totales - servicios_completados_con_checklist)
 
     return {
         'servicios_completados': servicios_completados_totales,
@@ -433,6 +499,9 @@ def _metricas_periodo(
         'tiempo_aceptacion_promedio_minutos': avg_aceptacion_min,
         'rechazos_periodo': len(rechazo_eventos),
         'score_rendimiento_global': score_global,
+        'sin_checklist': sin_checklist,
+        'checklist_en_curso': checklist_en_curso,
+        **control,
     }
 
 

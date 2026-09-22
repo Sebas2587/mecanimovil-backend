@@ -241,15 +241,21 @@ def _contexto_minimo_para_cotizar(
         return False
     if requiere_direccion_antes_de_cotizar:
         modalidad = (datos.get('modalidad') or '').strip().lower()
-        if modalidad != 'taller':
-            # Cliente pidió cotización primero / dirección después → no bloquear borrador.
-            if datos.get('direccion_diferida'):
-                return True
-            # Comuna o sector basta para armar borrador (calle exacta al coordinar visita).
-            direccion = (datos.get('direccion_servicio') or '').strip()
-            if len(direccion) < 4:
-                return False
+        if modalidad != 'taller' and not _direccion_calle_suficiente(
+            datos.get('direccion_servicio') or ''
+        ):
+            return False
     return True
+
+
+def _direccion_calle_suficiente(texto: str) -> bool:
+    """Calle usable: no basta una comuna. Exige número o calle + coma."""
+    t = (texto or '').strip()
+    if len(t) < 12:
+        return False
+    if any(c.isdigit() for c in t):
+        return True
+    return ',' in t and len(t) >= 16
 
 
 # Comunas frecuentes RM + algunas regiones (match case-insensitive).

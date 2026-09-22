@@ -83,6 +83,12 @@ class MecanicoKpisMetricasTestCase(TestCase):
         self.assertEqual(kpis['servicios_elegibles_checklist'], 0)
         self.assertIsNone(kpis['score_checklist'])
         self.assertEqual(kpis['ordenes_mecanimovil'], 1)
+        self.assertEqual(kpis['sin_checklist'], 1)
+        self.assertEqual(kpis['servicios_taller'], 1)
+        self.assertEqual(kpis['servicios_domicilio'], 0)
+        self.assertEqual(kpis['clientes_atendidos'], 1)
+        self.assertEqual(kpis['marcas_top'][0]['nombre'], 'Kia KPI')
+        self.assertEqual(kpis['modelos_top'][0]['nombre'], 'Rio KPI')
 
     def test_rechazada_incrementa_servicios_rechazados(self):
         self._crear_orden(estado='rechazada_por_proveedor')
