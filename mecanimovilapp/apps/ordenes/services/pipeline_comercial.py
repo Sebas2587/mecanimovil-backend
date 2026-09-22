@@ -277,6 +277,8 @@ def _fila_base(
     es_libre: bool = False,
     entrega_via: str = '',
     en_edicion: bool = False,
+    fecha_agendada: str = '',
+    hora_agendada: str = '',
 ) -> dict[str, Any]:
     patente = (vehiculo_patente or '').strip().upper()
     resumen = vehiculo_resumen or _vehiculo_resumen_partes(
@@ -337,6 +339,8 @@ def _fila_base(
         'es_libre': bool(es_libre),
         'entrega_via': (entrega_via or '').strip(),
         'en_edicion': bool(en_edicion),
+        'fecha_agendada': (fecha_agendada or '').strip(),
+        'hora_agendada': (hora_agendada or '').strip(),
     }
 
 
@@ -500,6 +504,14 @@ def _es_borrador_en_edicion(cot: CotizacionCanal) -> bool:
     return _hay_folio_publico(cot) or bool(meta.get('reabierta_por_taller'))
 
 
+def _slot_agendado(fecha, hora, *, por_confirmar: bool = False) -> tuple[str, str]:
+    if por_confirmar or fecha is None:
+        return '', ''
+    fecha_s = fecha.isoformat() if hasattr(fecha, 'isoformat') else str(fecha)
+    hora_s = hora.strftime('%H:%M') if hora else ''
+    return fecha_s, hora_s
+
+
 def _normalizar_busqueda(q: str | None) -> str:
     return ' '.join((q or '').strip().lower().split())
 
@@ -573,6 +585,7 @@ def _fila_coincide_busqueda(fila: dict[str, Any], q: str) -> bool:
             'servicio_resumen',
             'cotizacion_id',
             'entidad_id',
+            'fecha_agendada',
         )
     ).lower()
     if needle in haystack:
@@ -792,6 +805,7 @@ def _filas_citas_personales(
             | Q(detalle__servicio_nombre__icontains=needle)
             | Q(detalle__descripcion__icontains=needle)
             | Q(cotizacion_canal_origen__numero_publico__icontains=needle)
+            | Q(numero_publico__icontains=needle)
         )
         if compact:
             filtros |= Q(_patente_compact__contains=compact)
@@ -818,6 +832,11 @@ def _filas_citas_personales(
             origen_cita = _canal_origen(cita.conversation_origen)
         else:
             origen_cita = 'manual'
+        fecha_agendada, hora_agendada = _slot_agendado(
+            cita.fecha_servicio,
+            cita.hora_servicio,
+            por_confirmar=bool(getattr(cita, 'horario_por_confirmar', False)),
+        )
         filas.append(
             _fila_base(
                 tipo_entidad='cita_personal',
@@ -846,6 +865,12 @@ def _filas_citas_personales(
                 ),
                 template_generado_por_ia=_template_generado_por_ia_desde_instancia(inst),
                 horario_por_confirmar=bool(getattr(cita, 'horario_por_confirmar', False)),
+                numero_publico=(
+                    (getattr(cita, 'numero_publico', None) or '').strip()
+                    or (getattr(cot_origen, 'numero_publico', None) or '').strip()
+                ),
+                fecha_agendada=fecha_agendada,
+                hora_agendada=hora_agendada,
                 **_lead_fields(cita.conversation_origen_id, leads_map),
             )
         )
@@ -947,6 +972,7 @@ def _filas_solicitudes_directas(taller: Taller, proveedor_user) -> list[dict[str
         estado_norm = SOLICITUD_DIRECTA_MAP.get(orden.estado, 'nuevo')
         cliente = orden.cliente
         veh = _campos_vehiculo_obj(orden.vehiculo)
+        fecha_agendada, hora_agendada = _slot_agendado(orden.fecha_servicio, orden.hora_servicio)
         filas.append(
             _fila_base(
                 tipo_entidad='orden_directa',
@@ -978,6 +1004,9 @@ def _filas_solicitudes_directas(taller: Taller, proveedor_user) -> list[dict[str
                 miembro_taller_nombre=(
                     orden.mecanico_asignado.nombre if orden.mecanico_asignado_id else None
                 ),
+                numero_publico=(getattr(orden, 'numero_publico', None) or '').strip(),
+                fecha_agendada=fecha_agendada,
+                hora_agendada=hora_agendada,
             )
         )
     return filas
@@ -1050,6 +1079,11 @@ def _fusionar_filas_mismo_caso(a: dict[str, Any], b: dict[str, Any]) -> dict[str
             merged['miembro_taller_nombre'] = cita.get('miembro_taller_nombre')
         if cita.get('template_generado_por_ia'):
             merged['template_generado_por_ia'] = True
+        if cita.get('fecha_agendada') and not merged.get('fecha_agendada'):
+            merged['fecha_agendada'] = cita['fecha_agendada']
+            merged['hora_agendada'] = cita.get('hora_agendada') or ''
+        if cita.get('numero_publico') and not merged.get('numero_publico'):
+            merged['numero_publico'] = cita['numero_publico']
         rank_cot = _ESTADO_RANK.get(str(cot.get('estado_normalizado')), 0)
         rank_cita = _ESTADO_RANK.get(str(cita.get('estado_normalizado')), 0)
         if cot.get('estado_raw') == 'borrador' or cot.get('en_edicion'):
@@ -1218,6 +1252,8 @@ _CASO_PUBLICO_KEYS = (
     'folio_principal',
     'cotizacion_original_id',
     'ejecucion_adicional',
+    'fecha_agendada',
+    'hora_agendada',
 )
 
 

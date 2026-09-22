@@ -612,6 +612,9 @@ def crear_cita_desde_adicional_nueva_fecha(
     )
     det.full_clean()
     det.save()
+    from mecanimovilapp.apps.ordenes.services.folio_caso import asegurar_numero_publico_cita
+
+    asegurar_numero_publico_cita(cita)
     logger.info(
         'Cotización adicional %s aceptada → cita hija %s (fecha %s %s, padre %s)',
         cotizacion.id,

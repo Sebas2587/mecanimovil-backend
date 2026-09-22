@@ -253,12 +253,14 @@ def formatear_numero_publico(pk: int) -> str:
 
 
 def asegurar_numero_publico(cotizacion: CotizacionCanal) -> CotizacionCanal:
-    """Asigna folio inmutable MM-000184. No pisa un valor existente."""
+    """Asigna folio inmutable MM-000184. No pisa un valor existente ni choca con citas/órdenes."""
     if (cotizacion.numero_publico or '').strip():
         return cotizacion
     if cotizacion.pk is None:
         cotizacion.save()
-    cotizacion.numero_publico = formatear_numero_publico(cotizacion.pk)
+    from mecanimovilapp.apps.ordenes.services.folio_caso import asignar_folio_unico
+
+    cotizacion.numero_publico = asignar_folio_unico(preferido_pk=cotizacion.pk)
     cotizacion.save(update_fields=['numero_publico', 'actualizado_en'])
     return cotizacion
 
@@ -723,6 +725,10 @@ def crear_cita_desde_cotizacion_aceptada(cotizacion: CotizacionCanal) -> CitaAge
     )
     det.full_clean()
     det.save()
+
+    from mecanimovilapp.apps.ordenes.services.folio_caso import asegurar_numero_publico_cita
+
+    asegurar_numero_publico_cita(cita)
 
     logger.info(
         'Cotización %s aceptada → cita personal %s (horario por confirmar, tipo=%s)',

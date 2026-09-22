@@ -461,6 +461,9 @@ def crear_cita_personal(
             notificar_cita_asignada_mecanico,
         )
         notificar_cita_asignada_mecanico(cita, miembro)
+    from mecanimovilapp.apps.ordenes.services.folio_caso import asegurar_numero_publico_cita
+
+    asegurar_numero_publico_cita(cita)
     return cita
 
 
@@ -526,20 +529,27 @@ def actualizar_cita_personal(
     if 'miembro_taller' in cabecera and cabecera.get('miembro_taller') is None:
         miembro_id = None
 
+    solo_ficha = not any(
+        key in cabecera
+        for key in ('fecha_servicio', 'hora_servicio', 'duracion_minutos', 'miembro_taller')
+    )
     # omitir_especialidad: el agente ya resolvió mecánico con fallback (cupo
     # ofrecido sin especialidad alineada). Evita falso "horario tomado".
     categorias = [] if omitir_especialidad else _categorias_de_oferta(oferta)
-    miembro = validar_cita_personal_slot(
-        taller=cita.taller,
-        mecanico=cita.mecanico,
-        tipo_servicio=tipo_servicio,
-        fecha=fecha,
-        hora=hora,
-        duracion_minutos=duracion,
-        miembro_id=miembro_id,
-        categorias_requeridas=categorias,
-        excluir_cita_id=cita.pk,
-    )
+    if cita.horario_por_confirmar and solo_ficha:
+        miembro = cita.miembro_taller
+    else:
+        miembro = validar_cita_personal_slot(
+            taller=cita.taller,
+            mecanico=cita.mecanico,
+            tipo_servicio=tipo_servicio,
+            fecha=fecha,
+            hora=hora,
+            duracion_minutos=duracion,
+            miembro_id=miembro_id,
+            categorias_requeridas=categorias,
+            excluir_cita_id=cita.pk,
+        )
 
     for field, value in cabecera.items():
         if field in ('fecha_servicio', 'hora_servicio', 'duracion_minutos', 'tipo_servicio'):

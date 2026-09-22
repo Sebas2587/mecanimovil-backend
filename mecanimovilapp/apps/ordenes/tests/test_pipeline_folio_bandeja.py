@@ -280,3 +280,71 @@ class PipelineFolioBandejaTests(TestCase):
         payload = construir_pipeline_comercial(user=self.user, taller=self.taller, limite=50)
         nombres = [f['cliente_nombre'] for f in payload['results'] if f['tipo_entidad'] == 'cotizacion_canal']
         self.assertNotIn('Borrador fresco', nombres)
+
+    def test_folio_cita_y_cotizacion_no_se_repiten_entre_casos(self):
+        from mecanimovilapp.apps.ordenes.services.cotizacion_publica import formatear_numero_publico
+        from mecanimovilapp.apps.ordenes.services.folio_caso import asegurar_numero_publico_cita
+
+        cita = CitaAgendaPersonal.objects.create(
+            taller=self.taller,
+            fecha_servicio=date(2030, 8, 22),
+            hora_servicio=time(10, 0),
+            duracion_minutos=60,
+            tipo_servicio='taller',
+            estado='activa',
+            creado_por=self.user,
+        )
+        CitaAgendaPersonalDetalle.objects.create(
+            cita=cita,
+            cliente_nombre='Walk-in',
+            vehiculo_marca='Toyota',
+            vehiculo_modelo='Yaris',
+            servicio_nombre='Revisión',
+        )
+        asegurar_numero_publico_cita(cita)
+        cita.refresh_from_db()
+        self.assertTrue(cita.numero_publico.startswith('MM-'))
+
+        cot = self._cotizacion(servicio_nombre='Otro caso')
+        cita.numero_publico = formatear_numero_publico(cot.pk)
+        cita.save(update_fields=['numero_publico'])
+        cot.numero_publico = None
+        cot.save(update_fields=['numero_publico'])
+        asegurar_numero_publico(cot)
+        cot.refresh_from_db()
+        self.assertTrue(cot.numero_publico.startswith('MM-'))
+        self.assertNotEqual(cot.numero_publico, cita.numero_publico)
+
+        por_folio = construir_pipeline_comercial(
+            user=self.user, taller=self.taller, limite=50, q=cita.numero_publico,
+        )
+        self.assertTrue(
+            any(f.get('cita_id') == cita.id for f in por_folio['results']),
+        )
+
+    def test_cita_confirmada_expone_fecha_agendada(self):
+        from mecanimovilapp.apps.ordenes.services.folio_caso import asegurar_numero_publico_cita
+
+        cita = CitaAgendaPersonal.objects.create(
+            taller=self.taller,
+            fecha_servicio=date(2030, 8, 22),
+            hora_servicio=time(10, 0),
+            duracion_minutos=90,
+            tipo_servicio='taller',
+            estado='activa',
+            horario_por_confirmar=False,
+            creado_por=self.user,
+        )
+        CitaAgendaPersonalDetalle.objects.create(
+            cita=cita,
+            cliente_nombre='Walk-in',
+            vehiculo_marca='Toyota',
+            vehiculo_modelo='Yaris',
+            servicio_nombre='Revisión',
+        )
+        asegurar_numero_publico_cita(cita)
+        payload = construir_pipeline_comercial(user=self.user, taller=self.taller, limite=50)
+        fila = next(f for f in payload['results'] if f.get('cita_id') == cita.id)
+        self.assertEqual(fila['fecha_agendada'], '2030-08-22')
+        self.assertEqual(fila['hora_agendada'], '10:00')
+        self.assertTrue(fila['numero_publico'].startswith('MM-'))

@@ -200,7 +200,14 @@ class SolicitudServicio(models.Model):
         help_text='Oferta de compra marketplace que originó esta inspección pre-compra',
         verbose_name='Oferta Marketplace',
     )
-    
+    numero_publico = models.CharField(
+        max_length=16,
+        blank=True,
+        default='',
+        db_index=True,
+        help_text='Folio MM del caso. Mismo pool que cotizaciones y citas (MM-000184).',
+    )
+
     class Meta:
         verbose_name = _('solicitud de servicio')
         verbose_name_plural = _('solicitudes de servicio')
@@ -296,6 +303,10 @@ class SolicitudServicio(models.Model):
                 self.fecha_pendiente_aceptacion_proveedor = timezone.now()
 
         super().save(*args, **kwargs)
+        if not (self.numero_publico or '').strip() and self.pk:
+            from mecanimovilapp.apps.ordenes.services.folio_caso import asegurar_numero_publico_orden
+
+            asegurar_numero_publico_orden(self)
 
 
 class LineaServicio(models.Model):
@@ -1982,6 +1993,13 @@ class CitaAgendaPersonal(models.Model):
     horario_por_confirmar = models.BooleanField(
         default=False,
         help_text='True si la cita se creó desde cotización pública sin horario definido.',
+    )
+    numero_publico = models.CharField(
+        max_length=16,
+        blank=True,
+        default='',
+        db_index=True,
+        help_text='Folio MM del caso. Igual al de la cotización origen, o uno nuevo si nació en agenda.',
     )
     fecha_servicio = models.DateField()
     hora_servicio = models.TimeField()

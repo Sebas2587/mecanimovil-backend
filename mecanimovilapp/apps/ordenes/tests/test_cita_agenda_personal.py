@@ -121,6 +121,9 @@ class CitaAgendaPersonalAPITestCase(TestCase):
         res = self.client.post('/api/ordenes/citas-agenda-personal/', payload, format='json')
         self.assertEqual(res.status_code, 201, res.content)
         cita_id = res.data['id']
+        self.assertIn('numero_publico', res.data)
+        folio = (res.data.get('numero_publico') or '')
+        self.assertTrue(folio.startswith('MM-'), folio)
 
         res_cerrar = self.client.post(f'/api/ordenes/citas-agenda-personal/{cita_id}/cerrar/')
         self.assertEqual(res_cerrar.status_code, 200)

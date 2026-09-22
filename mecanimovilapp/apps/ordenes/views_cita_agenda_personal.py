@@ -638,6 +638,10 @@ def _serializar_cita_personal_evento(cita: CitaAgendaPersonal) -> dict:
         'orden_id': None,
         'miembro_taller_id': cita.miembro_taller_id,
         'mecanico_nombre': cita.miembro_taller.nombre if cita.miembro_taller_id else None,
+        'numero_publico': (
+            (getattr(cita, 'numero_publico', None) or '').strip()
+            or (getattr(getattr(cita, 'cotizacion_canal_origen', None), 'numero_publico', None) or '').strip()
+        ),
     }
 
 
@@ -676,6 +680,7 @@ def _serializar_orden_mecanimovil_evento(orden: SolicitudServicio) -> dict:
         'orden_id': orden.id,
         'miembro_taller_id': orden.mecanico_asignado_id,
         'mecanico_nombre': orden.mecanico_asignado.nombre if orden.mecanico_asignado_id else None,
+        'numero_publico': (getattr(orden, 'numero_publico', None) or '').strip(),
     }
 
 

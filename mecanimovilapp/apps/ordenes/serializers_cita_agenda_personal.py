@@ -65,6 +65,7 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
     mecanico_modalidad_display = serializers.SerializerMethodField()
     conversation_id = serializers.IntegerField(source='conversation_origen_id', read_only=True)
     cotizacion_canal_origen_id = serializers.IntegerField(read_only=True, allow_null=True)
+    numero_publico = serializers.SerializerMethodField()
     resumen_economico = serializers.SerializerMethodField()
     permite_cotizacion_adicional = serializers.SerializerMethodField()
     cotizacion_adicional_pendiente_id = serializers.SerializerMethodField()
@@ -109,6 +110,7 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
             'mecanico_modalidad_display',
             'conversation_id',
             'cotizacion_canal_origen_id',
+            'numero_publico',
             'resumen_economico',
             'permite_cotizacion_adicional',
             'cotizacion_adicional_pendiente_id',
@@ -213,6 +215,18 @@ class CitaAgendaPersonalSerializer(serializers.ModelSerializer):
         )
 
         return construir_resumen_economico_cita(obj)
+
+    def get_numero_publico(self, obj) -> str:
+        from mecanimovilapp.apps.ordenes.services.folio_caso import (
+            asegurar_numero_publico_cita,
+            folio_publico_cita,
+        )
+
+        folio = folio_publico_cita(obj)
+        if folio:
+            return folio
+        asegurar_numero_publico_cita(obj)
+        return folio_publico_cita(obj)
 
     def get_etiqueta(self, obj) -> str:
         return 'Personal'
@@ -401,3 +415,4 @@ class EventoAgendaUnificadoSerializer(serializers.Serializer):
     orden_id = serializers.IntegerField(required=False, allow_null=True)
     miembro_taller_id = serializers.IntegerField(required=False, allow_null=True)
     mecanico_nombre = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    numero_publico = serializers.CharField(required=False, allow_blank=True, allow_null=True)

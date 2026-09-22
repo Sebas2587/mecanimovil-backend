@@ -153,7 +153,8 @@ class SolicitudServicioSerializer(serializers.ModelSerializer):
             'id', 'cliente', 'cliente_detail', 'vehiculo', 'vehiculo_detail',
             'fecha_hora_solicitud', 'ubicacion_servicio', 'tipo_servicio',
             'taller', 'taller_detail', 'mecanico', 'mecanico_detail',
-            'fecha_servicio', 'hora_servicio', 'metodo_pago', 'total', 'estado',
+            'fecha_servicio', 'hora_servicio', 'numero_publico',
+            'metodo_pago', 'total', 'estado',
             'comprobante_pago', 'comprobante_validado', 'fecha_validacion',
             'notas_cliente', 'notas_admin', 'motivo_cancelacion', 'fecha_cancelacion',
             'fecha_devolucion', 'fecha_respuesta_proveedor', 'motivo_rechazo',
@@ -544,7 +545,8 @@ class SolicitudServicioProveedorSeguroSerializer(serializers.ModelSerializer):
         model = SolicitudServicio
         fields = (
             'id', 'cliente_detail', 'vehiculo_detail', 'fecha_hora_solicitud',
-            'ubicacion_servicio', 'ubicacion_servicio_segura', 'tipo_servicio', 'fecha_servicio', 'hora_servicio', 
+            'ubicacion_servicio', 'ubicacion_servicio_segura', 'tipo_servicio', 'fecha_servicio', 'hora_servicio',
+            'numero_publico',
             'metodo_pago', 'total', 'estado', 'estado_display',
             'notas_cliente', 'notas_proveedor', 'motivo_rechazo', 
             'lineas_detail', 'lineas', 'puede_gestionar', 'tiempo_respuesta_requerido',
@@ -946,7 +948,8 @@ class SolicitudServicioProveedorLegacySerializer(serializers.ModelSerializer):
         model = SolicitudServicio
         fields = (
             'id', 'cliente_detail', 'vehiculo_detail', 'fecha_hora_solicitud',
-            'ubicacion_servicio', 'tipo_servicio', 'fecha_servicio', 'hora_servicio', 
+            'ubicacion_servicio', 'tipo_servicio', 'fecha_servicio', 'hora_servicio',
+            'numero_publico',
             'metodo_pago', 'total', 'estado', 'estado_display',
             'notas_cliente', 'notas_proveedor', 'motivo_rechazo', 
             'lineas_detail', 'lineas', 'puede_gestionar'
