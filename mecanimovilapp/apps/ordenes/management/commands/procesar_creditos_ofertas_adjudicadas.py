@@ -226,7 +226,9 @@ class Command(BaseCommand):
                         oferta=oferta,
                         servicio=servicio
                     )
-                    
+                    if consumo is None:
+                        continue
+
                     procesadas += 1
                     
                     self.stdout.write(

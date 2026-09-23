@@ -771,24 +771,27 @@ class CreditoProveedorViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=False, methods=['get'], url_path='tabla-servicios-creditos')
     def tabla_servicios_creditos(self, request):
         """
-        Lista todos los servicios registrados con precio de referencia y créditos por postulación.
-        GET /api/suscripciones/creditos/tabla-servicios-creditos/  (preferida)
-        o GET /api/suscripciones/creditos/mi-saldo/tabla-servicios-creditos/
+        Servicios del marketplace que sí consumen créditos al postular.
+        Un servicio del taller, sin tarifa, no entra en esta lista.
+        GET /api/suscripciones/creditos/tabla-servicios-creditos/
         """
-        from mecanimovilapp.apps.servicios.models import Servicio
+        from .models import ConfiguracionCreditosServicio
 
-        from .creditos_services import obtener_creditos_servicio
-
+        configs = (
+            ConfiguracionCreditosServicio.objects.filter(activo=True, creditos_requeridos__gt=0)
+            .select_related('servicio')
+            .order_by('servicio__nombre')
+        )
         filas = []
-        for servicio in Servicio.objects.all().order_by('nombre'):
-            creditos = obtener_creditos_servicio(servicio)
+        for config in configs:
+            servicio = config.servicio
             precio_ref = servicio.precio_referencia or 0
             filas.append(
                 {
                     'servicio_id': servicio.id,
                     'nombre': servicio.nombre,
                     'precio_referencia_clp': float(precio_ref),
-                    'creditos_requeridos': creditos,
+                    'creditos_requeridos': config.creditos_requeridos,
                 }
             )
         return Response({'servicios': filas})

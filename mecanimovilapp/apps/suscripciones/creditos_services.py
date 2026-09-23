@@ -70,13 +70,12 @@ def obtener_creditos_servicio(servicio):
         
         if config:
             return config.creditos_requeridos
-        
-        # Valor por defecto si no hay configuración específica
-        logger.debug(f"No hay configuración específica para servicio {servicio.id}, usando valor por defecto: 2")
-        return 2
+
+        # Sin tarifa de marketplace no se inventa un puntaje ni se cobra.
+        return 0
     except Exception as e:
         logger.error(f"Error obteniendo créditos para servicio {servicio.id}: {e}", exc_info=True)
-        return 2
+        return 0
 
 
 def obtener_credito_proveedor(proveedor):
@@ -157,7 +156,9 @@ def consumir_creditos_adjudicacion(proveedor, oferta, servicio):
         puede, mensaje, creditos_necesarios = validar_creditos_suficientes(proveedor, servicio)
         if not puede:
             raise ValidationError(mensaje)
-        
+        if creditos_necesarios <= 0:
+            return None
+
         # Obtener crédito del proveedor
         credito_proveedor = obtener_credito_proveedor(proveedor)
         
