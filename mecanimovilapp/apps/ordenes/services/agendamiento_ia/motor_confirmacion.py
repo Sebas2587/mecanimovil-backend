@@ -111,8 +111,13 @@ def _incluye_repuestos_catalogo(ofertas_servicio: list[OfertaServicio]) -> bool:
     return any(_oferta_ofrece_repuestos(os) for os in ofertas_servicio)
 
 
-def _linea_usa_repuestos_catalogo(oferta_servicio: OfertaServicio) -> bool:
-    """Precio y detalle de la línea según configuración publicada del proveedor."""
+def _linea_usa_repuestos_catalogo(
+    oferta_servicio: OfertaServicio,
+    requiere_repuestos_solicitud: bool = True,
+) -> bool:
+    """Solo si el cliente pidió con repuestos y el taller los tiene publicados."""
+    if not requiere_repuestos_solicitud:
+        return False
     return _oferta_ofrece_repuestos(oferta_servicio)
 
 
@@ -209,7 +214,7 @@ def _crear_oferta_catalogo_con_lineas(
 
     for oferta_servicio in ofertas_servicio:
         mo_total += Decimal(str(oferta_servicio.costo_mano_de_obra_sin_iva or 0))
-        if _linea_usa_repuestos_catalogo(oferta_servicio):
+        if _linea_usa_repuestos_catalogo(oferta_servicio, requiere_repuestos):
             rep_total += Decimal(str(oferta_servicio.costo_repuestos_sin_iva or 0))
             gest_total += Decimal(
                 str(getattr(oferta_servicio, 'costo_gestion_compra_sin_iva', None) or 0)
@@ -252,7 +257,7 @@ def _crear_oferta_catalogo_con_lineas(
         servicio = oferta_servicio.servicio
         precio_detalle = _precio_linea_oferta_servicio_catalogo(oferta_servicio)
         repuestos_linea: list = []
-        if _linea_usa_repuestos_catalogo(oferta_servicio):
+        if _linea_usa_repuestos_catalogo(oferta_servicio, requiere_repuestos):
             raw_rep = getattr(oferta_servicio, 'repuestos_seleccionados', None)
             if isinstance(raw_rep, list):
                 repuestos_linea = list(raw_rep)

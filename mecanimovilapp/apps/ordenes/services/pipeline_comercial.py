@@ -399,10 +399,39 @@ def _estado_normalizado_cita_personal(cita) -> str:
     return 'aceptado_agendado'
 
 
+def _resumen_servicios_publica(solicitud) -> str:
+    """Nombre real del servicio. La descripción del cliente no reemplaza el catálogo."""
+    if solicitud is None:
+        return ''
+    nombres = [
+        nombre
+        for nombre in solicitud.servicios_solicitados.values_list('nombre', flat=True)
+        if nombre
+    ]
+    if nombres:
+        return ', '.join(nombres)[:120]
+    return (solicitud.descripcion_problema or '')[:120]
+
+
+def _resumen_servicios_orden(orden) -> str:
+    nombres = []
+    for linea in orden.lineas.all():
+        oferta_servicio = getattr(linea, 'oferta_servicio', None)
+        servicio = getattr(oferta_servicio, 'servicio', None) if oferta_servicio else None
+        nombre = getattr(servicio, 'nombre', None)
+        if nombre:
+            nombres.append(nombre)
+    if nombres:
+        return ', '.join(nombres)[:120]
+    return (orden.notas_cliente or '')[:120]
+
+
 def _filas_ofertas(proveedor_user, taller: Taller | None) -> list[dict[str, Any]]:
     qs = (
         OfertaProveedor.objects.filter(proveedor=proveedor_user)
+        .exclude(estado='pendiente_confirmacion')
         .select_related('solicitud', 'solicitud__cliente', 'solicitud__vehiculo__marca', 'solicitud__vehiculo__modelo', 'miembro_taller_asignado')
+        .prefetch_related('solicitud__servicios_solicitados')
         .order_by('-fecha_envio')[:200]
     )
     filas: list[dict[str, Any]] = []
@@ -439,7 +468,7 @@ def _filas_ofertas(proveedor_user, taller: Taller | None) -> list[dict[str, Any]
                 vehiculo_marca=veh['vehiculo_marca'],
                 vehiculo_modelo=veh['vehiculo_modelo'],
                 vehiculo_anio=veh['vehiculo_anio'],
-                servicio_resumen=(solicitud.descripcion_problema or '')[:120] if solicitud else '',
+                servicio_resumen=_resumen_servicios_publica(solicitud),
                 monto_clp=_monto_a_float(oferta.precio_total_ofrecido),
                 fecha_referencia=fecha_ref,
                 solicitud_id=str(solicitud.id) if solicitud else None,
@@ -896,7 +925,7 @@ def _filas_solicitudes_publicas_sin_oferta(proveedor_user, taller: Taller | None
 
     solicitudes_dirigidas = SolicitudServicioPublica.objects.filter(
         proveedores_dirigidos=proveedor_user,
-        estado__in=['publicada', 'con_ofertas', 'pendiente_confirmacion'],
+        estado__in=['publicada', 'con_ofertas'],
         fecha_expiracion__gt=timezone.now(),
         tipo_solicitud='dirigida',
     )
@@ -919,6 +948,7 @@ def _filas_solicitudes_publicas_sin_oferta(proveedor_user, taller: Taller | None
     qs = (
         queryset.distinct()
         .select_related('cliente', 'vehiculo__marca', 'vehiculo__modelo')
+        .prefetch_related('servicios_solicitados')
         .order_by('-fecha_publicacion', '-fecha_creacion')[:100]
     )
 
@@ -951,7 +981,7 @@ def _filas_solicitudes_publicas_sin_oferta(proveedor_user, taller: Taller | None
                 vehiculo_marca=veh['vehiculo_marca'],
                 vehiculo_modelo=veh['vehiculo_modelo'],
                 vehiculo_anio=veh['vehiculo_anio'],
-                servicio_resumen=(solicitud.descripcion_problema or '')[:120],
+                servicio_resumen=_resumen_servicios_publica(solicitud),
                 monto_clp=None,
                 fecha_referencia=fecha_ref,
                 fecha_limite_respuesta=solicitud.fecha_expiracion,
@@ -964,7 +994,9 @@ def _filas_solicitudes_publicas_sin_oferta(proveedor_user, taller: Taller | None
 def _filas_solicitudes_directas(taller: Taller, proveedor_user) -> list[dict[str, Any]]:
     qs = (
         SolicitudServicio.objects.filter(taller=taller)
+        .exclude(estado='pendiente_aceptacion_proveedor')
         .select_related('cliente', 'vehiculo__marca', 'vehiculo__modelo', 'mecanico_asignado')
+        .prefetch_related('lineas__oferta_servicio__servicio')
         .order_by('-fecha_hora_solicitud')[:100]
     )
     filas: list[dict[str, Any]] = []
@@ -996,7 +1028,7 @@ def _filas_solicitudes_directas(taller: Taller, proveedor_user) -> list[dict[str
                 vehiculo_marca=veh['vehiculo_marca'],
                 vehiculo_modelo=veh['vehiculo_modelo'],
                 vehiculo_anio=veh['vehiculo_anio'],
-                servicio_resumen=(orden.notas_cliente or '')[:120],
+                servicio_resumen=_resumen_servicios_orden(orden),
                 monto_clp=_monto_a_float(orden.total),
                 fecha_referencia=orden.fecha_hora_solicitud,
                 orden_id=orden.id,

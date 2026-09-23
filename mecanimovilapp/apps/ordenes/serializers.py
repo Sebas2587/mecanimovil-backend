@@ -1069,14 +1069,14 @@ class DetalleServicioOfertaSerializer(serializers.ModelSerializer):
         repuestos_raw = obj.repuestos_seleccionados
         if not repuestos_raw:
             oferta = getattr(obj, 'oferta', None)
-            if oferta and getattr(oferta, 'origen', None) == 'catalogo':
+            solicitud = getattr(oferta, 'solicitud', None) if oferta else None
+            cliente_quiere_repuestos = getattr(solicitud, 'requiere_repuestos', True) is not False
+            if oferta and getattr(oferta, 'origen', None) == 'catalogo' and cliente_quiere_repuestos:
                 os_cat = self._oferta_servicio_catalogo_para_detalle(obj)
                 if os_cat is not None:
-                    from mecanimovilapp.apps.ordenes.services.agendamiento_ia.motor_match import (
-                        _oferta_ofrece_repuestos,
-                    )
-                    if _oferta_ofrece_repuestos(os_cat):
-                        repuestos_raw = getattr(os_cat, 'repuestos_seleccionados', None) or []
+                    catalogo = getattr(os_cat, 'repuestos_seleccionados', None) or []
+                    if isinstance(catalogo, list) and catalogo:
+                        repuestos_raw = catalogo
         if not repuestos_raw:
             logger.debug(f"DetalleServicioOferta {obj.id}: No tiene repuestos_seleccionados")
             return []
