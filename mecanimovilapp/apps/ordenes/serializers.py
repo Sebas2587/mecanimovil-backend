@@ -1049,6 +1049,8 @@ class DetalleServicioOfertaSerializer(serializers.ModelSerializer):
                 'duracion_minima_minutos',
                 'duracion_maxima_minutos',
                 'duracion_estimada',
+                'repuestos_seleccionados',
+                'tipo_servicio',
             )
             .first()
         )
