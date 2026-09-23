@@ -347,6 +347,7 @@ class OmnichannelService:
             preview=preview,
             conversation_id=str(conversation.id),
             is_new_contact=is_new_contact,
+            message_id=str(message.id),
         )
         _registrar_alerta_entrante(
             connection.usuario_id,

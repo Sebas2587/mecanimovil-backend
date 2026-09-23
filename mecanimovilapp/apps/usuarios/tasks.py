@@ -264,7 +264,10 @@ def _should_throttle(user_id, data):
 
     if notif_type in ('chat_message', 'nuevo_mensaje_chat', 'nuevo_contacto_canal'):
         sender_id = _part('sender_id')
-        if sender_id:
+        message_id = _part('message_id')
+        if message_id:
+            unique_suffix = f"{unique_suffix}:{message_id}"
+        elif sender_id:
             unique_suffix = f"{unique_suffix}:{sender_id}"
 
     cache_key = f"push_throttle:{user_id}:{notif_type}:{unique_suffix}"

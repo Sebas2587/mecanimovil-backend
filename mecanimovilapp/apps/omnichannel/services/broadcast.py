@@ -97,6 +97,7 @@ def send_chat_push(
     solicitud_id: str = '',
     sender_id: str = '',
     is_new_contact: bool = False,
+    message_id: str = '',
 ):
     from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
 
@@ -124,6 +125,8 @@ def send_chat_push(
             'oferta_id': oferta_id or '',
             'solicitud_id': solicitud_id or '',
             'sender_id': str(sender_id or ''),
+            'message_id': str(message_id or ''),
+            'preview': (preview or '')[:140],
             'nuevo_contacto': 'true' if is_new_contact else 'false',
         },
     )
