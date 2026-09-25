@@ -95,7 +95,8 @@ def contenido_respaldo_sin_gemini(
     contenido['respaldo_sin_gemini'] = True
     contenido['origen_respaldo'] = origen
     contenido['valores_estimativos'] = not bool(contenido.get('precio_desde_catalogo'))
-    contenido['servicios_lineas'] = _lineas_mano_obra(chunks, int(contenido.get('mano_obra_clp') or 0))
+    if not contenido.get('servicios_lineas'):
+        contenido['servicios_lineas'] = _lineas_mano_obra(chunks, int(contenido.get('mano_obra_clp') or 0))
     adv = [a for a in (contenido.get('advertencias') or []) if isinstance(a, str)]
     if ADVERTENCIA_RESPALDO not in adv:
         adv.insert(0, ADVERTENCIA_RESPALDO)

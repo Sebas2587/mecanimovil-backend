@@ -144,6 +144,39 @@ def cita_permite_cotizacion_adicional(cita: CitaAgendaPersonal) -> bool:
     return True
 
 
+class CotizacionAdicionalRechazada(ValueError):
+    def __init__(self, message: str, codigo: str):
+        super().__init__(message)
+        self.codigo = codigo
+
+
+def rechazar_si_no_permite_adicional(cita: CitaAgendaPersonal) -> None:
+    """Explica por qué esta visita ya no acepta un hallazgo. No hace nada si sí lo acepta."""
+    if cita_permite_cotizacion_adicional(cita):
+        return
+    if cita.estado == 'cerrada':
+        raise CotizacionAdicionalRechazada(
+            'El cliente ya certificó este servicio. La visita quedó cerrada; '
+            'un hallazgo nuevo se cotiza como otro trabajo.',
+            'visita_cerrada',
+        )
+    if cita.estado == 'cancelada':
+        raise CotizacionAdicionalRechazada(
+            'Esta visita está cancelada. No se puede agregar un trabajo adicional.',
+            'visita_cancelada',
+        )
+    validar_sin_adicional_pendiente(cita)
+    if getattr(cita, 'horario_por_confirmar', False):
+        raise CotizacionAdicionalRechazada(
+            'Cuando el horario aún no está confirmado, actualiza la cotización original.',
+            'horario_por_confirmar',
+        )
+    raise CotizacionAdicionalRechazada(
+        'Este trabajo aún no permite cotizaciones adicionales.',
+        'no_permitida',
+    )
+
+
 def validar_sin_adicional_pendiente(cita: CitaAgendaPersonal) -> None:
     pendiente = adicional_pendiente_de_cita(cita)
     if pendiente is not None:
@@ -228,13 +261,7 @@ def crear_cotizacion_adicional_desde_catalogo(
     validar_cotizacion_original(cotizacion_original=cotizacion_original, taller=taller)
     if cotizacion_original.es_cotizacion_adicional:
         raise ValueError('No se puede crear un trabajo adicional sobre otro adicional.')
-    if not cita_permite_cotizacion_adicional(cita):
-        validar_sin_adicional_pendiente(cita)
-        if getattr(cita, 'horario_por_confirmar', False):
-            raise ValueError(
-                'Cuando el horario aún no está confirmado, actualiza la cotización original.'
-            )
-        raise ValueError('Este trabajo aún no permite cotizaciones adicionales.')
+    rechazar_si_no_permite_adicional(cita)
     validar_sin_adicional_pendiente(cita)
 
     ejecucion, fecha_p, hora_p = normalizar_plan_ejecucion(
@@ -338,13 +365,7 @@ def crear_cotizacion_adicional_con_ia(
     validar_cotizacion_original(cotizacion_original=cotizacion_original, taller=taller)
     if cotizacion_original.es_cotizacion_adicional:
         raise ValueError('No se puede crear un trabajo adicional sobre otro adicional.')
-    if not cita_permite_cotizacion_adicional(cita):
-        validar_sin_adicional_pendiente(cita)
-        if getattr(cita, 'horario_por_confirmar', False):
-            raise ValueError(
-                'Cuando el horario aún no está confirmado, actualiza la cotización original.'
-            )
-        raise ValueError('Este trabajo aún no permite cotizaciones adicionales.')
+    rechazar_si_no_permite_adicional(cita)
     validar_sin_adicional_pendiente(cita)
 
     ejecucion, fecha_p, hora_p = normalizar_plan_ejecucion(

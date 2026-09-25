@@ -722,10 +722,10 @@ MSG_ACEPTADA_CERRADA = (
 
 
 def cita_activa_de_cotizacion(cotizacion: CotizacionCanal):
-    """Cita activa más reciente generada por esta cotización, o None."""
+    """Cita activa de esta cotización. Si hay horario confirmado, esa manda."""
     return (
         cotizacion.citas_generadas.filter(estado='activa')
-        .order_by('-fecha_creacion')
+        .order_by('horario_por_confirmar', '-fecha_creacion')
         .first()
     )
 

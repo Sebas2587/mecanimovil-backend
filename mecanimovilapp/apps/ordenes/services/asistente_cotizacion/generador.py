@@ -362,6 +362,11 @@ def _construir_prompt(ctx: dict[str, Any]) -> str:
         else ''
     )
     pedido = (ctx.get('servicio_nombre') or '').strip() or 'Servicio mecánico'
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.separar_pedido_taller import (
+        bloque_para_prompt,
+    )
+
+    bloque_lectura = bloque_para_prompt(pedido)
     return f"""Eres un asesor de taller mecánico en Chile. Genera una cotización referencial en pesos chilenos (CLP enteros, sin decimales).
 
 Vehículo:
@@ -375,6 +380,8 @@ Vehículo:
 Servicio solicitado (ÚNICA fuente de líneas a cotizar): {pedido}
 Descripción del problema: {ctx.get('descripcion_problema', '')}
 
+{bloque_lectura}
+
 Contexto del chat reciente (NO son líneas de cotización; ignora servicios de otro auto o solo mencionados):
 {chat}
 {rag_bloque}
@@ -385,7 +392,8 @@ REGLAS:
 2. Precios en CLP enteros: son ESTIMADOS de mercado Chile (taller) para que el proveedor los revise. NO digas que vienen de un catálogo o tienda.
 3. CRÍTICO — IVA INCLUIDO: mano_obra_clp es precio FINAL al cliente con IVA 19% ya incluido. NO cotices neto ni agregues línea de IVA.
 4. El motor efectivo es {efectivo}. No mezcles repuestos diésel/bencina/híbrido.
-5. Incluye mano de obra separada de repuestos.
+5. Separa faena y pieza. El taller escribe "cambio de bujías" para la mano de obra; el repuesto se llama "Bujías", nunca "cambio de bujías". Revisión, diagnóstico, inspección, scanner y alineación son solo mano de obra: no crees un repuesto con ese nombre.
+5b. servicios_lineas.nombre es la faena tal como la pidió el taller. repuestos.nombre es la pieza.
 6. REPUESTOS POR VEHÍCULO (CRÍTICO): SOLO piezas compatibles con marca/modelo/año/cilindrada/motor. Prefiere MENOS líneas correctas. Nombra la pieza con precisión (posición: delantero/trasero, lado, kit completo si aplica).
 6b. ESPECIFICACIÓN ANTES DE PRECIO (CRÍTICO): si la pieza tiene variantes que cambian el precio (bujía cobre/platino/iridio; pastilla orgánica/semi-metálica/cerámica; aceite mineral/sintético + viscosidad; batería convencional/EFB/AGM; amortiguador hidráulico/gas), declara "especificacion" con UNA sola variante para ESTE vehículo (ej. "Iridio", "Cerámica", "5W30 sintético"). PROHIBIDO ofrecer dos ("cerámica o semi-metálica"), separar con "/" o describir medidas en vez de la variante. Si no puedes determinarla con certeza, deja especificacion="" y precio_unitario_clp=0. PROHIBIDO inventar un monto para una variante que no sabes.
 7. Volante bimasa: inclúyelo SOLO si el SERVICIO SOLICITADO es de embrague/clutch (no porque el chat mencionó vibración u otro auto).
@@ -402,6 +410,7 @@ Responde SOLO JSON válido en español:
   "tipo_motor_label": "...",
   "duracion_minutos_estimada": 90,
   "mano_obra_clp": 45000,
+  "servicios_lineas": [{{"nombre": "Cambio de bujías", "monto_clp": 25000}}],
   "repuestos": [
     {{
       "nombre": "...",

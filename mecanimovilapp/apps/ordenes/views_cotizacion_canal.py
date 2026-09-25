@@ -437,6 +437,7 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
         """Cotización adicional sobre un trabajo de canal agendado o en ejecución."""
         from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonal
         from mecanimovilapp.apps.ordenes.services.cotizacion_adicional import (
+            CotizacionAdicionalRechazada,
             crear_cotizacion_adicional_con_ia,
             crear_cotizacion_adicional_desde_catalogo,
         )
@@ -498,6 +499,8 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
                     fecha_propuesta=data.get('fecha_propuesta'),
                     hora_propuesta=data.get('hora_propuesta'),
                 )
+        except CotizacionAdicionalRechazada as exc:
+            raise ValidationError({'detail': str(exc), 'codigo': exc.codigo}) from exc
         except ValueError as exc:
             raise ValidationError(str(exc)) from exc
 
@@ -1085,16 +1088,20 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
         """Cierra el lead comercial desde la bandeja (taller)."""
         cotizacion = self.get_object()
         if cotizacion.estado in ('cancelada', 'rechazada', 'expirada'):
-            raise ValidationError({'estado': 'Esta cotización ya está cerrada.'})
-        # Aceptada sin cita activa (o cita cancelada) también puede ir a Perdidos.
+            return Response(CotizacionCanalSerializer(cotizacion).data)
         if cotizacion.estado == 'aceptada':
             from mecanimovilapp.apps.ordenes.services.cita_cotizacion_sync import (
-                cotizacion_aceptada_tiene_cita_activa,
+                preparar_cierre_caso_aceptado,
             )
-            if cotizacion_aceptada_tiene_cita_activa(cotizacion):
-                raise ValidationError({
-                    'estado': 'Hay una cita activa. Cancélala o elimínala antes de cerrar el caso.',
-                })
+            try:
+                resultado = preparar_cierre_caso_aceptado(cotizacion)
+            except ValueError as exc:
+                raise ValidationError({'estado': str(exc)}) from exc
+            cotizacion.refresh_from_db()
+            if resultado == 'terminada':
+                data = CotizacionCanalSerializer(cotizacion).data
+                data['cierre'] = 'terminada'
+                return Response(data)
         cotizacion.estado = 'cancelada'
         cotizacion.save(update_fields=['estado', 'actualizado_en'])
         if cotizacion.es_cotizacion_adicional and cotizacion.cita_origen_id:

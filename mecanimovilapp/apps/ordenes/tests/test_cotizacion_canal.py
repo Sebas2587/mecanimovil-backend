@@ -1207,6 +1207,58 @@ class NormalizarMantieneServicioPedidoTestCase(SimpleTestCase):
         self.assertEqual(out['servicio_nombre'], 'Cambio de aceite')
 
 
+class SepararPedidoTallerTestCase(SimpleTestCase):
+    PEDIDO = (
+        'Servicio para cambio de bujias, cambio de bobinas, '
+        'cambio de bateria y revision electromecanica'
+    )
+
+    def test_separa_faena_de_pieza(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.separar_pedido_taller import (
+            interpretar_pedido_taller,
+        )
+
+        interp = interpretar_pedido_taller(self.PEDIDO)
+        self.assertEqual(
+            interp['mano_obra'],
+            [
+                'Cambio de bujías',
+                'Cambio de bobinas',
+                'Cambio de batería',
+                'Revisión electromecánica',
+            ],
+        )
+        self.assertEqual(interp['repuestos'], ['Bujías', 'Bobinas', 'Batería'])
+
+    def test_no_guarda_la_faena_como_repuesto(self):
+        ctx = {'servicio_nombre': self.PEDIDO}
+        out = normalizar_cotizacion_ia(
+            {
+                'servicio_nombre': self.PEDIDO,
+                'mano_obra_clp': 80000,
+                'repuestos': [
+                    {'nombre': 'cambio de bujias', 'precio_unitario_clp': 12000},
+                    {'nombre': 'cambio de bobinas', 'precio_unitario_clp': 45000},
+                    {'nombre': 'cambio de bateria', 'precio_unitario_clp': 70000},
+                    {'nombre': 'revision electromecanica', 'precio_unitario_clp': 0},
+                ],
+            },
+            ctx,
+        )
+        nombres = [r['nombre'] for r in out['repuestos']]
+        self.assertEqual(nombres, ['Bujías', 'Bobinas', 'Batería'])
+        self.assertEqual(
+            [lin['nombre'] for lin in out['servicios_lineas']],
+            [
+                'Cambio de bujías',
+                'Cambio de bobinas',
+                'Cambio de batería',
+                'Revisión electromecánica',
+            ],
+        )
+        self.assertEqual(out['mano_obra_clp'], 80000)
+
+
 class HistorialCacheNoCruzaModelosTestCase(SimpleTestCase):
     def test_clave_fuzzy_historial_no_aplica_a_otro_auto(self):
         from types import SimpleNamespace

@@ -266,6 +266,16 @@ def normalizar_cotizacion_ia(data: dict[str, Any], ctx: dict[str, Any]) -> dict[
     if mano_obra == 0:
         mano_obra = _to_int_clp(data.get('costo_mano_obra_clp'))
 
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.separar_pedido_taller import (
+        aplicar_lectura_taller,
+    )
+
+    repuestos, servicios_lineas, mano_obra = aplicar_lectura_taller(
+        repuestos,
+        data.get('servicios_lineas'),
+        mano_obra,
+        pedido=str(ctx.get('servicio_nombre') or data.get('servicio_nombre') or ''),
+    )
     costo_rep, mo, total = recalcular_totales(repuestos, mano_obra)
 
     advertencias = data.get('advertencias') or []
@@ -310,6 +320,7 @@ def normalizar_cotizacion_ia(data: dict[str, Any], ctx: dict[str, Any]) -> dict[
         'aviso_motor': aviso_motor,
         'duracion_minutos_estimada': duracion_int,
         'repuestos': repuestos,
+        'servicios_lineas': servicios_lineas,
         'mano_obra_clp': mo,
         'costo_repuestos_clp': costo_rep,
         'total_clp': total,

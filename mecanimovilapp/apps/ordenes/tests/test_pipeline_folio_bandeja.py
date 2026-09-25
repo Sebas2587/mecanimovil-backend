@@ -122,6 +122,50 @@ class PipelineFolioBandejaTests(TestCase):
         self.assertEqual(fila['cita_id'], cita.id)
         self.assertTrue(fila['horario_por_confirmar'])
 
+    def test_visita_confirmada_no_queda_por_agendar(self):
+        cot = self._cotizacion(estado='aceptada')
+        placeholder = CitaAgendaPersonal.objects.create(
+            taller=self.taller,
+            conversation_origen=self.conversation,
+            cotizacion_canal_origen=cot,
+            fecha_servicio=date(2030, 8, 22),
+            hora_servicio=time(9, 0),
+            duracion_minutos=60,
+            tipo_servicio='taller',
+            estado='activa',
+            horario_por_confirmar=True,
+            creado_por=self.user,
+        )
+        confirmada = CitaAgendaPersonal.objects.create(
+            taller=self.taller,
+            conversation_origen=self.conversation,
+            cotizacion_canal_origen=cot,
+            fecha_servicio=date(2030, 8, 24),
+            hora_servicio=time(11, 30),
+            duracion_minutos=60,
+            tipo_servicio='taller',
+            estado='activa',
+            horario_por_confirmar=False,
+            creado_por=self.user,
+        )
+        for cita, nombre in ((placeholder, 'Placeholder'), (confirmada, 'Confirmada')):
+            CitaAgendaPersonalDetalle.objects.create(
+                cita=cita,
+                cliente_nombre='Gonzalo',
+                vehiculo_marca='Changan',
+                vehiculo_modelo='Hunter',
+                servicio_nombre=nombre,
+            )
+        payload = construir_pipeline_comercial(user=self.user, taller=self.taller, limite=50)
+        filas_caso = [f for f in payload['results'] if f.get('cotizacion_id') == cot.id]
+        self.assertEqual(len(filas_caso), 1)
+        fila = filas_caso[0]
+        self.assertFalse(fila['horario_por_confirmar'])
+        self.assertEqual(fila['cita_id'], confirmada.id)
+        self.assertEqual(fila['fecha_agendada'], '2030-08-24')
+        self.assertEqual(fila['hora_agendada'], '11:30')
+        self.assertEqual(fila['estado_normalizado'], 'aceptado_agendado')
+
     def test_cita_manual_sin_cotizacion_sigue_apareciendo(self):
         cita = CitaAgendaPersonal.objects.create(
             taller=self.taller,

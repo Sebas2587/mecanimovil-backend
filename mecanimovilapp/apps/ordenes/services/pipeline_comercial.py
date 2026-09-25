@@ -495,17 +495,23 @@ def _vehiculo_resumen_cotizacion(cot: CotizacionCanal) -> str:
 
 def _estado_normalizado_cotizacion_canal(cot: CotizacionCanal) -> str:
     """
-    Aceptada solo es «negociando» si aún hay cita activa por confirmar/agendar.
-    Si la cita se canceló o eliminó, el lead va a Perdidos (no queda zombie Agendado).
+    Aceptada sigue el estado real de su visita:
+    confirmada → agendado, sin horario → por agendar, terminada → completado.
+    Si la cita se canceló o eliminó, el lead va a Perdidos.
     """
-    if cot.estado == 'aceptada':
-        from mecanimovilapp.apps.ordenes.services.cita_cotizacion_sync import (
-            cotizacion_aceptada_tiene_cita_activa,
-        )
-        if not cotizacion_aceptada_tiene_cita_activa(cot):
-            return 'rechazado_perdido'
+    if cot.estado != 'aceptada' or getattr(cot, 'es_cotizacion_adicional', False):
+        if cot.estado == 'aceptada':
+            return 'en_negociacion'
+        return COTIZACION_CANAL_MAP.get(cot.estado, 'nuevo')
+    citas = list(cot.citas_generadas.all()) if hasattr(cot, 'citas_generadas') else []
+    activas = [c for c in citas if getattr(c, 'estado', None) == 'activa']
+    if any(not getattr(c, 'horario_por_confirmar', False) for c in activas):
+        return 'aceptado_agendado'
+    if activas:
         return 'en_negociacion'
-    return COTIZACION_CANAL_MAP.get(cot.estado, 'nuevo')
+    if any(getattr(c, 'estado', None) == 'cerrada' for c in citas):
+        return 'completado'
+    return 'rechazado_perdido'
 
 
 def _hay_folio_publico(cot: CotizacionCanal) -> bool:
@@ -702,6 +708,13 @@ def _filas_cotizaciones_canal(
         en_edicion = _es_borrador_en_edicion(cot)
         cita_rel = _cita_activa_de_cotizacion(cot)
         cita_id = getattr(cot, 'cita_origen_id', None) or (cita_rel.id if cita_rel else None)
+        por_confirmar = bool(cita_rel and getattr(cita_rel, 'horario_por_confirmar', False))
+        fecha_agendada, hora_agendada = ('', '')
+        if cita_rel is not None and not por_confirmar:
+            fecha_agendada, hora_agendada = _slot_agendado(
+                cita_rel.fecha_servicio,
+                cita_rel.hora_servicio,
+            )
         filas.append(
             _fila_base(
                 tipo_entidad='cotizacion_canal',
@@ -722,9 +735,9 @@ def _filas_cotizaciones_canal(
                 conversation_id=conv.id if conv else None,
                 cotizacion_id=cot.id,
                 cita_id=cita_id,
-                horario_por_confirmar=bool(
-                    cita_rel and getattr(cita_rel, 'horario_por_confirmar', False)
-                ),
+                horario_por_confirmar=por_confirmar,
+                fecha_agendada=fecha_agendada,
+                hora_agendada=hora_agendada,
                 visto_sin_respuesta=_visto_sin_respuesta(estado_norm, cot.visto_en),
                 es_cotizacion_adicional=bool(getattr(cot, 'es_cotizacion_adicional', False)),
                 **_referencia_principal_adicional(cot),
@@ -1068,8 +1081,9 @@ def _cita_activa_de_cotizacion(cot: CotizacionCanal):
     activas = [c for c in citas if getattr(c, 'estado', None) == 'activa']
     if not activas:
         return None
-    por_confirmar = [c for c in activas if getattr(c, 'horario_por_confirmar', False)]
-    return (por_confirmar or activas)[0]
+    # Una visita ya confirmada manda sobre el placeholder «por agendar».
+    confirmadas = [c for c in activas if not getattr(c, 'horario_por_confirmar', False)]
+    return (confirmadas or activas)[0]
 
 
 def _pipeline_dedupe_key(fila: dict[str, Any]) -> str:
@@ -1103,9 +1117,18 @@ def _fusionar_filas_mismo_caso(a: dict[str, Any], b: dict[str, Any]) -> dict[str
     if cot is not None and cita is not None:
         merged = dict(cot)
         merged['cita_id'] = cita.get('cita_id') or cot.get('cita_id')
-        merged['horario_por_confirmar'] = bool(
-            cita.get('horario_por_confirmar') or cot.get('horario_por_confirmar')
-        )
+        cita_confirmada = bool(cita.get('fecha_agendada')) and not cita.get('horario_por_confirmar')
+        cot_confirmada = bool(cot.get('fecha_agendada')) and not cot.get('horario_por_confirmar')
+        if cita_confirmada or cot_confirmada:
+            fuente = cita if cita_confirmada else cot
+            merged['horario_por_confirmar'] = False
+            merged['fecha_agendada'] = fuente.get('fecha_agendada') or ''
+            merged['hora_agendada'] = fuente.get('hora_agendada') or ''
+            merged['cita_id'] = fuente.get('cita_id') or merged.get('cita_id')
+        else:
+            merged['horario_por_confirmar'] = bool(
+                cita.get('horario_por_confirmar') or cot.get('horario_por_confirmar')
+            )
         if cita.get('miembro_taller_id') and not merged.get('miembro_taller_id'):
             merged['miembro_taller_id'] = cita['miembro_taller_id']
             merged['miembro_taller_nombre'] = cita.get('miembro_taller_nombre')

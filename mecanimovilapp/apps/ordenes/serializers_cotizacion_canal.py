@@ -115,6 +115,8 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
     cotizacion_original_id = serializers.IntegerField(read_only=True, allow_null=True)
     cita_origen_id = serializers.IntegerField(read_only=True, allow_null=True)
     tiene_horario_agendado = serializers.SerializerMethodField()
+    fecha_agendada = serializers.SerializerMethodField()
+    hora_agendada = serializers.SerializerMethodField()
     permite_edicion_completa = serializers.SerializerMethodField()
     descuento_etiqueta = serializers.SerializerMethodField()
     servicio_principal_nombre = serializers.SerializerMethodField()
@@ -198,6 +200,18 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
         if getattr(cita, 'horario_por_confirmar', False):
             return False
         return bool(getattr(cita, 'fecha_servicio', None) and getattr(cita, 'hora_servicio', None))
+
+    def get_fecha_agendada(self, obj) -> str:
+        cita = self._cita_activa(obj)
+        if cita is None or getattr(cita, 'horario_por_confirmar', False) or not cita.fecha_servicio:
+            return ''
+        return cita.fecha_servicio.isoformat()
+
+    def get_hora_agendada(self, obj) -> str:
+        cita = self._cita_activa(obj)
+        if cita is None or getattr(cita, 'horario_por_confirmar', False) or not cita.hora_servicio:
+            return ''
+        return cita.hora_servicio.strftime('%H:%M')
 
     def get_permite_edicion_completa(self, obj) -> bool:
         from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
@@ -358,6 +372,8 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             'cita_personal_id',
             'cita_origen_id',
             'tiene_horario_agendado',
+            'fecha_agendada',
+            'hora_agendada',
             'permite_edicion_completa',
             'token',
             'numero_publico',
@@ -431,6 +447,8 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             'cita_personal_id',
             'cita_origen_id',
             'tiene_horario_agendado',
+            'fecha_agendada',
+            'hora_agendada',
             'permite_edicion_completa',
             'mano_obra_lineas',
             'tipo_documento',

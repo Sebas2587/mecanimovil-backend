@@ -28,8 +28,35 @@ def _cotizaciones_por_conversacion(conversation_ids: list[int]) -> dict[int, Cot
     out: dict[int, CotizacionCanal] = {}
     for cot in qs:
         cid = cot.conversation_id
-        if cid not in out:
+        prev = out.get(cid)
+        if prev is None:
             out[cid] = cot
+            continue
+        # Un adicional más nuevo no tapa el estado del servicio principal.
+        if prev.es_cotizacion_adicional and not cot.es_cotizacion_adicional:
+            out[cid] = cot
+    return out
+
+
+def _cita_confirmada_por_conversacion(conversation_ids: list[int]) -> dict:
+    """Primera visita activa con día y hora, por conversación."""
+    if not conversation_ids:
+        return {}
+    from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonal
+
+    qs = (
+        CitaAgendaPersonal.objects.filter(
+            conversation_origen_id__in=conversation_ids,
+            estado='activa',
+            horario_por_confirmar=False,
+        )
+        .order_by('conversation_origen_id', 'fecha_servicio', 'hora_servicio')
+    )
+    out = {}
+    for cita in qs:
+        cid = cita.conversation_origen_id
+        if cid not in out:
+            out[cid] = cita
     return out
 
 
@@ -181,6 +208,7 @@ def build_omnichannel_chats(user):
     ultimos, no_leidos = _ultimos_visibles(conversations)
     conv_ids = [c.id for c in conversations]
     cot_map = _cotizaciones_por_conversacion(conv_ids)
+    cita_map = _cita_confirmada_por_conversacion(conv_ids)
 
     items = []
     for conv in conversations:
@@ -196,7 +224,11 @@ def build_omnichannel_chats(user):
                 solicitud_id = conv.object_id
 
         cot = cot_map.get(conv.id)
+        cita = cita_map.get(conv.id)
         lead = getattr(conv, 'lead_calificacion', None)
+        lead_categoria = lead.categoria if lead else 'sin_calificar'
+        if cita is not None and lead_categoria == 'listo_agendar':
+            lead_categoria = 'sin_calificar'
         items.append({
             'kind': 'omnichannel',
             'channel': channel_to_api_slug(conv.source_channel),
@@ -225,7 +257,11 @@ def build_omnichannel_chats(user):
             'cliente_sin_responder': (
                 last_msg.direction == 'inbound' or unread > 0
             ),
-            'lead_categoria': lead.categoria if lead else 'sin_calificar',
+            'lead_categoria': lead_categoria,
+            'cita_agendada': cita is not None,
+            'cita_id': cita.id if cita is not None else None,
+            'cita_fecha': cita.fecha_servicio.isoformat() if cita is not None else None,
+            'cita_hora': cita.hora_servicio.strftime('%H:%M') if cita is not None and cita.hora_servicio else None,
             'lead_score': lead.score if lead else 0,
             'contacto_rol': contact.rol if contact else 'sin_clasificar',
             'rol_sugerido': contact.rol_sugerido if contact else '',
