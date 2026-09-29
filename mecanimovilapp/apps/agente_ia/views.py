@@ -421,4 +421,44 @@ class AgenteIaViewSet(viewsets.ViewSet):
         if not isinstance(historial, list):
             historial = []
         from mecanimovilapp.apps.agente_ia.services.agente_dueno import responder_agente_dueno
-        return Response(responder_agente_dueno(taller, texto, historial[:16]))
+        return Response(responder_agente_dueno(
+            taller,
+            texto,
+            historial[:16],
+            request.data.get('hilo_id'),
+        ))
+
+    @action(detail=False, methods=['get'], url_path='dueno/hilos')
+    def dueno_hilos(self, request):
+        from mecanimovilapp.apps.agente_ia.models import AgenteDuenoHilo
+        taller = self._taller(request)
+        hilos = AgenteDuenoHilo.objects.filter(taller=taller).order_by('-actualizado_en')[:30]
+        return Response([
+            {
+                'id': hilo.id,
+                'titulo': hilo.titulo,
+                'actualizado_en': hilo.actualizado_en.isoformat(),
+            }
+            for hilo in hilos
+        ])
+
+    @action(detail=False, methods=['get'], url_path=r'dueno/hilos/(?P<hilo_id>[^/.]+)')
+    def dueno_hilo(self, request, hilo_id=None):
+        from mecanimovilapp.apps.agente_ia.models import AgenteDuenoHilo
+        taller = self._taller(request)
+        hilo = AgenteDuenoHilo.objects.filter(taller=taller, id=hilo_id).first()
+        if hilo is None:
+            raise ValidationError({'hilo_id': 'Esa conversación no es de este taller.'})
+        return Response({
+            'id': hilo.id,
+            'titulo': hilo.titulo,
+            'mensajes': [
+                {
+                    'id': mensaje.id,
+                    'rol': mensaje.rol,
+                    'texto': mensaje.texto,
+                    'vista': mensaje.vista or {},
+                }
+                for mensaje in hilo.mensajes.all()
+            ],
+        })

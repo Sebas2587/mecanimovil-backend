@@ -528,3 +528,47 @@ class AgenteAprendizajeDiario(models.Model):
 
     def __str__(self):
         return f'Aprendizaje {self.taller_id} {self.fecha} ({self.tipo_hallazgo})'
+
+
+class AgenteDuenoHilo(models.Model):
+    """Conversación del dueño con su agente. Una lista por taller."""
+
+    taller = models.ForeignKey(
+        'usuarios.Taller',
+        on_delete=models.CASCADE,
+        related_name='hilos_agente_dueno',
+    )
+    titulo = models.CharField(max_length=120, default='Nueva conversación')
+    creado_en = models.DateTimeField(auto_now_add=True)
+    actualizado_en = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-actualizado_en']
+        indexes = [
+            models.Index(fields=['taller', '-actualizado_en'], name='agente_dueno_hilo_taller'),
+        ]
+
+    def __str__(self):
+        return f'{self.taller_id} {self.titulo}'
+
+
+class AgenteDuenoMensaje(models.Model):
+    ROL_DUENO = 'dueno'
+    ROL_AGENTE = 'agente'
+    ROL_CHOICES = [
+        (ROL_DUENO, 'Dueño'),
+        (ROL_AGENTE, 'Agente'),
+    ]
+
+    hilo = models.ForeignKey(
+        AgenteDuenoHilo,
+        on_delete=models.CASCADE,
+        related_name='mensajes',
+    )
+    rol = models.CharField(max_length=12, choices=ROL_CHOICES)
+    texto = models.TextField()
+    vista = models.JSONField(default=dict, blank=True)
+    creado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['creado_en']

@@ -43,24 +43,35 @@ def _guardar(taller_id: int, historial: list[dict], respuesta: str) -> None:
 
 
 def _contexto(taller) -> dict[str, Any]:
-    from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonal
+    from django.db.models import Count
+
+    from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonal, CotizacionCanal
     from mecanimovilapp.apps.servicios.models import OfertaServicio
     from mecanimovilapp.apps.usuarios.models import MiembroTaller
 
     hoy = date.today()
-    servicios = []
-    ofertas = (
+    ofertas_qs = (
         OfertaServicio.objects.filter(taller=taller)
-        .select_related('servicio')
-        .order_by('servicio__nombre')[:40]
+        .select_related('servicio', 'marca_vehiculo_seleccionada', 'modelo_vehiculo_seleccionado')
+        .order_by('servicio__nombre', 'marca_vehiculo_seleccionada__nombre')
     )
-    for oferta in ofertas:
+    servicios = []
+    for oferta in ofertas_qs[:80]:
+        marca = getattr(oferta.marca_vehiculo_seleccionada, 'nombre', '') or 'Todas las marcas'
+        modelo = getattr(oferta.modelo_vehiculo_seleccionado, 'nombre', '') or 'Todos los modelos'
         servicios.append({
-            'id': oferta.id,
+            'oferta_id': oferta.id,
+            'servicio_id': oferta.servicio_id,
             'nombre': getattr(oferta.servicio, 'nombre', '') or '',
+            'marca': marca,
+            'modelo': modelo,
             'disponible': bool(oferta.disponible),
+            'con_repuestos': oferta.tipo_servicio == 'con_repuestos',
             'mano_obra_clp': int(oferta.costo_mano_de_obra_sin_iva or 0),
+            'repuestos_clp': int(oferta.costo_repuestos_sin_iva or 0),
+            'precio_publico_clp': int(oferta.precio_publicado_cliente or 0),
         })
+    nombres = {fila['nombre'] for fila in servicios if fila['nombre']}
 
     mecanicos = []
     for miembro in MiembroTaller.objects.filter(taller=taller).exclude(rol='mandante')[:20]:
@@ -96,10 +107,27 @@ def _contexto(taller) -> dict[str, Any]:
             'horario_por_confirmar': bool(cita.horario_por_confirmar),
         })
 
+    demanda = list(
+        CotizacionCanal.objects.filter(taller=taller)
+        .exclude(servicio_nombre='')
+        .values('servicio_nombre', 'vehiculo_marca')
+        .annotate(cotizaciones=Count('id'))
+        .order_by('-cotizaciones')[:12]
+    )
     return {
         'taller': getattr(taller, 'nombre', '') or '',
         'fecha': hoy.isoformat(),
+        'servicios_distintos': len(nombres),
+        'ofertas_precio': len(servicios),
         'servicios': servicios,
+        'demanda_cotizaciones': [
+            {
+                'servicio': fila['servicio_nombre'],
+                'marca': fila['vehiculo_marca'] or 'Sin marca',
+                'cotizaciones': fila['cotizaciones'],
+            }
+            for fila in demanda
+        ],
         'mecanicos': mecanicos,
         'agenda_hoy': agenda,
     }
@@ -110,6 +138,11 @@ def _prompt(taller_nombre: str, contexto: dict, historial: list[dict], texto: st
         'Eres el asistente personal del dueño de un taller mecánico en Chile. '
         'Este hilo es solo de este taller. Hablas breve, en español, como un colega. '
         'No inventes clientes, horas, precios ni servicios que no estén en el contexto. '
+        'servicios_distintos es la cantidad de servicios. ofertas_precio es cuántas configuraciones '
+        'hay por marca y modelo: no las presentes como si fueran servicios distintos. '
+        'Si preguntan cuántos servicios, di ambos números y lista marca, modelo, si lleva repuestos y el precio. '
+        'Si preguntan lo más pedido, usa demanda_cotizaciones. '
+        'agenda_hoy son las citas de hoy; si está vacía, di que hoy no hay nada agendado. '
         'Si falta un dato para crear o cambiar algo, haz una sola pregunta y no marques la acción como lista.\n\n'
         f'Taller: {taller_nombre}\n'
         f'Contexto vivo:\n{json.dumps(contexto, ensure_ascii=False)}\n\n'
@@ -124,6 +157,8 @@ def _prompt(taller_nombre: str, contexto: dict, historial: list[dict], texto: st
         '"tipo":"crear_servicio|pausar_servicio|activar_servicio|habilitar_mecanico|pausar_mecanico",'
         '"listo":false,'
         '"nombre":"",'
+        '"marca":"",'
+        '"modelo":"",'
         '"precio_mano_obra_clp":0,'
         '"con_repuestos":false,'
         '"duracion_minutos":60,'
@@ -213,6 +248,15 @@ def _crear_servicio(taller, accion: dict) -> str:
         ya.save(update_fields=['disponible', 'costo_mano_de_obra_sin_iva'])
         return f'{servicio.nombre} ya estaba en el taller. Actualicé el precio y lo dejé activo.'
     tipo = 'con_repuestos' if accion.get('con_repuestos') else 'sin_repuestos'
+    marca = None
+    modelo = None
+    marca_nombre = (accion.get('marca') or '').strip()
+    modelo_nombre = (accion.get('modelo') or '').strip()
+    if marca_nombre:
+        from mecanimovilapp.apps.vehiculos.models import MarcaVehiculo, Modelo
+        marca = MarcaVehiculo.objects.filter(nombre__icontains=marca_nombre).first()
+        if modelo_nombre and marca is not None:
+            modelo = Modelo.objects.filter(marca=marca, nombre__icontains=modelo_nombre).first()
     OfertaServicio.objects.create(
         tipo_proveedor='taller',
         taller=taller,
@@ -222,21 +266,41 @@ def _crear_servicio(taller, accion: dict) -> str:
         costo_mano_de_obra_sin_iva=precio_num,
         costo_repuestos_sin_iva=0,
         detalles_adicionales='',
+        marca_vehiculo_seleccionada=marca,
+        modelo_vehiculo_seleccionado=modelo,
     )
-    return f'{servicio.nombre} quedó registrado en el taller.'
+    donde = ' '.join(parte for parte in [getattr(marca, 'nombre', ''), getattr(modelo, 'nombre', '')] if parte)
+    return f'{servicio.nombre} quedó registrado{(" para " + donde) if donde else ""}.'
 
 
-def responder_agente_dueno(taller, texto: str, historial_cliente: list[dict] | None) -> dict[str, Any]:
+def _hilo(taller, hilo_id, texto: str):
+    from mecanimovilapp.apps.agente_ia.models import AgenteDuenoHilo, AgenteDuenoMensaje
+
+    hilo = None
+    if hilo_id:
+        hilo = AgenteDuenoHilo.objects.filter(taller=taller, id=hilo_id).first()
+    if hilo is None:
+        titulo = texto.strip().replace('\n', ' ')[:80] or 'Nueva conversación'
+        hilo = AgenteDuenoHilo.objects.create(taller=taller, titulo=titulo)
+    return hilo, AgenteDuenoMensaje
+
+
+def responder_agente_dueno(taller, texto: str, historial_cliente: list[dict] | None, hilo_id=None) -> dict[str, Any]:
     from mecanimovilapp.apps.agente_ia.services.orquestador import _llamar_gemini_agente
 
     texto = (texto or '').strip()
-    historial = _historial(taller.id, historial_cliente or [])
-    historial.append({'rol': 'dueno', 'texto': texto[:2000]})
+    hilo, Mensaje = _hilo(taller, hilo_id, texto)
+    previos = [
+        {'rol': mensaje.rol, 'texto': mensaje.texto}
+        for mensaje in hilo.mensajes.order_by('creado_en')[:_MAX_TURNOS]
+    ]
+    historial = previos or _historial(taller.id, historial_cliente or [])
+    Mensaje.objects.create(hilo=hilo, rol='dueno', texto=texto[:4000])
     contexto = _contexto(taller)
     decision, error = _llamar_gemini_agente(_prompt(
         getattr(taller, 'nombre', '') or 'Taller',
         contexto,
-        historial[:-1],
+        historial,
         texto,
     ))
     if not decision:
@@ -269,12 +333,21 @@ def responder_agente_dueno(taller, texto: str, historial_cliente: list[dict] | N
     pregunta = (decision.get('pregunta') or '').strip()
     if pregunta and pregunta not in decir:
         decir = f'{decir} {pregunta}'.strip()
+    vista_guardar = {
+        'titulo': str(vista.get('titulo') or 'Agente del taller')[:80],
+        'resumen': decir or 'Listo.',
+        'filas': filas_limpias,
+    }
+    Mensaje.objects.create(hilo=hilo, rol='agente', texto=vista_guardar['resumen'], vista=vista_guardar)
+    hilo.save(update_fields=['actualizado_en'])
     _guardar(taller.id, historial, decir)
     return {
         'ok': True,
+        'hilo_id': hilo.id,
+        'hilo_titulo': hilo.titulo,
         'haciendo': (decision.get('haciendo') or '').strip(),
-        'titulo': str(vista.get('titulo') or 'Agente del taller')[:80],
-        'resumen': decir or 'Listo.',
+        'titulo': vista_guardar['titulo'],
+        'resumen': vista_guardar['resumen'],
         'filas': filas_limpias,
         'memoria_ids': [fila['id'] for fila in filas_limpias],
     }
