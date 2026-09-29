@@ -38,7 +38,7 @@ class Migration(migrations.Migration):
                 ('hilo', models.ForeignKey(
                     on_delete=django.db.models.deletion.CASCADE,
                     related_name='mensajes',
-                    to='agente_ia.agenteduenoohilo',
+                    to='agente_ia.AgenteDuenoHilo',
                 )),
             ],
             options={
