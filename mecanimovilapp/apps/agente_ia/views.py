@@ -409,3 +409,16 @@ class AgenteIaViewSet(viewsets.ViewSet):
             'esperando_revision_count': esperando_revision_count,
             'eventos_recientes': eventos,
         })
+
+    @action(detail=False, methods=['post'], url_path='dueno')
+    def dueno(self, request):
+        """Hilo del dueño. El contexto y la memoria son solo de este taller."""
+        taller = self._taller(request)
+        texto = (request.data.get('texto') or '').strip()
+        if not texto:
+            raise ValidationError({'texto': 'Escribe qué necesitas.'})
+        historial = request.data.get('historial') or []
+        if not isinstance(historial, list):
+            historial = []
+        from mecanimovilapp.apps.agente_ia.services.agente_dueno import responder_agente_dueno
+        return Response(responder_agente_dueno(taller, texto, historial[:16]))
