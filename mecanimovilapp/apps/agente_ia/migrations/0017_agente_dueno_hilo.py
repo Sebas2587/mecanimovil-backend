@@ -25,6 +25,9 @@ class Migration(migrations.Migration):
             ],
             options={
                 'ordering': ['-actualizado_en'],
+                'indexes': [
+                    models.Index(fields=['taller', '-actualizado_en'], name='agente_dueno_hilo_taller'),
+                ],
             },
         ),
         migrations.CreateModel(
@@ -44,9 +47,5 @@ class Migration(migrations.Migration):
             options={
                 'ordering': ['creado_en'],
             },
-        ),
-        migrations.AddIndex(
-            model_name='agenteduenoohilo',
-            index=models.Index(fields=['taller', '-actualizado_en'], name='agente_dueno_hilo_taller'),
         ),
     ]
