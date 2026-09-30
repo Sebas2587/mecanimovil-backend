@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from decimal import Decimal
 from typing import Any
 
@@ -42,7 +41,7 @@ def _guardar(taller_id: int, historial: list[dict], respuesta: str) -> None:
     cache.set(_clave(taller_id), copia[-_MAX_TURNOS:], _CACHE_TTL)
 
 
-def _contexto(taller, texto: str = '') -> dict[str, Any]:
+def _contexto(taller) -> dict[str, Any]:
     from django.db.models import Count
 
     from django.utils import timezone
@@ -115,24 +114,7 @@ def _contexto(taller, texto: str = '') -> dict[str, Any]:
         'mecanicos': mecanicos,
         'agenda_hoy': agenda,
         'correcciones_dueno': correcciones_para_prompt(taller),
-        **_panorama_si_hace_falta(taller, texto),
     }
-
-
-def _panorama_si_hace_falta(taller, texto: str) -> dict:
-    from mecanimovilapp.apps.agente_ia.services.agente_dueno_caso import plano
-    from mecanimovilapp.apps.agente_ia.services.agente_dueno_consulta import (
-        panorama_comercial,
-    )
-
-    p = plano(texto)
-    if not re.search(r'\b(cotiz|cliente|presupuesto|solicitud|hoy)\b', p):
-        return {}
-    try:
-        return {'panorama_comercial': panorama_comercial(taller, getattr(taller, 'usuario', None))}
-    except Exception:
-        logger.exception('No pude armar el panorama comercial para el prompt')
-        return {}
 
 
 def _prompt(taller_nombre: str, contexto: dict, historial: list[dict], texto: str) -> str:
@@ -144,8 +126,7 @@ def _prompt(taller_nombre: str, contexto: dict, historial: list[dict], texto: st
         'hay por marca y modelo: no las presentes como si fueran servicios distintos. '
         'Si preguntan cuántos servicios, di ambos números y lista marca, modelo, si lleva repuestos y el precio. '
         'Si preguntan lo más pedido, usa demanda_cotizaciones. '
-        'Si preguntan quién necesita cotización, quién pidió una o cómo va el día comercial, usa panorama_comercial. '
-        'Si no hay casos, dilo. No inventes clientes y no armes una cotización nueva por esa pregunta. '
+        'Si preguntan quién escribió o quién necesita cotización, no inventes clientes: esa respuesta ya viene de los chats. '
         'agenda_hoy es la cita del cliente, no el catálogo. '
         'auto_marca, auto_modelo y auto_patente son el vehículo de ESA cita. '
         'servicio_marca y servicio_modelo son la marca para la que está configurado el servicio, no el auto del cliente. '
@@ -430,7 +411,7 @@ def responder_agente_dueno(taller, texto: str, historial_cliente: list[dict] | N
     if pendiente and not str(pendiente.get('tipo') or '').startswith('cotizacion_'):
         hilo.accion_pendiente = {}
         hilo.save(update_fields=['accion_pendiente'])
-    contexto = _contexto(taller, texto)
+    contexto = _contexto(taller)
     decision, error = _llamar_gemini_agente(_prompt(
         getattr(taller, 'nombre', '') or 'Taller',
         contexto,

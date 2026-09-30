@@ -330,6 +330,46 @@ class CotizacionDesdeChatDuenoTests(TestCase):
         hilo = AgenteDuenoHilo.objects.get(id=primera['hilo_id'])
         self.assertEqual(hilo.accion_pendiente, {})
 
+    def test_quien_hablo_hoy_sin_cotizacion_sale_en_la_respuesta(self):
+        from mecanimovilapp.apps.chat.models import Message
+
+        ct = ContentType.objects.get_for_model(Taller)
+        conexion = ProviderChannelConnection.objects.create(
+            content_type=ct,
+            object_id=self.taller.id,
+            usuario=self.user,
+            channel='WHATSAPP',
+            enabled=True,
+            status='conectada',
+        )
+        contacto = ExternalContact.objects.create(
+            connection=conexion,
+            channel='WHATSAPP',
+            external_id='56922223333',
+            display_name='Pedro Soto',
+            phone='56922223333',
+        )
+        conversacion = Conversation.objects.create(
+            type='OMNICHANNEL',
+            source_channel='WHATSAPP',
+            external_contact=contacto,
+        )
+        conversacion.participants.add(self.user)
+        Message.objects.create(
+            conversation=conversacion,
+            content='Necesito cotizar el embrague del Swift',
+            direction='inbound',
+        )
+        respuesta = self._decir(
+            'que clientes necesitan cotizaciones que hablaron el dia de hoy'
+        )
+        self.assertNotIn('que servicio cotizo', respuesta['resumen'].lower())
+        self.assertIn('Pedro Soto', respuesta['resumen'])
+        self.assertIn('embrague', respuesta['resumen'].lower())
+        self.assertIn('sin cotización enviada', respuesta['resumen'].lower())
+        self.assertEqual(CotizacionCanal.objects.count(), 0)
+        self.mocks[3].assert_not_called()
+
     def test_sin_casos_dice_que_hoy_no_hay_nadie(self):
         respuesta = self._decir('hay clientes que necesiten cotización hoy?')
         self.assertIn('no hay', respuesta['resumen'].lower())
