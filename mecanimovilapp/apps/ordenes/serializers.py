@@ -155,6 +155,7 @@ class SolicitudServicioSerializer(serializers.ModelSerializer):
             'taller', 'taller_detail', 'mecanico', 'mecanico_detail',
             'fecha_servicio', 'hora_servicio', 'numero_publico',
             'metodo_pago', 'total', 'estado',
+            'cobro_estado', 'cobro_medio', 'cobro_monto_clp', 'cobro_anotado_en',
             'comprobante_pago', 'comprobante_validado', 'fecha_validacion',
             'notas_cliente', 'notas_admin', 'motivo_cancelacion', 'fecha_cancelacion',
             'fecha_devolucion', 'fecha_respuesta_proveedor', 'motivo_rechazo',
@@ -166,6 +167,10 @@ class SolicitudServicioSerializer(serializers.ModelSerializer):
             'vehiculo': {'write_only': True},
             'taller': {'write_only': True},
             'mecanico': {'write_only': True},
+            'cobro_estado': {'read_only': True},
+            'cobro_medio': {'read_only': True},
+            'cobro_monto_clp': {'read_only': True},
+            'cobro_anotado_en': {'read_only': True},
         }
     
     def get_lineas_detail(self, obj):

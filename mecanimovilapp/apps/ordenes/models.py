@@ -105,6 +105,26 @@ class SolicitudServicio(models.Model):
         validators=[MinValueValidator(0)]
     )
     estado = models.CharField(max_length=40, choices=ESTADO_CHOICES, default='pendiente')
+    COBRO_PENDIENTE = 'pendiente'
+    COBRO_ANOTADO = 'anotado'
+    COBRO_ESTADO_CHOICES = [
+        (COBRO_PENDIENTE, 'Pendiente'),
+        (COBRO_ANOTADO, 'Anotado'),
+    ]
+    cobro_estado = models.CharField(
+        max_length=12,
+        choices=COBRO_ESTADO_CHOICES,
+        default=COBRO_PENDIENTE,
+        help_text='Anotación del taller. No reemplaza el pago del marketplace.',
+    )
+    cobro_medio = models.CharField(max_length=32, blank=True, default='')
+    cobro_monto_clp = models.DecimalField(
+        max_digits=12,
+        decimal_places=0,
+        null=True,
+        blank=True,
+    )
+    cobro_anotado_en = models.DateTimeField(null=True, blank=True)
     
     # Campos adicionales para gestión de pagos
     comprobante_pago = models.ImageField(
@@ -1994,6 +2014,25 @@ class CitaAgendaPersonal(models.Model):
         default=False,
         help_text='True si la cita se creó desde cotización pública sin horario definido.',
     )
+    COBRO_PENDIENTE = 'pendiente'
+    COBRO_ANOTADO = 'anotado'
+    COBRO_ESTADO_CHOICES = [
+        (COBRO_PENDIENTE, 'Pendiente'),
+        (COBRO_ANOTADO, 'Anotado'),
+    ]
+    cobro_estado = models.CharField(
+        max_length=12,
+        choices=COBRO_ESTADO_CHOICES,
+        default=COBRO_PENDIENTE,
+    )
+    cobro_medio = models.CharField(max_length=32, blank=True, default='')
+    cobro_monto_clp = models.DecimalField(
+        max_digits=12,
+        decimal_places=0,
+        null=True,
+        blank=True,
+    )
+    cobro_anotado_en = models.DateTimeField(null=True, blank=True)
     numero_publico = models.CharField(
         max_length=16,
         blank=True,

@@ -426,6 +426,7 @@ class AgenteIaViewSet(viewsets.ViewSet):
             texto,
             historial[:16],
             request.data.get('hilo_id'),
+            request.user,
         ))
 
     @action(detail=False, methods=['get'], url_path='dueno/hilos')

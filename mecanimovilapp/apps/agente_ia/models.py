@@ -539,6 +539,9 @@ class AgenteDuenoHilo(models.Model):
         related_name='hilos_agente_dueno',
     )
     titulo = models.CharField(max_length=120, default='Nueva conversación')
+    caso_anclado = models.JSONField(default=dict, blank=True)
+    ultima_tarjeta = models.JSONField(default=dict, blank=True)
+    accion_pendiente = models.JSONField(default=dict, blank=True)
     creado_en = models.DateTimeField(auto_now_add=True)
     actualizado_en = models.DateTimeField(auto_now=True)
 
@@ -572,3 +575,52 @@ class AgenteDuenoMensaje(models.Model):
 
     class Meta:
         ordering = ['creado_en']
+
+
+class AgenteDuenoCorreccion(models.Model):
+    """Corrección del dueño que vale en los hilos siguientes de ese taller."""
+
+    DESCARTA_CLIENTE = 'cliente'
+    DESCARTA_AUTO_SERVICIO = 'auto_desde_servicio'
+    DESCARTA_CHOICES = [
+        (DESCARTA_CLIENTE, 'Ese contacto no es el cliente'),
+        (DESCARTA_AUTO_SERVICIO, 'La marca del servicio no es el auto'),
+    ]
+
+    taller = models.ForeignKey(
+        'usuarios.Taller',
+        on_delete=models.CASCADE,
+        related_name='correcciones_agente_dueno',
+    )
+    caso_id = models.CharField(max_length=40, blank=True, default='')
+    descarta = models.CharField(max_length=32, choices=DESCARTA_CHOICES)
+    valor = models.CharField(max_length=200, blank=True, default='')
+    texto = models.TextField()
+    creado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-creado_en']
+        indexes = [
+            models.Index(fields=['taller', '-creado_en'], name='agente_dueno_corr_taller'),
+        ]
+
+
+class AgenteDuenoAvisoCliente(models.Model):
+    """Mensaje que el dueño dejó listo para el cliente de un caso."""
+
+    taller = models.ForeignKey(
+        'usuarios.Taller',
+        on_delete=models.CASCADE,
+        related_name='avisos_agente_dueno',
+    )
+    caso_id = models.CharField(max_length=40)
+    destinatario = models.CharField(max_length=200, blank=True, default='')
+    telefono = models.CharField(max_length=30, blank=True, default='')
+    texto = models.TextField()
+    creado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-creado_en']
+        indexes = [
+            models.Index(fields=['taller', 'caso_id'], name='agente_dueno_aviso_caso'),
+        ]

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date
 from decimal import Decimal
 from typing import Any
 
@@ -45,11 +44,13 @@ def _guardar(taller_id: int, historial: list[dict], respuesta: str) -> None:
 def _contexto(taller) -> dict[str, Any]:
     from django.db.models import Count
 
-    from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonal, CotizacionCanal
+    from django.utils import timezone
+
+    from mecanimovilapp.apps.ordenes.models import CotizacionCanal
     from mecanimovilapp.apps.servicios.models import OfertaServicio
     from mecanimovilapp.apps.usuarios.models import MiembroTaller
 
-    hoy = date.today()
+    hoy = timezone.localdate()
     ofertas_qs = (
         OfertaServicio.objects.filter(taller=taller)
         .select_related('servicio', 'marca_vehiculo_seleccionada', 'modelo_vehiculo_seleccionado')
@@ -82,30 +83,12 @@ def _contexto(taller) -> dict[str, Any]:
             'activo': bool(miembro.activo),
         })
 
-    agenda = []
-    citas = (
-        CitaAgendaPersonal.objects.filter(
-            taller=taller,
-            fecha_servicio=hoy,
-            estado='activa',
-        )
-        .select_related('detalle')
-        .order_by('hora_servicio')[:20]
+    from mecanimovilapp.apps.agente_ia.services.agente_dueno_caso import (
+        agenda_del_dia,
+        correcciones_para_prompt,
     )
-    for cita in citas:
-        try:
-            detalle = cita.detalle
-        except Exception:
-            detalle = None
-        cliente = getattr(detalle, 'cliente_nombre', '') if detalle else ''
-        servicio = getattr(detalle, 'servicio_nombre', '') if detalle else ''
-        agenda.append({
-            'id': cita.id,
-            'hora': cita.hora_servicio.strftime('%H:%M') if cita.hora_servicio else '',
-            'cliente': cliente or '',
-            'servicio': servicio or '',
-            'horario_por_confirmar': bool(cita.horario_por_confirmar),
-        })
+
+    agenda = agenda_del_dia(taller, hoy)
 
     demanda = list(
         CotizacionCanal.objects.filter(taller=taller)
@@ -130,6 +113,7 @@ def _contexto(taller) -> dict[str, Any]:
         ],
         'mecanicos': mecanicos,
         'agenda_hoy': agenda,
+        'correcciones_dueno': correcciones_para_prompt(taller),
     }
 
 
@@ -142,7 +126,18 @@ def _prompt(taller_nombre: str, contexto: dict, historial: list[dict], texto: st
         'hay por marca y modelo: no las presentes como si fueran servicios distintos. '
         'Si preguntan cuántos servicios, di ambos números y lista marca, modelo, si lleva repuestos y el precio. '
         'Si preguntan lo más pedido, usa demanda_cotizaciones. '
-        'agenda_hoy son las citas de hoy; si está vacía, di que hoy no hay nada agendado. '
+        'agenda_hoy es la cita del cliente, no el catálogo. '
+        'auto_marca, auto_modelo y auto_patente son el vehículo de ESA cita. '
+        'servicio_marca y servicio_modelo son la marca para la que está configurado el servicio, no el auto del cliente. '
+        'Si preguntan de qué auto o cliente es una cita ya mostrada, responde con esos campos. '
+        'No digas que el vehículo no está si auto_marca, auto_modelo o auto_patente tienen valor. '
+        'Si el auto del cliente viene vacío y el servicio sí tiene marca, dilo aparte: el auto no está anotado en la cita y el servicio está configurado para esa marca. '
+        'agenda_hoy incluye citas personales confirmadas y órdenes de la app con hora ese día. '
+        'Si agenda_hoy está vacía, di que hoy no hay nada agendado. '
+        'correcciones_dueno son datos que el dueño ya descartó: no los presentes otra vez. '
+        'Cada respuesta habla de un solo caso: cliente, vehículo de la cita y documento. '
+        'Si hay dos casos posibles, pregunta y no elijas uno. '
+        'No marques como listo enviar, aceptar, agendar, empezar ni anotar cobro: esos pasos se confirman en una tarjeta. '
         'Si falta un dato para crear o cambiar algo, haz una sola pregunta y no marques la acción como lista.\n\n'
         f'Taller: {taller_nombre}\n'
         f'Contexto vivo:\n{json.dumps(contexto, ensure_ascii=False)}\n\n'
@@ -285,7 +280,75 @@ def _hilo(taller, hilo_id, texto: str):
     return hilo, AgenteDuenoMensaje
 
 
-def responder_agente_dueno(taller, texto: str, historial_cliente: list[dict] | None, hilo_id=None) -> dict[str, Any]:
+_ACCIONES_SENSIBLES = {
+    'enviar_cotizacion',
+    'marcar_aceptada',
+    'agendar',
+    'contestar',
+    'empezar',
+    'anotar_cobro',
+}
+
+
+def _cerrar_turno(hilo, Mensaje, turno: dict) -> dict[str, Any]:
+    filas = []
+    for fila in (turno.get('filas') or [])[:30]:
+        if not isinstance(fila, dict):
+            continue
+        filas.append({
+            'id': str(fila.get('id') or '')[:80],
+            'titulo': str(fila.get('titulo') or '')[:120],
+            'detalle': str(fila.get('detalle') or '')[:240],
+            'meta': str(fila.get('meta') or '')[:80],
+        })
+    confirmacion = turno.get('confirmacion') if isinstance(turno.get('confirmacion'), dict) else None
+    if confirmacion:
+        confirmacion = {
+            'etiqueta': str(confirmacion.get('etiqueta') or 'Sí')[:80],
+            'tipo': 'whatsapp' if confirmacion.get('tipo') == 'whatsapp' else 'accion',
+        }
+    abrir = turno.get('abrir_whatsapp') if isinstance(turno.get('abrir_whatsapp'), dict) else None
+    if abrir and not (abrir.get('telefono') or '').strip():
+        abrir = None
+    elif abrir:
+        abrir = {
+            'telefono': str(abrir.get('telefono') or '')[:30],
+            'texto': str(abrir.get('texto') or '')[:1000],
+        }
+    resumen = (turno.get('resumen') or 'Listo.').strip()
+    vista = {
+        'titulo': str(turno.get('titulo') or 'Agente del taller')[:80],
+        'resumen': resumen,
+        'filas': filas,
+        'confirmacion': confirmacion,
+    }
+    Mensaje.objects.create(hilo=hilo, rol='agente', texto=resumen[:4000], vista=vista)
+    ancla = turno.get('ancla') or 'keep'
+    hilo.ultima_tarjeta = {'filas': filas}
+    hilo.accion_pendiente = turno.get('accion_pendiente') or {}
+    campos = ['actualizado_en', 'ultima_tarjeta', 'accion_pendiente']
+    if ancla == 'set':
+        hilo.caso_anclado = turno.get('caso_anclado') or {}
+        campos.append('caso_anclado')
+    elif ancla == 'clear':
+        hilo.caso_anclado = {}
+        campos.append('caso_anclado')
+    hilo.save(update_fields=campos)
+    return {
+        'ok': True,
+        'hilo_id': hilo.id,
+        'hilo_titulo': hilo.titulo,
+        'haciendo': (turno.get('haciendo') or '').strip(),
+        'titulo': vista['titulo'],
+        'resumen': resumen,
+        'filas': filas,
+        'memoria_ids': [fila['id'] for fila in filas],
+        'confirmacion': confirmacion,
+        'abrir_whatsapp': abrir,
+    }
+
+
+def responder_agente_dueno(taller, texto: str, historial_cliente: list[dict] | None, hilo_id=None, user=None) -> dict[str, Any]:
     from mecanimovilapp.apps.agente_ia.services.orquestador import _llamar_gemini_agente
 
     texto = (texto or '').strip()
@@ -296,6 +359,16 @@ def responder_agente_dueno(taller, texto: str, historial_cliente: list[dict] | N
     ]
     historial = previos or _historial(taller.id, historial_cliente or [])
     Mensaje.objects.create(hilo=hilo, rol='dueno', texto=texto[:4000])
+    from mecanimovilapp.apps.agente_ia.services.agente_dueno_caso import resolver_turno
+
+    turno = resolver_turno(taller, hilo, texto, user)
+    if turno is not None:
+        respuesta = _cerrar_turno(hilo, Mensaje, turno)
+        _guardar(taller.id, historial, respuesta['resumen'])
+        return respuesta
+    if hilo.accion_pendiente:
+        hilo.accion_pendiente = {}
+        hilo.save(update_fields=['accion_pendiente'])
     contexto = _contexto(taller)
     decision, error = _llamar_gemini_agente(_prompt(
         getattr(taller, 'nombre', '') or 'Taller',
@@ -312,9 +385,14 @@ def responder_agente_dueno(taller, texto: str, historial_cliente: list[dict] | N
             'resumen': error or 'No pude consultar al agente. Intenta de nuevo.',
             'filas': [],
             'memoria_ids': [],
+            'confirmacion': None,
+            'abrir_whatsapp': None,
         }
 
-    hecho = _ejecutar(taller, decision.get('accion') if isinstance(decision.get('accion'), dict) else None)
+    accion = decision.get('accion') if isinstance(decision.get('accion'), dict) else None
+    if isinstance(accion, dict) and accion.get('tipo') in _ACCIONES_SENSIBLES:
+        accion = None
+    hecho = _ejecutar(taller, accion)
     decir = (decision.get('decir') or '').strip()
     if hecho:
         decir = f'{decir} {hecho}'.strip()
@@ -337,9 +415,11 @@ def responder_agente_dueno(taller, texto: str, historial_cliente: list[dict] | N
         'titulo': str(vista.get('titulo') or 'Agente del taller')[:80],
         'resumen': decir or 'Listo.',
         'filas': filas_limpias,
+        'confirmacion': None,
     }
     Mensaje.objects.create(hilo=hilo, rol='agente', texto=vista_guardar['resumen'], vista=vista_guardar)
-    hilo.save(update_fields=['actualizado_en'])
+    hilo.ultima_tarjeta = {'filas': filas_limpias}
+    hilo.save(update_fields=['actualizado_en', 'ultima_tarjeta'])
     _guardar(taller.id, historial, decir)
     return {
         'ok': True,
@@ -350,4 +430,6 @@ def responder_agente_dueno(taller, texto: str, historial_cliente: list[dict] | N
         'resumen': vista_guardar['resumen'],
         'filas': filas_limpias,
         'memoria_ids': [fila['id'] for fila in filas_limpias],
+        'confirmacion': None,
+        'abrir_whatsapp': None,
     }
