@@ -126,6 +126,8 @@ def _prompt(taller_nombre: str, contexto: dict, historial: list[dict], texto: st
         'hay por marca y modelo: no las presentes como si fueran servicios distintos. '
         'Si preguntan cuántos servicios, di ambos números y lista marca, modelo, si lleva repuestos y el precio. '
         'Si preguntan lo más pedido, usa demanda_cotizaciones. '
+        'demanda_cotizaciones no dice quién es la persona. '
+        'Si preguntan quién está pendiente de cotización, no uses esa lista. '
         'Si preguntan quién escribió o quién necesita cotización, no inventes clientes: esa respuesta ya viene de los chats. '
         'agenda_hoy es la cita del cliente, no el catálogo. '
         'auto_marca, auto_modelo y auto_patente son el vehículo de ESA cita. '
@@ -407,10 +409,13 @@ def responder_agente_dueno(taller, texto: str, historial_cliente: list[dict] | N
         respuesta = _cerrar_turno(hilo, Mensaje, turno)
         _guardar(taller.id, historial, respuesta['resumen'])
         return respuesta
-    pendiente = hilo.accion_pendiente if isinstance(hilo.accion_pendiente, dict) else {}
-    if pendiente and not str(pendiente.get('tipo') or '').startswith('cotizacion_'):
-        hilo.accion_pendiente = {}
-        hilo.save(update_fields=['accion_pendiente'])
+    from mecanimovilapp.apps.agente_ia.services.agente_dueno_ciclo import ciclo_agente
+
+    turno = ciclo_agente(taller, hilo, texto, user, historial)
+    if turno is not None:
+        respuesta = _cerrar_turno(hilo, Mensaje, turno)
+        _guardar(taller.id, historial, respuesta['resumen'])
+        return respuesta
     contexto = _contexto(taller)
     decision, error = _llamar_gemini_agente(_prompt(
         getattr(taller, 'nombre', '') or 'Taller',

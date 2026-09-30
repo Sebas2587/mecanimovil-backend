@@ -1567,6 +1567,8 @@ def _pide_vehiculo(p: str) -> bool:
 
 
 def _pide_servicios(p: str) -> bool:
+    if re.search(r'realiz|enviad|cotiz|todo el tiempo', p):
+        return False
     return bool(re.search(r'cuantos servicios|cuantas ofertas|servicios tengo|ofertas tengo', p))
 
 

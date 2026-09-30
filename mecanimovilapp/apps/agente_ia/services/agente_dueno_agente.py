@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 _HERRAMIENTAS = {
     'clientes_esperando',
     'cotizar_pendientes',
+    'actividad_taller',
     'resumen_cotizaciones',
     'detalle_cotizaciones',
     'crear_servicio',
@@ -69,6 +70,7 @@ def _correr(taller, user, texto: str, herramienta: str, pendiente: dict) -> dict
         cotizar_pendientes,
         detalle_cotizaciones,
         empezar_servicio,
+        resumen_actividad,
         resumen_cotizaciones,
         turno_clientes_esperando,
     )
@@ -79,6 +81,8 @@ def _correr(taller, user, texto: str, herramienta: str, pendiente: dict) -> dict
         return cotizar_pendientes(taller, user, list(pendiente.get('clientes') or []))
     if herramienta == 'resumen_cotizaciones':
         return resumen_cotizaciones(taller, texto)
+    if herramienta == 'actividad_taller':
+        return resumen_actividad(taller)
     if herramienta == 'detalle_cotizaciones':
         return detalle_cotizaciones(taller, texto, str(pendiente.get('periodo') or 'semana'))
     if herramienta == 'crear_servicio':
@@ -95,7 +99,11 @@ def _herramienta_directa(texto: str) -> str | None:
         p,
     ):
         return 'cotizar_pendientes'
-    if re.search(r'\b(cuantas|cuantos)\b', p) and 'cotiz' in p and re.search(r'\b(semana|mes|enviad)\b', p):
+    if re.search(r'realiz', p) and re.search(r'\bservicio', p):
+        return 'actividad_taller'
+    if 'cotiz' in p and re.search(r'todo el tiempo|en total|historico', p):
+        return 'actividad_taller'
+    if re.search(r'\b(cuantas|cuantos)\b', p) and 'cotiz' in p and re.search(r'\b(semana|mes)\b', p):
         return 'resumen_cotizaciones'
     if re.search(r'\b(crea|crear|crees|da de alta)\b', p) and re.search(r'\bservicio\b', p):
         return 'crear_servicio'

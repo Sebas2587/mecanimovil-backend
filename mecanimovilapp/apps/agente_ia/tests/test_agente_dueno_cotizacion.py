@@ -382,6 +382,72 @@ class CotizacionDesdeChatDuenoTests(TestCase):
         self.assertIn('borrador', armado['resumen'].lower())
         self.mocks[3].assert_not_called()
 
+    def test_pendientes_de_hoy_nombra_a_la_persona_y_no_la_demanda(self):
+        from mecanimovilapp.apps.chat.models import Message
+
+        ct = ContentType.objects.get_for_model(Taller)
+        conexion = ProviderChannelConnection.objects.create(
+            content_type=ct,
+            object_id=self.taller.id,
+            usuario=self.user,
+            channel='WHATSAPP',
+            enabled=True,
+            status='conectada',
+        )
+        contacto = ExternalContact.objects.create(
+            connection=conexion,
+            channel='WHATSAPP',
+            external_id='56955556666',
+            display_name='Pedro Soto',
+            phone='56955556666',
+        )
+        conversacion = Conversation.objects.create(
+            type='OMNICHANNEL',
+            source_channel='WHATSAPP',
+            external_contact=contacto,
+        )
+        conversacion.participants.add(self.user)
+        Message.objects.create(
+            conversation=conversacion,
+            content='Necesito cambio de embrague patente ABCD12 a domicilio',
+            direction='inbound',
+        )
+        respuesta = self._decir('revisa si hay usuarios pendientes de cotizacion hoy')
+        self.assertIn('Pedro Soto', respuesta['resumen'])
+        self.assertNotIn('alta demanda', respuesta['resumen'].lower())
+        self.assertTrue(respuesta['filas'][0]['id'].startswith('lead:'))
+        self.mocks[3].assert_not_called()
+
+    def test_servicios_realizados_no_son_el_catalogo(self):
+        from django.utils import timezone
+
+        CotizacionCanal.objects.create(
+            taller=self.taller,
+            es_libre=True,
+            estado='enviada',
+            enviada_en=timezone.now(),
+            servicio_nombre='Pastillas',
+            modalidad='taller',
+            numero_publico='MM-000904',
+        )
+        respuesta = self._decir(
+            'cuantos servicios ha realizado el taller y cuantas cotizaciones se han enviado en todo el tiempo?'
+        )
+        self.assertNotIn('ofertas', respuesta['resumen'].lower())
+        self.assertIn('1', respuesta['resumen'])
+        self.assertIn('enviado', respuesta['resumen'].lower())
+        self.mocks[3].assert_not_called()
+
+    def test_si_el_modelo_inventa_clientes_se_consulta_el_taller(self):
+        self.mocks[3].return_value = ({
+            'decir': 'Sí, hay 69 clientes esperando cotización. Lo más pedido es embrague, alta demanda.',
+            'vista': {'filas': [{'titulo': 'Cambio de embrague', 'detalle': 'Suzuki', 'meta': 'Alta demanda'}]},
+        }, None)
+        respuesta = self._decir('quién podría necesitarnos esta semana')
+        self.assertNotIn('69', respuesta['resumen'])
+        self.assertNotIn('alta demanda', respuesta['resumen'].lower())
+        self.assertIn('no hay', respuesta['resumen'].lower())
+
     def test_casa_de_repuestos_y_saludo_no_cuentan_como_cliente(self):
         from mecanimovilapp.apps.chat.models import Message
 

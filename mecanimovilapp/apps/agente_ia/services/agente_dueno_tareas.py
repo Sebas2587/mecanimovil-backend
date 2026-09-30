@@ -34,14 +34,14 @@ def turno_clientes_esperando(taller, user) -> dict:
             haciendo='Reviso quién espera cotización',
             titulo='Clientes de hoy',
             resumen=(
-                'Hoy no hay clientes esperando cotización. '
-                'Miré quién escribió hoy y dejé fuera casas de repuestos, saludos, imágenes '
+                'Entre hoy y ayer no hay clientes esperando cotización. '
+                'Miré quién escribió, dejé fuera casas de repuestos, saludos e imágenes, '
                 'y a quien ya tiene una cotización enviada.'
             ),
             ancla='keep',
             accion_pendiente={},
             pasos=[
-                {'texto': 'Leí solo los mensajes de hoy', 'estado': 'hecho'},
+                {'texto': 'Leí los mensajes de hoy y de ayer', 'estado': 'hecho'},
                 {'texto': 'Ninguno pide un servicio y manda la patente sin cotización enviada', 'estado': 'ahora'},
             ],
             siguiente='Cuando escriba un cliente, pregúntame de nuevo.',
@@ -58,7 +58,7 @@ def turno_clientes_esperando(taller, user) -> dict:
             'clientes': [_memoria(cliente) for cliente in clientes],
         },
         pasos=[
-            {'texto': 'Leí quién escribió hoy y descarté casas de repuestos', 'estado': 'hecho'},
+            {'texto': 'Leí quién escribió hoy o ayer y descarté casas de repuestos', 'estado': 'hecho'},
             {'texto': 'Dejé a quien pidió un servicio, mandó la patente y no tiene cotización enviada', 'estado': 'ahora'},
         ],
         siguiente='Elige un cliente para ver el servicio, el vehículo y el siguiente paso.',
@@ -67,7 +67,8 @@ def turno_clientes_esperando(taller, user) -> dict:
 
 def clientes_esperando(taller, user) -> list[dict]:
     del taller
-    inicio = timezone.localtime().replace(hour=0, minute=0, second=0, microsecond=0)
+    ahora = timezone.localtime()
+    inicio = (ahora - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
     return _desde_chats(user, inicio)
 
 
@@ -101,7 +102,7 @@ def estudiar_lead(taller, user, conversation_id: int) -> dict:
         haciendo='Leo el pedido de este cliente',
         titulo=cliente['nombre'],
         resumen=(
-            f"{cliente['nombre']} escribió hoy por {cliente.get('canal') or 'el chat'}. "
+            f"{cliente['nombre']} escribió {cliente.get('cuando') or 'en estos días'} por {cliente.get('canal') or 'el chat'}. "
             f"Pide {cliente.get('servicio')} para {auto}.{donde} "
             + (
                 'Tiene borrador y falta enviarla.'
@@ -234,6 +235,28 @@ def cotizar_pendientes(taller, user, clientes: list[dict]) -> dict:
         accion_pendiente={},
         pasos=pasos,
         siguiente='Abre cada borrador, revísalo y envíalo cuando esté bien.',
+    )
+
+
+def resumen_actividad(taller) -> dict:
+    from mecanimovilapp.apps.agente_ia.services.agente_dueno_caso import _turno
+    from mecanimovilapp.apps.ordenes.models import CotizacionCanal, SolicitudServicio
+
+    realizados = SolicitudServicio.objects.filter(taller=taller, estado='completado').count()
+    enviadas = CotizacionCanal.objects.filter(taller=taller, enviada_en__isnull=False).count()
+    return _turno(
+        haciendo='Cuento el trabajo del taller',
+        titulo='Trabajo del taller',
+        resumen=(
+            f'El taller ha realizado {realizados} servicio{"s" if realizados != 1 else ""}. '
+            f'En todo el tiempo se han enviado {enviadas} cotizacion{"es" if enviadas != 1 else ""}.'
+        ),
+        ancla='keep',
+        accion_pendiente={},
+        pasos=[
+            {'texto': 'Conté los servicios completados', 'estado': 'hecho'},
+            {'texto': 'Conté las cotizaciones que sí se enviaron', 'estado': 'ahora'},
+        ],
     )
 
 
@@ -468,8 +491,8 @@ def _resumen_esperando(clientes: list[dict]) -> str:
     resto = n - len(lineas)
     cola = f' Y {resto} más con patente y servicio.' if resto else ''
     return (
-        f'Hoy hay {n} {frase} esperando cotización. '
-        f'Escribieron hoy, pidieron un trabajo y mandaron la patente. '
+        f'Entre hoy y ayer hay {n} {frase} esperando cotización. '
+        f'Pidieron un trabajo y mandaron la patente. '
         + ' '.join(lineas)
         + cola
     )
@@ -495,7 +518,7 @@ def _filas_esperando(clientes: list[dict]) -> list[dict]:
             'id': fila_id,
             'titulo': cliente['nombre'][:120],
             'detalle': detalle[:180],
-            'meta': 'falta enviar' if cliente.get('cotizacion_id') else (cliente.get('canal') or 'falta cotizar'),
+            'meta': cliente.get('cuando') or ('falta enviar' if cliente.get('cotizacion_id') else 'falta cotizar'),
         })
     return filas
 
@@ -545,6 +568,10 @@ def _desde_chats(user, desde) -> list[dict]:
             continue
         contacto = hilo[-1].conversation.external_contact
         texto = ' '.join((mensaje.content or '') for mensaje in entrantes)
+        ultimo = entrantes[-1].timestamp
+        if timezone.is_aware(ultimo):
+            ultimo = timezone.localtime(ultimo)
+        cuando = 'hoy' if ultimo.date() == timezone.localdate() else 'ayer'
         nombre = (contacto.display_name if contacto else '') or 'Cliente sin nombre'
         if _es_casa(contacto, texto, nombre):
             continue
@@ -566,6 +593,7 @@ def _desde_chats(user, desde) -> list[dict]:
             'anio': anio,
             'auto': auto,
             'donde': _donde(texto),
+            'cuando': cuando,
         })
     return clientes
 

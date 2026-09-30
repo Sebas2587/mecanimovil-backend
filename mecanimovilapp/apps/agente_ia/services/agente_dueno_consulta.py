@@ -24,7 +24,7 @@ def busca_casos_de_cotizacion(texto: str) -> bool:
     if re.search(r'\b(agrega|suma|incluye|quita|saca|esa cotizacion|el borrador)\b', p):
         return False
     menciona_personas = bool(re.search(
-        r'\b(cliente|clientes|quien|quienes|solicitud|solicitudes|chat|chats)\b',
+        r'\b(cliente|clientes|usuario|usuarios|quien|quienes|solicitud|solicitudes|chat|chats)\b',
         p,
     ))
     if menciona_personas and re.search(r'\b(potencial|escrib)', p):
