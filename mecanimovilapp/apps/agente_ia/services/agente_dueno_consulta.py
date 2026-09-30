@@ -93,31 +93,21 @@ def panorama_comercial(taller, user) -> dict:
 def responder_casos_cotizacion(taller, user, texto: str) -> dict:
     del texto
     from mecanimovilapp.apps.agente_ia.services.agente_dueno_caso import _turno
+    from mecanimovilapp.apps.agente_ia.services.agente_dueno_tareas import (
+        turno_clientes_esperando,
+    )
 
     try:
-        panorama = panorama_comercial(taller, user or getattr(taller, 'usuario', None))
+        return turno_clientes_esperando(taller, user or getattr(taller, 'usuario', None))
     except Exception:
-        logger.exception('No pude armar el panorama comercial del taller %s', getattr(taller, 'id', None))
+        logger.exception('No pude revisar quién espera cotización en el taller %s', getattr(taller, 'id', None))
         return _turno(
             haciendo='Reviso quién necesita cotización',
-        titulo='Clientes de hoy',
-        resumen='No pude revisar los chats del taller. Intenta de nuevo en un momento.',
+            titulo='Clientes de hoy',
+            resumen='No pude revisar los chats del taller. Intenta de nuevo en un momento.',
             ancla='keep',
             accion_pendiente={},
         )
-    return _turno(
-        haciendo='Reviso quién necesita cotización',
-        titulo='Clientes de hoy',
-        resumen=_redactar(panorama),
-        filas=_filas_chat(panorama),
-        ancla='keep',
-        accion_pendiente={},
-        pasos=[
-            {'texto': 'Revisé quién escribió hoy y si ya tiene cotización', 'estado': 'hecho'},
-            {'texto': 'Te muestro qué dijeron y quién sigue sin cotización', 'estado': 'ahora'},
-        ],
-        siguiente='Puedes pedirme que cotice uno de estos casos, o preguntar por otro cliente.',
-    )
 
 
 def _es_orden_de_armar(p: str) -> bool:

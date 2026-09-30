@@ -37,6 +37,8 @@ def es_pedido_cotizacion_cliente(texto: str) -> bool:
     if busca_casos_de_cotizacion(texto):
         return False
     p = plano(texto)
+    if re.search(r'\b(pendientes|cotizaciones de los clientes|las cotizaciones pendientes)\b', p):
+        return False
     if re.search(r'se cotiza|cotiza mas|mas cotiz|cuantas cotiz|que se pide', p):
         return False
     if re.search(r'servicio del taller|dar de alta|da de alta|en el catalogo|como servicio\b', p):
@@ -61,6 +63,10 @@ def intentar_cotizacion_desde_chat(taller, hilo, texto: str, user, correcciones:
 
     if busca_casos_de_cotizacion(texto):
         return responder_casos_cotizacion(taller, user, texto)
+    from mecanimovilapp.apps.agente_ia.services.agente_dueno_agente import es_otra_tarea
+
+    if es_otra_tarea(texto):
+        return None
     if tipo.startswith('cotizacion_'):
         if _es_otro_pedido(p) and not es_pedido_cotizacion_cliente(texto):
             return None

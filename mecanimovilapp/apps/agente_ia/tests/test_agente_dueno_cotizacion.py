@@ -328,7 +328,8 @@ class CotizacionDesdeChatDuenoTests(TestCase):
         self.assertEqual(segunda['accion_pendiente'] if 'accion_pendiente' in segunda else {}, {})
         from mecanimovilapp.apps.agente_ia.models import AgenteDuenoHilo
         hilo = AgenteDuenoHilo.objects.get(id=primera['hilo_id'])
-        self.assertEqual(hilo.accion_pendiente, {})
+        self.assertEqual(hilo.accion_pendiente.get('herramienta'), 'clientes_esperando')
+        self.assertNotEqual(hilo.accion_pendiente.get('tipo'), 'cotizacion_datos')
 
     def test_quien_hablo_hoy_sin_cotizacion_sale_en_la_respuesta(self):
         from mecanimovilapp.apps.chat.models import Message
@@ -369,6 +370,90 @@ class CotizacionDesdeChatDuenoTests(TestCase):
         self.assertIn('sin cotización enviada', respuesta['resumen'].lower())
         self.assertEqual(CotizacionCanal.objects.count(), 0)
         self.mocks[3].assert_not_called()
+
+    def test_cotizar_pendientes_deja_borradores_sin_enviar(self):
+        from mecanimovilapp.apps.chat.models import Message
+
+        ct = ContentType.objects.get_for_model(Taller)
+        conexion = ProviderChannelConnection.objects.create(
+            content_type=ct,
+            object_id=self.taller.id,
+            usuario=self.user,
+            channel='WHATSAPP',
+            enabled=True,
+            status='conectada',
+        )
+        contacto = ExternalContact.objects.create(
+            connection=conexion,
+            channel='WHATSAPP',
+            external_id='56933334444',
+            display_name='Luis Mora',
+            phone='56933334444',
+        )
+        conversacion = Conversation.objects.create(
+            type='OMNICHANNEL',
+            source_channel='WHATSAPP',
+            external_contact=contacto,
+        )
+        conversacion.participants.add(self.user)
+        Message.objects.create(
+            conversation=conversacion,
+            content='Necesito cambio de embrague patente ABCD12',
+            direction='inbound',
+        )
+        respuesta = self._decir('quiero que realices las cotizaciones de los clientes pendientes')
+        cotizacion = CotizacionCanal.objects.get()
+        self.assertEqual(cotizacion.estado, 'borrador')
+        self.assertEqual(cotizacion.conversation_id, conversacion.id)
+        self.assertIn('embrague', cotizacion.servicio_nombre.lower())
+        self.assertIn('borrador', respuesta['resumen'].lower())
+        self.assertTrue(respuesta['pasos'])
+        self.assertIn('No los mandé', respuesta['resumen'])
+
+    def test_conteo_de_enviadas_de_la_semana_ofrece_el_desglose(self):
+        from django.utils import timezone
+
+        CotizacionCanal.objects.create(
+            taller=self.taller,
+            es_libre=True,
+            estado='enviada',
+            enviada_en=timezone.now(),
+            cliente_nombre='Ana Rojas',
+            servicio_nombre='Pastillas',
+            vehiculo_marca='Suzuki',
+            vehiculo_modelo='Swift',
+            modalidad='taller',
+            numero_publico='MM-000902',
+        )
+        respuesta = self._decir('cuantas cotizaciones se han enviado esta semana')
+        self.assertIn('1', respuesta['resumen'])
+        self.assertIn('Swift', respuesta['resumen'])
+        self.assertIn('aprobadas', respuesta['siguiente'].lower())
+        detalle = self._decir('cuáles fueron aprobadas', respuesta['hilo_id'])
+        self.assertIn('no hay', detalle['resumen'].lower())
+
+    def test_crear_servicio_pregunta_alcance_y_usa_precio_cotizado(self):
+        from mecanimovilapp.apps.servicios.models import Servicio
+
+        Servicio.objects.create(nombre='Cambio de aceite')
+        CotizacionCanal.objects.create(
+            taller=self.taller,
+            es_libre=True,
+            estado='enviada',
+            servicio_nombre='Cambio de aceite',
+            mano_obra_clp=45000,
+            repuestos=[{'nombre': 'Filtro de aceite', 'precio_unitario_clp': 8000}],
+            modalidad='taller',
+            numero_publico='MM-000903',
+        )
+        pregunta = self._decir('quiero que crees el servicio cambio de aceite con el repuesto filtro')
+        self.assertIn('multimarca', pregunta['resumen'].lower())
+        self.assertEqual(OfertaServicio.objects.filter(taller=self.taller).count(), 0)
+        hecho = self._decir('multimarca', pregunta['hilo_id'])
+        oferta = OfertaServicio.objects.get(taller=self.taller)
+        self.assertEqual(int(oferta.costo_mano_de_obra_sin_iva), 45000)
+        self.assertEqual(int(oferta.costo_repuestos_sin_iva), 8000)
+        self.assertIn('multimarca', hecho['resumen'].lower())
 
     def test_sin_casos_dice_que_hoy_no_hay_nadie(self):
         respuesta = self._decir('hay clientes que necesiten cotización hoy?')

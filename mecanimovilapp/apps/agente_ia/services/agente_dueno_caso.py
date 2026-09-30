@@ -155,6 +155,11 @@ def resolver_turno(taller, hilo, texto: str, user) -> dict | None:
     turno_cotizacion = intentar_cotizacion_desde_chat(taller, hilo, texto, user, correcciones)
     if turno_cotizacion is not None:
         return turno_cotizacion
+    from mecanimovilapp.apps.agente_ia.services.agente_dueno_agente import atender_tarea
+
+    tarea = atender_tarea(taller, hilo, texto, user)
+    if tarea is not None:
+        return tarea
     if pendiente.get('tipo') and _es_si(p):
         return _confirmar(taller, hilo, pendiente, user, correcciones)
     if pendiente.get('tipo') and _es_no(p):
