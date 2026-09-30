@@ -27,6 +27,8 @@ def busca_casos_de_cotizacion(texto: str) -> bool:
         r'\b(cliente|clientes|quien|quienes|solicitud|solicitudes|chat|chats)\b',
         p,
     ))
+    if menciona_personas and re.search(r'\b(potencial|escrib)', p):
+        return True
     menciona_cotizacion = bool(re.search(r'\b(cotiz|presupuesto|precio)\b', p))
     pide_mirar = bool(re.search(
         r'\b(saber|revisa|revisar|hay|existen|existe|dime|muestra|muestrame|lista|'

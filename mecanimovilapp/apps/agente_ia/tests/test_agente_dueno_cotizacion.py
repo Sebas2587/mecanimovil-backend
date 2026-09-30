@@ -362,7 +362,7 @@ class CotizacionDesdeChatDuenoTests(TestCase):
             direction='inbound',
         )
         respuesta = self._decir(
-            'que clientes necesitan cotizaciones que hablaron el dia de hoy'
+            'que clientes han escrito que son potenciales clientes?'
         )
         self.assertNotIn('que servicio cotizo', respuesta['resumen'].lower())
         self.assertIn('Pedro Soto', respuesta['resumen'])
@@ -370,7 +370,16 @@ class CotizacionDesdeChatDuenoTests(TestCase):
         self.assertIn('no tiene cotización enviada', respuesta['resumen'].lower())
         self.assertIn('ABCD12', respuesta['resumen'])
         self.assertIn('domicilio', respuesta['resumen'].lower())
-        self.assertEqual(CotizacionCanal.objects.count(), 0)
+        self.assertTrue(respuesta['filas'][0]['id'].startswith('lead:'))
+        estudio = self._decir(f"elijo {respuesta['filas'][0]['id']}", respuesta['hilo_id'])
+        self.assertIn('embrague', estudio['resumen'].lower())
+        self.assertIn('ABCD12', estudio['resumen'])
+        self.assertEqual(estudio['confirmacion']['etiqueta'], 'Armar borrador')
+        armado = self._decir('sí', respuesta['hilo_id'])
+        cotizacion = CotizacionCanal.objects.get()
+        self.assertEqual(cotizacion.estado, 'borrador')
+        self.assertEqual(cotizacion.conversation_id, conversacion.id)
+        self.assertIn('borrador', armado['resumen'].lower())
         self.mocks[3].assert_not_called()
 
     def test_casa_de_repuestos_y_saludo_no_cuentan_como_cliente(self):

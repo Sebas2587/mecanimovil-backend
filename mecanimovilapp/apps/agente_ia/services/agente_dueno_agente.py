@@ -21,7 +21,11 @@ def es_otra_tarea(texto: str) -> bool:
 
 def atender_tarea(taller, hilo, texto: str, user) -> dict | None:
     from mecanimovilapp.apps.agente_ia.services.agente_dueno_caso import plano
+    from mecanimovilapp.apps.agente_ia.services.agente_dueno_tareas import estudiar_lead
 
+    elegido = _id_lead(texto)
+    if elegido:
+        return estudiar_lead(taller, user, elegido)
     pendiente = hilo.accion_pendiente if isinstance(hilo.accion_pendiente, dict) else {}
     if pendiente.get('tipo') == 'tarea_agente':
         return _continuar(taller, user, texto, pendiente)
@@ -43,6 +47,8 @@ def _continuar(taller, user, texto: str, pendiente: dict) -> dict | None:
 
     p = plano(texto)
     herramienta = pendiente.get('herramienta')
+    if herramienta == 'estudiar_lead' and _pide_armar(p):
+        return cotizar_pendientes(taller, user, list(pendiente.get('clientes') or []))
     if herramienta == 'crear_servicio':
         return cerrar_servicio(taller, texto, pendiente)
     if herramienta == 'resumen_cotizaciones' and re.search(
@@ -94,6 +100,20 @@ def _herramienta_directa(texto: str) -> str | None:
     if re.search(r'\b(crea|crear|crees|da de alta)\b', p) and re.search(r'\bservicio\b', p):
         return 'crear_servicio'
     return None
+
+
+def _id_lead(texto: str) -> int | None:
+    hallado = re.search(r'\blead:(\d+)\b', texto or '')
+    if not hallado:
+        return None
+    return int(hallado.group(1))
+
+
+def _pide_armar(p: str) -> bool:
+    return bool(re.match(r'^(si|dale|confirmo|ok|okay|de acuerdo|hazlo|adelante|claro|listo)\b', p) or re.search(
+        r'\b(cotiza|cotizalo|armalo|armar|hazla)\b',
+        p,
+    ))
 
 
 def _puede_planear(p: str) -> bool:

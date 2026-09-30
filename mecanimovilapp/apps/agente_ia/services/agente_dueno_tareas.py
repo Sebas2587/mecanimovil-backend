@@ -61,7 +61,7 @@ def turno_clientes_esperando(taller, user) -> dict:
             {'texto': 'Leí quién escribió hoy y descarté casas de repuestos', 'estado': 'hecho'},
             {'texto': 'Dejé a quien pidió un servicio, mandó la patente y no tiene cotización enviada', 'estado': 'ahora'},
         ],
-        siguiente='Puedes pedirme que deje en borrador las cotizaciones de estos clientes.',
+        siguiente='Elige un cliente para ver el servicio, el vehículo y el siguiente paso.',
     )
 
 
@@ -69,6 +69,65 @@ def clientes_esperando(taller, user) -> list[dict]:
     del taller
     inicio = timezone.localtime().replace(hour=0, minute=0, second=0, microsecond=0)
     return _desde_chats(user, inicio)
+
+
+def estudiar_lead(taller, user, conversation_id: int) -> dict:
+    from mecanimovilapp.apps.agente_ia.services.agente_dueno_caso import _turno
+
+    cliente = next(
+        (
+            item for item in clientes_esperando(taller, user)
+            if item.get('conversation_id') == conversation_id
+        ),
+        None,
+    )
+    if cliente is None:
+        return _turno(
+            haciendo='Busco ese chat',
+            titulo='Cliente',
+            resumen='Ese chat ya no está entre los que esperan cotización.',
+            ancla='keep',
+            accion_pendiente={},
+        )
+    auto = cliente.get('auto') or cliente.get('patente')
+    donde = f" Lo pidió {cliente['donde']}." if cliente.get('donde') else ''
+    if cliente.get('cotizacion_id'):
+        siguiente = 'El borrador ya está. Revísalo y envíalo cuando esté bien.'
+        confirmacion = None
+    else:
+        siguiente = 'Si está bien, armo el borrador. No lo envío.'
+        confirmacion = {'etiqueta': 'Armar borrador', 'tipo': 'accion'}
+    return _turno(
+        haciendo='Leo el pedido de este cliente',
+        titulo=cliente['nombre'],
+        resumen=(
+            f"{cliente['nombre']} escribió hoy por {cliente.get('canal') or 'el chat'}. "
+            f"Pide {cliente.get('servicio')} para {auto}.{donde} "
+            + (
+                'Tiene borrador y falta enviarla.'
+                if cliente.get('cotizacion_id')
+                else 'Todavía no tiene cotización enviada.'
+            )
+        ),
+        filas=_filas_esperando([cliente]),
+        confirmacion=confirmacion,
+        ancla='keep',
+        accion_pendiente={
+            'tipo': 'tarea_agente',
+            'herramienta': 'estudiar_lead',
+            'conversation_id': conversation_id,
+            'clientes': [_memoria(cliente)],
+        },
+        pasos=[
+            {'texto': 'Leí lo que escribió', 'estado': 'hecho'},
+            {'texto': f"Servicio: {cliente.get('servicio')}. Vehículo: {auto}", 'estado': 'hecho'},
+            {
+                'texto': 'Falta enviar el borrador' if cliente.get('cotizacion_id') else 'Falta armar el borrador',
+                'estado': 'ahora',
+            },
+        ],
+        siguiente=siguiente,
+    )
 
 
 def cotizar_pendientes(taller, user, clientes: list[dict]) -> dict:
@@ -420,7 +479,7 @@ def _filas_esperando(clientes: list[dict]) -> list[dict]:
     filas = []
     for cliente in clientes[:8]:
         if cliente.get('conversation_id'):
-            fila_id = f"chat:{cliente['conversation_id']}"
+            fila_id = f"lead:{cliente['conversation_id']}"
         elif cliente.get('cotizacion_id'):
             fila_id = f"cotizacion:{cliente['cotizacion_id']}"
         else:
