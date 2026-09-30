@@ -228,10 +228,15 @@ def resolver_precio_linea(
     if not spec_pendiente:
         return
 
-    # Sin variante decidida no se cobra un monto, pero la banda queda como orientación.
+    # La variante sigue pendiente de revisión, pero el monto de la ficha queda
+    # en la línea: el taller lo vio en la búsqueda y tiene que poder comprobarlo.
     next_rep['especificacion_pendiente'] = True
     next_rep['compatibilidad'] = next_rep.get('compatibilidad') or 'no_verificada'
     if next_rep.get('certeza') == CERTEZA_CONFIRMADO:
+        return
+    if _to_int_clp(next_rep.get('precio_unitario_clp')) > 0:
+        next_rep.pop('motivo_sin_precio', None)
+        aplicar_derivados_certeza(next_rep)
         return
     next_rep['precio_unitario_clp'] = 0
     next_rep['certeza'] = CERTEZA_SIN_PRECIO

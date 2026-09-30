@@ -151,8 +151,8 @@ class ResolverPrecioBandaTestCase(SimpleTestCase):
         }
         resolver_precio_linea(linea, [self._hit('web', 3200, url_producto='https://www.autoplanet.cl/p/bujia')], confianza_enabled=True)
         self.assertTrue(linea.get('especificacion_pendiente'))
-        self.assertEqual(linea['certeza'], 'sin_precio')
-        self.assertEqual(linea['precio_unitario_clp'], 0)
+        self.assertEqual(linea['certeza'], 'referencial')
+        self.assertEqual(linea['precio_unitario_clp'], 3200)
 
     @override_settings(PRECIO_CONFIANZA_ENABLED=True, FACTOR_MERCADO_MAX=2.50)
     def test_sin_hits_marca_motivo_sin_referencia(self):
@@ -177,9 +177,9 @@ class ResolverPrecioBandaTestCase(SimpleTestCase):
             confianza_enabled=True,
         )
         self.assertTrue(linea['especificacion_pendiente'])
-        self.assertEqual(linea['certeza'], 'sin_precio')
-        self.assertEqual(linea['motivo_sin_precio'], 'especificacion')
-        self.assertEqual(linea['precio_unitario_clp'], 0)
+        self.assertEqual(linea['certeza'], 'referencial')
+        self.assertNotIn('motivo_sin_precio', linea)
+        self.assertEqual(linea['precio_unitario_clp'], 9990)
         # La banda sigue orientando al taller aunque no se cobre un monto.
         self.assertEqual(linea['precio_min_clp'], 9990)
         self.assertGreater(linea['precio_max_clp'], linea['precio_min_clp'])
