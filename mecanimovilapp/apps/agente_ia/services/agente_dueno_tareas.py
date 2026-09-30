@@ -18,6 +18,10 @@ _CANAL = {
 _NECESIDAD = re.compile(
     r'\b(embrague|pastillas|aceite|frenos|bujias|distribucion|amortiguador|bateria|correa|filtro)\b',
 )
+_NOMBRE_CASA = re.compile(
+    r'ltda|eirl|\bspa\b|motors|motores|baterias|automotriz|repuestos|electromec|vulca|chinauto|portal',
+    re.IGNORECASE,
+)
 _TOPE_BORRADORES = 5
 
 
@@ -30,14 +34,15 @@ def turno_clientes_esperando(taller, user) -> dict:
             haciendo='Reviso quién espera cotización',
             titulo='Clientes de hoy',
             resumen=(
-                'Hoy no hay clientes que hayan escrito ni que esperen cotización. '
-                'Tampoco hay cotizaciones enviadas hoy.'
+                'Hoy no hay clientes esperando cotización. '
+                'Miré quién escribió hoy y dejé fuera casas de repuestos, saludos, imágenes '
+                'y a quien ya tiene una cotización enviada.'
             ),
             ancla='keep',
             accion_pendiente={},
             pasos=[
-                {'texto': 'Leí los chats de las últimas dos semanas y los borradores', 'estado': 'hecho'},
-                {'texto': 'No hay nadie esperando cotización', 'estado': 'ahora'},
+                {'texto': 'Leí solo los mensajes de hoy', 'estado': 'hecho'},
+                {'texto': 'Ninguno pide un servicio y manda la patente sin cotización enviada', 'estado': 'ahora'},
             ],
             siguiente='Cuando escriba un cliente, pregúntame de nuevo.',
         )
@@ -53,19 +58,17 @@ def turno_clientes_esperando(taller, user) -> dict:
             'clientes': [_memoria(cliente) for cliente in clientes],
         },
         pasos=[
-            {'texto': 'Leí los mensajes recientes y saqué pedido, patente y auto', 'estado': 'hecho'},
-            {'texto': 'Te muestro quién espera, qué necesita y el vehículo', 'estado': 'ahora'},
+            {'texto': 'Leí quién escribió hoy y descarté casas de repuestos', 'estado': 'hecho'},
+            {'texto': 'Dejé a quien pidió un servicio, mandó la patente y no tiene cotización enviada', 'estado': 'ahora'},
         ],
         siguiente='Puedes pedirme que deje en borrador las cotizaciones de estos clientes.',
     )
 
 
 def clientes_esperando(taller, user) -> list[dict]:
-    desde = timezone.now() - timedelta(days=14)
-    por_chat = _desde_chats(user, desde)
-    ya = {cliente['conversation_id'] for cliente in por_chat if cliente.get('conversation_id')}
-    por_chat.extend(_desde_borradores(taller, ya))
-    return por_chat
+    del taller
+    inicio = timezone.localtime().replace(hour=0, minute=0, second=0, microsecond=0)
+    return _desde_chats(user, inicio)
 
 
 def cotizar_pendientes(taller, user, clientes: list[dict]) -> dict:
@@ -390,23 +393,26 @@ def cerrar_servicio(taller, texto: str, pendiente: dict) -> dict:
 def _resumen_esperando(clientes: list[dict]) -> str:
     n = len(clientes)
     frase = 'cliente' if n == 1 else 'clientes'
-    dichos = []
-    for cliente in clientes[:5]:
-        partes = [cliente['nombre']]
-        if cliente.get('canal'):
-            partes[0] = f"{cliente['nombre']} por {cliente['canal']}"
-        if cliente.get('dijo'):
-            partes.append(f"dijo «{cliente['dijo']}»")
-        elif cliente.get('servicio'):
-            partes.append(cliente['servicio'])
-        if cliente.get('auto'):
-            partes.append(cliente['auto'])
-        dichos.append(', '.join(partes))
-    resto = n - len(dichos)
-    cola = f' y {resto} más' if resto else ''
+    lineas = []
+    for cliente in clientes[:8]:
+        auto = cliente.get('auto') or cliente.get('patente') or 'el auto que indicó'
+        donde = f", {cliente['donde']}" if cliente.get('donde') else ''
+        estado = (
+            'Tiene borrador y falta enviarla.'
+            if cliente.get('cotizacion_id')
+            else 'Todavía no tiene cotización enviada.'
+        )
+        lineas.append(
+            f"{cliente['nombre']} por {cliente.get('canal') or 'el chat'}: "
+            f"{cliente.get('servicio') or 'un servicio'} para {auto}{donde}. {estado}"
+        )
+    resto = n - len(lineas)
+    cola = f' Y {resto} más con patente y servicio.' if resto else ''
     return (
-        f'Sí, hay {n} {frase} esperando una cotización. '
-        f'Sin cotización enviada: {"; ".join(dichos)}{cola}.'
+        f'Hoy hay {n} {frase} esperando cotización. '
+        f'Escribieron hoy, pidieron un trabajo y mandaron la patente. '
+        + ' '.join(lineas)
+        + cola
     )
 
 
@@ -419,14 +425,18 @@ def _filas_esperando(clientes: list[dict]) -> list[dict]:
             fila_id = f"cotizacion:{cliente['cotizacion_id']}"
         else:
             fila_id = f"caso:{len(filas)}"
-        detalle = ', '.join(
-            parte for parte in (cliente.get('servicio'), cliente.get('auto'), cliente.get('dijo')) if parte
+        detalle = ' · '.join(
+            parte for parte in (
+                cliente.get('servicio'),
+                cliente.get('patente'),
+                cliente.get('donde'),
+            ) if parte
         )
         filas.append({
             'id': fila_id,
             'titulo': cliente['nombre'][:120],
             'detalle': detalle[:180],
-            'meta': cliente.get('canal') or 'sin enviar',
+            'meta': 'falta enviar' if cliente.get('cotizacion_id') else (cliente.get('canal') or 'falta cotizar'),
         })
     return filas
 
@@ -442,6 +452,7 @@ def _memoria(cliente: dict) -> dict:
         'modelo': cliente.get('modelo') or '',
         'anio': cliente.get('anio'),
         'canal': cliente.get('canal') or '',
+        'donde': cliente.get('donde') or '',
     }
 
 
@@ -467,58 +478,61 @@ def _desde_chats(user, desde) -> list[dict]:
     cotizaciones = _cotizaciones_por_conversacion(list(grupos))
     clientes = []
     for conv_id, hilo in grupos.items():
+        entrantes = [mensaje for mensaje in hilo if mensaje.direction == 'inbound']
+        if not entrantes:
+            continue
         cot = cotizaciones.get(conv_id)
-        if cot is not None and cot.estado in ('enviada', 'aceptada'):
+        if cot is not None and cot.estado in ('enviada', 'aceptada', 'rechazada', 'expirada'):
             continue
         contacto = hilo[-1].conversation.external_contact
-        if contacto is not None and contacto.rol in ('casa_repuestos', 'solo_consulta', 'otro'):
+        texto = ' '.join((mensaje.content or '') for mensaje in entrantes)
+        nombre = (contacto.display_name if contacto else '') or 'Cliente sin nombre'
+        if _es_casa(contacto, texto, nombre):
             continue
-        texto = ' '.join((mensaje.content or '') for mensaje in hilo if mensaje.direction == 'inbound')
-        ultimo = next((mensaje.content or '' for mensaje in reversed(hilo) if mensaje.direction == 'inbound'), '')
         patente, marca, modelo, anio = _auto_en(texto)
         servicio = _servicio_en(texto)
+        if not servicio or not patente:
+            continue
         canal = channel_to_api_slug(hilo[-1].conversation.source_channel)
-        auto = ' '.join(parte for parte in [marca, modelo, str(anio or ''), patente] if parte)
+        auto = ' '.join(parte for parte in [marca, modelo, str(anio or '') if anio else '', patente] if parte)
         clientes.append({
             'conversation_id': conv_id,
             'cotizacion_id': cot.id if cot is not None else None,
-            'nombre': (contacto.display_name if contacto else '') or 'Cliente sin nombre',
+            'nombre': nombre,
             'canal': _CANAL.get(canal, canal),
-            'dijo': ' '.join(ultimo.split())[:90],
-            'servicio': (cot.servicio_nombre if cot is not None and cot.servicio_nombre else servicio),
-            'patente': (cot.vehiculo_patente if cot is not None and cot.vehiculo_patente else patente),
-            'marca': (cot.vehiculo_marca if cot is not None and cot.vehiculo_marca else marca),
-            'modelo': (cot.vehiculo_modelo if cot is not None and cot.vehiculo_modelo else modelo),
-            'anio': cot.vehiculo_anio if cot is not None and cot.vehiculo_anio else anio,
+            'servicio': servicio,
+            'patente': patente,
+            'marca': marca,
+            'modelo': modelo,
+            'anio': anio,
             'auto': auto,
+            'donde': _donde(texto),
         })
     return clientes
 
 
-def _desde_borradores(taller, ya_chat: set) -> list[dict]:
-    from mecanimovilapp.apps.ordenes.models import CotizacionCanal
+def _es_casa(contacto, texto: str, nombre: str) -> bool:
+    from mecanimovilapp.apps.ordenes.services.rol_contacto import parece_texto_de_proveedor
 
-    clientes = []
-    for cot in CotizacionCanal.objects.filter(taller=taller, estado='borrador').order_by('-actualizado_en')[:20]:
-        if cot.conversation_id and cot.conversation_id in ya_chat:
-            continue
-        auto = ' '.join(
-            parte for parte in [cot.vehiculo_marca, cot.vehiculo_modelo, cot.vehiculo_patente] if parte
-        )
-        clientes.append({
-            'conversation_id': cot.conversation_id,
-            'cotizacion_id': cot.id,
-            'nombre': cot.cliente_nombre or 'Cliente sin nombre',
-            'canal': '',
-            'dijo': '',
-            'servicio': cot.servicio_nombre or '',
-            'patente': cot.vehiculo_patente or '',
-            'marca': cot.vehiculo_marca or '',
-            'modelo': cot.vehiculo_modelo or '',
-            'anio': cot.vehiculo_anio,
-            'auto': auto,
-        })
-    return clientes
+    if contacto is not None:
+        if contacto.rol in ('casa_repuestos', 'solo_consulta', 'otro'):
+            return True
+        if contacto.rol_sugerido == 'casa_repuestos':
+            return True
+    if _NOMBRE_CASA.search(nombre or ''):
+        return True
+    return parece_texto_de_proveedor(texto)
+
+
+def _donde(texto: str) -> str:
+    from mecanimovilapp.apps.agente_ia.services.agente_dueno_caso import plano
+
+    p = plano(texto)
+    if 'domicilio' in p:
+        return 'a domicilio'
+    if re.search(r'\b(en el taller|al taller|en taller)\b', p):
+        return 'en el taller'
+    return ''
 
 
 def _auto_en(texto: str) -> tuple[str, str, str, int | None]:

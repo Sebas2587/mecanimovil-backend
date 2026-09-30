@@ -315,7 +315,8 @@ class CotizacionDesdeChatDuenoTests(TestCase):
         )
         self.assertNotIn('qué servicio cotizo', primera['resumen'].lower())
         self.assertNotIn('que servicio cotizo', primera['resumen'].lower())
-        self.assertIn('Ana Rojas', primera['resumen'])
+        self.assertNotIn('Ana Rojas', primera['resumen'])
+        self.assertIn('no hay', primera['resumen'].lower())
         self.assertEqual(CotizacionCanal.objects.count(), 1)
         self.mocks[3].assert_not_called()
         segunda = self._decir(
@@ -324,11 +325,10 @@ class CotizacionDesdeChatDuenoTests(TestCase):
         )
         self.assertNotIn('qué servicio cotizo', segunda['resumen'].lower())
         self.assertNotIn('que servicio cotizo', segunda['resumen'].lower())
-        self.assertIn('Ana Rojas', segunda['resumen'])
+        self.assertNotIn('Ana Rojas', segunda['resumen'])
         self.assertEqual(segunda['accion_pendiente'] if 'accion_pendiente' in segunda else {}, {})
         from mecanimovilapp.apps.agente_ia.models import AgenteDuenoHilo
         hilo = AgenteDuenoHilo.objects.get(id=primera['hilo_id'])
-        self.assertEqual(hilo.accion_pendiente.get('herramienta'), 'clientes_esperando')
         self.assertNotEqual(hilo.accion_pendiente.get('tipo'), 'cotizacion_datos')
 
     def test_quien_hablo_hoy_sin_cotizacion_sale_en_la_respuesta(self):
@@ -358,7 +358,7 @@ class CotizacionDesdeChatDuenoTests(TestCase):
         conversacion.participants.add(self.user)
         Message.objects.create(
             conversation=conversacion,
-            content='Necesito cotizar el embrague del Swift',
+            content='Necesito cambio de embrague patente ABCD12 a domicilio',
             direction='inbound',
         )
         respuesta = self._decir(
@@ -367,9 +367,50 @@ class CotizacionDesdeChatDuenoTests(TestCase):
         self.assertNotIn('que servicio cotizo', respuesta['resumen'].lower())
         self.assertIn('Pedro Soto', respuesta['resumen'])
         self.assertIn('embrague', respuesta['resumen'].lower())
-        self.assertIn('sin cotización enviada', respuesta['resumen'].lower())
+        self.assertIn('no tiene cotización enviada', respuesta['resumen'].lower())
+        self.assertIn('ABCD12', respuesta['resumen'])
+        self.assertIn('domicilio', respuesta['resumen'].lower())
         self.assertEqual(CotizacionCanal.objects.count(), 0)
         self.mocks[3].assert_not_called()
+
+    def test_casa_de_repuestos_y_saludo_no_cuentan_como_cliente(self):
+        from mecanimovilapp.apps.chat.models import Message
+
+        ct = ContentType.objects.get_for_model(Taller)
+        conexion = ProviderChannelConnection.objects.create(
+            content_type=ct,
+            object_id=self.taller.id,
+            usuario=self.user,
+            channel='WHATSAPP',
+            enabled=True,
+            status='conectada',
+        )
+
+        def chat(nombre, external_id, texto):
+            contacto = ExternalContact.objects.create(
+                connection=conexion,
+                channel='WHATSAPP',
+                external_id=external_id,
+                display_name=nombre,
+                phone=external_id,
+            )
+            conversacion = Conversation.objects.create(
+                type='OMNICHANNEL',
+                source_channel='WHATSAPP',
+                external_contact=contacto,
+            )
+            conversacion.participants.add(self.user)
+            Message.objects.create(conversation=conversacion, content=texto, direction='inbound')
+
+        chat('Fullbaterias', '56910000001', 'Será ese motor?')
+        chat('Portal Motores', '56910000002', 'Que tengas lindo día !')
+        chat('Sandro Aguirre', '56910000003', 'ok')
+        respuesta = self._decir('dime si hay clientes esperando por cotizaciones hoy')
+        resumen = respuesta['resumen'].lower()
+        self.assertNotIn('fullbaterias', resumen)
+        self.assertNotIn('portal motores', resumen)
+        self.assertNotIn('sandro', resumen)
+        self.assertIn('no hay', resumen)
 
     def test_cotizar_pendientes_deja_borradores_sin_enviar(self):
         from mecanimovilapp.apps.chat.models import Message
