@@ -161,6 +161,8 @@ def _prompt(taller_nombre: str, contexto: dict, historial: list[dict], texto: st
         '}'
         '}\n'
         'Para agendamientos de hoy usa contexto.agenda_hoy en vista.filas. '
+        'crear_servicio solo si el dueño pidió dejar el servicio en el taller, no si pidió cotizarle a un cliente. '
+        'Una cotización para un cliente no es un alta de catálogo. '
         'crear_servicio solo con listo true si el dueño ya confirmó nombre y precio. '
         'Si pide registrar un servicio y falta el precio o el nombre, pregunta y listo false.'
     )
@@ -307,6 +309,21 @@ def _cerrar_turno(hilo, Mensaje, turno: dict) -> dict[str, Any]:
             'etiqueta': str(confirmacion.get('etiqueta') or 'Sí')[:80],
             'tipo': 'whatsapp' if confirmacion.get('tipo') == 'whatsapp' else 'accion',
         }
+    enlace = turno.get('enlace') if isinstance(turno.get('enlace'), dict) else None
+    if enlace and (enlace.get('url') or '').strip():
+        try:
+            cotizacion_id = int(enlace.get('cotizacion_id') or 0)
+        except (TypeError, ValueError):
+            cotizacion_id = 0
+        enlace = {
+            'url': str(enlace.get('url') or '')[:500],
+            'cotizacion_id': cotizacion_id,
+            'busqueda_pendiente': bool(enlace.get('busqueda_pendiente')),
+            'titulo': str(enlace.get('titulo') or '')[:180],
+            'descripcion': str(enlace.get('descripcion') or '')[:240],
+        }
+    else:
+        enlace = None
     abrir = turno.get('abrir_whatsapp') if isinstance(turno.get('abrir_whatsapp'), dict) else None
     if abrir and not (abrir.get('telefono') or '').strip():
         abrir = None
@@ -321,6 +338,7 @@ def _cerrar_turno(hilo, Mensaje, turno: dict) -> dict[str, Any]:
         'resumen': resumen,
         'filas': filas,
         'confirmacion': confirmacion,
+        'enlace': enlace,
     }
     Mensaje.objects.create(hilo=hilo, rol='agente', texto=resumen[:4000], vista=vista)
     ancla = turno.get('ancla') or 'keep'
@@ -345,6 +363,7 @@ def _cerrar_turno(hilo, Mensaje, turno: dict) -> dict[str, Any]:
         'memoria_ids': [fila['id'] for fila in filas],
         'confirmacion': confirmacion,
         'abrir_whatsapp': abrir,
+        'enlace': enlace,
     }
 
 
@@ -391,6 +410,15 @@ def responder_agente_dueno(taller, texto: str, historial_cliente: list[dict] | N
 
     accion = decision.get('accion') if isinstance(decision.get('accion'), dict) else None
     if isinstance(accion, dict) and accion.get('tipo') in _ACCIONES_SENSIBLES:
+        accion = None
+    from mecanimovilapp.apps.agente_ia.services.agente_dueno_cotizacion import (
+        es_pedido_cotizacion_cliente,
+    )
+    if (
+        isinstance(accion, dict)
+        and accion.get('tipo') == 'crear_servicio'
+        and es_pedido_cotizacion_cliente(texto)
+    ):
         accion = None
     hecho = _ejecutar(taller, accion)
     decir = (decision.get('decir') or '').strip()

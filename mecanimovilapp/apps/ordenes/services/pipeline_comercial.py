@@ -715,6 +715,13 @@ def _filas_cotizaciones_canal(
                 cita_rel.fecha_servicio,
                 cita_rel.hora_servicio,
             )
+        meta_cot = cot.metadata if isinstance(cot.metadata, dict) else {}
+        listo_chat = {}
+        if meta_cot.get('origen_chat_dueno'):
+            listo_chat = {
+                'listo_para_enviar': bool(meta_cot.get('listo_para_enviar')),
+                'pendientes_revision': list(meta_cot.get('pendientes_revision') or []),
+            }
         filas.append(
             _fila_base(
                 tipo_entidad='cotizacion_canal',
@@ -746,6 +753,7 @@ def _filas_cotizaciones_canal(
                 entrega_via=_entrega_via_cotizacion(cot),
                 en_edicion=en_edicion,
                 **_lead_fields(conv.id if conv else None, leads_map),
+                **listo_chat,
             )
         )
     return filas
