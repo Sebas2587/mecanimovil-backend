@@ -135,10 +135,13 @@ class CotizacionDesdeChatDuenoTests(TestCase):
         self.assertTrue(cotizacion.url_publica)
         self.assertTrue(cotizacion.numero_publico)
         self.assertEqual(OfertaServicio.objects.filter(taller=self.taller).count(), 0)
-        self.assertEqual(respuesta['enlace']['url'], cotizacion.url_publica)
         self.assertEqual(respuesta['enlace']['cotizacion_id'], cotizacion.id)
+        self.assertTrue(respuesta['enlace']['es_borrador'])
+        self.assertNotIn('http', respuesta['resumen'].lower())
+        self.assertIn('kit de embrague', ' '.join(fila['titulo'] for fila in respuesta['filas']).lower())
         mensaje = AgenteDuenoMensaje.objects.filter(hilo_id=respuesta['hilo_id'], rol='agente').latest('id')
-        self.assertEqual(mensaje.vista['enlace']['url'], cotizacion.url_publica)
+        self.assertEqual(mensaje.vista['enlace']['cotizacion_id'], cotizacion.id)
+        self.assertNotIn('url', mensaje.vista['enlace'])
         self.assertIn('repuestos', respuesta['resumen'].lower())
 
     def test_si_la_patente_no_responde_el_borrador_igual_existe(self):
@@ -286,6 +289,24 @@ class CotizacionDesdeChatDuenoTests(TestCase):
         )
         self.assertTrue(fila['listo_para_enviar'])
         self.assertEqual(fila['pendientes_revision'], [])
+
+    def test_una_pregunta_siguiente_no_pide_de_nuevo_el_auto(self):
+        borrador = self._decir(FRASE)
+        respuesta = self._decir('¿Qué repuestos lleva esa cotización?', borrador['hilo_id'])
+        self.assertNotIn('qué servicio cotizo', respuesta['resumen'].lower())
+        self.assertIn('HCBC63', respuesta['resumen'])
+        self.assertIn('Kit de embrague', respuesta['resumen'])
+        self.assertEqual(CotizacionCanal.objects.count(), 1)
+        self.mocks[3].assert_not_called()
+
+    def test_la_patente_queda_completa_y_no_se_usa_como_modelo(self):
+        self.mocks[0].side_effect = lambda *_a, **_k: (None, 503, 'servicio_externo')
+        respuesta = self._decir('Cotiza cambio de embrague para Suzuki Swift HCBC 63')
+        cotizacion = CotizacionCanal.objects.get()
+        self.assertEqual(cotizacion.vehiculo_patente, 'HCBC63')
+        self.assertEqual(cotizacion.vehiculo_modelo, 'Swift')
+        self.assertNotIn('Hcbc', respuesta['resumen'])
+        self.assertIn('HCBC63', respuesta['resumen'])
 
     def test_alta_de_servicio_del_taller_no_arma_cotizacion(self):
         self.mocks[3].return_value = ({

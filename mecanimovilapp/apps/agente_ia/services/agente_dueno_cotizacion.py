@@ -16,7 +16,10 @@ _CANAL_LABEL = {
     'WHATSAPP': 'WhatsApp',
 }
 _MENORES = {'de', 'del', 'la', 'el', 'y', 'e', 'a', 'en'}
-_PATENTE_RE = re.compile(r'\b([a-z]{4}\s?-?\s?\d{2}|[a-z]{2}\s?-?\s?\d{4})\b', re.IGNORECASE)
+_PATENTE_RE = re.compile(
+    r'\b([a-z]{4}[\s.\-]*\d{2}|[a-z]{2}[\s.\-]*\d{4})\b',
+    re.IGNORECASE,
+)
 _SERVICIO_RE = re.compile(
     r'\b((?:cambio|reparacion|mantencion|revision|alineacion|balanceo|diagnostico|'
     r'instalacion|rectificacion|ajuste|limpieza)\s+de\s+[a-z0-9]+'
@@ -50,20 +53,12 @@ def intentar_cotizacion_desde_chat(taller, hilo, texto: str, user, correcciones:
         if _es_otro_pedido(p) and not es_pedido_cotizacion_cliente(texto):
             return None
         return _continuar(taller, hilo, texto, user, pendiente)
+    cotizacion = _borrador_chat(taller, hilo)
+    slots = dict(pendiente.get('slots') or {})
+    if cotizacion is not None and not _trabajo_distinto(texto, slots, cotizacion):
+        return _seguir_borrador(taller, cotizacion, texto, slots)
     if es_pedido_cotizacion_cliente(texto):
         return _empezar(taller, texto, user, pendiente)
-    cotizacion = _borrador_chat(taller, hilo)
-    if cotizacion is None:
-        return None
-    slots = dict(pendiente.get('slots') or {})
-    if _es_precio_solo(texto):
-        return _aplicar_precio_dicho(taller, cotizacion, texto, slots)
-    if _dijo_sin_repuestos(p):
-        return _dejar_sin_repuestos(cotizacion, slots)
-    if _es_aprobacion(p):
-        return _preguntar_destinatario(taller, cotizacion, slots)
-    if _es_envio(p):
-        return _preparar_envio(taller, cotizacion, slots)
     return None
 
 
@@ -85,21 +80,9 @@ def _continuar(taller, hilo, texto, user, pendiente) -> dict:
         cotizacion = _borrador_chat(taller, hilo)
         if cotizacion is None:
             return _empezar(taller, texto, user, {})
-        if es_pedido_cotizacion_cliente(texto):
+        if _trabajo_distinto(texto, slots, cotizacion):
             return _empezar(taller, texto, user, {})
-        if _es_precio_solo(texto):
-            return _aplicar_precio_dicho(taller, cotizacion, texto, slots)
-        if _dijo_sin_repuestos(p):
-            return _dejar_sin_repuestos(cotizacion, slots)
-        if _es_aprobacion(p):
-            return _preguntar_destinatario(taller, cotizacion, slots)
-        if _es_envio(p):
-            return _preparar_envio(taller, cotizacion, slots)
-        return _turno_doc(
-            cotizacion,
-            slots,
-            'Sigo con este borrador. Si está bien, dime a quién se la dejo.',
-        )
+        return _seguir_borrador(taller, cotizacion, texto, slots)
     return _empezar(taller, texto, user, pendiente)
 
 
@@ -195,20 +178,20 @@ def _armar(taller, user, slots: dict) -> dict:
     frases = []
     if slots.get('aviso_patente'):
         frases.append(str(slots['aviso_patente']))
-    frases.append(f"Dejé el borrador de {cotizacion.servicio_nombre} para {auto}.")
+    patente = (cotizacion.vehiculo_patente or '').strip()
+    frases.append(
+        f"Dejé el borrador de {cotizacion.servicio_nombre} para {auto}."
+        + (f" Patente {patente}." if patente else '')
+    )
     if slots.get('precio'):
         frases.append(f"La mano de obra quedó en ${clp(int(slots['precio']))}.")
-    if slots.get('con_repuestos') is None and cotizacion.repuestos:
-        frases.append('Incluí repuestos. Si van solo la mano de obra, dímelo.')
-    if pendientes:
-        frases.append(f"{pendientes[0]}. Revísala en el editor antes de enviar.")
-    else:
-        frases.append(f"Total ${clp(int(cotizacion.total_clp or 0))}.")
-    frases.append('Cuando esté bien, la dejamos a nombre del cliente.')
+    frases.append(_frase_desglose(cotizacion, buscando))
+    frases.append('Ábrelo para revisarlo y enviarlo. El cliente todavía no lo recibe.')
     return _turno(
         haciendo=_haciendo_armado(slots, buscando),
-        titulo=cotizacion.numero_publico or 'Cotización',
+        titulo=cotizacion.numero_publico or 'Borrador',
         resumen=' '.join(frases),
+        filas=_filas_desglose(cotizacion, buscando),
         enlace=_enlace(cotizacion, buscando),
         caso_anclado=_caso_cotizacion(cotizacion, _hoy()),
         ancla='set',
@@ -818,11 +801,36 @@ def _consultar_patente(patente: str, user) -> dict:
     }
 
 
+def _leer_patente(texto: str) -> str:
+    match = _PATENTE_RE.search(texto or '')
+    if not match:
+        return ''
+    compacta = re.sub(r'[^a-z0-9]', '', match.group(1), flags=re.IGNORECASE).upper()
+    if not re.search(r'[A-Z]', compacta) or not re.search(r'\d', compacta):
+        return ''
+    if not (5 <= len(compacta) <= 6):
+        return ''
+    return compacta
+
+
+def _sin_patente(texto: str, patente: str) -> str:
+    limpio = _PATENTE_RE.sub(' ', texto or '')
+    if patente:
+        limpio = re.sub(re.escape(patente), ' ', limpio, flags=re.IGNORECASE)
+        letras = patente[:4] if len(patente) >= 6 else ''
+        if len(letras) == 4:
+            limpio = re.sub(rf'\b{letras}\b', ' ', limpio, flags=re.IGNORECASE)
+    return limpio
+
+
 def _extraer(texto: str) -> dict:
     from mecanimovilapp.apps.agente_ia.services.agente_dueno_caso import plano
 
-    p = plano(texto)
+    patente = _leer_patente(texto)
+    p = plano(_sin_patente(texto, patente))
     out: dict = {}
+    if patente:
+        out['patente'] = patente
     cliente = re.search(r'\bcliente\s+([a-zñ]+(?:\s+[a-zñ]+)?)\b', p)
     if cliente:
         nombre = re.split(r'\b(del|de|chat|por)\b', cliente.group(1))[0].strip()
@@ -834,9 +842,6 @@ def _extraer(texto: str) -> dict:
         out['canal'] = 'INSTAGRAM'
     elif re.search(r'\b(whatsapp|wsp)\b', p):
         out['canal'] = 'WHATSAPP'
-    patente = _PATENTE_RE.search(texto)
-    if patente:
-        out['patente'] = re.sub(r'[\s-]', '', patente.group(1)).upper()
     if re.search(r'\ba domicilio\b|\bdomicilio\b', p):
         out['modalidad'] = 'domicilio'
     elif re.search(r'\ben el taller\b|\ben taller\b', p):
@@ -1121,29 +1126,164 @@ def _guardar_listo(cotizacion, pendientes: list[str]) -> None:
 
 
 def _enlace(cotizacion, buscando: bool) -> dict:
-    from mecanimovilapp.apps.agente_ia.services.agente_dueno_caso import clp
-
     auto = _frase_auto_cotizacion(cotizacion)
-    folio = f'#{cotizacion.numero_publico}' if cotizacion.numero_publico else 'Cotización'
+    folio = cotizacion.numero_publico or 'Borrador'
     servicio = cotizacion.servicio_nombre or 'Servicio'
     titulo = f'{folio}: {servicio}'
     if auto:
         titulo = f'{titulo} · {auto}'
-    modalidad = 'A domicilio' if cotizacion.modalidad == 'domicilio' else 'En taller'
-    taller = getattr(cotizacion.taller, 'nombre', '') or 'Taller'
-    descripcion = ' · '.join([
-        f"Total: ${clp(int(cotizacion.total_clp or 0))}",
-        servicio,
-        f'Taller: {taller}',
-        modalidad,
-    ])
     return {
-        'url': cotizacion.url_publica or '',
         'cotizacion_id': cotizacion.id,
         'busqueda_pendiente': bool(buscando),
         'titulo': titulo[:180],
-        'descripcion': descripcion[:240],
+        'descripcion': 'Borrador para revisar y enviar. El cliente todavía no lo recibe.',
+        'es_borrador': True,
     }
+
+
+def _seguir_borrador(taller, cotizacion, texto: str, slots: dict) -> dict:
+    from mecanimovilapp.apps.agente_ia.services.agente_dueno_caso import plano
+
+    p = plano(texto)
+    if _es_precio_solo(texto):
+        return _aplicar_precio_dicho(taller, cotizacion, texto, slots)
+    if _dijo_sin_repuestos(p):
+        return _dejar_sin_repuestos(cotizacion, slots)
+    if _es_aprobacion(p):
+        return _preguntar_destinatario(taller, cotizacion, slots)
+    if _es_envio(p):
+        return _preparar_envio(taller, cotizacion, slots)
+    return _turno_doc(cotizacion, slots, _respuesta_sobre_borrador(cotizacion, texto))
+
+
+def _trabajo_distinto(texto: str, slots: dict, cotizacion) -> bool:
+    from mecanimovilapp.apps.agente_ia.services.agente_dueno_caso import plano
+
+    extra = _extraer(texto)
+    patente_actual = (slots.get('patente') or cotizacion.vehiculo_patente or '').upper()
+    if extra.get('patente') and extra['patente'] != patente_actual:
+        return True
+    nuevo = plano(extra.get('servicio') or '')
+    actual = plano(cotizacion.servicio_nombre or slots.get('servicio') or '')
+    if nuevo and actual and nuevo not in actual and actual not in nuevo:
+        return True
+    return False
+
+
+def _respuesta_sobre_borrador(cotizacion, texto: str) -> str:
+    from mecanimovilapp.apps.agente_ia.services.agente_dueno_caso import plano
+
+    p = plano(texto)
+    auto = _frase_auto_cotizacion(cotizacion)
+    patente = (cotizacion.vehiculo_patente or '').strip()
+    piezas = [
+        str(rep.get('nombre') or '').strip()
+        for rep in (cotizacion.repuestos or [])
+        if isinstance(rep, dict) and (rep.get('nombre') or '').strip()
+    ]
+    base = f"Sigo en el borrador de {cotizacion.servicio_nombre} para {auto}."
+    if patente:
+        base = f"{base} Patente {patente}."
+    if piezas and re.search(r'repuesto|pieza|incluye|lleva|kit|aceite|hidraulic|precio|desglose|cotiz', p):
+        lista = ', '.join(piezas[:6])
+        return (
+            f"{base} Las piezas que armé son: {lista}. "
+            'El desglose está abajo, con el origen de cada precio. '
+            'Ábrelo para revisarlo. El cliente todavía no lo recibe.'
+        )
+    return (
+        f"{base} {_frase_desglose(cotizacion, False)} "
+        'Ábrelo para revisarlo y enviarlo. El cliente todavía no lo recibe.'
+    )
+
+
+def _filas_desglose(cotizacion, buscando: bool) -> list[dict]:
+    from mecanimovilapp.apps.agente_ia.services.agente_dueno_caso import clp
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.mano_obra_lineas import (
+        resolver_mano_obra_lineas,
+    )
+
+    filas = []
+    for linea in resolver_mano_obra_lineas(cotizacion):
+        monto = int(linea.get('monto_clp') or 0)
+        filas.append({
+            'id': f"mo-{linea.get('id') or len(filas)}",
+            'titulo': linea.get('nombre') or 'Mano de obra',
+            'detalle': 'Mano de obra de este borrador.',
+            'meta': f"${clp(monto)}" if monto else 'Sin precio',
+        })
+    for indice, rep in enumerate(cotizacion.repuestos or []):
+        if not isinstance(rep, dict):
+            continue
+        nombre = (rep.get('nombre') or 'Repuesto').strip()
+        detalle = _detalle_repuesto(rep, buscando)
+        precio = int(rep.get('precio_unitario_clp') or 0)
+        filas.append({
+            'id': f"rep-{rep.get('id') or indice}",
+            'titulo': nombre[:120],
+            'detalle': detalle[:240],
+            'meta': f"${clp(precio)}" if precio else 'Sin precio',
+        })
+    return filas[:20]
+
+
+def _detalle_repuesto(rep: dict, buscando: bool) -> str:
+    partes = []
+    especificacion = (rep.get('especificacion') or '').strip()
+    if especificacion:
+        partes.append(especificacion)
+    if rep.get('especificacion_pendiente'):
+        partes.append('Falta confirmar la variante de esta pieza.')
+    partes.append(_origen_precio(rep, buscando))
+    comentario = (rep.get('comentario') or '').strip()
+    if comentario:
+        partes.append(comentario)
+    return '. '.join(parte for parte in partes if parte)
+
+
+def _origen_precio(rep: dict, buscando: bool) -> str:
+    fuente = str(rep.get('fuente_marketplace') or '').strip().lower()
+    precio = int(rep.get('precio_unitario_clp') or 0)
+    if fuente in ('catalogo', 'catálogo', 'proveedor'):
+        return 'Precio del taller.'
+    if fuente == 'historial':
+        return 'Precio del historial del taller.'
+    if fuente in ('web', 'ml', 'mercadolibre'):
+        return 'Precio consultado en tiendas.'
+    if precio <= 0 and (buscando or rep.get('motivo_sin_precio')):
+        return 'Buscando el precio en tiendas.'
+    if precio <= 0:
+        return 'Todavía sin precio de tienda.'
+    if rep.get('precio_estimado') or rep.get('precio_referencia_mercado'):
+        return 'Precio de referencia, hay que confirmarlo.'
+    return 'Precio de referencia.'
+
+
+def _frase_desglose(cotizacion, buscando: bool) -> str:
+    nombres = [
+        str(rep.get('nombre') or '').strip()
+        for rep in (cotizacion.repuestos or [])
+        if isinstance(rep, dict) and (rep.get('nombre') or '').strip()
+    ]
+    if not nombres:
+        return 'Quedó la mano de obra, sin líneas de repuesto.'
+    lista = ', '.join(nombres[:6])
+    if buscando:
+        return f"Armé los repuestos: {lista}. Estoy consultando esos precios en tiendas."
+    sin_precio = [
+        nombre for nombre, rep in (
+            (str(rep.get('nombre') or '').strip(), rep)
+            for rep in (cotizacion.repuestos or [])
+            if isinstance(rep, dict)
+        )
+        if nombre and int(rep.get('precio_unitario_clp') or 0) <= 0
+    ]
+    if sin_precio:
+        return (
+            f"Armé los repuestos: {lista}. "
+            f"Sin precio de tienda: {', '.join(sin_precio[:4])}."
+        )
+    return f"Armé los repuestos: {lista}. Cada línea dice de dónde salió el precio."
 
 
 def _borrador_chat(taller, hilo):
@@ -1312,8 +1452,9 @@ def _haciendo_armado(slots: dict, buscando: bool) -> str:
 def _turno_doc(cotizacion, slots: dict, resumen: str) -> dict:
     return _turno(
         haciendo='Sigo con la cotización',
-        titulo=cotizacion.numero_publico or 'Cotización',
+        titulo=cotizacion.numero_publico or 'Borrador',
         resumen=resumen,
+        filas=_filas_desglose(cotizacion, False),
         enlace=_enlace(cotizacion, False),
         caso_anclado=_caso_anclado(cotizacion),
         ancla='set',

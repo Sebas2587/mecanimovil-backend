@@ -310,18 +310,21 @@ def _cerrar_turno(hilo, Mensaje, turno: dict) -> dict[str, Any]:
             'tipo': 'whatsapp' if confirmacion.get('tipo') == 'whatsapp' else 'accion',
         }
     enlace = turno.get('enlace') if isinstance(turno.get('enlace'), dict) else None
-    if enlace and (enlace.get('url') or '').strip():
+    if isinstance(enlace, dict):
         try:
             cotizacion_id = int(enlace.get('cotizacion_id') or 0)
         except (TypeError, ValueError):
             cotizacion_id = 0
-        enlace = {
-            'url': str(enlace.get('url') or '')[:500],
-            'cotizacion_id': cotizacion_id,
-            'busqueda_pendiente': bool(enlace.get('busqueda_pendiente')),
-            'titulo': str(enlace.get('titulo') or '')[:180],
-            'descripcion': str(enlace.get('descripcion') or '')[:240],
-        }
+        if cotizacion_id or (enlace.get('url') or '').strip():
+            enlace = {
+                'cotizacion_id': cotizacion_id,
+                'busqueda_pendiente': bool(enlace.get('busqueda_pendiente')),
+                'titulo': str(enlace.get('titulo') or '')[:180],
+                'descripcion': str(enlace.get('descripcion') or '')[:240],
+                'es_borrador': bool(enlace.get('es_borrador', True)),
+            }
+        else:
+            enlace = None
     else:
         enlace = None
     abrir = turno.get('abrir_whatsapp') if isinstance(turno.get('abrir_whatsapp'), dict) else None
@@ -385,7 +388,8 @@ def responder_agente_dueno(taller, texto: str, historial_cliente: list[dict] | N
         respuesta = _cerrar_turno(hilo, Mensaje, turno)
         _guardar(taller.id, historial, respuesta['resumen'])
         return respuesta
-    if hilo.accion_pendiente:
+    pendiente = hilo.accion_pendiente if isinstance(hilo.accion_pendiente, dict) else {}
+    if pendiente and not str(pendiente.get('tipo') or '').startswith('cotizacion_'):
         hilo.accion_pendiente = {}
         hilo.save(update_fields=['accion_pendiente'])
     contexto = _contexto(taller)
