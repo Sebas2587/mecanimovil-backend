@@ -30,7 +30,12 @@ _ANIO_RE = re.compile(r'\b((?:19|20)\d{2})\b')
 
 def es_pedido_cotizacion_cliente(texto: str) -> bool:
     from mecanimovilapp.apps.agente_ia.services.agente_dueno_caso import plano
+    from mecanimovilapp.apps.agente_ia.services.agente_dueno_consulta import (
+        busca_casos_de_cotizacion,
+    )
 
+    if busca_casos_de_cotizacion(texto):
+        return False
     p = plano(texto)
     if re.search(r'se cotiza|cotiza mas|mas cotiz|cuantas cotiz|que se pide', p):
         return False
@@ -49,6 +54,13 @@ def intentar_cotizacion_desde_chat(taller, hilo, texto: str, user, correcciones:
     p = plano(texto)
     if tipo == 'enviar_cotizacion':
         return None
+    from mecanimovilapp.apps.agente_ia.services.agente_dueno_consulta import (
+        busca_casos_de_cotizacion,
+        responder_casos_cotizacion,
+    )
+
+    if busca_casos_de_cotizacion(texto):
+        return responder_casos_cotizacion(taller, user, texto)
     if tipo.startswith('cotizacion_'):
         if _es_otro_pedido(p) and not es_pedido_cotizacion_cliente(texto):
             return None
@@ -907,7 +919,9 @@ def _extraer_marca_modelo(p: str, anio) -> dict:
         resto,
     ):
         tokens = [tok for tok in match.group(1).split() if tok not in ruido]
-        if len(tokens) < 2 or tokens[0] in ('cliente', 'chat', 'domicilio', 'comuna'):
+        if len(tokens) < 2 or tokens[0] in (
+            'cliente', 'clientes', 'chat', 'domicilio', 'comuna', 'dia', 'hoy', 'cotizacion',
+        ):
             continue
         data = {'marca': _titulo(tokens[0]), 'modelo': _titulo(' '.join(tokens[1:3]))}
         if match.group(2):

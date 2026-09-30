@@ -298,6 +298,44 @@ class CotizacionDesdeChatDuenoTests(TestCase):
         self.assertTrue(fila['listo_para_enviar'])
         self.assertEqual(fila['pendientes_revision'], [])
 
+    def test_preguntar_por_clientes_de_hoy_no_abre_el_formulario(self):
+        CotizacionCanal.objects.create(
+            taller=self.taller,
+            es_libre=True,
+            estado='borrador',
+            numero_publico='MM-000901',
+            cliente_nombre='Ana Rojas',
+            servicio_nombre='Pastillas',
+            vehiculo_marca='Suzuki',
+            vehiculo_modelo='Swift',
+            modalidad='taller',
+        )
+        primera = self._decir(
+            'quiero saber si para el dia de hoy hay clientes que necesitan cotizacion'
+        )
+        self.assertNotIn('qué servicio cotizo', primera['resumen'].lower())
+        self.assertNotIn('que servicio cotizo', primera['resumen'].lower())
+        self.assertIn('Ana Rojas', primera['resumen'])
+        self.assertEqual(CotizacionCanal.objects.count(), 1)
+        self.mocks[3].assert_not_called()
+        segunda = self._decir(
+            'primero revisa si hay clientes que solicitaron cotizaciones el dia de hoy',
+            primera['hilo_id'],
+        )
+        self.assertNotIn('qué servicio cotizo', segunda['resumen'].lower())
+        self.assertNotIn('que servicio cotizo', segunda['resumen'].lower())
+        self.assertIn('Ana Rojas', segunda['resumen'])
+        self.assertEqual(segunda['accion_pendiente'] if 'accion_pendiente' in segunda else {}, {})
+        from mecanimovilapp.apps.agente_ia.models import AgenteDuenoHilo
+        hilo = AgenteDuenoHilo.objects.get(id=primera['hilo_id'])
+        self.assertEqual(hilo.accion_pendiente, {})
+
+    def test_sin_casos_dice_que_hoy_no_hay_nadie(self):
+        respuesta = self._decir('hay clientes que necesiten cotización hoy?')
+        self.assertIn('no hay', respuesta['resumen'].lower())
+        self.assertEqual(CotizacionCanal.objects.count(), 0)
+        self.mocks[3].assert_not_called()
+
     def test_una_pregunta_siguiente_no_pide_de_nuevo_el_auto(self):
         borrador = self._decir(FRASE)
         respuesta = self._decir('¿Qué repuestos lleva esa cotización?', borrador['hilo_id'])
