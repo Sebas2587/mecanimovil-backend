@@ -53,8 +53,18 @@ def intentar_cotizacion_desde_chat(taller, hilo, texto: str, user, correcciones:
         if _es_otro_pedido(p) and not es_pedido_cotizacion_cliente(texto):
             return None
         return _continuar(taller, hilo, texto, user, pendiente)
-    cotizacion = _borrador_chat(taller, hilo)
+    from mecanimovilapp.apps.agente_ia.services.agente_dueno_cotizacion_actualizar import (
+        aplicar_cambio,
+        documento_del_hilo,
+        pide_sumar,
+        pide_quitar,
+    )
+
+    documento = documento_del_hilo(taller, hilo)
     slots = dict(pendiente.get('slots') or {})
+    if documento is not None and (pide_sumar(texto) or pide_quitar(texto)):
+        return aplicar_cambio(taller, user, documento, texto, slots)
+    cotizacion = _borrador_chat(taller, hilo)
     if cotizacion is not None and not _trabajo_distinto(texto, slots, cotizacion):
         return _seguir_borrador(taller, cotizacion, texto, slots)
     if es_pedido_cotizacion_cliente(texto):
@@ -77,6 +87,16 @@ def _continuar(taller, hilo, texto, user, pendiente) -> dict:
     if tipo == 'cotizacion_calle':
         return _resolver_calle(taller, texto, pendiente)
     if tipo == 'cotizacion_lista':
+        from mecanimovilapp.apps.agente_ia.services.agente_dueno_cotizacion_actualizar import (
+            aplicar_cambio,
+            documento_del_hilo,
+            pide_sumar,
+            pide_quitar,
+        )
+
+        documento = documento_del_hilo(taller, hilo)
+        if documento is not None and (pide_sumar(texto) or pide_quitar(texto)):
+            return aplicar_cambio(taller, user, documento, texto, slots)
         cotizacion = _borrador_chat(taller, hilo)
         if cotizacion is None:
             return _empezar(taller, texto, user, {})
@@ -193,6 +213,12 @@ def _armar(taller, user, slots: dict) -> dict:
         resumen=' '.join(frases),
         filas=_filas_desglose(cotizacion, buscando),
         enlace=_enlace(cotizacion, buscando),
+        pasos=_pasos_armado(cotizacion, slots, buscando),
+        siguiente=(
+            'Cuando aparezcan los precios, abre el borrador y envíalo.'
+            if buscando
+            else 'Abre el borrador, revisa las líneas y envíalo al cliente.'
+        ),
         caso_anclado=_caso_cotizacion(cotizacion, _hoy()),
         ancla='set',
         accion_pendiente={
@@ -1428,6 +1454,27 @@ def _slots_con_api(slots: dict) -> dict:
     data['api'] = slots.get('api')
     data['conflicto_visto'] = True
     return data
+
+
+def _pasos_armado(cotizacion, slots: dict, buscando: bool) -> list[dict]:
+    patente = (cotizacion.vehiculo_patente or slots.get('patente') or '').strip()
+    pasos = []
+    if patente:
+        if slots.get('aviso_patente'):
+            pasos.append({'texto': str(slots['aviso_patente'])[:180], 'estado': 'hecho'})
+        else:
+            pasos.append({'texto': f'Consulté la patente {patente}', 'estado': 'hecho'})
+    else:
+        pasos.append({'texto': 'Usé el auto que me dijiste', 'estado': 'hecho'})
+    pasos.append({
+        'texto': f"Armé {cotizacion.servicio_nombre or 'la cotización'} con mano de obra y repuestos",
+        'estado': 'hecho',
+    })
+    if buscando:
+        pasos.append({'texto': 'Buscando los precios en tiendas', 'estado': 'ahora'})
+    else:
+        pasos.append({'texto': 'El borrador está listo para revisarlo', 'estado': 'ahora'})
+    return pasos
 
 
 def _haciendo_armado(slots: dict, buscando: bool) -> str:

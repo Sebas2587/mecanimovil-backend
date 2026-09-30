@@ -102,6 +102,14 @@ class CotizacionDesdeChatDuenoTests(TestCase):
                 'mecanimovilapp.apps.agente_ia.services.orquestador._llamar_gemini_agente',
                 return_value=(None, 'no debía llamar al modelo'),
             ),
+            patch(
+                'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos.enriquecer_repuestos_cotizacion',
+                side_effect=lambda repuestos, **_kwargs: repuestos,
+            ),
+            patch(
+                'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web.disparar_y_refrescar_cotizacion',
+                side_effect=lambda cotizacion: cotizacion,
+            ),
         ]
         self.mocks = [p.start() for p in self.parches]
         self.addCleanup(lambda: [p.stop() for p in self.parches])
@@ -307,6 +315,81 @@ class CotizacionDesdeChatDuenoTests(TestCase):
         self.assertEqual(cotizacion.vehiculo_modelo, 'Swift')
         self.assertNotIn('Hcbc', respuesta['resumen'])
         self.assertIn('HCBC63', respuesta['resumen'])
+
+    def test_agregar_una_pieza_actualiza_el_mismo_borrador(self):
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos.enriquecer_repuestos_cotizacion',
+            side_effect=lambda repuestos, **_kwargs: repuestos,
+        ):
+            borrador = self._decir(FRASE)
+            respuesta = self._decir('Agrega el aceite de caja', borrador['hilo_id'])
+        self.assertEqual(CotizacionCanal.objects.count(), 1)
+        cotizacion = CotizacionCanal.objects.get()
+        nombres = [rep.get('nombre', '').lower() for rep in cotizacion.repuestos]
+        self.assertTrue(any('aceite' in nombre for nombre in nombres))
+        self.assertIn('aceite de caja', respuesta['resumen'].lower())
+        self.assertTrue(any('repuesto' in paso['texto'].lower() for paso in respuesta['pasos']))
+        self.assertTrue(respuesta['pasos'])
+        self.assertTrue(respuesta['siguiente'])
+        self.mocks[3].assert_not_called()
+
+    def test_agregar_un_trabajo_no_abre_otra_cotizacion(self):
+        borrador = self._decir(FRASE)
+        self._decir('Agrega cambio de pastillas', borrador['hilo_id'])
+        self.assertEqual(CotizacionCanal.objects.count(), 1)
+        cotizacion = CotizacionCanal.objects.get()
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.mano_obra_lineas import (
+            resolver_mano_obra_lineas,
+        )
+        nombres = ' '.join(linea['nombre'].lower() for linea in resolver_mano_obra_lineas(cotizacion))
+        self.assertIn('pastillas', nombres)
+
+    def test_cotizacion_enviada_se_reabre_al_sumar(self):
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos.enriquecer_repuestos_cotizacion',
+            side_effect=lambda repuestos, **_kwargs: repuestos,
+        ):
+            borrador = self._decir(FRASE)
+            cotizacion = CotizacionCanal.objects.get()
+            cotizacion.estado = 'enviada'
+            cotizacion.save(update_fields=['estado'])
+            respuesta = self._decir('Agrega el filtro de aceite', borrador['hilo_id'])
+        cotizacion.refresh_from_db()
+        self.assertEqual(cotizacion.estado, 'borrador')
+        self.assertIn('reabr', respuesta['resumen'].lower())
+        nombres = [rep.get('nombre', '').lower() for rep in cotizacion.repuestos]
+        self.assertTrue(any('filtro' in nombre for nombre in nombres))
+
+    def test_cotizacion_aceptada_abre_adicional(self):
+        from datetime import time
+
+        from django.utils import timezone
+
+        from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonal
+
+        borrador = self._decir(FRASE)
+        cotizacion = CotizacionCanal.objects.get()
+        cotizacion.estado = 'aceptada'
+        cotizacion.save(update_fields=['estado'])
+        CitaAgendaPersonal.objects.create(
+            taller=self.taller,
+            fecha_servicio=timezone.localdate(),
+            hora_servicio=time(10, 0),
+            duracion_minutos=60,
+            tipo_servicio='taller',
+            estado='activa',
+            horario_por_confirmar=False,
+            cotizacion_canal_origen=cotizacion,
+            creado_por=self.user,
+        )
+        respuesta = self._decir('Agrega el soporte de motor', borrador['hilo_id'])
+        adicional = CotizacionCanal.objects.exclude(id=cotizacion.id).get()
+        self.assertTrue(adicional.es_cotizacion_adicional)
+        self.assertEqual(adicional.cotizacion_original_id, cotizacion.id)
+        self.assertEqual(adicional.estado, 'borrador')
+        cotizacion.refresh_from_db()
+        self.assertEqual(cotizacion.estado, 'aceptada')
+        self.assertIn('adicional', respuesta['resumen'].lower())
 
     def test_alta_de_servicio_del_taller_no_arma_cotizacion(self):
         self.mocks[3].return_value = ({

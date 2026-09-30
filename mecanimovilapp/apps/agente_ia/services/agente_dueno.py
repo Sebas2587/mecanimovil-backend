@@ -342,6 +342,8 @@ def _cerrar_turno(hilo, Mensaje, turno: dict) -> dict[str, Any]:
         'filas': filas,
         'confirmacion': confirmacion,
         'enlace': enlace,
+        'pasos': _pasos_vista(turno.get('pasos')),
+        'siguiente': str(turno.get('siguiente') or '')[:240],
     }
     Mensaje.objects.create(hilo=hilo, rol='agente', texto=resumen[:4000], vista=vista)
     ancla = turno.get('ancla') or 'keep'
@@ -367,7 +369,22 @@ def _cerrar_turno(hilo, Mensaje, turno: dict) -> dict[str, Any]:
         'confirmacion': confirmacion,
         'abrir_whatsapp': abrir,
         'enlace': enlace,
+        'pasos': vista['pasos'],
+        'siguiente': vista['siguiente'],
     }
+
+
+def _pasos_vista(pasos) -> list[dict]:
+    limpios = []
+    for paso in (pasos or [])[:8]:
+        if not isinstance(paso, dict):
+            continue
+        texto = str(paso.get('texto') or '').strip()
+        if not texto:
+            continue
+        estado = 'ahora' if paso.get('estado') == 'ahora' else 'hecho'
+        limpios.append({'texto': texto[:180], 'estado': estado})
+    return limpios
 
 
 def responder_agente_dueno(taller, texto: str, historial_cliente: list[dict] | None, hilo_id=None, user=None) -> dict[str, Any]:
