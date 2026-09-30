@@ -1399,6 +1399,13 @@ class AtributosFichaTavilyTestCase(SimpleTestCase):
             'url': 'https://www.ciper.cl/prensa-morning/p',
         }
         self.assertFalse(bw._candidato_sirve_linea(linea, prensa, anio=2011))
+        conjunto = {
+            'title': 'DISCO PRENSA Y RODAMIENTO DE EMPUJE KIA MORNING 1.1 2012-2016',
+            'content': 'Precio $82.900',
+            'url': 'https://www.todoembragues.cl/disco-prensa-rodamiento-morning-11',
+        }
+        self.assertTrue(bw._candidato_sirve_linea(linea, conjunto, anio=2014, cilindraje='1.1'))
+        self.assertFalse(bw._ficha_cubre_pieza('Disco de embrague', conjunto['title']))
 
     def test_kit_1_2_no_sirve_para_morning_1_1(self):
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw

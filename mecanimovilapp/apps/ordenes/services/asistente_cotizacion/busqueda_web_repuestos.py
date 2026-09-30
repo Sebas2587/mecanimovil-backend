@@ -824,16 +824,34 @@ def _linea_es_kit(nombre_linea: str) -> bool:
     )
 
 
+def _ficha_es_kit_embrague_completo(titulo_ficha: str) -> bool:
+    """La casa vende disco, prensa y rodamiento de empuje como un solo kit."""
+    ficha = _norm(titulo_ficha)
+    if not ficha:
+        return False
+    if _KIT_RE.search(ficha) and ('embrague' in ficha or 'clutch' in ficha):
+        return True
+    tiene_disco = 'disco' in ficha
+    tiene_prensa = 'prensa' in ficha or 'plato' in ficha
+    tiene_empuje = 'rodamiento' in ficha or 'collarin' in ficha or 'empuje' in ficha
+    return tiene_disco and tiene_prensa and tiene_empuje
+
+
 def _ficha_cubre_pieza(nombre_linea: str, titulo_ficha: str) -> bool:
-    """Un kit no se cotiza con la ficha de un solo componente (prensa ≠ kit)."""
+    """El kit toma la ficha del conjunto. Una prensa suelta no es el kit, ni al revés."""
     linea = _norm(nombre_linea)
     ficha = _norm(titulo_ficha)
     if not linea or not ficha:
         return True
-    ficha_kit = bool(_KIT_RE.search(ficha))
-    if _linea_es_kit(nombre_linea) and not ficha_kit:
+    ficha_kit = _ficha_es_kit_embrague_completo(titulo_ficha)
+    if _linea_es_kit(nombre_linea):
+        if ficha_kit:
+            return True
         if any(c in ficha for c in _COMPONENTE_EMBRAGUE):
             return False
+        return True
+    if ficha_kit and any(c in linea for c in _COMPONENTE_EMBRAGUE) and 'kit' not in linea:
+        return False
     return True
 
 
@@ -905,7 +923,7 @@ URLs:
 {lista_urls}
 
 Reglas:
-1. encontrado=true SOLO si la ficha es LA MISMA PIEZA. Kit de embrague ≠ prensa, disco o collarín sueltos. Un componente no cotiza el kit.
+1. encontrado=true SOLO si la ficha es LA MISMA PIEZA y es compatible con este auto (marca, modelo, año y motor o cilindrada). El kit de embrague es disco + prensa + rodamiento de empuje vendidos juntos: esa ficha SÍ es el kit. Una ficha de solo disco, solo prensa o solo rodamiento NO es el kit. El precio del kit no se usa para una pieza suelta.
 2. compatibilidad: alta si nombra marca+modelo y el año del auto entra en el rango de la ficha; media si nombra el modelo sin año; baja si es genérico. Si la ficha declara años y el auto queda fuera, encontrado=false.
 3. marca_repuesto = marca de la PIEZA (Bosch, Gates, Wahler, NGK, etc.). Si no aparece, "". NUNCA "GENÉRICO", "Original", "N/A" ni la marca del auto.
 4. calidad = original (genuino/agencia), oem (equivalente OEM) o alternativo (aftermarket). Solo si el texto lo decide. Si duda, "".
@@ -1377,7 +1395,7 @@ Servicio: {servicio_nombre or 'N/A'}
 {cuerpo}
 
 Para cada repuesto, elige el MEJOR candidato de su lista (por índice):
-1. encontrado=true SOLO si la ficha es LA MISMA PIEZA. Kit de embrague ≠ prensa, disco o collarín sueltos. Un componente no cotiza el kit. Prioridad: (a) ficha que nombre el modelo y la variante/motor de ESTE vehículo, (b) ficha que nombre marca y modelo, (c) casa especialista por sobre retail generalista. Insumos universales (filtro, aceite) sí pueden ser de la categoría sin el modelo.
+1. encontrado=true SOLO si la ficha es LA MISMA PIEZA y es compatible con este auto (marca, modelo, año y motor o cilindrada). El kit de embrague es disco + prensa + rodamiento de empuje vendidos juntos: esa ficha SÍ es el kit. Una ficha de solo disco, solo prensa o solo rodamiento NO es el kit. Prioridad: (a) ficha que nombre el modelo y la variante/motor de ESTE vehículo, (b) ficha que nombre marca y modelo, (c) casa especialista por sobre retail generalista. Insumos universales (filtro, aceite) sí pueden ser de la categoría sin el modelo.
 2. compatibilidad: alta si el título/texto nombra modelo y el año del auto entra en el rango de la ficha; media si nombra la marca o es un insumo universal; baja si es genérico. Si la ficha declara años y el auto queda fuera, encontrado=false.
 3. marca_repuesto = marca de la PIEZA visible en título/texto (Bosch, Gates, NGK, etc.). Si no aparece, "". NUNCA "Original", "GENÉRICO" ni la marca del auto.
 4. calidad = original (genuino/agencia), oem (equivalente OEM) o alternativo (aftermarket / tipo alternativo). Solo si el texto lo decide. Si duda o nombra dos, "".

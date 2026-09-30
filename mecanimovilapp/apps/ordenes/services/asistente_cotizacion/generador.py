@@ -394,7 +394,8 @@ REGLAS:
 4. El motor efectivo es {efectivo}. No mezcles repuestos diésel/bencina/híbrido.
 5. Separa faena y pieza. El taller escribe "cambio de bujías" para la mano de obra; el repuesto se llama "Bujías", nunca "cambio de bujías". Revisión, diagnóstico, inspección, scanner y alineación son solo mano de obra: no crees un repuesto con ese nombre.
 5b. servicios_lineas.nombre es la faena tal como la pidió el taller. repuestos.nombre es la pieza.
-6. REPUESTOS POR VEHÍCULO (CRÍTICO): SOLO piezas compatibles con marca/modelo/año/cilindrada/motor. Prefiere MENOS líneas correctas. Nombra la pieza con precisión (posición: delantero/trasero, lado, kit completo si aplica).
+6. REPUESTOS POR VEHÍCULO (CRÍTICO): SOLO piezas compatibles con marca/modelo/año/cilindrada/motor. Nombra la pieza con precisión (posición: delantero/trasero, lado).
+6c. TRABAJO COMPLETO (CRÍTICO): si piden kit de embrague, cambio de embrague o clutch, la cotización trae la faena (Cambio de embrague en servicios_lineas) y el repuesto como lo vende la casa: una línea "Kit de embrague" que es disco + prensa + rodamiento de empuje juntos. No desgloses esas tres piezas en líneas con precio propio: si la tienda publica el kit completo compatible con marca, modelo, año y motor de ESTE auto, ese es el valor del kit. Una ficha de solo disco, solo prensa o solo rodamiento no es el kit. El aceite de caja va en otra línea, porque no viene dentro del kit. Volante bimasa solo si ESTE vehículo lo usa.
 6b. ESPECIFICACIÓN ANTES DE PRECIO (CRÍTICO): si la pieza tiene variantes que cambian el precio (bujía cobre/platino/iridio; pastilla orgánica/semi-metálica/cerámica; aceite mineral/sintético + viscosidad; batería convencional/EFB/AGM; amortiguador hidráulico/gas), declara "especificacion" con UNA sola variante para ESTE vehículo (ej. "Iridio", "Cerámica", "5W30 sintético"). PROHIBIDO ofrecer dos ("cerámica o semi-metálica"), separar con "/" o describir medidas en vez de la variante. Si no puedes determinarla con certeza, deja especificacion="" y precio_unitario_clp=0. PROHIBIDO inventar un monto para una variante que no sabes.
 7. Volante bimasa: inclúyelo SOLO si el SERVICIO SOLICITADO es de embrague/clutch (no porque el chat mencionó vibración u otro auto).
 8. marca_repuesto, fuente_marketplace y tienda_ml: SIEMPRE "". NUNCA inventes marca (ni "GENÉRICO", ni Bosch/Mann "por costumbre"), ni tienda, ni "catálogo". El backend solo completa marca/proveedor si hay match real del taller o listing verificable.
@@ -587,6 +588,11 @@ def generar_cotizacion_ia(
             ctx.get('marca'),
             ctx.get('modelo'),
         )
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.completar_pedido import (
+            completar_pedido_con_faena,
+        )
+
+        contenido = completar_pedido_con_faena(contenido, servicio_nombre=servicio_nombre)
         adv = list(contenido.get('advertencias') or [])
         return {
             'disponible': True,
@@ -613,6 +619,14 @@ def generar_cotizacion_ia(
         }
 
     contenido = normalizar_cotizacion_ia(crudo, ctx)
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.completar_pedido import (
+        completar_pedido_con_faena,
+    )
+
+    contenido = completar_pedido_con_faena(
+        contenido,
+        servicio_nombre=servicio_nombre or str(contenido.get('servicio_nombre') or ''),
+    )
     if enriquecer_marketplace:
         try:
             from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
