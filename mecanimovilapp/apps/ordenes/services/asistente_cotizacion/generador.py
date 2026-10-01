@@ -366,7 +366,10 @@ def _construir_prompt(ctx: dict[str, Any]) -> str:
         bloque_para_prompt,
     )
 
-    bloque_lectura = bloque_para_prompt(pedido)
+    bloque_lectura = bloque_para_prompt(
+        pedido,
+        str(ctx.get('descripcion_problema') or ''),
+    )
     return f"""Eres un asesor de taller mecánico en Chile. Genera una cotización referencial en pesos chilenos (CLP enteros, sin decimales).
 
 Vehículo:
@@ -392,8 +395,9 @@ REGLAS:
 2. Precios en CLP enteros: son ESTIMADOS de mercado Chile (taller) para que el proveedor los revise. NO digas que vienen de un catálogo o tienda.
 3. CRÍTICO — IVA INCLUIDO: mano_obra_clp es precio FINAL al cliente con IVA 19% ya incluido. NO cotices neto ni agregues línea de IVA.
 4. El motor efectivo es {efectivo}. No mezcles repuestos diésel/bencina/híbrido.
-5. Separa faena y pieza. El taller escribe "cambio de bujías" para la mano de obra; el repuesto se llama "Bujías", nunca "cambio de bujías". Revisión, diagnóstico, inspección, scanner y alineación son solo mano de obra: no crees un repuesto con ese nombre.
+5. Separa faena y pieza. El taller escribe "cambio de bujías" para la mano de obra; el repuesto se llama "Bujías", nunca "cambio de bujías". Revisión, diagnóstico, inspección, scanner, alineación y limpieza son solo mano de obra: no crees un repuesto con ese nombre ni con el objeto de esa faena (limpiar el cuerpo de aceleración no agrega la pieza "cuerpo de aceleración").
 5b. servicios_lineas.nombre es la faena tal como la pidió el taller. repuestos.nombre es la pieza.
+5c. TRABAJOS QUE VAN JUNTOS: "cambio de A y B" (bujías y bobinas, pastillas y discos) es UNA línea de mano de obra y UN monto, porque se hacen en el mismo trabajo. Las piezas sí van separadas en repuestos. "y también", "también" y "además" abren otro servicio, que es mano de obra: no lo conviertas en repuesto. El detalle del problema puede sumar otro servicio; un síntoma ("hace ruido") no es una línea.
 6. REPUESTOS POR VEHÍCULO (CRÍTICO): SOLO piezas compatibles con marca/modelo/año/cilindrada/motor. Nombra la pieza con precisión (posición: delantero/trasero, lado).
 6c. TRABAJO COMPLETO (CRÍTICO): si piden kit de embrague, cambio de embrague o clutch, la cotización trae la faena (Cambio de embrague en servicios_lineas) y el repuesto como lo vende la casa: una línea "Kit de embrague" que es disco + prensa + rodamiento de empuje juntos. No desgloses esas tres piezas en líneas con precio propio: si la tienda publica el kit completo compatible con marca, modelo, año y motor de ESTE auto, ese es el valor del kit. Una ficha de solo disco, solo prensa o solo rodamiento no es el kit. El aceite de caja va en otra línea, porque no viene dentro del kit. Volante bimasa solo si ESTE vehículo lo usa.
 6b. ESPECIFICACIÓN ANTES DE PRECIO (CRÍTICO): si la pieza tiene variantes que cambian el precio (bujía cobre/platino/iridio; pastilla orgánica/semi-metálica/cerámica; aceite mineral/sintético + viscosidad; batería convencional/EFB/AGM; amortiguador hidráulico/gas), declara "especificacion" con UNA sola variante para ESTE vehículo (ej. "Iridio", "Cerámica", "5W30 sintético"). PROHIBIDO ofrecer dos ("cerámica o semi-metálica"), separar con "/" o describir medidas en vez de la variante. Si no puedes determinarla con certeza, deja especificacion="" y precio_unitario_clp=0. PROHIBIDO inventar un monto para una variante que no sabes.
@@ -471,8 +475,14 @@ def generar_cotizacion_ia(
             from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.aplicar_catalogo import (
                 _split_servicios,
             )
+            from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.separar_pedido_taller import (
+                texto_pedido_taller,
+            )
 
-            servicio_ctx = servicio_nombre or str(ctx.get('servicio_nombre') or '')
+            servicio_ctx = texto_pedido_taller(
+                servicio_nombre or str(ctx.get('servicio_nombre') or ''),
+                descripcion_problema or str(ctx.get('descripcion_problema') or ''),
+            )
             solo_cat = _intentar_contenido_solo_catalogo(
                 taller=taller,
                 servicios=_split_servicios(servicio_ctx),
@@ -526,7 +536,14 @@ def generar_cotizacion_ia(
                 construir_bloque_historial_prompt,
             )
 
-            servicio_ctx = servicio_nombre or str(ctx.get('servicio_nombre') or '')
+            from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.separar_pedido_taller import (
+                texto_pedido_taller,
+            )
+
+            servicio_ctx = texto_pedido_taller(
+                servicio_nombre or str(ctx.get('servicio_nombre') or ''),
+                descripcion_problema or str(ctx.get('descripcion_problema') or ''),
+            )
             marca_ctx = str(ctx.get('marca') or '')
             modelo_ctx = str(ctx.get('modelo') or '')
             bloques: list[str] = []

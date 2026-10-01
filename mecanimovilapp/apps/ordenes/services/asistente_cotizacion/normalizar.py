@@ -268,13 +268,18 @@ def normalizar_cotizacion_ia(data: dict[str, Any], ctx: dict[str, Any]) -> dict[
 
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.separar_pedido_taller import (
         aplicar_lectura_taller,
+        texto_pedido_taller,
     )
 
+    lectura = texto_pedido_taller(
+        str(ctx.get('servicio_nombre') or data.get('servicio_nombre') or ''),
+        str(ctx.get('descripcion_problema') or ''),
+    )
     repuestos, servicios_lineas, mano_obra = aplicar_lectura_taller(
         repuestos,
         data.get('servicios_lineas'),
         mano_obra,
-        pedido=str(ctx.get('servicio_nombre') or data.get('servicio_nombre') or ''),
+        pedido=lectura,
     )
     costo_rep, mo, total = recalcular_totales(repuestos, mano_obra)
 

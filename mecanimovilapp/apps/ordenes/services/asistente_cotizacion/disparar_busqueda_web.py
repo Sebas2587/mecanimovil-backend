@@ -175,6 +175,77 @@ def _feature_listo() -> bool:
     )
 
 
+def _clave_cancel_busqueda(cotizacion_id: int) -> str:
+    return f'busqueda_web_cancel:{int(cotizacion_id)}'
+
+
+def busqueda_fue_cancelada(cotizacion_id: int) -> bool:
+    """True si el taller pidió cortar esta búsqueda. El worker lo mira entre consultas."""
+    from django.core.cache import cache
+
+    return bool(cache.get(_clave_cancel_busqueda(cotizacion_id)))
+
+
+def _recordar_task_id(cotizacion_id: int, task_id: str) -> None:
+    task_id = str(task_id or '').strip()
+    if not task_id or busqueda_fue_cancelada(cotizacion_id):
+        return
+    from mecanimovilapp.apps.ordenes.models import CotizacionCanal
+
+    cot = CotizacionCanal.objects.filter(pk=cotizacion_id).first()
+    if cot is None:
+        return
+    meta = dict(cot.metadata or {})
+    if str(meta.get('busqueda_web_estado') or '') == 'cancelada':
+        return
+    if str(meta.get('busqueda_web_task_id') or '') == task_id:
+        return
+    meta['busqueda_web_task_id'] = task_id
+    cot.metadata = meta
+    cot.save(update_fields=['metadata', 'actualizado_en'])
+
+
+def _revocar_task(task_id: str) -> None:
+    """Mata el worker que está consultando tiendas. En cola, la tarea no arranca."""
+    task_id = str(task_id or '').strip()
+    if not task_id:
+        return
+    try:
+        from mecanimovilapp.celery import app as celery_app
+
+        celery_app.control.revoke(task_id, terminate=True, signal='SIGTERM')
+    except Exception as exc:
+        logger.warning('No se pudo revocar la búsqueda web %s: %s', task_id, exc)
+
+
+def cancelar_busqueda_web_cotizacion(cotizacion):
+    """Corta la búsqueda en curso y deja el borrador con lo que ya tenía."""
+    if cotizacion is None:
+        return cotizacion
+    meta = dict(getattr(cotizacion, 'metadata', None) or {})
+    if str(meta.get('busqueda_web_estado') or '') != 'pendiente':
+        return cotizacion
+
+    from django.core.cache import cache
+    from django.utils import timezone
+
+    cache.set(_clave_cancel_busqueda(cotizacion.id), '1', timeout=15 * 60)
+    task_id = str(meta.get('busqueda_web_task_id') or '')
+    meta['busqueda_web_estado'] = 'cancelada'
+    meta['busqueda_web_en'] = timezone.now().isoformat()
+    meta.pop('busqueda_web_ids', None)
+    meta['busqueda_web_progreso'] = construir_progreso_busqueda(
+        paso='cancelada',
+        detalle='Búsqueda cancelada. La cotización queda con lo que ya tenía.',
+        fuentes=[],
+        lineas=[],
+    )
+    cotizacion.metadata = meta
+    cotizacion.save(update_fields=['metadata', 'actualizado_en'])
+    _revocar_task(task_id)
+    return cotizacion
+
+
 def _ejecutar_task(cotizacion_id: int, *, sync: bool) -> None:
     from mecanimovilapp.apps.ordenes.tasks import buscar_precios_web_cotizacion_task
 
@@ -183,7 +254,8 @@ def _ejecutar_task(cotizacion_id: int, *, sync: bool) -> None:
         # y devolver marca/tienda en la misma respuesta HTTP.
         buscar_precios_web_cotizacion_task.apply(args=[int(cotizacion_id)], throw=False)
         return
-    buscar_precios_web_cotizacion_task.delay(int(cotizacion_id))
+    async_result = buscar_precios_web_cotizacion_task.delay(int(cotizacion_id))
+    _recordar_task_id(cotizacion_id, str(getattr(async_result, 'id', '') or ''))
 
 
 def disparar_busqueda_web_cotizacion(

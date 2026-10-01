@@ -1259,6 +1259,115 @@ class SepararPedidoTallerTestCase(SimpleTestCase):
         self.assertEqual(out['mano_obra_clp'], 80000)
 
 
+class FaenaConjuntaNoEsRepuestoTestCase(SimpleTestCase):
+    PEDIDO = (
+        'Servicio para cambio de bujias y bobinas y también '
+        'limpieza de cuerpode aceleracion'
+    )
+
+    def test_separa_faena_conjunta_de_otro_servicio(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.separar_pedido_taller import (
+            interpretar_pedido_taller,
+        )
+
+        interp = interpretar_pedido_taller(self.PEDIDO)
+        self.assertEqual(
+            interp['mano_obra'],
+            [
+                'Cambio de bujías y bobinas',
+                'Limpieza de cuerpo de aceleración',
+            ],
+        )
+        self.assertEqual(interp['repuestos'], ['Bujías', 'Bobinas'])
+        self.assertIn('Cambio de bujías y bobinas', interp['conjuntas'])
+
+    def test_precio_en_conjunto_y_limpieza_no_es_pieza(self):
+        ctx = {'servicio_nombre': self.PEDIDO, 'descripcion_problema': ''}
+        out = normalizar_cotizacion_ia(
+            {
+                'servicio_nombre': self.PEDIDO,
+                'mano_obra_clp': 60000,
+                'servicios_lineas': [
+                    {'nombre': 'Cambio de bujías', 'monto_clp': 25000},
+                    {'nombre': 'Cambio de bobinas', 'monto_clp': 20000},
+                    {'nombre': 'Limpieza de cuerpo de aceleración', 'monto_clp': 15000},
+                ],
+                'repuestos': [
+                    {'nombre': 'Bujías', 'precio_unitario_clp': 8000, 'cantidad': 4},
+                    {'nombre': 'Bobinas', 'precio_unitario_clp': 40000, 'cantidad': 4},
+                    {'nombre': 'Cuerpo de aceleración', 'precio_unitario_clp': 90000},
+                    {'nombre': 'Limpieza de cuerpo de aceleración', 'precio_unitario_clp': 0},
+                ],
+            },
+            ctx,
+        )
+        self.assertEqual(
+            [(lin['nombre'], lin['monto_clp']) for lin in out['servicios_lineas']],
+            [
+                ('Cambio de bujías y bobinas', 45000),
+                ('Limpieza de cuerpo de aceleración', 15000),
+            ],
+        )
+        self.assertEqual(out['mano_obra_clp'], 60000)
+        self.assertEqual([r['nombre'] for r in out['repuestos']], ['Bujías', 'Bobinas'])
+
+    def test_detalle_suma_otro_servicio(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.separar_pedido_taller import (
+            interpretar_pedido_taller,
+            texto_pedido_taller,
+        )
+
+        interp = interpretar_pedido_taller(texto_pedido_taller(
+            'Cambio de bujías y bobinas',
+            'También limpieza de cuerpo de aceleración',
+        ))
+        self.assertEqual(
+            interp['mano_obra'],
+            ['Cambio de bujías y bobinas', 'Limpieza de cuerpo de aceleración'],
+        )
+        self.assertEqual(interp['repuestos'], ['Bujías', 'Bobinas'])
+
+    def test_sintoma_en_el_detalle_no_abre_faena(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.separar_pedido_taller import (
+            texto_pedido_taller,
+        )
+
+        self.assertEqual(
+            texto_pedido_taller('Cambio de bujías y bobinas', 'El motor falla en frío'),
+            'Cambio de bujías y bobinas',
+        )
+
+    def test_split_no_parte_las_piezas_de_la_misma_faena(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.aplicar_catalogo import (
+            _split_servicios,
+        )
+
+        self.assertEqual(
+            _split_servicios(self.PEDIDO),
+            [
+                'cambio de bujias y bobinas',
+                'limpieza de cuerpo de aceleracion',
+            ],
+        )
+
+    def test_prompt_pide_un_solo_monto(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador import (
+            _construir_prompt,
+        )
+
+        prompt = _construir_prompt({
+            'marca': 'Suzuki',
+            'modelo': 'Swift',
+            'anio': '2015',
+            'servicio_nombre': self.PEDIDO,
+            'descripcion_problema': '',
+            'tipo_motor_efectivo_label': 'Bencinero',
+        })
+        self.assertIn('Cambio de bujías y bobinas (un solo monto', prompt)
+        self.assertIn('Limpieza de cuerpo de aceleración', prompt)
+        self.assertIn('solo mano de obra, no repuestos', prompt)
+
+
 class HistorialCacheNoCruzaModelosTestCase(SimpleTestCase):
     def test_clave_fuzzy_historial_no_aplica_a_otro_auto(self):
         from types import SimpleNamespace

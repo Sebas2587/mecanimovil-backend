@@ -21,13 +21,61 @@ _PREFIJO_SERVICIO_SPLIT_RE = re.compile(
     re.IGNORECASE,
 )
 _SPLIT_LISTA_RE = re.compile(r'\s*[+|]\s*|,(?!\d)|;(?!\d)')
+# "y también" / "además" abren otro trabajo. No son la "y" que une piezas de una misma faena.
+_SEP_OTRO_SERVICIO_RE = re.compile(
+    r'(?:\s+y)?\s+(?:tambi[eé]n|adem[aá]s)\s+',
+    re.IGNORECASE,
+)
+_PEGADO_CUERPO_RE = re.compile(r'\bcuerpode\b', re.IGNORECASE)
+# La derecha de "y" es otra faena si empieza por un verbo de trabajo.
+_VERBO_NUEVA_FAENA_RE = re.compile(
+    r'^(?:cambio|reemplazo|recambio|instalaci[oó]n|montaje|colocaci[oó]n|'
+    r'revisi[oó]n|diagn[oó]stico|inspecci[oó]n|escaneo|scanner|chequeo|'
+    r'alineaci[oó]n|balanceo|rectificado|limpieza|regulaci[oó]n|ajuste|'
+    r'mantenci[oó]n|reparaci[oó]n|servicio|'
+    r'limpiar|cambiar|reemplazar|revisar|diagnosticar|inspeccionar|'
+    r'alinear|rectificar|reparar|instalar|colocar|mantener)\b',
+    re.IGNORECASE,
+)
+_FILTRO_HABITACULO_RE = re.compile(
+    r'^filtro\s+de\s+(?:aire|polen|habit[aá]culo|cabina)\b',
+    re.IGNORECASE,
+)
+
+
+def _derecha_es_otra_faena(texto: str) -> bool:
+    derecha = (texto or '').strip()
+    if not derecha:
+        return False
+    if _VERBO_NUEVA_FAENA_RE.match(derecha):
+        return True
+    return bool(_FILTRO_HABITACULO_RE.match(derecha))
+
+
+def _unir_piezas_de_la_misma_faena(chunk: str) -> list[str]:
+    """'cambio de bujías y bobinas' es un trabajo. 'y revisión' es otro."""
+    partes = re.split(r'\s+y\s+', (chunk or '').strip(), flags=re.IGNORECASE)
+    if len(partes) <= 1:
+        return [chunk.strip()] if (chunk or '').strip() else []
+    grupos = [partes[0].strip()]
+    for parte in partes[1:]:
+        p = parte.strip()
+        if not p:
+            continue
+        if grupos and _derecha_es_otra_faena(p):
+            grupos.append(p)
+        else:
+            grupos[-1] = f'{grupos[-1]} y {p}'
+    return [g for g in grupos if g]
 
 
 def _split_servicios(servicio_nombre: str) -> list[str]:
     raw = (servicio_nombre or '').strip()
     if not raw:
         return []
+    raw = _PEGADO_CUERPO_RE.sub('cuerpo de', raw)
     raw = _PREFIJO_SERVICIO_SPLIT_RE.sub('', raw).strip() or raw
+    raw = _SEP_OTRO_SERVICIO_RE.sub(' | ', raw)
 
     def _es_pack_aceite(texto: str) -> bool:
         return bool(
@@ -47,10 +95,7 @@ def _split_servicios(servicio_nombre: str) -> list[str]:
         if _es_pack_aceite(c):
             out.append(c)
             continue
-        for sub in c.replace(' y ', '|').split('|'):
-            s = sub.strip()
-            if s:
-                out.append(s)
+        out.extend(_unir_piezas_de_la_misma_faena(c))
     return out or [raw]
 
 

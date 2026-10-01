@@ -588,6 +588,57 @@ class BuscarPreciosWebTaskTestCase(SimpleTestCase):
         self.assertEqual(result.get('reason'), 'estado')
         cot.save.assert_not_called()
 
+    def test_cancelada_no_consulta_tiendas(self):
+        from mecanimovilapp.apps.ordenes.tasks import buscar_precios_web_cotizacion_task
+
+        cot = MagicMock()
+        cot.estado = 'borrador'
+        cot.pk = 42
+        cot.metadata = {'busqueda_web_estado': 'pendiente'}
+        cot.repuestos = [{'nombre': 'Bujías', 'precio_unitario_clp': 0, 'cantidad': 1}]
+        with patch(
+            'mecanimovilapp.apps.ordenes.models.CotizacionCanal.objects.filter',
+        ) as filt, patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.busqueda_web_habilitada',
+            return_value=True,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web.busqueda_fue_cancelada',
+            return_value=True,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.buscar_repuestos_web',
+        ) as buscar:
+            filt.return_value.first.return_value = cot
+            result = buscar_precios_web_cotizacion_task.run(42)
+        self.assertFalse(result.get('ok'))
+        self.assertEqual(result.get('reason'), 'cancelada')
+        buscar.assert_not_called()
+        cot.save.assert_not_called()
+
+    def test_cancelar_mata_el_worker(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web import (
+            cancelar_busqueda_web_cotizacion,
+        )
+
+        cot = MagicMock()
+        cot.id = 15
+        cot.metadata = {
+            'busqueda_web_estado': 'pendiente',
+            'busqueda_web_task_id': 'abc-123',
+        }
+        with patch('django.core.cache.cache.set') as cache_set, patch(
+            'mecanimovilapp.celery.app',
+        ) as celery_app:
+            cancelar_busqueda_web_cotizacion(cot)
+        self.assertEqual(cot.metadata['busqueda_web_estado'], 'cancelada')
+        self.assertIn('cancelada', (cot.metadata.get('busqueda_web_progreso') or {}).get('detalle', '').lower())
+        cache_set.assert_called()
+        celery_app.control.revoke.assert_called_once_with(
+            'abc-123',
+            terminate=True,
+            signal='SIGTERM',
+        )
+        cot.save.assert_called()
+
     def test_si_busca_en_cotizacion_aceptada(self):
         from mecanimovilapp.apps.ordenes.tasks import buscar_precios_web_cotizacion_task
 

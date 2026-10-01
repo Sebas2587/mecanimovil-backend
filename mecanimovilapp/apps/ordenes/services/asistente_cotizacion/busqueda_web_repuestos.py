@@ -1665,6 +1665,10 @@ def _hits_desde_candidatos(
     return out
 
 
+class BusquedaWebCancelada(Exception):
+    """El taller cortó la búsqueda. No se siguen consultando tiendas."""
+
+
 def _buscar_repuestos_web_tavily(
     nombres_limpios: list[str],
     *,
@@ -1676,6 +1680,7 @@ def _buscar_repuestos_web_tavily(
     servicio_nombre: str,
     timeout: int,
     on_progreso=None,
+    deberia_cancelar=None,
 ) -> dict[str, dict[str, Any]]:
     """Agregador Tavily (JSON real) + Gemini solo como filtro/formateador."""
     whitelist = _dominios_whitelist()
@@ -1685,8 +1690,13 @@ def _buscar_repuestos_web_tavily(
     fuentes_vivo += [c['nombre'] for c in casas_marca[:2] if c.get('nombre')]
     if 'Mercado Libre' not in fuentes_vivo:
         fuentes_vivo.append('Mercado Libre')
+    def _cortar() -> None:
+        if callable(deberia_cancelar) and deberia_cancelar():
+            raise BusquedaWebCancelada()
+
     candidatos_por_nombre: dict[str, list[dict[str, str]]] = {}
     for i, nombre in enumerate(nombres_limpios):
+        _cortar()
         if callable(on_progreso):
             on_progreso({
                 'paso': 'web',
@@ -1707,6 +1717,7 @@ def _buscar_repuestos_web_tavily(
         )
         n_consultas = 0
         for i_query, query in enumerate(consultas):
+            _cortar()
             if i_query >= _MAX_CONSULTAS_TAVILY_POR_LINEA:
                 break
             n_consultas += 1
@@ -1969,6 +1980,7 @@ def buscar_repuestos_web(
     vehiculo: dict[str, Any] | None = None,
     servicio_nombre: str = '',
     on_progreso=None,
+    deberia_cancelar=None,
 ) -> dict[str, dict[str, Any]]:
     """Tavily si hay API key. url_context solo si Tavily no está configurada."""
     nombres_limpios = [str(n).strip()[:200] for n in nombres if str(n).strip()]
@@ -1987,6 +1999,9 @@ def buscar_repuestos_web(
     pendientes = list(nombres_limpios)
     tavily_listo = False
 
+    if callable(deberia_cancelar) and deberia_cancelar():
+        raise BusquedaWebCancelada()
+
     if tavily_habilitada() and (getattr(settings, 'GEMINI_API_KEY', '') or '').strip():
         try:
             resultados = _buscar_repuestos_web_tavily(
@@ -1999,8 +2014,11 @@ def buscar_repuestos_web(
                 servicio_nombre=servicio_nombre,
                 timeout=timeout,
                 on_progreso=on_progreso,
+                deberia_cancelar=deberia_cancelar,
             )
             tavily_listo = True
+        except BusquedaWebCancelada:
+            raise
         except Exception as exc:
             logger.warning('busqueda_web_repuestos[tavily]: fallo inesperado: %s', exc)
             resultados = {}
@@ -2013,6 +2031,9 @@ def buscar_repuestos_web(
 
     # Tavily ya recorrió Chile. url_context sobre URLs inventadas no encuentra
     # el kit del Morning y deja al worker 45–135s extra (Gemini 503).
+    if callable(deberia_cancelar) and deberia_cancelar():
+        raise BusquedaWebCancelada()
+
     if tavily_listo:
         if pendientes:
             logger.info(

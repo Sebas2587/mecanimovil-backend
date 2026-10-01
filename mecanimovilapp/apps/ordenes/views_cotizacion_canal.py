@@ -1033,6 +1033,16 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             'entrega_mensaje': getattr(plan, 'message', None),
         })
 
+    @action(detail=True, methods=['post'], url_path='cancelar-busqueda')
+    def cancelar_busqueda(self, request, pk=None):
+        """Corta la consulta de precios en tiendas y mata el worker que la está haciendo."""
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web import (
+            cancelar_busqueda_web_cotizacion,
+        )
+
+        cotizacion = cancelar_busqueda_web_cotizacion(self.get_object())
+        return Response(CotizacionCanalSerializer(cotizacion).data)
+
     @action(detail=True, methods=['post'])
     def cancelar(self, request, pk=None):
         cotizacion = self.get_object()

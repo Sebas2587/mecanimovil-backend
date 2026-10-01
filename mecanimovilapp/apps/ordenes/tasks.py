@@ -480,8 +480,22 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
         aplicar_totales_cotizacion,
     )
 
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+        BusquedaWebCancelada,
+    )
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web import (
+        busqueda_fue_cancelada,
+    )
+
+    def _abortar_si_cancelada() -> None:
+        if busqueda_fue_cancelada(cotizacion_id):
+            raise BusquedaWebCancelada()
+
     def _set_estado(cot: CotizacionCanal, estado: str) -> None:
+        _abortar_si_cancelada()
         meta = dict(cot.metadata or {})
+        if str(meta.get('busqueda_web_estado') or '') == 'cancelada':
+            raise BusquedaWebCancelada()
         meta['busqueda_web_estado'] = estado
         meta['busqueda_web_en'] = timezone.now().isoformat()
         meta.pop('busqueda_web_ids', None)
@@ -489,8 +503,12 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
         cot.save(update_fields=['metadata', 'actualizado_en'])
 
     def _set_progreso(cot: CotizacionCanal, **kwargs) -> None:
+        _abortar_si_cancelada()
         meta = dict(cot.metadata or {})
+        if str(meta.get('busqueda_web_estado') or '') == 'cancelada':
+            raise BusquedaWebCancelada()
         meta['busqueda_web_progreso'] = construir_progreso_busqueda(**kwargs)
+        _abortar_si_cancelada()
         cot.metadata = meta
         cot.save(update_fields=['metadata', 'actualizado_en'])
 
@@ -501,8 +519,18 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
         cot = CotizacionCanal.objects.filter(pk=cotizacion_id).first()
         if cot is None:
             return {'ok': False, 'reason': 'not_found'}
+        if busqueda_fue_cancelada(cotizacion_id) or str(
+            (cot.metadata or {}).get('busqueda_web_estado') or '',
+        ) == 'cancelada':
+            return {'ok': False, 'reason': 'cancelada'}
         if cot.estado not in ('borrador', 'aceptada', 'enviada'):
             return {'ok': False, 'reason': 'estado', 'estado': cot.estado}
+        task_id = str(getattr(getattr(self, 'request', None), 'id', '') or '')
+        if task_id and str((cot.metadata or {}).get('busqueda_web_task_id') or '') != task_id:
+            meta_task = dict(cot.metadata or {})
+            meta_task['busqueda_web_task_id'] = task_id
+            cot.metadata = meta_task
+            cot.save(update_fields=['metadata', 'actualizado_en'])
 
         reps = list(cot.repuestos or [])
         if not isinstance(reps, list) or not reps:
@@ -587,6 +615,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                     return {'ok': False, 'reason': 'rpd'}
             else:
                 def _on_progreso(evento: dict) -> None:
+                    _abortar_si_cancelada()
                     try:
                         cot_vivo = CotizacionCanal.objects.filter(pk=cotizacion_id).first()
                         if cot_vivo is None or cot_vivo.estado not in (
@@ -604,9 +633,12 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                                 buscando=str(evento.get('nombre_actual') or ''),
                             ),
                         )
+                    except BusquedaWebCancelada:
+                        raise
                     except Exception:
                         return
 
+                _abortar_si_cancelada()
                 nuevos = buscar_repuestos_web(
                     faltantes,
                     vehiculo={
@@ -618,6 +650,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                     },
                     servicio_nombre=cot.servicio_nombre or '',
                     on_progreso=_on_progreso,
+                    deberia_cancelar=lambda: busqueda_fue_cancelada(cotizacion_id),
                 )
                 if nuevos:
                     resultados.update(nuevos)
@@ -628,6 +661,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                 len(nombres),
             )
 
+        _abortar_si_cancelada()
         ttl_dias = max(1, int(getattr(settings, 'BUSQUEDA_WEB_REPUESTOS_TTL_DIAS', 14) or 14))
         expira = timezone.now() + timedelta(days=ttl_dias)
         upserts = 0
@@ -780,6 +814,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                 next_rep['fuente_marketplace'] = 'web'
                 reps_enriquecidos[i] = next_rep
 
+        _abortar_si_cancelada()
         progreso_lineas = [
             r for r in reps_enriquecidos
             if isinstance(r, dict) and (not cand_ids or str(r.get('id') or '') in cand_ids)
@@ -833,6 +868,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
 
         cot.repuestos = aplicar_techo_ia_en_repuestos(list(cot.repuestos or []))
         aplicar_totales_cotizacion(cot)
+        _abortar_si_cancelada()
         cot.metadata = meta
         cot.save(update_fields=[
             'repuestos',
@@ -856,6 +892,9 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
             'upserts': upserts,
             'hits': len(resultados or {}),
         }
+    except BusquedaWebCancelada:
+        logger.info('buscar_precios_web_cotizacion_task(%s): el taller canceló la búsqueda', cotizacion_id)
+        return {'ok': False, 'reason': 'cancelada'}
     except Exception as exc:
         logger.warning(
             'buscar_precios_web_cotizacion_task(%s) falló: %s',
@@ -865,7 +904,12 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
         )
         try:
             cot = CotizacionCanal.objects.filter(pk=cotizacion_id).first()
-            if cot and cot.estado == 'borrador':
+            if (
+                cot
+                and cot.estado == 'borrador'
+                and not busqueda_fue_cancelada(cotizacion_id)
+                and str((cot.metadata or {}).get('busqueda_web_estado') or '') != 'cancelada'
+            ):
                 _set_estado(cot, 'error')
         except Exception:
             pass
