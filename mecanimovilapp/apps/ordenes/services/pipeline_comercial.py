@@ -1402,6 +1402,37 @@ def _caso_rechazado(fila: dict[str, Any]) -> bool:
     return fila.get('estado_normalizado') == 'rechazado_perdido'
 
 
+_PASOS_CLIENTE = ('por_agendar', 'por_enviar', 'esperando', 'en_agenda', 'cerrado')
+
+
+def _paso_caso(fila: dict[str, Any]) -> str:
+    """Un solo siguiente paso. Agendar gana: es lo que desbloquea el trabajo."""
+    estado = fila.get('estado_normalizado')
+    if estado in ('rechazado_perdido', 'completado'):
+        return 'cerrado'
+    if fila.get('horario_por_confirmar') and not fila.get('fecha_agendada'):
+        return 'por_agendar'
+    if (
+        fila.get('en_edicion')
+        or fila.get('estado_raw') == 'borrador'
+        or fila.get('listo_para_enviar')
+    ):
+        return 'por_enviar'
+    if estado in ('nuevo', 'cotizacion_enviada', 'en_negociacion'):
+        return 'esperando'
+    if estado in ('aceptado_agendado', 'en_ejecucion') or fila.get('fecha_agendada'):
+        return 'en_agenda'
+    return 'cerrado'
+
+
+def _paso_cliente(casos: list[dict[str, Any]]) -> str:
+    presentes = {_paso_caso(caso) for caso in casos}
+    for paso in _PASOS_CLIENTE:
+        if paso in presentes:
+            return paso
+    return 'cerrado'
+
+
 def _caso_abierto(fila: dict[str, Any]) -> bool:
     if fila.get('en_edicion') or fila.get('horario_por_confirmar') or fila.get('listo_para_enviar'):
         return True
@@ -1474,6 +1505,7 @@ def _payload_cliente(cliente_key: str, casos: list[dict[str, Any]]) -> dict[str,
         'aceptadas': sum(1 for c in ordered if _caso_aceptado(c)),
         'rechazadas': sum(1 for c in ordered if _caso_rechazado(c)),
         'abiertas': sum(1 for c in ordered if _caso_abierto(c)),
+        'siguiente_paso': _paso_cliente(ordered),
         'ultima_actividad': ordered[0].get('fecha_referencia') if ordered else None,
         'conversation_id': conv_id,
         'con_accion': any(_caso_abierto(c) for c in ordered),
@@ -1535,6 +1567,7 @@ def construir_pipeline_clientes(
     taller: Taller | None,
     origen: str | None = None,
     prioridad: str | None = None,
+    paso: str | None = None,
     miembro_taller_id: int | None = None,
     limite: int = 100,
     q: str | None = None,
@@ -1603,6 +1636,9 @@ def construir_pipeline_clientes(
         clientes = [c for c in clientes if c.get('con_accion')]
     elif prioridad_norm == 'cerrados':
         clientes = [c for c in clientes if not c.get('con_accion')]
+    paso_norm = (paso or '').strip().lower()
+    if paso_norm in _PASOS_CLIENTE:
+        clientes = [c for c in clientes if c.get('siguiente_paso') == paso_norm]
 
     results = []
     for cliente in clientes[:limite]:

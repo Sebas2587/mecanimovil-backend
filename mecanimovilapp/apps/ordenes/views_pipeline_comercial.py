@@ -71,12 +71,14 @@ class PipelineComercialViewSet(viewsets.ViewSet):
         taller_ctx, miembro_id = self._contexto(request)
         origen = request.query_params.get('origen')
         prioridad = (request.query_params.get('prioridad') or 'todos').strip().lower()
+        paso = (request.query_params.get('paso') or '').strip().lower() or None
         q = (request.query_params.get('q') or '').strip() or None
         payload = construir_pipeline_clientes(
             user=request.user,
             taller=taller_ctx,
             origen=origen or None,
             prioridad=prioridad,
+            paso=paso,
             miembro_taller_id=miembro_id,
             limite=self._limite(request),
             q=q,

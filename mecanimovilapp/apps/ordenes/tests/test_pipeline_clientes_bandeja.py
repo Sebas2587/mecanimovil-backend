@@ -98,6 +98,7 @@ class PipelineClientesBandejaTests(TestCase):
         self.assertEqual(row['casos_count'], 2)
         self.assertTrue(row['cliente_key'].startswith('tel-'))
         self.assertEqual(row['enviadas'], 2)
+        self.assertEqual(row['siguiente_paso'], 'esperando')
         patentes = {v.get('patente') for v in row['vehiculos']}
         self.assertIn('KGGR22', patentes)
         self.assertIn('ABCD12', patentes)
@@ -154,6 +155,29 @@ class PipelineClientesBandejaTests(TestCase):
         juans = [r for r in payload['results'] if r['cliente_nombre'] == 'Juan']
         self.assertEqual(len(juans), 2)
         self.assertTrue(all(r['cliente_key'].startswith('caso-') for r in juans))
+
+    def test_paso_por_agendar_gana_sobre_esperando(self):
+        from mecanimovilapp.apps.ordenes.services.pipeline_comercial import (
+            _paso_caso,
+            _paso_cliente,
+        )
+
+        self.assertEqual(
+            _paso_cliente([
+                {'estado_normalizado': 'cotizacion_enviada', 'estado_raw': 'enviada'},
+                {
+                    'estado_normalizado': 'en_negociacion',
+                    'estado_raw': 'aceptada',
+                    'horario_por_confirmar': True,
+                    'fecha_agendada': None,
+                },
+            ]),
+            'por_agendar',
+        )
+        self.assertEqual(
+            _paso_caso({'estado_normalizado': 'aceptado_agendado', 'fecha_agendada': '2026-10-02'}),
+            'en_agenda',
+        )
 
     def test_prioridad_cerrados_excluye_enviadas_abiertas(self):
         self._cotizacion(estado='enviada')
