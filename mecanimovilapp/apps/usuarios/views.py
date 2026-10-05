@@ -4017,6 +4017,7 @@ class EstadoProveedorView(APIView):
         # Preparar datos del proveedor
         datos_proveedor = {
             'descripcion': proveedor.descripcion,
+            'foto_perfil': get_image_url(getattr(proveedor, 'foto_perfil', None), request),
             'politicas_cotizacion': getattr(proveedor, 'politicas_cotizacion', '') or '',
             'dias_validez_cotizacion': int(getattr(proveedor, 'dias_validez_cotizacion', None) or 30),
             'telefono': proveedor.telefono,

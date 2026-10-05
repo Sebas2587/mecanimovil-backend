@@ -280,6 +280,13 @@ class Taller(ProveedorServicio):
     rut = models.CharField(max_length=20, blank=True, null=True, help_text=_('RUT del taller'))
     capacidad_diaria = models.IntegerField(default=10, help_text=_('Capacidad de servicios por día'))
     horario_atencion = models.CharField(max_length=100, blank=True, null=True)
+    prefijo_folio = models.CharField(
+        max_length=6,
+        unique=True,
+        null=True,
+        blank=True,
+        help_text=_('Sigla propia del taller para folios de cotización (ej. TR).'),
+    )
 
     # Unificación por modalidad: un taller puede atender en su local, a domicilio o ambas.
     modalidad_atencion = models.CharField(

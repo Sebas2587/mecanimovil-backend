@@ -1,7 +1,13 @@
-"""Folio MM compartido entre cotización, cita y orden de la app usuarios."""
+"""Folio por taller: sigla propia y serie que parte en 0.
+
+Los MM- ya emitidos se conservan. Las cotizaciones nuevas usan {SIGLA}-000000.
+"""
 from __future__ import annotations
 
 import re
+import unicodedata
+
+from django.db import transaction
 
 from mecanimovilapp.apps.ordenes.services.cotizacion_publica import (
     asegurar_numero_publico,
@@ -60,6 +66,64 @@ def _siguiente_folio_libre(ocupados: set[str]) -> str:
         n += 1
 
 
+def _sin_acentos(texto: str) -> str:
+    normalizado = unicodedata.normalize('NFKD', texto or '')
+    return ''.join(c for c in normalizado if not unicodedata.combining(c))
+
+
+def prefijo_desde_nombre(nombre: str) -> str:
+    palabras = re.findall(r'[A-Za-z0-9]+', _sin_acentos(nombre))
+    if not palabras:
+        return 'TL'
+    if len(palabras) == 1:
+        base = palabras[0][:3]
+    else:
+        base = ''.join(palabra[0] for palabra in palabras[:4])
+    base = re.sub(r'[^A-Za-z0-9]', '', base).upper()
+    return (base or 'TL')[:4]
+
+
+def asegurar_prefijo_taller(taller) -> str:
+    """Sigla estable del taller. Se guarda la primera vez y no cambia si renombran."""
+    guardado = (getattr(taller, 'prefijo_folio', None) or '').strip().upper()
+    if guardado:
+        return guardado
+    from mecanimovilapp.apps.usuarios.models import Taller
+
+    base = prefijo_desde_nombre(getattr(taller, 'nombre', '') or '')
+    prefijo = base
+    n = 2
+    while Taller.objects.exclude(pk=taller.pk).filter(prefijo_folio=prefijo).exists():
+        prefijo = f'{base[:3]}{n}'[:6]
+        n += 1
+    taller.prefijo_folio = prefijo
+    taller.save(update_fields=['prefijo_folio'])
+    return prefijo
+
+
+def asignar_folio_taller(taller) -> str:
+    """Siguiente folio del taller. El primero es {SIGLA}-000000."""
+    from mecanimovilapp.apps.ordenes.models import CotizacionCanal
+    from mecanimovilapp.apps.usuarios.models import Taller
+
+    with transaction.atomic():
+        bloqueado = Taller.objects.select_for_update().get(pk=taller.pk)
+        prefijo = asegurar_prefijo_taller(bloqueado)
+        patron = re.compile(rf'^{re.escape(prefijo)}-(\d+)$', re.IGNORECASE)
+        maximo = -1
+        folios = (
+            CotizacionCanal.objects.filter(taller_id=bloqueado.pk)
+            .exclude(numero_publico__isnull=True)
+            .exclude(numero_publico='')
+            .values_list('numero_publico', flat=True)
+        )
+        for folio in folios:
+            coincide = patron.match(str(folio).strip())
+            if coincide:
+                maximo = max(maximo, int(coincide.group(1)))
+        return f'{prefijo}-{maximo + 1:06d}'
+
+
 def asignar_folio_unico(*, preferido_pk: int | None = None) -> str:
     """Siguiente MM libre en el pool cotización + cita + orden app."""
     ocupados = _folios_ocupados()
@@ -85,7 +149,10 @@ def asegurar_numero_publico_cita(cita):
     if stored:
         return cita
 
-    cita.numero_publico = asignar_folio_unico(preferido_pk=cita.pk)
+    taller = getattr(cita, 'taller', None)
+    cita.numero_publico = (
+        asignar_folio_taller(taller) if taller is not None else asignar_folio_unico(preferido_pk=cita.pk)
+    )
     cita.save(update_fields=['numero_publico'])
     return cita
 
@@ -97,6 +164,9 @@ def asegurar_numero_publico_orden(orden):
         return orden
     if orden.pk is None:
         orden.save()
-    orden.numero_publico = asignar_folio_unico(preferido_pk=orden.pk)
+    taller = getattr(orden, 'taller', None)
+    orden.numero_publico = (
+        asignar_folio_taller(taller) if taller is not None else asignar_folio_unico(preferido_pk=orden.pk)
+    )
     orden.save(update_fields=['numero_publico'])
     return orden

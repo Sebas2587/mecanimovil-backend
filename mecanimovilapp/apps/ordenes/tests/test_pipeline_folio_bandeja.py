@@ -347,7 +347,7 @@ class PipelineFolioBandejaTests(TestCase):
         )
         asegurar_numero_publico_cita(cita)
         cita.refresh_from_db()
-        self.assertTrue(cita.numero_publico.startswith('MM-'))
+        self.assertRegex(cita.numero_publico or '', r'^[A-Z0-9]+-000000$')
 
         cot = self._cotizacion(servicio_nombre='Otro caso')
         cita.numero_publico = formatear_numero_publico(cot.pk)
@@ -356,7 +356,7 @@ class PipelineFolioBandejaTests(TestCase):
         cot.save(update_fields=['numero_publico'])
         asegurar_numero_publico(cot)
         cot.refresh_from_db()
-        self.assertTrue(cot.numero_publico.startswith('MM-'))
+        self.assertRegex(cot.numero_publico or '', r'^[A-Z0-9]+-000000$')
         self.assertNotEqual(cot.numero_publico, cita.numero_publico)
 
         por_folio = construir_pipeline_comercial(
@@ -391,4 +391,4 @@ class PipelineFolioBandejaTests(TestCase):
         fila = next(f for f in payload['results'] if f.get('cita_id') == cita.id)
         self.assertEqual(fila['fecha_agendada'], '2030-08-22')
         self.assertEqual(fila['hora_agendada'], '10:00')
-        self.assertTrue(fila['numero_publico'].startswith('MM-'))
+        self.assertRegex(fila['numero_publico'] or '', r'^[A-Z0-9]+-\d{6}$')

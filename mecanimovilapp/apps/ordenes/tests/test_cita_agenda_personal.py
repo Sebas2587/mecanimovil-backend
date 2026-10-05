@@ -123,7 +123,7 @@ class CitaAgendaPersonalAPITestCase(TestCase):
         cita_id = res.data['id']
         self.assertIn('numero_publico', res.data)
         folio = (res.data.get('numero_publico') or '')
-        self.assertTrue(folio.startswith('MM-'), folio)
+        self.assertRegex(folio, r'^[A-Z0-9]+-000000$')
 
         res_cerrar = self.client.post(f'/api/ordenes/citas-agenda-personal/{cita_id}/cerrar/')
         self.assertEqual(res_cerrar.status_code, 200)

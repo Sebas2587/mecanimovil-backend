@@ -253,14 +253,19 @@ def formatear_numero_publico(pk: int) -> str:
 
 
 def asegurar_numero_publico(cotizacion: CotizacionCanal) -> CotizacionCanal:
-    """Asigna folio inmutable MM-000184. No pisa un valor existente ni choca con citas/órdenes."""
+    """Asigna el folio del taller (sigla-000000). No pisa un valor ya emitido."""
     if (cotizacion.numero_publico or '').strip():
         return cotizacion
     if cotizacion.pk is None:
         cotizacion.save()
-    from mecanimovilapp.apps.ordenes.services.folio_caso import asignar_folio_unico
+    from mecanimovilapp.apps.ordenes.services.folio_caso import asignar_folio_taller
 
-    cotizacion.numero_publico = asignar_folio_unico(preferido_pk=cotizacion.pk)
+    taller = getattr(cotizacion, 'taller', None)
+    if taller is None:
+        from mecanimovilapp.apps.ordenes.services.folio_caso import asignar_folio_unico
+        cotizacion.numero_publico = asignar_folio_unico(preferido_pk=cotizacion.pk)
+    else:
+        cotizacion.numero_publico = asignar_folio_taller(taller)
     cotizacion.save(update_fields=['numero_publico', 'actualizado_en'])
     return cotizacion
 
