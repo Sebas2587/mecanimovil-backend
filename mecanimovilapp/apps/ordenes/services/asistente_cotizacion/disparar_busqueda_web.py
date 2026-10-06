@@ -72,7 +72,7 @@ def lineas_progreso_desde_repuestos(
             precio = 0
         elif terminado:
             estado = 'sin_precio'
-            fuente = ''
+            fuente = str(raw.get('comentario') or '')[:80]
             precio = 0
         else:
             estado = 'buscando'

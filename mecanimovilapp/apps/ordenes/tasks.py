@@ -602,6 +602,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
         resultados: dict = dict(cache_hits or {})
 
         # Solo gasta Gemini (y cuota diaria) en líneas sin hit vigente.
+        avisos_busqueda: dict = {}
         if faltantes:
             if not cuota_diaria_disponible():
                 if resultados:
@@ -651,6 +652,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                     servicio_nombre=cot.servicio_nombre or '',
                     on_progreso=_on_progreso,
                     deberia_cancelar=lambda: busqueda_fue_cancelada(cotizacion_id),
+                    avisos=avisos_busqueda,
                 )
                 if nuevos:
                     resultados.update(nuevos)
@@ -746,6 +748,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
 
         # Si el enrich por cache no matcheó, aplicar hits directos por clave fuzzy.
         if resultados:
+            urls_usadas: set[str] = set()
             for i, rep in enumerate(reps_enriquecidos):
                 if not isinstance(rep, dict):
                     continue
@@ -754,10 +757,19 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                     continue
                 if str(rep.get('fuente_marketplace') or '') in ('catalogo', 'historial', 'web'):
                     continue
-                q = _clave_fuzzy(str(rep.get('nombre') or ''))
+                from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+                    _ficha_cubre_pieza,
+                    _precio_plausible_para_linea,
+                )
+
+                nombre_linea = str(rep.get('nombre') or '')
+                q = _clave_fuzzy(nombre_linea)
                 hit = resultados.get(q)
+                if hit and not _ficha_cubre_pieza(
+                    nombre_linea, str(hit.get('nombre_producto') or ''),
+                ):
+                    hit = None
                 if not hit:
-                    # fuzzy best among resultados keys
                     cands = [
                         {
                             'clave': k,
@@ -766,15 +778,18 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                             'fuente_marketplace': 'web',
                             'proveedor_nombre': v.get('tienda'),
                             'url_producto': v.get('url'),
+                            'nombre_producto': v.get('nombre_producto'),
                             'confianza': v.get('confianza') or 0.8,
                         }
                         for k, v in resultados.items()
                         if isinstance(v, dict)
+                        and _ficha_cubre_pieza(nombre_linea, str(v.get('nombre_producto') or ''))
+                        and str(v.get('url') or '') not in urls_usadas
                     ]
                     best = _mejor_hit(
-                        str(rep.get('nombre') or ''),
+                        nombre_linea,
                         cands,
-                        min_score=min_score_web_para(str(rep.get('nombre') or '')),
+                        min_score=min_score_web_para(nombre_linea),
                     )
                     if not best:
                         continue
@@ -783,7 +798,10 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                         'precio_clp': best.get('precio_unitario_clp'),
                         'tienda': best.get('proveedor_nombre'),
                         'url': best.get('url_producto'),
+                        'nombre_producto': best.get('nombre_producto'),
                     }
+                if str(hit.get('url') or '') in urls_usadas:
+                    continue
                 next_rep = dict(rep)
                 if hit.get('marca_repuesto'):
                     next_rep['marca_repuesto'] = str(hit['marca_repuesto'])[:100]
@@ -804,13 +822,11 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                 if hit.get('pais_origen'):
                     next_rep['pais_origen'] = str(hit['pais_origen'])[:40]
                 precio = int(hit.get('precio_clp') or 0)
-                if precio > 0:
-                    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
-                        _precio_plausible_para_linea,
-                    )
-
-                    if not _precio_plausible_para_linea(str(next_rep.get('nombre') or ''), precio):
-                        continue
+                if precio > 0 and not _precio_plausible_para_linea(nombre_linea, precio):
+                    continue
+                url_hit = str(hit.get('url') or '').strip()
+                if url_hit:
+                    urls_usadas.add(url_hit)
                 if precio > 0 and (
                     bool(next_rep.get('precio_estimado', True))
                     or int(next_rep.get('precio_unitario_clp') or 0) <= 0
@@ -820,6 +836,32 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                     next_rep['precio_estimado'] = True
                 next_rep['fuente_marketplace'] = 'web'
                 reps_enriquecidos[i] = next_rep
+
+        if avisos_busqueda:
+            from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+                _clave_fuzzy as _clave_aviso,
+            )
+
+            por_clave = {
+                _clave_aviso(nombre): nota
+                for nombre, nota in avisos_busqueda.items()
+                if isinstance(nota, dict)
+            }
+            for i, rep in enumerate(reps_enriquecidos):
+                if not isinstance(rep, dict):
+                    continue
+                if _to_int_clp(rep.get('precio_unitario_clp')) > 0:
+                    continue
+                nota = por_clave.get(_clave_aviso(str(rep.get('nombre') or '')))
+                if not nota:
+                    continue
+                rep['precio_unitario_clp'] = 0
+                rep['precio_min_clp'] = 0
+                rep['precio_max_clp'] = 0
+                rep['certeza'] = 'sin_precio'
+                rep['motivo_sin_precio'] = str(nota.get('motivo') or 'sin_ficha')[:40]
+                rep['comentario'] = str(nota.get('detalle') or '')[:500]
+                reps_enriquecidos[i] = rep
 
         _abortar_si_cancelada()
         progreso_lineas = [

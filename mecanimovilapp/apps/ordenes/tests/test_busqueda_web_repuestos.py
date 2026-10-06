@@ -845,7 +845,8 @@ class BuscarRepuestosWebTavilyTestCase(SimpleTestCase):
 
         self.assertEqual(calls['tavily_search'], 1)
         self.assertEqual(calls['tavily_extract'], 1)
-        self.assertEqual(calls['gemini'], 0)
+        # Una llamada corta para razonar el pedido. La ficha sale del snippet, no de otra vuelta a Gemini.
+        self.assertEqual(calls['gemini'], 1)
         self.assertEqual(len(out), 1)
         hit = next(iter(out.values()))
         self.assertEqual(hit['marca_repuesto'], 'Gates')
@@ -1359,10 +1360,58 @@ class PrecioDesdeTextoTestCase(SimpleTestCase):
                 'Kit de embrague Suzuki Celerio',
             )
         )
+        self.assertFalse(
+            bw._ficha_cubre_pieza(
+                'Kit de embrague',
+                'piola embrague suzuki celerio',
+            )
+        )
+        self.assertTrue(
+            bw._ficha_cubre_pieza(
+                'Piola de embrague',
+                'piola embrague suzuki celerio',
+            )
+        )
+        self.assertTrue(
+            bw._ficha_cubre_pieza(
+                'Kit de embrague',
+                'Kit embrague Suzuki Celerio 2016',
+            )
+        )
+        self.assertFalse(
+            bw._ficha_cubre_pieza(
+                'Rodamiento de volante',
+                'Rodamiento Suzuki',
+            )
+        )
         self.assertTrue(
             bw._ficha_cubre_pieza(
                 'Rodamiento de volante',
                 'Rodamiento piloto Suzuki Celerio',
+            )
+        )
+        self.assertFalse(
+            bw._candidato_sirve_linea(
+                'Rodamiento de volante',
+                {
+                    'title': 'Rodamiento Suzuki',
+                    'content': 'Envío gratis Precio $300.000',
+                    'url': 'https://www.mundorepuestos.cl/rodamiento-suzuki',
+                },
+                anio=2016,
+                modelo='CELERIO',
+            )
+        )
+        self.assertTrue(
+            bw._candidato_sirve_linea(
+                'Kit de embrague',
+                {
+                    'title': 'Kit embrague Suzuki Celerio 2014-2018',
+                    'content': 'Precio $89.900',
+                    'url': 'https://www.repuestodo.cl/kit-embrague-celerio',
+                },
+                anio=2016,
+                modelo='CELERIO',
             )
         )
         self.assertEqual(
@@ -1692,3 +1741,71 @@ class CoberturaPreciosComunesTests(SimpleTestCase):
 
         self.assertIn(bw._clave_fuzzy('Termostato'), out)
         self.assertEqual(out[bw._clave_fuzzy('Termostato')]['precio_clp'], 18990)
+
+
+class RazonarYCortarBusquedaTests(SimpleTestCase):
+    def test_plan_embrague_separa_kit_de_piola(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.razonar_pedido import (
+            planificar,
+        )
+
+        plan = planificar(
+            'servicio para cambio de kit de embrague, cambio piola de embrague',
+            {'marca': 'SUZUKI', 'modelo': 'CELERIO', 'anio': 2016, 'cilindraje': '998'},
+            usar_llm=False,
+        )
+        nombres = [p['nombre'] for p in plan['piezas']]
+        self.assertIn('Kit de embrague', nombres)
+        self.assertIn('Piola de embrague', nombres)
+        self.assertIn('Rodamiento de volante', nombres)
+        kit = next(p for p in plan['piezas'] if p['nombre'] == 'Kit de embrague')
+        self.assertIn('kit', kit['consulta'])
+        self.assertNotIn('piola', kit['consulta'])
+        piloto = next(p for p in plan['piezas'] if 'volante' in p['nombre'])
+        self.assertTrue(piloto['escasa'])
+        self.assertIn('piloto', piloto['consulta'])
+        self.assertIn('CELERIO', plan['razonamiento'])
+
+    def test_ficha_ajena_corta_la_busqueda(self):
+        from unittest.mock import patch
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.razonar_pedido import (
+            planificar,
+        )
+
+        calls = {'n': 0}
+
+        def fake_validos(query, _whitelist):
+            calls['n'] += 1
+            return [{
+                'title': 'piola embrague suzuki celerio',
+                'url': 'https://www.repuestodo.cl/piola-celerio',
+                'content': 'Precio: $12.800',
+            }]
+
+        plan = planificar(
+            'cambio de kit de embrague',
+            {'marca': 'Suzuki', 'modelo': 'Celerio', 'anio': 2016},
+            usar_llm=False,
+        )
+        avisos: dict = {}
+        with patch.object(bw, '_candidatos_validos', side_effect=fake_validos), patch.object(
+            bw, '_tavily_extraer', return_value={},
+        ), patch.object(bw, '_gemini_generar', return_value=None):
+            out = bw._buscar_repuestos_web_tavily(
+                ['Kit de embrague'],
+                marca='Suzuki',
+                modelo='Celerio',
+                anio=2016,
+                cilindraje='998',
+                tipo_motor='GASOLINA',
+                servicio_nombre='cambio de kit de embrague',
+                timeout=5,
+                avisos=avisos,
+                plan=plan,
+            )
+        self.assertEqual(calls['n'], 1)
+        self.assertEqual(out, {})
+        self.assertEqual(avisos['Kit de embrague']['motivo'], 'sin_ficha')
+        self.assertIn('piola', avisos['Kit de embrague']['detalle'].lower())

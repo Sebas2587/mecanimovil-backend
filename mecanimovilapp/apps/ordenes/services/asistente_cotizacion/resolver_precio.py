@@ -197,14 +197,27 @@ def _anotar_ficha_en_linea(next_rep: dict[str, Any], hit: dict[str, Any]) -> Non
 
 
 def _aplicar_precio_legacy(next_rep: dict[str, Any], hits: list[dict[str, Any]]) -> None:
-    """Comportamiento actual: catalogo → historial → web; ML solo si IA no tiene precio."""
+    """Catálogo y historial primero. La web solo entra si la ficha es esa pieza y el monto cabe."""
+    from .busqueda_web_repuestos import _ficha_cubre_pieza, _precio_plausible_para_linea
+
     precio_ia = _to_int_clp(next_rep.get('precio_unitario_clp'))
+    nombre = str(next_rep.get('nombre') or '')
+
+    def _hit_sirve(hit: dict[str, Any], precio_hit: int) -> bool:
+        fuente = str(hit.get('fuente_marketplace') or '')
+        titulo = str(hit.get('nombre_producto') or hit.get('nombre') or '')
+        if titulo and not _ficha_cubre_pieza(nombre, titulo):
+            return False
+        if fuente in ('web', 'mercadolibre') and not _precio_plausible_para_linea(nombre, precio_hit):
+            return False
+        return True
+
     for fuente in ('catalogo', 'historial', 'web'):
         for hit in hits:
             if str(hit.get('fuente_marketplace') or '') != fuente:
                 continue
             precio_hit = _to_int_clp(hit.get('precio_unitario_clp'))
-            if precio_hit > 0:
+            if precio_hit > 0 and _hit_sirve(hit, precio_hit):
                 next_rep['precio_unitario_clp'] = precio_hit
                 if fuente == 'web':
                     next_rep['precio_referencia_mercado'] = True
@@ -214,7 +227,7 @@ def _aplicar_precio_legacy(next_rep: dict[str, Any], hits: list[dict[str, Any]])
             if str(hit.get('fuente_marketplace') or '') != 'mercadolibre':
                 continue
             precio_hit = _to_int_clp(hit.get('precio_unitario_clp'))
-            if precio_hit > 0:
+            if precio_hit > 0 and _hit_sirve(hit, precio_hit):
                 next_rep['precio_unitario_clp'] = precio_hit
                 return
 

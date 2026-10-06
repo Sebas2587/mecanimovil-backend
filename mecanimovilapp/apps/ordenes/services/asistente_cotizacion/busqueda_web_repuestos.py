@@ -837,36 +837,60 @@ def _ficha_es_kit_embrague_completo(titulo_ficha: str) -> bool:
     return tiene_disco and tiene_prensa and tiene_empuje
 
 
+def _ficha_es_rodamiento_piloto(titulo: str) -> bool:
+    """Rulemán piloto. Un 'Rodamiento Suzuki' suelto es otra pieza (rueda, maza)."""
+    ficha = _norm(titulo)
+    if not ficha or 'piola' in ficha or 'prensa' in ficha or 'disco' in ficha:
+        return False
+    if 'piloto' in ficha or 'ruleman' in ficha:
+        return True
+    return 'rodamiento' in ficha and 'volante' in ficha
+
+
 def _ficha_cubre_pieza(nombre_linea: str, titulo_ficha: str) -> bool:
-    """El kit toma la ficha del conjunto. Una prensa suelta no es el kit, ni al revés."""
+    """La ficha tiene que ser la misma pieza. Una piola no cotiza el kit."""
     linea = _norm(nombre_linea)
     ficha = _norm(titulo_ficha)
     if not linea or not ficha:
         return True
-    if _es_rodamiento_piloto(linea) and _ficha_es_volante_motor(titulo_ficha):
-        return False
+    ficha_kit = _ficha_es_kit_embrague_completo(titulo_ficha)
+    ficha_piola = _es_piola_embrague(ficha)
+    ficha_piloto = _ficha_es_rodamiento_piloto(titulo_ficha)
+    if _es_rodamiento_piloto(linea):
+        if _ficha_es_volante_motor(titulo_ficha) or ficha_kit or ficha_piola:
+            return False
+        return ficha_piloto
     if _es_aceite_caja(linea) and (
-        _ficha_es_kit_embrague_completo(titulo_ficha)
+        ficha_kit
         or _ficha_es_volante_motor(titulo_ficha)
-        or _es_rodamiento_piloto(ficha)
-        or 'piola' in ficha
+        or ficha_piloto
+        or ficha_piola
         or ('embrague' in ficha and 'aceite' not in ficha)
     ):
         return False
-    if _es_piola_embrague(linea) and (
-        _ficha_es_kit_embrague_completo(titulo_ficha) or _ficha_es_volante_motor(titulo_ficha)
-    ):
-        return False
-    ficha_kit = _ficha_es_kit_embrague_completo(titulo_ficha)
+    if _es_piola_embrague(linea):
+        if ficha_kit or _ficha_es_volante_motor(titulo_ficha) or ficha_piloto:
+            return False
+        return ficha_piola
     if _linea_es_kit(nombre_linea):
+        if ficha_piola or ficha_piloto or 'aceite' in ficha or 'reten' in ficha or 'ciguenal' in ficha:
+            return False
         if ficha_kit:
             return True
         if any(c in ficha for c in _COMPONENTE_EMBRAGUE):
             return False
-        return True
+        return False
     if ficha_kit and any(c in linea for c in _COMPONENTE_EMBRAGUE) and 'kit' not in linea:
         return False
     return True
+
+
+def _ficha_nombra_modelo(texto: str, modelo: str) -> bool | None:
+    """True/False si hay un modelo que buscar. None si no hay modelo útil."""
+    token = _norm(_modelo_busqueda(modelo))
+    if len(token) < 3:
+        return None
+    return token in _norm(texto)
 
 
 def _candidato_sirve_linea(
@@ -875,6 +899,7 @@ def _candidato_sirve_linea(
     *,
     anio: Any = None,
     cilindraje: Any = None,
+    modelo: str = '',
 ) -> bool:
     titulo = str(candidato.get('title') or '')
     texto = f'{titulo} {candidato.get("content") or ""} {candidato.get("url") or ""}'
@@ -882,6 +907,8 @@ def _candidato_sirve_linea(
         return False
     if not _pieza_exige_compatibilidad(nombre_linea):
         return True
+    if _ficha_nombra_modelo(texto, modelo) is False:
+        return False
     holgura = 1 if _linea_es_kit(nombre_linea) else 0
     if _ficha_cubre_anio(texto, anio, holgura=holgura) is False:
         return False
@@ -1617,6 +1644,7 @@ def _ordenar_candidatos(
     nombre_linea: str = '',
     anio: Any = None,
     cilindraje: Any = None,
+    modelo: str = '',
 ) -> list[dict[str, Any]]:
     """Manda la ficha que nombra a ESTE auto; después la casa y el precio.
 
@@ -1637,7 +1665,7 @@ def _ordenar_candidatos(
 
     def rango(c: dict[str, Any]) -> tuple[int, ...]:
         no_sirve = 0 if _candidato_sirve_linea(
-            nombre_linea, c, anio=anio, cilindraje=cilindraje,
+            nombre_linea, c, anio=anio, cilindraje=cilindraje, modelo=modelo,
         ) else 1
         calce = -_calce_vehiculo(c, tokens)
         precio = _precio_desde_texto(c.get('content') or '', nombre_linea)
@@ -1677,6 +1705,7 @@ def _hits_desde_candidatos(
     marca_vehiculo: str = '',
     anio: Any = None,
     cilindraje: Any = None,
+    modelo: str = '',
 ) -> dict[str, dict[str, Any]]:
     """Arma hits desde snippet/ficha Tavily cuando el monto ya es legible."""
     out: dict[str, dict[str, Any]] = {}
@@ -1691,7 +1720,9 @@ def _hits_desde_candidatos(
                     (c, _precio_desde_texto(c.get('content') or '', nombre)) for c in candidatos
                 )
                 if _precio_plausible_para_linea(nombre, precio)
-                and _candidato_sirve_linea(nombre, c, anio=anio, cilindraje=cilindraje)
+                and _candidato_sirve_linea(
+                    nombre, c, anio=anio, cilindraje=cilindraje, modelo=modelo,
+                )
             ),
             None,
         )
@@ -1741,6 +1772,8 @@ def _buscar_repuestos_web_tavily(
     timeout: int,
     on_progreso=None,
     deberia_cancelar=None,
+    avisos: dict[str, dict[str, str]] | None = None,
+    plan: dict[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Agregador Tavily (JSON real) + Gemini solo como filtro/formateador."""
     whitelist = _dominios_whitelist()
@@ -1755,12 +1788,16 @@ def _buscar_repuestos_web_tavily(
             raise BusquedaWebCancelada()
 
     candidatos_por_nombre: dict[str, list[dict[str, str]]] = {}
+    notas = avisos if avisos is not None else {}
+    from .razonar_pedido import consulta_de, es_escasa
+
+    plan = plan or {}
     for i, nombre in enumerate(nombres_limpios):
         _cortar()
         if callable(on_progreso):
             on_progreso({
                 'paso': 'web',
-                'detalle': f'Buscando {nombre} en tiendas de Chile',
+                'detalle': f'Buscando {nombre} para {modelo or marca or "este auto"}',
                 'fuentes': fuentes_vivo,
                 'nombre_actual': nombre,
                 'indice': i,
@@ -1775,43 +1812,59 @@ def _buscar_repuestos_web_tavily(
             casas=casas_marca,
             tipo_motor=tipo_motor,
         )
+        pensada = consulta_de(plan, nombre)
+        if pensada:
+            consultas = [pensada] + [q for q in consultas if _norm(q) != _norm(pensada)]
+        max_q = 1 if es_escasa(plan, nombre) else _MAX_CONSULTAS_TAVILY_POR_LINEA
         n_consultas = 0
+        corto_mal = False
         for i_query, query in enumerate(consultas):
             _cortar()
-            if i_query >= _MAX_CONSULTAS_TAVILY_POR_LINEA:
+            if i_query >= max_q:
                 break
             n_consultas += 1
             crudos += _candidatos_validos(query, whitelist)
-            # Ficha de LA MISMA pieza con monto: listo, extract no hace falta más search.
-            if any(
-                _candidato_sirve_linea(nombre, c, anio=anio, cilindraje=cilindraje)
-                and _precio_desde_texto(c.get('content') or '', nombre) > 0
-                for c in crudos
-            ):
+            sirven = [
+                c for c in crudos
+                if _candidato_sirve_linea(
+                    nombre, c, anio=anio, cilindraje=cilindraje, modelo=modelo,
+                )
+            ]
+            # Ficha de LA MISMA pieza con monto: listo.
+            if any(_precio_desde_texto(c.get('content') or '', nombre) > 0 for c in sirven):
                 break
-            # Dos URLs de kit/pieza ya alcanzan: el extract saca el $ del HTML.
-            urls_servibles = {
-                c['url'] for c in crudos
-                if _candidato_sirve_linea(nombre, c, anio=anio, cilindraje=cilindraje)
-            }
-            if len(urls_servibles) >= 2:
+            if len({c['url'] for c in sirven}) >= 2:
+                break
+            # Hay resultados, pero son otra pieza. No seguir ni pasarlos a Gemini.
+            if crudos and not sirven:
+                corto_mal = True
                 break
         logger.info(
-            'busqueda_web_repuestos[tavily]: %s consultas=%s/%s candidatos=%s',
+            'busqueda_web_repuestos[tavily]: %s consultas=%s/%s candidatos=%s corte=%s',
             nombre[:80],
             n_consultas,
-            len(consultas),
+            max_q,
             len({c['url'] for c in crudos}),
+            'mal_clasificado' if corto_mal else 'ok',
         )
-        candidatos = _ordenar_candidatos(
+        ordenados = _ordenar_candidatos(
             crudos,
             tokens_vehiculo=tokens_veh,
             nombre_linea=nombre,
             anio=anio,
             cilindraje=cilindraje,
-        )[:4]
-        if candidatos:
-            candidatos_por_nombre[nombre] = candidatos
+            modelo=modelo,
+        )
+        servir = [
+            c for c in ordenados
+            if _candidato_sirve_linea(
+                nombre, c, anio=anio, cilindraje=cilindraje, modelo=modelo,
+            )
+        ][:4]
+        if servir:
+            candidatos_por_nombre[nombre] = servir
+        else:
+            notas[nombre] = _aviso_sin_ficha(nombre, crudos, modelo, corto_mal)
 
     if not candidatos_por_nombre:
         logger.info('busqueda_web_repuestos[tavily]: 0 candidatos para %s repuestos', len(nombres_limpios))
@@ -1825,10 +1878,11 @@ def _buscar_repuestos_web_tavily(
         if not candidatos:
             continue
         servir = [c for c in candidatos if _candidato_sirve_linea(
-            nombre, c, anio=anio, cilindraje=cilindraje,
+            nombre, c, anio=anio, cilindraje=cilindraje, modelo=modelo,
         )]
-        pool = servir or candidatos
-        urls_ficha.extend(c['url'] for c in pool[:3])
+        if not servir:
+            continue
+        urls_ficha.extend(c['url'] for c in servir[:3])
     hay_kit = any(_linea_es_kit(n) for n in candidatos_por_nombre)
     fichas = _tavily_extraer(
         urls_ficha,
@@ -1847,10 +1901,16 @@ def _buscar_repuestos_web_tavily(
                 nombre_linea=nombre,
                 anio=anio,
                 cilindraje=cilindraje,
+                modelo=modelo,
             )
 
     preliminar = _hits_desde_candidatos(
-        candidatos_por_nombre, tokens_veh, marca_vehiculo=marca, anio=anio, cilindraje=cilindraje,
+        candidatos_por_nombre,
+        tokens_veh,
+        marca_vehiculo=marca,
+        anio=anio,
+        cilindraje=cilindraje,
+        modelo=modelo,
     )
     if preliminar and all(
         _clave_fuzzy(nombre) in preliminar for nombre in candidatos_por_nombre
@@ -1928,6 +1988,7 @@ def _buscar_repuestos_web_tavily(
             {'title': nombre_prod, 'content': snippet, 'url': url},
             anio=anio,
             cilindraje=cilindraje,
+            modelo=modelo,
         ):
             continue
         attrs = _atributos_desde_texto(
@@ -1956,7 +2017,7 @@ def _buscar_repuestos_web_tavily(
                     (c, p) for c, p in with_precio
                     if _precio_plausible_para_linea(nombre_linea, p)
                     and _candidato_sirve_linea(
-                        nombre_linea, c, anio=anio, cilindraje=cilindraje,
+                        nombre_linea, c, anio=anio, cilindraje=cilindraje, modelo=modelo,
                     )
                 ),
                 None,
@@ -2014,7 +2075,12 @@ def _buscar_repuestos_web_tavily(
     # la línea en $0, así que se arma el hit sin pasar por el modelo.
     rescatadas = 0
     for clave, hit in _hits_desde_candidatos(
-        candidatos_por_nombre, tokens_veh, marca_vehiculo=marca, anio=anio, cilindraje=cilindraje,
+        candidatos_por_nombre,
+        tokens_veh,
+        marca_vehiculo=marca,
+        anio=anio,
+        cilindraje=cilindraje,
+        modelo=modelo,
     ).items():
         if clave in out:
             continue
@@ -2034,6 +2100,39 @@ def _buscar_repuestos_web_tavily(
     return out
 
 
+def _aviso_sin_ficha(
+    nombre: str,
+    crudos: list[dict[str, Any]],
+    modelo: str,
+    otra_pieza: bool,
+) -> dict[str, str]:
+    """Lo que el taller debe leer cuando no hay ficha de ESA pieza para ESTE auto."""
+    vistos: list[str] = []
+    for cand in crudos:
+        titulo = str(cand.get('title') or '').strip()
+        if titulo and titulo not in vistos:
+            vistos.append(titulo[:90])
+        if len(vistos) >= 2:
+            break
+    auto = modelo or 'este auto'
+    if otra_pieza and vistos:
+        return {
+            'motivo': 'sin_ficha',
+            'detalle': (
+                f'Sin ficha de {nombre} para {auto}. '
+                f'Lo publicado era otra pieza: {vistos[0]}. '
+                'No se siguió buscando. Escribe el precio de tu casa.'
+            )[:240],
+        }
+    return {
+        'motivo': 'pieza_escasa',
+        'detalle': (
+            f'{nombre} no está publicado para {auto} en las tiendas consultadas. '
+            'Es una pieza difícil de encontrar así: escribe el precio y la casa.'
+        )[:240],
+    }
+
+
 def buscar_repuestos_web(
     nombres: list[str],
     *,
@@ -2041,6 +2140,7 @@ def buscar_repuestos_web(
     servicio_nombre: str = '',
     on_progreso=None,
     deberia_cancelar=None,
+    avisos: dict[str, dict[str, str]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Tavily si hay API key. url_context solo si Tavily no está configurada."""
     nombres_limpios = [str(n).strip()[:200] for n in nombres if str(n).strip()]
@@ -2062,6 +2162,18 @@ def buscar_repuestos_web(
     if callable(deberia_cancelar) and deberia_cancelar():
         raise BusquedaWebCancelada()
 
+    from .razonar_pedido import planificar
+
+    plan = planificar(servicio_nombre, veh, usar_llm=True)
+    if callable(on_progreso):
+        on_progreso({
+            'paso': 'pensando',
+            'detalle': str(plan.get('razonamiento') or 'Revisando el trabajo de este auto')[:240],
+            'fuentes': ['Razonamiento del trabajo'],
+            'nombre_actual': '',
+        })
+    notas = avisos if avisos is not None else {}
+
     if tavily_habilitada() and (getattr(settings, 'GEMINI_API_KEY', '') or '').strip():
         try:
             resultados = _buscar_repuestos_web_tavily(
@@ -2075,6 +2187,8 @@ def buscar_repuestos_web(
                 timeout=timeout,
                 on_progreso=on_progreso,
                 deberia_cancelar=deberia_cancelar,
+                avisos=notas,
+                plan=plan,
             )
             tavily_listo = True
         except BusquedaWebCancelada:
