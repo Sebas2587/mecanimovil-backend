@@ -31,9 +31,22 @@ _PREFIJO_SOLO_MANO = re.compile(
     re.IGNORECASE,
 )
 _CONECTOR_INICIAL = re.compile(
-    r'^(?:y\s+)?(?:tambi[eé]n|adem[aá]s)\s+',
+    r'^(?:y\s+)?(?:tambi[eé]n|adem[aá]s)\s+|^y\s+',
     re.IGNORECASE,
 )
+# "embrague" no identifica la pieza: la piola y el kit comparten esa palabra
+# y no son el mismo repuesto. El distintivo (piola, volante, aire) sí separa.
+_GENERICOS_PIEZA = {
+    'embrague', 'clutch', 'freno', 'frenos', 'filtro', 'filtros',
+    'aceite', 'cambio', 'completo', 'servicio', 'kit', 'juego', 'set',
+    'repuesto', 'repuestos',
+}
+_DISTINTIVOS_PIEZA = {
+    'piola', 'cable', 'guaya', 'volante', 'piloto', 'empuje', 'collarin',
+    'prensa', 'plato', 'disco', 'caja', 'motor', 'aire', 'polen',
+    'gasolina', 'bencina', 'reten', 'sello', 'ciguenal', 'bimasa',
+    'bombin', 'hidraulico', 'delantero', 'trasero', 'izquierdo', 'derecho',
+}
 _LADO = re.compile(
     r'^(?:delanter[oa]s?|traser[oa]s?|izquierd[oa]s?|derech[oa]s?|'
     r'superiores?|inferiores?)$',
@@ -132,11 +145,26 @@ def _tokens(texto: str) -> set[str]:
 
 
 def misma_pieza(a: str, b: str) -> bool:
+    """La misma pieza, no solo la misma familia.
+
+    "Piola de embrague" y "Kit de embrague" comparten "embrague" y son
+    repuestos distintos. "Bujías" y "cambio de bujías" sí son la misma.
+    """
     ta = _tokens(a)
     tb = _tokens(b)
     if not ta or not tb:
         return False
-    return bool(ta & tb)
+    distintivos_a = ta & _DISTINTIVOS_PIEZA
+    distintivos_b = tb & _DISTINTIVOS_PIEZA
+    if distintivos_a and distintivos_b and distintivos_a.isdisjoint(distintivos_b):
+        return False
+    nucleo_a = ta - _GENERICOS_PIEZA
+    nucleo_b = tb - _GENERICOS_PIEZA
+    if nucleo_a and nucleo_b:
+        return bool(nucleo_a & nucleo_b)
+    if not nucleo_a and not nucleo_b:
+        return bool(ta & tb)
+    return False
 
 
 def _mismo_objeto(a: str, b: str) -> bool:

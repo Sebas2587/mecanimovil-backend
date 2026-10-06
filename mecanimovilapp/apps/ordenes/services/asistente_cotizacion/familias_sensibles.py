@@ -28,8 +28,12 @@ FAMILIAS_SENSIBLES: dict[str, dict[str, Any]] = {
         'opciones': ['Mineral', 'Semi-sintético', 'Sintético'],
         'requiere_viscosidad': True,
         'keywords': ('aceite', 'lubricante'),
-        # Un filtro o una bomba de aceite no se piden por viscosidad.
-        'excluye': ('filtro', 'bomba', 'carter', 'enfriador', 'sensor', 'tapa', 'reten'),
+        # Un filtro, el aceite de caja o un rodamiento no se piden como 5W30.
+        'excluye': (
+            'filtro', 'bomba', 'carter', 'enfriador', 'sensor', 'tapa', 'reten',
+            'caja', 'transmision', 'valvulina', 'rodamiento', 'volante',
+            'piola', 'embrague', 'clutch', 'cable', 'guaya',
+        ),
         'eje_calidad': True,
     },
     'amortiguador': {
@@ -158,7 +162,9 @@ def anotar_familia_en_linea(
     """
     next_rep = dict(rep)
     nombre = str(next_rep.get('nombre') or '')
-    familia = str(next_rep.get('familia_sensible') or '').strip() or detectar_familia_sensible(nombre)
+    # La familia sale del nombre. Una marca guardada ("aceite" en un
+    # rodamiento) no se hereda: el selector de variante sería el de otra pieza.
+    familia = detectar_familia_sensible(nombre)
     if familia:
         next_rep['familia_sensible'] = familia
         spec = str(next_rep.get('especificacion') or '').strip()

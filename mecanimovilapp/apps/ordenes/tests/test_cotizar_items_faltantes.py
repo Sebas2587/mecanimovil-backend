@@ -795,6 +795,29 @@ class TechoIaYLineasAgenteTests(SimpleTestCase):
         })
         self.assertEqual(out['precio_unitario_clp'], 12500)
 
+    def test_techo_absurdo_de_aceite_o_rodamiento_no_se_cobra(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.resolver_precio import (
+            aplicar_techo_ia_si_falta_unitario,
+        )
+
+        aceite = aplicar_techo_ia_si_falta_unitario({
+            'nombre': 'Aceite de caja de cambios',
+            'precio_unitario_clp': 0,
+            'precio_min_clp': 300000,
+            'precio_max_clp': 300000,
+        })
+        self.assertEqual(aceite['precio_unitario_clp'], 0)
+        self.assertEqual(aceite['precio_max_clp'], 0)
+
+        rodamiento = aplicar_techo_ia_si_falta_unitario({
+            'nombre': 'Rodamiento de volante',
+            'precio_unitario_clp': 0,
+            'precio_min_clp': 300000,
+            'precio_max_clp': 300000,
+        })
+        self.assertEqual(rodamiento['precio_unitario_clp'], 0)
+        self.assertEqual(rodamiento['precio_max_clp'], 0)
+
     def test_asegurar_montos_reparte_lump_en_lineas_vacias(self):
         from mecanimovilapp.apps.agente_ia.services.cotizacion_borrador import (
             _asegurar_montos_en_lineas,

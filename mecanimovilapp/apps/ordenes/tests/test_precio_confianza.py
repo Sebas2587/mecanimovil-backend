@@ -85,6 +85,8 @@ class CategoriaYFamiliaTestCase(SimpleTestCase):
         self.assertIsNone(detectar_familia_sensible('Cable de bujía'))
         self.assertIsNone(detectar_familia_sensible('Soporte de amortiguador'))
         self.assertEqual(detectar_familia_sensible('Aceite de motor 5W-30'), 'aceite_motor')
+        self.assertIsNone(detectar_familia_sensible('Aceite de caja de cambios'))
+        self.assertIsNone(detectar_familia_sensible('Rodamiento de volante'))
         self.assertEqual(detectar_familia_sensible('Amortiguador delantero'), 'amortiguador')
 
 

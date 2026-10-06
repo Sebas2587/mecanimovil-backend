@@ -804,6 +804,13 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                 if hit.get('pais_origen'):
                     next_rep['pais_origen'] = str(hit['pais_origen'])[:40]
                 precio = int(hit.get('precio_clp') or 0)
+                if precio > 0:
+                    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+                        _precio_plausible_para_linea,
+                    )
+
+                    if not _precio_plausible_para_linea(str(next_rep.get('nombre') or ''), precio):
+                        continue
                 if precio > 0 and (
                     bool(next_rep.get('precio_estimado', True))
                     or int(next_rep.get('precio_unitario_clp') or 0) <= 0

@@ -1343,6 +1343,28 @@ class PrecioDesdeTextoTestCase(SimpleTestCase):
         self.assertFalse(bw._precio_plausible_para_linea(kit, 23170))
         self.assertFalse(bw._precio_plausible_para_linea(kit, 447000))
         self.assertTrue(bw._precio_plausible_para_linea(kit, 89900))
+        self.assertFalse(bw._precio_plausible_para_linea('Aceite de caja de cambios', 300000))
+        self.assertFalse(bw._precio_plausible_para_linea('Rodamiento de volante', 300000))
+        self.assertTrue(bw._precio_plausible_para_linea('Rodamiento de volante', 12990))
+        self.assertTrue(bw._precio_plausible_para_linea('Piola de embrague', 18990))
+        self.assertFalse(
+            bw._ficha_cubre_pieza(
+                'Rodamiento de volante',
+                'Volante bimasa Suzuki Celerio',
+            )
+        )
+        self.assertFalse(
+            bw._ficha_cubre_pieza(
+                'Aceite de caja de cambios',
+                'Kit de embrague Suzuki Celerio',
+            )
+        )
+        self.assertTrue(
+            bw._ficha_cubre_pieza(
+                'Rodamiento de volante',
+                'Rodamiento piloto Suzuki Celerio',
+            )
+        )
         self.assertEqual(
             bw._precio_desde_texto('Precio: $89.900 En Stock', kit),
             89900,

@@ -843,6 +843,20 @@ def _ficha_cubre_pieza(nombre_linea: str, titulo_ficha: str) -> bool:
     ficha = _norm(titulo_ficha)
     if not linea or not ficha:
         return True
+    if _es_rodamiento_piloto(linea) and _ficha_es_volante_motor(titulo_ficha):
+        return False
+    if _es_aceite_caja(linea) and (
+        _ficha_es_kit_embrague_completo(titulo_ficha)
+        or _ficha_es_volante_motor(titulo_ficha)
+        or _es_rodamiento_piloto(ficha)
+        or 'piola' in ficha
+        or ('embrague' in ficha and 'aceite' not in ficha)
+    ):
+        return False
+    if _es_piola_embrague(linea) and (
+        _ficha_es_kit_embrague_completo(titulo_ficha) or _ficha_es_volante_motor(titulo_ficha)
+    ):
+        return False
     ficha_kit = _ficha_es_kit_embrague_completo(titulo_ficha)
     if _linea_es_kit(nombre_linea):
         if ficha_kit:
@@ -929,7 +943,7 @@ Reglas:
 4. calidad = original (genuino/agencia), oem (equivalente OEM) o alternativo (aftermarket). Solo si el texto lo decide. Si duda, "".
 5. pais_origen = país de la PIEZA (China, Japón, Alemania…) solo si dice hecho/fabricado/importado/origen. No uses Chile por ser la tienda.
 6. tienda = quién vende. En una tienda es el sitio (AutoPlanet, Refax, …); en una publicación de marketplace es el nombre del vendedor visible, no "Mercado Libre". url = link de la publicación o producto leído (https).
-7. precio_clp = entero CLP sin puntos ni símbolo: el "Precio:" de ESA ficha, no relacionados ni cuotas. Si el monto es irreal para la pieza (kit 3 piezas ~35.000–280.000, prensa suelta ~8.000–120.000), encontrado=false para ese candidato.
+7. precio_clp = entero CLP sin puntos ni símbolo: el "Precio:" de ESA ficha, no relacionados ni cuotas. Si el monto es irreal para la pieza, encontrado=false: kit 3 piezas ~35.000–280.000, prensa suelta ~8.000–120.000, rodamiento piloto ~3.000–45.000 (un volante bimasa no es el rodamiento), piola ~4.000–55.000, aceite de caja ~3.000–90.000.
 8. Solo encontrado=false si en las páginas NO hay ningún producto de la misma pieza.
 9. Responde SOLO JSON válido (sin markdown):
 {{
@@ -1311,12 +1325,50 @@ _BANDAS_CATEGORIA = {
 }
 _BANDA_KIT_EMBRAGUE = (35_000, 280_000)
 _BANDA_COMPONENTE_EMBRAGUE = (8_000, 120_000)
+# Un rodamiento piloto o una piola no valen lo de un volante bimasa ni de un kit.
+_BANDA_RODAMIENTO_PILOTO = (3_000, 45_000)
+_BANDA_PIOLA_EMBRAGUE = (4_000, 55_000)
+
+
+def _es_rodamiento_piloto(nombre: str) -> bool:
+    n = _norm(nombre)
+    if 'empuje' in n or 'bimasa' in n:
+        return False
+    return ('rodamiento' in n or 'ruleman' in n) and ('volante' in n or 'piloto' in n)
+
+
+def _es_piola_embrague(nombre: str) -> bool:
+    n = _norm(nombre)
+    return 'piola' in n or 'guaya' in n or (
+        'cable' in n and ('embrague' in n or 'clutch' in n)
+    )
+
+
+def _es_aceite_caja(nombre: str) -> bool:
+    n = _norm(nombre)
+    return 'aceite' in n and ('caja' in n or 'transmision' in n or 'valvulina' in n)
+
+
+def _ficha_es_volante_motor(titulo: str) -> bool:
+    """Volante bimasa o volante de motor: no es el rodamiento piloto."""
+    ficha = _norm(titulo)
+    if not ficha or 'volante' not in ficha:
+        return False
+    if any(k in ficha for k in ('rodamiento', 'piloto', 'ruleman', 'piola', 'aceite')):
+        return False
+    return True
 
 
 def _banda_precio_linea(nombre: str) -> tuple[int, int]:
     n = _norm(nombre)
     if not n:
         return _BANDA_DEFAULT
+    if _es_rodamiento_piloto(n):
+        return _BANDA_RODAMIENTO_PILOTO
+    if _es_piola_embrague(n):
+        return _BANDA_PIOLA_EMBRAGUE
+    if _es_aceite_caja(n):
+        return _BANDAS_CATEGORIA['aceites']
     if any(k in n for k in ('embrague', 'clutch')):
         if _linea_es_kit(nombre):
             return _BANDA_KIT_EMBRAGUE
@@ -1402,7 +1454,7 @@ Para cada repuesto, elige el MEJOR candidato de su lista (por índice):
 5. pais_origen = país de fabricación/procedencia de la pieza solo si el texto lo dice (hecho en, importado de, origen). No uses Chile por ser la tienda.
 6. precio_clp = el precio de VENTA de ESA ficha, el que está junto a "Precio:". Entero CLP sin puntos ni símbolo. NO uses precios de productos relacionados, cuotas, REF, EAN ni SKU. Si el candidato trae "precio detectado", úsalo solo si coincide con "Precio:" o es el único monto creíble de esa ficha.
 6b. Entre candidatos de la misma pieza, PREFIERE el que tenga precio; uno sin monto solo si ninguno lo trae.
-6c. Si el monto es irreal para esa pieza (prensa/disco/collarín de auto liviano fuera de 8.000–120.000, kit de 3 piezas fuera de 35.000–280.000), descarta ese candidato.
+6c. Si el monto es irreal para esa pieza, descarta ese candidato: prensa/disco/collarín de auto liviano fuera de 8.000–120.000; kit de 3 piezas fuera de 35.000–280.000; rodamiento piloto o de volante fuera de 3.000–45.000 (un volante bimasa no es el rodamiento); piola o cable de embrague fuera de 4.000–55.000; aceite de caja fuera de 3.000–90.000 (un litro o el llenado, no la caja de cambios ni el kit).
 6d. Si la línea es un KIT y hay un candidato "kit … 3 piezas" compatible con el auto, elígelo. Un componente no cotiza el kit.
 7. url = EXACTAMENTE la url del candidato elegido (cópiala tal cual, no la modifiques).
 8. tienda = quién vende: el sitio según el dominio (AutoPlanet, Refax, etc.) o, si es una publicación de marketplace, el nombre del vendedor visible en el texto.
@@ -1508,6 +1560,14 @@ def _escalera_consultas(
     como "3 piezas". Esa frase mandaba al agente a listados y a kits de otro motor.
     """
     completo = _modelo_busqueda_completo(modelo)
+    # "rodamiento de volante" en Google cae en el volante bimasa. La casa
+    # publica el piloto como rodamiento piloto. La piola, como cable.
+    if _es_rodamiento_piloto(nombre):
+        nombre = 'rodamiento piloto'
+    elif _es_piola_embrague(nombre):
+        nombre = 'piola de embrague'
+    elif _es_aceite_caja(nombre):
+        nombre = 'aceite caja cambios'
     nucleo = _nombre_busqueda_corto(nombre)
     motor = _codigo_motor_query(tipo_motor)
     base = ' '.join(p for p in [nombre, marca, completo, cilindraje, motor] if p)

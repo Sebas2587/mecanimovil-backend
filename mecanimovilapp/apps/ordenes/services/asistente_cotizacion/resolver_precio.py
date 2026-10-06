@@ -85,7 +85,11 @@ def aplicar_derivados_certeza(rep: dict[str, Any]) -> None:
 
 
 def aplicar_techo_ia_si_falta_unitario(rep: dict[str, Any]) -> dict[str, Any]:
-    """Si no hay ficha, cobra el techo del rango que Gemini ya entregó."""
+    """Si no hay ficha, cobra el techo del rango que Gemini ya entregó.
+
+    Un techo fuera de la banda de esa pieza (aceite a $300.000, rodamiento
+    piloto al precio de un volante) no se usa: queda sin precio para buscarlo.
+    """
     next_rep = dict(rep)
     if _to_int_clp(next_rep.get('precio_unitario_clp')) > 0:
         return next_rep
@@ -99,6 +103,16 @@ def aplicar_techo_ia_si_falta_unitario(rep: dict[str, Any]) -> dict[str, Any]:
         piso = techo
     if piso > techo:
         piso, techo = techo, piso
+    nombre = str(next_rep.get('nombre') or '')
+    if not _monto_en_banda_de_pieza(nombre, techo):
+        if _monto_en_banda_de_pieza(nombre, piso):
+            techo = piso
+        else:
+            next_rep['precio_min_clp'] = 0
+            next_rep['precio_max_clp'] = 0
+            return next_rep
+    if not _monto_en_banda_de_pieza(nombre, piso):
+        piso = techo
     next_rep['precio_unitario_clp'] = techo
     next_rep['precio_min_clp'] = piso
     next_rep['precio_max_clp'] = techo
@@ -108,6 +122,14 @@ def aplicar_techo_ia_si_falta_unitario(rep: dict[str, Any]) -> dict[str, Any]:
     next_rep.pop('motivo_sin_precio', None)
     aplicar_derivados_certeza(next_rep)
     return next_rep
+
+
+def _monto_en_banda_de_pieza(nombre: str, precio: int) -> bool:
+    if precio <= 0:
+        return False
+    from .busqueda_web_repuestos import _precio_plausible_para_linea
+
+    return _precio_plausible_para_linea(nombre, precio)
 
 
 def aplicar_techo_ia_en_repuestos(repuestos: list | None) -> list:

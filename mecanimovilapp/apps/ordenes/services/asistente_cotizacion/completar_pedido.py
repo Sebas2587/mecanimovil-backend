@@ -1,4 +1,11 @@
-"""Si el taller pide un kit, la cotización trae la faena y las piezas de ese cambio."""
+"""Si el taller pide un embrague, la cotización trae el trabajo completo.
+
+Un cambio de embrague no es una sola línea. La casa vende el kit (disco,
+prensa y rodamiento de empuje). Al bajar la caja se cambian el rodamiento
+de volante y el aceite, y conviene el retén que queda a la vista. La piola,
+si el taller la pidió, es un repuesto: no se queda solo en la mano de obra.
+La faena es una: el monto cubre todas esas piezas.
+"""
 from __future__ import annotations
 
 import re
@@ -11,14 +18,32 @@ _KIT_EMBRAGUE = (
     ('kit',),
     'Disco, prensa y rodamiento de empuje. Así lo venden las casas de repuestos.',
 )
-_ASOCIADOS_CAMBIO = (
-    ('Aceite de caja de cambios', ('aceite',), 'Insumo del cambio de embrague.'),
+_RODAMIENTO_VOLANTE = (
+    'Rodamiento de volante',
+    ('rodamiento de volante', 'rodamiento volante', 'rodamiento piloto', 'rodamiento de piloto', 'ruleman'),
+    'Rodamiento piloto. No viene dentro del kit y no es el volante del motor.',
+)
+_ACEITE_CAJA = (
+    'Aceite de caja de cambios',
+    ('aceite de caja', 'aceite caja', 'valvulina', 'aceite de transmision'),
+    'Insumo del cambio de embrague. Es el llenado de la caja, no la caja ni un tambor.',
+)
+_RETEN = (
+    'Retén trasero de cigüeñal',
+    ('reten', 'ciguenal'),
+    'Queda a la vista al bajar la caja. Conviene cambiarlo en el mismo trabajo.',
+)
+_PIOLA = (
+    'Piola de embrague',
+    ('piola', 'guaya', 'cable de embrague', 'cable embrague'),
+    'Cable de accionamiento. El taller lo pidió: es repuesto, no mano de obra.',
 )
 _PIEZA_DEL_KIT = ('disco', 'prensa', 'plato', 'collarin', 'empuje')
+_FAENA = 'Cambio de embrague'
 
 
 def completar_pedido_con_faena(contenido: dict[str, Any] | None, servicio_nombre: str = '') -> dict[str, Any]:
-    """Un kit de embrague incluye el cambio y cada pieza que se compra para hacerlo."""
+    """Un cambio de embrague incluye la faena única y cada pieza de ese trabajo."""
     data = dict(contenido or {})
     pedido = ' '.join(
         parte for parte in (
@@ -31,35 +56,44 @@ def completar_pedido_con_faena(contenido: dict[str, Any] | None, servicio_nombre
         return data
     reps = [rep for rep in (data.get('repuestos') or []) if isinstance(rep, dict)]
     reps = [rep for rep in reps if not _es_pieza_suelta_del_kit(str(rep.get('nombre') or ''))]
-    nombre_kit, claves_kit, comentario_kit = _KIT_EMBRAGUE
-    if not _ya_tiene(reps, claves_kit):
-        reps.insert(0, _linea(nombre_kit, comentario_kit))
-    for nombre, claves, comentario in _ASOCIADOS_CAMBIO:
+    reps = [rep for rep in reps if not _es_embrague_vago(str(rep.get('nombre') or ''))]
+    for nombre, claves, comentario in _piezas_del_trabajo(pedido):
         if _ya_tiene(reps, claves):
             continue
         reps.append(_linea(nombre, comentario))
     data['repuestos'] = reps
-    data['servicios_lineas'] = _faena(data, servicio_nombre)
+    data['servicios_lineas'] = _faena_unica(data)
+    data['mano_obra_clp'] = sum(
+        int(lin.get('monto_clp') or 0) for lin in data['servicios_lineas']
+    )
     return data
 
 
-def _faena(data: dict[str, Any], servicio_nombre: str) -> list[dict[str, Any]]:
+def _piezas_del_trabajo(pedido: str) -> tuple[tuple[str, tuple[str, ...], str], ...]:
+    piezas = [_KIT_EMBRAGUE, _RODAMIENTO_VOLANTE, _ACEITE_CAJA, _RETEN]
+    if _menciona_piola(pedido):
+        piezas.append(_PIOLA)
+    return tuple(piezas)
+
+
+def _faena_unica(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Una sola faena de embrague. El monto suma lo que se había partido por pieza."""
     lineas = [lin for lin in (data.get('servicios_lineas') or []) if isinstance(lin, dict)]
-    if any(_es_embrague(str(lin.get('nombre') or '')) for lin in lineas):
-        return lineas
-    titulo = (servicio_nombre or str(data.get('servicio_nombre') or '')).strip()
-    if not titulo.lower().startswith('cambio'):
-        titulo = 'Cambio de embrague'
-    monto = 0
-    if len(lineas) == 1 and _es_faena_generica(str(lineas[0].get('nombre') or '')):
-        monto = int(lineas[0].get('monto_clp') or data.get('mano_obra_clp') or 0)
-        lineas[0]['nombre'] = titulo[:200]
-        lineas[0]['monto_clp'] = monto
-        return lineas
-    if not lineas:
+    del_trabajo: list[dict[str, Any]] = []
+    otras: list[dict[str, Any]] = []
+    for lin in lineas:
+        nombre = str(lin.get('nombre') or '')
+        if _es_faena_generica(nombre) or _es_faena_de_este_trabajo(nombre):
+            del_trabajo.append(lin)
+        else:
+            otras.append(lin)
+    monto = sum(int(lin.get('monto_clp') or 0) for lin in del_trabajo)
+    if monto <= 0 and not otras:
         monto = int(data.get('mano_obra_clp') or 0)
-    lineas.append({'nombre': titulo[:200], 'monto_clp': monto})
-    return lineas
+    faena = {'nombre': _FAENA, 'monto_clp': monto}
+    if del_trabajo and str(del_trabajo[0].get('id') or '').strip():
+        faena['id'] = del_trabajo[0]['id']
+    return otras + [faena]
 
 
 def _linea(nombre: str, comentario: str) -> dict[str, Any]:
@@ -82,6 +116,38 @@ def _es_embrague(texto: str) -> bool:
     return 'embrague' in n or 'clutch' in n
 
 
+def _menciona_piola(texto: str) -> bool:
+    n = _norm(texto)
+    return 'piola' in n or 'guaya' in n or ('cable' in n and ('embrague' in n or 'clutch' in n))
+
+
+def _es_faena_de_este_trabajo(nombre: str) -> bool:
+    n = _norm(nombre)
+    if 'embrague' in n or 'clutch' in n or 'piola' in n or 'guaya' in n:
+        return True
+    if 'volante' in n or 'piloto' in n:
+        return True
+    if 'aceite' in n and 'caja' in n:
+        return True
+    if 'reten' in n or 'ciguenal' in n:
+        return True
+    return False
+
+
+def _es_embrague_vago(nombre: str) -> bool:
+    """'Embrague completo' no es una ficha: el repuesto es el kit."""
+    n = _norm(nombre)
+    if 'embrague' not in n and 'clutch' not in n:
+        return False
+    if any(clave in n for clave in (
+        'piola', 'cable', 'guaya', 'volante', 'piloto', 'aceite', 'reten',
+        'sello', 'bombin', 'hidraulico', 'bimasa', 'kit', 'juego', 'set',
+        'disco', 'prensa', 'plato', 'collarin', 'empuje',
+    )):
+        return False
+    return True
+
+
 def _es_pieza_suelta_del_kit(nombre: str) -> bool:
     """Disco, prensa o rodamiento de empuje sueltos: el kit de las casas ya los trae."""
     n = _norm(nombre)
@@ -90,6 +156,8 @@ def _es_pieza_suelta_del_kit(nombre: str) -> bool:
     if 'kit' in n or 'juego' in n or 'set' in n:
         return False
     if 'piloto' in n or 'aceite' in n or 'volante' in n or 'bimasa' in n:
+        return False
+    if 'piola' in n or 'cable' in n or 'guaya' in n:
         return False
     return any(pieza in n for pieza in _PIEZA_DEL_KIT)
 
