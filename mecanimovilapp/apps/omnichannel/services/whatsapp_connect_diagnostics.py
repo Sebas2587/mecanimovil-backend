@@ -50,6 +50,15 @@ WHATSAPP_CONNECT_COPY = {
             'Cierra el navegador, vuelve a la app y pulsa Conectar otra vez.'
         ),
     },
+    'numero_sin_registro': {
+        'message': (
+            'El código llegó al WhatsApp, pero ese número todavía no puede enviar ni recibir en el chat.'
+        ),
+        'instruction': (
+            'Pulsa Conectar otra vez. En la ventana de Facebook elige ese mismo WhatsApp '
+            'y pon el código que llega al teléfono. No la cierres hasta que termine.'
+        ),
+    },
     'generico': {
         'message': 'No pudimos vincular tu WhatsApp.',
         'instruction': 'Pulsa Conectar e intenta de nuevo. Si se repite, contacta a soporte.',

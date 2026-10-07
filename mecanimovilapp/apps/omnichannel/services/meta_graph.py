@@ -241,7 +241,7 @@ class MetaGraphClient:
             self._url(phone_number_id),
             params={
                 'access_token': access_token,
-                'fields': 'id,display_phone_number,verified_name',
+                'fields': 'id,display_phone_number,verified_name,code_verification_status,status',
             },
             timeout=30,
         )
@@ -254,6 +254,18 @@ class MetaGraphClient:
             )
             return None
         return resp.json()
+
+    def numero_listo_para_mensajeria(self, phone: dict | None) -> bool:
+        """El código de WhatsApp no alcanza: el número tiene que estar verificado para la API."""
+        if not isinstance(phone, dict):
+            return False
+        verificado = str(phone.get('code_verification_status') or '').upper()
+        if verificado == 'NOT_VERIFIED':
+            return False
+        estado = str(phone.get('status') or '').upper()
+        if estado in {'PENDING', 'DELETED', 'MIGRATED', 'BANNED', 'DISCONNECTED', 'UNVERIFIED'}:
+            return False
+        return True
 
     def subscribe_page_webhooks(
         self,

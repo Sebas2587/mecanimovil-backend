@@ -208,6 +208,36 @@ def complete_meta_oauth_connection(
                 except Exception as sub_exc:
                     logger.warning('WABA webhook subscribe after OAuth failed: %s', sub_exc)
 
+            phone_id = update_fields.get('phone_number_id')
+            if phone_id:
+                phone = client.get_phone_number_by_id(phone_id, user_token)
+                if phone and not client.numero_listo_para_mensajeria(phone):
+                    display = phone.get('display_phone_number') or update_fields.get('display_identifier')
+                    diagnosis = copy_for_error('numero_sin_registro')
+                    logger.info(
+                        'WhatsApp número sin registro API phone_number_id=%s display=%s status=%s verification=%s',
+                        phone_id,
+                        display,
+                        phone.get('status'),
+                        phone.get('code_verification_status'),
+                    )
+                    conn.access_token = user_token
+                    conn.phone_number_id = phone_id
+                    conn.waba_id = update_fields.get('waba_id') or conn.waba_id
+                    conn.display_identifier = display
+                    conn.display_name = phone.get('verified_name') or update_fields.get('display_name')
+                    conn.status = 'error'
+                    conn.enabled = False
+                    conn.mensaje_estado = diagnosis.message
+                    conn.save()
+                    return MetaOAuthCompletionResult(
+                        success=False,
+                        message=diagnosis.message,
+                        instruction=diagnosis.instruction,
+                        error_code=diagnosis.error_code,
+                        channel=conn.channel.lower(),
+                    )
+
         page_id = update_fields.get('page_id')
         page_token = update_fields.get('access_token')
         if page_id and page_token and conn.channel in ('MESSENGER', 'INSTAGRAM'):

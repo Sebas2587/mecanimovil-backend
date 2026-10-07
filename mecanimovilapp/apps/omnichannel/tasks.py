@@ -418,6 +418,13 @@ def send_meta_message(self, message_id: int):
             if _meta_reintenta(resp) and self.request.retries < (self.max_retries or 0):
                 raise self.retry(countdown=10 * (self.request.retries + 1))
             _guardar_error_envio(resp.text)
+            if connection.channel == 'WHATSAPP' and _codigo_error_meta(resp) == 133010:
+                connection.status = 'error'
+                connection.mensaje_estado = (
+                    'Este WhatsApp no puede enviar ni recibir. Pulsa Conectar y completa '
+                    'el alta con el código que llega a ese teléfono.'
+                )
+                connection.save(update_fields=['status', 'mensaje_estado', 'updated_at'])
             message.refresh_from_db()
             _broadcast_estado_envio(message)
             return {'error': resp.text}

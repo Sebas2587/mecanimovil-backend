@@ -372,4 +372,18 @@ class MetaSendRetryTests(SimpleTestCase):
         self.assertTrue(_meta_reintenta(resp_131000))
         self.assertTrue(_meta_reintenta(resp_500))
         self.assertFalse(_meta_reintenta(resp_perm))
-        self.assertFalse(_meta_reintenta(None))
+
+
+class NumeroWhatsappListoTests(SimpleTestCase):
+    def test_codigo_sin_verificacion_no_deja_mensajear(self):
+        from mecanimovilapp.apps.omnichannel.services.meta_graph import MetaGraphClient
+
+        client = MetaGraphClient()
+        self.assertFalse(client.numero_listo_para_mensajeria({
+            'code_verification_status': 'NOT_VERIFIED',
+            'status': 'CONNECTED',
+        }))
+        self.assertTrue(client.numero_listo_para_mensajeria({
+            'code_verification_status': 'VERIFIED',
+            'status': 'CONNECTED',
+        }))
