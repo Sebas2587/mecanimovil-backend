@@ -1,27 +1,14 @@
 """
-Eliminación completa de hilos de chat (Conversation + Message + ChatSolicitud + archivos).
+Saca un hilo de la bandeja sin recorrer archivos ni borrar cotizaciones.
 """
 from __future__ import annotations
-
-import logging
 
 from django.contrib.contenttypes.models import ContentType
 from django.db import transaction
 from rest_framework.exceptions import PermissionDenied, NotFound
 
-from mecanimovilapp.apps.chat.models import Conversation, Message
+from mecanimovilapp.apps.chat.models import Conversation
 from mecanimovilapp.apps.ordenes.models import ChatSolicitud, OfertaProveedor, SolicitudServicioPublica
-
-logger = logging.getLogger(__name__)
-
-
-def _delete_storage_file(file_field) -> None:
-    if not file_field:
-        return
-    try:
-        file_field.delete(save=False)
-    except Exception:
-        logger.exception('No se pudo borrar archivo de storage: %s', file_field.name)
 
 
 def _user_may_access_oferta(user, oferta: OfertaProveedor) -> bool:
@@ -32,18 +19,20 @@ def _user_may_access_oferta(user, oferta: OfertaProveedor) -> bool:
     return user.is_staff or user.is_superuser
 
 
+def _desvincular_cotizaciones(conversation: Conversation) -> None:
+    """El chat sale de la bandeja. La cotización, la cita y el historial de la patente quedan."""
+    from mecanimovilapp.apps.ordenes.models import CotizacionCanal
+
+    CotizacionCanal.objects.filter(conversation_id=conversation.id).update(conversation=None)
+
+
 def _purge_chat_solicitud_queryset(qs) -> int:
-    count = 0
-    for msg in qs.iterator():
-        _delete_storage_file(msg.archivo_adjunto)
-        count += 1
     deleted, _ = qs.delete()
     return deleted
 
 
 def _purge_conversation_instance(conversation: Conversation) -> None:
-    for msg in conversation.messages.all().iterator():
-        _delete_storage_file(msg.attachment)
+    _desvincular_cotizaciones(conversation)
     conversation.delete()
 
 
