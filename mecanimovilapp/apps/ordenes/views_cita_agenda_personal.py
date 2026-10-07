@@ -234,23 +234,45 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
         from mecanimovilapp.apps.checklists.models import ChecklistInstance
         from mecanimovilapp.apps.checklists.services import resolver_servicio_desde_cita_personal
 
+        motivo = ''
+        if isinstance(request.data, dict):
+            motivo = str(request.data.get('motivo') or '')
         checklist = ChecklistInstance.objects.filter(cita_personal=cita).only('estado').first()
-        if checklist is not None and checklist.estado != 'PENDIENTE':
-            return Response(
-                {
-                    'error': 'Completa el checklist operativo antes de cerrar la cita.',
-                    'codigo': 'checklist_en_curso',
-                },
-                status=status.HTTP_409_CONFLICT,
-            )
-        if checklist is None and resolver_servicio_desde_cita_personal(cita) is not None:
-            return Response(
-                {
-                    'error': 'Inicia el servicio para generar el checklist operativo.',
-                    'codigo': 'requiere_checklist',
-                },
-                status=status.HTTP_409_CONFLICT,
-            )
+        if motivo == 'sin_firma_cliente':
+            if checklist is None or checklist.estado != 'PENDIENTE_FIRMA_CLIENTE':
+                return Response(
+                    {
+                        'error': 'Solo puedes cerrar sin firma cuando el informe ya está esperando al cliente.',
+                        'codigo': 'no_espera_firma',
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+        elif motivo == 'sin_checklist':
+            if checklist is not None and checklist.estado not in ('PENDIENTE',):
+                return Response(
+                    {
+                        'error': 'El servicio ya tiene un checklist en curso. Termínalo o espera la firma.',
+                        'codigo': 'checklist_en_curso',
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+        else:
+            if checklist is not None and checklist.estado != 'PENDIENTE':
+                return Response(
+                    {
+                        'error': 'Completa el checklist operativo antes de cerrar la cita.',
+                        'codigo': 'checklist_en_curso',
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+            if checklist is None and resolver_servicio_desde_cita_personal(cita) is not None:
+                return Response(
+                    {
+                        'error': 'Inicia el servicio para generar el checklist operativo.',
+                        'codigo': 'requiere_checklist',
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
 
         try:
             cita.cerrar()
@@ -626,6 +648,7 @@ def _serializar_cita_personal_evento(cita: CitaAgendaPersonal) -> dict:
         'editable': cita.estado == 'activa',
         'tiene_checklist': bool(cita_data.get('checklist_id')),
         'checklist_id': cita_data.get('checklist_id'),
+        'checklist_estado': cita_data.get('checklist_estado'),
         'cliente_nombre': det.cliente_nombre,
         'cliente_telefono': det.cliente_telefono,
         'vehiculo_marca': det.vehiculo_marca,
@@ -670,6 +693,7 @@ def _serializar_orden_mecanimovil_evento(orden: SolicitudServicio) -> dict:
         'editable': False,
         'tiene_checklist': True,
         'checklist_id': None,
+        'checklist_estado': None,
         'cliente_nombre': cliente_nombre,
         'cliente_telefono': getattr(orden.cliente, 'telefono', '') if orden.cliente else '',
         'vehiculo_marca': vehiculo.marca.nombre if vehiculo and vehiculo.marca else '',

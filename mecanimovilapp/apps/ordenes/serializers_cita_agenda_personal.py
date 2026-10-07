@@ -408,6 +408,7 @@ class EventoAgendaUnificadoSerializer(serializers.Serializer):
     editable = serializers.BooleanField()
     tiene_checklist = serializers.BooleanField()
     checklist_id = serializers.IntegerField(required=False, allow_null=True)
+    checklist_estado = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     cliente_nombre = serializers.CharField(required=False, allow_blank=True)
     cliente_telefono = serializers.CharField(required=False, allow_blank=True)
     vehiculo_marca = serializers.CharField(required=False, allow_blank=True)
