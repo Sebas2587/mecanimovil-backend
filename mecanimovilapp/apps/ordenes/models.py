@@ -3065,3 +3065,41 @@ class VehiculoPreferenciaRepuesto(models.Model):
 
     def __str__(self):
         return f'{self.patente} → {self.calidad_preferida or "—"}'
+
+
+class VistaTallerOculta(models.Model):
+    """Marca una ficha como fuera de las listas del taller.
+
+    No borra la cotización, la cita, el chat ni los registros de aprendizaje.
+    """
+
+    TIPO_COTIZACION = 'cotizacion'
+    TIPO_CITA = 'cita'
+    TIPO_ORDEN = 'orden'
+    TIPO_OFERTA = 'oferta'
+    TIPO_CHOICES = [
+        (TIPO_COTIZACION, 'Cotización'),
+        (TIPO_CITA, 'Cita'),
+        (TIPO_ORDEN, 'Orden'),
+        (TIPO_OFERTA, 'Oferta'),
+    ]
+
+    taller = models.ForeignKey(
+        'usuarios.Taller',
+        on_delete=models.CASCADE,
+        related_name='vista_oculta',
+    )
+    tipo = models.CharField(max_length=16, choices=TIPO_CHOICES)
+    objeto_id = models.CharField(max_length=64)
+    oculto_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['taller', 'tipo', 'objeto_id'],
+                name='vista_taller_oculta_uniq',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['taller', 'tipo'], name='vista_taller_oculta_tipo_idx'),
+        ]

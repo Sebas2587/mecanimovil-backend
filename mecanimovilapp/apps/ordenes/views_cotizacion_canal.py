@@ -72,7 +72,7 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             taller, _rol = self._taller_contexto()
         except PermissionDenied:
             return CotizacionCanal.objects.none()
-        return CotizacionCanal.objects.filter(taller=taller).select_related(
+        qs = CotizacionCanal.objects.filter(taller=taller).select_related(
             'taller',
             'conversation',
             'conversation__external_contact',
@@ -81,6 +81,10 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             'cita_origen',
             'cita_origen__detalle',
         )
+        if getattr(self, 'action', None) == 'list':
+            from mecanimovilapp.apps.ordenes.services.vista_taller import excluir_ocultos
+            qs = excluir_ocultos(qs, taller.id, 'cotizacion')
+        return qs
 
     def retrieve(self, request, *args, **kwargs):
         """Detalle; reintenta búsqueda web si el borrador quedó pendiente/sin marca."""

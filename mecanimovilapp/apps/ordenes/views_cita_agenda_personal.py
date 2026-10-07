@@ -18,6 +18,7 @@ from rest_framework.response import Response
 
 from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonal, CotizacionCanal, SolicitudServicio
 from mecanimovilapp.apps.ordenes.permissions import IsProveedor
+from mecanimovilapp.apps.ordenes.services.vista_taller import excluir_ocultos
 from mecanimovilapp.apps.ordenes.serializers_cita_agenda_personal import (
     CitaAgendaPersonalCreateSerializer,
     CitaAgendaPersonalSerializer,
@@ -119,6 +120,10 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
             qs = qs.filter(fecha_servicio__gte=fecha_desde)
         if fecha_hasta:
             qs = qs.filter(fecha_servicio__lte=fecha_hasta)
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
+        taller, _miembro, _rol = resolver_contexto_taller(request.user)
+        if taller is not None:
+            qs = excluir_ocultos(qs, taller.id, 'cita')
         serializer = CitaAgendaPersonalSerializer(qs, many=True)
         return Response(serializer.data)
 
@@ -610,6 +615,10 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
         reparar_citas_activas_con_checklist_completo(self.get_queryset())
 
         qs = self.get_queryset().filter(estado='cerrada')
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
+        taller, _miembro, _rol = resolver_contexto_taller(request.user)
+        if taller is not None:
+            qs = excluir_ocultos(qs, taller.id, 'cita')
         dias_raw = request.query_params.get('dias')
         if dias_raw is not None:
             try:
@@ -625,6 +634,10 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
     @action(detail=False, methods=['get'])
     def canceladas(self, request):
         qs = self.get_queryset().filter(estado='cancelada')
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
+        taller, _miembro, _rol = resolver_contexto_taller(request.user)
+        if taller is not None:
+            qs = excluir_ocultos(qs, taller.id, 'cita')
         return Response(CitaAgendaPersonalSerializer(qs, many=True).data)
 
 
@@ -769,6 +782,8 @@ class ProveedorAgendaViewSet(viewsets.ViewSet):
             reparar_citas_activas_con_checklist_completo(citas_qs)
 
         citas_qs = citas_qs.filter(estado__in=estados_cita)
+        if taller is not None:
+            citas_qs = excluir_ocultos(citas_qs, taller.id, 'cita')
         # Placeholders (cotización aceptada sin día/hora) no son visitas de calendario.
         citas_qs = citas_qs.exclude(horario_por_confirmar=True)
         eventos = [_serializar_cita_personal_evento(c) for c in citas_qs]
@@ -793,6 +808,8 @@ class ProveedorAgendaViewSet(viewsets.ViewSet):
                 ordenes_qs = ordenes_qs.exclude(estado__in=estados_finalizados)
             elif 'cerradas' in incluir and 'activas' not in incluir:
                 ordenes_qs = ordenes_qs.filter(estado='completado')
+            if taller is not None:
+                ordenes_qs = excluir_ocultos(ordenes_qs, taller.id, 'orden')
 
             eventos.extend(_serializar_orden_mecanimovil_evento(o) for o in ordenes_qs)
 

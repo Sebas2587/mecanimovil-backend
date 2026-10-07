@@ -442,7 +442,10 @@ def construir_bloque_historial_prompt(
     modelo: str,
     max_cotizaciones: int = 3,
 ) -> str:
-    """Bloque para el prompt Gemini: cotizaciones enviadas previas marca/modelo."""
+    """Bloque para el prompt Gemini: cotizaciones enviadas previas marca/modelo.
+
+    Incluye fichas que el taller ya quitó de su lista: limpiar no borra el aprendizaje.
+    """
     if taller is None or not (marca or '').strip() or not (modelo or '').strip():
         return ''
     try:

@@ -2055,6 +2055,11 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
         Lista órdenes con filtros opcionales de estado
         """
         queryset = self.get_queryset()
+        from mecanimovilapp.apps.ordenes.services.vista_taller import excluir_ocultos
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
+        taller, _miembro, _rol = resolver_contexto_taller(request.user)
+        if taller is not None:
+            queryset = excluir_ocultos(queryset, taller.id, 'orden')
         
         # Aplicar filtro de estado si se proporciona
         estado = request.query_params.get('estado')
@@ -5650,6 +5655,12 @@ class OfertaProveedorViewSet(viewsets.ModelViewSet):
         
         if estado_filter:
             queryset = queryset.filter(estado=estado_filter)
+
+        from mecanimovilapp.apps.ordenes.services.vista_taller import excluir_ocultos
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
+        taller, _miembro, _rol = resolver_contexto_taller(request.user)
+        if taller is not None:
+            queryset = excluir_ocultos(queryset, taller.id, 'oferta')
         
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)

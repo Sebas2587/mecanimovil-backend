@@ -22,6 +22,7 @@ from mecanimovilapp.apps.ordenes.models import (
     SolicitudServicioPublica,
 )
 from mecanimovilapp.apps.usuarios.models import Taller
+from mecanimovilapp.apps.ordenes.services.vista_taller import excluir_ocultos
 
 ESTADOS_NORMALIZADOS = (
     'nuevo',
@@ -653,7 +654,7 @@ def _filas_cotizaciones_canal(
     leads_map: dict | None = None,
     q: str | None = None,
 ) -> list[dict[str, Any]]:
-    qs = (
+    qs = excluir_ocultos(
         CotizacionCanal.objects.filter(taller=taller)
         .filter(
             ~Q(estado='borrador')
@@ -671,7 +672,9 @@ def _filas_cotizaciones_canal(
             'cotizacion_original',
         )
         .prefetch_related('citas_generadas')
-        .order_by('-actualizado_en')
+        .order_by('-actualizado_en'),
+        taller.id,
+        'cotizacion',
     )
     needle = _normalizar_busqueda(q)
     if needle:

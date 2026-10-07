@@ -23,7 +23,7 @@ from .views_vitrina_repuestos import (
     VitrinaRepuestosDetailView,
     VitrinaRepuestosSeleccionarView,
 )
-from .views_pipeline_comercial import PipelineComercialViewSet
+from .views_vista_taller import VistaTallerLimpiarView, VistaTallerOcultarView
 
 app_name = 'ordenes'
 
@@ -89,6 +89,8 @@ router.register(
 # - /api/usuarios/mecanicos-domicilio/{id}/horarios_disponibles/
 
 urlpatterns = [
+    path('vista-taller/limpiar/', VistaTallerLimpiarView.as_view(), name='vista-taller-limpiar'),
+    path('vista-taller/ocultar/', VistaTallerOcultarView.as_view(), name='vista-taller-ocultar'),
     # Incluir rutas del router
     path('', include(router.urls)),
     
