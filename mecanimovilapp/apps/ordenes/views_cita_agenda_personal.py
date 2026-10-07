@@ -453,8 +453,9 @@ class CitaAgendaPersonalViewSet(viewsets.GenericViewSet):
             return Response(
                 {
                     'error': (
-                        f'Solo puedes iniciar el servicio el día de la cita '
-                        f'({cita.fecha_servicio.strftime("%d/%m/%Y")}).'
+                        f'Puedes iniciar el servicio desde el '
+                        f'{cita.fecha_servicio.strftime("%d/%m/%Y")}. '
+                        f'Todavía no es el día de la cita.'
                     ),
                     'codigo': 'fuera_de_fecha',
                     'fecha_servicio': cita.fecha_servicio.isoformat(),

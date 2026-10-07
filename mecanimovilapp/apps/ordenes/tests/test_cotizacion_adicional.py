@@ -311,13 +311,15 @@ class CotizacionAdicionalFlujoTestCase(TestCase):
         self.assertEqual(data['fecha_propuesta'], '2030-08-20')
         self.assertEqual(data['hora_propuesta'], '16:30')
 
-    def test_cita_es_dia_de_servicio_solo_hoy(self):
+    def test_cita_puede_iniciar_desde_el_dia(self):
         from mecanimovilapp.apps.ordenes.services.cita_agenda_personal import (
             cita_es_dia_de_servicio,
         )
 
         self.cita.fecha_servicio = date(2030, 8, 12)
         self.assertFalse(cita_es_dia_de_servicio(self.cita))
+        self.cita.fecha_servicio = timezone.localdate() - timedelta(days=1)
+        self.assertTrue(cita_es_dia_de_servicio(self.cita))
         self.cita.fecha_servicio = timezone.localdate()
         self.assertTrue(cita_es_dia_de_servicio(self.cita))
 
