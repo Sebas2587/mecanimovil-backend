@@ -614,6 +614,7 @@ def _serializar_cita_personal_evento(cita: CitaAgendaPersonal) -> dict:
         if servicio is not None:
             nombre_servicio = servicio.nombre
 
+    cita_data = CitaAgendaPersonalSerializer(cita).data
     return {
         'id': str(cita.id),
         'origen': 'personal',
@@ -623,7 +624,8 @@ def _serializar_cita_personal_evento(cita: CitaAgendaPersonal) -> dict:
         'duracion_minutos': cita.duracion_minutos,
         'estado': cita.estado,
         'editable': cita.estado == 'activa',
-        'tiene_checklist': CitaAgendaPersonalSerializer(cita).data.get('tiene_checklist', False),
+        'tiene_checklist': bool(cita_data.get('checklist_id')),
+        'checklist_id': cita_data.get('checklist_id'),
         'cliente_nombre': det.cliente_nombre,
         'cliente_telefono': det.cliente_telefono,
         'vehiculo_marca': det.vehiculo_marca,
@@ -667,6 +669,7 @@ def _serializar_orden_mecanimovil_evento(orden: SolicitudServicio) -> dict:
         'estado': orden.estado,
         'editable': False,
         'tiene_checklist': True,
+        'checklist_id': None,
         'cliente_nombre': cliente_nombre,
         'cliente_telefono': getattr(orden.cliente, 'telefono', '') if orden.cliente else '',
         'vehiculo_marca': vehiculo.marca.nombre if vehiculo and vehiculo.marca else '',
