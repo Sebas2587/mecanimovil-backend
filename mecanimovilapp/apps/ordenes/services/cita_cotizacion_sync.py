@@ -44,8 +44,8 @@ def preparar_cierre_caso_aceptado(cotizacion) -> str:
     - Visita ya realizada (checklist completo o cita cerrada) → no pasa a Perdidos.
     - Solo queda el placeholder sin día/hora → se cancela y el lead puede ir a Perdidos.
     - Visita confirmada todavía activa → no se cierra desde aquí.
-    - Trabajos adicionales ya rechazados o cancelados no bloquean.
-    - Trabajos adicionales todavía enviados sí bloquean.
+    - Trabajos adicionales sin visita confirmada se cancelan junto con el caso.
+    - Un adicional que ya tiene día y hora sí bloquea: se cierra desde esa cita.
 
     Returns 'terminada' si el servicio principal ya se hizo, 'perdida' si el
     lead comercial puede marcarse cancelado.
@@ -70,19 +70,42 @@ def preparar_cierre_caso_aceptado(cotizacion) -> str:
     confirmadas = [c for c in activas if not c.horario_por_confirmar]
     if confirmadas:
         raise ValueError(
-            'Hay una visita agendada en curso. Complétala o cancélala antes de cerrar el caso.'
+            'Hay una visita con día y hora. Ciérrala desde la cita: iníciala, o avisa que no se realizó.'
         )
     for placeholder in activas:
         placeholder.cancelar()
         placeholder.save(update_fields=['estado', 'cancelada_en', 'fecha_actualizacion'])
 
-    abiertos = CotizacionCanal.objects.filter(
-        cotizacion_original_id=cotizacion.id,
-        estado__in=('borrador', 'enviada', 'aceptada'),
-    ).exists()
-    if abiertos:
+    adicionales = list(
+        CotizacionCanal.objects.filter(
+            cotizacion_original_id=cotizacion.id,
+            estado__in=('borrador', 'enviada', 'aceptada'),
+        )
+    )
+    con_visita = []
+    for adicional in adicionales:
+        visitas = list(
+            CitaAgendaPersonal.objects.filter(
+                cotizacion_canal_origen_id=adicional.id,
+                estado='activa',
+                horario_por_confirmar=False,
+            )
+        )
+        if visitas:
+            con_visita.append((adicional.servicio_nombre or '').strip() or f'#{adicional.id}')
+            continue
+        for placeholder in CitaAgendaPersonal.objects.filter(
+            cotizacion_canal_origen_id=adicional.id,
+            estado='activa',
+        ):
+            placeholder.cancelar()
+            placeholder.save(update_fields=['estado', 'cancelada_en', 'fecha_actualizacion'])
+        adicional.estado = 'cancelada'
+        adicional.save(update_fields=['estado', 'actualizado_en'])
+    if con_visita:
         raise ValueError(
-            'Cierra primero los trabajos adicionales que el cliente todavía no rechazó.'
+            'Hay un trabajo adicional con visita agendada'
+            f' ({", ".join(con_visita)}). Ciérralo desde esa cita.'
         )
     if any(c.estado == 'cerrada' for c in citas):
         return 'terminada'

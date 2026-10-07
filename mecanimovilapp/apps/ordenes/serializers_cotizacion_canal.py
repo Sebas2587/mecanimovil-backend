@@ -110,6 +110,8 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
     canal = serializers.SerializerMethodField()
     cliente_display = serializers.SerializerMethodField()
     cita_personal_id = serializers.SerializerMethodField()
+    cita_ultima_id = serializers.SerializerMethodField()
+    cita_ultima_estado = serializers.SerializerMethodField()
     listo_para_enviar = serializers.SerializerMethodField()
     pendientes_revision = serializers.SerializerMethodField()
     cotizacion_original_id = serializers.IntegerField(read_only=True, allow_null=True)
@@ -192,6 +194,37 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             return obj.cita_origen_id
         cita = self._cita_activa(obj)
         return getattr(cita, 'id', None) if cita is not None else None
+
+    def _cita_cerrada(self, obj):
+        """Última visita ya entregada, cuando ya no queda una cita activa."""
+        if obj.es_cotizacion_adicional and obj.cita_origen_id:
+            return None
+        if self._cita_activa(obj) is not None:
+            return None
+        cache = self.context.setdefault('_cita_cerrada_by_cotizacion', {})
+        if obj.pk in cache:
+            return cache[obj.pk]
+        cita = (
+            obj.citas_generadas.filter(estado='cerrada')
+            .order_by('-cerrada_en', '-fecha_creacion')
+            .first()
+        )
+        cache[obj.pk] = cita
+        return cita
+
+    def get_cita_ultima_id(self, obj) -> int | None:
+        activa = self._cita_activa(obj)
+        if activa is not None:
+            return getattr(activa, 'id', None)
+        cerrada = self._cita_cerrada(obj)
+        return getattr(cerrada, 'id', None) if cerrada is not None else None
+
+    def get_cita_ultima_estado(self, obj) -> str:
+        if self._cita_activa(obj) is not None:
+            return 'activa'
+        if self._cita_cerrada(obj) is not None:
+            return 'cerrada'
+        return ''
 
     def get_tiene_horario_agendado(self, obj) -> bool:
         cita = self._cita_activa(obj)
@@ -370,6 +403,8 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             'cliente_display',
             'canal',
             'cita_personal_id',
+            'cita_ultima_id',
+            'cita_ultima_estado',
             'cita_origen_id',
             'tiene_horario_agendado',
             'fecha_agendada',
@@ -445,6 +480,8 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             'cliente_display',
             'canal',
             'cita_personal_id',
+            'cita_ultima_id',
+            'cita_ultima_estado',
             'cita_origen_id',
             'tiene_horario_agendado',
             'fecha_agendada',
