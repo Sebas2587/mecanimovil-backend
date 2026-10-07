@@ -784,7 +784,19 @@ def aceptar_cotizacion_publica(cotizacion: CotizacionCanal) -> tuple[CotizacionC
         else:
             aplicar_adicional_aceptada_a_cita(cotizacion, cita)
     else:
-        cita = crear_cita_desde_cotizacion_aceptada(cotizacion)
+        from mecanimovilapp.apps.ordenes.services.cotizacion_canal import cita_activa_de_cotizacion
+
+        existente = cita_activa_de_cotizacion(cotizacion)
+        if existente is not None and getattr(existente, 'horario_por_confirmar', False):
+            det = getattr(existente, 'detalle', None)
+            if det is not None:
+                det.precio_referencia = cotizacion.total_clp
+                det.servicio_nombre = cotizacion.servicio_nombre or det.servicio_nombre
+                det.descripcion = cotizacion.descripcion_problema or det.descripcion
+                det.save(update_fields=['precio_referencia', 'servicio_nombre', 'descripcion'])
+            cita = existente
+        else:
+            cita = crear_cita_desde_cotizacion_aceptada(cotizacion)
 
     from mecanimovilapp.apps.agente_ia.services.lead_scoring import (
         actualizar_calificacion_desde_cotizacion,

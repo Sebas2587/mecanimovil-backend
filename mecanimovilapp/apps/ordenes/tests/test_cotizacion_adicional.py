@@ -353,6 +353,29 @@ class CotizacionAdicionalFlujoTestCase(TestCase):
         self.assertEqual(cot.token, 'tok-reabrir-stable')
         self.assertTrue((cot.metadata or {}).get('reabierta_por_taller'))
 
+    def test_reabrir_aceptada_sin_horario_vuelve_a_borrador(self):
+        from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
+            MSG_EDICION_CON_HORARIO,
+            reabrir_cotizacion_enviada,
+        )
+
+        self.cita.horario_por_confirmar = True
+        self.cita.save(update_fields=['horario_por_confirmar'])
+        reabrir_cotizacion_enviada(self.cot_principal)
+        self.cot_principal.refresh_from_db()
+        self.assertEqual(self.cot_principal.estado, 'borrador')
+        self.assertIsNone(self.cot_principal.aceptada_en)
+        self.assertEqual(self.cot_principal.token, 'tok-principal-test')
+        self.assertEqual((self.cot_principal.metadata or {}).get('reabierta_desde'), 'aceptada')
+
+        self.cot_principal.estado = 'aceptada'
+        self.cot_principal.save(update_fields=['estado'])
+        self.cita.horario_por_confirmar = False
+        self.cita.save(update_fields=['horario_por_confirmar'])
+        with self.assertRaises(ValueError) as ctx:
+            reabrir_cotizacion_enviada(self.cot_principal)
+        self.assertEqual(str(ctx.exception), MSG_EDICION_CON_HORARIO)
+
     def test_actualizar_aceptada_sin_iniciar_total_igual(self):
         from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
             MSG_ACEPTADA_CERRADA,

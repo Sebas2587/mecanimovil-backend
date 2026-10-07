@@ -902,7 +902,7 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='reabrir')
     def reabrir(self, request, pk=None):
-        """enviada → borrador (mismo token) para que el taller actualice y reenvíe."""
+        """enviada o aceptada sin horario → borrador, para actualizar y avisarle al cliente."""
         from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
             reabrir_cotizacion_enviada,
         )

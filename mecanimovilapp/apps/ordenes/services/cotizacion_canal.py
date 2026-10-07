@@ -815,15 +815,28 @@ def cerrar_reapertura_taller(cotizacion: CotizacionCanal) -> None:
 
 @transaction.atomic
 def reabrir_cotizacion_enviada(cotizacion: CotizacionCanal) -> CotizacionCanal:
-    """enviada → borrador (mismo token). El cliente deja de poder aceptar hasta reenviar."""
-    if cotizacion.estado != 'enviada':
-        raise ValueError('Solo se puede reabrir una cotización enviada pendiente de respuesta.')
+    """Vuelve a borrador (mismo token) para agregar ítems y reenviar.
+
+    Enviada: el cliente todavía no aceptó.
+    Aceptada sin día y hora: se actualiza la original y el cliente debe aceptarla de nuevo.
+    Aceptada con visita confirmada: el trabajo nuevo va en una cotización adicional.
+    """
+    campos = ['estado', 'metadata', 'actualizado_en']
+    if cotizacion.estado == 'aceptada':
+        if cotizacion_tiene_horario_agendado(cotizacion):
+            raise ValueError(MSG_EDICION_CON_HORARIO)
+        cotizacion.aceptada_en = None
+        campos.append('aceptada_en')
+    elif cotizacion.estado != 'enviada':
+        raise ValueError('Solo se puede reabrir una cotización enviada o aceptada que todavía no tiene horario.')
     meta = dict(cotizacion.metadata or {})
     meta['reabierta_por_taller'] = True
     meta['reabierta_en'] = timezone.now().isoformat()
+    if cotizacion.estado == 'aceptada':
+        meta['reabierta_desde'] = 'aceptada'
     cotizacion.estado = 'borrador'
     cotizacion.metadata = meta
-    cotizacion.save(update_fields=['estado', 'metadata', 'actualizado_en'])
+    cotizacion.save(update_fields=campos)
     return cotizacion
 
 
