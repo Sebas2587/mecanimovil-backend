@@ -23,6 +23,7 @@ from .views_vitrina_repuestos import (
     VitrinaRepuestosDetailView,
     VitrinaRepuestosSeleccionarView,
 )
+from .views_pipeline_comercial import PipelineComercialViewSet
 from .views_vista_taller import VistaTallerLimpiarView, VistaTallerOcultarView
 
 app_name = 'ordenes'
