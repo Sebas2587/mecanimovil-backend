@@ -384,16 +384,17 @@ def build_whatsapp_alta_html(
         var params = new URLSearchParams({{
           code: code,
           state: cfg.state,
-          sdk_redirect: location.href.split('#')[0],
         }});
         if (sesion.phone_number_id) params.set('phone_number_id', sesion.phone_number_id);
         if (sesion.waba_id) params.set('waba_id', sesion.waba_id);
         if (sesion.business_id) params.set('business_id', sesion.business_id);
-        location.href = cfg.callbackUrl + '?' + params.toString();
+        var join = cfg.callbackUrl.indexOf('?') >= 0 ? '&' : '?';
+        location.href = cfg.callbackUrl + join + params.toString();
       }}, {{
         config_id: cfg.configId,
         response_type: 'code',
         override_default_response_type: true,
+        redirect_uri: cfg.callbackUrl,
         extras: {{
           setup: {{}},
           featureType: 'whatsapp_business_app_onboarding',
