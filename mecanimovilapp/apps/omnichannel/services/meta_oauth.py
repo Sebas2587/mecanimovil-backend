@@ -356,69 +356,28 @@ def build_whatsapp_alta_html(
 <body>
   <div class="card">
     <h1>Vincular WhatsApp</h1>
-    <p id="estado">Pulsa Continuar. En Facebook elige el WhatsApp que ya usas. El código se escribe en el teléfono, en Conectar a la plataforma.</p>
-    <button id="continuar" type="button" disabled>Continuar</button>
+    <p id="estado">Pulsa Continuar. Esta misma ventana pasa a Facebook. Elige el WhatsApp que ya usas y escribe el código en el teléfono.</p>
+    <button id="continuar" type="button">Continuar</button>
   </div>
   <script>
     const cfg = {payload};
-    const sesion = {{}};
-    const estado = document.getElementById('estado');
-    const boton = document.getElementById('continuar');
-    window.addEventListener('message', function (event) {{
-      if (event.origin !== 'https://www.facebook.com' && event.origin !== 'https://web.facebook.com') return;
-      var data = event.data;
-      try {{ data = typeof data === 'string' ? JSON.parse(data) : data; }} catch (e) {{ return; }}
-      if (!data || data.type !== 'WA_EMBEDDED_SIGNUP' || !data.data) return;
-      if (data.data.phone_number_id) sesion.phone_number_id = data.data.phone_number_id;
-      if (data.data.waba_id) sesion.waba_id = data.data.waba_id;
-      if (data.data.business_id) sesion.business_id = data.data.business_id;
-    }});
-    function abrirFacebook() {{
-      FB.login(function (response) {{
-        var code = response && response.authResponse && response.authResponse.code;
-        if (!code) {{
-          estado.textContent = 'Se cerró Facebook antes de vincular el teléfono. Pulsa Continuar otra vez.';
-          boton.disabled = false;
-          return;
-        }}
-        var params = new URLSearchParams({{
-          code: code,
-          state: cfg.state,
-        }});
-        if (sesion.phone_number_id) params.set('phone_number_id', sesion.phone_number_id);
-        if (sesion.waba_id) params.set('waba_id', sesion.waba_id);
-        if (sesion.business_id) params.set('business_id', sesion.business_id);
-        var join = cfg.callbackUrl.indexOf('?') >= 0 ? '&' : '?';
-        location.href = cfg.callbackUrl + join + params.toString();
-      }}, {{
-        config_id: cfg.configId,
-        response_type: 'code',
-        override_default_response_type: true,
+    document.getElementById('continuar').addEventListener('click', function () {{
+      var params = new URLSearchParams({{
+        client_id: cfg.appId,
         redirect_uri: cfg.callbackUrl,
-        extras: {{
+        state: cfg.state,
+        response_type: 'code',
+        config_id: cfg.configId,
+        override_default_response_type: 'true',
+        display: 'page',
+        extras: JSON.stringify({{
           setup: {{}},
           featureType: 'whatsapp_business_app_onboarding',
           sessionInfoVersion: '3',
-        }},
+        }}),
       }});
-    }}
-    boton.addEventListener('click', function () {{
-      if (!window.FB) return;
-      boton.disabled = true;
-      estado.textContent = 'Elige el WhatsApp que ya usas. El código se escribe en el teléfono.';
-      abrirFacebook();
+      location.href = 'https://www.facebook.com/' + cfg.version + '/dialog/oauth?' + params.toString();
     }});
-    window.fbAsyncInit = function () {{
-      FB.init({{ appId: cfg.appId, cookie: true, xfbml: false, version: cfg.version }});
-      boton.disabled = false;
-    }};
-    window.setTimeout(function () {{
-      if (!window.FB) {{
-        estado.textContent = 'No se pudo abrir Facebook. Recarga la página y pulsa Continuar.';
-      }}
-    }}, 8000);
-  </script>
-  <script async defer crossorigin="anonymous" src="https://connect.facebook.net/es_ES/sdk.js"></script>
 </body>
 </html>"""
     return HttpResponse(html, content_type='text/html; charset=utf-8')
