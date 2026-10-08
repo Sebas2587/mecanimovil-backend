@@ -21,6 +21,7 @@ from mecanimovilapp.apps.omnichannel.services import MetaGraphClient
 from mecanimovilapp.apps.omnichannel.services.meta_oauth import (
     MetaOAuthSessionData,
     build_oauth_callback_html,
+    build_whatsapp_alta_html,
     complete_meta_oauth_connection,
 )
 from mecanimovilapp.apps.omnichannel.tasks import process_meta_webhook
@@ -28,8 +29,13 @@ from mecanimovilapp.apps.omnichannel.utils import (
     build_embedded_config_payload,
     build_embedded_signup_url,
     generate_oauth_state,
+    meta_app_id,
+    meta_embedded_signup_config_id_for_channel,
+    meta_graph_version,
+    meta_oauth_redirect_uri,
     meta_verify_token,
     omnichannel_enabled,
+    sdk_redirect_permitido,
     verify_meta_signature,
 )
 from mecanimovilapp.apps.usuarios.models import MecanicoDomicilio, Taller
@@ -417,6 +423,30 @@ def meta_webhook_receive(request):
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
+def whatsapp_alta(request):
+    """Página HTTPS que abre el vínculo del WhatsApp que ya está en el teléfono."""
+    state = (request.GET.get('state') or '').strip()
+    conn = ProviderChannelConnection.objects.filter(oauth_state=state, channel='WHATSAPP').first()
+    config_id = meta_embedded_signup_config_id_for_channel('WHATSAPP')
+    app_id = meta_app_id()
+    if not conn or not config_id or not app_id:
+        return build_oauth_callback_html(
+            success=False,
+            title='Enlace incompleto',
+            message='Esta ventana de WhatsApp ya no es válida.',
+            instruction='Vuelve a la app y pulsa Conectar otra vez.',
+        )
+    return build_whatsapp_alta_html(
+        app_id=app_id,
+        config_id=config_id,
+        graph_version=meta_graph_version(),
+        state=state,
+        callback_url=meta_oauth_redirect_uri().split('?')[0],
+    )
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
 def meta_oauth_callback(request):
     code = request.GET.get('code')
     state = request.GET.get('state')
@@ -457,7 +487,9 @@ def meta_oauth_callback(request):
             ) if wid
         ],
     )
-    result = complete_meta_oauth_connection(conn, code, session)
+    sdk_redirect = request.GET.get('sdk_redirect') or ''
+    redirect_uri = sdk_redirect if sdk_redirect_permitido(sdk_redirect) else None
+    result = complete_meta_oauth_connection(conn, code, session, redirect_uri=redirect_uri)
 
     if result.success:
         return build_oauth_callback_html(

@@ -5,6 +5,7 @@ from .views import (
     ProviderChannelConnectionViewSet,
     meta_oauth_callback,
     meta_webhook_receive,
+    whatsapp_alta,
 )
 from .views_contacto_rol import ContactoRolView
 
@@ -16,4 +17,5 @@ urlpatterns = [
     path('', include(router.urls)),
     path('webhooks/meta/', meta_webhook_receive, name='meta-webhook'),
     path('oauth/callback/', meta_oauth_callback, name='meta-oauth-callback'),
+    path('oauth/alta-whatsapp/', whatsapp_alta, name='whatsapp-alta'),
 ]

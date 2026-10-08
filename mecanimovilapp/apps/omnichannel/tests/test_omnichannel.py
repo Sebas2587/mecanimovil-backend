@@ -145,7 +145,10 @@ class EmbeddedConfigTests(SimpleTestCase):
     def test_oauth_whatsapp_pide_vincular_la_app_del_telefono(self):
         from urllib.parse import parse_qs, urlparse
 
-        from mecanimovilapp.apps.omnichannel.utils import build_embedded_signup_url
+        from mecanimovilapp.apps.omnichannel.utils import (
+            build_embedded_signup_url,
+            sdk_redirect_permitido,
+        )
 
         with patch('mecanimovilapp.apps.omnichannel.utils.meta_app_id', return_value='123'):
             with patch(
@@ -161,9 +164,16 @@ class EmbeddedConfigTests(SimpleTestCase):
                         return_value='v21.0',
                     ):
                         url = build_embedded_signup_url('state-1', 'WHATSAPP')
-        extras = parse_qs(urlparse(url).query)['extras'][0]
-        self.assertIn('whatsapp_business_app_onboarding', extras)
-        self.assertIn('"sessionInfoVersion":"3"', extras)
+        self.assertIn('/api/omnichannel/oauth/alta-whatsapp/', url)
+        self.assertEqual(parse_qs(urlparse(url).query)['state'][0], 'state-1')
+        with patch(
+            'mecanimovilapp.apps.omnichannel.utils.meta_oauth_redirect_uri',
+            return_value='https://api.example/api/omnichannel/oauth/callback/',
+        ):
+            self.assertTrue(sdk_redirect_permitido(
+                'https://api.example/api/omnichannel/oauth/alta-whatsapp/?state=state-1',
+            ))
+            self.assertFalse(sdk_redirect_permitido('https://evil.example/alta-whatsapp/'))
 
 
 class ChannelSlugTests(SimpleTestCase):

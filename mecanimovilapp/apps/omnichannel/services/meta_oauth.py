@@ -1,6 +1,7 @@
 """Completar conexiones Meta OAuth / Embedded Signup."""
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -47,12 +48,13 @@ def complete_meta_oauth_connection(
     conn: ProviderChannelConnection,
     code: str,
     session: MetaOAuthSessionData | None = None,
+    redirect_uri: str | None = None,
 ) -> MetaOAuthCompletionResult:
     session = session or MetaOAuthSessionData()
     client = MetaGraphClient()
 
     try:
-        token_data = client.exchange_code(code, meta_oauth_redirect_uri())
+        token_data = client.exchange_code(code, redirect_uri or meta_oauth_redirect_uri())
         access_token = token_data.get('access_token')
         if not access_token:
             diagnosis = copy_for_error('codigo_expirado')
@@ -307,6 +309,96 @@ def complete_meta_oauth_connection(
             instruction='Vuelve a la app Mecanimovil Proveedores e intenta de nuevo.',
             error_code='generico',
         )
+
+
+def build_whatsapp_alta_html(
+    *,
+    app_id: str,
+    config_id: str,
+    graph_version: str,
+    state: str,
+    callback_url: str,
+) -> HttpResponse:
+    """Abre Facebook en HTTPS y pide vincular el WhatsApp que ya está en el teléfono."""
+    payload = json.dumps({
+        'appId': app_id,
+        'configId': config_id,
+        'version': graph_version,
+        'state': state,
+        'callbackUrl': callback_url,
+    })
+    html = f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vincular WhatsApp — Mecanimovil</title>
+  <style>
+    body {{
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #F4F6F8; margin: 0; min-height: 100vh;
+      display: flex; align-items: center; justify-content: center; padding: 24px;
+    }}
+    .card {{
+      background: #fff; border-radius: 16px; padding: 32px 28px;
+      max-width: 420px; width: 100%; text-align: center;
+      box-shadow: 0 8px 32px rgba(10, 11, 13, 0.08);
+    }}
+    h1 {{ color: #0A0B0D; font-size: 20px; margin-bottom: 8px; }}
+    p {{ color: #5B616E; font-size: 14px; line-height: 1.5; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Vincular WhatsApp</h1>
+    <p id="estado">Se abre Facebook. Elige el WhatsApp que ya usas. El código se escribe en el teléfono, en Conectar a la plataforma.</p>
+  </div>
+  <script>
+    const cfg = {payload};
+    const sesion = {{}};
+    window.addEventListener('message', function (event) {{
+      if (event.origin !== 'https://www.facebook.com' && event.origin !== 'https://web.facebook.com') return;
+      var data = event.data;
+      try {{ data = typeof data === 'string' ? JSON.parse(data) : data; }} catch (e) {{ return; }}
+      if (!data || data.type !== 'WA_EMBEDDED_SIGNUP' || !data.data) return;
+      if (data.data.phone_number_id) sesion.phone_number_id = data.data.phone_number_id;
+      if (data.data.waba_id) sesion.waba_id = data.data.waba_id;
+      if (data.data.business_id) sesion.business_id = data.data.business_id;
+    }});
+    window.fbAsyncInit = function () {{
+      FB.init({{ appId: cfg.appId, cookie: true, xfbml: false, version: cfg.version }});
+      FB.login(function (response) {{
+        var code = response && response.authResponse && response.authResponse.code;
+        var estado = document.getElementById('estado');
+        if (!code) {{
+          estado.textContent = 'Se cerró Facebook antes de vincular el teléfono. Vuelve a la app y pulsa Conectar.';
+          return;
+        }}
+        var params = new URLSearchParams({{
+          code: code,
+          state: cfg.state,
+          sdk_redirect: location.href.split('#')[0],
+        }});
+        if (sesion.phone_number_id) params.set('phone_number_id', sesion.phone_number_id);
+        if (sesion.waba_id) params.set('waba_id', sesion.waba_id);
+        if (sesion.business_id) params.set('business_id', sesion.business_id);
+        location.href = cfg.callbackUrl + '?' + params.toString();
+      }}, {{
+        config_id: cfg.configId,
+        response_type: 'code',
+        override_default_response_type: true,
+        extras: {{
+          setup: {{}},
+          featureType: 'whatsapp_business_app_onboarding',
+          sessionInfoVersion: '3',
+        }},
+      }});
+    }};
+  </script>
+  <script async defer crossorigin="anonymous" src="https://connect.facebook.net/es_ES/sdk.js"></script>
+</body>
+</html>"""
+    return HttpResponse(html, content_type='text/html; charset=utf-8')
 
 
 def build_oauth_callback_html(
