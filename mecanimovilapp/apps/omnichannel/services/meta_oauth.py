@@ -331,11 +331,11 @@ def build_whatsapp_alta_html(
             'response_type': 'code',
             'config_id': config_id,
             'override_default_response_type': 'true',
-            'display': 'page',
             'extras': json.dumps({
                 'setup': {},
                 'featureType': 'whatsapp_business_app_onboarding',
                 'sessionInfoVersion': '3',
+                'version': 'v4',
             }, separators=(',', ':')),
         })
     )

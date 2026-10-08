@@ -118,8 +118,8 @@ class WhatsAppConnectDiagnosticsTests(SimpleTestCase):
             'status': 'CONNECTED',
         })
         self.assertEqual(diagnosis.error_code, 'whatsapp_en_el_telefono')
-        self.assertIn('WhatsApp Business', diagnosis.message)
-        self.assertIn('Conectar a la plataforma', diagnosis.instruction)
+        self.assertIn('Facebook compartió la cuenta', diagnosis.message)
+        self.assertIn('app de WhatsApp Business', diagnosis.instruction)
 
 
 class EmbeddedConfigTests(SimpleTestCase):

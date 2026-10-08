@@ -61,14 +61,13 @@ WHATSAPP_CONNECT_COPY = {
     },
     'whatsapp_en_el_telefono': {
         'message': (
-            'Este número sigue solo en la app de WhatsApp Business. '
-            'Hay que vincular esa app para poder usarlo en el chat.'
+            'Facebook compartió la cuenta, pero no abrió el paso para vincular '
+            'el WhatsApp que ya está en el teléfono.'
         ),
         'instruction': (
-            'Pulsa Conectar y elige el WhatsApp que ya usas. '
-            'Cuando aparezca un código, ábrelo en WhatsApp Business, toca '
-            'Conectar a la plataforma y escríbelo ahí (o escanea el QR). '
-            'No cierres la ventana hasta que termine.'
+            'En developers.facebook.com, app mecanimovil_connect, caso de uso de WhatsApp, '
+            'abre el configurador de registro insertado y elige el tipo '
+            '«Incorporación de la app de WhatsApp Business». Guarda y pulsa Conectar otra vez.'
         ),
     },
     'generico': {
