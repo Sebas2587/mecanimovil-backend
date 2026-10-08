@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 from html import escape
 from urllib.parse import urlencode
 from dataclasses import dataclass, field
@@ -26,6 +27,10 @@ from mecanimovilapp.apps.omnichannel.utils import (
 
 logger = logging.getLogger(__name__)
 
+ALTA_APP_WHATSAPP = 'app_whatsapp'
+ALTA_NUMERO_NUEVO = 'numero_nuevo'
+ALTA_MODOS = (ALTA_APP_WHATSAPP, ALTA_NUMERO_NUEVO)
+
 
 @dataclass
 class MetaOAuthSessionData:
@@ -46,6 +51,48 @@ class MetaOAuthCompletionResult:
     error_code: str | None = None
 
 
+def _cambio_de_numero_fallido(
+    conn: ProviderChannelConnection,
+    diagnosis,
+) -> MetaOAuthCompletionResult:
+    """El número nuevo no quedó listo: el anterior sigue atendiendo el chat."""
+    anterior = conn.display_identifier or 'tu número anterior'
+    aviso = f'{diagnosis.message} {anterior} sigue conectado.'
+    conn.oauth_state = None
+    conn.alta_modo = ''
+    conn.numero_solicitado = ''
+    conn.mensaje_estado = aviso
+    conn.save(update_fields=[
+        'oauth_state', 'alta_modo', 'numero_solicitado', 'mensaje_estado', 'updated_at',
+    ])
+    return MetaOAuthCompletionResult(
+        success=False,
+        message=aviso,
+        instruction=diagnosis.instruction,
+        error_code=diagnosis.error_code,
+        channel='whatsapp',
+    )
+
+
+def _registrar_en_cloud_api(
+    client: MetaGraphClient,
+    conn: ProviderChannelConnection,
+    phone_id: str,
+    phone: dict,
+    token: str,
+) -> dict:
+    """Un número nuevo verificado por SMS queda PENDING hasta registrarlo en Cloud API."""
+    if phone.get('is_on_biz_app') is True:
+        return phone
+    if not conn.registro_pin:
+        conn.registro_pin = f'{secrets.randbelow(1_000_000):06d}'
+        conn.save(update_fields=['registro_pin', 'updated_at'])
+    if not client.registrar_numero(phone_id, token, conn.registro_pin):
+        return phone
+    logger.info('Número registrado en Cloud API phone_number_id=%s', phone_id)
+    return client.get_phone_number_by_id(phone_id, token) or phone
+
+
 def complete_meta_oauth_connection(
     conn: ProviderChannelConnection,
     code: str,
@@ -54,12 +101,19 @@ def complete_meta_oauth_connection(
 ) -> MetaOAuthCompletionResult:
     session = session or MetaOAuthSessionData()
     client = MetaGraphClient()
+    cambio_de_numero = (
+        conn.channel == 'WHATSAPP'
+        and conn.status == 'conectada'
+        and bool(conn.phone_number_id)
+    )
 
     try:
         token_data = client.exchange_code(code, redirect_uri or meta_oauth_redirect_uri())
         access_token = token_data.get('access_token')
         if not access_token:
             diagnosis = copy_for_error('codigo_expirado')
+            if cambio_de_numero:
+                return _cambio_de_numero_fallido(conn, diagnosis)
             conn.status = 'error'
             conn.mensaje_estado = diagnosis.message
             conn.save(update_fields=['status', 'mensaje_estado', 'updated_at'])
@@ -160,6 +214,7 @@ def complete_meta_oauth_connection(
             if business_id:
                 update_fields['meta_business_id'] = business_id
 
+            numero_preferido = conn.numero_solicitado or None
             if not update_fields.get('phone_number_id'):
                 candidate_waba_ids = [wid for wid in shared_waba_ids if wid]
                 if waba_id and waba_id not in candidate_waba_ids:
@@ -171,6 +226,7 @@ def complete_meta_oauth_connection(
                     wa_assets = client.resolve_whatsapp_from_waba_ids(
                         candidate_waba_ids,
                         user_token,
+                        preferred_display_phone=numero_preferido,
                         meta_business_id=business_id,
                     )
                     if wa_assets:
@@ -179,21 +235,27 @@ def complete_meta_oauth_connection(
             if not update_fields.get('phone_number_id'):
                 wa_assets = client.resolve_whatsapp_assets(
                     user_token,
+                    preferred_display_phone=numero_preferido,
                     business_id=business_id,
                 )
                 if wa_assets:
                     update_fields.update(wa_assets)
 
             if not update_fields.get('phone_number_id'):
-                granted = client.get_granted_waba_ids(user_token)
-                if granted:
-                    conn.waba_id = granted[0]
-                diagnosis = diagnose_whatsapp_connection_gap(client, user_token)
+                if numero_preferido:
+                    diagnosis = copy_for_error('numero_no_encontrado')
+                else:
+                    diagnosis = diagnose_whatsapp_connection_gap(client, user_token)
                 logger.info(
                     'WhatsApp OAuth sin phone_number_id user=%s error_code=%s',
                     conn.usuario_id,
                     diagnosis.error_code,
                 )
+                if cambio_de_numero:
+                    return _cambio_de_numero_fallido(conn, diagnosis)
+                granted = client.get_granted_waba_ids(user_token)
+                if granted:
+                    conn.waba_id = granted[0]
                 conn.access_token = user_token
                 anotar_vigencia(conn, client, user_token)
                 conn.status = 'error'
@@ -220,6 +282,8 @@ def complete_meta_oauth_connection(
             if phone_id:
                 phone = client.get_phone_number_by_id(phone_id, user_token)
                 if phone and not client.numero_listo_para_mensajeria(phone):
+                    phone = _registrar_en_cloud_api(client, conn, phone_id, phone, user_token)
+                if phone and not client.numero_listo_para_mensajeria(phone):
                     display = phone.get('display_phone_number') or update_fields.get('display_identifier')
                     diagnosis = diagnose_phone_not_ready(phone)
                     logger.info(
@@ -231,6 +295,8 @@ def complete_meta_oauth_connection(
                         phone.get('platform_type'),
                         phone.get('is_on_biz_app'),
                     )
+                    if cambio_de_numero:
+                        return _cambio_de_numero_fallido(conn, diagnosis)
                     conn.access_token = user_token
                     anotar_vigencia(conn, client, user_token)
                     conn.phone_number_id = phone_id
@@ -292,6 +358,8 @@ def complete_meta_oauth_connection(
         logger.exception('Meta OAuth completion failed: %s', exc)
         if isinstance(exc, MetaOAuthExchangeError) and getattr(exc, 'status_code', None) == 400:
             diagnosis = copy_for_error('codigo_expirado')
+            if cambio_de_numero:
+                return _cambio_de_numero_fallido(conn, diagnosis)
             conn.status = 'error'
             conn.mensaje_estado = diagnosis.message
             conn.save(update_fields=['status', 'mensaje_estado', 'updated_at'])
@@ -301,6 +369,8 @@ def complete_meta_oauth_connection(
                 instruction=diagnosis.instruction,
                 error_code=diagnosis.error_code,
             )
+        if cambio_de_numero:
+            return _cambio_de_numero_fallido(conn, copy_for_error('generico'))
         friendly = friendly_oauth_error(exc)
         conn.status = 'error'
         conn.mensaje_estado = friendly
@@ -320,8 +390,21 @@ def build_whatsapp_alta_html(
     graph_version: str,
     state: str,
     callback_url: str,
+    modo: str = ALTA_APP_WHATSAPP,
+    numero: str = '',
 ) -> HttpResponse:
-    """Abre Facebook en HTTPS y pide vincular el WhatsApp que ya está en el teléfono."""
+    """Abre Facebook en HTTPS para vincular el WhatsApp del teléfono o un número nuevo."""
+    extras: dict[str, Any] = {'setup': {}, 'sessionInfoVersion': '3', 'version': 'v4'}
+    if modo == ALTA_NUMERO_NUEVO:
+        pasos = 'Elige «Agregar número nuevo», escribe el número y pon el código SMS que te llega.'
+    else:
+        extras['featureType'] = 'whatsapp_business_app_onboarding'
+        pasos = (
+            'Elige el WhatsApp Business que ya usas y escanea el código QR '
+            'con la app WhatsApp Business del teléfono.'
+        )
+    if numero:
+        pasos = f'Número a conectar: {numero}. {pasos}'
     facebook_url = (
         f'https://www.facebook.com/{graph_version}/dialog/oauth?'
         + urlencode({
@@ -331,12 +414,7 @@ def build_whatsapp_alta_html(
             'response_type': 'code',
             'config_id': config_id,
             'override_default_response_type': 'true',
-            'extras': json.dumps({
-                'setup': {},
-                'featureType': 'whatsapp_business_app_onboarding',
-                'sessionInfoVersion': '3',
-                'version': 'v4',
-            }, separators=(',', ':')),
+            'extras': json.dumps(extras, separators=(',', ':')),
         })
     )
     html = f"""<!DOCTYPE html>
@@ -367,7 +445,8 @@ def build_whatsapp_alta_html(
 <body>
   <div class="card">
     <h1>Vincular WhatsApp</h1>
-    <p>Pulsa Continuar. Esta misma ventana pasa a Facebook. Elige el WhatsApp que ya usas y escribe el código en el teléfono.</p>
+    <p>Pulsa Continuar. Esta misma ventana pasa a Facebook.</p>
+    <p>{escape(pasos)}</p>
     <a href="{escape(facebook_url, quote=True)}">Continuar</a>
   </div>
 </body>

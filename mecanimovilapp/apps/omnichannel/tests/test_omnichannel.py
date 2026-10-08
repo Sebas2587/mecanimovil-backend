@@ -118,8 +118,8 @@ class WhatsAppConnectDiagnosticsTests(SimpleTestCase):
             'status': 'CONNECTED',
         })
         self.assertEqual(diagnosis.error_code, 'whatsapp_en_el_telefono')
-        self.assertIn('Facebook compartió la cuenta', diagnosis.message)
-        self.assertIn('app de WhatsApp Business', diagnosis.instruction)
+        self.assertIn('app WhatsApp Business', diagnosis.message)
+        self.assertIn('Cambiar número', diagnosis.instruction)
 
 
 class EmbeddedConfigTests(SimpleTestCase):
@@ -526,3 +526,149 @@ class NumeroWhatsappListoTests(SimpleTestCase):
             'code_verification_status': 'NOT_VERIFIED',
             'status': 'DISCONNECTED',
         }))
+
+
+class CambioNumeroWhatsappTests(TestCase):
+    NUEVO = {
+        'id': '999',
+        'display_phone_number': '+56 9 4482 9287',
+        'verified_name': 'Taller Omni',
+        'code_verification_status': 'VERIFIED',
+    }
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='taller_cambio', password='pass')
+        self.taller = Taller.objects.create(
+            usuario=self.user,
+            nombre='Taller Cambio',
+            telefono='900000002',
+            estado_verificacion='aprobado',
+        )
+        self.conn = ProviderChannelConnection.objects.create(
+            content_type=ContentType.objects.get_for_model(Taller),
+            object_id=self.taller.id,
+            usuario=self.user,
+            channel='WHATSAPP',
+            enabled=True,
+            status='conectada',
+            phone_number_id='111',
+            waba_id='waba-1',
+            access_token='token-viejo',
+            display_identifier='+56911112222',
+            oauth_state='state-cambio',
+            alta_modo='numero_nuevo',
+            numero_solicitado='56944829287',
+        )
+
+    def _client(self, phone_states, registro_ok=True):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from mecanimovilapp.apps.omnichannel.services.meta_graph import MetaGraphClient
+
+        real = MetaGraphClient()
+        client = MagicMock()
+        client.exchange_code.return_value = {'access_token': 'token-nuevo'}
+        client.extender_token_si_vence_pronto.side_effect = lambda token: token
+        client.clasificar_expiracion.return_value = SimpleNamespace(
+            expires_at=None, never=True, known=True,
+        )
+        client.resolve_whatsapp_from_waba_ids.return_value = {
+            'waba_id': 'waba-1',
+            'phone_number_id': '999',
+            'display_identifier': '+56 9 4482 9287',
+            'display_name': 'Taller Omni',
+        }
+        client.get_granted_waba_ids.return_value = ['waba-1']
+        client.get_phone_number_by_id.side_effect = phone_states
+        client.numero_listo_para_mensajeria.side_effect = real.numero_listo_para_mensajeria
+        client.registrar_numero.return_value = registro_ok
+        return client
+
+    def _completar(self, client):
+        from mecanimovilapp.apps.omnichannel.services.meta_oauth import complete_meta_oauth_connection
+
+        with patch(
+            'mecanimovilapp.apps.omnichannel.services.meta_oauth.MetaGraphClient',
+            return_value=client,
+        ):
+            return complete_meta_oauth_connection(self.conn, 'code')
+
+    def test_numero_nuevo_se_registra_y_los_chats_siguen(self):
+        OmnichannelService.ingest_inbound_message(
+            self.conn,
+            external_id='56999998888',
+            text='Hola',
+            external_message_id='wamid.ANTES',
+        )
+        pendiente = {**self.NUEVO, 'status': 'PENDING', 'platform_type': 'NOT_APPLICABLE'}
+        listo = {**self.NUEVO, 'status': 'CONNECTED', 'platform_type': 'CLOUD_API'}
+        client = self._client([pendiente, listo])
+
+        result = self._completar(client)
+
+        self.assertTrue(result.success)
+        self.conn.refresh_from_db()
+        self.assertEqual(self.conn.phone_number_id, '999')
+        self.assertEqual(self.conn.status, 'conectada')
+        self.assertEqual(len(self.conn.registro_pin), 6)
+        client.registrar_numero.assert_called_once_with('999', 'token-nuevo', self.conn.registro_pin)
+        _, kwargs = client.resolve_whatsapp_from_waba_ids.call_args
+        self.assertEqual(kwargs['preferred_display_phone'], '56944829287')
+
+        self.assertIsNone(OmnichannelService.resolve_connection_for_whatsapp('111'))
+        self.assertEqual(OmnichannelService.resolve_connection_for_whatsapp('999'), self.conn)
+        OmnichannelService.ingest_inbound_message(
+            self.conn,
+            external_id='56999998888',
+            text='Sigo aquí',
+            external_message_id='wamid.DESPUES',
+        )
+        self.assertEqual(Conversation.objects.filter(source_channel='WHATSAPP').count(), 1)
+
+    def test_si_el_nuevo_falla_el_anterior_sigue_conectado(self):
+        en_app = {
+            **self.NUEVO,
+            'status': 'DISCONNECTED',
+            'platform_type': 'ON_PREMISE',
+            'is_on_biz_app': True,
+            'code_verification_status': 'NOT_VERIFIED',
+        }
+        client = self._client([en_app])
+
+        result = self._completar(client)
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.error_code, 'whatsapp_en_el_telefono')
+        client.registrar_numero.assert_not_called()
+        self.conn.refresh_from_db()
+        self.assertEqual(self.conn.status, 'conectada')
+        self.assertTrue(self.conn.enabled)
+        self.assertEqual(self.conn.phone_number_id, '111')
+        self.assertEqual(self.conn.access_token, 'token-viejo')
+        self.assertIsNone(self.conn.oauth_state)
+        self.assertIn('+56911112222 sigue conectado', self.conn.mensaje_estado)
+
+    def test_numero_que_facebook_no_compartio(self):
+        client = self._client([])
+        client.resolve_whatsapp_from_waba_ids.return_value = None
+        client.resolve_whatsapp_assets.return_value = None
+
+        result = self._completar(client)
+
+        self.assertEqual(result.error_code, 'numero_no_encontrado')
+        self.conn.refresh_from_db()
+        self.assertEqual(self.conn.phone_number_id, '111')
+
+    def test_alta_numero_nuevo_no_pide_la_app_del_telefono(self):
+        from mecanimovilapp.apps.omnichannel.services.meta_oauth import build_whatsapp_alta_html
+
+        kwargs = dict(
+            app_id='123', config_id='cfg', graph_version='v21.0',
+            state='s', callback_url='https://api.example/cb/',
+        )
+        nuevo = build_whatsapp_alta_html(**kwargs, modo='numero_nuevo', numero='+56944829287').content.decode()
+        app = build_whatsapp_alta_html(**kwargs, modo='app_whatsapp').content.decode()
+        self.assertNotIn('whatsapp_business_app_onboarding', nuevo)
+        self.assertIn('+56944829287', nuevo)
+        self.assertIn('whatsapp_business_app_onboarding', app)

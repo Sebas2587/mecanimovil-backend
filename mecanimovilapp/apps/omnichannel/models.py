@@ -46,6 +46,10 @@ class ProviderChannelConnection(models.Model):
     display_name = models.CharField(max_length=255, blank=True, null=True)
     display_identifier = models.CharField(max_length=255, blank=True, null=True)
     oauth_state = models.CharField(max_length=128, blank=True, null=True)
+    alta_modo = models.CharField(max_length=20, blank=True, default='')
+    numero_solicitado = models.CharField(max_length=30, blank=True, default='')
+    # PIN de verificación en dos pasos que Meta exige al registrar un número en Cloud API.
+    registro_pin = models.CharField(max_length=6, blank=True, default='')
     mensaje_estado = models.TextField(blank=True, null=True)
     connected_at = models.DateTimeField(null=True, blank=True)
     disconnected_at = models.DateTimeField(null=True, blank=True)
@@ -82,6 +86,8 @@ class ProviderChannelConnection(models.Model):
         self.connected_at = timezone.now()
         self.disconnected_at = None
         self.oauth_state = None
+        self.alta_modo = ''
+        self.numero_solicitado = ''
         self.mensaje_estado = 'Canal conectado y listo para recibir mensajes.'
         self.save()
 
@@ -98,6 +104,8 @@ class ProviderChannelConnection(models.Model):
         self.display_name = None
         self.display_identifier = None
         self.oauth_state = None
+        self.alta_modo = ''
+        self.numero_solicitado = ''
         self.enabled = False
         self.status = 'desconectada'
         self.disconnected_at = timezone.now()

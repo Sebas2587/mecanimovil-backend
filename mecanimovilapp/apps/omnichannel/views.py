@@ -18,7 +18,10 @@ from mecanimovilapp.apps.omnichannel.serializers import (
     ProviderChannelConnectionToggleSerializer,
 )
 from mecanimovilapp.apps.omnichannel.services import MetaGraphClient
+from mecanimovilapp.apps.omnichannel.services.meta_graph import normalize_phone
 from mecanimovilapp.apps.omnichannel.services.meta_oauth import (
+    ALTA_APP_WHATSAPP,
+    ALTA_MODOS,
     MetaOAuthSessionData,
     build_oauth_callback_html,
     build_whatsapp_alta_html,
@@ -164,10 +167,27 @@ class ProviderChannelConnectionViewSet(viewsets.GenericViewSet):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
+        if channel == 'WHATSAPP':
+            modo = (request.query_params.get('modo') or ALTA_APP_WHATSAPP).strip()
+            if modo not in ALTA_MODOS:
+                return Response({'error': 'modo inválido (app_whatsapp|numero_nuevo)'}, status=400)
+            numero = normalize_phone(request.query_params.get('numero'))
+            if numero and not 8 <= len(numero) <= 15:
+                return Response(
+                    {'error': 'Escribe el número completo con código de país, por ejemplo +56 9 1234 5678.'},
+                    status=400,
+                )
+            conn.alta_modo = modo
+            conn.numero_solicitado = numero
+
         state = generate_oauth_state()
         conn.oauth_state = state
-        conn.status = 'pendiente'
-        conn.mensaje_estado = 'Esperando autorización de Meta...'
+        if ya_conectado:
+            # Cambio de número: el número actual sigue atendiendo hasta que el nuevo quede listo.
+            conn.mensaje_estado = 'Cambiando de número. El actual sigue conectado hasta terminar.'
+        else:
+            conn.status = 'pendiente'
+            conn.mensaje_estado = 'Esperando autorización de Meta...'
         conn.save()
 
         auth_url = build_embedded_signup_url(state, channel)
@@ -212,7 +232,8 @@ class ProviderChannelConnectionViewSet(viewsets.GenericViewSet):
         ).first()
         if not conn:
             return Response({'error': 'Conexión no encontrada'}, status=404)
-        if conn.status not in ('pendiente', 'error', 'no_configurada'):
+        cambio_en_curso = conn.status == 'conectada' and bool(conn.oauth_state)
+        if conn.status not in ('pendiente', 'error', 'no_configurada') and not cambio_en_curso:
             return Response(
                 {'error': 'Este canal ya está conectado o no puede completarse.'},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -442,6 +463,8 @@ def whatsapp_alta(request):
         graph_version=meta_graph_version(),
         state=state,
         callback_url=meta_oauth_redirect_uri().split('?')[0],
+        modo=conn.alta_modo or ALTA_APP_WHATSAPP,
+        numero=f'+{conn.numero_solicitado}' if conn.numero_solicitado else '',
     )
 
 
@@ -521,6 +544,8 @@ def meta_oauth_callback(request):
         title = 'Falta vincular el teléfono'
     elif result.error_code == 'numero_sin_registro':
         title = 'WhatsApp sin terminar'
+    elif result.error_code == 'numero_no_encontrado':
+        title = 'Número no compartido'
     return build_oauth_callback_html(
         success=False,
         title=title,

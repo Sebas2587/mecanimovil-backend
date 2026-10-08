@@ -55,19 +55,25 @@ WHATSAPP_CONNECT_COPY = {
             'El código llegó al WhatsApp, pero ese número todavía no puede enviar ni recibir en el chat.'
         ),
         'instruction': (
-            'Pulsa Conectar otra vez. En la ventana de Facebook elige ese mismo WhatsApp '
-            'y pon el código que llega al teléfono. No la cierres hasta que termine.'
+            'Pulsa Cambiar número, elige «Número nuevo para el chat» y pon el código SMS '
+            'que llega a ese número. No cierres la ventana hasta que termine.'
         ),
     },
     'whatsapp_en_el_telefono': {
         'message': (
-            'Facebook compartió la cuenta, pero no abrió el paso para vincular '
-            'el WhatsApp que ya está en el teléfono.'
+            'Ese número sigue solo en la app WhatsApp Business del teléfono y Facebook '
+            'no terminó de vincularlo.'
         ),
         'instruction': (
-            'En developers.facebook.com, app mecanimovil_connect, caso de uso de WhatsApp, '
-            'abre el configurador de registro insertado y elige el tipo '
-            '«Incorporación de la app de WhatsApp Business». Guarda y pulsa Conectar otra vez.'
+            'Pulsa Cambiar número y elige «Ya lo uso en WhatsApp Business». Si Facebook no te '
+            'muestra el código QR, usa «Número nuevo para el chat» con un número que no esté '
+            'en la app.'
+        ),
+    },
+    'numero_no_encontrado': {
+        'message': 'Facebook no compartió el número que escribiste.',
+        'instruction': (
+            'Pulsa Cambiar número otra vez y, en la ventana de Facebook, elige ese mismo número.'
         ),
     },
     'generico': {

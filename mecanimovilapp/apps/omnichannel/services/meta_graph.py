@@ -281,6 +281,27 @@ class MetaGraphClient:
             return False
         return True
 
+    def registrar_numero(self, phone_number_id: str, access_token: str, pin: str) -> bool:
+        """Activa en Cloud API un número verificado por SMS (no aplica a la app del teléfono)."""
+        resp = requests.post(
+            self._url(f'{phone_number_id}/register'),
+            data={
+                'messaging_product': 'whatsapp',
+                'pin': pin,
+                'access_token': access_token,
+            },
+            timeout=30,
+        )
+        if resp.status_code >= 400:
+            logger.warning(
+                'Registro Cloud API falló phone_number_id=%s status=%s body=%s',
+                phone_number_id,
+                resp.status_code,
+                resp.text[:500],
+            )
+            return False
+        return bool(resp.json().get('success'))
+
     def subscribe_page_webhooks(
         self,
         page_id: str,
