@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import logging
+from html import escape
+from urllib.parse import urlencode
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -320,13 +322,23 @@ def build_whatsapp_alta_html(
     callback_url: str,
 ) -> HttpResponse:
     """Abre Facebook en HTTPS y pide vincular el WhatsApp que ya está en el teléfono."""
-    payload = json.dumps({
-        'appId': app_id,
-        'configId': config_id,
-        'version': graph_version,
-        'state': state,
-        'callbackUrl': callback_url,
-    })
+    facebook_url = (
+        f'https://www.facebook.com/{graph_version}/dialog/oauth?'
+        + urlencode({
+            'client_id': app_id,
+            'redirect_uri': callback_url,
+            'state': state,
+            'response_type': 'code',
+            'config_id': config_id,
+            'override_default_response_type': 'true',
+            'display': 'page',
+            'extras': json.dumps({
+                'setup': {},
+                'featureType': 'whatsapp_business_app_onboarding',
+                'sessionInfoVersion': '3',
+            }, separators=(',', ':')),
+        })
+    )
     html = f"""<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -346,38 +358,18 @@ def build_whatsapp_alta_html(
     }}
     h1 {{ color: #0A0B0D; font-size: 20px; margin-bottom: 8px; }}
     p {{ color: #5B616E; font-size: 14px; line-height: 1.5; margin-bottom: 16px; }}
-    button {{
-      background: #0052FF; color: #fff; border: none; border-radius: 10px;
-      padding: 14px 24px; font-size: 15px; font-weight: 600; cursor: pointer;
+    a {{
+      display: inline-block; background: #0052FF; color: #fff; text-decoration: none;
+      border-radius: 10px; padding: 14px 24px; font-size: 15px; font-weight: 600;
     }}
-    button:disabled {{ opacity: 0.5; cursor: default; }}
   </style>
 </head>
 <body>
   <div class="card">
     <h1>Vincular WhatsApp</h1>
-    <p id="estado">Pulsa Continuar. Esta misma ventana pasa a Facebook. Elige el WhatsApp que ya usas y escribe el código en el teléfono.</p>
-    <button id="continuar" type="button">Continuar</button>
+    <p>Pulsa Continuar. Esta misma ventana pasa a Facebook. Elige el WhatsApp que ya usas y escribe el código en el teléfono.</p>
+    <a href="{escape(facebook_url, quote=True)}">Continuar</a>
   </div>
-  <script>
-    const cfg = {payload};
-    document.getElementById('continuar').addEventListener('click', function () {{
-      var params = new URLSearchParams({{
-        client_id: cfg.appId,
-        redirect_uri: cfg.callbackUrl,
-        state: cfg.state,
-        response_type: 'code',
-        config_id: cfg.configId,
-        override_default_response_type: 'true',
-        display: 'page',
-        extras: JSON.stringify({{
-          setup: {{}},
-          featureType: 'whatsapp_business_app_onboarding',
-          sessionInfoVersion: '3',
-        }}),
-      }});
-      location.href = 'https://www.facebook.com/' + cfg.version + '/dialog/oauth?' + params.toString();
-    }});
 </body>
 </html>"""
     return HttpResponse(html, content_type='text/html; charset=utf-8')
