@@ -9,8 +9,10 @@ from django.http import HttpResponse
 
 from mecanimovilapp.apps.omnichannel.models import ProviderChannelConnection
 from mecanimovilapp.apps.omnichannel.services.meta_graph import MetaGraphClient
+from mecanimovilapp.apps.omnichannel.services.token_meta import anotar_vigencia
 from mecanimovilapp.apps.omnichannel.services.whatsapp_connect_diagnostics import (
     copy_for_error,
+    diagnose_phone_not_ready,
     diagnose_whatsapp_connection_gap,
 )
 from mecanimovilapp.apps.omnichannel.utils import (
@@ -64,7 +66,7 @@ def complete_meta_oauth_connection(
                 error_code=diagnosis.error_code,
             )
 
-        user_token = access_token
+        user_token = client.extender_token_si_vence_pronto(access_token)
         update_fields: dict[str, Any] = {'access_token': user_token}
 
         if conn.channel in ('MESSENGER', 'INSTAGRAM'):
@@ -140,6 +142,7 @@ def complete_meta_oauth_connection(
                 update_fields['display_identifier'] = page.get('name')
 
         if conn.channel == 'WHATSAPP':
+            client.ensure_whatsapp_coexistence_subscription()
             update_fields['access_token'] = user_token
             business_id = session.business_id or conn.meta_business_id
             phone_number_id = session.phone_number_id
@@ -188,6 +191,7 @@ def complete_meta_oauth_connection(
                     diagnosis.error_code,
                 )
                 conn.access_token = user_token
+                anotar_vigencia(conn, client, user_token)
                 conn.status = 'error'
                 conn.mensaje_estado = diagnosis.message
                 conn.save()
@@ -213,15 +217,18 @@ def complete_meta_oauth_connection(
                 phone = client.get_phone_number_by_id(phone_id, user_token)
                 if phone and not client.numero_listo_para_mensajeria(phone):
                     display = phone.get('display_phone_number') or update_fields.get('display_identifier')
-                    diagnosis = copy_for_error('numero_sin_registro')
+                    diagnosis = diagnose_phone_not_ready(phone)
                     logger.info(
-                        'WhatsApp número sin registro API phone_number_id=%s display=%s status=%s verification=%s',
+                        'WhatsApp número sin registro API phone_number_id=%s display=%s status=%s verification=%s platform=%s on_biz_app=%s',
                         phone_id,
                         display,
                         phone.get('status'),
                         phone.get('code_verification_status'),
+                        phone.get('platform_type'),
+                        phone.get('is_on_biz_app'),
                     )
                     conn.access_token = user_token
+                    anotar_vigencia(conn, client, user_token)
                     conn.phone_number_id = phone_id
                     conn.waba_id = update_fields.get('waba_id') or conn.waba_id
                     conn.display_identifier = display
@@ -266,6 +273,10 @@ def complete_meta_oauth_connection(
                 conn.usuario_id,
             )
 
+        token_final = update_fields.get('access_token') or user_token
+        anotar_vigencia(conn, client, token_final)
+        update_fields['token_expires_at'] = conn.token_expires_at
+        update_fields['token_no_expira'] = conn.token_no_expira
         conn.mark_connected(enabled=True, **update_fields)
         return MetaOAuthCompletionResult(
             success=True,

@@ -36,6 +36,8 @@ class ProviderChannelConnection(models.Model):
     enabled = models.BooleanField(default=False)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='no_configurada')
     access_token = models.CharField(max_length=500, blank=True, null=True)
+    token_expires_at = models.DateTimeField(null=True, blank=True)
+    token_no_expira = models.BooleanField(default=False)
     phone_number_id = models.CharField(max_length=100, blank=True, null=True)
     waba_id = models.CharField(max_length=100, blank=True, null=True)
     page_id = models.CharField(max_length=100, blank=True, null=True)
@@ -86,6 +88,8 @@ class ProviderChannelConnection(models.Model):
     def disconnect(self):
         from django.utils import timezone
         self.access_token = None
+        self.token_expires_at = None
+        self.token_no_expira = False
         self.phone_number_id = None
         self.waba_id = None
         self.page_id = None

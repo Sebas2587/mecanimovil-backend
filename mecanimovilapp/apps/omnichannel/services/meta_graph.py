@@ -241,7 +241,10 @@ class MetaGraphClient:
             self._url(phone_number_id),
             params={
                 'access_token': access_token,
-                'fields': 'id,display_phone_number,verified_name,code_verification_status,status',
+                'fields': (
+                    'id,display_phone_number,verified_name,code_verification_status,'
+                    'status,platform_type,is_on_biz_app'
+                ),
             },
             timeout=30,
         )
@@ -256,14 +259,25 @@ class MetaGraphClient:
         return resp.json()
 
     def numero_listo_para_mensajeria(self, phone: dict | None) -> bool:
-        """El código de WhatsApp no alcanza: el número tiene que estar verificado para la API."""
+        """Listo para el chat.
+
+        Un número que sigue en la app de WhatsApp Business queda usable cuando
+        Meta lo pasa a Cloud API, aunque el código de verificación siga en
+        NOT_VERIFIED. En ON_PREMISE los envíos responden 133010.
+        """
         if not isinstance(phone, dict):
-            return False
-        verificado = str(phone.get('code_verification_status') or '').upper()
-        if verificado == 'NOT_VERIFIED':
             return False
         estado = str(phone.get('status') or '').upper()
         if estado in {'PENDING', 'DELETED', 'MIGRATED', 'BANNED', 'DISCONNECTED', 'UNVERIFIED'}:
+            return False
+        plataforma = str(phone.get('platform_type') or '').upper()
+        if plataforma == 'ON_PREMISE':
+            return False
+        verificado = str(phone.get('code_verification_status') or '').upper()
+        en_app = phone.get('is_on_biz_app') is True
+        if plataforma in {'CLOUD_API', 'CLOUD'} and (en_app or verificado != 'NOT_VERIFIED'):
+            return estado in {'', 'CONNECTED'}
+        if verificado == 'NOT_VERIFIED':
             return False
         return True
 
@@ -328,6 +342,45 @@ class MetaGraphClient:
             resp.raise_for_status()
         return resp.json()
 
+    def ensure_whatsapp_coexistence_subscription(self) -> None:
+        """Campos que Meta pide para vincular un WhatsApp que ya está en el teléfono."""
+        from decouple import config
+
+        from mecanimovilapp.apps.omnichannel.utils import meta_app_id, meta_verify_token
+
+        app_id = meta_app_id()
+        verify = meta_verify_token()
+        if not app_id or not verify:
+            return
+        callback = config(
+            'WEBHOOK_BASE_URL',
+            default='https://mecanimovil-api.onrender.com',
+        ).rstrip('/')
+        fields = 'messages,account_update,history,smb_app_state_sync,smb_message_echoes'
+        try:
+            resp = requests.post(
+                self._url(f'{app_id}/subscriptions'),
+                data={
+                    'object': 'whatsapp_business_account',
+                    'callback_url': f'{callback}/api/omnichannel/webhooks/meta/',
+                    'verify_token': verify,
+                    'fields': fields,
+                    'access_token': self.get_app_access_token(),
+                },
+                timeout=30,
+            )
+        except Exception:
+            logger.exception('No se pudo suscribir webhooks de WhatsApp Business')
+            return
+        if resp.status_code >= 400:
+            logger.warning(
+                'WhatsApp subscription fields failed (%s): %s',
+                resp.status_code,
+                resp.text[:400],
+            )
+            return
+        logger.info('WhatsApp subscription fields OK: %s', fields)
+
     def get_app_access_token(self) -> str:
         from decouple import config
         app_id = config('META_APP_ID', default='')
@@ -347,6 +400,70 @@ class MetaGraphClient:
             logger.warning('debug_token failed: %s', resp.text)
             return {}
         return resp.json().get('data', {}) or {}
+
+    def clasificar_expiracion(self, token: str):
+        """expires_at en UTC. never=True si Meta dice que el permiso no caduca."""
+        from dataclasses import dataclass
+        from datetime import datetime, timezone as dt_timezone
+
+        @dataclass(frozen=True)
+        class TokenVigencia:
+            expires_at: datetime | None
+            never: bool
+            known: bool
+
+        data = self.debug_token(token)
+        if not data or 'expires_at' not in data:
+            return TokenVigencia(None, False, False)
+        raw = data.get('expires_at')
+        if raw in (0, '0'):
+            return TokenVigencia(None, True, True)
+        try:
+            expires_at = datetime.fromtimestamp(int(raw), tz=dt_timezone.utc)
+        except (TypeError, ValueError):
+            return TokenVigencia(None, False, False)
+        return TokenVigencia(expires_at, False, True)
+
+    def extender_token(self, token: str) -> dict[str, Any] | None:
+        """Pide otro permiso largo. El taller no vuelve a entrar a Facebook."""
+        from decouple import config
+
+        app_id = config('META_APP_ID', default='')
+        secret = meta_app_secret()
+        if not app_id or not secret or not token:
+            return None
+        resp = requests.get(
+            self._url('oauth/access_token'),
+            params={
+                'grant_type': 'fb_exchange_token',
+                'client_id': app_id,
+                'client_secret': secret,
+                'fb_exchange_token': token,
+            },
+            timeout=30,
+        )
+        if resp.status_code >= 400:
+            logger.warning('No se pudo renovar el permiso de Meta (%s)', resp.status_code)
+            return None
+        data = resp.json()
+        if not data.get('access_token'):
+            return None
+        return data
+
+    def extender_token_si_vence_pronto(self, token: str, *, umbral_dias: int = 20) -> str:
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        info = self.clasificar_expiracion(token)
+        if info.never:
+            return token
+        if info.known and info.expires_at and info.expires_at - timezone.now() > timedelta(days=umbral_dias):
+            return token
+        renovado = self.extender_token(token)
+        if renovado and renovado.get('access_token'):
+            return renovado['access_token']
+        return token
 
     def get_granted_waba_ids(self, access_token: str) -> list[str]:
         """WABAs que el usuario seleccionó en el diálogo OAuth (granular scopes)."""

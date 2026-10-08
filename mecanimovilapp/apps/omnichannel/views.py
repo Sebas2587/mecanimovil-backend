@@ -485,6 +485,10 @@ def meta_oauth_callback(request):
         title = 'Sin número de WhatsApp Business'
     elif result.error_code == 'sin_permisos_admin':
         title = 'Sin permiso de administrador'
+    elif result.error_code == 'whatsapp_en_el_telefono':
+        title = 'Falta vincular el teléfono'
+    elif result.error_code == 'numero_sin_registro':
+        title = 'WhatsApp sin terminar'
     return build_oauth_callback_html(
         success=False,
         title=title,

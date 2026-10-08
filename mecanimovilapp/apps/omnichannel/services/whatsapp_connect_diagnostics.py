@@ -59,6 +59,18 @@ WHATSAPP_CONNECT_COPY = {
             'y pon el código que llega al teléfono. No la cierres hasta que termine.'
         ),
     },
+    'whatsapp_en_el_telefono': {
+        'message': (
+            'Este número sigue solo en la app de WhatsApp Business. '
+            'Hay que vincular esa app para poder usarlo en el chat.'
+        ),
+        'instruction': (
+            'Pulsa Conectar y elige el WhatsApp que ya usas. '
+            'Cuando aparezca un código, ábrelo en WhatsApp Business, toca '
+            'Conectar a la plataforma y escríbelo ahí (o escanea el QR). '
+            'No cierres la ventana hasta que termine.'
+        ),
+    },
     'generico': {
         'message': 'No pudimos vincular tu WhatsApp.',
         'instruction': 'Pulsa Conectar e intenta de nuevo. Si se repite, contacta a soporte.',
@@ -80,6 +92,16 @@ def copy_for_error(error_code: str) -> WhatsAppConnectDiagnosis:
         message=payload['message'],
         instruction=payload['instruction'],
     )
+
+
+def diagnose_phone_not_ready(phone: dict | None) -> WhatsAppConnectDiagnosis:
+    """El número existe, pero el chat todavía no puede usarlo."""
+    data = phone or {}
+    plataforma = str(data.get('platform_type') or '').upper()
+    en_la_app = data.get('is_on_biz_app') is True
+    if plataforma == 'ON_PREMISE' or en_la_app:
+        return copy_for_error('whatsapp_en_el_telefono')
+    return copy_for_error('numero_sin_registro')
 
 
 def diagnose_whatsapp_connection_gap(client, access_token: str) -> WhatsAppConnectDiagnosis:

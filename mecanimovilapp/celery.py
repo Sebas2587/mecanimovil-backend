@@ -175,6 +175,11 @@ app.conf.beat_schedule = {
         'schedule': crontab(minute='*/30'),  # Cada 30 minutos
         'options': {'queue': 'default'},
     },
+    'omnichannel-renovar-tokens-meta': {
+        'task': 'omnichannel.renovar_tokens_meta',
+        'schedule': crontab(hour=6, minute=10),
+        'options': {'queue': 'default'},
+    },
     'ordenes-expirar-vitrinas-vencidas': {
         'task': 'ordenes.expirar_vitrinas_vencidas',
         'schedule': crontab(minute=0, hour='*/6'),

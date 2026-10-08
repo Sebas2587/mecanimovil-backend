@@ -106,6 +106,21 @@ class WhatsAppConnectDiagnosticsTests(SimpleTestCase):
         diagnosis = diagnose_whatsapp_connection_gap(client, 'token')
         self.assertEqual(diagnosis.error_code, 'sin_permisos_admin')
 
+    def test_numero_en_la_app_pide_vincular_el_telefono(self):
+        from mecanimovilapp.apps.omnichannel.services.whatsapp_connect_diagnostics import (
+            diagnose_phone_not_ready,
+        )
+
+        diagnosis = diagnose_phone_not_ready({
+            'platform_type': 'ON_PREMISE',
+            'is_on_biz_app': True,
+            'code_verification_status': 'NOT_VERIFIED',
+            'status': 'CONNECTED',
+        })
+        self.assertEqual(diagnosis.error_code, 'whatsapp_en_el_telefono')
+        self.assertIn('WhatsApp Business', diagnosis.message)
+        self.assertIn('Conectar a la plataforma', diagnosis.instruction)
+
 
 class EmbeddedConfigTests(SimpleTestCase):
     def test_build_embedded_config_requires_app_and_config_id(self):
@@ -126,6 +141,29 @@ class EmbeddedConfigTests(SimpleTestCase):
                 payload = build_embedded_config_payload('WHATSAPP')
                 self.assertTrue(payload['enabled'])
                 self.assertEqual(payload['config_id'], 'cfg-abc')
+
+    def test_oauth_whatsapp_pide_vincular_la_app_del_telefono(self):
+        from urllib.parse import parse_qs, urlparse
+
+        from mecanimovilapp.apps.omnichannel.utils import build_embedded_signup_url
+
+        with patch('mecanimovilapp.apps.omnichannel.utils.meta_app_id', return_value='123'):
+            with patch(
+                'mecanimovilapp.apps.omnichannel.utils.meta_oauth_redirect_uri',
+                return_value='https://api.example/callback',
+            ):
+                with patch(
+                    'mecanimovilapp.apps.omnichannel.utils.meta_embedded_signup_config_id_for_channel',
+                    return_value='cfg-wa',
+                ):
+                    with patch(
+                        'mecanimovilapp.apps.omnichannel.utils.meta_graph_version',
+                        return_value='v21.0',
+                    ):
+                        url = build_embedded_signup_url('state-1', 'WHATSAPP')
+        extras = parse_qs(urlparse(url).query)['extras'][0]
+        self.assertIn('whatsapp_business_app_onboarding', extras)
+        self.assertIn('"sessionInfoVersion":"3"', extras)
 
 
 class ChannelSlugTests(SimpleTestCase):
@@ -374,6 +412,81 @@ class MetaSendRetryTests(SimpleTestCase):
         self.assertFalse(_meta_reintenta(resp_perm))
 
 
+class RenovarTokenMetaTests(SimpleTestCase):
+    def _conn(self, **kwargs):
+        from datetime import timedelta
+        from unittest.mock import MagicMock
+
+        from django.utils import timezone
+
+        conn = MagicMock()
+        conn.access_token = 'viejo'
+        conn.token_no_expira = False
+        conn.token_expires_at = timezone.now() + timedelta(days=40)
+        conn.channel = 'WHATSAPP'
+        conn.id = 'abc'
+        conn.status = 'conectada'
+        for key, value in kwargs.items():
+            setattr(conn, key, value)
+        return conn
+
+    def test_no_toca_un_permiso_que_aun_dura(self):
+        from unittest.mock import MagicMock
+
+        from mecanimovilapp.apps.omnichannel.services.token_meta import renovar_conexion
+
+        conn = self._conn()
+        client = MagicMock()
+        self.assertEqual(renovar_conexion(conn, client), 'omitida')
+        client.extender_token.assert_not_called()
+
+    def test_renueva_cuando_faltan_menos_de_14_dias(self):
+        from datetime import timedelta
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from django.utils import timezone
+
+        from mecanimovilapp.apps.omnichannel.services.token_meta import renovar_conexion
+
+        conn = self._conn(token_expires_at=timezone.now() + timedelta(days=5))
+        client = MagicMock()
+        client.extender_token.return_value = {'access_token': 'nuevo', 'expires_in': 5183944}
+        client.clasificar_expiracion.return_value = SimpleNamespace(
+            expires_at=timezone.now() + timedelta(days=60),
+            never=False,
+            known=True,
+        )
+        self.assertEqual(renovar_conexion(conn, client), 'renovada')
+        self.assertEqual(conn.access_token, 'nuevo')
+        conn.save.assert_called()
+
+    def test_permiso_sin_vencimiento_no_se_renueva(self):
+        from unittest.mock import MagicMock
+
+        from mecanimovilapp.apps.omnichannel.services.token_meta import renovar_conexion
+
+        conn = self._conn(token_no_expira=True)
+        client = MagicMock()
+        self.assertEqual(renovar_conexion(conn, client), 'omitida')
+        client.extender_token.assert_not_called()
+
+    def test_si_ya_vencio_y_meta_no_renueva_pide_conectar(self):
+        from datetime import timedelta
+        from unittest.mock import MagicMock
+
+        from django.utils import timezone
+
+        from mecanimovilapp.apps.omnichannel.services.token_meta import renovar_conexion
+
+        conn = self._conn(token_expires_at=timezone.now() - timedelta(hours=1))
+        client = MagicMock()
+        client.extender_token.return_value = None
+        self.assertEqual(renovar_conexion(conn, client), 'fallo')
+        self.assertEqual(conn.status, 'error')
+        self.assertIn('Conectar', conn.mensaje_estado)
+
+
 class NumeroWhatsappListoTests(SimpleTestCase):
     def test_codigo_sin_verificacion_no_deja_mensajear(self):
         from mecanimovilapp.apps.omnichannel.services.meta_graph import MetaGraphClient
@@ -386,4 +499,20 @@ class NumeroWhatsappListoTests(SimpleTestCase):
         self.assertTrue(client.numero_listo_para_mensajeria({
             'code_verification_status': 'VERIFIED',
             'status': 'CONNECTED',
+        }))
+        self.assertFalse(client.numero_listo_para_mensajeria({
+            'code_verification_status': 'NOT_VERIFIED',
+            'status': 'CONNECTED',
+            'platform_type': 'ON_PREMISE',
+            'is_on_biz_app': True,
+        }))
+        self.assertTrue(client.numero_listo_para_mensajeria({
+            'code_verification_status': 'NOT_VERIFIED',
+            'status': 'CONNECTED',
+            'platform_type': 'CLOUD_API',
+            'is_on_biz_app': True,
+        }))
+        self.assertFalse(client.numero_listo_para_mensajeria({
+            'code_verification_status': 'NOT_VERIFIED',
+            'status': 'DISCONNECTED',
         }))

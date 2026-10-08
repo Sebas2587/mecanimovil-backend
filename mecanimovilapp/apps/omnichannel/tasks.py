@@ -452,3 +452,11 @@ def send_meta_message(self, message_id: int):
             raise
         logger.exception('send_meta_message error: %s', exc)
         raise
+
+
+@shared_task(name='omnichannel.renovar_tokens_meta')
+def renovar_tokens_meta():
+    """Renueva permisos de Meta que vencen en los próximos 14 días."""
+    from mecanimovilapp.apps.omnichannel.services.token_meta import renovar_tokens_por_vencer
+
+    return renovar_tokens_por_vencer()

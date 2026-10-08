@@ -1,6 +1,7 @@
 """Utilidades Meta omnicanal."""
 import hashlib
 import hmac
+import json
 import secrets
 from urllib.parse import urlencode
 
@@ -173,6 +174,15 @@ def build_embedded_signup_url(state: str, channel: str) -> str | None:
         params['scope'] = _scopes_for_channel(channel)
     if config_id:
         params['config_id'] = config_id
+    if channel == 'WHATSAPP' and config_id:
+        # El navegador del teléfono no usa el SDK. Sin este extra, Facebook solo
+        # comparte la cuenta y el número que ya está en WhatsApp Business no entra al chat.
+        params['override_default_response_type'] = 'true'
+        params['extras'] = json.dumps({
+            'setup': {},
+            'featureType': 'whatsapp_business_app_onboarding',
+            'sessionInfoVersion': '3',
+        }, separators=(',', ':'))
     return f'https://www.facebook.com/{meta_graph_version()}/dialog/oauth?{urlencode(params)}'
 
 
