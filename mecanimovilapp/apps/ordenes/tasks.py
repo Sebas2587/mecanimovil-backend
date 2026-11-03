@@ -762,14 +762,16 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                     _precio_plausible_para_linea,
                 )
                 from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
-                    _validar_tipo_parte,
+                    _producto_es_la_pieza,
                 )
 
                 nombre_linea = str(rep.get('nombre') or '')
                 q = _clave_fuzzy(nombre_linea)
                 hit = resultados.get(q)
-                if hit and not _validar_tipo_parte(
-                    nombre_linea, str(hit.get('nombre_producto') or ''),
+                if hit and not _producto_es_la_pieza(
+                    nombre_linea,
+                    str(hit.get('nombre_producto') or ''),
+                    fuente='web',
                 ):
                     hit = None
                 if not hit:
@@ -786,7 +788,11 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                         }
                         for k, v in resultados.items()
                         if isinstance(v, dict)
-                        and _validar_tipo_parte(nombre_linea, str(v.get('nombre_producto') or ''))
+                        and _producto_es_la_pieza(
+                            nombre_linea,
+                            str(v.get('nombre_producto') or ''),
+                            fuente='web',
+                        )
                         and str(v.get('url') or '') not in urls_usadas
                     ]
                     best = _mejor_hit(

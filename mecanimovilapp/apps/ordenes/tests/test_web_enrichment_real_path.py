@@ -137,7 +137,12 @@ class WebEnrichmentRealPathTestCase(TestCase):
         })
         
         # Mock para que nombres_sin_cache_vigente devuelva cache hit
-        with patch('mecanimovilapp.apps.ordenes.tasks.nombres_sin_cache_vigente') as mock_cache:
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.busqueda_web_habilitada',
+            return_value=True,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.nombres_sin_cache_vigente',
+        ) as mock_cache:
             mock_cache.return_value = ([], {clave_aceite: {
                 'nombre_producto': 'Enfriador aceite Fiat Bravo 1.4 | Euroespecialista',
                 'precio_clp': 31490,
@@ -145,11 +150,13 @@ class WebEnrichmentRealPathTestCase(TestCase):
                 'url': 'https://euroespecialista.cl/enfriador-aceite-fiat-bravo',
             }})
             
-            with patch('mecanimovilapp.apps.ordenes.tasks.buscar_repuestos_web') as mock_web:
+            with patch(
+                'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.buscar_repuestos_web',
+            ) as mock_web:
                 mock_web.return_value = {}
                 
                 from mecanimovilapp.apps.ordenes.tasks import buscar_precios_web_cotizacion_task
-                result = buscar_precios_web_cotizacion_task(None, cot.id)
+                result = buscar_precios_web_cotizacion_task(cot.id)
         
         self.assertTrue(result.get('ok'))
         cot.refresh_from_db()
@@ -162,5 +169,6 @@ class WebEnrichmentRealPathTestCase(TestCase):
         # Verificación 2: NO debe tener el nombre_producto del enfriador
         self.assertNotIn('Enfriador', rep_enriquecido.get('nombre_producto', ''))
         
-        # Verificación 3: Debe quedar sin precio (rechazó el único hit)
-        self.assertLessEqual(rep_enriquecido.get('precio_unitario_clp', 0), 0)
+        # Verificación 3: no se queda el precio del enfriador. La banda de la IA
+        # puede seguir en la línea; el hit rechazado no.
+        self.assertNotEqual(rep_enriquecido.get('precio_unitario_clp'), 31490)

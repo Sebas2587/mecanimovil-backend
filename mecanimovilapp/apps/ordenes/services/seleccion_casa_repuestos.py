@@ -100,10 +100,15 @@ def seleccionar_casa_optima(
     # 2. Si solo hay una con stock, elegirla
     if len(con_stock) == 1:
         unica = con_stock[0]
+        tienda = (unica.casa or '').strip()
+        motivo = (
+            f'Única casa con stock disponible ({tienda})'
+            if tienda else 'Única casa con stock disponible'
+        )
         return ResultadoSeleccion(
             casa_elegida=unica.casa,
             proveedor_id=unica.proveedor_id,
-            motivo_seleccion='Única casa con stock disponible',
+            motivo_seleccion=motivo,
             alternativas_descartadas=_construir_alternativas(opciones, unica),
             precio_final_clp=unica.precio_clp,
         )
@@ -137,6 +142,17 @@ def seleccionar_casa_optima(
     )
 
 
+def _clave_casa(opcion: OpcionCasa) -> str:
+    """Identidad de la casa. El id 0 (web) no puede unir tiendas distintas."""
+    try:
+        pid = int(opcion.proveedor_id or 0)
+    except (TypeError, ValueError):
+        pid = 0
+    if pid > 0:
+        return f'id:{pid}'
+    return 'nombre:' + ' '.join((opcion.casa or '').strip().lower().split())
+
+
 def consolidar_si_posible(
     repuestos: list[dict],
     todas_las_opciones: dict[str, list[OpcionCasa]],
@@ -156,10 +172,19 @@ def consolidar_si_posible(
     """
     if not todas_las_opciones or len(todas_las_opciones) < 2:
         return None
+
+    n_repuestos = len([r for r in (repuestos or []) if isinstance(r, dict)]) or len(todas_las_opciones)
+    if len(todas_las_opciones) < n_repuestos:
+        logger.info(
+            'ordenes[seleccion_casa] consolidacion_omitida cobertura_parcial repuestos=%d con_opciones=%d',
+            n_repuestos,
+            len(todas_las_opciones),
+        )
+        return None
     
     # 1. Identificar casas que aparecen en todos los repuestos
     casas_por_repuesto = {
-        rid: {o.proveedor_id for o in opciones if o.stock_disponible}
+        rid: {_clave_casa(o) for o in opciones if o.stock_disponible and (o.casa or '').strip()}
         for rid, opciones in todas_las_opciones.items()
     }
     
@@ -181,7 +206,10 @@ def consolidar_si_posible(
         nombre_casa = ''
         
         for rid, opciones in todas_las_opciones.items():
-            opc_casa = next((o for o in opciones if o.proveedor_id == casa_id and o.stock_disponible), None)
+            opc_casa = next(
+                (o for o in opciones if _clave_casa(o) == casa_id and o.stock_disponible),
+                None,
+            )
             if not opc_casa:
                 break  # Esta casa no tiene este repuesto con stock
             
@@ -239,7 +267,7 @@ def consolidar_si_posible(
     resultados = {}
     for rid, opciones in todas_las_opciones.items():
         opc_elegida = next(
-            (o for o in opciones if o.proveedor_id == casa_elegida_id),
+            (o for o in opciones if _clave_casa(o) == casa_elegida_id),
             None
         )
         
@@ -254,13 +282,24 @@ def consolidar_si_posible(
             motivo = f'Consolidado en una sola casa (${costo_consolidado:,} CLP, {ahorro_pct:.1f}% sobre óptimo distribuido)'.replace(',', '.')
         
         resultados[rid] = ResultadoSeleccion(
-            casa_elegida=opc_elegida.casa,
-            proveedor_id=casa_elegida_id,
+            casa_elegida=casa_elegida_nombre,
+            proveedor_id=opc_elegida.proveedor_id,
             motivo_seleccion=motivo,
             alternativas_descartadas=_construir_alternativas(opciones, opc_elegida),
             precio_final_clp=opc_elegida.precio_clp,
             consolidacion_aplicada=True,
         )
+
+    if len(resultados) != len(todas_las_opciones):
+        logger.info(
+            'ordenes[seleccion_casa] consolidacion_omitida cobertura_incompleta cubiertos=%d total=%d',
+            len(resultados),
+            len(todas_las_opciones),
+        )
+        return None
+    casas_resultado = {(r.casa_elegida or '').strip().lower() for r in resultados.values()}
+    if len(casas_resultado) != 1:
+        return None
     
     return resultados
 

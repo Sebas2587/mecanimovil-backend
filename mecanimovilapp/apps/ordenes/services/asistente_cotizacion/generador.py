@@ -686,12 +686,42 @@ def _aplicar_seleccion_casa_repuestos(
             todas_las_opciones[rep_id] = opciones_casa
     
     # PASO 2: Intentar consolidación global (una casa con todos los repuestos dentro del 110%)
+    # CRÍTICO: Solo consolidar si TODOS los repuestos tienen opciones disponibles
     resultados_consolidados = None
-    if len(todas_las_opciones) >= 2:
+    if len(todas_las_opciones) >= 2 and len(todas_las_opciones) == len(repuestos):
         try:
             resultados_consolidados = consolidar_si_posible(repuestos, todas_las_opciones)
+            if resultados_consolidados:
+                casas = {
+                    (r.casa_elegida or '').strip().lower()
+                    for r in resultados_consolidados.values()
+                }
+                cubre_todos = (
+                    len(resultados_consolidados) == len(repuestos)
+                    and len(casas) == 1
+                    and '' not in casas
+                )
+                if not cubre_todos:
+                    logger.info(
+                        'ordenes[seleccion_casa] consolidacion_descartada casas=%s cubiertos=%d total=%d',
+                        sorted(casas),
+                        len(resultados_consolidados),
+                        len(repuestos),
+                    )
+                    resultados_consolidados = None
+                else:
+                    logger.info(
+                        'ordenes[seleccion_casa] consolidacion_valida casa=%s repuestos=%d',
+                        next(iter(resultados_consolidados.values())).casa_elegida,
+                        len(resultados_consolidados),
+                    )
         except Exception as exc:
             logger.warning('consolidar_si_posible falló: %s', exc, exc_info=True)
+    elif len(todas_las_opciones) < len(repuestos):
+        logger.info(
+            'ordenes[seleccion_casa] consolidacion_omitida repuestos=%d con_opciones=%d',
+            len(repuestos), len(todas_las_opciones)
+        )
     
     # PASO 3: Aplicar selección a cada repuesto
     repuestos_finales = []
@@ -705,19 +735,28 @@ def _aplicar_seleccion_casa_repuestos(
             rep['alternativas_descartadas'] = []
             rep['consolidacion_aplicada'] = False
             rep.pop('_config_modelo', None)
-        # Si hay consolidación, usar resultado consolidado
+        # Si hay consolidación, usar resultado consolidado y ACTUALIZAR proveedor_nombre
         elif resultados_consolidados and rep_id in resultados_consolidados:
             resultado = resultados_consolidados[rep_id]
             rep['casa_repuesto_nombre'] = resultado.casa_elegida
+            rep['proveedor_nombre'] = resultado.casa_elegida
             rep['motivo_seleccion'] = resultado.motivo_seleccion
             rep['alternativas_descartadas'] = resultado.alternativas_descartadas
-            rep['consolidacion_aplicada'] = resultado.consolidacion_aplicada
-            rep['precio_unitario_clp'] = resultado.precio_final_clp // rep.get('cantidad', 1)
+            rep['consolidacion_aplicada'] = True
+            try:
+                cantidad = int(rep.get('cantidad') or 1)
+            except (TypeError, ValueError):
+                cantidad = 1
+            cantidad = max(cantidad, 1)
+            if resultado.precio_final_clp > 0:
+                rep['precio_unitario_clp'] = resultado.precio_final_clp // cantidad
         # Si no hay consolidación pero hay opciones, seleccionar óptima individual
         elif rep_id in todas_las_opciones:
             opciones = todas_las_opciones[rep_id]
             resultado = seleccionar_casa_optima(opciones)
             rep['casa_repuesto_nombre'] = resultado.casa_elegida
+            if resultado.casa_elegida:
+                rep['proveedor_nombre'] = resultado.casa_elegida
             rep['motivo_seleccion'] = resultado.motivo_seleccion
             rep['alternativas_descartadas'] = resultado.alternativas_descartadas
             rep['consolidacion_aplicada'] = False
@@ -1018,6 +1057,13 @@ def generar_cotizacion_ia(
                 exc_info=True,
             )
             contenido['valores_estimativos'] = True
+    
+    # CRÍTICO: Ajustar rangos para cubrir line totals después del enriquecimiento
+    try:
+        reps = _ajustar_rangos_consistentes(list(contenido.get('repuestos') or []))
+        contenido['repuestos'] = reps
+    except Exception as exc:
+        logger.warning('_ajustar_rangos_consistentes falló: %s', exc, exc_info=True)
 
     # Prioridad: OfertaServicio del taller para marca/modelo (igual que el agente chat).
     if taller is not None:
