@@ -1018,6 +1018,13 @@ def generar_cotizacion_ia(
                 exc_info=True,
             )
             contenido['valores_estimativos'] = True
+    
+    # CRÍTICO: Ajustar rangos para cubrir line totals después del enriquecimiento
+    try:
+        reps = _ajustar_rangos_consistentes(list(contenido.get('repuestos') or []))
+        contenido['repuestos'] = reps
+    except Exception as exc:
+        logger.warning('_ajustar_rangos_consistentes falló: %s', exc, exc_info=True)
 
     # Prioridad: OfertaServicio del taller para marca/modelo (igual que el agente chat).
     if taller is not None:

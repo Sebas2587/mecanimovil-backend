@@ -398,11 +398,13 @@ def _mejor_hit(nombre: str, candidatos: list[dict[str, Any]], *, min_score: int 
     
     # NUEVO: validar tipo de parte antes de devolver
     if best and best_score >= min_score:
-        producto_nombre = best.get('nombre') or ''
+        # Usar nombre_producto si existe (historial/web), sino el nombre
+        producto_nombre = best.get('nombre_producto') or best.get('nombre') or ''
         if not _validar_tipo_parte(nombre, producto_nombre):
             logger.warning(
-                'ordenes[enrich] mismatch_tipo_rechazado repuesto=%s producto=%s score=%d',
-                nombre[:60], producto_nombre[:60], best_score
+                'ordenes[enrich] mismatch_tipo_rechazado repuesto=%s producto=%s fuente=%s score=%d',
+                nombre[:50], producto_nombre[:50], 
+                best.get('fuente_marketplace', '')[:15], best_score
             )
             return None
     
@@ -639,6 +641,8 @@ def _candidatos_historial_taller(
                 clave = _clave_fuzzy(nombre)
                 if not clave:
                     continue
+                # CRÍTICO: Preservar nombre_producto para validación de tipo
+                nombre_producto = str(raw.get('nombre_producto') or '').strip()
                 precio = _to_int_clp(raw.get('precio_unitario_clp'))
                 marca = _marca_repuesto_valida(raw.get('marca_repuesto'))
                 prov = str(
@@ -657,6 +661,8 @@ def _candidatos_historial_taller(
                     b['proveedores'].append(prov)
                 if url:
                     b['urls'].append(url)
+                if nombre_producto:
+                    b.setdefault('nombres_producto', []).append(nombre_producto)
                 b['nombre'] = nombre
                 b['match_modelo'] = b['match_modelo'] or match_modelo
 
@@ -677,6 +683,11 @@ def _candidatos_historial_taller(
             url_moda = (
                 Counter(data['urls']).most_common(1)[0][0] if data['urls'] else ''
             )
+            # NUEVO: Preservar nombre_producto más común para validación
+            nombre_prod_moda = ''
+            if data.get('nombres_producto'):
+                nombre_prod_moda = Counter(data['nombres_producto']).most_common(1)[0][0]
+            
             conf = _CONF_HISTORIAL + (0.05 if data.get('match_modelo') else 0.0)
             hit = _hit(
                 nombre=data.get('nombre') or clave,
@@ -688,6 +699,9 @@ def _candidatos_historial_taller(
                 confianza=min(0.88, conf),
                 clave=clave,
             )
+            # CRÍTICO: Agregar nombre_producto para validación
+            if nombre_prod_moda:
+                hit['nombre_producto'] = nombre_prod_moda
             out.append(hit)
         return out
     except Exception as exc:
