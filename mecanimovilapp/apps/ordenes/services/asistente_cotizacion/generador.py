@@ -642,25 +642,44 @@ def _aplicar_seleccion_casa_repuestos(
         rep_id = rep.get('id') or f'rep-{idx}'
         opciones_casa = []
         
-        # Opción 1: del campo proveedor_nombre (catálogo/historial taller)
-        if rep.get('proveedor_nombre'):
+        fuente = rep.get('fuente_marketplace', '') or rep.get('fuente_repuesto', '')
+        proveedor_nombre = rep.get('proveedor_nombre', '')
+        
+        # Opción 1: Catálogo/historial del taller (proveedor_nombre + fuente catalogo/historial)
+        if proveedor_nombre and fuente in ('catalogo', 'historial'):
             opciones_casa.append(OpcionCasa(
-                casa=rep['proveedor_nombre'],
+                casa=proveedor_nombre,
                 proveedor_id=rep.get('proveedor_id', 0),
                 precio_clp=rep.get('precio_unitario_clp', 0) * rep.get('cantidad', 1),
-                stock_disponible=True,  # Catálogo del taller siempre tiene stock
-                compatibilidad_score=1.0,  # Máxima confianza
+                stock_disponible=True,
+                compatibilidad_score=1.0,
             ))
-        
-        # Opción 2: del campo fuente_marketplace (web, ML, etc.)
-        fuente = rep.get('fuente_marketplace', '') or rep.get('fuente_repuesto', '')
-        if fuente and fuente not in ('catalogo', 'historial'):
+        # Opción 2: Búsqueda web (proveedor_nombre + fuente web)
+        elif proveedor_nombre and fuente == 'web':
             opciones_casa.append(OpcionCasa(
-                casa=rep.get('tienda_ml', '') or fuente.title(),
+                casa=proveedor_nombre,
+                proveedor_id=0,
+                precio_clp=rep.get('precio_unitario_clp', 0) * rep.get('cantidad', 1),
+                stock_disponible=rep.get('url_producto', '') != '',  # Tiene URL = verificado
+                compatibilidad_score=0.8,
+            ))
+        # Opción 3: MercadoLibre u otras fuentes
+        elif fuente and fuente not in ('catalogo', 'historial', 'web'):
+            opciones_casa.append(OpcionCasa(
+                casa=rep.get('tienda_ml', '') or proveedor_nombre or fuente.title(),
                 proveedor_id=0,
                 precio_clp=rep.get('precio_unitario_clp', 0) * rep.get('cantidad', 1),
                 stock_disponible=not rep.get('precio_estimado', True),
-                compatibilidad_score=0.7,  # Menor confianza que catálogo
+                compatibilidad_score=0.7,
+            ))
+        # Fallback: Si tiene proveedor_nombre sin fuente clara, asumirlo como web/alternativo
+        elif proveedor_nombre:
+            opciones_casa.append(OpcionCasa(
+                casa=proveedor_nombre,
+                proveedor_id=0,
+                precio_clp=rep.get('precio_unitario_clp', 0) * rep.get('cantidad', 1),
+                stock_disponible=rep.get('url_producto', '') != '',
+                compatibilidad_score=0.6,
             ))
         
         if opciones_casa:

@@ -761,11 +761,14 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                     _ficha_cubre_pieza,
                     _precio_plausible_para_linea,
                 )
+                from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+                    _validar_tipo_parte,
+                )
 
                 nombre_linea = str(rep.get('nombre') or '')
                 q = _clave_fuzzy(nombre_linea)
                 hit = resultados.get(q)
-                if hit and not _ficha_cubre_pieza(
+                if hit and not _validar_tipo_parte(
                     nombre_linea, str(hit.get('nombre_producto') or ''),
                 ):
                     hit = None
@@ -783,7 +786,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                         }
                         for k, v in resultados.items()
                         if isinstance(v, dict)
-                        and _ficha_cubre_pieza(nombre_linea, str(v.get('nombre_producto') or ''))
+                        and _validar_tipo_parte(nombre_linea, str(v.get('nombre_producto') or ''))
                         and str(v.get('url') or '') not in urls_usadas
                     ]
                     best = _mejor_hit(
@@ -916,6 +919,28 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
         )
 
         cot.repuestos = aplicar_techo_ia_en_repuestos(list(cot.repuestos or []))
+        
+        # Aplicar selección de casa y consolidación DESPUÉS del enriquecimiento web
+        try:
+            from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador import (
+                _ajustar_rangos_consistentes,
+                _aplicar_seleccion_casa_repuestos,
+            )
+            cot.repuestos = _aplicar_seleccion_casa_repuestos(
+                list(cot.repuestos or []),
+                taller=cot.taller,
+                marca_vehiculo=cot.vehiculo_marca or '',
+                modelo_vehiculo=cot.vehiculo_modelo or '',
+            )
+            cot.repuestos = _ajustar_rangos_consistentes(list(cot.repuestos or []))
+        except Exception as exc:
+            logger.warning(
+                'buscar_precios_web_cotizacion_task(%s): error en selección casa: %s',
+                cotizacion_id,
+                exc,
+                exc_info=True,
+            )
+        
         aplicar_totales_cotizacion(cot)
         _abortar_si_cancelada()
         cot.metadata = meta
