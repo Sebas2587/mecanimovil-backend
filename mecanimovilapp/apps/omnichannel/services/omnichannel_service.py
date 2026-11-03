@@ -119,8 +119,11 @@ def mensaje_visible_en_bandeja(message: Message, corte: datetime | None) -> bool
     """El historial importado trae timestamp de Meta viejo aunque se haya guardado hoy."""
     if corte is None:
         return True
-    piso = corte - timedelta(minutes=2)
     meta = message.channel_metadata or {}
+    if meta.get('origen') == 'historial_whatsapp':
+        # Chats que el taller aceptó compartir al vincular su WhatsApp del teléfono.
+        return True
+    piso = corte - timedelta(minutes=2)
     raw = meta.get('provider_timestamp')
     if raw in (None, ''):
         crudo = meta.get('timestamp')
@@ -377,10 +380,7 @@ class OmnichannelService:
             for change in entry.get('changes', []):
                 field = change.get('field') or 'messages'
                 if field in _HISTORIAL_WHATSAPP:
-                    logger.info(
-                        'WhatsApp %s ignorado: solo entran mensajes nuevos desde la conexión',
-                        field,
-                    )
+                    # Coexistencia: se procesa aparte en process_webhook_body.
                     continue
                 value = change.get('value', {})
                 metadata = value.get('metadata', {})
@@ -470,12 +470,27 @@ class OmnichannelService:
                         events.append(event)
         return events
 
+    @staticmethod
+    def _procesar_coexistencia(body: dict) -> int:
+        """Ecos del teléfono, historial compartido y agenda (app WhatsApp Business)."""
+        from mecanimovilapp.apps.omnichannel.services.coexistencia import procesar_cambio_coexistencia
+
+        atendidos = 0
+        for entry in body.get('entry', []):
+            for change in entry.get('changes', []):
+                field = change.get('field') or ''
+                if field in _HISTORIAL_WHATSAPP:
+                    if procesar_cambio_coexistencia(field, change.get('value') or {}):
+                        atendidos += 1
+        return atendidos
+
     @classmethod
     def process_webhook_body(cls, body: dict) -> int:
         processed = 0
         obj = body.get('object')
         logger.info('Meta webhook object=%s entries=%s', obj, len(body.get('entry', [])))
         if body.get('object') == 'whatsapp_business_account':
+            processed += cls._procesar_coexistencia(body)
             events = cls.parse_whatsapp_payload(body)
             logger.info('Parsed %s WhatsApp events', len(events))
             for event in events:

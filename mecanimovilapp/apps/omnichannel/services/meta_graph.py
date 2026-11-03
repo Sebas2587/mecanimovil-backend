@@ -302,6 +302,26 @@ class MetaGraphClient:
             return False
         return bool(resp.json().get('success'))
 
+    def solicitar_sincronizacion_app(self, phone_number_id: str, access_token: str, sync_type: str) -> bool:
+        """Pide a Meta los contactos ('smb_app_state_sync') o los chats ('history') del teléfono.
+
+        Solo vale una vez por vinculación y dentro de las 24 h siguientes.
+        """
+        resp = requests.post(
+            self._url(f'{phone_number_id}/smb_app_data'),
+            json={'messaging_product': 'whatsapp', 'sync_type': sync_type},
+            headers={'Authorization': f'Bearer {access_token}'},
+            timeout=30,
+        )
+        if resp.status_code >= 400:
+            logger.warning(
+                'Sincronización %s rechazada phone_number_id=%s status=%s body=%s',
+                sync_type, phone_number_id, resp.status_code, resp.text[:300],
+            )
+            return False
+        logger.info('Sincronización %s pedida phone_number_id=%s', sync_type, phone_number_id)
+        return True
+
     def subscribe_page_webhooks(
         self,
         page_id: str,

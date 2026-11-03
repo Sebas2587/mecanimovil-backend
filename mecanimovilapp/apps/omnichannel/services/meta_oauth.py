@@ -93,6 +93,23 @@ def _registrar_en_cloud_api(
     return client.get_phone_number_by_id(phone_id, token) or phone
 
 
+def _sincronizar_app_del_telefono(
+    client: MetaGraphClient,
+    conn: ProviderChannelConnection,
+    phone: dict | None,
+) -> None:
+    """Si el número sigue en la app del teléfono, pide agenda e historial a Meta."""
+    if not phone or phone.get('is_on_biz_app') is not True:
+        return
+    if not conn.phone_number_id or not conn.access_token:
+        return
+    for sync_type in ('smb_app_state_sync', 'history'):
+        try:
+            client.solicitar_sincronizacion_app(conn.phone_number_id, conn.access_token, sync_type)
+        except Exception:
+            logger.exception('No se pudo pedir %s phone_number_id=%s', sync_type, conn.phone_number_id)
+
+
 def complete_meta_oauth_connection(
     conn: ProviderChannelConnection,
     code: str,
@@ -106,6 +123,8 @@ def complete_meta_oauth_connection(
         and conn.status == 'conectada'
         and bool(conn.phone_number_id)
     )
+
+    telefono_meta: dict | None = None
 
     try:
         token_data = client.exchange_code(code, redirect_uri or meta_oauth_redirect_uri())
@@ -283,6 +302,7 @@ def complete_meta_oauth_connection(
                 phone = client.get_phone_number_by_id(phone_id, user_token)
                 if phone and not client.numero_listo_para_mensajeria(phone):
                     phone = _registrar_en_cloud_api(client, conn, phone_id, phone, user_token)
+                telefono_meta = phone
                 if phone and not client.numero_listo_para_mensajeria(phone):
                     display = phone.get('display_phone_number') or update_fields.get('display_identifier')
                     diagnosis = diagnose_phone_not_ready(phone)
@@ -348,6 +368,8 @@ def complete_meta_oauth_connection(
         update_fields['token_expires_at'] = conn.token_expires_at
         update_fields['token_no_expira'] = conn.token_no_expira
         conn.mark_connected(enabled=True, **update_fields)
+        if conn.channel == 'WHATSAPP':
+            _sincronizar_app_del_telefono(client, conn, telefono_meta)
         return MetaOAuthCompletionResult(
             success=True,
             message='Canal conectado correctamente.',

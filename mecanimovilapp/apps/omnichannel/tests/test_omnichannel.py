@@ -528,6 +528,149 @@ class NumeroWhatsappListoTests(SimpleTestCase):
         }))
 
 
+class CoexistenciaTests(TestCase):
+    """El taller sigue usando la app del teléfono y el chat lo refleja."""
+
+    PHONE_ID = '777'
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='taller_coex', password='pass')
+        self.taller = Taller.objects.create(
+            usuario=self.user,
+            nombre='Taller Coex',
+            telefono='900000003',
+            estado_verificacion='aprobado',
+        )
+        self.conn = ProviderChannelConnection.objects.create(
+            content_type=ContentType.objects.get_for_model(Taller),
+            object_id=self.taller.id,
+            usuario=self.user,
+            channel='WHATSAPP',
+            enabled=True,
+            status='conectada',
+            phone_number_id=self.PHONE_ID,
+            access_token='token',
+            display_identifier='+56 9 1111 2222',
+            display_name='Taller Coex',
+        )
+
+    def _body(self, field, value):
+        return {
+            'object': 'whatsapp_business_account',
+            'entry': [{'id': 'waba', 'changes': [{
+                'field': field,
+                'value': {
+                    'messaging_product': 'whatsapp',
+                    'metadata': {'display_phone_number': '56911112222', 'phone_number_id': self.PHONE_ID},
+                    **value,
+                },
+            }]}],
+        }
+
+    def test_respuesta_desde_el_telefono_pausa_al_agente(self):
+        from mecanimovilapp.apps.agente_ia.models import AgenteConversacionSesion
+
+        OmnichannelService.ingest_inbound_message(
+            self.conn, external_id='56999998888', text='Hola', external_message_id='wamid.IN1',
+        )
+        conv = Conversation.objects.get(source_channel='WHATSAPP')
+        AgenteConversacionSesion.objects.create(
+            conversation=conv, taller=self.taller, habilitado_en_chat=True,
+            estado=AgenteConversacionSesion.ESTADO_CAPTURANDO,
+        )
+
+        with patch('mecanimovilapp.apps.agente_ia.hooks.agente_ia_habilitado', return_value=True):
+            OmnichannelService.process_webhook_body(self._body('smb_message_echoes', {
+                'message_echoes': [{
+                    'from': '56911112222', 'to': '56999998888', 'id': 'wamid.ECO1',
+                    'timestamp': '1739230955', 'type': 'text', 'text': {'body': 'Te llamo'},
+                }],
+            }))
+
+        eco = Message.objects.get(external_message_id='wamid.ECO1')
+        self.assertEqual(eco.direction, 'outbound')
+        self.assertEqual(eco.sender_id, self.user.id)
+        self.assertEqual(eco.conversation_id, conv.id)
+        self.assertEqual(eco.channel_metadata['origen'], 'app_whatsapp')
+        sesion = AgenteConversacionSesion.objects.get(conversation=conv)
+        self.assertTrue(sesion.pausado_por_taller)
+        self.assertEqual(sesion.estado, AgenteConversacionSesion.ESTADO_PAUSADO)
+
+        # El mismo eco repetido no duplica.
+        OmnichannelService.process_webhook_body(self._body('smb_message_echoes', {
+            'message_echoes': [{'from': '56911112222', 'to': '56999998888', 'id': 'wamid.ECO1',
+                                'type': 'text', 'text': {'body': 'Te llamo'}}],
+        }))
+        self.assertEqual(Message.objects.filter(external_message_id='wamid.ECO1').count(), 1)
+
+    def test_historial_compartido_queda_visible_y_ordenado(self):
+        from mecanimovilapp.apps.omnichannel.services.omnichannel_service import (
+            corte_bandeja,
+            mensaje_visible_en_bandeja,
+        )
+
+        with patch('mecanimovilapp.apps.agente_ia.tasks.procesar_mensaje_entrante_task.delay') as agente:
+            OmnichannelService.process_webhook_body(self._body('history', {
+                'history': [{
+                    'metadata': {'phase': 0, 'chunk_order': 1, 'progress': 100},
+                    'threads': [{
+                        'id': '56977776666',
+                        'messages': [
+                            {'from': '56911112222', 'id': 'wamid.H1', 'timestamp': '1700000000',
+                             'type': 'text', 'text': {'body': 'Su auto está listo'},
+                             'history_context': {'status': 'READ'}},
+                            {'from': '56977776666', 'id': 'wamid.H2', 'timestamp': '1700000100',
+                             'type': 'text', 'text': {'body': 'Gracias!'},
+                             'history_context': {'status': 'READ'}},
+                            {'from': '56911112222', 'id': 'wamid.H3', 'timestamp': '1700000200',
+                             'type': 'media_placeholder', 'history_context': {'status': 'PLAYED'}},
+                        ],
+                    }],
+                }],
+            }))
+        agente.assert_not_called()
+
+        conv = Conversation.objects.get(source_channel='WHATSAPP')
+        self.assertEqual(conv.external_contact.external_id, '56977776666')
+        msgs = list(conv.messages.order_by('timestamp'))
+        self.assertEqual([m.external_message_id for m in msgs], ['wamid.H1', 'wamid.H2', 'wamid.H3'])
+        self.assertEqual([m.direction for m in msgs], ['outbound', 'inbound', 'outbound'])
+        self.assertEqual(msgs[0].timestamp.year, 2023)
+        self.assertTrue(all(m.is_read for m in msgs))
+        corte = corte_bandeja(self.conn)
+        self.assertTrue(all(mensaje_visible_en_bandeja(m, corte) for m in msgs))
+
+    def test_agenda_del_telefono_pone_nombre_a_contactos_con_chat(self):
+        OmnichannelService.ingest_inbound_message(
+            self.conn, external_id='56999998888', text='Hola', external_message_id='wamid.IN2',
+        )
+        OmnichannelService.process_webhook_body(self._body('smb_app_state_sync', {
+            'state_sync': [
+                {'type': 'contact', 'action': 'add',
+                 'contact': {'full_name': 'Pedro Cliente', 'first_name': 'Pedro', 'phone_number': '+56999998888'}},
+                {'type': 'contact', 'action': 'add',
+                 'contact': {'full_name': 'Sin Chat', 'first_name': 'Sin', 'phone_number': '+56900000000'}},
+            ],
+        }))
+        contacto = Conversation.objects.get(source_channel='WHATSAPP').external_contact
+        self.assertEqual(contacto.display_name, 'Pedro Cliente')
+        self.assertEqual(Conversation.objects.filter(source_channel='WHATSAPP').count(), 1)
+
+    def test_al_vincular_la_app_se_pide_agenda_e_historial(self):
+        from unittest.mock import MagicMock
+
+        from mecanimovilapp.apps.omnichannel.services.meta_oauth import _sincronizar_app_del_telefono
+
+        client = MagicMock()
+        _sincronizar_app_del_telefono(client, self.conn, {'is_on_biz_app': True, 'platform_type': 'CLOUD_API'})
+        tipos = [c.args[2] for c in client.solicitar_sincronizacion_app.call_args_list]
+        self.assertEqual(tipos, ['smb_app_state_sync', 'history'])
+
+        client.reset_mock()
+        _sincronizar_app_del_telefono(client, self.conn, {'is_on_biz_app': False, 'platform_type': 'CLOUD_API'})
+        client.solicitar_sincronizacion_app.assert_not_called()
+
+
 class CambioNumeroWhatsappTests(TestCase):
     NUEVO = {
         'id': '999',
