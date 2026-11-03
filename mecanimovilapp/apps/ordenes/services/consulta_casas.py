@@ -576,19 +576,78 @@ def _aplicar_en_cotizacion(consulta: ConsultaRepuesto, parsed: dict) -> None:
         opciones = list(rep.get('opciones_casa') or [])
         opciones.append(opcion)
         rep['opciones_casa'] = opciones[-8:]
-        precio = int(parsed.get('precio_clp') or 0)
-        alta = float(parsed.get('confianza') or 0) >= CONFIANZA_ALTA and precio > 0
-        precio_previo = int(rep.get('precio_unitario_clp') or 0)
-        if alta and precio_previo <= 0:
-            rep['precio_unitario_clp'] = precio
-            rep['proveedor_nombre'] = consulta.proveedor.nombre
-            rep['proveedor_id'] = consulta.proveedor_id
-            rep['fuente_marketplace'] = 'casa_repuestos'
-            rep['certeza'] = 'referencial'
-            rep['precio_estimado'] = True
-            rep['comentario'] = f'Cotizado por {consulta.proveedor.nombre}'
-            if parsed.get('calidad'):
-                rep['calidad'] = parsed['calidad']
+        
+        # Aplicar selección inteligente si hay múltiples opciones
+        if len(rep['opciones_casa']) > 1:
+            try:
+                from mecanimovilapp.apps.ordenes.services.seleccion_casa_repuestos import (
+                    OpcionCasa,
+                    seleccionar_casa_optima,
+                )
+                
+                opciones_obj = [OpcionCasa.from_dict(o) for o in rep['opciones_casa']]
+                resultado = seleccionar_casa_optima(opciones_obj)
+                
+                rep['casa_repuesto_nombre'] = resultado.casa_elegida
+                rep['motivo_seleccion'] = resultado.motivo_seleccion
+                rep['alternativas_descartadas'] = resultado.alternativas_descartadas
+                rep['consolidacion_aplicada'] = resultado.consolidacion_aplicada
+                rep['precio_unitario_clp'] = resultado.precio_final_clp
+                rep['proveedor_id'] = resultado.proveedor_id
+                rep['proveedor_nombre'] = resultado.casa_elegida
+                rep['fuente_marketplace'] = 'casa_repuestos'
+                rep['certeza'] = 'referencial'
+                rep['precio_estimado'] = True
+                rep['comentario'] = f'Cotizado: {resultado.motivo_seleccion}'
+                
+                logger.info(
+                    'ordenes[consulta_casas] seleccion_aplicada rep=%s casa=%s precio=%d alternativas=%d',
+                    consulta.repuesto_id,
+                    resultado.casa_elegida,
+                    resultado.precio_final_clp,
+                    len(resultado.alternativas_descartadas),
+                )
+            except Exception as exc:
+                logger.warning(
+                    'ordenes[consulta_casas] seleccion_error rep=%s: %s',
+                    consulta.repuesto_id,
+                    exc,
+                    exc_info=True
+                )
+                # Fallback al comportamiento anterior
+                precio = int(parsed.get('precio_clp') or 0)
+                alta = float(parsed.get('confianza') or 0) >= CONFIANZA_ALTA and precio > 0
+                precio_previo = int(rep.get('precio_unitario_clp') or 0)
+                if alta and precio_previo <= 0:
+                    rep['precio_unitario_clp'] = precio
+                    rep['proveedor_nombre'] = consulta.proveedor.nombre
+                    rep['proveedor_id'] = consulta.proveedor_id
+                    rep['fuente_marketplace'] = 'casa_repuestos'
+                    rep['certeza'] = 'referencial'
+                    rep['precio_estimado'] = True
+                    rep['comentario'] = f'Cotizado por {consulta.proveedor.nombre}'
+                    if parsed.get('calidad'):
+                        rep['calidad'] = parsed['calidad']
+        else:
+            # Una sola opción: usarla directamente
+            precio = int(parsed.get('precio_clp') or 0)
+            alta = float(parsed.get('confianza') or 0) >= CONFIANZA_ALTA and precio > 0
+            precio_previo = int(rep.get('precio_unitario_clp') or 0)
+            if alta and precio_previo <= 0:
+                rep['precio_unitario_clp'] = precio
+                rep['proveedor_nombre'] = consulta.proveedor.nombre
+                rep['proveedor_id'] = consulta.proveedor_id
+                rep['fuente_marketplace'] = 'casa_repuestos'
+                rep['certeza'] = 'referencial'
+                rep['precio_estimado'] = True
+                rep['comentario'] = f'Cotizado por {consulta.proveedor.nombre}'
+                rep['casa_repuesto_nombre'] = consulta.proveedor.nombre
+                rep['motivo_seleccion'] = 'Única casa consultada'
+                rep['alternativas_descartadas'] = []
+                rep['consolidacion_aplicada'] = False
+                if parsed.get('calidad'):
+                    rep['calidad'] = parsed['calidad']
+        
         rep['consulta_casas'] = {
             'estado': parsed.get('estado'),
             'casa': consulta.proveedor.nombre,

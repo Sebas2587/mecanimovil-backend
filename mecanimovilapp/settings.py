@@ -162,9 +162,34 @@ else:
 # Rutas a las bibliotecas espaciales (necesarias para SpatiaLite/GDAL en desarrollo local)
 # En producción (Render), estas se configuran automáticamente
 if DEBUG:
-    SPATIALITE_LIBRARY_PATH = '/opt/homebrew/lib/mod_spatialite.dylib'
-    GDAL_LIBRARY_PATH = '/opt/homebrew/lib/libgdal.dylib'
-    GEOS_LIBRARY_PATH = '/opt/homebrew/lib/libgeos_c.dylib'
+    import platform
+    import os
+    if platform.system() == 'Darwin':
+        # macOS (Homebrew)
+        SPATIALITE_LIBRARY_PATH = '/opt/homebrew/lib/mod_spatialite.dylib'
+        GDAL_LIBRARY_PATH = '/opt/homebrew/lib/libgdal.dylib'
+        GEOS_LIBRARY_PATH = '/opt/homebrew/lib/libgeos_c.dylib'
+    else:
+        # Linux (Ubuntu/Debian)
+        # Detectar automáticamente GDAL
+        gdal_candidates = [
+            '/usr/lib/x86_64-linux-gnu/libgdal.so',
+            '/usr/lib/x86_64-linux-gnu/ogdi/4.1/libgdal.so',
+            '/usr/lib/libgdal.so',
+        ]
+        for path in gdal_candidates:
+            if os.path.exists(path):
+                GDAL_LIBRARY_PATH = path
+                break
+        # GEOS
+        geos_candidates = [
+            '/usr/lib/x86_64-linux-gnu/libgeos_c.so',
+            '/usr/lib/libgeos_c.so',
+        ]
+        for path in geos_candidates:
+            if os.path.exists(path):
+                GEOS_LIBRARY_PATH = path
+                break
 
 
 # Password validation
