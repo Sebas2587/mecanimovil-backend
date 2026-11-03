@@ -293,6 +293,76 @@ def _hit(
     return out
 
 
+def _validar_tipo_parte(nombre_repuesto: str, producto_matched: str) -> bool:
+    """Rechaza mismatches obvios por tipo de parte incompatible.
+    
+    Evita que "aceite de motor" matche con "enfriador de aceite" (oil cooler),
+    o "pastillas" con "discos", etc.
+    
+    Returns:
+        True si el match es válido, False si debe rechazarse
+    """
+    rep_norm = _norm(nombre_repuesto)
+    prod_norm = _norm(producto_matched)
+    
+    # Lógica especial para filtros: deben coincidir en tipo
+    if 'filtro' in rep_norm or 'filtro' in prod_norm:
+        tipos_filtro_rep = set()
+        tipos_filtro_prod = set()
+        
+        for tipo in ['aceite', 'aire', 'combustible', 'polen', 'cabina', 'gasolina', 'diesel', 'particulas']:
+            if tipo in rep_norm:
+                tipos_filtro_rep.add(tipo)
+            if tipo in prod_norm:
+                tipos_filtro_prod.add(tipo)
+        
+        # Si ambos mencionan filtro y tienen tipos, deben compartir al menos uno
+        if tipos_filtro_rep and tipos_filtro_prod:
+            if not tipos_filtro_rep & tipos_filtro_prod:
+                return False
+    
+    # Pares mutuamente exclusivos: A no puede matchear con B, ni B con A
+    exclusiones_bidireccionales = [
+        # Aceites
+        (['aceite motor', 'aceite'], ['enfriador', 'cooler', 'radiador', 'deposito']),
+        
+        # Frenos
+        (['pastilla'], ['disco', 'tambor', 'campana', 'caliper', 'mordaza']),
+        (['disco freno'], ['pastilla', 'zapata', 'tambor', 'caliper']),
+        (['zapata'], ['disco', 'pastilla', 'caliper']),
+        
+        # Encendido
+        (['bujia'], ['bobina', 'cable', 'modulo encendido']),
+        (['bobina encendido', 'bobina'], ['bujia', 'cable']),
+        
+        # Suspensión
+        (['amortiguador'], ['resorte', 'espiral', 'barra estabilizadora']),
+        (['resorte', 'espiral'], ['amortiguador', 'barra']),
+        
+        # Embrague
+        (['kit embrague'], ['volante', 'bimasa', 'dual mass', 'flywheel']),
+        (['piola embrague', 'cable embrague', 'guaya embrague'], ['kit embrague', 'disco embrague', 'prensa']),
+        
+        # Motor
+        (['correa distribucion', 'kit distribucion'], ['tensor', 'bomba agua', 'polea']),
+        (['tensor'], ['correa', 'polea', 'bomba']),
+    ]
+    
+    # Verificar exclusiones en ambas direcciones
+    for grupo_a, grupo_b in exclusiones_bidireccionales:
+        # Si repuesto tiene términos de grupo A, producto NO debe tener términos de grupo B
+        if any(termino in rep_norm for termino in grupo_a):
+            if any(prohibido in prod_norm for prohibido in grupo_b):
+                return False
+        
+        # Y viceversa: si repuesto tiene términos de grupo B, producto NO debe tener términos de grupo A
+        if any(termino in rep_norm for termino in grupo_b):
+            if any(prohibido in prod_norm for prohibido in grupo_a):
+                return False
+    
+    return True
+
+
 def _mejor_hit(nombre: str, candidatos: list[dict[str, Any]], *, min_score: int = 50) -> dict[str, Any] | None:
     q = _clave_fuzzy(nombre)
     if not q:
@@ -309,6 +379,17 @@ def _mejor_hit(nombre: str, candidatos: list[dict[str, Any]], *, min_score: int 
             best_score = score
             best_conf = conf
             best = cand
+    
+    # NUEVO: validar tipo de parte antes de devolver
+    if best and best_score >= min_score:
+        producto_nombre = best.get('nombre') or ''
+        if not _validar_tipo_parte(nombre, producto_nombre):
+            logger.warning(
+                'ordenes[enrich] mismatch_tipo_rechazado repuesto=%s producto=%s score=%d',
+                nombre[:60], producto_nombre[:60], best_score
+            )
+            return None
+    
     return best
 
 
