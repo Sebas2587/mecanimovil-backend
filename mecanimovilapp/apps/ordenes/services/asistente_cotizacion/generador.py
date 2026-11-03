@@ -665,6 +665,11 @@ def generar_cotizacion_ia(
                 usar_ml=enriquecer_ml,
                 usar_web=usar_web,
             )
+            
+            # Adjust ranges to be consistent with line prices (Bug #4 fix)
+            from .resolver_precio import _ajustar_rangos_consistentes
+            reps = _ajustar_rangos_consistentes(reps)
+            
             costo_rep, mo, total = recalcular_totales(reps, int(contenido.get('mano_obra_clp') or 0))
             contenido['repuestos'] = reps
             contenido['costo_repuestos_clp'] = costo_rep

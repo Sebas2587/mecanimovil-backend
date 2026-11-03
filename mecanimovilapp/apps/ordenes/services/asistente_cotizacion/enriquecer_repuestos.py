@@ -293,6 +293,58 @@ def _hit(
     return out
 
 
+def _validar_tipo_parte(nombre_linea: str, titulo_ficha: str) -> bool:
+    """Validate that the listing title matches the part type.
+    
+    Uses _ficha_cubre_pieza logic and requires the part-type keyword to appear
+    in the listing title. Rejects mismatches like 'Aceite de motor' matching
+    'Enfriador aceite Fiat Bravo 1.4' (oil cooler != motor oil).
+    """
+    from .busqueda_web_repuestos import _ficha_cubre_pieza
+    
+    # First check: does the listing cover the part type at all?
+    if not _ficha_cubre_pieza(nombre_linea, titulo_ficha):
+        return False
+    
+    # Second check: does the title contain the part-type keyword?
+    linea_norm = _norm(nombre_linea)
+    titulo_norm = _norm(titulo_ficha)
+    
+    if not linea_norm or not titulo_norm:
+        return True
+    
+    tokens = linea_norm.split()
+    if not tokens:
+        return True
+    
+    # Extract part-type keyword (first significant word > 3 chars, or second if first is short)
+    keyword = ''
+    for token in tokens:
+        if len(token) > 3:
+            keyword = token
+            break
+    if not keyword and tokens:
+        keyword = tokens[0]
+    
+    if not keyword:
+        return True
+    
+    # Common synonyms for Chilean market
+    synonyms = {
+        'aceite': ['lubricante', 'oil'],
+        'filtro': ['filter'],
+        'pastilla': ['balata', 'pad', 'pastillas'],
+        'disco': ['rotor', 'discos'],
+        'bujia': ['spark', 'plug', 'bujias'],
+        'correa': ['belt', 'correas'],
+        'amortiguador': ['shock', 'absorber', 'amortiguadores'],
+        'bateria': ['battery', 'baterias'],
+    }
+    
+    keywords_to_check = [keyword] + synonyms.get(keyword, [])
+    return any(kw in titulo_norm for kw in keywords_to_check if len(kw) > 2)
+
+
 def _mejor_hit(nombre: str, candidatos: list[dict[str, Any]], *, min_score: int = 50) -> dict[str, Any] | None:
     q = _clave_fuzzy(nombre)
     if not q:
@@ -301,6 +353,16 @@ def _mejor_hit(nombre: str, candidatos: list[dict[str, Any]], *, min_score: int 
     best_score = 0
     best_conf = -1.0
     for cand in candidatos:
+        # Apply part-type validation before scoring
+        titulo = str(cand.get('nombre_producto') or cand.get('nombre') or '')
+        if titulo and not _validar_tipo_parte(nombre, titulo):
+            logger.debug(
+                'Candidato rechazado por tipo de parte: linea=%r titulo=%r',
+                nombre[:60],
+                titulo[:80],
+            )
+            continue
+        
         score = _match_score(q, cand.get('clave') or '')
         conf = float(cand.get('confianza') or 0)
         if score < min_score:
@@ -789,8 +851,21 @@ def _candidatos_web_cache(
             elif _es_listado_sin_vendedor(str(row.url or '') or f'https://{dominio}/'):
                 # Fila cacheada de un listado: no dice de qué tienda es el precio.
                 continue
-            marca = _marca_repuesto_valida(row.marca_repuesto)
+            
+            # Apply part-type validation before adding to candidates
             clave_nombre = clave.split('|', 1)[0] if '|' in clave else clave
+            titulo_producto = str(row.nombre_producto or '')
+            if clave_nombre and titulo_producto:
+                if not _validar_tipo_parte(clave_nombre, titulo_producto):
+                    logger.debug(
+                        'Web cache hit rechazado por tipo de parte: clave=%r titulo=%r dominio=%s',
+                        clave_nombre[:60],
+                        titulo_producto[:80],
+                        dominio,
+                    )
+                    continue
+            
+            marca = _marca_repuesto_valida(row.marca_repuesto)
             dominio = str(row.dominio or '').strip().lower()
             # Semilla post-envío (aprendizaje) → historial del taller, no marketplace web.
             if dominio in ('historial-taller', 'historial_taller'):
@@ -802,14 +877,14 @@ def _candidatos_web_cache(
                 conf = float(row.confianza or _CONF_WEB)
                 proveedor = str(row.tienda or '')[:200]
             hit = _hit(
-                nombre=str(row.nombre_producto or '')[:200],
+                nombre=titulo_producto[:200],
                 marca_repuesto=marca,
                 precio_unitario_clp=int(row.precio_clp or 0),
                 fuente_marketplace=fuente,
                 proveedor_nombre=proveedor,
                 url_producto=str(row.url or '')[:500],
                 confianza=conf if conf > 0 else (_CONF_HISTORIAL if fuente == 'historial' else _CONF_WEB),
-                clave=clave_nombre or _clave_fuzzy(str(row.nombre_producto or '')),
+                clave=clave_nombre or _clave_fuzzy(titulo_producto),
                 calidad=str(getattr(row, 'calidad', '') or ''),
             )
             out.append(hit)
@@ -898,6 +973,119 @@ def _aplicar_precio(next_rep: dict[str, Any], hits: list[dict[str, Any]]) -> Non
     resolver_precio_linea(next_rep, hits)
 
 
+def _aplicar_seleccion_casa_repuestos(
+    repuestos: list[dict[str, Any]],
+    hits_by_part: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Aplica selección de casa de repuestos a cada línea con trazabilidad de decisiones.
+    
+    Mapea hits de catálogo/historial (proveedor_nombre) y web (tienda/dominio) a
+    OpcionCasa, aplica seleccionar_casa_optima y consolidar_si_posible.
+    """
+    try:
+        from ..seleccion_casa_repuestos import (
+            OpcionCasa,
+            seleccionar_casa_optima,
+            consolidar_si_posible,
+        )
+    except ImportError:
+        logger.warning('seleccion_casa_repuestos no disponible; sin motivo_seleccion')
+        return repuestos
+    
+    todas_las_opciones: dict[str, list[OpcionCasa]] = {}
+    nombre_to_index: dict[str, int] = {}
+    
+    for i, rep in enumerate(repuestos):
+        if not isinstance(rep, dict):
+            continue
+        nombre = str(rep.get('nombre') or '').strip()
+        if not nombre:
+            continue
+        
+        nombre_to_index[nombre] = i
+        hits = hits_by_part.get(nombre, [])
+        opciones: list[OpcionCasa] = []
+        
+        for hit in hits:
+            if not isinstance(hit, dict):
+                continue
+            
+            # Map both catalog/historial (proveedor_nombre) and web hits (tienda)
+            casa = str(hit.get('proveedor_nombre') or hit.get('tienda') or '').strip()
+            if not casa:
+                continue
+            
+            precio = _to_int_clp(hit.get('precio_unitario_clp'))
+            if precio <= 0:
+                continue
+            
+            # Create stable proveedor_id from casa name
+            proveedor_id = abs(hash(casa)) % 1_000_000
+            
+            opciones.append(OpcionCasa(
+                casa=casa,
+                proveedor_id=proveedor_id,
+                precio_clp=precio,
+                stock_disponible=True,  # Assume available if listed
+                compatibilidad_score=float(hit.get('confianza') or 0.5),
+            ))
+        
+        if opciones:
+            todas_las_opciones[nombre] = opciones
+    
+    # Try consolidation first (single store within 110% of optimal)
+    consolidado = None
+    if len(todas_las_opciones) >= 2:
+        try:
+            consolidado = consolidar_si_posible(repuestos, todas_las_opciones)
+        except Exception as exc:
+            logger.warning('consolidar_si_posible falló: %s', exc, exc_info=True)
+    
+    if consolidado:
+        logger.info(
+            'Consolidación aplicada: %d repuestos en una sola casa',
+            len(consolidado),
+        )
+        for nombre, res in consolidado.items():
+            idx = nombre_to_index.get(nombre)
+            if idx is not None and idx < len(repuestos):
+                repuestos[idx]['motivo_seleccion'] = res.motivo_seleccion
+                repuestos[idx]['alternativas_descartadas'] = res.alternativas_descartadas
+                repuestos[idx]['consolidacion_aplicada'] = res.consolidacion_aplicada
+        return repuestos
+    
+    # Individual selection per part
+    for i, rep in enumerate(repuestos):
+        if not isinstance(rep, dict):
+            continue
+        nombre = str(rep.get('nombre') or '').strip()
+        opciones = todas_las_opciones.get(nombre, [])
+        
+        if not opciones:
+            rep['motivo_seleccion'] = 'No se encontraron proveedores para esta pieza'
+            rep['alternativas_descartadas'] = []
+            rep['consolidacion_aplicada'] = False
+            continue
+        
+        try:
+            res = seleccionar_casa_optima(opciones)
+            rep['motivo_seleccion'] = res.motivo_seleccion
+            rep['alternativas_descartadas'] = res.alternativas_descartadas
+            rep['consolidacion_aplicada'] = False
+        except Exception as exc:
+            logger.warning(
+                'seleccionar_casa_optima falló para %r: %s',
+                nombre[:40],
+                exc,
+                exc_info=True,
+            )
+            rep['motivo_seleccion'] = 'Error al seleccionar proveedor'
+            rep['alternativas_descartadas'] = []
+            rep['consolidacion_aplicada'] = False
+    
+    return repuestos
+
+
 def enriquecer_repuestos_cotizacion(
     repuestos: list[dict[str, Any]],
     *,
@@ -963,6 +1151,8 @@ def enriquecer_repuestos_cotizacion(
     )
 
     out: list[dict[str, Any]] = []
+    hits_by_part: dict[str, list[dict[str, Any]]] = {}
+    
     for rep in repuestos:
         if not isinstance(rep, dict):
             continue
@@ -1106,5 +1296,13 @@ def enriquecer_repuestos_cotizacion(
         ):
             next_rep.pop('proveedor_nombre', None)
 
+        # Track hits for house selection
+        if nombre and hits:
+            hits_by_part[nombre] = hits
+        
         out.append(next_rep)
+    
+    # Apply house selection with consolidation
+    out = _aplicar_seleccion_casa_repuestos(out, hits_by_part)
+    
     return out
