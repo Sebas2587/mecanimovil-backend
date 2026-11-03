@@ -165,18 +165,18 @@ class ConsolidacionCasasTestCase(TestCase):
         
         todas_opciones = {
             'rep1': [
-                OpcionCasa(casa='Casa Cara', proveedor_id=1, precio_clp=10000, stock_disponible=True),
-                OpcionCasa(casa='Casa Barata', proveedor_id=2, precio_clp=7000, stock_disponible=True),
+                OpcionCasa(casa='Casa Unica', proveedor_id=1, precio_clp=11000, stock_disponible=True),
+                OpcionCasa(casa='Casa Barata Rep1', proveedor_id=2, precio_clp=7000, stock_disponible=True),
             ],
             'rep2': [
-                OpcionCasa(casa='Casa Cara', proveedor_id=1, precio_clp=15000, stock_disponible=True),
-                OpcionCasa(casa='Casa Barata', proveedor_id=2, precio_clp=11000, stock_disponible=True),
+                OpcionCasa(casa='Casa Unica', proveedor_id=1, precio_clp=11000, stock_disponible=True),
+                OpcionCasa(casa='Casa Barata Rep2', proveedor_id=3, precio_clp=8000, stock_disponible=True),
             ],
         }
         
-        # Total Casa Cara: 25000
-        # Total óptimo distribuido: 7000 + 11000 = 18000
-        # 25000 / 18000 = 138% > 110% threshold
+        # Total Casa Unica (única con ambos): 11000 + 11000 = 22000
+        # Total óptimo distribuido: 7000 + 8000 = 15000
+        # 22000 / 15000 = 146.7% > 110% threshold
         
         resultado = consolidar_si_posible(repuestos, todas_opciones)
         

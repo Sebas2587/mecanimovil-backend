@@ -869,51 +869,123 @@ def _sin_patente(texto: str, patente: str) -> str:
 
 def _extraer(texto: str) -> dict:
     from mecanimovilapp.apps.agente_ia.services.agente_dueno_caso import plano
+    from mecanimovilapp.apps.agente_ia.services.extraccion_pedido_llm import extraer_pedido_con_llm
 
-    patente = _leer_patente(texto)
-    p = plano(_sin_patente(texto, patente))
-    out: dict = {}
-    if patente:
-        out['patente'] = patente
-    cliente = re.search(r'\bcliente\s+([a-zñ]+(?:\s+[a-zñ]+)?)\b', p)
-    if cliente:
-        nombre = re.split(r'\b(del|de|chat|por)\b', cliente.group(1))[0].strip()
-        if nombre and nombre not in ('del', 'de', 'chat'):
-            out['cliente'] = _titulo(nombre)
-    if re.search(r'\b(facebook|messenger)\b', p):
-        out['canal'] = 'MESSENGER'
-    elif re.search(r'\binstagram\b', p):
-        out['canal'] = 'INSTAGRAM'
-    elif re.search(r'\b(whatsapp|wsp)\b', p):
-        out['canal'] = 'WHATSAPP'
-    if re.search(r'\ba domicilio\b|\bdomicilio\b', p):
-        out['modalidad'] = 'domicilio'
-    elif re.search(r'\ben el taller\b|\ben taller\b', p):
-        out['modalidad'] = 'taller'
-    comuna = re.search(r'comuna de\s+([a-zñ ]+)', p)
-    if not comuna:
-        comuna = re.search(r'a domicilio en\s+(?:la comuna de\s+)?([a-zñ ]+)', p)
-    if comuna:
-        lugar = re.split(r'\b(patente|cliente|para|cambio)\b', comuna.group(1))[0].strip(' .,) ')
-        if lugar:
-            out['direccion'] = _titulo(lugar)
-    if re.search(r'\bsin repuestos\b|\bsolo mano de obra\b|\bsin piezas\b', p):
-        out['con_repuestos'] = False
-    elif re.search(r'\bcon repuestos\b|\bincluye repuestos\b|\bcon piezas\b', p):
-        out['con_repuestos'] = True
-    servicio = _SERVICIO_RE.search(p)
-    if servicio:
-        nombre = _limpiar_servicio(servicio.group(1))
-        if nombre:
-            out['servicio'] = nombre[:1].upper() + nombre[1:]
-    anio = _ANIO_RE.search(p)
-    if anio:
-        out['anio'] = int(anio.group(1))
-    out.update(_extraer_marca_modelo(p, out.get('anio')))
-    precio = _precio_en(texto, out.get('anio'))
-    if precio and not _es_telefono(texto):
-        out['precio'] = precio
-    return out
+    # Intentar extracción estructurada con LLM primero
+    try:
+        pedido_llm = extraer_pedido_con_llm(texto_cliente=texto, vehiculo_context=None, taller=None)
+        out: dict = {}
+        
+        # Mapear datos del LLM al formato de slots
+        if pedido_llm.vehiculo:
+            veh = pedido_llm.vehiculo
+            if veh.patente:
+                out['patente'] = veh.patente
+            if veh.marca:
+                out['marca'] = veh.marca
+            if veh.modelo:
+                out['modelo'] = veh.modelo
+            if veh.anio:
+                out['anio'] = veh.anio
+        
+        # Servicios: tomar el primero si hay
+        if pedido_llm.servicios and len(pedido_llm.servicios) > 0:
+            out['servicio'] = pedido_llm.servicios[0].nombre_servicio
+        
+        # Cliente y canal (fallback a regex si LLM no los encuentra)
+        patente = _leer_patente(texto)
+        p = plano(_sin_patente(texto, patente))
+        
+        if not out.get('patente') and patente:
+            out['patente'] = patente
+        
+        cliente = re.search(r'\bcliente\s+([a-zñ]+(?:\s+[a-zñ]+)?)\b', p)
+        if cliente:
+            nombre = re.split(r'\b(del|de|chat|por)\b', cliente.group(1))[0].strip()
+            if nombre and nombre not in ('del', 'de', 'chat'):
+                out['cliente'] = _titulo(nombre)
+        
+        if re.search(r'\b(facebook|messenger)\b', p):
+            out['canal'] = 'MESSENGER'
+        elif re.search(r'\binstagram\b', p):
+            out['canal'] = 'INSTAGRAM'
+        elif re.search(r'\b(whatsapp|wsp)\b', p):
+            out['canal'] = 'WHATSAPP'
+        
+        if re.search(r'\ba domicilio\b|\bdomicilio\b', p):
+            out['modalidad'] = 'domicilio'
+        elif re.search(r'\ben el taller\b|\ben taller\b', p):
+            out['modalidad'] = 'taller'
+        
+        comuna = re.search(r'comuna de\s+([a-zñ ]+)', p)
+        if not comuna:
+            comuna = re.search(r'a domicilio en\s+(?:la comuna de\s+)?([a-zñ ]+)', p)
+        if comuna:
+            lugar = re.split(r'\b(patente|cliente|para|cambio)\b', comuna.group(1))[0].strip(' .,) ')
+            if lugar:
+                out['direccion'] = _titulo(lugar)
+        
+        if re.search(r'\bsin repuestos\b|\bsolo mano de obra\b|\bsin piezas\b', p):
+            out['con_repuestos'] = False
+        elif re.search(r'\bcon repuestos\b|\bincluye repuestos\b|\bcon piezas\b', p):
+            out['con_repuestos'] = True
+        
+        precio = _precio_en(texto, out.get('anio'))
+        if precio and not _es_telefono(texto):
+            out['precio'] = precio
+        
+        logger.info('agente_ia[extraccion] llm_usado vehiculo=%s servicios=%d',
+                    out.get('marca', 'N/A'), len(pedido_llm.servicios))
+        return out
+    
+    except Exception as exc:
+        logger.warning('agente_ia[extraccion] llm_fallo error=%s, usando_fallback_regex', str(exc))
+        
+        # Fallback a extracción regex original
+        patente = _leer_patente(texto)
+        p = plano(_sin_patente(texto, patente))
+        out: dict = {}
+        if patente:
+            out['patente'] = patente
+        cliente = re.search(r'\bcliente\s+([a-zñ]+(?:\s+[a-zñ]+)?)\b', p)
+        if cliente:
+            nombre = re.split(r'\b(del|de|chat|por)\b', cliente.group(1))[0].strip()
+            if nombre and nombre not in ('del', 'de', 'chat'):
+                out['cliente'] = _titulo(nombre)
+        if re.search(r'\b(facebook|messenger)\b', p):
+            out['canal'] = 'MESSENGER'
+        elif re.search(r'\binstagram\b', p):
+            out['canal'] = 'INSTAGRAM'
+        elif re.search(r'\b(whatsapp|wsp)\b', p):
+            out['canal'] = 'WHATSAPP'
+        if re.search(r'\ba domicilio\b|\bdomicilio\b', p):
+            out['modalidad'] = 'domicilio'
+        elif re.search(r'\ben el taller\b|\ben taller\b', p):
+            out['modalidad'] = 'taller'
+        comuna = re.search(r'comuna de\s+([a-zñ ]+)', p)
+        if not comuna:
+            comuna = re.search(r'a domicilio en\s+(?:la comuna de\s+)?([a-zñ ]+)', p)
+        if comuna:
+            lugar = re.split(r'\b(patente|cliente|para|cambio)\b', comuna.group(1))[0].strip(' .,) ')
+            if lugar:
+                out['direccion'] = _titulo(lugar)
+        if re.search(r'\bsin repuestos\b|\bsolo mano de obra\b|\bsin piezas\b', p):
+            out['con_repuestos'] = False
+        elif re.search(r'\bcon repuestos\b|\bincluye repuestos\b|\bcon piezas\b', p):
+            out['con_repuestos'] = True
+        servicio = _SERVICIO_RE.search(p)
+        if servicio:
+            nombre = _limpiar_servicio(servicio.group(1))
+            if nombre:
+                out['servicio'] = nombre[:1].upper() + nombre[1:]
+        anio = _ANIO_RE.search(p)
+        if anio:
+            out['anio'] = int(anio.group(1))
+        out.update(_extraer_marca_modelo(p, out.get('anio')))
+        precio = _precio_en(texto, out.get('anio'))
+        if precio and not _es_telefono(texto):
+            out['precio'] = precio
+        return out
 
 
 def _extraer_marca_modelo(p: str, anio) -> dict:
