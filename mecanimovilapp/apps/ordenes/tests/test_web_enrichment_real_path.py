@@ -46,12 +46,10 @@ class WebEnrichmentRealPathTestCase(TestCase):
             username='provider_test',
             email='provider@test.com',
             password='test123',
-            is_taller_rep=True,
         )
         self.taller = Taller.objects.create(
             nombre='Taller Test Real Path',
             telefono='+56912345678',
-            es_taller_autorizado=True,
         )
         self.taller.miembros_taller.add(self.user, through_defaults={'rol': 'mandante'})
     
