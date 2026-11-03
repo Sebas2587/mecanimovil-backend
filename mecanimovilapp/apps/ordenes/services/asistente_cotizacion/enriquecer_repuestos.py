@@ -305,7 +305,23 @@ def _validar_tipo_parte(nombre_repuesto: str, producto_matched: str) -> bool:
     rep_norm = _norm(nombre_repuesto)
     prod_norm = _norm(producto_matched)
     
-    # Lógica especial para filtros: deben coincidir en tipo
+    # Lógica especial para aceite vs filtro de aceite: son mutuamente exclusivos
+    rep_tiene_filtro = 'filtro' in rep_norm
+    prod_tiene_filtro = 'filtro' in prod_norm
+    rep_tiene_aceite = 'aceite' in rep_norm
+    prod_tiene_aceite = 'aceite' in prod_norm
+    
+    # Caso 1: Si repuesto es "aceite" (sin filtro), NO debe matchear con producto "filtro de aceite"
+    if rep_tiene_aceite and not rep_tiene_filtro:
+        if prod_tiene_filtro:
+            return False  # "aceite de motor" NO matcha "filtro de aceite"
+    
+    # Caso 2: Si repuesto es "filtro de aceite", NO debe matchear con producto "aceite" (sin filtro)
+    if rep_tiene_filtro and rep_tiene_aceite:
+        if prod_tiene_aceite and not prod_tiene_filtro:
+            return False  # "filtro de aceite" NO matcha "aceite sintético"
+    
+    # Lógica especial para otros filtros: deben coincidir en tipo
     if 'filtro' in rep_norm or 'filtro' in prod_norm:
         tipos_filtro_rep = set()
         tipos_filtro_prod = set()

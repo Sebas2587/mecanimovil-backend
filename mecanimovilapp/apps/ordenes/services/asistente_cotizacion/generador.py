@@ -346,7 +346,7 @@ def _llamar_gemini(prompt: str) -> tuple[dict[str, Any] | None, dict[str, int | 
     return None, uso_vacio, ultimo_error
 
 
-def _construir_prompt(ctx: dict[str, Any]) -> str:
+def _construir_prompt(ctx: dict[str, Any], pedido_extraido=None) -> str:
     efectivo = ctx.get('tipo_motor_efectivo_label') or 'No especificado'
     motor_bloque = (
         f"- Motor del vehículo (patente/modelo): {efectivo}\n"
@@ -370,6 +370,23 @@ def _construir_prompt(ctx: dict[str, Any]) -> str:
         pedido,
         str(ctx.get('descripcion_problema') or ''),
     )
+    
+    # Enriquecer con extracción estructurada si está disponible
+    bloque_partes_requeridas = ""
+    if pedido_extraido and pedido_extraido.servicios:
+        partes_explicitas = []
+        for servicio in pedido_extraido.servicios:
+            partes_explicitas.append(f"- Servicio: {servicio.nombre}")
+        for repuesto in pedido_extraido.repuestos_mencionados:
+            partes_explicitas.append(f"- Repuesto mencionado: {repuesto.nombre}" + 
+                                   (f" ({repuesto.especificacion})" if repuesto.especificacion else ""))
+        if partes_explicitas:
+            bloque_partes_requeridas = (
+                "\nPARTES REQUERIDAS EXTRAÍDAS (DEBES incluir TODAS estas en tu respuesta):\n" +
+                "\n".join(partes_explicitas) +
+                "\n"
+            )
+    
     return f"""Eres un asesor de taller mecánico en Chile. Genera una cotización referencial en pesos chilenos (CLP enteros, sin decimales).
 
 Vehículo:
@@ -384,7 +401,7 @@ Servicio solicitado (ÚNICA fuente de líneas a cotizar): {pedido}
 Descripción del problema: {ctx.get('descripcion_problema', '')}
 
 {bloque_lectura}
-
+{bloque_partes_requeridas}
 Contexto del chat reciente (NO son líneas de cotización; ignora servicios de otro auto o solo mencionados):
 {chat}
 {rag_bloque}
@@ -444,6 +461,95 @@ Responde SOLO JSON válido en español:
 }}"""
 
 
+def _aplicar_seleccion_casa_repuestos(
+    repuestos: list[dict[str, Any]],
+    *,
+    taller=None,
+    marca_vehiculo: str = '',
+    modelo_vehiculo: str = '',
+) -> list[dict[str, Any]]:
+    """
+    Aplica selección inteligente de casa para cada repuesto.
+    
+    Para cada repuesto:
+    1. Recolecta opciones de casas disponibles (del enriquecimiento previo)
+    2. Aplica seleccion_casa_repuestos para elegir la mejor
+    3. Evalúa consolidación (una casa con todos los repuestos dentro del 110%)
+    4. Agrega: casa_repuesto_nombre, motivo_seleccion, alternativas_descartadas, consolidacion_aplicada
+    """
+    if not repuestos:
+        return []
+    
+    try:
+        from mecanimovilapp.apps.ordenes.services.seleccion_casa_repuestos import (
+            OpcionCasa,
+            ResultadoSeleccion,
+            consolidar_si_posible,
+            seleccionar_casa_optima,
+        )
+    except ImportError as exc:
+        logger.warning('No se pudo importar seleccion_casa_repuestos: %s, omitiendo selección', exc)
+        return repuestos
+    
+    # Para cada repuesto, construir opciones de casas desde el enriquecimiento
+    repuestos_con_opciones = []
+    for rep in repuestos:
+        opciones_casa = []
+        
+        # Opción 1: del campo proveedor_nombre (catálogo/historial taller)
+        if rep.get('proveedor_nombre'):
+            opciones_casa.append(OpcionCasa(
+                casa=rep['proveedor_nombre'],
+                proveedor_id=rep.get('proveedor_id', 0),
+                precio_clp=rep.get('precio_unitario_clp', 0) * rep.get('cantidad', 1),
+                stock_disponible=True,  # Catálogo del taller siempre tiene stock
+                compatibilidad_score=1.0,  # Máxima confianza
+            ))
+        
+        # Opción 2: del campo fuente_marketplace (web, ML, etc.)
+        fuente = rep.get('fuente_marketplace', '') or rep.get('fuente_repuesto', '')
+        if fuente and fuente not in ('catalogo', 'historial'):
+            opciones_casa.append(OpcionCasa(
+                casa=rep.get('tienda_ml', '') or fuente.title(),
+                proveedor_id=0,
+                precio_clp=rep.get('precio_unitario_clp', 0) * rep.get('cantidad', 1),
+                stock_disponible=not rep.get('precio_estimado', True),
+                compatibilidad_score=0.7,  # Menor confianza que catálogo
+            ))
+        
+        # Si no hay opciones reales, crear una "sin casa" explicativa
+        if not opciones_casa:
+            motivo = 'No se encontraron proveedores con este repuesto en stock para el vehículo'
+            rep['casa_repuesto_nombre'] = ''
+            rep['motivo_seleccion'] = motivo
+            rep['alternativas_descartadas'] = []
+            rep['consolidacion_aplicada'] = False
+        else:
+            # Aplicar selección
+            resultado = seleccionar_casa_optima(opciones_casa)
+            rep['casa_repuesto_nombre'] = resultado.casa_elegida
+            rep['motivo_seleccion'] = resultado.motivo_seleccion
+            rep['alternativas_descartadas'] = resultado.alternativas_descartadas
+            rep['consolidacion_aplicada'] = resultado.consolidacion_aplicada
+        
+        repuestos_con_opciones.append(rep)
+    
+    # PASO 2: Evaluación de consolidación (pendiente implementación completa)
+    # TODO: Implementar consolidación global usando consolidar_si_posible
+    # Por ahora, aseguramos que todos los repuestos tienen los campos requeridos
+    for rep in repuestos_con_opciones:
+        if 'casa_repuesto_nombre' not in rep:
+            rep['casa_repuesto_nombre'] = ''
+        if 'motivo_seleccion' not in rep:
+            rep['motivo_seleccion'] = ''
+        if 'alternativas_descartadas' not in rep:
+            rep['alternativas_descartadas'] = []
+        if 'consolidacion_aplicada' not in rep:
+            rep['consolidacion_aplicada'] = False
+    
+    return repuestos_con_opciones
+
+
 def generar_cotizacion_ia(
     *,
     conversation=None,
@@ -474,6 +580,33 @@ def generar_cotizacion_ia(
     )
     if contexto_rag_extra:
         ctx['contexto_rag'] = contexto_rag_extra
+
+    # PASO 1: Extracción estructurada del pedido con LLM (partes implícitas, alcance)
+    pedido_extraido = None
+    if taller is not None:
+        try:
+            from mecanimovilapp.apps.agente_ia.services.extraccion_pedido_llm import (
+                extraer_pedido_con_llm,
+            )
+
+            texto_completo = f"{servicio_nombre}. {descripcion_problema}".strip()
+            pedido_extraido = extraer_pedido_con_llm(
+                texto_cliente=texto_completo,
+                vehiculo_context={
+                    'marca': ctx.get('marca', ''),
+                    'modelo': ctx.get('modelo', ''),
+                    'anio': ctx.get('anio', ''),
+                    'patente': ctx.get('patente', ''),
+                },
+                taller=taller,
+            )
+            logger.info(
+                'generar_cotizacion_ia: extraccion_llm servicios=%d repuestos_mencionados=%d',
+                len(pedido_extraido.servicios),
+                len(pedido_extraido.repuestos_mencionados),
+            )
+        except Exception as exc:
+            logger.warning('extraccion_pedido_llm falló: %s', exc, exc_info=True)
 
     # Catálogo del taller primero: si hay OfertaServicio para marca/modelo+servicio,
     # no llamar Gemini ni búsqueda web (misma regla que el agente chat).
@@ -581,7 +714,7 @@ def generar_cotizacion_ia(
         except Exception as exc:
             logger.info('No se pudo inyectar catálogo/historial en prompt cotización: %s', exc)
 
-    prompt = _construir_prompt(ctx)
+    prompt = _construir_prompt(ctx, pedido_extraido=pedido_extraido)
     inicio = time.monotonic()
     crudo, uso, error = _llamar_gemini(prompt)
     latencia_ms = int((time.monotonic() - inicio) * 1000)
@@ -675,6 +808,15 @@ def generar_cotizacion_ia(
                 usar_ml=enriquecer_ml,
                 usar_web=usar_web,
             )
+            
+            # PASO 2: Aplicar selección inteligente de casas a cada repuesto
+            reps = _aplicar_seleccion_casa_repuestos(
+                reps,
+                taller=taller,
+                marca_vehiculo=str(ctx.get('marca') or ''),
+                modelo_vehiculo=str(ctx.get('modelo') or ''),
+            )
+            
             costo_rep, mo, total = recalcular_totales(reps, int(contenido.get('mano_obra_clp') or 0))
             contenido['repuestos'] = reps
             contenido['costo_repuestos_clp'] = costo_rep

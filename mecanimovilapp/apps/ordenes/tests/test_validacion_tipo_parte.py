@@ -23,16 +23,16 @@ class ValidacionTipoParteTestCase(TestCase):
     def test_aceite_no_matcha_con_filtro(self):
         """Test: Aceite NO debe matchear con Filtro de aceite."""
         assert _validar_tipo_parte("Aceite sintético", "Aceite Mobil 1 5W30") == True
-        # Limitación conocida: "Aceite" y "Filtro de aceite" comparten tipo "aceite"
-        # TODO: mejorar lógica para distinguir "aceite de motor" vs "filtro de aceite"
-        # assert _validar_tipo_parte("Aceite sintético", "Filtro de aceite Mann") == False
+        assert _validar_tipo_parte("Aceite sintético", "Filtro de aceite Mann") == False
+        assert _validar_tipo_parte("Aceite de motor", "Filtro de aceite") == False
         assert _validar_tipo_parte("Aceite", "Depósito de aceite") == False
 
     def test_filtro_aceite_no_matcha_con_enfriador(self):
-        """Test: Filtro de aceite NO debe matchear con Enfriador."""
+        """Test: Filtro de aceite NO debe matchear con Enfriador ni con Aceite solo."""
         assert _validar_tipo_parte("Filtro de aceite", "Filtro Mann W712") == True
         assert _validar_tipo_parte("Filtro de aceite", "Enfriador aceite") == False
         assert _validar_tipo_parte("Filtro de aceite", "Radiador aceite") == False
+        assert _validar_tipo_parte("Filtro de aceite", "Aceite sintético 5W30") == False
 
     def test_pastillas_no_matcha_con_discos(self):
         """Test: Pastillas NO deben matchear con Discos de freno."""
