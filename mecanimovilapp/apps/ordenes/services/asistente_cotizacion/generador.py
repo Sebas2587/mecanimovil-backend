@@ -346,7 +346,7 @@ def _llamar_gemini(prompt: str) -> tuple[dict[str, Any] | None, dict[str, int | 
     return None, uso_vacio, ultimo_error
 
 
-def _construir_prompt(ctx: dict[str, Any]) -> str:
+def _construir_prompt(ctx: dict[str, Any], pedido_extraido=None) -> str:
     efectivo = ctx.get('tipo_motor_efectivo_label') or 'No especificado'
     motor_bloque = (
         f"- Motor del vehículo (patente/modelo): {efectivo}\n"
@@ -370,6 +370,23 @@ def _construir_prompt(ctx: dict[str, Any]) -> str:
         pedido,
         str(ctx.get('descripcion_problema') or ''),
     )
+    
+    # Enriquecer con extracción estructurada si está disponible
+    bloque_partes_requeridas = ""
+    if pedido_extraido and pedido_extraido.servicios:
+        partes_explicitas = []
+        for servicio in pedido_extraido.servicios:
+            partes_explicitas.append(f"- Servicio: {servicio.nombre}")
+        for repuesto in pedido_extraido.repuestos_mencionados:
+            partes_explicitas.append(f"- Repuesto mencionado: {repuesto.nombre}" + 
+                                   (f" ({repuesto.especificacion})" if repuesto.especificacion else ""))
+        if partes_explicitas:
+            bloque_partes_requeridas = (
+                "\nPARTES REQUERIDAS EXTRAÍDAS (DEBES incluir TODAS estas en tu respuesta):\n" +
+                "\n".join(partes_explicitas) +
+                "\n"
+            )
+    
     return f"""Eres un asesor de taller mecánico en Chile. Genera una cotización referencial en pesos chilenos (CLP enteros, sin decimales).
 
 Vehículo:
@@ -384,13 +401,14 @@ Servicio solicitado (ÚNICA fuente de líneas a cotizar): {pedido}
 Descripción del problema: {ctx.get('descripcion_problema', '')}
 
 {bloque_lectura}
-
+{bloque_partes_requeridas}
 Contexto del chat reciente (NO son líneas de cotización; ignora servicios de otro auto o solo mencionados):
 {chat}
 {rag_bloque}
 REGLAS:
-0. ALCANCE (CRÍTICO): cotiza el servicio pedido para ESTE vehículo ({ctx.get('marca', '')} {ctx.get('modelo', '')}). En un cambio de embrague SÍ sumas las piezas de ESE mismo trabajo (kit, rodamiento de volante, aceite de caja, retén trasero y, si la pidieron o el embrague es a cable, la piola). PROHIBIDO agregar otro servicio (frenos, distribución, diagnóstico, otro auto) que no esté en el pedido. El campo servicio_nombre de salida DEBE ser exactamente "{pedido}".
-0b. PRECIOS POR VEHÍCULO (CRÍTICO): NUNCA copies mano de obra ni precios de piezas de otro marca/modelo (Toyota ≠ BAIC; Yaris ≠ Yaris Cross) aunque el servicio se llame igual. Si el bloque de historial no es de este marca+modelo exacto, ignóralo.
+0. ALCANCE (CRÍTICO): cotiza SOLO el servicio pedido para ESTE vehículo ({ctx.get('marca', '')} {ctx.get('modelo', '')}). PROHIBIDO agregar servicios no solicitados (frenos si solo pidió aceite, distribución si solo pidió embrague, diagnóstico no pedido, otro auto). El campo servicio_nombre de salida DEBE ser exactamente "{pedido}".
+0b. EMBRAGUE - QUÉ INCLUIR: Si piden "cambio de embrague" o "kit de embrague", incluye SOLO: Kit de embrague (disco+prensa+collarin), Rodamiento de volante (piloto), Aceite de caja (cantidad según capacidad), Retén trasero cigüeñal. SOLO agrega "Piola de embrague" si el pedido la menciona explícitamente O si sabes con certeza que este modelo usa embrague a cable. NUNCA agregues volante bimasa/motor/dual mass flywheel salvo que el pedido lo pida.
+0c. PRECIOS POR VEHÍCULO (CRÍTICO): NUNCA copies mano de obra ni precios de piezas de otro marca/modelo (Toyota ≠ BAIC; Yaris ≠ Yaris Cross) aunque el servicio se llame igual. Si el bloque de historial no es de este marca+modelo exacto, ignóralo.
 1. Analiza el SERVICIO pedido + el VEHÍCULO concreto ({ctx.get('marca', '')} {ctx.get('modelo', '')} {ctx.get('anio', '')}, motor {efectivo}). Cada marca/modelo/año tiene piezas y cantidades distintas: no copies listas genéricas de otro auto.
 2. Precios en CLP enteros: son ESTIMADOS de mercado Chile (taller) para que el proveedor los revise. NO digas que vienen de un catálogo o tienda.
 3. CRÍTICO — IVA INCLUIDO: mano_obra_clp es precio FINAL al cliente con IVA 19% ya incluido. NO cotices neto ni agregues línea de IVA.
@@ -398,6 +416,15 @@ REGLAS:
 5. Separa faena y pieza. El taller escribe "cambio de bujías" para la mano de obra; el repuesto se llama "Bujías", nunca "cambio de bujías". Revisión, diagnóstico, inspección, scanner, alineación y limpieza son solo mano de obra: no crees un repuesto con ese nombre ni con el objeto de esa faena (limpiar el cuerpo de aceleración no agrega la pieza "cuerpo de aceleración").
 5b. servicios_lineas.nombre es la faena tal como la pidió el taller. repuestos.nombre es la pieza.
 5c. TRABAJOS QUE VAN JUNTOS: "cambio de A y B" (bujías y bobinas, pastillas y discos) es UNA línea de mano de obra y UN monto, porque se hacen en el mismo trabajo. Las piezas sí van separadas en repuestos. "y también", "también" y "además" abren otro servicio, que es mano de obra: no lo conviertas en repuesto. El detalle del problema puede sumar otro servicio; un síntoma ("hace ruido") no es una línea.
+5d. PARTES IMPLÍCITAS (CRÍTICO): Si el servicio menciona EXPLÍCITAMENTE que incluye una parte, DEBES incluirla como repuesto separado:
+   - "cambio de aceite CON FILTRO" → repuestos: "Aceite de motor" + "Filtro de aceite"
+   - "pastillas Y discos" → repuestos: "Pastillas de freno" + "Discos de freno"
+   - "cambio de correa de distribución con bomba de agua" → repuestos: "Correa de distribución" + "Bomba de agua"
+   Las palabras "con", "incluye", "y", "más" indican parte adicional que DEBE estar en repuestos[] como línea separada.
+5e. CANTIDADES REALISTAS POR CAPACIDAD:
+   - Aceite de motor: cantidad en LITROS según capacidad del motor para ESTE vehículo (ej. motor 1.4L = 4 litros, 1.6L = 4.5 litros, 2.0L = 5 litros). NO uses cantidad=4 si vendes un bidón de 4L completo (marca cantidad=1, precio del bidón). Cantidad es lo que el motor necesita, no el tamaño del envase.
+   - Líquido refrigerante: ~5-7 litros típico (depende del vehículo)
+   - Aceite de caja: cantidad según capacidad de transmisión (ej. 2-3 litros manual, 4-6 litros automática)
 6. REPUESTOS POR VEHÍCULO (CRÍTICO): SOLO piezas compatibles con marca/modelo/año/cilindrada/motor. Nombra la pieza con precisión (posición: delantero/trasero, lado).
 6c. TRABAJO DE EMBRAGUE (CRÍTICO): si piden kit, cambio de embrague o clutch, es UN trabajo. servicios_lineas trae una sola faena "Cambio de embrague" cuyo monto cubre bajar la caja, el kit, el rodamiento piloto, la piola si va y el aceite: no partas la mano de obra en una línea por cada pieza. Repuestos, cada uno con su precio de ESA pieza para este auto: "Kit de embrague" (disco + prensa + rodamiento de empuje, un solo precio de kit; una ficha de solo disco, prensa o rodamiento no es el kit). "Rodamiento de volante" (piloto; no viene en el kit; no es el volante bimasa ni el volante de motor). "Aceite de caja de cambios" (el llenado, litros de valvulina, no un tambor ni la caja completa). "Retén trasero de cigüeñal" (queda a la vista al sacar la caja). Si el taller nombra piola, cable o guaya, la línea es "Piola de embrague": es un repuesto, nunca solo mano de obra. El precio del kit, del volante o de la caja no se copia al aceite ni al rodamiento.
 6b. ESPECIFICACIÓN ANTES DE PRECIO (CRÍTICO): si la pieza tiene variantes que cambian el precio (bujía cobre/platino/iridio; pastilla orgánica/semi-metálica/cerámica; aceite mineral/sintético + viscosidad; batería convencional/EFB/AGM; amortiguador hidráulico/gas), declara "especificacion" con UNA sola variante para ESTE vehículo (ej. "Iridio", "Cerámica", "5W30 sintético"). PROHIBIDO ofrecer dos ("cerámica o semi-metálica"), separar con "/" o describir medidas en vez de la variante. Si no puedes determinarla con certeza, deja especificacion="" y precio_unitario_clp=0. PROHIBIDO inventar un monto para una variante que no sabes.
@@ -434,6 +461,259 @@ Responde SOLO JSON válido en español:
 }}"""
 
 
+def _ajustar_rangos_consistentes(repuestos: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Asegura que precio_min_clp y precio_max_clp contengan el precio_unitario_clp.
+    
+    Regla: Si precio_unitario_clp está fuera del rango [min, max], ajustar el rango
+    para que lo contenga, manteniendo cierta amplitud.
+    
+    Esto previene inconsistencias UI donde se muestra "$8K–$15K" pero precio línea es $31K.
+    """
+    for rep in repuestos:
+        precio_unit = rep.get('precio_unitario_clp', 0)
+        precio_min = rep.get('precio_min_clp', 0)
+        precio_max = rep.get('precio_max_clp', 0)
+        cantidad = rep.get('cantidad', 1)
+        
+        # Si no hay precio unitario, mantener el rango de Gemini
+        if precio_unit <= 0:
+            continue
+        
+        # Precio total de la línea
+        precio_total = precio_unit * cantidad
+        
+        # Si el rango no contiene el precio, ajustarlo
+        if precio_total < precio_min or precio_total > precio_max:
+            # Ajustar con margen ±20% del precio real
+            margen = int(precio_total * 0.2)
+            nuevo_min = max(1000, precio_total - margen)  # Mínimo $1.000
+            nuevo_max = precio_total + margen
+            
+            rep['precio_min_clp'] = nuevo_min
+            rep['precio_max_clp'] = nuevo_max
+            
+            logger.info(
+                'generador[rango_ajustado] rep=%s precio_line=%d rango_orig=[%d,%d] rango_nuevo=[%d,%d]',
+                rep.get('nombre', '')[:30],
+                precio_total,
+                precio_min,
+                precio_max,
+                nuevo_min,
+                nuevo_max,
+            )
+        # Si el precio está dentro del rango pero muy cerca de los extremos, verificar amplitud
+        elif precio_min > 0 and precio_max > 0:
+            amplitud = precio_max - precio_min
+            # Si el rango es muy estrecho (< 10% del precio), ampliarlo
+            if amplitud < precio_total * 0.1:
+                margen = int(precio_total * 0.15)
+                rep['precio_min_clp'] = max(1000, precio_total - margen)
+                rep['precio_max_clp'] = precio_total + margen
+    
+    return repuestos
+
+
+def _aplicar_config_taller_por_modelo(
+    contenido: dict[str, Any],
+    *,
+    taller,
+    servicio_nombre: str,
+    marca: str,
+    modelo: str,
+    tipo_motor: str = '',
+) -> dict[str, Any]:
+    """
+    Aplica configuración de servicio del taller específica por modelo/motor cuando existe.
+    
+    Si existe OfertaServicio para marca/modelo/motor:
+    - Usa precio mano de obra de la oferta
+    - Usa precios de repuestos de la oferta
+    - Actualiza motivo_seleccion para indicar "Precio del taller para este vehículo"
+    
+    Fallback: mantiene valores de Gemini/catálogo general.
+    """
+    if not servicio_nombre:
+        return contenido
+    
+    try:
+        from mecanimovilapp.apps.ordenes.services.catalogo_pricing import (
+            buscar_oferta_exacta,
+            precio_publico_oferta,
+        )
+        
+        oferta = buscar_oferta_exacta(
+            taller=taller,
+            servicio_nombre=servicio_nombre,
+            marca=marca,
+            modelo=modelo,
+            tipo_motor=tipo_motor,
+        )
+        
+        if not oferta:
+            return contenido
+        
+        # Aplicar precio de mano de obra (sin repuestos = solo mano de obra)
+        precio_mo, _ = precio_publico_oferta(oferta, con_repuestos=False)
+        # Si precio_sin_repuestos está vacío pero hay costo_mano_de_obra_sin_iva
+        if precio_mo <= 0 and int(oferta.costo_mano_de_obra_sin_iva or 0) > 0:
+            precio_mo = int(round(int(oferta.costo_mano_de_obra_sin_iva) * 1.19))
+        
+        if precio_mo > 0:
+            contenido['mano_obra_clp'] = precio_mo
+            contenido['precio_desde_catalogo'] = True
+            logger.info(
+                'generar_cotizacion_ia: config_taller_aplicada marca=%s modelo=%s motor=%s mano_obra=%d',
+                marca, modelo, tipo_motor, precio_mo
+            )
+        
+        # Aplicar precios de repuestos del catálogo
+        repuestos_oferta = oferta.repuestos_seleccionados or []
+        if repuestos_oferta and contenido.get('repuestos'):
+            repuestos_nuevos = []
+            for rep in contenido['repuestos']:
+                # Buscar match en repuestos de la oferta
+                nombre_rep = (rep.get('nombre') or '').lower()
+                match_oferta = None
+                for rep_oferta in repuestos_oferta:
+                    if not isinstance(rep_oferta, dict):
+                        continue
+                    nombre_oferta = (rep_oferta.get('nombre') or rep_oferta.get('repuesto') or '').lower()
+                    if nombre_oferta and nombre_oferta in nombre_rep or nombre_rep in nombre_oferta:
+                        match_oferta = rep_oferta
+                        break
+                
+                if match_oferta:
+                    # Aplicar precio del catálogo
+                    precio_cat = match_oferta.get('precio_unitario_clp') or match_oferta.get('precio')
+                    if precio_cat and precio_cat > 0:
+                        rep['precio_unitario_clp'] = int(precio_cat)
+                        rep['precio_desde_catalogo'] = True
+                        rep['fuente_marketplace'] = 'catalogo'
+                        rep['proveedor_nombre'] = 'Catálogo del taller'
+                        # Marcar que viene de config específica
+                        rep['_config_modelo'] = True
+                
+                repuestos_nuevos.append(rep)
+            
+            contenido['repuestos'] = repuestos_nuevos
+        
+        return contenido
+        
+    except Exception as exc:
+        logger.warning('_aplicar_config_taller_por_modelo falló: %s', exc, exc_info=True)
+        return contenido
+
+
+def _aplicar_seleccion_casa_repuestos(
+    repuestos: list[dict[str, Any]],
+    *,
+    taller=None,
+    marca_vehiculo: str = '',
+    modelo_vehiculo: str = '',
+) -> list[dict[str, Any]]:
+    """
+    Aplica selección inteligente de casa para cada repuesto.
+    
+    Para cada repuesto:
+    1. Recolecta opciones de casas disponibles (del enriquecimiento previo)
+    2. Aplica seleccion_casa_repuestos para elegir la mejor
+    3. Evalúa consolidación (una casa con todos los repuestos dentro del 110%)
+    4. Agrega: casa_repuesto_nombre, motivo_seleccion, alternativas_descartadas, consolidacion_aplicada
+    """
+    if not repuestos:
+        return []
+    
+    try:
+        from mecanimovilapp.apps.ordenes.services.seleccion_casa_repuestos import (
+            OpcionCasa,
+            ResultadoSeleccion,
+            consolidar_si_posible,
+            seleccionar_casa_optima,
+        )
+    except ImportError as exc:
+        logger.warning('No se pudo importar seleccion_casa_repuestos: %s, omitiendo selección', exc)
+        return repuestos
+    
+    # PASO 1: Para cada repuesto, recolectar opciones de casas disponibles
+    todas_las_opciones = {}  # {repuesto_id: [OpcionCasa, ...]}
+    
+    for idx, rep in enumerate(repuestos):
+        rep_id = rep.get('id') or f'rep-{idx}'
+        opciones_casa = []
+        
+        # Opción 1: del campo proveedor_nombre (catálogo/historial taller)
+        if rep.get('proveedor_nombre'):
+            opciones_casa.append(OpcionCasa(
+                casa=rep['proveedor_nombre'],
+                proveedor_id=rep.get('proveedor_id', 0),
+                precio_clp=rep.get('precio_unitario_clp', 0) * rep.get('cantidad', 1),
+                stock_disponible=True,  # Catálogo del taller siempre tiene stock
+                compatibilidad_score=1.0,  # Máxima confianza
+            ))
+        
+        # Opción 2: del campo fuente_marketplace (web, ML, etc.)
+        fuente = rep.get('fuente_marketplace', '') or rep.get('fuente_repuesto', '')
+        if fuente and fuente not in ('catalogo', 'historial'):
+            opciones_casa.append(OpcionCasa(
+                casa=rep.get('tienda_ml', '') or fuente.title(),
+                proveedor_id=0,
+                precio_clp=rep.get('precio_unitario_clp', 0) * rep.get('cantidad', 1),
+                stock_disponible=not rep.get('precio_estimado', True),
+                compatibilidad_score=0.7,  # Menor confianza que catálogo
+            ))
+        
+        if opciones_casa:
+            todas_las_opciones[rep_id] = opciones_casa
+    
+    # PASO 2: Intentar consolidación global (una casa con todos los repuestos dentro del 110%)
+    resultados_consolidados = None
+    if len(todas_las_opciones) >= 2:
+        try:
+            resultados_consolidados = consolidar_si_posible(repuestos, todas_las_opciones)
+        except Exception as exc:
+            logger.warning('consolidar_si_posible falló: %s', exc, exc_info=True)
+    
+    # PASO 3: Aplicar selección a cada repuesto
+    repuestos_finales = []
+    for idx, rep in enumerate(repuestos):
+        rep_id = rep.get('id') or f'rep-{idx}'
+        
+        # Si viene de config del taller por modelo, priorizar ese origen
+        if rep.get('_config_modelo'):
+            rep['casa_repuesto_nombre'] = 'Catálogo del taller'
+            rep['motivo_seleccion'] = f'Precio del taller para {marca_vehiculo} {modelo_vehiculo} (configuración específica)'
+            rep['alternativas_descartadas'] = []
+            rep['consolidacion_aplicada'] = False
+            rep.pop('_config_modelo', None)
+        # Si hay consolidación, usar resultado consolidado
+        elif resultados_consolidados and rep_id in resultados_consolidados:
+            resultado = resultados_consolidados[rep_id]
+            rep['casa_repuesto_nombre'] = resultado.casa_elegida
+            rep['motivo_seleccion'] = resultado.motivo_seleccion
+            rep['alternativas_descartadas'] = resultado.alternativas_descartadas
+            rep['consolidacion_aplicada'] = resultado.consolidacion_aplicada
+            rep['precio_unitario_clp'] = resultado.precio_final_clp // rep.get('cantidad', 1)
+        # Si no hay consolidación pero hay opciones, seleccionar óptima individual
+        elif rep_id in todas_las_opciones:
+            opciones = todas_las_opciones[rep_id]
+            resultado = seleccionar_casa_optima(opciones)
+            rep['casa_repuesto_nombre'] = resultado.casa_elegida
+            rep['motivo_seleccion'] = resultado.motivo_seleccion
+            rep['alternativas_descartadas'] = resultado.alternativas_descartadas
+            rep['consolidacion_aplicada'] = False
+        # Sin opciones: explicar por qué
+        else:
+            rep['casa_repuesto_nombre'] = ''
+            rep['motivo_seleccion'] = 'No se encontraron proveedores con este repuesto en stock para el vehículo'
+            rep['alternativas_descartadas'] = []
+            rep['consolidacion_aplicada'] = False
+        
+        repuestos_finales.append(rep)
+    
+    return repuestos_finales
+
+
 def generar_cotizacion_ia(
     *,
     conversation=None,
@@ -464,6 +744,33 @@ def generar_cotizacion_ia(
     )
     if contexto_rag_extra:
         ctx['contexto_rag'] = contexto_rag_extra
+
+    # PASO 1: Extracción estructurada del pedido con LLM (partes implícitas, alcance)
+    pedido_extraido = None
+    if taller is not None:
+        try:
+            from mecanimovilapp.apps.agente_ia.services.extraccion_pedido_llm import (
+                extraer_pedido_con_llm,
+            )
+
+            texto_completo = f"{servicio_nombre}. {descripcion_problema}".strip()
+            pedido_extraido = extraer_pedido_con_llm(
+                texto_cliente=texto_completo,
+                vehiculo_context={
+                    'marca': ctx.get('marca', ''),
+                    'modelo': ctx.get('modelo', ''),
+                    'anio': ctx.get('anio', ''),
+                    'patente': ctx.get('patente', ''),
+                },
+                taller=taller,
+            )
+            logger.info(
+                'generar_cotizacion_ia: extraccion_llm servicios=%d repuestos_mencionados=%d',
+                len(pedido_extraido.servicios),
+                len(pedido_extraido.repuestos_mencionados),
+            )
+        except Exception as exc:
+            logger.warning('extraccion_pedido_llm falló: %s', exc, exc_info=True)
 
     # Catálogo del taller primero: si hay OfertaServicio para marca/modelo+servicio,
     # no llamar Gemini ni búsqueda web (misma regla que el agente chat).
@@ -571,7 +878,7 @@ def generar_cotizacion_ia(
         except Exception as exc:
             logger.info('No se pudo inyectar catálogo/historial en prompt cotización: %s', exc)
 
-    prompt = _construir_prompt(ctx)
+    prompt = _construir_prompt(ctx, pedido_extraido=pedido_extraido)
     inicio = time.monotonic()
     crudo, uso, error = _llamar_gemini(prompt)
     latencia_ms = int((time.monotonic() - inicio) * 1000)
@@ -665,6 +972,18 @@ def generar_cotizacion_ia(
                 usar_ml=enriquecer_ml,
                 usar_web=usar_web,
             )
+            
+            # PASO 2: Aplicar selección inteligente de casas a cada repuesto
+            reps = _aplicar_seleccion_casa_repuestos(
+                reps,
+                taller=taller,
+                marca_vehiculo=str(ctx.get('marca') or ''),
+                modelo_vehiculo=str(ctx.get('modelo') or ''),
+            )
+            
+            # PASO 3: Ajustar rangos para que sean consistentes con precios finales
+            reps = _ajustar_rangos_consistentes(reps)
+            
             costo_rep, mo, total = recalcular_totales(reps, int(contenido.get('mano_obra_clp') or 0))
             contenido['repuestos'] = reps
             contenido['costo_repuestos_clp'] = costo_rep
@@ -696,6 +1015,13 @@ def generar_cotizacion_ia(
                 modelo=str(ctx.get('modelo') or ''),
                 tipo_motor=str(ctx.get('tipo_motor_efectivo') or ''),
             )
+            
+            # Marcar repuestos que vienen del catálogo del taller con flag especial
+            if contenido.get('precio_desde_catalogo') and contenido.get('repuestos'):
+                for rep in contenido['repuestos']:
+                    if rep.get('fuente_marketplace') == 'catalogo' or rep.get('proveedor_nombre'):
+                        rep['_config_modelo'] = True  # Flag para que selección de casas lo respete
+                        
         except Exception as exc:
             logger.warning('fusionar_contenido_con_catalogo_taller falló: %s', exc, exc_info=True)
 

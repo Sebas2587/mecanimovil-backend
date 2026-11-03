@@ -73,6 +73,15 @@ class RepuestoCotizacionSerializer(serializers.Serializer):
     precio_estimado = serializers.BooleanField(required=False, default=True)
     precio_referencia_mercado = serializers.BooleanField(required=False, default=False)
     comentario = serializers.CharField(required=False, allow_blank=True, default='')
+    # Campos de selección inteligente de casa (PR #7)
+    casa_repuesto_nombre = serializers.CharField(required=False, allow_blank=True, default='')
+    motivo_seleccion = serializers.CharField(required=False, allow_blank=True, default='')
+    alternativas_descartadas = serializers.ListField(
+        child=serializers.DictField(),
+        required=False,
+        default=list,
+    )
+    consolidacion_aplicada = serializers.BooleanField(required=False, default=False)
     certeza = serializers.ChoiceField(
         choices=('confirmado', 'asumido', 'referencial', 'sin_precio'),
         required=False,
