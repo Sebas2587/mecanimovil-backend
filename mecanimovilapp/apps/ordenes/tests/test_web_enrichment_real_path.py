@@ -48,10 +48,11 @@ class WebEnrichmentRealPathTestCase(TestCase):
             password='test123',
         )
         self.taller = Taller.objects.create(
+            usuario=self.user,
             nombre='Taller Test Real Path',
             telefono='+56912345678',
+            estado_verificacion='aprobado',
         )
-        self.taller.miembros_taller.add(self.user, through_defaults={'rol': 'mandante'})
     
     def _crear_cotizacion_base(self, repuestos_list):
         """Crea una cotización como lo hace generar_ia (sin web enrichment)."""
@@ -124,7 +125,7 @@ class WebEnrichmentRealPathTestCase(TestCase):
         cot = self._crear_cotizacion_base(repuestos)
         
         # Cache web con MISMATCH (enfriador vs aceite)
-        clave_aceite = self._clave_fuzzy('Aceite de motor TISS 5W-30')
+        clave_aceite = self.__class__._clave_fuzzy('Aceite de motor TISS 5W-30')
         self._poblar_cache_web({
             clave_aceite: {
                 'nombre_producto': 'Enfriador aceite Fiat Bravo 1.4 | Euroespecialista',
