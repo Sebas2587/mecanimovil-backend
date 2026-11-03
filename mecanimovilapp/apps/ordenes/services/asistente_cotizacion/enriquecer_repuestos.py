@@ -379,6 +379,84 @@ def _validar_tipo_parte(nombre_repuesto: str, producto_matched: str) -> bool:
     return True
 
 
+_STOP_PIEZA = frozenset({
+    'de', 'del', 'la', 'el', 'los', 'las', 'un', 'una', 'y', 'para', 'con',
+    'motor', 'delantero', 'delantera', 'delanteros', 'delanteras',
+    'trasero', 'trasera', 'traseros', 'traseras', 'juego', 'kit', 'par',
+    'original', 'alternativo', 'sintetico', 'mineral',
+})
+
+
+def _stem_pieza(token: str) -> str:
+    t = _norm(token)
+    if len(t) > 4 and t.endswith('es'):
+        return t[:-2]
+    if len(t) > 3 and t.endswith('s'):
+        return t[:-1]
+    return t
+
+
+def _keywords_pieza(nombre: str) -> list[str]:
+    """Sustantivos que la ficha tiene que nombrar. 'Repuestos Fiat Bravo' no califica."""
+    from .familias_sensibles import FAMILIAS_SENSIBLES, detectar_familia_sensible
+
+    claves: list[str] = []
+    fam = detectar_familia_sensible(nombre)
+    if fam:
+        for key in FAMILIAS_SENSIBLES[fam].get('keywords') or ():
+            stem = _stem_pieza(str(key))
+            if stem and stem not in claves:
+                claves.append(stem)
+        return claves
+    for tok in _norm(nombre).split():
+        if len(tok) < 4 or tok in _STOP_PIEZA:
+            continue
+        stem = _stem_pieza(tok)
+        if stem and stem not in claves:
+            claves.append(stem)
+    return claves[:3]
+
+
+def _producto_menciona_pieza(nombre_repuesto: str, producto_matched: str) -> bool:
+    """True si el título nombra la pieza pedida.
+
+    Un listado genérico ('Repuestos Fiat Bravo | Mundo Repuestos Chile') no
+    trae 'pastilla' ni 'filtro' y no puede cotizar esa línea.
+    """
+    producto = str(producto_matched or '').strip()
+    if not producto:
+        return True
+    if _norm(producto) == _norm(nombre_repuesto):
+        return True
+    keywords = _keywords_pieza(nombre_repuesto)
+    if not keywords:
+        return True
+    prod = _norm(producto)
+    return any(k in prod for k in keywords)
+
+
+def _producto_es_la_pieza(nombre_repuesto: str, producto_matched: str, *, fuente: str = '') -> bool:
+    """Tipo de parte + keyword. Rechaza enfriador-por-aceite y listados genéricos."""
+    producto = str(producto_matched or '').strip()
+    if not _validar_tipo_parte(nombre_repuesto, producto):
+        logger.warning(
+            'ordenes[enrich] mismatch_tipo_rechazado repuesto=%s producto=%s fuente=%s',
+            (nombre_repuesto or '')[:50],
+            producto[:50],
+            (fuente or '')[:15],
+        )
+        return False
+    if fuente in ('web', 'historial', '') and not _producto_menciona_pieza(nombre_repuesto, producto):
+        logger.warning(
+            'ordenes[enrich] listado_generico_rechazado repuesto=%s producto=%s fuente=%s',
+            (nombre_repuesto or '')[:50],
+            producto[:50],
+            (fuente or '')[:15],
+        )
+        return False
+    return True
+
+
 def _mejor_hit(nombre: str, candidatos: list[dict[str, Any]], *, min_score: int = 50) -> dict[str, Any] | None:
     q = _clave_fuzzy(nombre)
     if not q:
@@ -388,26 +466,17 @@ def _mejor_hit(nombre: str, candidatos: list[dict[str, Any]], *, min_score: int 
     best_conf = -1.0
     for cand in candidatos:
         score = _match_score(q, cand.get('clave') or '')
-        conf = float(cand.get('confianza') or 0)
         if score < min_score:
             continue
+        producto_nombre = str(cand.get('nombre_producto') or cand.get('nombre') or '')
+        fuente = str(cand.get('fuente_marketplace') or '')
+        if not _producto_es_la_pieza(nombre, producto_nombre, fuente=fuente):
+            continue
+        conf = float(cand.get('confianza') or 0)
         if score > best_score or (score == best_score and conf > best_conf):
             best_score = score
             best_conf = conf
             best = cand
-    
-    # NUEVO: validar tipo de parte antes de devolver
-    if best and best_score >= min_score:
-        # Usar nombre_producto si existe (historial/web), sino el nombre
-        producto_nombre = best.get('nombre_producto') or best.get('nombre') or ''
-        if not _validar_tipo_parte(nombre, producto_nombre):
-            logger.warning(
-                'ordenes[enrich] mismatch_tipo_rechazado repuesto=%s producto=%s fuente=%s score=%d',
-                nombre[:50], producto_nombre[:50], 
-                best.get('fuente_marketplace', '')[:15], best_score
-            )
-            return None
-    
     return best
 
 
@@ -641,8 +710,16 @@ def _candidatos_historial_taller(
                 clave = _clave_fuzzy(nombre)
                 if not clave:
                     continue
-                # CRÍTICO: Preservar nombre_producto para validación de tipo
+                # Un borrador no llega aquí (solo enviada/aceptada). Si la línea
+                # guardó una ficha web de otra pieza, no se reaprende.
                 nombre_producto = str(raw.get('nombre_producto') or '').strip()
+                fuente_linea = str(
+                    raw.get('fuente_marketplace') or raw.get('fuente_repuesto') or '',
+                ).strip()
+                if nombre_producto and not _producto_es_la_pieza(
+                    nombre, nombre_producto, fuente=fuente_linea or 'historial',
+                ):
+                    continue
                 precio = _to_int_clp(raw.get('precio_unitario_clp'))
                 marca = _marca_repuesto_valida(raw.get('marca_repuesto'))
                 prov = str(
