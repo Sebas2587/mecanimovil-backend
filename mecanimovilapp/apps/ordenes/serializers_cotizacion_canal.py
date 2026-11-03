@@ -102,6 +102,31 @@ class RepuestoCotizacionSerializer(serializers.Serializer):
     seleccion_cliente_en = serializers.CharField(required=False, allow_blank=True, default='')
     imagen_url = serializers.CharField(required=False, allow_blank=True, default='')
     opciones = OpcionRepuestoSerializer(many=True, required=False)
+    
+    # NUEVOS CAMPOS: Selección inteligente de casas de repuestos
+    casa_repuesto_nombre = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        default='',
+        help_text='Nombre de la casa de repuestos elegida'
+    )
+    motivo_seleccion = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        default='',
+        help_text='Explicación de por qué se eligió esta casa'
+    )
+    alternativas_descartadas = serializers.ListField(
+        child=serializers.DictField(),
+        required=False,
+        default=list,
+        help_text='Otras opciones consideradas y razón de descarte'
+    )
+    consolidacion_aplicada = serializers.BooleanField(
+        required=False,
+        default=False,
+        help_text='Si este repuesto fue consolidado con otros en la misma casa'
+    )
 
 
 class CotizacionCanalSerializer(serializers.ModelSerializer):
