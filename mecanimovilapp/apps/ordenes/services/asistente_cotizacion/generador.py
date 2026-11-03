@@ -461,6 +461,150 @@ Responde SOLO JSON válido en español:
 }}"""
 
 
+def _ajustar_rangos_consistentes(repuestos: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Asegura que precio_min_clp y precio_max_clp contengan el precio_unitario_clp.
+    
+    Regla: Si precio_unitario_clp está fuera del rango [min, max], ajustar el rango
+    para que lo contenga, manteniendo cierta amplitud.
+    
+    Esto previene inconsistencias UI donde se muestra "$8K–$15K" pero precio línea es $31K.
+    """
+    for rep in repuestos:
+        precio_unit = rep.get('precio_unitario_clp', 0)
+        precio_min = rep.get('precio_min_clp', 0)
+        precio_max = rep.get('precio_max_clp', 0)
+        cantidad = rep.get('cantidad', 1)
+        
+        # Si no hay precio unitario, mantener el rango de Gemini
+        if precio_unit <= 0:
+            continue
+        
+        # Precio total de la línea
+        precio_total = precio_unit * cantidad
+        
+        # Si el rango no contiene el precio, ajustarlo
+        if precio_total < precio_min or precio_total > precio_max:
+            # Ajustar con margen ±20% del precio real
+            margen = int(precio_total * 0.2)
+            nuevo_min = max(1000, precio_total - margen)  # Mínimo $1.000
+            nuevo_max = precio_total + margen
+            
+            rep['precio_min_clp'] = nuevo_min
+            rep['precio_max_clp'] = nuevo_max
+            
+            logger.info(
+                'generador[rango_ajustado] rep=%s precio_line=%d rango_orig=[%d,%d] rango_nuevo=[%d,%d]',
+                rep.get('nombre', '')[:30],
+                precio_total,
+                precio_min,
+                precio_max,
+                nuevo_min,
+                nuevo_max,
+            )
+        # Si el precio está dentro del rango pero muy cerca de los extremos, verificar amplitud
+        elif precio_min > 0 and precio_max > 0:
+            amplitud = precio_max - precio_min
+            # Si el rango es muy estrecho (< 10% del precio), ampliarlo
+            if amplitud < precio_total * 0.1:
+                margen = int(precio_total * 0.15)
+                rep['precio_min_clp'] = max(1000, precio_total - margen)
+                rep['precio_max_clp'] = precio_total + margen
+    
+    return repuestos
+
+
+def _aplicar_config_taller_por_modelo(
+    contenido: dict[str, Any],
+    *,
+    taller,
+    servicio_nombre: str,
+    marca: str,
+    modelo: str,
+    tipo_motor: str = '',
+) -> dict[str, Any]:
+    """
+    Aplica configuración de servicio del taller específica por modelo/motor cuando existe.
+    
+    Si existe OfertaServicio para marca/modelo/motor:
+    - Usa precio mano de obra de la oferta
+    - Usa precios de repuestos de la oferta
+    - Actualiza motivo_seleccion para indicar "Precio del taller para este vehículo"
+    
+    Fallback: mantiene valores de Gemini/catálogo general.
+    """
+    if not servicio_nombre:
+        return contenido
+    
+    try:
+        from mecanimovilapp.apps.ordenes.services.catalogo_pricing import (
+            buscar_oferta_exacta,
+            precio_publico_oferta,
+        )
+        
+        oferta = buscar_oferta_exacta(
+            taller=taller,
+            servicio_nombre=servicio_nombre,
+            marca=marca,
+            modelo=modelo,
+            tipo_motor=tipo_motor,
+        )
+        
+        if not oferta:
+            return contenido
+        
+        # Aplicar precio de mano de obra (sin repuestos = solo mano de obra)
+        precio_mo, _ = precio_publico_oferta(oferta, con_repuestos=False)
+        # Si precio_sin_repuestos está vacío pero hay costo_mano_de_obra_sin_iva
+        if precio_mo <= 0 and int(oferta.costo_mano_de_obra_sin_iva or 0) > 0:
+            precio_mo = int(round(int(oferta.costo_mano_de_obra_sin_iva) * 1.19))
+        
+        if precio_mo > 0:
+            contenido['mano_obra_clp'] = precio_mo
+            contenido['precio_desde_catalogo'] = True
+            logger.info(
+                'generar_cotizacion_ia: config_taller_aplicada marca=%s modelo=%s motor=%s mano_obra=%d',
+                marca, modelo, tipo_motor, precio_mo
+            )
+        
+        # Aplicar precios de repuestos del catálogo
+        repuestos_oferta = oferta.repuestos_seleccionados or []
+        if repuestos_oferta and contenido.get('repuestos'):
+            repuestos_nuevos = []
+            for rep in contenido['repuestos']:
+                # Buscar match en repuestos de la oferta
+                nombre_rep = (rep.get('nombre') or '').lower()
+                match_oferta = None
+                for rep_oferta in repuestos_oferta:
+                    if not isinstance(rep_oferta, dict):
+                        continue
+                    nombre_oferta = (rep_oferta.get('nombre') or rep_oferta.get('repuesto') or '').lower()
+                    if nombre_oferta and nombre_oferta in nombre_rep or nombre_rep in nombre_oferta:
+                        match_oferta = rep_oferta
+                        break
+                
+                if match_oferta:
+                    # Aplicar precio del catálogo
+                    precio_cat = match_oferta.get('precio_unitario_clp') or match_oferta.get('precio')
+                    if precio_cat and precio_cat > 0:
+                        rep['precio_unitario_clp'] = int(precio_cat)
+                        rep['precio_desde_catalogo'] = True
+                        rep['fuente_marketplace'] = 'catalogo'
+                        rep['proveedor_nombre'] = 'Catálogo del taller'
+                        # Marcar que viene de config específica
+                        rep['_config_modelo'] = True
+                
+                repuestos_nuevos.append(rep)
+            
+            contenido['repuestos'] = repuestos_nuevos
+        
+        return contenido
+        
+    except Exception as exc:
+        logger.warning('_aplicar_config_taller_por_modelo falló: %s', exc, exc_info=True)
+        return contenido
+
+
 def _aplicar_seleccion_casa_repuestos(
     repuestos: list[dict[str, Any]],
     *,
@@ -491,9 +635,11 @@ def _aplicar_seleccion_casa_repuestos(
         logger.warning('No se pudo importar seleccion_casa_repuestos: %s, omitiendo selección', exc)
         return repuestos
     
-    # Para cada repuesto, construir opciones de casas desde el enriquecimiento
-    repuestos_con_opciones = []
-    for rep in repuestos:
+    # PASO 1: Para cada repuesto, recolectar opciones de casas disponibles
+    todas_las_opciones = {}  # {repuesto_id: [OpcionCasa, ...]}
+    
+    for idx, rep in enumerate(repuestos):
+        rep_id = rep.get('id') or f'rep-{idx}'
         opciones_casa = []
         
         # Opción 1: del campo proveedor_nombre (catálogo/historial taller)
@@ -517,37 +663,55 @@ def _aplicar_seleccion_casa_repuestos(
                 compatibilidad_score=0.7,  # Menor confianza que catálogo
             ))
         
-        # Si no hay opciones reales, crear una "sin casa" explicativa
-        if not opciones_casa:
-            motivo = 'No se encontraron proveedores con este repuesto en stock para el vehículo'
-            rep['casa_repuesto_nombre'] = ''
-            rep['motivo_seleccion'] = motivo
+        if opciones_casa:
+            todas_las_opciones[rep_id] = opciones_casa
+    
+    # PASO 2: Intentar consolidación global (una casa con todos los repuestos dentro del 110%)
+    resultados_consolidados = None
+    if len(todas_las_opciones) >= 2:
+        try:
+            resultados_consolidados = consolidar_si_posible(repuestos, todas_las_opciones)
+        except Exception as exc:
+            logger.warning('consolidar_si_posible falló: %s', exc, exc_info=True)
+    
+    # PASO 3: Aplicar selección a cada repuesto
+    repuestos_finales = []
+    for idx, rep in enumerate(repuestos):
+        rep_id = rep.get('id') or f'rep-{idx}'
+        
+        # Si viene de config del taller por modelo, priorizar ese origen
+        if rep.get('_config_modelo'):
+            rep['casa_repuesto_nombre'] = 'Catálogo del taller'
+            rep['motivo_seleccion'] = f'Precio del taller para {marca_vehiculo} {modelo_vehiculo} (configuración específica)'
             rep['alternativas_descartadas'] = []
             rep['consolidacion_aplicada'] = False
-        else:
-            # Aplicar selección
-            resultado = seleccionar_casa_optima(opciones_casa)
+            rep.pop('_config_modelo', None)
+        # Si hay consolidación, usar resultado consolidado
+        elif resultados_consolidados and rep_id in resultados_consolidados:
+            resultado = resultados_consolidados[rep_id]
             rep['casa_repuesto_nombre'] = resultado.casa_elegida
             rep['motivo_seleccion'] = resultado.motivo_seleccion
             rep['alternativas_descartadas'] = resultado.alternativas_descartadas
             rep['consolidacion_aplicada'] = resultado.consolidacion_aplicada
-        
-        repuestos_con_opciones.append(rep)
-    
-    # PASO 2: Evaluación de consolidación (pendiente implementación completa)
-    # TODO: Implementar consolidación global usando consolidar_si_posible
-    # Por ahora, aseguramos que todos los repuestos tienen los campos requeridos
-    for rep in repuestos_con_opciones:
-        if 'casa_repuesto_nombre' not in rep:
-            rep['casa_repuesto_nombre'] = ''
-        if 'motivo_seleccion' not in rep:
-            rep['motivo_seleccion'] = ''
-        if 'alternativas_descartadas' not in rep:
-            rep['alternativas_descartadas'] = []
-        if 'consolidacion_aplicada' not in rep:
+            rep['precio_unitario_clp'] = resultado.precio_final_clp // rep.get('cantidad', 1)
+        # Si no hay consolidación pero hay opciones, seleccionar óptima individual
+        elif rep_id in todas_las_opciones:
+            opciones = todas_las_opciones[rep_id]
+            resultado = seleccionar_casa_optima(opciones)
+            rep['casa_repuesto_nombre'] = resultado.casa_elegida
+            rep['motivo_seleccion'] = resultado.motivo_seleccion
+            rep['alternativas_descartadas'] = resultado.alternativas_descartadas
             rep['consolidacion_aplicada'] = False
+        # Sin opciones: explicar por qué
+        else:
+            rep['casa_repuesto_nombre'] = ''
+            rep['motivo_seleccion'] = 'No se encontraron proveedores con este repuesto en stock para el vehículo'
+            rep['alternativas_descartadas'] = []
+            rep['consolidacion_aplicada'] = False
+        
+        repuestos_finales.append(rep)
     
-    return repuestos_con_opciones
+    return repuestos_finales
 
 
 def generar_cotizacion_ia(
@@ -817,6 +981,9 @@ def generar_cotizacion_ia(
                 modelo_vehiculo=str(ctx.get('modelo') or ''),
             )
             
+            # PASO 3: Ajustar rangos para que sean consistentes con precios finales
+            reps = _ajustar_rangos_consistentes(reps)
+            
             costo_rep, mo, total = recalcular_totales(reps, int(contenido.get('mano_obra_clp') or 0))
             contenido['repuestos'] = reps
             contenido['costo_repuestos_clp'] = costo_rep
@@ -848,6 +1015,13 @@ def generar_cotizacion_ia(
                 modelo=str(ctx.get('modelo') or ''),
                 tipo_motor=str(ctx.get('tipo_motor_efectivo') or ''),
             )
+            
+            # Marcar repuestos que vienen del catálogo del taller con flag especial
+            if contenido.get('precio_desde_catalogo') and contenido.get('repuestos'):
+                for rep in contenido['repuestos']:
+                    if rep.get('fuente_marketplace') == 'catalogo' or rep.get('proveedor_nombre'):
+                        rep['_config_modelo'] = True  # Flag para que selección de casas lo respete
+                        
         except Exception as exc:
             logger.warning('fusionar_contenido_con_catalogo_taller falló: %s', exc, exc_info=True)
 
