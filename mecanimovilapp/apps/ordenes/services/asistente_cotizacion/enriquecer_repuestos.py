@@ -836,6 +836,11 @@ def _referencia_consulta(
         precio = int(linea.get('precio_referencia_clp') or 0)
     except (TypeError, ValueError):
         precio = 0
+    from mecanimovilapp.apps.ordenes.casas_especialistas import es_etiqueta_historial
+
+    # El historial no es una ficha web: no se le aplican las compuertas de modelo.
+    if es_etiqueta_historial(tienda) and precio > 0:
+        return 'historial del taller', precio
     if not (tienda and precio > 0):
         casa = nombre_tienda_visible(str(linea.get('casa_repuesto_nombre') or ''))
         prov = nombre_tienda_visible(str(linea.get('proveedor_nombre') or ''))

@@ -227,6 +227,33 @@ def _sin_conector(texto: str) -> str:
     return _CONECTOR_INICIAL.sub('', (texto or '').strip()).strip()
 
 
+_ROTULO_GENERICO = re.compile(
+    r'^(?:mantenci[oó]n|servicio)'
+    r'(?:\s+(?:general|preventiva|b[aá]sica|del\s+veh[ií]culo|automotriz))?$',
+    re.IGNORECASE,
+)
+_PREFIJO_MANTENCION = re.compile(r'^(?:mantenci[oó]n|mantener)\b', re.IGNORECASE)
+
+
+def _titulo_de_faena_pedido(frase: str) -> str:
+    """«Mantención con pastillas» es el cambio de esa pieza, no otro título."""
+    titulo = _titulo_faena(frase)
+    base = (frase or titulo or '').strip()
+    if not _PREFIJO_MANTENCION.match(base):
+        return titulo
+    objeto = _objeto_comprable(base) or _objeto_comprable(titulo)
+    if not objeto:
+        return titulo
+    return _titulo(f'Cambio de {objeto}')
+
+
+def _sin_rotulo_generico(nombres: list[str]) -> list[str]:
+    """«Mantención» es el nombre del servicio. No suma una faena si hay trabajos."""
+    if not any(not _ROTULO_GENERICO.match(nombre.strip()) for nombre in nombres):
+        return nombres
+    return [nombre for nombre in nombres if not _ROTULO_GENERICO.match(nombre.strip())]
+
+
 def _titulo_faena(texto: str) -> str:
     limpio = _sin_conector(texto)
     palabras = limpio.split()
@@ -339,7 +366,7 @@ def interpretar_pedido_taller(texto: str) -> dict[str, list[str]]:
         # «Cambio de pastillas, aceite y filtro, bujías»: el verbo abre toda la lista.
         if lista and puede_heredar and verbo_lista and not _VERBO_PIEZA.match(frase) and not es_solo_mano(frase):
             frase = f'{verbo_lista} {frase}'.strip()
-        titulo = _titulo_faena(frase)
+        titulo = _titulo_de_faena_pedido(frase)
         abierto = _VERBO_PIEZA.match(frase)
         if abierto:
             verbo_lista = frase[:abierto.start(1)].strip()
@@ -367,7 +394,7 @@ def interpretar_pedido_taller(texto: str) -> dict[str, list[str]]:
             continue
         mano.append(titulo)
     return {
-        'mano_obra': _dedupe_faenas(mano),
+        'mano_obra': _sin_rotulo_generico(_dedupe_faenas(mano)),
         'repuestos': piezas,
         'conjuntas': conjuntas,
     }

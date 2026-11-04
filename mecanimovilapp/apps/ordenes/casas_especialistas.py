@@ -242,6 +242,11 @@ def _norm(texto: str) -> str:
     return re.sub(r'[^a-z0-9]+', ' ', t).strip()
 
 
+def es_etiqueta_historial(nombre: str) -> bool:
+    """El historial es un precio, no una casa de repuestos."""
+    return _norm(nombre) in {'historial del taller', 'historial', 'historial taller'}
+
+
 def _compacto(texto: str) -> str:
     return re.sub(r'[^a-z0-9]', '', _norm(texto))
 

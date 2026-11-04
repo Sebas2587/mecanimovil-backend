@@ -136,6 +136,30 @@ class CasasEspecialistasTests(TestCase):
         self.assertLessEqual(len(linea['motivo_seleccion']), 160)
         self.assertIn('Lira 664', linea['casa_sucursal'])
 
+    def test_el_historial_no_es_la_casa_de_las_pastillas(self):
+        linea = _aplicar_seleccion_casa_repuestos([{
+            'id': 'pastillas',
+            'nombre': 'Pastillas de freno',
+            'cantidad': 1,
+            'precio_unitario_clp': 40000,
+            'fuente_marketplace': 'historial',
+            'proveedor_nombre': 'Historial del taller',
+            'casa_repuesto_nombre': 'Historial del taller',
+            'fuentes_detalle': [{
+                'fuente': 'historial',
+                'tienda': 'Historial del taller',
+                'precio_clp': 40000,
+            }],
+        }], marca_vehiculo='Fiat', modelo_vehiculo='Bravo')[0]
+        self.assertEqual(linea['casa_repuesto_nombre'], 'Indra')
+        self.assertEqual(linea['proveedor_nombre'], 'Indra')
+        self.assertEqual(linea['precio_unitario_clp'], 40000)
+        self.assertEqual(linea['referencia_tienda'], 'historial del taller')
+        self.assertEqual(linea['precio_referencia_clp'], 40000)
+        self.assertTrue(linea['precio_a_consultar'])
+        self.assertIn('Referencia: historial del taller $40.000', linea['motivo_seleccion'])
+        self.assertNotEqual(linea['fuentes_detalle'][0]['tienda'], 'Historial del taller')
+
     def test_cerca_de_la_florida_elige_esa_sucursal(self):
         user = User.objects.create_user(username='taller_florida', password='x', email='f@test.cl')
         taller = Taller.objects.create(usuario=user, nombre='Taller Florida', telefono='1')
@@ -378,6 +402,46 @@ class OrdenCompraPdfTests(TestCase):
         self.assertNotIn('margen', texto.lower())
         self.assertNotIn('80.000', texto)
         self.assertNotIn('150.000', texto)
+
+    def test_el_historial_no_abre_otro_grupo_ni_repite_la_sucursal(self):
+        TallerDireccion.objects.create(
+            taller=self.taller,
+            calle='John Kennedy',
+            numero='709',
+            comuna='La Florida',
+            ciudad='Santiago',
+            region='Metropolitana',
+        )
+        self.cot.repuestos = [
+            {
+                'nombre': 'Pastillas de freno',
+                'cantidad': 1,
+                'precio_unitario_clp': 40000,
+                'fuente_marketplace': 'historial',
+                'proveedor_nombre': 'Historial del taller',
+                'casa_repuesto_nombre': 'Historial del taller',
+                'casa_sucursal': 'Av. Vicuña Mackenna 8580, La Florida',
+                'casa_telefono': '+56 2 2783 8300',
+            },
+            {
+                'nombre': 'Aceite de motor',
+                'cantidad': 4,
+                'precio_unitario_clp': 9990,
+                'casa_repuesto_nombre': 'Indra',
+                'casa_sucursal': 'Av. Vicuña Mackenna 8580, La Florida',
+                'casa_telefono': '+56 2 2783 8300',
+            },
+        ]
+        self.cot.save(update_fields=['repuestos'])
+        texto = _texto_pdf(generar_pdf_orden_compra(self.cot))
+        self.assertNotIn('Historial del taller', texto)
+        self.assertIn('historial del taller', texto)
+        self.assertIn('Pastillas de freno', texto)
+        self.assertIn('Indra', texto)
+        self.assertIn('A consultar', texto)
+        self.assertIn('40.000', texto)
+        self.assertEqual(texto.count('Vicuña Mackenna 8580'), 1)
+        self.assertEqual(texto.count('La Florida'), 1)
 
     def test_el_pdf_usa_la_sucursal_de_la_florida(self):
         TallerDireccion.objects.create(
