@@ -467,10 +467,11 @@ def _candidato_de_hit(hit: dict) -> dict:
     }
 
 
-def _hit_sirve_linea(hit: dict, rep: dict, cot) -> bool:
+def _motivo_hit(hit: dict, rep: dict, cot) -> str:
+    """La misma compuerta de la selección y de la caché. '' si el hit se queda."""
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
-        _candidato_sirve_linea,
         _monto_banda_por_unidad,
+        _motivo_calidad_pastilla,
     )
 
     nombre_linea = str(rep.get('nombre') or '')
@@ -484,18 +485,22 @@ def _hit_sirve_linea(hit: dict, rep: dict, cot) -> bool:
         techo_linea = 0
     piso_linea = _monto_banda_por_unidad(nombre_linea, piso_linea, rep.get('cantidad'))
     techo_linea = _monto_banda_por_unidad(nombre_linea, techo_linea, rep.get('cantidad'))
-    return _candidato_sirve_linea(
-        str(rep.get('nombre') or ''),
+    return _motivo_calidad_pastilla(
         _candidato_de_hit(hit),
-        anio=cot.vehiculo_anio or '',
-        cilindraje=cot.vehiculo_cilindraje or '',
+        nombre=nombre_linea,
         modelo=cot.vehiculo_modelo or '',
         tipo_motor=' '.join(
             p for p in (cot.tipo_motor or '', getattr(cot, 'tipo_motor_label', '') or '') if p
         ),
         banda_min=piso_linea,
         banda_max=techo_linea,
+        anio=cot.vehiculo_anio or '',
+        cilindraje=cot.vehiculo_cilindraje or '',
     )
+
+
+def _hit_sirve_linea(hit: dict, rep: dict, cot) -> bool:
+    return _motivo_hit(hit, rep, cot) == ''
 
 
 def _pad_web_no_sirve(rep: dict, cot) -> bool:
@@ -989,14 +994,44 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                     hit = None
                 if not hit:
                     continue
-                if str(hit.get('url') or '') in rechazadas or not _hit_sirve_linea(hit, rep, cot):
+                motivo_hit = _motivo_hit(hit, rep, cot)
+                if str(hit.get('url') or '') in rechazadas or motivo_hit:
                     logger.info(
-                        'buscar_precios_web_cotizacion_task(%s): hit rechazado id=%s linea=%s producto=%s',
+                        'buscar_precios_web_cotizacion_task(%s): hit rechazado id=%s linea=%s '
+                        'producto=%s motivo=%s',
                         cotizacion_id,
                         rid,
                         nombre_linea[:80],
                         str(hit.get('nombre_producto') or '')[:80],
+                        motivo_hit or 'url_rechazada',
                     )
+                    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+                        _aviso_sin_ficha,
+                    )
+                    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+                        anotar_busqueda_sin_ficha,
+                        nota_de_busqueda,
+                    )
+
+                    if not (
+                        nota_de_busqueda(rep.get('motivo_seleccion'))
+                        or nota_de_busqueda(rep.get('comentario'))
+                    ):
+                        nota = _aviso_sin_ficha(
+                            nombre_linea,
+                            [_candidato_de_hit(hit)],
+                            cot.vehiculo_modelo or '',
+                            False,
+                            anio=cot.vehiculo_anio or '',
+                            tipo_motor=' '.join(
+                                p for p in (
+                                    cot.tipo_motor or '',
+                                    getattr(cot, 'tipo_motor_label', '') or '',
+                                ) if p
+                            ),
+                            cilindraje=cot.vehiculo_cilindraje or '',
+                        )
+                        reps_enriquecidos[i] = anotar_busqueda_sin_ficha(dict(rep), nota)
                     continue
                 if str(hit.get('url') or '') in urls_usadas:
                     continue
