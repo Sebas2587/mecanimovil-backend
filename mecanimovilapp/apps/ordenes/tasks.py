@@ -470,8 +470,10 @@ def _candidato_de_hit(hit: dict) -> dict:
 def _hit_sirve_linea(hit: dict, rep: dict, cot) -> bool:
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
         _candidato_sirve_linea,
+        _monto_banda_por_unidad,
     )
 
+    nombre_linea = str(rep.get('nombre') or '')
     try:
         piso_linea = int(rep.get('precio_min_clp') or 0)
     except (TypeError, ValueError):
@@ -480,13 +482,17 @@ def _hit_sirve_linea(hit: dict, rep: dict, cot) -> bool:
         techo_linea = int(rep.get('precio_max_clp') or 0)
     except (TypeError, ValueError):
         techo_linea = 0
+    piso_linea = _monto_banda_por_unidad(nombre_linea, piso_linea, rep.get('cantidad'))
+    techo_linea = _monto_banda_por_unidad(nombre_linea, techo_linea, rep.get('cantidad'))
     return _candidato_sirve_linea(
         str(rep.get('nombre') or ''),
         _candidato_de_hit(hit),
         anio=cot.vehiculo_anio or '',
         cilindraje=cot.vehiculo_cilindraje or '',
         modelo=cot.vehiculo_modelo or '',
-        tipo_motor=cot.tipo_motor or '',
+        tipo_motor=' '.join(
+            p for p in (cot.tipo_motor or '', getattr(cot, 'tipo_motor_label', '') or '') if p
+        ),
         banda_min=piso_linea,
         banda_max=techo_linea,
     )
@@ -529,6 +535,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
         litros_envase,
         nombres_sin_cache_vigente,
         urls_rechazadas_de,
+        _monto_banda_por_unidad,
     )
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web import (
         construir_progreso_busqueda,
@@ -668,12 +675,14 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
         especificaciones = {}
         bandas_min: dict[str, int] = {}
         bandas_max: dict[str, int] = {}
+        cantidades: dict[str, object] = {}
         for linea in candidatos:
             if not isinstance(linea, dict):
                 continue
             nombre_linea = str(linea.get('nombre') or '').strip()
             if not nombre_linea:
                 continue
+            cantidades[nombre_linea] = linea.get('cantidad')
             try:
                 piso_linea = int(linea.get('precio_min_clp') or 0)
             except (TypeError, ValueError):
@@ -683,9 +692,13 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
             except (TypeError, ValueError):
                 techo_linea = 0
             if piso_linea > 0:
-                bandas_min[nombre_linea] = piso_linea
+                bandas_min[nombre_linea] = _monto_banda_por_unidad(
+                    nombre_linea, piso_linea, linea.get('cantidad'),
+                )
             if techo_linea > 0:
-                bandas_max[nombre_linea] = techo_linea
+                bandas_max[nombre_linea] = _monto_banda_por_unidad(
+                    nombre_linea, techo_linea, linea.get('cantidad'),
+                )
             extra = str(linea.get('especificacion') or '').strip()
             comentario = str(linea.get('comentario') or '').strip()
             bajo = comentario.lower()
@@ -760,6 +773,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                         'anio': cot.vehiculo_anio or '',
                         'cilindraje': cot.vehiculo_cilindraje or '',
                         'tipo_motor': cot.tipo_motor or '',
+                        'tipo_motor_label': cot.tipo_motor_label or '',
                     },
                     servicio_nombre=cot.servicio_nombre or '',
                     on_progreso=_on_progreso,
@@ -768,6 +782,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                     especificaciones=especificaciones,
                     bandas_min=bandas_min,
                     bandas_max=bandas_max,
+                    cantidades=cantidades,
                 )
                 if nuevos:
                     resultados.update(nuevos)
