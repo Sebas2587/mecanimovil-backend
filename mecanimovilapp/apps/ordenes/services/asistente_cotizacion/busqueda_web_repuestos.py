@@ -909,6 +909,10 @@ _ANIO_RANGO_RE = re.compile(
     r'\b((?:19|20)\d{2})\s*(?:-|–|/|a)\s*((?:19|20)\d{2})\b',
     re.I,
 )
+# '2013 2017' en el título chileno, sin guion. No junta '2010 Fiat 2014'.
+_ANIO_ESPACIO_RE = re.compile(
+    r'\b((?:19|20)\d{2})(?:\s+((?:19|20)\d{2}))+\b',
+)
 # '08/15' y '95-01' en la ficha chilena. No es '1.4': hacen falta dos dígitos.
 _ANIO_CORTO_RE = re.compile(
     r'(?<!\d)(\d{2})\s*(?:-|–|/)\s*(\d{2})(?!\d)',
@@ -966,6 +970,16 @@ def _rangos_anio(texto: str) -> list[tuple[int, int]]:
         if a > b:
             a, b = b, a
         rangos.append((a, b))
+        ocupados.append((match.start(), match.end()))
+    for match in _ANIO_ESPACIO_RE.finditer(raw):
+        if any(not (match.end() <= ini or match.start() >= fin) for ini, fin in ocupados):
+            continue
+        anios = [int(y) for y in re.findall(r'(?:19|20)\d{2}', match.group(0))]
+        if len(anios) < 2:
+            continue
+        a, b = min(anios), max(anios)
+        if 1980 <= a <= 2035 and 1980 <= b <= 2035:
+            rangos.append((a, b))
     return rangos
 
 
@@ -1203,8 +1217,12 @@ def _compat_pastilla(
     tokens = set(norm.split())
     if permite_cruce and _bravo_tjet(modelo, tipo_motor):
         cruce = 'linea' in tokens or 'punto' in tokens
-        if cruce and ('t jet' in norm or 'tjet' in norm.replace(' ', '')):
+        dice_tjet = 't jet' in norm or 'tjet' in norm.replace(' ', '')
+        # El cruce es el Linea/Punto T-Jet. Un Linea 1.4 sin T-Jet es otro auto.
+        if cruce and dice_tjet:
             return True
+        if cruce and not dice_tjet:
+            return False
     if tokens & _MODELOS_PASTILLA_AJENOS:
         return False
     return None
@@ -4233,21 +4251,25 @@ def _aviso_sin_ficha(
     descartados: list[str] = []
     fuera_anio: list[str] = []
     otro_motor: list[str] = []
+    otro_modelo: list[str] = []
     for cand in crudos:
         titulo = str(cand.get('title') or '').strip()
         if not titulo or titulo in vistos:
             continue
         vistos.append(titulo[:90])
+        corto = titulo[:90]
         if _titulo_contradice_motor(titulo, modelo, tipo_motor, cilindraje):
-            otro_motor.append(titulo[:90])
-        elif _anio_fuera_de_rango(
+            otro_motor.append(corto)
+        if _anio_fuera_de_rango(
             cand,
             anio,
             holgura=_holgura_anio_titulo(
                 nombre, cand, modelo, tipo_motor, cilindraje,
             ),
         ):
-            fuera_anio.append(titulo[:90])
+            fuera_anio.append(corto)
+        if corto not in otro_motor and _compat_pastilla_candidato(cand, modelo, tipo_motor) is False:
+            otro_modelo.append(corto)
         if not _titulo_nombra_pieza(nombre, titulo):
             descartados.append(titulo[:90])
     auto = modelo or 'este auto'
@@ -4258,7 +4280,7 @@ def _aviso_sin_ficha(
         busqueda = f'Se buscó {citas}. '
     titulos_rechazados = ', '.join(f'"{t}"' for t in (descartados or vistos)[:3])
     anio_auto = _anio_vehiculo_int(anio)
-    if fuera_anio or otro_motor:
+    if fuera_anio or otro_motor or otro_modelo:
         frases: list[str] = []
         if fuera_anio:
             citados = ', '.join(f'"{t}"' for t in fuera_anio[:3])
@@ -4266,6 +4288,9 @@ def _aviso_sin_ficha(
         if otro_motor:
             citados = ', '.join(f'"{t}"' for t in otro_motor[:3])
             frases.append(f'{citados} nombra otro motor.')
+        if otro_modelo:
+            citados = ', '.join(f'"{t}"' for t in otro_modelo[:3])
+            frases.append(f'{citados} nombra otro modelo.')
         detalle = (
             f'{busqueda}Sin ficha de {nombre} para {auto}'
             f'{f" ({anio_auto})" if anio_auto else ""}. '

@@ -573,7 +573,11 @@ def nota_de_busqueda(texto: str) -> str:
     """Nota de la búsqueda web. La descripción de la pieza no lo es."""
     t = str(texto or '').strip()
     bajo = t.lower()
-    if bajo.startswith('se busc') or bajo.startswith('no se pudo consultar'):
+    if (
+        bajo.startswith('se busc')
+        or bajo.startswith('no se pudo consultar')
+        or bajo.startswith('sin ficha de')
+    ):
         return t
     return ''
 

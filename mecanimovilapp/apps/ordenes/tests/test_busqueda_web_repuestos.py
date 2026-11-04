@@ -3967,3 +3967,203 @@ class Quote21EscaleraHolguraTests(SimpleTestCase):
             history = []
 
         self.assertTrue(bw._respuesta_sin_ficha(_Deny()))
+
+
+class Quote22MismaCompuertaTests(SimpleTestCase):
+    """Un Linea 1.4 2013-2017 no es el Bravo T-Jet 2010, en ningún paso.
+
+    La selección, la caché y el apply leen el mismo motivo. Si no hay ficha,
+    la nota dice qué se buscó y por qué se botó el título.
+    """
+
+    _BUJIA = 'Bujías'
+    _TITULO = 'SET 4 BUJIAS FIAT LINEA 1.4 2013 2017 - TodoAuto Spa'
+    _URL = 'https://www.todoauto.cl/set-4-bujias-fiat-linea-14-2013-2017'
+    _LINEA_SIN_ANIO = 'SET 4 BUJIAS FIAT LINEA 1.4'
+
+    def _cand(self, titulo: str, *, leida: bool = False) -> dict:
+        cand = {
+            'title': titulo,
+            'url': self._URL,
+            'content': f'{titulo}. Precio $ 18.990',
+        }
+        if leida:
+            cand['ficha_leida'] = True
+            cand['precio_snippet'] = 18990
+        return cand
+
+    def _motivo(self, cand: dict) -> str:
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        return bw._motivo_calidad_pastilla(
+            cand,
+            nombre=self._BUJIA,
+            modelo='BRAVO SPORT TJET',
+            tipo_motor='GASOLINA',
+            banda_min=7000,
+            banda_max=25000,
+            anio=2010,
+            cilindraje='1368',
+        )
+
+    def test_2013_2017_es_un_rango_y_linea_sin_tjet_no_es_el_bravo(self):
+        from types import SimpleNamespace
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+        from mecanimovilapp.apps.ordenes.tasks import _motivo_hit
+
+        self.assertEqual(
+            bw._rangos_anio(self._TITULO),
+            [(2013, 2017)],
+        )
+        self.assertTrue(bw._anio_fuera_de_rango(self._cand(self._TITULO), 2010))
+        # El guion sigue siendo un rango. Un año suelto no.
+        self.assertEqual(bw._rangos_anio('Bujía Fiat Bravo 2011-2014'), [(2011, 2014)])
+        self.assertEqual(bw._rangos_anio('Bujía Fiat Bravo 2010'), [])
+
+        seleccion = self._motivo(self._cand(self._TITULO))
+        cache = self._motivo(bw._candidato_desde_cache(
+            SimpleNamespace(nombre_producto=self._TITULO, url=self._URL),
+            18990,
+        ))
+        cot = SimpleNamespace(
+            vehiculo_modelo='BRAVO SPORT TJET',
+            vehiculo_anio=2010,
+            vehiculo_cilindraje='1368',
+            tipo_motor='GASOLINA',
+            tipo_motor_label='',
+        )
+        apply = _motivo_hit(
+            {
+                'nombre_producto': self._TITULO,
+                'url': self._URL,
+                'precio_clp': 18990,
+            },
+            {
+                'nombre': self._BUJIA,
+                'cantidad': 4,
+                'precio_min_clp': 7000,
+                'precio_max_clp': 25000,
+            },
+            cot,
+        )
+        self.assertEqual(seleccion, 'anio_incompatible')
+        self.assertEqual(cache, seleccion)
+        self.assertEqual(apply, seleccion)
+
+        sin_anio = self._motivo(self._cand(self._LINEA_SIN_ANIO))
+        sin_anio_leida = self._motivo(self._cand(self._LINEA_SIN_ANIO, leida=True))
+        self.assertEqual(sin_anio, 'modelo_incompatible')
+        self.assertEqual(sin_anio_leida, sin_anio)
+
+        # El cruce sigue siendo el Linea T-Jet, no el 1.4 atmosférico.
+        tjet = {
+            'title': 'Pastillas freno Fiat Linea 1.4 T-Jet',
+            'url': 'https://frenosvergara.shop/products/linea-t-jet',
+            'content': 'Precio: $32990',
+            'precio_snippet': 32990,
+        }
+        self.assertEqual(
+            bw._motivo_calidad_pastilla(
+                tjet,
+                nombre='Pastillas de freno delanteras',
+                modelo='BRAVO SPORT TJET',
+                tipo_motor='T-Jet',
+                banda_min=28000,
+                anio=2010,
+                cilindraje='1.4',
+            ),
+            '',
+        )
+
+    def test_la_escalera_no_elige_el_linea_y_la_nota_dice_por_que(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            nota_de_busqueda,
+        )
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador import (
+            _aplicar_seleccion_casa_repuestos,
+        )
+
+        def fake_buscar(query, **kwargs):
+            if 'bujia' in query.lower():
+                return [{
+                    'title': self._TITULO,
+                    'url': self._URL,
+                    'content': f'{self._TITULO}. Precio $ 18.990',
+                    'score': 0.9,
+                }]
+            return []
+
+        avisos: dict = {}
+        with patch.object(bw, '_tavily_buscar_uno', side_effect=fake_buscar), patch.object(
+            bw, '_tavily_extraer', return_value={},
+        ), patch.object(bw, '_leer_html_fichas', return_value={}), patch.object(
+            bw, '_gemini_generar', return_value=None,
+        ), self.assertLogs(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos',
+            level='INFO',
+        ) as logs:
+            out = bw._buscar_repuestos_web_tavily(
+                [self._BUJIA],
+                marca='FIAT',
+                modelo='BRAVO SPORT TJET',
+                anio=2010,
+                cilindraje='1368',
+                tipo_motor='GASOLINA',
+                servicio_nombre='Cambio de bujías y filtro de aire',
+                timeout=5,
+                plan={'piezas': []},
+                bandas_min={self._BUJIA: 7000},
+                bandas_max={self._BUJIA: 25000},
+                cantidades={self._BUJIA: 4},
+                avisos=avisos,
+            )
+
+        self.assertEqual(out, {})
+        texto = '\n'.join(logs.output)
+        self.assertIn(f'{self._TITULO}: anio_incompatible', texto)
+        self.assertNotIn('elegido linea=Bujías', texto)
+        detalle = avisos[self._BUJIA]['detalle']
+        self.assertIn('Se buscó', detalle)
+        self.assertIn('bujias', detalle.lower())
+        self.assertIn('LINEA 1.4 2013 2017', detalle)
+        self.assertIn('otros años', detalle)
+        self.assertIn('otro modelo', detalle)
+        self.assertNotIn(
+            'No se encontraron proveedores con este repuesto en stock',
+            detalle,
+        )
+        self.assertEqual(nota_de_busqueda(detalle), detalle)
+
+        linea = _aplicar_seleccion_casa_repuestos([{
+            'id': 'rep-0',
+            'nombre': self._BUJIA,
+            'cantidad': 4,
+            'precio_unitario_clp': 0,
+            'motivo_seleccion': detalle,
+        }])[0]
+        self.assertEqual(linea['motivo_seleccion'], detalle)
+        self.assertNotEqual(
+            linea['motivo_seleccion'],
+            'No se encontraron proveedores con este repuesto en stock para el vehículo',
+        )
+
+        tardia = bw._aviso_sin_ficha(
+            self._BUJIA,
+            [self._cand(self._TITULO)],
+            'BRAVO SPORT TJET',
+            False,
+            anio=2010,
+            tipo_motor='GASOLINA',
+            cilindraje='1368',
+        )['detalle']
+        self.assertTrue(nota_de_busqueda(tardia))
+        conservada = _aplicar_seleccion_casa_repuestos([{
+            'id': 'rep-0',
+            'nombre': self._BUJIA,
+            'cantidad': 4,
+            'precio_unitario_clp': 0,
+            'motivo_seleccion': tardia,
+        }])[0]
+        self.assertEqual(conservada['motivo_seleccion'], tardia)
