@@ -654,6 +654,22 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                     faltantes,
                     solo_ids,
                 )
+                especificaciones = {}
+                for linea in candidatos:
+                    if not isinstance(linea, dict):
+                        continue
+                    nombre_linea = str(linea.get('nombre') or '').strip()
+                    if not nombre_linea:
+                        continue
+                    extra = str(linea.get('especificacion') or '').strip()
+                    comentario = str(linea.get('comentario') or '').strip()
+                    bajo = comentario.lower()
+                    if comentario and not (
+                        bajo.startswith('se busc') or bajo.startswith('no se pudo consultar')
+                    ):
+                        extra = f'{extra} {comentario}'.strip()
+                    if extra:
+                        especificaciones[nombre_linea] = extra[:200]
                 nuevos = buscar_repuestos_web(
                     faltantes,
                     vehiculo={
@@ -667,6 +683,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                     on_progreso=_on_progreso,
                     deberia_cancelar=lambda: busqueda_fue_cancelada(cotizacion_id),
                     avisos=avisos_busqueda,
+                    especificaciones=especificaciones,
                 )
                 if nuevos:
                     resultados.update(nuevos)

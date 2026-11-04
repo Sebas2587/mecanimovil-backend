@@ -770,9 +770,9 @@ def _aplicar_seleccion_casa_repuestos(
             detalle = nota_de_busqueda(rep.get('comentario'))
             previo = nota_de_busqueda(rep.get('motivo_seleccion'))
             if detalle:
-                rep['motivo_seleccion'] = detalle[:300]
+                rep['motivo_seleccion'] = detalle[:500]
             elif previo:
-                rep['motivo_seleccion'] = previo[:300]
+                rep['motivo_seleccion'] = previo[:500]
             else:
                 rep['motivo_seleccion'] = (
                     'No se encontraron proveedores con este repuesto en stock para el vehículo'

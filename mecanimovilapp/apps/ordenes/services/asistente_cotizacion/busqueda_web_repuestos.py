@@ -984,6 +984,8 @@ def _candidato_sirve_linea(
     if not _ficha_cubre_pieza(nombre_linea, titulo):
         return False
     if not _pieza_exige_compatibilidad(nombre_linea):
+        # Pastillas: una ficha que lista varios modelos ("Bravo, Stilo, Punto")
+        # sigue siendo la pieza. El trim y el año no tienen que estar solos.
         return True
     if _ficha_nombra_modelo(texto, modelo) is False:
         return False
@@ -1294,16 +1296,30 @@ def _tavily_buscar_uno(
         )
     except requests.RequestException as exc:
         logger.warning('tavily_buscar: error de red: %s', exc)
+        logger.info(
+            'busqueda_web_repuestos[tavily] query=%s resultados=0',
+            query.strip()[:160],
+        )
         return []
     if resp.status_code != 200:
         logger.warning('tavily_buscar: status=%s body=%s', resp.status_code, resp.text[:300])
+        logger.info(
+            'busqueda_web_repuestos[tavily] query=%s resultados=0',
+            query.strip()[:160],
+        )
         return []
     try:
         data = resp.json()
     except ValueError:
+        logger.info(
+            'busqueda_web_repuestos[tavily] query=%s resultados=0',
+            query.strip()[:160],
+        )
         return []
+    brutos = data.get('results') or []
+    n_api = len(brutos) if isinstance(brutos, list) else 0
     out: list[dict[str, str]] = []
-    for r in data.get('results') or []:
+    for r in brutos:
         if not isinstance(r, dict):
             continue
         url = str(r.get('url') or '').strip()
@@ -1320,6 +1336,12 @@ def _tavily_buscar_uno(
             'url': url[:500],
             'content': str(r.get('content') or '')[:900],
         })
+    logger.info(
+        'busqueda_web_repuestos[tavily] query=%s resultados=%s utiles=%s',
+        query.strip()[:160],
+        n_api,
+        len(out),
+    )
     return out
 
 
@@ -1650,6 +1672,80 @@ def _gemini_generar(prompt: str, *, timeout: int, use_url_context: bool) -> dict
     return None
 
 
+def _es_pastillas_freno(nombre: str) -> bool:
+    """Pastilla o balata. Un disco de freno no entra."""
+    n = _norm(nombre)
+    if 'freno' not in n and 'balata' not in n:
+        return False
+    return 'pastilla' in n or 'balata' in n
+
+
+def _viscosidad_aceite(texto: str) -> str:
+    """'5W-40' y '5W40' → '5w40'. La cilindrada 1.4 no es viscosidad."""
+    m = re.search(r'\b(\d{1,2})\s*w\s*(\d{2})\b', _norm(texto))
+    if not m:
+        return ''
+    return f'{m.group(1)}w{m.group(2)}'
+
+
+def _consultas_aceite_motor(nombre: str, especificacion: str = '') -> list[str]:
+    """El lubricante no es del auto: se busca por viscosidad y envase.
+
+    'Aceite de motor' + '5W40 sintético' → 
+    'aceite 5w40 sintetico 4 litros', 'aceite motor 5w40 1 litro'.
+    Sin modelo, sin año y sin el alias de la casa.
+    """
+    texto = _norm(f'{nombre} {especificacion}')
+    visc = _viscosidad_aceite(texto)
+    if 'sintetic' in texto and 'semi' not in texto:
+        calidad = 'sintetico'
+    elif 'semi' in texto and 'sintetic' in texto:
+        calidad = 'semisintetico'
+    elif 'mineral' in texto:
+        calidad = 'mineral'
+    else:
+        calidad = ''
+    if visc and calidad:
+        return [
+            f'aceite {visc} {calidad} 4 litros',
+            f'aceite motor {visc} 1 litro',
+        ]
+    if visc:
+        return [
+            f'aceite {visc} 4 litros',
+            f'aceite motor {visc} 1 litro',
+        ]
+    return ['aceite motor 4 litros', 'aceite motor 1 litro']
+
+
+def _consultas_pastillas(
+    nombre: str,
+    *,
+    marca: str,
+    modelo: str,
+    cilindraje: str,
+) -> list[str]:
+    """'pastillas freno delanteras fiat bravo 1.4' y 'pastillas freno fiat bravo'.
+
+    El trim (Sport T-Jet) y el año no están en el título de la tienda.
+    """
+    n = _norm(nombre)
+    if 'traser' in n:
+        posicion = 'traseras'
+    elif 'delanter' in n:
+        posicion = 'delanteras'
+    else:
+        posicion = ''
+    modelo_corto = _modelo_busqueda(modelo).lower()
+    marca_q = str(marca or '').strip().lower()
+    cil = str(cilindraje or '').strip()
+    especifica = ' '.join(
+        p for p in ['pastillas freno', posicion, marca_q, modelo_corto, cil] if p
+    )
+    corta = ' '.join(p for p in ['pastillas freno', marca_q, modelo_corto] if p)
+    return [especifica, corta]
+
+
 def _escalera_consultas(
     nombre: str,
     *,
@@ -1658,12 +1754,52 @@ def _escalera_consultas(
     cilindraje: str,
     casas: list[dict[str, Any]],
     tipo_motor: str = '',
+    especificacion: str = '',
 ) -> list[str]:
     """Consultas como las haría un humano en Google, de más específica a más corta.
 
     Un kit de embrague se publica como "kit embrague kia morning 1.1 g4hg", no
     como "3 piezas". Esa frase mandaba al agente a listados y a kits de otro motor.
+    El aceite de motor se publica como "aceite 5w40 4 litros", no con el auto.
+    Las pastillas, como "pastillas freno fiat bravo", sin el trim ni el año.
     """
+    from .enriquecer_repuestos import _es_linea_aceite_motor
+
+    if _es_linea_aceite_motor(nombre):
+        consultas = _consultas_aceite_motor(nombre, especificacion)
+    elif _es_pastillas_freno(nombre):
+        consultas = _consultas_pastillas(
+            nombre, marca=marca, modelo=modelo, cilindraje=cilindraje,
+        )
+    else:
+        consultas = _escalera_consultas_vehiculo(
+            nombre,
+            marca=marca,
+            modelo=modelo,
+            cilindraje=cilindraje,
+            casas=casas,
+            tipo_motor=tipo_motor,
+        )
+    vistas: set[str] = set()
+    out: list[str] = []
+    for q in consultas:
+        clave = _norm(q)
+        if q and clave not in vistas:
+            vistas.add(clave)
+            out.append(q)
+    return out
+
+
+def _escalera_consultas_vehiculo(
+    nombre: str,
+    *,
+    marca: str,
+    modelo: str,
+    cilindraje: str,
+    casas: list[dict[str, Any]],
+    tipo_motor: str = '',
+) -> list[str]:
+    """Escalera con el auto. No la usan el aceite de motor ni las pastillas."""
     completo = _modelo_busqueda_completo(modelo)
     # "rodamiento de volante" en Google cae en el volante bimasa. La casa
     # publica el piloto como rodamiento piloto. La piola, como cable.
@@ -1715,12 +1851,20 @@ def _escalera_consultas(
 
 def _candidatos_validos(query: str, whitelist: set[str]) -> list[dict[str, Any]]:
     """Fichas de tienda chilena para la consulta, sin listados ni blogs."""
-    return [
-        c for c in _tavily_buscar_uno(query, max_results=8)
+    crudos = _tavily_buscar_uno(query, max_results=8)
+    validos = [
+        c for c in crudos
         if _es_tienda_chilena(c['url'], whitelist, c.get('content') or '')
         and not _es_listado_sin_vendedor(c['url'])
         and not _es_pagina_sin_ficha(c['url'])
     ]
+    logger.info(
+        'busqueda_web_repuestos[tavily] query=%s resultados=%s fichas=%s',
+        str(query or '')[:160],
+        len(crudos),
+        len(validos),
+    )
+    return validos
 
 
 def _ordenar_candidatos(
@@ -1862,6 +2006,7 @@ def _buscar_repuestos_web_tavily(
     deberia_cancelar=None,
     avisos: dict[str, dict[str, str]] | None = None,
     plan: dict[str, Any] | None = None,
+    especificaciones: dict[str, str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Agregador Tavily (JSON real) + Gemini solo como filtro/formateador."""
     whitelist = _dominios_whitelist()
@@ -1908,6 +2053,12 @@ def _buscar_repuestos_web_tavily(
                 'total': len(nombres_limpios),
             })
         crudos: list[dict[str, Any]] = []
+        from .enriquecer_repuestos import _es_linea_aceite_motor
+
+        spec = str((especificaciones or {}).get(nombre) or '')
+        # Aceite y pastillas no usan la frase del plan (modelo + año + trim)
+        # ni el tope de "escasa": esa frase es la que llegó a producción.
+        pieza_de_spec = _es_linea_aceite_motor(nombre) or _es_pastillas_freno(nombre)
         consultas = _escalera_consultas(
             nombre,
             marca=marca,
@@ -1915,8 +2066,9 @@ def _buscar_repuestos_web_tavily(
             cilindraje=cilindraje,
             casas=casas_marca,
             tipo_motor=tipo_motor,
+            especificacion=spec,
         )
-        pensada = consulta_de(plan, nombre)
+        pensada = '' if pieza_de_spec else consulta_de(plan, nombre)
         if pensada:
             resto = [q for q in consultas if _norm(q) != _norm(pensada)]
             _, saco_ruido = _nombre_busqueda_amplia(nombre)
@@ -1926,7 +2078,11 @@ def _buscar_repuestos_web_tavily(
                 consultas = resto[:2] + [pensada] + resto[2:]
             else:
                 consultas = [pensada] + resto
-        max_q = 1 if es_escasa(plan, nombre) else _MAX_CONSULTAS_TAVILY_POR_LINEA
+        max_q = (
+            _MAX_CONSULTAS_TAVILY_POR_LINEA
+            if pieza_de_spec or not es_escasa(plan, nombre)
+            else 1
+        )
         n_consultas = 0
         corto_mal = False
         for i_query, query in enumerate(consultas):
@@ -1955,7 +2111,7 @@ def _buscar_repuestos_web_tavily(
                     nombre, c, anio=anio, cilindraje=cilindraje, modelo=modelo,
                 )
             ]
-            if crudos and not sirven and len(otra_pieza) == len(crudos):
+            if crudos and not sirven and len(otra_pieza) == len(crudos) and not pieza_de_spec:
                 corto_mal = True
                 break
         rechazos: list[str] = []
@@ -2277,7 +2433,7 @@ def _aviso_sin_ficha(
         vistos.append(titulo[:90])
         if not _titulo_nombra_pieza(nombre, titulo):
             descartados.append(titulo[:90])
-        if len(vistos) >= 2:
+        if len(descartados) >= 3:
             break
     auto = modelo or 'este auto'
     buscadas = [q for q in (consultas or []) if str(q).strip()][:3]
@@ -2285,16 +2441,17 @@ def _aviso_sin_ficha(
     if buscadas:
         citas = ', '.join(f'"{q}"' for q in buscadas)
         busqueda = f'Se buscó {citas}. '
+    titulos_rechazados = ', '.join(f'"{t}"' for t in (descartados or vistos)[:3])
     if otra_pieza and vistos:
         detalle = (
             f'{busqueda}Sin ficha de {nombre} para {auto}. '
-            f'Lo publicado era otra pieza: {vistos[0]}. '
+            f'Lo publicado era otra pieza: {titulos_rechazados}. '
             'No se siguió buscando. Escribe el precio de tu casa.'
         )
     elif descartados:
         detalle = (
             f'{busqueda}Sin ficha de {nombre} para {auto}. '
-            f'Se descartó "{descartados[0]}" porque el título no es esa pieza.'
+            f'Se descartó {titulos_rechazados} porque el título no es esa pieza.'
         )
     else:
         detalle = (
@@ -2303,7 +2460,7 @@ def _aviso_sin_ficha(
         )
     return {
         'motivo': 'sin_ficha' if (otra_pieza or descartados or buscadas) else 'pieza_escasa',
-        'detalle': detalle[:400],
+        'detalle': detalle[:500],
     }
 
 
@@ -2315,6 +2472,7 @@ def buscar_repuestos_web(
     on_progreso=None,
     deberia_cancelar=None,
     avisos: dict[str, dict[str, str]] | None = None,
+    especificaciones: dict[str, str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Tavily si hay API key. url_context solo si Tavily no está configurada."""
     nombres_limpios = [str(n).strip()[:200] for n in nombres if str(n).strip()]
@@ -2363,6 +2521,7 @@ def buscar_repuestos_web(
                 deberia_cancelar=deberia_cancelar,
                 avisos=notas,
                 plan=plan,
+                especificaciones=especificaciones,
             )
             tavily_listo = True
         except BusquedaWebCancelada:
