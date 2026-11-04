@@ -927,6 +927,13 @@ def _lugar_del_taller(taller) -> str:
     usuario = getattr(taller, 'usuario', None)
     if usuario is not None:
         partes.append(str(getattr(usuario, 'direccion', '') or ''))
+        try:
+            extras = usuario.direcciones.all()
+        except Exception:
+            extras = []
+        for extra in extras:
+            partes.append(str(getattr(extra, 'direccion', '') or ''))
+            partes.append(str(getattr(extra, 'detalles', '') or ''))
     return ' '.join(p.strip() for p in partes if p and str(p).strip())
 
 

@@ -370,7 +370,10 @@ def sucursal_para(perfil: dict[str, Any], marca: str = '', comuna_taller: str = 
             if not comuna or (comuna != texto and comuna not in texto):
                 continue
             if comuna == 'santiago':
-                generica = sucursal
+                # Lira y Brasil comparten comuna. Quedarse con la última
+                # imprimía Avenida Brasil 28 cuando el texto solo dice Santiago.
+                if generica is None:
+                    generica = sucursal
             else:
                 especificas.append(sucursal)
         if especificas:

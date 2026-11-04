@@ -1,5 +1,6 @@
 """Casas especialistas, prioridad de taller y orden de compra."""
 from io import BytesIO
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
@@ -27,7 +28,7 @@ from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador import 
     _aplicar_seleccion_casa_repuestos,
 )
 from mecanimovilapp.apps.ordenes.services.orden_compra_pdf import generar_pdf_orden_compra
-from mecanimovilapp.apps.usuarios.models import Taller, TallerDireccion
+from mecanimovilapp.apps.usuarios.models import DireccionUsuario, Taller, TallerDireccion
 from mecanimovilapp.apps.agente_ia.services.agente_dueno_cotizacion import _origen_precio
 
 User = get_user_model()
@@ -444,3 +445,231 @@ class TarifaManoObraTests(TestCase):
         self.assertTrue(all(monto > 0 for monto in montos.values()))
         self.assertEqual(out['mano_obra_clp'], sum(montos.values()))
         self.assertGreater(out['mano_obra_clp'], 50000)
+
+
+_NOTA_VIEJA = 'Indra: especialista FIAT, tiene todos los repuestos. Precio a consultar.'
+_NOTA_LIDER = (
+    'Indra (especialista Fiat): consulta disponibilidad y precio. '
+    'Referencia: Lider $21.390.'
+)
+_NOTA_SIN_REF = 'Indra (especialista Fiat): consulta disponibilidad y precio.'
+
+
+class NotaViejaYSucursalEnLaTareaTests(TestCase):
+    """La tarea real y la lectura reescriben la frase vieja y la sucursal."""
+
+    def test_el_saneo_reescribe_la_frase_vieja_con_la_referencia_de_la_linea(self):
+        linea = sanear_notas_linea({
+            'nombre': 'Pastillas de freno',
+            'casa_repuesto_nombre': 'Indra',
+            'proveedor_nombre': 'Lider',
+            'precio_unitario_clp': 21390,
+            'precio_a_consultar': True,
+            'referencia_tienda': 'Lider',
+            'precio_referencia_clp': 21390,
+            'fuente_marketplace': 'web',
+            'motivo_seleccion': _NOTA_VIEJA,
+            'comentario': _NOTA_VIEJA,
+        }, marca='FIAT')
+        self.assertEqual(linea['motivo_seleccion'], _NOTA_LIDER)
+        self.assertEqual(linea['comentario'], _NOTA_LIDER)
+        self.assertNotIn('tiene todos', linea['motivo_seleccion'].lower())
+        self.assertNotIn('FIAT', linea['motivo_seleccion'])
+        self.assertLessEqual(len(linea['motivo_seleccion']), 160)
+
+    def test_sin_tienda_validada_no_inventa_referencia(self):
+        linea = sanear_notas_linea({
+            'nombre': 'Filtro de aire',
+            'casa_repuesto_nombre': 'Indra',
+            'precio_unitario_clp': 0,
+            'precio_a_consultar': True,
+            'fuente_marketplace': 'estimado',
+            'motivo_seleccion': _NOTA_VIEJA,
+            'comentario': _NOTA_VIEJA,
+        }, marca='FIAT')
+        self.assertEqual(linea['motivo_seleccion'], _NOTA_SIN_REF)
+        self.assertNotIn('Referencia', linea['motivo_seleccion'])
+
+    def test_la_tarea_y_el_pdf_dejan_la_consulta_y_la_florida(self):
+        user = User.objects.create_user(
+            username='mecanimovil_209', password='x', email='m209@test.cl',
+        )
+        user.direccion = 'Oficina virtual, Providencia, Santiago'
+        user.save(update_fields=['direccion'])
+        taller = Taller.objects.create(usuario=user, nombre='Mecanimovil', telefono='1')
+        TallerDireccion.objects.create(
+            taller=taller,
+            calle='',
+            numero='',
+            comuna='',
+            ciudad='Santiago',
+            region='Metropolitana',
+        )
+        DireccionUsuario.objects.create(
+            usuario=user,
+            direccion='John Kennedy 709, La Florida',
+            etiqueta='Taller',
+            es_principal=True,
+        )
+        vieja = _NOTA_VIEJA
+        lineas = [
+            {
+                'id': 'pastillas',
+                'nombre': 'Pastillas de freno delanteras',
+                'cantidad': 1,
+                'precio_unitario_clp': 21390,
+                'fuente_marketplace': 'web',
+                'proveedor_nombre': 'Lider',
+                'url_producto': 'https://www.lider.cl/pastillas-fiat',
+                'motivo_seleccion': vieja,
+                'comentario': vieja,
+                'casa_sucursal': 'Avenida Brasil 28, Santiago',
+            },
+            {
+                'id': 'aceite',
+                'nombre': 'Aceite de motor',
+                'cantidad': 4,
+                'precio_unitario_clp': 0,
+                'fuente_marketplace': 'estimado',
+                'motivo_seleccion': vieja,
+                'comentario': vieja,
+                'casa_sucursal': 'Avenida Brasil 28, Santiago',
+            },
+            {
+                'id': 'filtro-aceite',
+                'nombre': 'Filtro de aceite',
+                'cantidad': 1,
+                'precio_unitario_clp': 4990,
+                'fuente_marketplace': 'web',
+                'proveedor_nombre': 'Todoautochile',
+                'url_producto': 'https://todoautochile.cl/filtro',
+                'motivo_seleccion': vieja,
+                'comentario': vieja,
+                'casa_sucursal': 'Avenida Brasil 28, Santiago',
+            },
+            {
+                'id': 'bujias',
+                'nombre': 'Bujías',
+                'cantidad': 4,
+                'precio_unitario_clp': 0,
+                'fuente_marketplace': 'estimado',
+                'motivo_seleccion': vieja,
+                'comentario': vieja,
+                'casa_sucursal': 'Avenida Brasil 28, Santiago',
+            },
+            {
+                'id': 'filtro-aire',
+                'nombre': 'Filtro de aire',
+                'cantidad': 1,
+                'precio_unitario_clp': 0,
+                'fuente_marketplace': 'estimado',
+                'motivo_seleccion': vieja,
+                'comentario': vieja,
+                'casa_sucursal': 'Avenida Brasil 28, Santiago',
+            },
+        ]
+        cot = CotizacionCanal.objects.create(
+            taller=taller,
+            creado_por=user,
+            estado='borrador',
+            modalidad='taller',
+            vehiculo_marca='FIAT',
+            vehiculo_modelo='Bravo',
+            vehiculo_anio=2010,
+            servicio_nombre='Pastillas, aceite, bujías',
+            repuestos=lineas,
+            metadata={'busqueda_web_estado': 'pendiente'},
+        )
+
+        def _sin_fichas(nombres, **kwargs):
+            avisos = kwargs.get('avisos')
+            if isinstance(avisos, dict):
+                for nombre in nombres:
+                    avisos[nombre] = {'motivo': 'sin_ficha', 'detalle': 'Sin ficha de Indra.'}
+            return {}
+
+        from mecanimovilapp.apps.ordenes.tasks import buscar_precios_web_cotizacion_task
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.busqueda_web_habilitada',
+            return_value=True,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.buscar_repuestos_web',
+            side_effect=_sin_fichas,
+        ):
+            result = buscar_precios_web_cotizacion_task(cot.id)
+
+        self.assertTrue(result.get('ok'))
+        cot.refresh_from_db()
+        por_id = {r['id']: r for r in cot.repuestos}
+        self.assertEqual(por_id['pastillas']['motivo_seleccion'], _NOTA_LIDER)
+        self.assertEqual(por_id['pastillas']['comentario'], _NOTA_LIDER)
+        self.assertEqual(
+            por_id['filtro-aceite']['motivo_seleccion'],
+            'Indra (especialista Fiat): consulta disponibilidad y precio. '
+            'Referencia: TodoAuto $4.990.',
+        )
+        for rid in ('aceite', 'bujias', 'filtro-aire'):
+            self.assertEqual(por_id[rid]['motivo_seleccion'], _NOTA_SIN_REF)
+            self.assertNotIn('Referencia', por_id[rid]['motivo_seleccion'])
+        for linea in cot.repuestos:
+            self.assertNotIn('tiene todos', linea['motivo_seleccion'].lower())
+            self.assertNotIn('FIAT', linea['motivo_seleccion'])
+            self.assertIn('Vicuña Mackenna 8580', linea['casa_sucursal'])
+            self.assertNotIn('Brasil', linea['casa_sucursal'])
+
+        texto = _texto_pdf(generar_pdf_orden_compra(cot))
+        self.assertIn('Av. Vicuña Mackenna 8580, La Florida', texto)
+        self.assertNotIn('Avenida Brasil 28', texto)
+        self.assertNotIn('tiene todos', texto.lower())
+
+        from mecanimovilapp.apps.ordenes.serializers_cotizacion_canal import (
+            CotizacionCanalSerializer,
+        )
+
+        cot.repuestos = [
+            {**r, 'motivo_seleccion': vieja, 'comentario': vieja}
+            for r in cot.repuestos
+        ]
+        cot.save(update_fields=['repuestos'])
+        data = CotizacionCanalSerializer(cot).data
+        leida = next(r for r in data['repuestos'] if r['id'] == 'pastillas')
+        self.assertEqual(leida['motivo_seleccion'], _NOTA_LIDER)
+        self.assertNotIn('FIAT', leida['motivo_seleccion'])
+
+    def test_solo_santiago_usa_lira_y_no_brasil(self):
+        user = User.objects.create_user(
+            username='taller_solo_santiago', password='x', email='s@test.cl',
+        )
+        user.direccion = 'Oficina virtual, Providencia, Santiago'
+        user.save(update_fields=['direccion'])
+        taller = Taller.objects.create(usuario=user, nombre='Mecanimovil', telefono='1')
+        TallerDireccion.objects.create(
+            taller=taller,
+            calle='',
+            numero='',
+            comuna='',
+            ciudad='Santiago',
+            region='Metropolitana',
+        )
+        perfil = next(p for p in PERFILES if p['nombre'] == 'Indra')
+        sucursal = sucursal_para(perfil, 'Fiat', 'Santiago')
+        self.assertEqual(sucursal['direccion'], 'Lira 664')
+        cot = CotizacionCanal.objects.create(
+            taller=taller,
+            creado_por=user,
+            estado='borrador',
+            modalidad='taller',
+            vehiculo_marca='FIAT',
+            vehiculo_modelo='Bravo',
+            repuestos=[{
+                'nombre': 'Filtro de aceite',
+                'cantidad': 1,
+                'casa_repuesto_nombre': 'Indra',
+                'casa_sucursal': 'Avenida Brasil 28, Santiago',
+                'precio_a_consultar': True,
+            }],
+        )
+        texto = _texto_pdf(generar_pdf_orden_compra(cot))
+        self.assertIn('Lira 664, Santiago', texto)
+        self.assertNotIn('Avenida Brasil 28', texto)
