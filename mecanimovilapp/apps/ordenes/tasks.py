@@ -833,6 +833,15 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                 precio = int(hit.get('precio_clp') or 0)
                 if precio > 0 and not _precio_plausible_para_linea(nombre_linea, precio):
                     continue
+                from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+                    precio_unitario_desde_envase,
+                )
+
+                precio, nota_envase = precio_unitario_desde_envase(
+                    nombre_linea,
+                    precio,
+                    str(hit.get('nombre_producto') or ''),
+                )
                 url_hit = str(hit.get('url') or '').strip()
                 if url_hit:
                     urls_usadas.add(url_hit)
@@ -843,6 +852,8 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                     next_rep['precio_unitario_clp'] = precio
                     next_rep['precio_referencia_mercado'] = True
                     next_rep['precio_estimado'] = True
+                    if nota_envase:
+                        next_rep['comentario'] = nota_envase[:300]
                 next_rep['fuente_marketplace'] = 'web'
                 reps_enriquecidos[i] = next_rep
 
