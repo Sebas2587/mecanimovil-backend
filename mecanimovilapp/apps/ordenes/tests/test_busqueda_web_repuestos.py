@@ -2989,3 +2989,250 @@ class CalidadFichaQuote11Tests(SimpleTestCase):
         self.assertTrue(bw._es_pagina_sin_ficha(
             'https://www.mundorepuestos.cl/categoria/pastillas-freno-fiat',
         ))
+
+
+class Quote13PadCandidatesTests(SimpleTestCase):
+    """Cotización 13: el slug linea-t-jet no salva el listado, y Bravo entra al cupo."""
+
+    _LINEA = 'Pastillas de freno delanteras'
+    _URL_LISTADO = (
+        'https://mundorepuestos.com/producto/9971766272027220102014/'
+        'juego-pastillas-freno-delanteras-semimetalica-fiat-linea-active-1400-'
+        'sohc-t-jet-198-a4-000-italia'
+    )
+    _TITULO_LISTADO = 'Juego Pastillas Freno Fiat | Envío gratis - Mundo Repuestos Chile'
+
+    def test_11_920_es_11920_y_el_slug_linea_no_salva_el_listado(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        self.assertEqual(bw._parse_monto_clp('11.920'), 11920)
+        self.assertEqual(bw._parse_monto_clp('11920.00'), 11920)
+        html = """
+        <html><head>
+          <title>Juego Pastillas Freno Fiat | Envío gratis - Mundo Repuestos Chile</title>
+          <script type="application/ld+json">
+            {"@type":"Product","name":"Juego Pastillas Freno Fiat",
+             "offers":{"@type":"Offer","price":"1192.00","priceCurrency":"CLP"}}
+          </script>
+        </head><body>
+          <h1>Juego Pastillas Freno Fiat</h1>
+          <p>Precio: $11.920</p>
+        </body></html>
+        """
+        self.assertEqual(bw._precio_desde_html(html, self._LINEA, url=self._URL_LISTADO), 11920)
+        listado = {
+            'title': self._TITULO_LISTADO,
+            'url': self._URL_LISTADO,
+            'content': 'Precio: $11.920',
+            'ficha_leida': True,
+            'precio_snippet': 11920,
+        }
+        self.assertEqual(
+            bw._motivo_calidad_pastilla(
+                listado,
+                nombre=self._LINEA,
+                modelo='Bravo',
+                tipo_motor='T-Jet',
+                banda_min=28000,
+            ),
+            'listado',
+        )
+        self.assertFalse(bw._candidato_sirve_linea(
+            self._LINEA,
+            listado,
+            modelo='Bravo',
+            tipo_motor='T-Jet',
+            banda_min=28000,
+        ))
+        linea_barata = {
+            'title': 'Pastillas freno Fiat Linea 1.4 T-Jet',
+            'url': 'https://frenosvergara.shop/products/linea-t-jet-barata',
+            'content': 'Compatible Linea T-Jet. Precio: $15000',
+            'ficha_leida': True,
+            'precio_snippet': 15000,
+        }
+        self.assertEqual(
+            bw._motivo_calidad_pastilla(
+                linea_barata,
+                nombre=self._LINEA,
+                modelo='Bravo',
+                tipo_motor='T-Jet',
+                banda_min=28000,
+            ),
+            'precio_bajo_banda',
+        )
+        lider = {
+            'title': 'Pastillas De Freno Delantera Fiat Bravo 1.4 08/15',
+            'url': 'https://www.lider.cl/pastillas-freno-fiat-bravo-14',
+            'content': 'Precio: $21.390',
+            'precio_snippet': 21390,
+        }
+        self.assertEqual(
+            bw._motivo_calidad_pastilla(
+                lider,
+                nombre=self._LINEA,
+                modelo='Bravo',
+                tipo_motor='T-Jet',
+                banda_min=28000,
+            ),
+            '',
+        )
+        sodimac = {
+            'title': 'Pastillas de freno Delantera Fiat Bravo 1.4 08/15',
+            'url': 'https://www.sodimac.cl/sodimac-cl/articulo/123/pastillas-bravo',
+            'content': 'Precio: $10.000',
+            'precio_snippet': 10000,
+        }
+        self.assertEqual(
+            bw._motivo_calidad_pastilla(
+                sodimac,
+                nombre=self._LINEA,
+                modelo='Bravo',
+                tipo_motor='T-Jet',
+                banda_min=28000,
+            ),
+            'precio_bajo_banda',
+        )
+
+    def test_bravo_se_lee_antes_que_el_listado_y_si_no_hay_precio_no_hay_tienda(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        urls = {
+            'listado': self._URL_LISTADO,
+            'sodimac': 'https://www.sodimac.cl/sodimac-cl/articulo/123/pastillas-bravo-14',
+            'lider': 'https://www.lider.cl/pastillas-freno-delantera-fiat-bravo-14',
+            'gmak': 'https://www.gmak.cl/pastillas-freno-fiat-bravo-14-t-jet',
+            'sol': 'https://www.repuestosdelsol.cl/pastillas-freno-fiat-bravo-14-2007',
+            'ml': 'https://articulo.mercadolibre.cl/MLC-123-pastillas-freno-fiat-linea-t-jet',
+            'imaparts': 'https://www.imaparts.cl/pastillas-freno-fiat-bravo-14',
+        }
+        titulos = {
+            'listado': self._TITULO_LISTADO,
+            'sodimac': 'Pastillas de freno Delantera Fiat Bravo 1.4 08/15',
+            'lider': 'Pastillas De Freno Delantera Fiat Bravo 1.4 08/15',
+            'gmak': 'Pastillas de freno Delantera Fiat Bravo 1.4 T-Jet',
+            'sol': 'Pastillas de freno Fiat Bravo 1.4 2007',
+            'ml': 'Pastillas de Freno Delanteras Fiat Linea 1.4 T-Jet',
+            'imaparts': 'Pastillas de freno Fiat Bravo 1.4',
+        }
+        contenidos = {
+            'listado': 'Juego pastillas Fiat. Precio: $11.920',
+            'sodimac': 'Fiat Bravo 1.4. Precio: $10.000',
+            'lider': 'Fiat Bravo 1.4 08/15. Precio: $21.390',
+            'gmak': 'Consultar stock en tienda.',
+            'sol': 'Consultar stock en tienda.',
+            'ml': 'Consultar stock en tienda.',
+            'imaparts': 'Consultar stock en tienda.',
+        }
+        html_gmak = """
+        <html><head>
+          <title>Pastillas de freno Delantera Fiat Bravo 1.4 T-Jet</title>
+          <meta property="og:price:amount" content="32990">
+        </head><body><h1>Pastillas de freno Delantera Fiat Bravo 1.4 T-Jet</h1></body></html>
+        """
+        html_listado = """
+        <html><head>
+          <script type="application/ld+json">
+            {"@type":"Product","name":"Juego Pastillas Freno Fiat",
+             "offers":{"price":"1192.00","priceCurrency":"CLP"}}
+          </script>
+        </head><body><p>Precio: $11.920</p></body></html>
+        """
+        pedidos: list[str] = []
+
+        def fake_buscar(query, **kwargs):
+            if 'pastilla' not in query.lower():
+                return []
+            return [
+                {'title': titulos[k], 'url': urls[k], 'content': contenidos[k], 'score': 0.8}
+                for k in (
+                    'listado', 'sodimac', 'lider', 'gmak', 'sol', 'ml', 'imaparts',
+                )
+            ]
+
+        def fake_html(lista):
+            pedidos.extend(lista)
+            return {
+                url: html_gmak if url == urls['gmak'] else html_listado
+                for url in lista
+            }
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos._tavily_buscar_uno',
+            side_effect=fake_buscar,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos._tavily_extraer',
+            return_value={},
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos._leer_html_fichas',
+            side_effect=fake_html,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos._gemini_generar',
+            return_value=None,
+        ), self.assertLogs(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos',
+            level='INFO',
+        ) as logs:
+            out = bw._buscar_repuestos_web_tavily(
+                [self._LINEA],
+                marca='FIAT',
+                modelo='BRAVO SPORT TJET',
+                anio=2010,
+                cilindraje='1.4',
+                tipo_motor='T-Jet',
+                servicio_nombre='Pastillas',
+                timeout=5,
+                plan={'piezas': []},
+                bandas_min={self._LINEA: 28000},
+            )
+
+        hit = out[bw._clave_fuzzy(self._LINEA)]
+        self.assertEqual(hit['url'], urls['gmak'])
+        self.assertEqual(hit['precio_clp'], 32990)
+        self.assertNotEqual(hit['precio_clp'], 1192)
+        self.assertNotIn('mundorepuestos', hit['url'])
+        self.assertIn(urls['gmak'], pedidos)
+        self.assertIn(urls['sol'], pedidos)
+        self.assertIn(urls['ml'], pedidos)
+        self.assertNotIn(urls['listado'], pedidos)
+        texto = '\n'.join(logs.output)
+        self.assertIn(f"url={urls['listado']} motivo=fuera_del_cupo", texto)
+        self.assertIn(f"url={urls['sodimac']} motivo=precio_bajo_banda", texto)
+        self.assertNotIn(f"url={urls['lider']} motivo=fuera_del_cupo", texto)
+        self.assertNotIn(f"url={urls['gmak']} motivo=fuera_del_cupo", texto)
+        self.assertIn('banda_min=28000', texto)
+
+        def fake_buscar_sin_bravo(query, **kwargs):
+            if 'pastilla' not in query.lower():
+                return []
+            return [
+                {'title': titulos['listado'], 'url': urls['listado'], 'content': contenidos['listado'], 'score': 0.9},
+                {'title': titulos['sodimac'], 'url': urls['sodimac'], 'content': contenidos['sodimac'], 'score': 0.5},
+            ]
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos._tavily_buscar_uno',
+            side_effect=fake_buscar_sin_bravo,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos._tavily_extraer',
+            return_value={},
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos._leer_html_fichas',
+            return_value={urls['listado']: html_listado},
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos._gemini_generar',
+            return_value=None,
+        ):
+            vacio = bw._buscar_repuestos_web_tavily(
+                [self._LINEA],
+                marca='FIAT',
+                modelo='BRAVO SPORT TJET',
+                anio=2010,
+                cilindraje='1.4',
+                tipo_motor='T-Jet',
+                servicio_nombre='Pastillas',
+                timeout=5,
+                plan={'piezas': []},
+                bandas_min={self._LINEA: 28000},
+            )
+        self.assertEqual(vacio, {})

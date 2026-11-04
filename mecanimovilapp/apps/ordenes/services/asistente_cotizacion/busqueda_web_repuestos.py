@@ -985,16 +985,19 @@ _MODELOS_PASTILLA_AJENOS = frozenset({
 })
 
 
-def _texto_modelo_ficha(candidato: dict[str, Any]) -> str:
-    url = str((candidato or {}).get('url') or '').replace('-', ' ').replace('/', ' ')
-    return ' '.join(
-        str((candidato or {}).get(campo) or '')
-        for campo in ('title', 'content', 'cuerpo')
-    ) + f' {url}'
+def _compat_pastilla(
+    texto: str,
+    modelo: str,
+    tipo_motor: str,
+    *,
+    permite_cruce: bool = True,
+) -> bool | None:
+    """True si nombra el auto pedido. False si nombra otro. None si no hay modelo.
 
-
-def _compat_pastilla(texto: str, modelo: str, tipo_motor: str) -> bool | None:
-    """True si nombra Bravo o el cruce T-Jet. False si nombra otro auto. None si no hay modelo."""
+    El cruce Linea/Punto T-Jet solo vale en el título o el cuerpo. El slug
+    de la URL no alcanza: un listado 'Envío gratis' no es la pastilla del Bravo
+    porque la ruta dice fiat-linea-t-jet.
+    """
     norm = _norm(texto)
     if not norm:
         return None
@@ -1002,13 +1005,89 @@ def _compat_pastilla(texto: str, modelo: str, tipo_motor: str) -> bool | None:
     if len(token) >= 3 and re.search(rf'\b{re.escape(token)}\b', norm):
         return True
     tokens = set(norm.split())
-    if _bravo_tjet(modelo, tipo_motor):
+    if permite_cruce and _bravo_tjet(modelo, tipo_motor):
         cruce = 'linea' in tokens or 'punto' in tokens
         if cruce and ('t jet' in norm or 'tjet' in norm.replace(' ', '')):
             return True
     if tokens & _MODELOS_PASTILLA_AJENOS:
         return False
     return None
+
+
+def _titulo_nombra_modelo(titulo: str, modelo: str) -> bool:
+    token = _norm(_modelo_busqueda(modelo))
+    if len(token) < 3:
+        return False
+    return re.search(rf'\b{re.escape(token)}\b', _norm(titulo)) is not None
+
+
+def _titulo_nombra_bravo_14(titulo: str, modelo: str) -> bool:
+    """El título dice Bravo 1.4. El slug de otro modelo no cuenta."""
+    if 'bravo' not in _norm(modelo):
+        return False
+    if not _titulo_nombra_modelo(titulo, modelo):
+        return False
+    return re.search(r'\b1\s+4\b', _norm(titulo)) is not None
+
+
+def _titulo_es_cruce_tjet(titulo: str, modelo: str, tipo_motor: str) -> bool:
+    if _titulo_nombra_modelo(titulo, modelo):
+        return False
+    return _compat_pastilla(titulo, modelo, tipo_motor, permite_cruce=True) is True
+
+
+def _texto_ficha_sin_url(candidato: dict[str, Any]) -> str:
+    return ' '.join(
+        str((candidato or {}).get(campo) or '')
+        for campo in ('title', 'cuerpo', 'content')
+    )
+
+
+def _compat_pastilla_candidato(
+    candidato: dict[str, Any],
+    modelo: str,
+    tipo_motor: str,
+) -> bool | None:
+    """La URL confirma el modelo pedido o bota Idea/Stilo. No otorga el cruce."""
+    ficha = _compat_pastilla(
+        _texto_ficha_sin_url(candidato), modelo, tipo_motor, permite_cruce=True,
+    )
+    url = _compat_pastilla(
+        str((candidato or {}).get('url') or '').replace('-', ' ').replace('/', ' '),
+        modelo,
+        tipo_motor,
+        permite_cruce=False,
+    )
+    titulo = str((candidato or {}).get('title') or '')
+    if ficha is True and _titulo_nombra_modelo(titulo, modelo):
+        return True
+    if ficha is False or url is False:
+        return False
+    if ficha is True or url is True:
+        return True
+    return None
+
+
+def _ficha_nombra_modelo_pedido(
+    candidato: dict[str, Any],
+    modelo: str,
+    tipo_motor: str,
+) -> bool:
+    return _compat_pastilla(
+        _texto_ficha_sin_url(candidato), modelo, tipo_motor, permite_cruce=False,
+    ) is True
+
+
+def _ficha_es_cruce_tjet(
+    candidato: dict[str, Any],
+    modelo: str,
+    tipo_motor: str,
+) -> bool:
+    if _ficha_nombra_modelo_pedido(candidato, modelo, tipo_motor):
+        return False
+    return _compat_pastilla(
+        _texto_ficha_sin_url(candidato), modelo, tipo_motor, permite_cruce=True,
+    ) is True
 
 
 def _es_listado_pastilla(candidato: dict[str, Any], modelo: str, tipo_motor: str) -> bool:
@@ -1024,14 +1103,44 @@ def _es_listado_pastilla(candidato: dict[str, Any], modelo: str, tipo_motor: str
 
 
 def _pastilla_es_exacta(candidato: dict[str, Any], modelo: str, tipo_motor: str) -> bool:
-    """La ficha nombra el auto en el título o en el cuerpo, y no es un listado."""
+    """La ficha nombra el auto pedido en el título o en el cuerpo. El slug no."""
     if _es_pagina_sin_ficha(str((candidato or {}).get('url') or '')):
         return False
-    texto = ' '.join(
-        str((candidato or {}).get(campo) or '')
-        for campo in ('title', 'cuerpo', 'content')
-    )
-    return _compat_pastilla(texto, modelo, tipo_motor) is True
+    return _ficha_nombra_modelo_pedido(candidato, modelo, tipo_motor)
+
+
+def _rechazo_precio_pastilla(
+    candidato: dict[str, Any],
+    *,
+    nombre: str,
+    modelo: str,
+    tipo_motor: str,
+    banda_min: int,
+) -> str:
+    """Piso de la banda de la IA. '' si el monto todavía puede cotizarse.
+
+    Un título que dice Bravo 1.4 baja el piso al 40%: la banda 28.000–55.000
+    deja afuera fichas reales de ese auto. Linea/Punto T-Jet solo calza si el
+    precio está dentro de la banda. Un listado genérico sigue en el 50%.
+    """
+    precio = _precio_de_candidato(candidato, nombre)
+    piso = int(banda_min or 0)
+    if piso <= 0 or precio <= 0:
+        return ''
+    if _ficha_nombra_modelo_pedido(candidato, modelo, tipo_motor):
+        titulo = str((candidato or {}).get('title') or '')
+        # La banda 28.000–55.000 deja afuera fichas reales de Bravo 1.4.
+        # Con el modelo en el título, el piso baja al 40% ($10.000 no, $21.390 sí).
+        if _titulo_nombra_bravo_14(titulo, modelo) and precio < piso * 2 // 5:
+            return 'precio_bajo_banda'
+        return ''
+    if _ficha_es_cruce_tjet(candidato, modelo, tipo_motor):
+        if precio < piso:
+            return 'precio_bajo_banda'
+        return ''
+    if precio * 2 < piso:
+        return 'precio_bajo_banda'
+    return ''
 
 
 def _motivo_calidad_pastilla(
@@ -1045,30 +1154,42 @@ def _motivo_calidad_pastilla(
     """Por qué una pastilla no se cotiza. '' si todavía puede servir.
 
     Sin la página leída no se descarta un título genérico: la tabla de
-    compatibilidad puede nombrar al Bravo. Ya leída, Idea/Stilo o un
-    precio bajo la mitad de la banda de la IA se botan.
+    compatibilidad puede nombrar al Bravo. Un título que ya dice Bravo 1.4,
+    o Linea/Punto T-Jet, sí se mide contra la banda. Ya leída, 'Envío gratis'
+    sin el auto en el título es listado aunque el slug diga linea-t-jet.
     """
     if not _es_pastillas_freno(nombre):
         return ''
     titulo = str((candidato or {}).get('title') or '')
     if titulo and not _es_pastillas_freno(titulo):
         return ''
-    compat = _compat_pastilla(_texto_modelo_ficha(candidato), modelo, tipo_motor)
+    compat = _compat_pastilla_candidato(candidato, modelo, tipo_motor)
     if compat is False:
         return 'modelo_incompatible'
-    if not (candidato or {}).get('ficha_leida'):
+    leida = bool((candidato or {}).get('ficha_leida'))
+    if not leida:
+        if _precio_de_candidato(candidato, nombre) <= 0:
+            return ''
+        if _titulo_nombra_modelo(titulo, modelo) or _titulo_es_cruce_tjet(titulo, modelo, tipo_motor):
+            return _rechazo_precio_pastilla(
+                candidato,
+                nombre=nombre,
+                modelo=modelo,
+                tipo_motor=tipo_motor,
+                banda_min=banda_min,
+            )
         return ''
-    if _es_listado_pastilla(candidato, modelo, tipo_motor) and compat is not True:
+    if _es_listado_pastilla(candidato, modelo, tipo_motor):
         return 'listado'
-    precio = _precio_de_candidato(candidato, nombre)
-    piso = int(banda_min or 0)
-    if (
-        piso > 0
-        and precio > 0
-        and precio * 2 < piso
-        and not _pastilla_es_exacta(candidato, modelo, tipo_motor)
-    ):
-        return 'precio_bajo_banda'
+    bajo = _rechazo_precio_pastilla(
+        candidato,
+        nombre=nombre,
+        modelo=modelo,
+        tipo_motor=tipo_motor,
+        banda_min=banda_min,
+    )
+    if bajo:
+        return bajo
     if compat is None:
         return 'sin_modelo'
     return ''
@@ -1653,6 +1774,10 @@ _PRECIO_ETIQUETA_RE = re.compile(
     re.I,
 )
 _CUOTA_RE = re.compile(r'\d+\s*cuotas?\s+de\s+\$?\s*[\d.]+', re.I)
+_ENVIO_PRECIO_RE = re.compile(
+    r'(?:costo\s+de\s+env[ií]o|env[ií]o\s+a\s+domicilio|despacho|flete)\s*:?\s*\$?\s*[\d.]{3,12}',
+    re.I,
+)
 
 # Bandas de mercado Chile (aftermarket). Evitan SKU, id de ficha o un kit de
 # camioneta colado en el snippet de una prensa de auto chico.
@@ -1763,13 +1888,13 @@ def _precio_desde_texto(texto: str, nombre_linea: str = '') -> int:
     """Precio de VENTA de la ficha. No el primer `$` del snippet (relacionados/cuotas)."""
     raw = texto or ''
     for m in _PRECIO_ETIQUETA_RE.finditer(raw):
-        val = _to_int_clp(m.group(1))
+        val = _parse_monto_clp(m.group(1))
         if _precio_plausible_para_linea(nombre_linea, val):
             return val
     limpio = _CUOTA_RE.sub(' ', raw)
     en_banda: list[int] = []
     for m in _PRECIO_CLP_RE.finditer(limpio):
-        val = _to_int_clp(m.group(1))
+        val = _parse_monto_clp(m.group(1))
         if _precio_plausible_para_linea(nombre_linea, val):
             en_banda.append(val)
     if not en_banda:
@@ -1831,6 +1956,8 @@ def _parse_monto_clp(raw: Any) -> int:
     texto = re.sub(r'(?i)\bclp\b', '', texto)
     texto = texto.replace('$', '')
     texto = re.sub(r'\s+', '', texto)
+    # El regex del snippet se come el punto final: "18.990." sigue siendo 18990.
+    texto = texto.strip('.,')
     if not texto:
         return 0
     if re.fullmatch(r'\d{1,3}(\.\d{3})+', texto):
@@ -2045,6 +2172,12 @@ def _texto_producto_jsonld(node: Any, partes: list[str], depth: int = 0) -> None
             partes.append(descripcion[:400])
 
 
+def _html_sin_ruido_precio(html: str) -> str:
+    """Saca cuotas y el monto del envío antes de leer el precio de la ficha."""
+    limpio = _CUOTA_RE.sub(' ', html or '')
+    return _ENVIO_PRECIO_RE.sub(' ', limpio)
+
+
 def _precio_desde_html(html: str, nombre_linea: str = '', url: str = '') -> int:
     """Precio de ESTA ficha. El actual, no el tachado ni el de los relacionados."""
     pagina = html or ''
@@ -2057,6 +2190,7 @@ def _precio_desde_html(html: str, nombre_linea: str = '', url: str = '') -> int:
     for data in _iter_jsonld(pagina):
         _recolectar_precios_jsonld(data, jsonld)
     respaldo = 0
+    en_banda: list[int] = []
     if jsonld:
         con_nombre = [
             (monto, nom) for monto, nom in jsonld
@@ -2067,9 +2201,18 @@ def _precio_desde_html(html: str, nombre_linea: str = '', url: str = '') -> int:
             monto for monto, _nom in pool
             if _precio_plausible_para_linea(nombre_linea, monto)
         ]
-        if en_banda:
-            return en_banda[0]
-        respaldo = pool[0][0]
+        if not en_banda:
+            respaldo = pool[0][0]
+    if en_banda:
+        estante = _precio_woo(_html_sin_ruido_precio(pagina))
+        # JSON-LD de una cuota o un relacionado: la mitad del estante visible.
+        if (
+            estante
+            and estante > en_banda[0] * 2
+            and _precio_plausible_para_linea(nombre_linea, estante)
+        ):
+            return estante
+        return en_banda[0]
     if not _meta_moneda_extranjera(pagina):
         meta = _precio_meta(pagina)
         if meta and _precio_plausible_para_linea(nombre_linea, meta):
@@ -2077,12 +2220,19 @@ def _precio_desde_html(html: str, nombre_linea: str = '', url: str = '') -> int:
         if meta and not jsonld:
             return meta
     for lector in (
-        _precio_woo(pagina),
+        _precio_woo(_html_sin_ruido_precio(pagina)),
         _precio_ml_visible(pagina, url),
         _precio_shopify(pagina, url, nombre_linea),
     ):
         if lector and _precio_plausible_para_linea(nombre_linea, lector):
             return lector
+    # 1192 en el JSON-LD no pisa un $11.920 visible: el punto es de miles.
+    visible = _precio_desde_texto(
+        _texto_plano_html(_html_sin_ruido_precio(pagina)),
+        nombre_linea,
+    )
+    if visible and _precio_plausible_para_linea(nombre_linea, visible):
+        return visible
     return respaldo
 
 
@@ -2139,6 +2289,8 @@ def _motivo_de_candidato(
     titulo = str(cand.get('title') or '')
     if titulo and not _titulo_nombra_pieza(nombre, titulo):
         return 'titulo_no_es_la_pieza'
+    # fuera_del_cupo: no está entre las 5 URLs que se abren. Un listado con
+    # precio no puede ocupar ese lugar delante de una ficha que nombra al Bravo.
     if url not in cupo:
         return 'fuera_del_cupo'
     if int(cand.get('precio_fuera_banda') or 0) > 0:
@@ -2520,10 +2672,17 @@ def _ordenar_candidatos(
     for c in crudos:
         unicos.setdefault(c['url'], c)
     candidatos = list(unicos.values())
-    # El retail generalista solo se usa si no hay ninguna casa de repuestos.
-    especializados = [c for c in candidatos if not _es_generalista(c['url'])]
-    if especializados:
-        candidatos = especializados
+    # El retail generalista solo se usa si no hay ninguna casa de repuestos,
+    # salvo que el título ya nombre el auto (Sodimac/Lider "Fiat Bravo 1.4").
+    if any(not _es_generalista(c['url']) for c in candidatos):
+        def _se_queda(c: dict[str, Any]) -> bool:
+            if not _es_generalista(c['url']):
+                return True
+            if not _es_pastillas_freno(nombre_linea):
+                return False
+            return _titulo_nombra_modelo(str(c.get('title') or ''), modelo)
+
+        candidatos = [c for c in candidatos if _se_queda(c)]
     tokens = tokens_vehiculo or []
 
     def rango(c: dict[str, Any]) -> tuple[int, ...]:
@@ -2535,9 +2694,22 @@ def _ordenar_candidatos(
         precio = _precio_desde_texto(c.get('content') or '', nombre_linea)
         sin_precio = 0 if precio else 1
         no_esp = 0 if _es_de_especialista(c) else 1
+        # Pastillas: un título que dice Bravo entra al cupo antes que un
+        # listado con precio. Sin esto, GMAK y Repuestos del Sol quedan
+        # fuera_del_cupo (no están entre las 5 URLs que se abren).
+        if _es_pastillas_freno(nombre_linea):
+            titulo_c = str(c.get('title') or '')
+            if _titulo_nombra_modelo(titulo_c, modelo):
+                rango_modelo = 0
+            elif _titulo_es_cruce_tjet(titulo_c, modelo, tipo_motor):
+                rango_modelo = 1
+            else:
+                rango_modelo = 2
+        else:
+            rango_modelo = 0
         if priorizar_precio:
-            return (no_sirve, sin_precio, calce, no_esp)
-        return (no_sirve, calce, no_esp, sin_precio)
+            return (no_sirve, rango_modelo, sin_precio, calce, no_esp)
+        return (no_sirve, rango_modelo, calce, no_esp, sin_precio)
 
     return sorted(candidatos, key=rango)
 
@@ -2937,12 +3109,26 @@ def _buscar_repuestos_web_tavily(
             if not url_cand or url_cand in pedidas:
                 continue
             titulo_cand = str(cand.get('title') or '')
-            necesita_modelo = (
+            sin_precio = not _precio_plausible_para_linea(
+                nombre, _precio_de_candidato(cand, nombre),
+            )
+            # Un listado con monto no alcanza: la ficha que dice Bravo en el
+            # título, y el cruce Linea/Punto sin precio, se leen igual.
+            quiere_modelo = (
                 _es_pastillas_freno(nombre)
                 and _es_pastillas_freno(titulo_cand)
-                and _compat_pastilla(_texto_modelo_ficha(cand), modelo, tipo_motor) is None
+                and (
+                    _compat_pastilla_candidato(cand, modelo, tipo_motor) is None
+                    or (
+                        sin_precio
+                        and (
+                            _titulo_nombra_modelo(titulo_cand, modelo)
+                            or _titulo_es_cruce_tjet(titulo_cand, modelo, tipo_motor)
+                        )
+                    )
+                )
             )
-            if not hay_precio or necesita_modelo:
+            if (not hay_precio and sin_precio) or quiere_modelo:
                 pedidas.append(url_cand)
     if pedidas:
         htmls = _leer_html_fichas(pedidas)
@@ -3681,15 +3867,26 @@ def _fila_cache_utilizable(
             )
             return None
     if monto and monto != precio:
-        logger.info(
-            'busqueda_web_repuestos[cache] precio_actualizado linea=%s guardado=%s actual=%s',
-            str(nombre_linea)[:80],
-            precio,
-            monto,
-        )
-        row.precio_clp = monto
-        row.save(update_fields=['precio_clp'])
-        return monto
+        # 10.990 → 4.990 es una cuota, el envío o un relacionado. Una baja
+        # de verdad (58.500 → 52.650) sigue siendo el precio actual.
+        if precio > 0 and monto * 2 < precio:
+            logger.info(
+                'busqueda_web_repuestos[cache] caida_ignorada linea=%s guardado=%s leido=%s',
+                str(nombre_linea)[:80],
+                precio,
+                monto,
+            )
+            monto = precio
+        else:
+            logger.info(
+                'busqueda_web_repuestos[cache] precio_actualizado linea=%s guardado=%s actual=%s',
+                str(nombre_linea)[:80],
+                precio,
+                monto,
+            )
+            row.precio_clp = monto
+            row.save(update_fields=['precio_clp'])
+            return monto
     try:
         row.save(update_fields=['consultado_en'])
     except Exception:
