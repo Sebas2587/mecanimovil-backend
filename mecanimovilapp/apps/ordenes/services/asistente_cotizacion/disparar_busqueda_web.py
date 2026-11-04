@@ -251,15 +251,13 @@ def _marcar_cola_caida(cotizacion_id: int, exc: BaseException) -> None:
     from mecanimovilapp.apps.ordenes.models import CotizacionCanal
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
         linea_necesita_busqueda_web,
+        nota_cola_caida,
     )
 
     cot = CotizacionCanal.objects.filter(pk=cotizacion_id).first()
     if cot is None:
         return
-    nota = (
-        'No se pudo consultar tiendas: la cola no respondió. '
-        'Se mantiene el precio de la línea.'
-    )
+    nota = nota_cola_caida()
     reps = []
     for raw in cot.repuestos or []:
         if not isinstance(raw, dict):

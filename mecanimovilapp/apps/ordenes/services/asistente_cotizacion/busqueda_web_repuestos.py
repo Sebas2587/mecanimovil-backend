@@ -2523,6 +2523,35 @@ def _texto_plano_html(html: str) -> str:
     return re.sub(r'\s+', ' ', unescape(sin_tags)).strip()
 
 
+_DEL_WOO_RE = re.compile(
+    r'<del\b[^>]*>.{0,800}?woocommerce-Price-amount\b[^>]*>.{0,400}?'
+    r'(\d{1,3}(?:\.\d{3})+|\d+[.,]\d{2})',
+    re.I | re.S,
+)
+_PRECIO_ORIGINAL_RE = re.compile(
+    r'precio\s+original(?:\s+era)?\s*:?\s*(?:clp\s*)?\$?\s*([\d.]{4,12})',
+    re.I,
+)
+
+
+def _precio_normal_tachado(html: str, cobrado: int) -> int:
+    """El precio de lista si la ficha cobra menos y el tachado no es otro producto."""
+    if cobrado <= 0:
+        return 0
+    pagina = html or ''
+    monto = 0
+    tachado = _DEL_WOO_RE.search(pagina)
+    if tachado:
+        monto = _parse_monto_clp(tachado.group(1))
+    if not monto:
+        original = _PRECIO_ORIGINAL_RE.search(_texto_plano_html(pagina))
+        if original:
+            monto = _parse_monto_clp(original.group(1))
+    if monto > cobrado and monto < cobrado * 3:
+        return monto
+    return 0
+
+
 def _precio_oferta_visible(html: str) -> int:
     """El precio actual: <ins> de WooCommerce o 'El precio actual es'.
 
@@ -3445,6 +3474,9 @@ def _hits_desde_candidatos(
             'compatibilidad': 'media' if calce >= 2 else 'baja',
             'confianza': 0.7 if calce >= 2 else 0.6,
         }
+        normal = int(candidato.get('precio_normal_clp') or 0)
+        if normal > precio and normal < precio * 3:
+            hit['precio_normal_clp'] = normal
         if attrs['calidad']:
             hit['calidad'] = attrs['calidad']
         if attrs['pais_origen']:
@@ -3903,6 +3935,9 @@ def _buscar_repuestos_web_tavily(
                 snippet = str(cand.get('content') or '')
                 cand['content'] = f'{snippet}\nPrecio: ${monto}'.strip()
                 cand['precio_snippet'] = monto
+                normal = _precio_normal_tachado(html, monto)
+                if normal:
+                    cand['precio_normal_clp'] = normal
                 if _motivo_calidad_pastilla(
                     cand, nombre=nombre, modelo=modelo, tipo_motor=tipo_motor,
                     banda_min=piso, banda_max=_techo(nombre), anio=anio,
@@ -4162,6 +4197,9 @@ def _buscar_repuestos_web_tavily(
             'compatibilidad': compat,
             'confianza': conf,
         }
+        ficha_normal = int((ficha or {}).get('precio_normal_clp') or 0)
+        if ficha_normal > precio and ficha_normal < precio * 3:
+            hit_out['precio_normal_clp'] = ficha_normal
         if calidad_it:
             hit_out['calidad'] = calidad_it
         if pais_it:
@@ -4291,33 +4329,53 @@ def _aviso_sin_ficha(
         if otro_modelo:
             citados = ', '.join(f'"{t}"' for t in otro_modelo[:3])
             frases.append(f'{citados} nombra otro modelo.')
-        detalle = (
+        largo = (
             f'{busqueda}Sin ficha de {nombre} para {auto}'
             f'{f" ({anio_auto})" if anio_auto else ""}. '
             f'{" ".join(frases)} '
             'Escribe el precio y la casa.'
         )
-        return {'motivo': 'sin_ficha', 'detalle': detalle[:500]}
-    if otra_pieza and vistos:
-        detalle = (
+        descarte = 'Lo encontrado era para otro año o modelo.'
+        motivo = 'sin_ficha'
+    elif otra_pieza and vistos:
+        largo = (
             f'{busqueda}Sin ficha de {nombre} para {auto}. '
             f'Lo publicado era otra pieza: {titulos_rechazados}. '
             'No se siguió buscando. Escribe el precio de tu casa.'
         )
+        descarte = 'Lo encontrado era otra pieza.'
+        motivo = 'sin_ficha'
     elif descartados:
-        detalle = (
+        largo = (
             f'{busqueda}Sin ficha de {nombre} para {auto}. '
             f'Se descartó {titulos_rechazados} porque el título no es esa pieza.'
         )
+        descarte = 'Lo encontrado era otra pieza.'
+        motivo = 'sin_ficha'
     else:
-        detalle = (
+        largo = (
             f'{busqueda}{nombre} no está publicado para {auto} en las tiendas consultadas. '
             'Escribe el precio y la casa.'
         )
-    return {
-        'motivo': 'sin_ficha' if (otra_pieza or descartados or buscadas) else 'pieza_escasa',
-        'detalle': detalle[:500],
-    }
+        descarte = ''
+        motivo = 'sin_ficha' if buscadas else 'pieza_escasa'
+    from .enriquecer_repuestos import nota_sin_tienda
+
+    detalle = nota_sin_tienda(
+        modelo=modelo,
+        anio=anio,
+        tipo_motor=tipo_motor,
+        cilindraje=cilindraje,
+        descarte=descarte,
+    )
+    logger.info(
+        'busqueda_web_repuestos[aviso] linea=%s motivo=%s descarte=%s detalle=%s',
+        str(nombre)[:80],
+        motivo,
+        descarte,
+        largo[:500],
+    )
+    return {'motivo': motivo, 'detalle': detalle, 'descarte': descarte}
 
 
 def buscar_repuestos_web(
@@ -4695,6 +4753,9 @@ def _fila_cache_utilizable(
     monto = _precio_desde_html(html, nombre_linea, url)
     if monto and _precio_plausible_para_linea(nombre_linea, monto):
         cand['precio_snippet'] = monto
+        normal = _precio_normal_tachado(html, monto)
+        if normal:
+            row.precio_normal_clp = normal
     else:
         monto = precio
     if nombre_linea:
@@ -4724,6 +4785,8 @@ def _fila_cache_utilizable(
                 monto,
             )
             monto = precio
+            if hasattr(row, 'precio_normal_clp'):
+                del row.precio_normal_clp
         else:
             logger.info(
                 'busqueda_web_repuestos[cache] precio_actualizado linea=%s guardado=%s actual=%s',
@@ -4851,6 +4914,9 @@ def hits_cache_vigentes_para_nombres(
             'confianza': float(row.confianza or 0.8),
             'desde_cache': True,
         }
+        normal = int(getattr(row, 'precio_normal_clp', 0) or 0)
+        if normal > int(precio_usar or 0) and normal < int(precio_usar or 0) * 3:
+            out[fuzzy]['precio_normal_clp'] = normal
     return out
 
 

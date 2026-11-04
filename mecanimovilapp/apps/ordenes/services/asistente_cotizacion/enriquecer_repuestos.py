@@ -158,14 +158,42 @@ def linea_necesita_busqueda_web(rep: Any) -> bool:
     return True
 
 
-def anotar_busqueda_sin_ficha(rep: dict, nota: dict | None) -> dict:
-    """Escribe qué se buscó. No borra el unitario ni la banda de la IA."""
-    detalle = str((nota or {}).get('detalle') or '').strip()
+def anotar_busqueda_sin_ficha(
+    rep: dict,
+    nota: dict | None,
+    *,
+    marca: str = '',
+    modelo: str = '',
+    anio: Any = None,
+    tipo_motor: str = '',
+    cilindraje: Any = None,
+) -> dict:
+    """Deja la nota corta del mecánico. No borra el unitario ni la banda de la IA."""
+    crudo = str((nota or {}).get('detalle') or '').strip()
+    descarte = str((nota or {}).get('descarte') or '').strip()
+    if crudo and not (_es_nota_mecanico(crudo) and len(crudo) <= _NOTA_MAX):
+        logger.info(
+            'nota_busqueda_tecnica linea=%s detalle=%s',
+            str(rep.get('nombre') or '')[:80],
+            crudo[:500],
+        )
+        if not descarte:
+            descarte = _descarte_desde_texto(crudo)
+        crudo = ''
+    if not crudo:
+        crudo = nota_sin_tienda(
+            modelo=modelo,
+            anio=anio,
+            tipo_motor=tipo_motor,
+            cilindraje=cilindraje,
+            descarte=descarte,
+        )
+    detalle = recortar_nota(crudo)
     if detalle:
-        rep['motivo_seleccion'] = detalle[:500]
+        rep['motivo_seleccion'] = detalle
         # La descripción de la pieza ("Juego completo…") no es la búsqueda.
         if not str(rep.get('comentario') or '').strip() or nota_de_busqueda(rep.get('comentario')):
-            rep['comentario'] = detalle[:500]
+            rep['comentario'] = detalle
     if _to_int_clp(rep.get('precio_unitario_clp')) > 0:
         return rep
     if _to_int_clp(rep.get('precio_min_clp')) > 0 or _to_int_clp(rep.get('precio_max_clp')) > 0:
@@ -569,17 +597,299 @@ def _ficha_es_aceite_de_motor(titulo: str) -> bool:
     return litros_envase(titulo) > 0
 
 
+_NOTA_MAX = 160
+
+_NOTA_COLA = (
+    'Precio estimado. No pudimos consultar tiendas; confirma precio y tienda.'
+)
+
+
+def recortar_nota(texto: str, maximo: int = _NOTA_MAX) -> str:
+    """Corta en un espacio y deja la frase en una sola línea."""
+    t = re.sub(r'\s+', ' ', str(texto or '')).strip()
+    if len(t) <= maximo:
+        return t
+    corte = t[:maximo].rsplit(' ', 1)[0].rstrip(' ,;.')
+    if len(corte) < 40:
+        corte = t[: maximo - 1].rstrip(' ,;.')
+    if not corte.endswith('.'):
+        if len(corte) + 1 <= maximo:
+            corte += '.'
+        else:
+            corte = corte[: maximo - 1].rstrip(' ,;.') + '.'
+    return corte
+
+
+def _titulo_visible(palabra: str) -> str:
+    p = str(palabra or '').strip(' .,')
+    if not p:
+        return ''
+    if p.isupper() and len(p) <= 3:
+        return p
+    if p.isupper() or p.islower():
+        return p.capitalize()
+    return p
+
+
+def _tokens_modelo_visibles(modelo: str) -> list[str]:
+    raw = re.split(r'\s+', str(modelo or '').strip())
+    out: list[str] = []
+    i = 0
+    while i < len(raw):
+        tok = raw[i].strip('.,')
+        low = tok.lower()
+        if low in ('t-jet', 'tjet') or low.replace('-', '') == 'tjet':
+            i += 1
+            continue
+        if low == 't' and i + 1 < len(raw) and raw[i + 1].lower().strip('.,') == 'jet':
+            i += 2
+            continue
+        if re.fullmatch(r'\d+[.,]\d+', tok) or re.fullmatch(r'\d{3,4}', tok):
+            i += 1
+            continue
+        visible = _titulo_visible(tok)
+        if visible:
+            out.append(visible)
+        i += 1
+    return out
+
+
+def etiqueta_auto(
+    *,
+    marca: str = '',
+    modelo: str = '',
+    anio: Any = None,
+    tipo_motor: str = '',
+    cilindraje: Any = None,
+    incluir_marca: bool = False,
+    incluir_anio: bool = False,
+) -> str:
+    """Cómo nombra el taller al auto: 'Fiat Bravo 1.4 T-Jet' o 'Bravo 1.4 T-Jet 2010'."""
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+        _anio_vehiculo_int,
+        _auto_es_tjet,
+        _cilindraje_litros,
+    )
+
+    partes: list[str] = []
+    if incluir_marca:
+        marca_visible = _titulo_visible(marca)
+        if marca_visible:
+            partes.append(marca_visible)
+    partes.extend(_tokens_modelo_visibles(modelo))
+    litros = _cilindraje_litros(cilindraje) or _cilindraje_litros(modelo)
+    if litros and litros not in partes:
+        partes.append(litros)
+    if _auto_es_tjet(modelo, tipo_motor) and 'T-Jet' not in partes:
+        partes.append('T-Jet')
+    if incluir_anio:
+        year = _anio_vehiculo_int(anio)
+        if year:
+            partes.append(str(year))
+    return ' '.join(partes)
+
+
+def _base_sin_tienda(auto: str) -> str:
+    auto = str(auto or '').strip()
+    if auto:
+        return (
+            f'Precio estimado. No encontramos este repuesto para tu auto ({auto}); '
+            'confirma precio y tienda.'
+        )
+    return (
+        'Precio estimado. No encontramos este repuesto para tu auto; '
+        'confirma precio y tienda.'
+    )
+
+
+def _clausula_descarte(descarte: str) -> str:
+    texto = re.sub(r'\s+', ' ', str(descarte or '')).strip().rstrip('.')
+    if not texto:
+        return ''
+    return f'{texto}.'
+
+
+def nota_sin_tienda(
+    *,
+    marca: str = '',
+    modelo: str = '',
+    anio: Any = None,
+    tipo_motor: str = '',
+    cilindraje: Any = None,
+    descarte: str = '',
+) -> str:
+    """Sin ficha de tienda. Una frase, y como mucho un porqué genérico."""
+    del marca  # El ejemplo sin tienda nombra el modelo, no la marca.
+    auto = etiqueta_auto(
+        modelo=modelo,
+        anio=anio,
+        tipo_motor=tipo_motor,
+        cilindraje=cilindraje,
+        incluir_marca=False,
+        incluir_anio=True,
+    )
+    clausula = _clausula_descarte(descarte)
+    while True:
+        base = _base_sin_tienda(auto)
+        if clausula and len(base) + 1 + len(clausula) <= _NOTA_MAX:
+            return f'{base} {clausula}'
+        if len(base) <= _NOTA_MAX:
+            return base
+        if not auto:
+            return recortar_nota(base)
+        auto = auto.rsplit(' ', 1)[0]
+
+
+def nota_con_tienda(
+    tienda: str,
+    *,
+    marca: str = '',
+    modelo: str = '',
+    anio: Any = None,
+    tipo_motor: str = '',
+    cilindraje: Any = None,
+) -> str:
+    """Con ficha: la casa, el auto y que es el mejor precio hallado."""
+    del anio
+    casa = re.sub(r'\s+', ' ', str(tienda or '')).strip()
+    auto = etiqueta_auto(
+        marca=marca,
+        modelo=modelo,
+        tipo_motor=tipo_motor,
+        cilindraje=cilindraje,
+        incluir_marca=True,
+        incluir_anio=False,
+    )
+    while auto and casa:
+        texto = f'{casa}: compatible con {auto}, mejor precio encontrado.'
+        if len(texto) <= _NOTA_MAX:
+            return texto
+        auto = auto.rsplit(' ', 1)[0]
+    if casa:
+        return recortar_nota(f'{casa}: mejor precio encontrado.')
+    return 'Mejor precio encontrado.'
+
+
+def _formatear_pesos(monto: int) -> str:
+    return '$' + f'{int(monto):,}'.replace(',', '.')
+
+
+def nota_oferta(tienda: str, precio_normal: int) -> str:
+    """El precio cobrado está bajo el de lista."""
+    casa = re.sub(r'\s+', ' ', str(tienda or '')).strip() or 'Tienda'
+    return recortar_nota(
+        f'{casa}, precio en oferta (normal {_formatear_pesos(precio_normal)}).'
+    )
+
+
+def nota_cola_caida() -> str:
+    return _NOTA_COLA
+
+
+def _es_nota_mecanico(texto: str) -> bool:
+    bajo = str(texto or '').strip().lower()
+    return (
+        bajo.startswith('precio estimado')
+        or bajo.startswith('no pudimos consultar')
+        or 'mejor precio encontrado' in bajo
+        or 'precio en oferta' in bajo
+    )
+
+
+def _descarte_desde_texto(texto: str) -> str:
+    """Un solo resumen, si el texto viejo decía por qué se botó lo encontrado."""
+    bajo = str(texto or '').lower()
+    if (
+        'otros años' in bajo
+        or 'otro modelo' in bajo
+        or 'otro motor' in bajo
+        or 'otro año' in bajo
+    ):
+        return 'Lo encontrado era para otro año o modelo.'
+    if 'no es esa pieza' in bajo or 'otra pieza' in bajo:
+        return 'Lo encontrado era otra pieza.'
+    return ''
+
+
 def nota_de_busqueda(texto: str) -> str:
-    """Nota de la búsqueda web. La descripción de la pieza no lo es."""
+    """Nota de la búsqueda web, vieja o corta. La descripción de la pieza no lo es."""
     t = str(texto or '').strip()
     bajo = t.lower()
     if (
         bajo.startswith('se busc')
         or bajo.startswith('no se pudo consultar')
         or bajo.startswith('sin ficha de')
+        or _es_nota_mecanico(t)
     ):
         return t
     return ''
+
+
+def nota_visible_con_tienda(
+    rep: dict,
+    motivo_interno: str = '',
+    *,
+    marca: str = '',
+    modelo: str = '',
+    anio: Any = None,
+    tipo_motor: str = '',
+    cilindraje: Any = None,
+) -> str:
+    """La frase de la línea cuando ya hay casa. El motivo interno queda en el log."""
+    tienda = str(
+        rep.get('proveedor_nombre') or rep.get('casa_repuesto_nombre') or ''
+    ).strip()
+    normal = _to_int_clp(rep.get('precio_normal_clp'))
+    if tienda and normal > 0:
+        nota = nota_oferta(tienda, normal)
+    else:
+        nota = nota_con_tienda(
+            tienda,
+            marca=marca,
+            modelo=modelo,
+            tipo_motor=tipo_motor,
+            cilindraje=cilindraje,
+        )
+    interno = str(motivo_interno or '').strip()
+    if interno and interno != nota:
+        logger.info(
+            'nota_tienda linea=%s tienda=%s motivo_interno=%s nota=%s',
+            str(rep.get('nombre') or '')[:80],
+            tienda[:80],
+            interno[:240],
+            nota,
+        )
+    return nota
+
+
+def nota_visible_sin_tienda(
+    rep: dict,
+    *,
+    marca: str = '',
+    modelo: str = '',
+    anio: Any = None,
+    tipo_motor: str = '',
+    cilindraje: Any = None,
+) -> str:
+    """Conserva una nota corta ya escrita. Una nota larga se reemplaza."""
+    previo = nota_de_busqueda(rep.get('comentario')) or nota_de_busqueda(
+        rep.get('motivo_seleccion'),
+    )
+    if previo and _es_nota_mecanico(previo) and len(previo) <= _NOTA_MAX:
+        return previo
+    if previo:
+        logger.info(
+            'nota_busqueda_tecnica linea=%s detalle=%s',
+            str(rep.get('nombre') or '')[:80],
+            previo[:500],
+        )
+    return nota_sin_tienda(
+        modelo=modelo,
+        anio=anio,
+        tipo_motor=tipo_motor,
+        cilindraje=cilindraje,
+        descarte=_descarte_desde_texto(previo),
+    )
 
 
 _STOP_PIEZA = frozenset({

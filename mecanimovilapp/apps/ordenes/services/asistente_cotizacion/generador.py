@@ -613,12 +613,89 @@ def _aplicar_config_taller_por_modelo(
         return contenido
 
 
+def _nota_de_linea_con_tienda(
+    rep: dict[str, Any],
+    motivo_interno: str,
+    *,
+    marca_vehiculo: str,
+    modelo_vehiculo: str,
+    anio_vehiculo: Any,
+    tipo_motor: str,
+    cilindraje: Any,
+) -> str:
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+        nota_de_busqueda,
+        nota_visible_con_tienda,
+    )
+
+    nota = nota_visible_con_tienda(
+        rep,
+        motivo_interno,
+        marca=marca_vehiculo,
+        modelo=modelo_vehiculo,
+        anio=anio_vehiculo,
+        tipo_motor=tipo_motor,
+        cilindraje=cilindraje,
+    )
+    if not str(rep.get('comentario') or '').strip() or nota_de_busqueda(rep.get('comentario')):
+        rep['comentario'] = nota
+    return nota
+
+
+def _notar_linea_sin_tienda(
+    rep: dict[str, Any],
+    *,
+    marca_vehiculo: str,
+    modelo_vehiculo: str,
+    anio_vehiculo: Any,
+    tipo_motor: str,
+    cilindraje: Any,
+) -> None:
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+        nota_de_busqueda,
+        nota_visible_sin_tienda,
+    )
+
+    rep['casa_repuesto_nombre'] = ''
+    if str(rep.get('proveedor_nombre') or '').strip().lower() == 'estimado':
+        rep['proveedor_nombre'] = ''
+    rep['motivo_seleccion'] = nota_visible_sin_tienda(
+        rep,
+        marca=marca_vehiculo,
+        modelo=modelo_vehiculo,
+        anio=anio_vehiculo,
+        tipo_motor=tipo_motor,
+        cilindraje=cilindraje,
+    )
+    if (
+        not str(rep.get('comentario') or '').strip()
+        or nota_de_busqueda(rep.get('comentario'))
+    ):
+        rep['comentario'] = rep['motivo_seleccion']
+
+
+def _casa_es_tienda(rep: dict[str, Any], casa: str) -> bool:
+    """Una fuente 'estimado' no es una casa. No se le inventa el nombre Estimado."""
+    nombre = str(casa or '').strip()
+    if not nombre or nombre.lower() == 'estimado':
+        return False
+    fuente = str(
+        rep.get('fuente_marketplace') or rep.get('fuente_repuesto') or ''
+    ).strip().lower()
+    if fuente == 'estimado' and not str(rep.get('url_producto') or '').strip():
+        return False
+    return True
+
+
 def _aplicar_seleccion_casa_repuestos(
     repuestos: list[dict[str, Any]],
     *,
     taller=None,
     marca_vehiculo: str = '',
     modelo_vehiculo: str = '',
+    anio_vehiculo: Any = None,
+    tipo_motor: str = '',
+    cilindraje: Any = None,
 ) -> list[dict[str, Any]]:
     """
     Aplica selección inteligente de casa para cada repuesto.
@@ -746,9 +823,28 @@ def _aplicar_seleccion_casa_repuestos(
         # Si hay consolidación, usar resultado consolidado y ACTUALIZAR proveedor_nombre
         elif resultados_consolidados and rep_id in resultados_consolidados:
             resultado = resultados_consolidados[rep_id]
-            rep['casa_repuesto_nombre'] = resultado.casa_elegida
-            rep['proveedor_nombre'] = resultado.casa_elegida
-            rep['motivo_seleccion'] = resultado.motivo_seleccion
+            casa = str(resultado.casa_elegida or '').strip()
+            if _casa_es_tienda(rep, casa):
+                rep['casa_repuesto_nombre'] = casa
+                rep['proveedor_nombre'] = casa
+                rep['motivo_seleccion'] = _nota_de_linea_con_tienda(
+                    rep,
+                    resultado.motivo_seleccion,
+                    marca_vehiculo=marca_vehiculo,
+                    modelo_vehiculo=modelo_vehiculo,
+                    anio_vehiculo=anio_vehiculo,
+                    tipo_motor=tipo_motor,
+                    cilindraje=cilindraje,
+                )
+            else:
+                _notar_linea_sin_tienda(
+                    rep,
+                    marca_vehiculo=marca_vehiculo,
+                    modelo_vehiculo=modelo_vehiculo,
+                    anio_vehiculo=anio_vehiculo,
+                    tipo_motor=tipo_motor,
+                    cilindraje=cilindraje,
+                )
             rep['alternativas_descartadas'] = resultado.alternativas_descartadas
             rep['consolidacion_aplicada'] = True
             try:
@@ -762,29 +858,40 @@ def _aplicar_seleccion_casa_repuestos(
         elif rep_id in todas_las_opciones:
             opciones = todas_las_opciones[rep_id]
             resultado = seleccionar_casa_optima(opciones)
-            rep['casa_repuesto_nombre'] = resultado.casa_elegida
-            if resultado.casa_elegida:
-                rep['proveedor_nombre'] = resultado.casa_elegida
-            rep['motivo_seleccion'] = resultado.motivo_seleccion
+            casa = str(resultado.casa_elegida or '').strip()
+            if _casa_es_tienda(rep, casa):
+                rep['casa_repuesto_nombre'] = casa
+                rep['proveedor_nombre'] = casa
+                rep['motivo_seleccion'] = _nota_de_linea_con_tienda(
+                    rep,
+                    resultado.motivo_seleccion,
+                    marca_vehiculo=marca_vehiculo,
+                    modelo_vehiculo=modelo_vehiculo,
+                    anio_vehiculo=anio_vehiculo,
+                    tipo_motor=tipo_motor,
+                    cilindraje=cilindraje,
+                )
+            else:
+                _notar_linea_sin_tienda(
+                    rep,
+                    marca_vehiculo=marca_vehiculo,
+                    modelo_vehiculo=modelo_vehiculo,
+                    anio_vehiculo=anio_vehiculo,
+                    tipo_motor=tipo_motor,
+                    cilindraje=cilindraje,
+                )
             rep['alternativas_descartadas'] = resultado.alternativas_descartadas
             rep['consolidacion_aplicada'] = False
-        # Sin opciones: decir qué se buscó y qué se descartó, si la búsqueda lo dejó.
+        # Sin casa: la nota corta. El detalle de títulos y consultas queda en el log.
         else:
-            rep['casa_repuesto_nombre'] = ''
-            from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
-                nota_de_busqueda,
+            _notar_linea_sin_tienda(
+                rep,
+                marca_vehiculo=marca_vehiculo,
+                modelo_vehiculo=modelo_vehiculo,
+                anio_vehiculo=anio_vehiculo,
+                tipo_motor=tipo_motor,
+                cilindraje=cilindraje,
             )
-
-            detalle = nota_de_busqueda(rep.get('comentario'))
-            previo = nota_de_busqueda(rep.get('motivo_seleccion'))
-            if detalle:
-                rep['motivo_seleccion'] = detalle[:500]
-            elif previo:
-                rep['motivo_seleccion'] = previo[:500]
-            else:
-                rep['motivo_seleccion'] = (
-                    'No se encontraron proveedores con este repuesto en stock para el vehículo'
-                )
             rep['alternativas_descartadas'] = []
             rep['consolidacion_aplicada'] = False
         
@@ -1058,6 +1165,9 @@ def generar_cotizacion_ia(
                 taller=taller,
                 marca_vehiculo=str(ctx.get('marca') or ''),
                 modelo_vehiculo=str(ctx.get('modelo') or ''),
+                anio_vehiculo=ctx.get('anio') or '',
+                tipo_motor=str(ctx.get('tipo_motor_efectivo') or ''),
+                cilindraje=str(ctx.get('cilindraje') or ''),
             )
             
             # PASO 3: Ajustar rangos para que sean consistentes con precios finales
