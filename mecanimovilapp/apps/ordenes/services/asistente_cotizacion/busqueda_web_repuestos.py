@@ -31,6 +31,7 @@ from django.core.cache import cache
 from .enriquecer_repuestos import (
     _clave_fuzzy,
     _inferir_marca_desde_nombre,
+    _marca_canonica,
     _marca_desde_etiqueta,
     _marca_repuesto_valida,
     _norm,
@@ -976,6 +977,103 @@ def _ficha_nombra_modelo(texto: str, modelo: str) -> bool | None:
     return token in _norm(texto)
 
 
+# La pastilla del Bravo T-Jet (Fras-le PD/92) también calza en Linea y Punto
+# T-Jet. Idea, Stilo, Fiorino y Strada son otra pastilla.
+_MODELOS_PASTILLA_AJENOS = frozenset({
+    'idea', 'stilo', 'fiorino', 'strada', 'palio', 'siena', 'doblo',
+    'argo', 'cronos', 'mobi', 'toro', 'adventur', 'adventure',
+})
+
+
+def _texto_modelo_ficha(candidato: dict[str, Any]) -> str:
+    url = str((candidato or {}).get('url') or '').replace('-', ' ').replace('/', ' ')
+    return ' '.join(
+        str((candidato or {}).get(campo) or '')
+        for campo in ('title', 'content', 'cuerpo')
+    ) + f' {url}'
+
+
+def _compat_pastilla(texto: str, modelo: str, tipo_motor: str) -> bool | None:
+    """True si nombra Bravo o el cruce T-Jet. False si nombra otro auto. None si no hay modelo."""
+    norm = _norm(texto)
+    if not norm:
+        return None
+    token = _norm(_modelo_busqueda(modelo))
+    if len(token) >= 3 and re.search(rf'\b{re.escape(token)}\b', norm):
+        return True
+    tokens = set(norm.split())
+    if _bravo_tjet(modelo, tipo_motor):
+        cruce = 'linea' in tokens or 'punto' in tokens
+        if cruce and ('t jet' in norm or 'tjet' in norm.replace(' ', '')):
+            return True
+    if tokens & _MODELOS_PASTILLA_AJENOS:
+        return False
+    return None
+
+
+def _es_listado_pastilla(candidato: dict[str, Any], modelo: str, tipo_motor: str) -> bool:
+    """Categoría, búsqueda, o tarjeta 'Envío gratis' que no nombra el auto."""
+    url = str((candidato or {}).get('url') or '')
+    if url and _es_pagina_sin_ficha(url):
+        return True
+    titulo = str((candidato or {}).get('title') or '')
+    if 'envio gratis' not in _norm(titulo):
+        return False
+    cabeza = titulo.split('|')[0]
+    return _compat_pastilla(cabeza, modelo, tipo_motor) is not True
+
+
+def _pastilla_es_exacta(candidato: dict[str, Any], modelo: str, tipo_motor: str) -> bool:
+    """La ficha nombra el auto en el título o en el cuerpo, y no es un listado."""
+    if _es_pagina_sin_ficha(str((candidato or {}).get('url') or '')):
+        return False
+    texto = ' '.join(
+        str((candidato or {}).get(campo) or '')
+        for campo in ('title', 'cuerpo', 'content')
+    )
+    return _compat_pastilla(texto, modelo, tipo_motor) is True
+
+
+def _motivo_calidad_pastilla(
+    candidato: dict[str, Any],
+    *,
+    nombre: str,
+    modelo: str,
+    tipo_motor: str = '',
+    banda_min: int = 0,
+) -> str:
+    """Por qué una pastilla no se cotiza. '' si todavía puede servir.
+
+    Sin la página leída no se descarta un título genérico: la tabla de
+    compatibilidad puede nombrar al Bravo. Ya leída, Idea/Stilo o un
+    precio bajo la mitad de la banda de la IA se botan.
+    """
+    if not _es_pastillas_freno(nombre):
+        return ''
+    titulo = str((candidato or {}).get('title') or '')
+    if titulo and not _es_pastillas_freno(titulo):
+        return ''
+    compat = _compat_pastilla(_texto_modelo_ficha(candidato), modelo, tipo_motor)
+    if compat is False:
+        return 'modelo_incompatible'
+    if not (candidato or {}).get('ficha_leida'):
+        return ''
+    if _es_listado_pastilla(candidato, modelo, tipo_motor) and compat is not True:
+        return 'listado'
+    precio = _precio_de_candidato(candidato, nombre)
+    piso = int(banda_min or 0)
+    if (
+        piso > 0
+        and precio > 0
+        and precio * 2 < piso
+        and not _pastilla_es_exacta(candidato, modelo, tipo_motor)
+    ):
+        return 'precio_bajo_banda'
+    if compat is None:
+        return 'sin_modelo'
+    return ''
+
+
 def _candidato_sirve_linea(
     nombre_linea: str,
     candidato: dict[str, Any],
@@ -983,14 +1081,24 @@ def _candidato_sirve_linea(
     anio: Any = None,
     cilindraje: Any = None,
     modelo: str = '',
+    tipo_motor: str = '',
+    banda_min: int = 0,
 ) -> bool:
     titulo = str(candidato.get('title') or '')
     texto = f'{titulo} {candidato.get("content") or ""} {candidato.get("url") or ""}'
     if not _ficha_cubre_pieza(nombre_linea, titulo):
         return False
     if not _pieza_exige_compatibilidad(nombre_linea):
-        # Pastillas: una ficha que lista varios modelos ("Bravo, Stilo, Punto")
-        # sigue siendo la pieza. El trim y el año no tienen que estar solos.
+        # Pastillas: Bravo, Stilo y Punto en la MISMA ficha siguen sirviendo.
+        # Una ficha que solo nombra Idea, o un listado sin modelo ya leído, no.
+        if _motivo_calidad_pastilla(
+            candidato,
+            nombre=nombre_linea,
+            modelo=modelo,
+            tipo_motor=tipo_motor,
+            banda_min=banda_min,
+        ):
+            return False
         return True
     if _ficha_nombra_modelo(texto, modelo) is False:
         return False
@@ -1002,21 +1110,99 @@ def _candidato_sirve_linea(
     return True
 
 
+_NOMBRES_TIENDA_GENERICOS = frozenset({
+    'repuestos', 'repuesto', 'tienda', 'shop', 'store', 'www',
+})
+
+
+def _sld_host(host: str) -> str:
+    """Etiqueta registrable, sin TLD. mundorepuestos.com y .cl coinciden."""
+    limpio = (host or '').lower().removeprefix('www.').strip('.')
+    labels = [parte for parte in limpio.split('.') if parte]
+    if not labels:
+        return ''
+    if (
+        len(labels) >= 3
+        and labels[-2] in ('com', 'co', 'gob', 'org', 'net')
+        and len(labels[-1]) <= 3
+    ):
+        base = labels[:-2]
+    elif len(labels) >= 2:
+        base = labels[:-1]
+    else:
+        base = labels
+    return base[-1] if base else ''
+
+
+def _canon_nombre_tienda(nombre: str) -> str:
+    """El nombre que ya usa la cotización, no el primer rótulo DNS."""
+    crudo = str(nombre or '').strip()
+    if not crudo:
+        return ''
+    n = _norm(crudo)
+    if 'sergio' in n and 'escobar' in n:
+        return 'Repuestos Sergio Escobar'
+    if 'mundo' in n and 'repuesto' in n:
+        return 'Mundo Repuestos'
+    if 'frenos' in n and 'vergara' in n:
+        return 'Frenos Vergara'
+    limpio = re.sub(r'\s+chile\s*$', '', crudo, flags=re.I).strip(' |-')
+    return limpio[:200]
+
+
 def _tienda_por_dominio(dominio: str) -> str:
     host = (dominio or '').lower()
     for fuente in _fuentes():
         d = fuente['dominio']
         if host == d or host.endswith('.' + d.lstrip('www.')) or d in host:
             return fuente['nombre']
+        if _sld_host(host) and _sld_host(host) == _sld_host(d):
+            return fuente['nombre']
     if 'mercadolibre' in host:
         return 'Mercado Libre'
+    sld = _sld_host(host)
     for esp in _especialistas():
         d = (esp.get('dominio') or '').lower().removeprefix('www.')
-        if d and (host == d or host.endswith('.' + d) or d in host):
+        if d and (
+            host == d or host.endswith('.' + d) or d in host or (sld and sld == _sld_host(d))
+        ):
             return esp.get('nombre') or d
-    # Tienda fuera de la lista configurada: nombre legible desde el dominio.
-    raiz = host.removeprefix('www.').split('.')[0].replace('-', ' ').strip()
-    return (raiz.title() or host)[:200]
+    # 'repuestos.sergioescobar.cl' no se llama "Repuestos": esa etiqueta es genérica.
+    labels = host.removeprefix('www.').split('.')
+    raiz = (labels[0] if labels else '').replace('-', ' ').strip()
+    if raiz in _NOMBRES_TIENDA_GENERICOS and len(labels) >= 2:
+        siguiente = labels[1].replace('-', ' ').strip()
+        if siguiente and siguiente not in ('cl', 'com', 'shop', 'net', 'org'):
+            return _canon_nombre_tienda(siguiente.title())[:200]
+    if raiz in _NOMBRES_TIENDA_GENERICOS:
+        return ''
+    return _canon_nombre_tienda((raiz.title() or host))[:200]
+
+
+def _tienda_desde_titulo(titulo: str) -> str:
+    """Sufijo '… | Sergio Escobar Repuestos' cuando el dominio no alcanza."""
+    texto = str(titulo or '').strip()
+    if not texto:
+        return ''
+    if '|' in texto:
+        cola = texto.split('|')[-1].strip()
+    elif ' - ' in texto:
+        cola = texto.split(' - ')[-1].strip()
+    else:
+        return ''
+    nombre = _canon_nombre_tienda(cola)
+    if not nombre or _norm(nombre) in _NOMBRES_TIENDA_GENERICOS:
+        return ''
+    if 'envio gratis' in _norm(nombre):
+        return ''
+    return nombre
+
+
+def _tienda_de_ficha(url: str, titulo: str = '') -> str:
+    por_dominio = _tienda_por_dominio(_dominio_de_url(url))
+    if por_dominio and _norm(por_dominio) not in _NOMBRES_TIENDA_GENERICOS:
+        return por_dominio
+    return _tienda_desde_titulo(titulo) or por_dominio
 
 
 def _construir_prompt(
@@ -1236,6 +1422,7 @@ def _atributos_desde_texto(*partes: Any, marca_vehiculo: str = '') -> dict[str, 
     marca = _marca_repuesto_valida(_inferir_marca_desde_nombre(blob))
     if not marca:
         marca = _marca_desde_etiqueta(blob, marca_vehiculo)
+    marca = _marca_canonica(marca, blob)
     if marca and _norm(marca) == _norm(marca_vehiculo):
         marca = ''
     cal = detectar_calidad(blob) or ''
@@ -1612,6 +1799,16 @@ _WOO_AMOUNT_RE = re.compile(
     r'woocommerce-Price-amount\b[^>]*>.{0,400}?(\d{1,3}(?:\.\d{3})+|\d+[.,]\d{2})',
     re.I | re.S,
 )
+_INS_WOO_RE = re.compile(
+    r'<ins\b[^>]*>.{0,800}?woocommerce-Price-amount\b[^>]*>.{0,400}?'
+    r'(\d{1,3}(?:\.\d{3})+|\d+[.,]\d{2})',
+    re.I | re.S,
+)
+_DEL_RE = re.compile(r'<del\b[^>]*>.*?</del>', re.I | re.S)
+_PRECIO_ACTUAL_RE = re.compile(
+    r'precio\s+actual(?:\s+es)?\s*:?\s*(?:clp\s*)?\$?\s*([\d.]{4,12})',
+    re.I,
+)
 _ML_FRACTION_RE = re.compile(
     r'andes-money-amount__fraction[^>]*>\s*([\d.]+)',
     re.I,
@@ -1725,8 +1922,38 @@ def _meta_moneda_extranjera(html: str) -> bool:
     return False
 
 
+def _texto_plano_html(html: str) -> str:
+    from html import unescape
+
+    sin_script = re.sub(r'<script\b[^>]*>.*?</script>', ' ', html or '', flags=re.I | re.S)
+    sin_style = re.sub(r'<style\b[^>]*>.*?</style>', ' ', sin_script, flags=re.I | re.S)
+    sin_tags = re.sub(r'<[^>]+>', ' ', sin_style)
+    return re.sub(r'\s+', ' ', unescape(sin_tags)).strip()
+
+
+def _precio_oferta_visible(html: str) -> int:
+    """El precio actual: <ins> de WooCommerce o 'El precio actual es'.
+
+    El primer woocommerce-Price-amount de Sergio Escobar es el tachado
+    ($58.500). El que se cobra está en <ins> ($52.650).
+    """
+    pagina = html or ''
+    ins = _INS_WOO_RE.search(pagina)
+    if ins:
+        monto = _parse_monto_clp(ins.group(1))
+        if monto > 0:
+            return monto
+    actual = _PRECIO_ACTUAL_RE.search(_texto_plano_html(pagina))
+    if actual:
+        monto = _parse_monto_clp(actual.group(1))
+        if monto > 0:
+            return monto
+    return 0
+
+
 def _precio_woo(html: str) -> int:
-    match = _WOO_AMOUNT_RE.search(html or '')
+    pagina = _DEL_RE.sub(' ', html or '')
+    match = _WOO_AMOUNT_RE.search(pagina)
     if not match:
         return 0
     return _parse_monto_clp(match.group(1))
@@ -1759,11 +1986,73 @@ def _precio_shopify(html: str, url: str, nombre_linea: str) -> int:
     return 0
 
 
+def _cuerpo_compatibilidad(html: str) -> str:
+    """Título, marca y tabla de compatibilidad. No el menú de la tienda."""
+    pagina = html or ''
+    if not pagina.strip():
+        return ''
+    partes: list[str] = []
+    titulo = re.search(r'<title[^>]*>(.*?)</title>', pagina, flags=re.I | re.S)
+    if titulo:
+        partes.append(_texto_plano_html(titulo.group(1))[:240])
+    h1 = re.search(r'<h1[^>]*>(.*?)</h1>', pagina, flags=re.I | re.S)
+    if h1:
+        partes.append(_texto_plano_html(h1.group(1))[:240])
+    for tag in _META_TAG_RE.findall(pagina):
+        low = tag.lower()
+        if 'og:description' not in low and 'name="description"' not in low and "name='description'" not in low:
+            continue
+        content = re.search(r'\bcontent\s*=\s*["\']([^"\']+)["\']', tag, flags=re.I)
+        if content:
+            partes.append(content.group(1)[:400])
+    for data in _iter_jsonld(pagina):
+        _texto_producto_jsonld(data, partes)
+    plano = _texto_plano_html(pagina)
+    bajo = plano.lower()
+    for ancla in (
+        'modelos de autos compatibles',
+        'compatible con',
+        'compatibilidades',
+        'aplicaciones',
+        'marca:',
+        'marca |',
+    ):
+        idx = bajo.find(ancla)
+        if idx >= 0:
+            partes.append(plano[idx:idx + 420])
+    return re.sub(r'\s+', ' ', ' '.join(parte for parte in partes if parte)).strip()[:1500]
+
+
+def _texto_producto_jsonld(node: Any, partes: list[str], depth: int = 0) -> None:
+    if depth > 6:
+        return
+    if isinstance(node, list):
+        for item in node:
+            _texto_producto_jsonld(item, partes, depth + 1)
+        return
+    if not isinstance(node, dict):
+        return
+    if '@graph' in node:
+        _texto_producto_jsonld(node.get('@graph'), partes, depth + 1)
+    tipo = node.get('@type') or ''
+    tipo_s = ' '.join(str(t) for t in tipo) if isinstance(tipo, list) else str(tipo)
+    if 'Product' in tipo_s or node.get('name') or node.get('description'):
+        nombre = str(node.get('name') or '').strip()
+        descripcion = str(node.get('description') or '').strip()
+        if nombre:
+            partes.append(nombre[:240])
+        if descripcion:
+            partes.append(descripcion[:400])
+
+
 def _precio_desde_html(html: str, nombre_linea: str = '', url: str = '') -> int:
-    """Precio de ESTA ficha. No el primer `$` de los relacionados."""
+    """Precio de ESTA ficha. El actual, no el tachado ni el de los relacionados."""
     pagina = html or ''
     if not pagina.strip():
         return 0
+    oferta = _precio_oferta_visible(pagina)
+    if oferta and _precio_plausible_para_linea(nombre_linea, oferta):
+        return oferta
     jsonld: list[tuple[int, str]] = []
     for data in _iter_jsonld(pagina):
         _recolectar_precios_jsonld(data, jsonld)
@@ -1797,6 +2086,24 @@ def _precio_desde_html(html: str, nombre_linea: str = '', url: str = '') -> int:
     return respaldo
 
 
+def _banda_min_de(bandas_min: dict[str, int] | None, nombre: str) -> int:
+    if not bandas_min:
+        return 0
+    if nombre in bandas_min:
+        try:
+            return max(0, int(bandas_min[nombre] or 0))
+        except (TypeError, ValueError):
+            return 0
+    clave = _clave_fuzzy(nombre)
+    for llave, valor in bandas_min.items():
+        if _clave_fuzzy(str(llave)) == clave:
+            try:
+                return max(0, int(valor or 0))
+            except (TypeError, ValueError):
+                return 0
+    return 0
+
+
 def _motivo_de_candidato(
     cand: dict[str, Any],
     *,
@@ -1808,13 +2115,25 @@ def _motivo_de_candidato(
     anio: Any = None,
     cilindraje: Any = None,
     modelo: str = '',
+    tipo_motor: str = '',
+    banda_min: int = 0,
 ) -> str:
     """Por qué esta URL quedó o se botó. Una línea de log por candidato."""
     url = str(cand.get('url') or '')
     if url_elegida and url == url_elegida:
         return 'elegido'
+    motivo_pad = _motivo_calidad_pastilla(
+        cand,
+        nombre=nombre,
+        modelo=modelo,
+        tipo_motor=tipo_motor,
+        banda_min=banda_min,
+    )
+    if motivo_pad:
+        return motivo_pad
     if not _candidato_sirve_linea(
         nombre, cand, anio=anio, cilindraje=cilindraje, modelo=modelo,
+        tipo_motor=tipo_motor, banda_min=banda_min,
     ):
         return 'otra_pieza'
     titulo = str(cand.get('title') or '')
@@ -2187,6 +2506,8 @@ def _ordenar_candidatos(
     anio: Any = None,
     cilindraje: Any = None,
     modelo: str = '',
+    tipo_motor: str = '',
+    banda_min: int = 0,
 ) -> list[dict[str, Any]]:
     """Manda la ficha que nombra a ESTE auto; después la casa y el precio.
 
@@ -2208,6 +2529,7 @@ def _ordenar_candidatos(
     def rango(c: dict[str, Any]) -> tuple[int, ...]:
         no_sirve = 0 if _candidato_sirve_linea(
             nombre_linea, c, anio=anio, cilindraje=cilindraje, modelo=modelo,
+            tipo_motor=tipo_motor, banda_min=banda_min,
         ) else 1
         calce = -_calce_vehiculo(c, tokens)
         precio = _precio_desde_texto(c.get('content') or '', nombre_linea)
@@ -2248,6 +2570,8 @@ def _hits_desde_candidatos(
     anio: Any = None,
     cilindraje: Any = None,
     modelo: str = '',
+    tipo_motor: str = '',
+    bandas_min: dict[str, int] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Arma hits desde snippet/ficha Tavily cuando el monto ya es legible."""
     out: dict[str, dict[str, Any]] = {}
@@ -2255,6 +2579,7 @@ def _hits_desde_candidatos(
         clave = _clave_fuzzy(nombre)
         if not clave:
             continue
+        piso = _banda_min_de(bandas_min, nombre)
         rescate = next(
             (
                 (c, precio)
@@ -2264,6 +2589,7 @@ def _hits_desde_candidatos(
                 if _precio_plausible_para_linea(nombre, precio)
                 and _candidato_sirve_linea(
                     nombre, c, anio=anio, cilindraje=cilindraje, modelo=modelo,
+                    tipo_motor=tipo_motor, banda_min=piso,
                 )
                 and _titulo_nombra_pieza(nombre, str(c.get('title') or ''))
             ),
@@ -2274,18 +2600,18 @@ def _hits_desde_candidatos(
         candidato, precio = rescate
         host = _dominio_de_url(candidato['url'])
         nombre_prod = str(candidato.get('title') or nombre)[:200]
+        ficha_txt = f"{nombre_prod} {candidato.get('content') or ''} {candidato.get('cuerpo') or ''}"
         attrs = _atributos_desde_texto(
-            nombre_prod,
-            candidato.get('content'),
+            ficha_txt,
             marca_vehiculo=marca_vehiculo,
         )
         calce = _calce_vehiculo(candidato, tokens_veh)
         hit = {
             'nombre_buscado': nombre[:200],
             'nombre_producto': nombre_prod,
-            'marca_repuesto': attrs['marca_repuesto'],
+            'marca_repuesto': _marca_canonica(attrs['marca_repuesto'], ficha_txt),
             'precio_clp': precio,
-            'tienda': _tienda_por_dominio(host),
+            'tienda': _tienda_de_ficha(candidato['url'], ficha_txt),
             'dominio': host[:200],
             'url': candidato['url'],
             'compatibilidad': 'media' if calce >= 2 else 'baja',
@@ -2318,6 +2644,7 @@ def _buscar_repuestos_web_tavily(
     avisos: dict[str, dict[str, str]] | None = None,
     plan: dict[str, Any] | None = None,
     especificaciones: dict[str, str] | None = None,
+    bandas_min: dict[str, int] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Agregador Tavily (JSON real) + Gemini solo como filtro/formateador."""
     whitelist = _dominios_whitelist()
@@ -2338,6 +2665,10 @@ def _buscar_repuestos_web_tavily(
     pedidas: list[str] = []
     htmls: dict[str, str] = {}
     notas = avisos if avisos is not None else {}
+    pisos = bandas_min or {}
+
+    def _piso(nombre_linea: str) -> int:
+        return _banda_min_de(pisos, nombre_linea)
 
     def _cerrar_sin_hit(hits: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
         """Si la línea quedó sin ficha, el motivo dice qué se buscó y qué se botó."""
@@ -2369,13 +2700,18 @@ def _buscar_repuestos_web_tavily(
                     anio=anio,
                     cilindraje=cilindraje,
                     modelo=modelo,
+                    tipo_motor=tipo_motor,
+                    banda_min=_piso(nombre_linea),
                 )
                 logger.info(
-                    'busqueda_web_repuestos[tavily] candidato linea=%s titulo=%s url=%s motivo=%s',
+                    'busqueda_web_repuestos[tavily] candidato linea=%s titulo=%s url=%s motivo=%s '
+                    'precio=%s banda_min=%s',
                     nombre_linea[:80],
                     str(cand.get('title') or '')[:120],
                     url[:180],
                     motivo,
+                    _precio_de_candidato(cand, nombre_linea) or int(cand.get('precio_fuera_banda') or 0) or '',
+                    _piso(nombre_linea) or '',
                 )
         for nombre_linea in nombres_limpios:
             if _clave_fuzzy(nombre_linea) in hits or nombre_linea in notas:
@@ -2446,6 +2782,7 @@ def _buscar_repuestos_web_tavily(
                 c for c in crudos
                 if _candidato_sirve_linea(
                     nombre, c, anio=anio, cilindraje=cilindraje, modelo=modelo,
+                    tipo_motor=tipo_motor, banda_min=_piso(nombre),
                 )
                 and _titulo_nombra_pieza(nombre, str(c.get('title') or ''))
             ]
@@ -2464,6 +2801,7 @@ def _buscar_repuestos_web_tavily(
                 c for c in crudos
                 if not _candidato_sirve_linea(
                     nombre, c, anio=anio, cilindraje=cilindraje, modelo=modelo,
+                    tipo_motor=tipo_motor, banda_min=_piso(nombre),
                 )
             ]
             if crudos and not sirven and len(otra_pieza) == len(crudos) and not pieza_de_spec:
@@ -2475,8 +2813,13 @@ def _buscar_repuestos_web_tavily(
             etiqueta = titulo[:80] or '(sin título)'
             if not _candidato_sirve_linea(
                 nombre, cand, anio=anio, cilindraje=cilindraje, modelo=modelo,
+                tipo_motor=tipo_motor, banda_min=_piso(nombre),
             ):
-                rechazos.append(f'{etiqueta}: otra pieza')
+                detalle = _motivo_calidad_pastilla(
+                    cand, nombre=nombre, modelo=modelo, tipo_motor=tipo_motor,
+                    banda_min=_piso(nombre),
+                ) or 'otra pieza'
+                rechazos.append(f'{etiqueta}: {detalle}')
             elif titulo and not _titulo_nombra_pieza(nombre, titulo):
                 rechazos.append(f'{etiqueta}: el título no es esa pieza')
         logger.info(
@@ -2508,11 +2851,14 @@ def _buscar_repuestos_web_tavily(
             anio=anio,
             cilindraje=cilindraje,
             modelo=modelo,
+            tipo_motor=tipo_motor,
+            banda_min=_piso(nombre),
         )
         servir = [
             c for c in ordenados
             if _candidato_sirve_linea(
                 nombre, c, anio=anio, cilindraje=cilindraje, modelo=modelo,
+                tipo_motor=tipo_motor, banda_min=_piso(nombre),
             )
             and _titulo_nombra_pieza(nombre, str(c.get('title') or ''))
         ][:_FICHA_HTML_MAX]
@@ -2545,6 +2891,7 @@ def _buscar_repuestos_web_tavily(
             continue
         servir = [c for c in candidatos if _candidato_sirve_linea(
             nombre, c, anio=anio, cilindraje=cilindraje, modelo=modelo,
+            tipo_motor=tipo_motor, banda_min=_piso(nombre),
         )]
         if not servir:
             continue
@@ -2574,25 +2921,52 @@ def _buscar_repuestos_web_tavily(
                 anio=anio,
                 cilindraje=cilindraje,
                 modelo=modelo,
+                tipo_motor=tipo_motor,
+                banda_min=_piso(nombre),
             )
 
-    # Snippet y extract sin monto: se leen las URLs reales (no url_context).
+    # Snippet sin monto, o pastilla cuyo título no nombra el auto: se lee
+    # la página real. El cuerpo (compatibilidad, marca) queda en la ficha.
     for nombre, candidatos in candidatos_por_nombre.items():
-        if any(
+        hay_precio = any(
             _precio_plausible_para_linea(nombre, _precio_de_candidato(c, nombre))
             for c in candidatos
-        ):
-            continue
-        pedidas.extend(str(c.get('url') or '') for c in candidatos[:_FICHA_HTML_MAX] if c.get('url'))
+        )
+        for cand in candidatos[:_FICHA_HTML_MAX]:
+            url_cand = str(cand.get('url') or '')
+            if not url_cand or url_cand in pedidas:
+                continue
+            titulo_cand = str(cand.get('title') or '')
+            necesita_modelo = (
+                _es_pastillas_freno(nombre)
+                and _es_pastillas_freno(titulo_cand)
+                and _compat_pastilla(_texto_modelo_ficha(cand), modelo, tipo_motor) is None
+            )
+            if not hay_precio or necesita_modelo:
+                pedidas.append(url_cand)
     if pedidas:
         htmls = _leer_html_fichas(pedidas)
+        pedidas_set_html = set(pedidas)
         for nombre, candidatos in list(candidatos_por_nombre.items()):
             cambio = False
+            piso = _piso(nombre)
             for cand in candidatos:
-                html = htmls.get(str(cand.get('url') or '')) or ''
-                if not html:
+                url_cand = str(cand.get('url') or '')
+                if url_cand not in pedidas_set_html:
                     continue
-                monto = _precio_desde_html(html, nombre, url=str(cand.get('url') or ''))
+                cand['ficha_leida'] = True
+                html = htmls.get(url_cand) or ''
+                if not html:
+                    cambio = True
+                    continue
+                cuerpo = _cuerpo_compatibilidad(html)
+                if cuerpo:
+                    cand['cuerpo'] = cuerpo
+                    snippet = str(cand.get('content') or '')
+                    if cuerpo not in snippet:
+                        cand['content'] = f'{snippet}\n{cuerpo}'.strip()
+                    cambio = True
+                monto = _precio_desde_html(html, nombre, url=url_cand)
                 if not monto:
                     continue
                 cambio = True
@@ -2602,6 +2976,10 @@ def _buscar_repuestos_web_tavily(
                 snippet = str(cand.get('content') or '')
                 cand['content'] = f'{snippet}\nPrecio: ${monto}'.strip()
                 cand['precio_snippet'] = monto
+                if _motivo_calidad_pastilla(
+                    cand, nombre=nombre, modelo=modelo, tipo_motor=tipo_motor, banda_min=piso,
+                ):
+                    continue
             if cambio:
                 candidatos_por_nombre[nombre] = _ordenar_candidatos(
                     candidatos,
@@ -2611,6 +2989,8 @@ def _buscar_repuestos_web_tavily(
                     anio=anio,
                     cilindraje=cilindraje,
                     modelo=modelo,
+                    tipo_motor=tipo_motor,
+                    banda_min=piso,
                 )
 
     preliminar = _hits_desde_candidatos(
@@ -2620,6 +3000,8 @@ def _buscar_repuestos_web_tavily(
         anio=anio,
         cilindraje=cilindraje,
         modelo=modelo,
+        tipo_motor=tipo_motor,
+        bandas_min=pisos,
     )
     if preliminar and all(
         _clave_fuzzy(nombre) in preliminar for nombre in candidatos_por_nombre
@@ -2709,12 +3091,20 @@ def _buscar_repuestos_web_tavily(
                 continue
         ficha = next((c for c in candidatos_linea if c.get('url') == url), None)
         snippet = str((ficha or {}).get('content') or '')
+        evaluar = dict(ficha or {})
+        if not evaluar.get('title'):
+            evaluar['title'] = nombre_prod
+        evaluar['url'] = url
+        if snippet:
+            evaluar['content'] = snippet
         if not _candidato_sirve_linea(
             nombre_linea,
-            {'title': nombre_prod, 'content': snippet, 'url': url},
+            evaluar,
             anio=anio,
             cilindraje=cilindraje,
             modelo=modelo,
+            tipo_motor=tipo_motor,
+            banda_min=_piso(nombre_linea),
         ):
             continue
         if not _titulo_nombra_pieza(nombre_linea, nombre_prod):
@@ -2729,6 +3119,10 @@ def _buscar_repuestos_web_tavily(
         )
         if not marca_it:
             marca_it = attrs['marca_repuesto']
+        marca_it = _marca_canonica(
+            marca_it,
+            f"{nombre_prod} {snippet} {(ficha or {}).get('cuerpo') or ''}",
+        )
         calidad_it, pais_it = _calidad_pais_de_item(item, attrs)
         precio = _to_int_clp(item.get('precio_clp'))
         if not _precio_plausible_para_linea(nombre_linea, precio):
@@ -2746,6 +3140,7 @@ def _buscar_repuestos_web_tavily(
                     if _precio_plausible_para_linea(nombre_linea, p)
                     and _candidato_sirve_linea(
                         nombre_linea, c, anio=anio, cilindraje=cilindraje, modelo=modelo,
+                        tipo_motor=tipo_motor, banda_min=_piso(nombre_linea),
                     )
                     and _titulo_nombra_pieza(nombre_linea, str(c.get('title') or ''))
                 ),
@@ -2761,7 +3156,12 @@ def _buscar_repuestos_web_tavily(
             # Guardar la línea en $0 envenena el cache y la deja igual sin
             # referencia; se descarta para que el rescate del snippet la tome.
             continue
-        tienda = str(item.get('tienda') or '').strip()[:200] or _tienda_por_dominio(host)
+        tienda_item = str(item.get('tienda') or '').strip()
+        if not tienda_item or _norm(tienda_item) in _NOMBRES_TIENDA_GENERICOS:
+            tienda_item = _tienda_de_ficha(
+                url, f"{nombre_prod} {snippet} {(ficha or {}).get('cuerpo') or ''}",
+            )
+        tienda = tienda_item[:200]
         compat = str(item.get('compatibilidad') or '').strip().lower()[:20]
         if compat not in ('alta', 'media', 'baja'):
             compat = 'media'
@@ -2810,6 +3210,8 @@ def _buscar_repuestos_web_tavily(
         anio=anio,
         cilindraje=cilindraje,
         modelo=modelo,
+        tipo_motor=tipo_motor,
+        bandas_min=pisos,
     ).items():
         if clave in out:
             continue
@@ -2911,6 +3313,7 @@ def buscar_repuestos_web(
     deberia_cancelar=None,
     avisos: dict[str, dict[str, str]] | None = None,
     especificaciones: dict[str, str] | None = None,
+    bandas_min: dict[str, int] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Tavily si hay API key. url_context solo si Tavily no está configurada."""
     nombres_limpios = [str(n).strip()[:200] for n in nombres if str(n).strip()]
@@ -2960,6 +3363,7 @@ def buscar_repuestos_web(
                 avisos=notas,
                 plan=plan,
                 especificaciones=especificaciones,
+                bandas_min=bandas_min,
             )
             tavily_listo = True
         except BusquedaWebCancelada:

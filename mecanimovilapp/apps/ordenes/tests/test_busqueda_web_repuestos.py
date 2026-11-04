@@ -2751,3 +2751,241 @@ class FichaSinPrecioEnSnippetTests(SimpleTestCase):
                 f'url={url} motivo={motivo}',
                 texto,
             )
+
+
+class CalidadFichaQuote11Tests(SimpleTestCase):
+    """Cotización 11: listado Fiat genérico, marca cortada, casa 'Repuestos' y el tachado."""
+
+    def test_precio_actual_no_el_tachado_y_el_litro_sale_del_bidon(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        html = """
+        <html><head>
+          <title>Aceite Para Motor Liqui Moly Sintético 5w-40 4L | Sergio Escobar Repuestos</title>
+          <script type="application/ld+json">
+            {"@type":"Product","name":"Aceite Para Motor Liqui Moly Sintético 5w-40 4L",
+             "offers":{"@type":"Offer","price":"58500","priceCurrency":"CLP"}}
+          </script>
+        </head><body>
+          <h1>Aceite Para Motor Liqui Moly Sintético 5w-40 4L</h1>
+          <p class="price">
+            <del><span class="woocommerce-Price-amount amount"><bdi>$58.500</bdi></span></del>
+            <ins><span class="woocommerce-Price-amount amount"><bdi>$52.650</bdi></span></ins>
+          </p>
+          <p>El precio original era: $58.500. El precio actual es: $52.650.</p>
+          <p>Marca: Liqui Moly</p>
+          <table><tr><td>Marca</td><td>Liqui Moly</td></tr></table>
+        </body></html>
+        """
+        url = (
+            'https://repuestos.sergioescobar.cl/tienda/lubricantes/'
+            'aceite-para-motor-liqui-moly-sintetico-5w-40-para-auto-camioneta-x-4l/'
+        )
+        self.assertEqual(bw._precio_desde_html(html, 'Aceite de motor', url=url), 52650)
+        unit, nota = bw.precio_unitario_desde_envase(
+            'Aceite de motor',
+            52650,
+            'Aceite Para Motor Liqui Moly Sintético 5w-40 4L',
+        )
+        self.assertEqual(unit, 13162)
+        self.assertIn('52.650', nota)
+        self.assertIn('13.162', nota)
+        self.assertIn('4 L', nota)
+        self.assertEqual(bw._tienda_de_ficha(url, ''), 'Repuestos Sergio Escobar')
+        self.assertNotEqual(bw._tienda_por_dominio('repuestos.sergioescobar.cl'), 'Repuestos')
+        self.assertEqual(
+            bw._tienda_por_dominio('mundorepuestos.com'),
+            'Mundo Repuestos',
+        )
+
+    def test_marca_liqui_moly_completa_y_stp_no_se_pega(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            _marca_desde_etiqueta,
+            _nombre_con_marca,
+        )
+
+        texto = 'Marca: Liqui Moly. Origen: Alemania. Marca | Liqui Moly'
+        self.assertEqual(_marca_desde_etiqueta(texto), 'Liqui Moly')
+        self.assertEqual(
+            _nombre_con_marca('Aceite de motor', 'Liqui', texto),
+            'Aceite de motor Liqui Moly',
+        )
+        self.assertEqual(
+            _nombre_con_marca('Aceite de motor', 'Liqui'),
+            'Aceite de motor',
+        )
+        self.assertEqual(
+            _nombre_con_marca('Pastillas de freno delanteras', 'Stp', 'Marca: Stp'),
+            'Pastillas de freno delanteras',
+        )
+        self.assertEqual(_marca_desde_etiqueta('Marca: Stp Origen: China'), '')
+        self.assertEqual(_nombre_con_marca('Discos de freno delanteros', 'Repstock'), 'Discos de freno delanteros Repstock')
+
+    def test_pastilla_sin_bravo_y_barata_no_se_cotiza(self):
+        from unittest.mock import patch
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        mala = 'https://mundorepuestos.com/producto/9972779244826220072009/juego-pastillas-freno-fiat'
+        buena = 'https://frenosvergara.shop/products/pastillas-fiat-bravo-t-jet'
+        html_mala = """
+        <html><head><title>Juego Pastillas Freno Fiat | Envío gratis - Mundo Repuestos Chile</title></head>
+        <body>
+          <h1>Juego Pastillas Freno Fiat</h1>
+          <p class="price"><span class="woocommerce-Price-amount amount"><bdi>$11.920</bdi></span></p>
+          <p>Marca: Stp</p>
+          <p>Modelos de autos compatibles: Fiat IDEA ADVENTUR 1.8, Fiorino, Strada, Ram 700.</p>
+        </body></html>
+        """
+        html_buena = """
+        <html><head>
+          <title>Pastillas de Freno Delanteras Fiat Bravo 1.4 T-Jet</title>
+          <meta property="og:price:amount" content="32990">
+        </head><body><h1>Pastillas de Freno Delanteras Fiat Bravo 1.4 T-Jet</h1></body></html>
+        """
+
+        def fake_buscar(query, **kwargs):
+            if 'pastilla' not in query.lower():
+                return []
+            return [
+                {
+                    'title': 'Juego Pastillas Freno Fiat | Envío gratis - Mundo Repuestos Chile',
+                    'url': mala,
+                    'content': 'Consultar stock en tienda.',
+                    'score': 0.9,
+                },
+                {
+                    'title': 'Pastillas de Freno Delanteras Fiat Bravo 1.4 T-Jet',
+                    'url': buena,
+                    'content': 'Consultar stock en tienda.',
+                    'score': 0.8,
+                },
+            ]
+
+        def fake_html(urls):
+            return {mala: html_mala, buena: html_buena}
+
+        with patch.object(bw, '_tavily_buscar_uno', side_effect=fake_buscar), patch.object(
+            bw, '_tavily_extraer', return_value={},
+        ), patch.object(bw, '_leer_html_fichas', side_effect=fake_html), patch.object(
+            bw, '_gemini_generar', return_value=None,
+        ), self.assertLogs(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos',
+            level='INFO',
+        ) as logs:
+            out = bw._buscar_repuestos_web_tavily(
+                ['Pastillas de freno delanteras'],
+                marca='FIAT',
+                modelo='Bravo',
+                anio=2010,
+                cilindraje='1.4',
+                tipo_motor='T-Jet',
+                servicio_nombre='Pastillas',
+                timeout=5,
+                plan={'piezas': []},
+                bandas_min={'Pastillas de freno delanteras': 28000},
+            )
+
+        hit = out[bw._clave_fuzzy('Pastillas de freno delanteras')]
+        self.assertEqual(hit['url'], buena)
+        self.assertEqual(hit['precio_clp'], 32990)
+        self.assertNotIn('Stp', hit.get('marca_repuesto') or '')
+        texto = '\n'.join(logs.output)
+        self.assertIn('motivo=modelo_incompatible', texto)
+        self.assertIn(mala, texto)
+        self.assertIn('precio=11920', texto)
+        self.assertIn('banda_min=28000', texto)
+
+    def test_solo_el_listado_idea_no_deja_hit_y_linea_tjet_si(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        idea = {
+            'title': 'Juego Pastillas Freno Fiat | Envío gratis - Mundo Repuestos Chile',
+            'url': 'https://mundorepuestos.com/producto/1/juego-pastillas-fiat-idea',
+            'content': 'Precio: $11920',
+            'cuerpo': 'Marca: Stp. Compatible con Fiat Idea, Fiorino y Strada.',
+            'ficha_leida': True,
+            'precio_snippet': 11920,
+        }
+        self.assertFalse(bw._candidato_sirve_linea(
+            'Pastillas de freno delanteras',
+            idea,
+            modelo='Bravo',
+            tipo_motor='T-Jet',
+            banda_min=28000,
+        ))
+        self.assertEqual(
+            bw._motivo_calidad_pastilla(
+                idea,
+                nombre='Pastillas de freno delanteras',
+                modelo='Bravo',
+                tipo_motor='T-Jet',
+                banda_min=28000,
+            ),
+            'modelo_incompatible',
+        )
+        stilo = {
+            'title': 'Pastillas freno Fiat Stilo 1.4',
+            'url': 'https://frenosvergara.shop/products/stilo',
+            'content': 'Fiat Stilo. Precio: $24990',
+            'ficha_leida': True,
+            'precio_snippet': 24990,
+        }
+        self.assertEqual(
+            bw._motivo_calidad_pastilla(
+                stilo,
+                nombre='Pastillas de freno delanteras',
+                modelo='Bravo',
+                tipo_motor='T-Jet',
+            ),
+            'modelo_incompatible',
+        )
+        linea = {
+            'title': 'Pastillas freno Fiat Linea 1.4 T-Jet',
+            'url': 'https://frenosvergara.shop/products/linea-t-jet',
+            'content': 'Compatible Linea T-Jet y Punto T-Jet. Precio: $32990',
+            'ficha_leida': True,
+            'precio_snippet': 32990,
+        }
+        self.assertTrue(bw._candidato_sirve_linea(
+            'Pastillas de freno delanteras',
+            linea,
+            modelo='Bravo',
+            tipo_motor='T-Jet',
+            banda_min=28000,
+        ))
+        exacta_barata = {
+            'title': 'Pastillas de Freno Delanteras Fiat Bravo 1.4 T-Jet',
+            'url': 'https://frenosvergara.shop/products/bravo',
+            'content': 'Precio: $11920',
+            'ficha_leida': True,
+            'precio_snippet': 11920,
+        }
+        self.assertTrue(bw._candidato_sirve_linea(
+            'Pastillas de freno delanteras',
+            exacta_barata,
+            modelo='Bravo',
+            tipo_motor='T-Jet',
+            banda_min=28000,
+        ))
+        generica = {
+            'title': 'Juego Pastillas Freno Fiat',
+            'url': 'https://mundorepuestos.com/producto/2/juego-pastillas-fiat',
+            'content': 'Precio: $11920',
+            'cuerpo': 'Pastillas de freno para Fiat. Envío gratis.',
+            'ficha_leida': True,
+            'precio_snippet': 11920,
+        }
+        self.assertEqual(
+            bw._motivo_calidad_pastilla(
+                generica,
+                nombre='Pastillas de freno delanteras',
+                modelo='Bravo',
+                tipo_motor='T-Jet',
+                banda_min=28000,
+            ),
+            'precio_bajo_banda',
+        )
+        self.assertTrue(bw._es_pagina_sin_ficha(
+            'https://www.mundorepuestos.cl/categoria/pastillas-freno-fiat',
+        ))

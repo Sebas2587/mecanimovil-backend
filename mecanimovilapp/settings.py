@@ -871,6 +871,8 @@ def _parse_tiendas_especialistas_default():
          'marcas': []},
         {'nombre': 'Mundo Repuestos', 'alias': 'mundo repuestos', 'dominio': 'mundorepuestos.cl',
          'marcas': []},
+        {'nombre': 'Repuestos Sergio Escobar', 'alias': 'sergio escobar',
+         'dominio': 'sergioescobar.cl', 'marcas': []},
         {'nombre': 'Repuestos Ank', 'alias': 'repuestos ank', 'dominio': 'repuestosank.cl',
          'marcas': []},
         {'nombre': 'Emasa', 'alias': 'emasa', 'dominio': 'emasa.cl', 'marcas': []},

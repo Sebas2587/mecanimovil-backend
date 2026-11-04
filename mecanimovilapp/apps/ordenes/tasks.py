@@ -461,6 +461,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
         busqueda_web_habilitada,
         clave_cache_repuesto,
         cuota_diaria_disponible,
+        litros_envase,
         nombres_sin_cache_vigente,
     )
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web import (
@@ -471,6 +472,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
         enriquecer_repuestos_cotizacion,
         linea_necesita_busqueda_web,
         _clave_fuzzy,
+        _marca_canonica,
         _nombre_con_marca,
         _to_int_clp,
     )
@@ -653,12 +655,19 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                     solo_ids,
                 )
                 especificaciones = {}
+                bandas_min: dict[str, int] = {}
                 for linea in candidatos:
                     if not isinstance(linea, dict):
                         continue
                     nombre_linea = str(linea.get('nombre') or '').strip()
                     if not nombre_linea:
                         continue
+                    try:
+                        piso_linea = int(linea.get('precio_min_clp') or 0)
+                    except (TypeError, ValueError):
+                        piso_linea = 0
+                    if piso_linea > 0:
+                        bandas_min[nombre_linea] = piso_linea
                     extra = str(linea.get('especificacion') or '').strip()
                     comentario = str(linea.get('comentario') or '').strip()
                     bajo = comentario.lower()
@@ -682,6 +691,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                     deberia_cancelar=lambda: busqueda_fue_cancelada(cotizacion_id),
                     avisos=avisos_busqueda,
                     especificaciones=especificaciones,
+                    bandas_min=bandas_min,
                 )
                 if nuevos:
                     resultados.update(nuevos)
@@ -814,15 +824,18 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                         if isinstance(ya, dict) and str(ya.get('nombre_producto') or '') == str(
                             rep.get('nombre_producto') or '',
                         ):
+                            litros_ya = litros_envase(str(ya.get('nombre_producto') or ''))
                             logger.info(
                                 'buscar_precios_web_cotizacion_task(%s): elegido id=%s linea=%s '
-                                'producto=%s url=%s precio=%s',
+                                'producto=%s url=%s precio_estante=%s litros=%s precio_unitario=%s',
                                 cotizacion_id,
                                 rid,
                                 str(rep.get('nombre') or '')[:80],
                                 str(ya.get('nombre_producto') or '')[:80],
                                 str(ya.get('url') or '')[:180],
                                 ya.get('precio_clp') or 0,
+                                f'{litros_ya:g}' if litros_ya else 0,
+                                rep.get('precio_unitario_clp') or 0,
                             )
                     continue
                 from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
@@ -867,11 +880,16 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                 if str(hit.get('url') or '') in urls_usadas:
                     continue
                 next_rep = dict(rep)
-                if hit.get('marca_repuesto'):
-                    next_rep['marca_repuesto'] = str(hit['marca_repuesto'])[:100]
+                marca_hit = _marca_canonica(
+                    str(hit.get('marca_repuesto') or ''),
+                    str(hit.get('nombre_producto') or ''),
+                )
+                if marca_hit:
+                    next_rep['marca_repuesto'] = marca_hit[:100]
                     next_rep['nombre'] = _nombre_con_marca(
                         str(next_rep.get('nombre') or ''),
-                        hit['marca_repuesto'],
+                        marca_hit,
+                        str(hit.get('nombre_producto') or ''),
                     )
                 if hit.get('tienda'):
                     next_rep['proveedor_nombre'] = str(hit['tienda'])[:200]
@@ -911,14 +929,18 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                         next_rep['comentario'] = nota_envase[:300]
                 next_rep['fuente_marketplace'] = 'web'
                 reps_enriquecidos[i] = next_rep
+                litros_hit = litros_envase(str(hit.get('nombre_producto') or ''))
                 logger.info(
-                    'buscar_precios_web_cotizacion_task(%s): elegido id=%s linea=%s producto=%s url=%s precio=%s',
+                    'buscar_precios_web_cotizacion_task(%s): elegido id=%s linea=%s producto=%s '
+                    'url=%s precio_estante=%s litros=%s precio_unitario=%s',
                     cotizacion_id,
                     rid,
                     nombre_linea[:80],
                     str(hit.get('nombre_producto') or '')[:80],
                     str(hit.get('url') or '')[:180],
                     hit.get('precio_clp') or 0,
+                    f'{litros_hit:g}' if litros_hit else 0,
+                    precio,
                 )
 
         if avisos_busqueda:
