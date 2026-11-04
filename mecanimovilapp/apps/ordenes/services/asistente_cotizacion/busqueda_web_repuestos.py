@@ -1376,6 +1376,99 @@ def _rechazo_precio_pastilla(
     return ''
 
 
+def _token_modelo_exacto(modelo: str, tipo_motor: str) -> str:
+    """El nombre del modelo, no el trim. Bravo Sport T-Jet → bravo."""
+    if re.search(r'\bbravo\b', _norm(f'{modelo} {tipo_motor}')):
+        return 'bravo'
+    for tok in _norm(modelo).split():
+        if len(tok) >= 3 and tok not in ('sport', 'tjet', 'turbo') and not tok.isdigit():
+            return tok
+    return ''
+
+
+def _litros_en_titulo(titulo: str) -> set[str]:
+    """1.4, 1,4 y 1.4t son 1.4. Un rango 2011-2014 no es una cilindrada."""
+    return {
+        f'{a}.{b}' for a, b in re.findall(r'\b([1-4]) (\d)t?\b', _norm(titulo))
+    }
+
+
+def _auto_es_tjet(modelo: str, tipo_motor: str) -> bool:
+    return 'tjet' in _norm(f'{modelo} {tipo_motor}').replace(' ', '')
+
+
+def _auto_es_sport(modelo: str, tipo_motor: str) -> bool:
+    return re.search(r'\bsport\b', _norm(f'{modelo} {tipo_motor}')) is not None
+
+
+def _titulo_nombra_modelo_exacto(titulo: str, modelo: str, tipo_motor: str) -> bool:
+    token = _token_modelo_exacto(modelo, tipo_motor)
+    if len(token) < 3:
+        return False
+    return re.search(rf'\b{re.escape(token)}\b', _norm(titulo)) is not None
+
+
+def _titulo_calza_motor(
+    titulo: str,
+    modelo: str,
+    tipo_motor: str,
+    cilindraje: Any,
+) -> bool:
+    """El título dice el mismo motor o la misma versión: 1.4t, T-Jet o Sport."""
+    n = _norm(titulo)
+    cil = _cilindraje_litros(cilindraje) or ''
+    if cil and cil in _litros_en_titulo(titulo):
+        return True
+    if _auto_es_tjet(modelo, tipo_motor) and 'tjet' in n.replace(' ', ''):
+        return True
+    if _auto_es_sport(modelo, tipo_motor) and re.search(r'\bsport\b', n):
+        return True
+    return False
+
+
+def _titulo_contradice_motor(
+    titulo: str,
+    modelo: str,
+    tipo_motor: str,
+    cilindraje: Any,
+) -> bool:
+    """1.6 o 8v no es el 1.4 T-Jet, aunque el rango de años cubra el auto."""
+    cil = _cilindraje_litros(cilindraje) or ''
+    litros = _litros_en_titulo(titulo)
+    if cil and litros and cil not in litros:
+        return True
+    n = _norm(titulo)
+    if _auto_es_tjet(modelo, tipo_motor) and (
+        re.search(r'\b8v\b', n) or re.search(r'\b8 v\b', n)
+    ):
+        return True
+    return False
+
+
+def _holgura_anio_titulo(
+    nombre: str,
+    candidato: dict[str, Any],
+    modelo: str,
+    tipo_motor: str,
+    cilindraje: Any,
+) -> int:
+    """Un año de borde si es kit, o si el título nombra el modelo y el motor.
+
+    'Bravo Sport 1.4t 2011-2014' es el Bravo 2010. '1995-2001' y un 1.6 no.
+    """
+    if _linea_es_kit(nombre):
+        return 1
+    titulo = str((candidato or {}).get('title') or '')
+    if _titulo_contradice_motor(titulo, modelo, tipo_motor, cilindraje):
+        return 0
+    if (
+        _titulo_nombra_modelo_exacto(titulo, modelo, tipo_motor)
+        and _titulo_calza_motor(titulo, modelo, tipo_motor, cilindraje)
+    ):
+        return 1
+    return 0
+
+
 def _motivo_calidad_pastilla(
     candidato: dict[str, Any],
     *,
@@ -1385,6 +1478,7 @@ def _motivo_calidad_pastilla(
     banda_min: int = 0,
     banda_max: int = 0,
     anio: Any = None,
+    cilindraje: Any = None,
 ) -> str:
     """Por qué una ficha no se cotiza. '' si todavía puede servir.
 
@@ -1393,14 +1487,22 @@ def _motivo_calidad_pastilla(
     descarta un título genérico sin precio: la tabla de compatibilidad puede
     nombrar al Bravo. Un título 'Envío gratis' que ya trae monto es listado
     aunque nadie haya abierto la ficha. El cruce Linea/Punto T-Jet y el
-    monto se miden contra la banda de la IA.
+    monto se miden contra la banda de la IA. Un año de borde (±1) solo si
+    el título nombra el modelo y el motor; 1.6 y 8v se botan igual.
     """
     from .enriquecer_repuestos import _es_linea_aceite_motor
 
     # 1995-2001 no es el Bravo 2010. El aviso de la ficha no alcanza: se bota.
-    # Un kit conserva un año de borde (Morning 2011 vs ficha 2012-2016).
+    # 'Bravo Sport 1.4t 2011-2014' sí: misma generación, un año de borde.
+    titulo_ficha = str((candidato or {}).get('title') or '')
+    if _titulo_contradice_motor(titulo_ficha, modelo, tipo_motor, cilindraje):
+        return 'motor_incompatible'
     if _anio_fuera_de_rango(
-        candidato, anio, holgura=1 if _linea_es_kit(nombre) else 0,
+        candidato,
+        anio,
+        holgura=_holgura_anio_titulo(
+            nombre, candidato, modelo, tipo_motor, cilindraje,
+        ),
     ):
         return 'anio_incompatible'
     if _es_linea_aceite_motor(nombre):
@@ -1470,12 +1572,17 @@ def _candidato_sirve_linea(
             banda_min=banda_min,
             banda_max=banda_max,
             anio=anio,
+            cilindraje=cilindraje,
         ):
             return False
         return True
+    if _titulo_contradice_motor(titulo, modelo, tipo_motor, cilindraje):
+        return False
     if _ficha_nombra_modelo(texto, modelo) is False:
         return False
-    holgura = 1 if _linea_es_kit(nombre_linea) else 0
+    holgura = _holgura_anio_titulo(
+        nombre_linea, candidato, modelo, tipo_motor, cilindraje,
+    )
     if _ficha_cubre_anio(texto, anio, holgura=holgura) is False:
         return False
     if _ficha_cubre_cilindraje(texto, cilindraje) is False:
@@ -2533,6 +2640,7 @@ def _motivo_de_candidato(
         banda_min=banda_min,
         banda_max=banda_max,
         anio=anio,
+        cilindraje=cilindraje,
     )
     if motivo_pad:
         return motivo_pad
@@ -3139,6 +3247,7 @@ def _motivo_rechazo_duro(
     motivo = _motivo_calidad_pastilla(
         cand, nombre=nombre, modelo=modelo, tipo_motor=tipo_motor,
         banda_min=banda_min, banda_max=banda_max, anio=anio,
+        cilindraje=cilindraje,
     )
     if motivo:
         return motivo
@@ -3341,6 +3450,7 @@ def _buscar_repuestos_web_tavily(
                 if motivo in (
                     'listado', 'precio_bajo_banda', 'precio_alto_banda',
                     'modelo_incompatible', 'sin_modelo', 'anio_incompatible',
+                    'motor_incompatible',
                 ):
                     _anotar_url_rechazada(notas, url)
                 elif motivo in ('otra_pieza', 'titulo_no_es_la_pieza'):
@@ -3361,6 +3471,8 @@ def _buscar_repuestos_web_tavily(
                 False,
                 consultas=consultas_usadas.get(nombre_linea),
                 anio=anio,
+                tipo_motor=tipo_motor,
+                cilindraje=cilindraje,
             )
         return hits
 
@@ -3464,7 +3576,7 @@ def _buscar_repuestos_web_tavily(
                 detalle = _motivo_calidad_pastilla(
                     cand, nombre=nombre, modelo=modelo, tipo_motor=tipo_motor,
                     banda_min=_piso(nombre), banda_max=_techo(nombre),
-                    anio=anio,
+                    anio=anio, cilindraje=cilindraje,
                 ) or 'otra pieza'
                 rechazos.append(f'{etiqueta}: {detalle}')
             elif titulo and not _titulo_nombra_pieza(nombre, titulo):
@@ -3528,6 +3640,8 @@ def _buscar_repuestos_web_tavily(
                 corto_mal,
                 consultas=consultas[:n_consultas],
                 anio=anio,
+                tipo_motor=tipo_motor,
+                cilindraje=cilindraje,
             )
 
     if not candidatos_por_nombre:
@@ -3647,6 +3761,7 @@ def _buscar_repuestos_web_tavily(
                 if _motivo_calidad_pastilla(
                     cand, nombre=nombre, modelo=modelo, tipo_motor=tipo_motor,
                     banda_min=piso, banda_max=_techo(nombre), anio=anio,
+                    cilindraje=cilindraje,
                 ):
                     continue
             if cambio:
@@ -3686,6 +3801,7 @@ def _buscar_repuestos_web_tavily(
                 if motivo in (
                     'listado', 'precio_bajo_banda', 'precio_alto_banda',
                     'modelo_incompatible', 'sin_modelo', 'anio_incompatible',
+                    'motor_incompatible',
                 ):
                     _anotar_url_rechazada(notas, url_cand)
                 elif motivo:
@@ -3977,17 +4093,28 @@ def _aviso_sin_ficha(
     otra_pieza: bool,
     consultas: list[str] | None = None,
     anio: Any = None,
+    tipo_motor: str = '',
+    cilindraje: Any = None,
 ) -> dict[str, str]:
     """Lo que el taller debe leer cuando no hay ficha de ESA pieza para ESTE auto."""
     vistos: list[str] = []
     descartados: list[str] = []
     fuera_anio: list[str] = []
+    otro_motor: list[str] = []
     for cand in crudos:
         titulo = str(cand.get('title') or '').strip()
         if not titulo or titulo in vistos:
             continue
         vistos.append(titulo[:90])
-        if _anio_fuera_de_rango(cand, anio):
+        if _titulo_contradice_motor(titulo, modelo, tipo_motor, cilindraje):
+            otro_motor.append(titulo[:90])
+        elif _anio_fuera_de_rango(
+            cand,
+            anio,
+            holgura=_holgura_anio_titulo(
+                nombre, cand, modelo, tipo_motor, cilindraje,
+            ),
+        ):
             fuera_anio.append(titulo[:90])
         if not _titulo_nombra_pieza(nombre, titulo):
             descartados.append(titulo[:90])
@@ -3999,12 +4126,18 @@ def _aviso_sin_ficha(
         busqueda = f'Se buscó {citas}. '
     titulos_rechazados = ', '.join(f'"{t}"' for t in (descartados or vistos)[:3])
     anio_auto = _anio_vehiculo_int(anio)
-    if fuera_anio:
-        citados = ', '.join(f'"{t}"' for t in fuera_anio[:3])
+    if fuera_anio or otro_motor:
+        frases: list[str] = []
+        if fuera_anio:
+            citados = ', '.join(f'"{t}"' for t in fuera_anio[:3])
+            frases.append(f'{citados} cubre otros años y no incluye este auto.')
+        if otro_motor:
+            citados = ', '.join(f'"{t}"' for t in otro_motor[:3])
+            frases.append(f'{citados} nombra otro motor.')
         detalle = (
             f'{busqueda}Sin ficha de {nombre} para {auto}'
             f'{f" ({anio_auto})" if anio_auto else ""}. '
-            f'{citados} cubre otros años y no incluye este auto. '
+            f'{" ".join(frases)} '
             'Escribe el precio y la casa.'
         )
         return {'motivo': 'sin_ficha', 'detalle': detalle[:500]}
@@ -4330,6 +4463,7 @@ def _fila_cache_utilizable(
     banda_min: int = 0,
     banda_max: int = 0,
     anio: Any = None,
+    cilindraje: Any = None,
     now,
     cupo: list[int] | None = None,
 ) -> int | None:
@@ -4362,6 +4496,7 @@ def _fila_cache_utilizable(
             banda_min=banda_min,
             banda_max=banda_max,
             anio=anio,
+            cilindraje=cilindraje,
         )
         if motivo:
             _expirar_fila_cache(
@@ -4409,6 +4544,7 @@ def _fila_cache_utilizable(
             banda_min=banda_min,
             banda_max=banda_max,
             anio=anio,
+            cilindraje=cilindraje,
         )
         if motivo:
             _expirar_fila_cache(
@@ -4531,6 +4667,7 @@ def hits_cache_vigentes_para_nombres(
                 banda_min=_banda_min_de(bandas_min, nombre_linea),
                 banda_max=_banda_min_de(bandas_max, nombre_linea),
                 anio=anio,
+                cilindraje=cilindraje,
                 now=now,
                 cupo=cupo,
             )

@@ -3638,3 +3638,175 @@ class Quote17AnioYPackTests(SimpleTestCase):
         self.assertIn('1995-2001', nota_bujia)
         self.assertIn('2010', nota_filtro)
         self.assertIn('1996/2000', nota_filtro)
+
+
+class Quote19HolguraMotorTests(SimpleTestCase):
+    """Cotización 19: 2011-2014 del mismo Bravo Sport 1.4 T-Jet cabe en 2010.
+
+    Un año de borde solo si el título nombra el modelo y el motor. Otra
+    generación (1995-2001) u otro motor (1.6, 8v) se sigue botando, y el
+    monto sigue sujeto a la banda.
+    """
+
+    _BUJIA = 'Bujías'
+    _FILTRO = 'Filtro de aire'
+    _TITULO = 'Bujía Original Fiat Bravo Sport 1.4t 2011-2014'
+    _URL = 'https://www.repuestosbravo.cl/producto/bujia-original-bravo-sport-14t-2011-2014'
+
+    def _motivo(self, cand, nombre, *, banda_min=8000, banda_max=18000):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        return bw._motivo_calidad_pastilla(
+            cand,
+            nombre=nombre,
+            modelo='BRAVO SPORT TJET',
+            tipo_motor='T-Jet',
+            banda_min=banda_min,
+            banda_max=banda_max,
+            anio=2010,
+            cilindraje='1.4',
+        )
+
+    def test_un_anio_de_borde_si_el_titulo_nombra_modelo_y_motor(self):
+        en_banda = {
+            'title': self._TITULO,
+            'url': self._URL,
+            'content': f'{self._TITULO}. Precio $ 12.990',
+            'ficha_leida': True,
+        }
+        self.assertEqual(self._motivo(en_banda, self._BUJIA), '')
+        # Sport o T-Jet alcanzan; no hace falta que estén las tres marcas.
+        por_sport = {
+            'title': 'Bujía Fiat Bravo Sport 2011-2014',
+            'url': self._URL,
+            'content': 'Precio $ 12.990',
+            'ficha_leida': True,
+        }
+        por_tjet = {
+            'title': 'Bujía Fiat Bravo T-Jet 2011-2014',
+            'url': self._URL,
+            'content': 'Precio $ 12.990',
+            'ficha_leida': True,
+        }
+        self.assertEqual(self._motivo(por_sport, self._BUJIA), '')
+        self.assertEqual(self._motivo(por_tjet, self._BUJIA), '')
+        # El filtro usa la misma regla.
+        filtro = {
+            'title': 'Filtro de aire Fiat Bravo Sport 1.4t 2011-2014',
+            'url': 'https://www.repuestosbravo.cl/producto/filtro-aire-bravo-sport-14t',
+            'content': 'Precio $ 9.990',
+            'ficha_leida': True,
+        }
+        self.assertEqual(self._motivo(filtro, self._FILTRO, banda_max=15000), '')
+        # Sin motor en el título no hay borde: 2011-2014 deja afuera el 2010.
+        sin_motor = {
+            'title': 'Bujía Fiat Bravo 2011-2014',
+            'url': self._URL,
+            'content': 'Precio $ 12.990',
+            'ficha_leida': True,
+        }
+        self.assertEqual(self._motivo(sin_motor, self._BUJIA), 'anio_incompatible')
+        # Dos años de diferencia siguen afuera.
+        dos = {
+            'title': 'Bujía Fiat Bravo Sport 1.4t 2012-2014',
+            'url': self._URL,
+            'content': 'Precio $ 12.990',
+            'ficha_leida': True,
+        }
+        self.assertEqual(self._motivo(dos, self._BUJIA), 'anio_incompatible')
+
+    def test_otra_generacion_u_otro_motor_se_rechazan_y_la_banda_sigue(self):
+        viejo = {
+            'title': 'Bujía Champion Fiat Bravo 1.4 1995-2001 x4',
+            'url': 'https://www.entretuercas.cl/producto/bujia-champion-bravo-1995',
+            'content': 'Precio $ 9.641',
+            'ficha_leida': True,
+        }
+        self.assertEqual(self._motivo(viejo, self._BUJIA), 'anio_incompatible')
+        uno_seis = {
+            'title': 'Bujía Fiat Bravo 1.6 2008-2014',
+            'url': 'https://www.repuestosbravo.cl/producto/bujia-bravo-16',
+            'content': 'Precio $ 12.990',
+            'ficha_leida': True,
+        }
+        self.assertEqual(self._motivo(uno_seis, self._BUJIA), 'motor_incompatible')
+        ocho = {
+            'title': 'Bujía Fiat Bravo 8v 2008-2014',
+            'url': 'https://www.repuestosbravo.cl/producto/bujia-bravo-8v',
+            'content': 'Precio $ 12.990',
+            'ficha_leida': True,
+        }
+        self.assertEqual(self._motivo(ocho, self._BUJIA), 'motor_incompatible')
+        # El borde no salta la banda: por encima de 2,5× el máximo sigue alto.
+        caro = {
+            'title': self._TITULO,
+            'url': self._URL,
+            'content': f'{self._TITULO}. Precio $ 49.990',
+            'ficha_leida': True,
+        }
+        self.assertEqual(self._motivo(caro, self._BUJIA), 'precio_alto_banda')
+
+    def test_busqueda_cotiza_el_2011_y_bota_1995_y_el_1_6(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        url_16 = 'https://www.repuestosbravo.cl/producto/bujia-bravo-16-2008'
+        url_95 = 'https://www.entretuercas.cl/producto/bujia-champion-bravo-1995'
+        html = """
+        <html><head>
+          <meta property="og:price:amount" content="12990">
+        </head><body><h1>Bujía Original Fiat Bravo Sport 1.4t 2011-2014</h1></body></html>
+        """
+
+        def fake_buscar(query, **kwargs):
+            q = query.lower()
+            if q.startswith('bujias'):
+                return [
+                    {
+                        'title': self._TITULO,
+                        'url': self._URL,
+                        'content': self._TITULO,
+                        'score': 0.7,
+                    },
+                    {
+                        'title': 'Bujía Champion Fiat Bravo 1.4 1995-2001 x4',
+                        'url': url_95,
+                        'content': 'Bujía Champion Fiat Bravo 1.4 1995-2001 x4. Precio $ 9.641',
+                        'score': 0.9,
+                    },
+                    {
+                        'title': 'Bujía Fiat Bravo 1.6 2008-2014',
+                        'url': url_16,
+                        'content': 'Bujía Fiat Bravo 1.6 2008-2014. Precio $ 12.990',
+                        'score': 0.8,
+                    },
+                ]
+            return []
+
+        with patch.object(bw, '_tavily_buscar_uno', side_effect=fake_buscar), patch.object(
+            bw, '_tavily_extraer', return_value={},
+        ), patch.object(bw, '_leer_html_fichas', return_value={self._URL: html}), patch.object(
+            bw, '_gemini_generar', return_value=None,
+        ), self.assertLogs(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos',
+            level='INFO',
+        ) as logs:
+            out = bw._buscar_repuestos_web_tavily(
+                [self._BUJIA],
+                marca='FIAT',
+                modelo='BRAVO SPORT TJET',
+                anio=2010,
+                cilindraje='1.4',
+                tipo_motor='T-Jet',
+                servicio_nombre='Cambio de bujías y filtro de aire',
+                timeout=5,
+                plan={'piezas': []},
+                bandas_min={self._BUJIA: 8000},
+                bandas_max={self._BUJIA: 18000},
+            )
+
+        hit = out[bw._clave_fuzzy(self._BUJIA)]
+        self.assertEqual(hit['url'], self._URL)
+        texto = '\n'.join(logs.output)
+        self.assertIn(f'url={url_95} motivo=anio_incompatible', texto)
+        self.assertIn(f'url={url_16} motivo=motor_incompatible', texto)
+        self.assertNotIn(f'url={self._URL} motivo=anio_incompatible', texto)

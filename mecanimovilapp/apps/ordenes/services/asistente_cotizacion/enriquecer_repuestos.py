@@ -1250,6 +1250,7 @@ def _candidatos_web_cache(
                     banda_min=_banda_min_de(bandas_min, linea_cache),
                     banda_max=_banda_min_de(bandas_max, linea_cache),
                     anio=anio_vehiculo,
+                    cilindraje=cilindraje,
                     now=now,
                     cupo=cupo,
                 )
