@@ -956,6 +956,10 @@ def _ficha_cubre_pieza(nombre_linea: str, titulo_ficha: str) -> bool:
         return False
     if ficha_kit and any(c in linea for c in _COMPONENTE_EMBRAGUE) and 'kit' not in linea:
         return False
+    from .enriquecer_repuestos import _validar_tipo_parte
+
+    if not _validar_tipo_parte(nombre_linea, titulo_ficha):
+        return False
     return True
 
 
@@ -2241,11 +2245,18 @@ def _buscar_repuestos_web_tavily(
 
 def _titulo_nombra_pieza(nombre: str, titulo: str) -> bool:
     """El título tiene que decir la pieza. Un listado 'Repuestos Fiat Bravo' no."""
-    from .enriquecer_repuestos import _producto_menciona_pieza, _validar_tipo_parte
+    from .enriquecer_repuestos import (
+        _es_linea_aceite_motor,
+        _ficha_es_aceite_de_motor,
+        _producto_menciona_pieza,
+        _validar_tipo_parte,
+    )
 
     texto = str(titulo or '').strip()
     if not texto:
         return True
+    if _es_linea_aceite_motor(nombre) and not _ficha_es_aceite_de_motor(texto):
+        return False
     return _validar_tipo_parte(nombre, texto) and _producto_menciona_pieza(nombre, texto)
 
 
@@ -2592,6 +2603,7 @@ def hits_cache_vigentes_para_nombres(
         .order_by('-confianza', '-consultado_en')
     )
     out: dict[str, dict[str, Any]] = {}
+    from .enriquecer_repuestos import _producto_es_la_pieza
     from .vehiculo_exacto import clave_historial_cubre_vehiculo
 
     for row in rows:
@@ -2603,6 +2615,21 @@ def hits_cache_vigentes_para_nombres(
         fuzzy = clave.split('|', 1)[0] if '|' in clave else clave
         fuzzy = fuzzy or _clave_fuzzy(str(row.nombre_producto or ''))
         if not fuzzy:
+            continue
+        nombre_linea = claves_objetivo.get(clave) or claves_objetivo.get(fuzzy) or ''
+        producto = str(row.nombre_producto or '')
+        if nombre_linea and producto and not _producto_es_la_pieza(
+            nombre_linea, producto, fuente='web',
+        ):
+            # Fila vieja (bomba de aceite guardada como aceite). No se reusa
+            # y deja de contar como caché vigente para que Tavily vuelva a buscar.
+            logger.info(
+                'busqueda_web_repuestos[cache] ignorada linea=%s producto=%s',
+                str(nombre_linea)[:80],
+                producto[:80],
+            )
+            row.expira_en = now
+            row.save(update_fields=['expira_en'])
             continue
         # Preferir primer hit (mayor confianza) por fuzzy.
         if fuzzy in out:

@@ -313,3 +313,94 @@ class WebEnrichmentRealPathTestCase(TestCase):
         self.assertEqual(por_id['rep-filtro']['precio_unitario_clp'], 10990)
         self.assertEqual(por_id['rep-filtro']['proveedor_nombre'], 'Todoautochile')
         self.assertNotIn('cola no respondió', por_id['rep-filtro'].get('motivo_seleccion') or '')
+
+    def test_pastillas_asumidas_se_buscan_y_la_bomba_no_cotiza_el_aceite(self):
+        """Cotización 6: pastillas a $55.000 se buscan; la bomba de aceite no es el lubricante."""
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+            clave_cache_repuesto,
+        )
+        from mecanimovilapp.apps.ordenes.tasks import buscar_precios_web_cotizacion_task
+
+        clave = clave_cache_repuesto(
+            'Aceite de motor TISS',
+            marca_vehiculo='Fiat',
+            modelo_vehiculo='Bravo',
+            anio=2010,
+            cilindraje='1.4',
+        )
+        PrecioRepuestoWeb.objects.create(
+            clave=clave,
+            dominio='euroespecialista.cl',
+            nombre_producto='Bomba de aceite Fiat Bravo 1.4',
+            precio_clp=62991,
+            tienda='Euroespecialista',
+            url='https://euroespecialista.cl/bomba-aceite-fiat-bravo-1-4',
+            confianza=0.9,
+            cilindraje='1.4',
+            expira_en=timezone.now() + timedelta(days=7),
+        )
+        cot = self._crear_cotizacion_base([
+            {
+                'id': 'rep-pastillas',
+                'nombre': 'Pastillas de freno delanteras',
+                'cantidad': 1,
+                'precio_unitario_clp': 55000,
+                'precio_min_clp': 28000,
+                'precio_max_clp': 55000,
+                'certeza': 'asumido',
+                'comentario': 'Juego completo para eje delantero',
+                'especificacion': 'Cerámica',
+            },
+            {
+                'id': 'rep-aceite',
+                'nombre': 'Aceite de motor TISS',
+                'cantidad': 3,
+                'precio_unitario_clp': 0,
+                'precio_min_clp': 8000,
+                'precio_max_clp': 15000,
+                'comentario': '5W40 sintético',
+            },
+        ])
+        consultadas: list[str] = []
+
+        def _tavily(nombres, **kwargs):
+            consultadas.extend(nombres)
+            avisos = kwargs.get('avisos')
+            if isinstance(avisos, dict):
+                for nombre in nombres:
+                    if 'pastilla' in nombre.lower():
+                        avisos[nombre] = {
+                            'motivo': 'sin_ficha',
+                            'detalle': f'Se buscó "{nombre}". Sin ficha de pastillas.',
+                        }
+            return {
+                self.__class__._clave_fuzzy('Aceite de motor TISS'): {
+                    'nombre_producto': 'Aceite 5W40 4L',
+                    'precio_clp': 39960,
+                    'tienda': 'Todoautochile',
+                    'url': 'https://todoautochile.cl/aceite-5w40-4l',
+                    'dominio': 'todoautochile.cl',
+                },
+            }
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.busqueda_web_habilitada',
+            return_value=True,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.buscar_repuestos_web',
+            side_effect=_tavily,
+        ):
+            result = buscar_precios_web_cotizacion_task(cot.id)
+
+        self.assertTrue(result.get('ok'))
+        self.assertIn('Pastillas de freno delanteras', consultadas)
+        self.assertIn('Aceite de motor TISS', consultadas)
+        cot.refresh_from_db()
+        por_id = {r['id']: r for r in cot.repuestos}
+        self.assertEqual(por_id['rep-pastillas']['precio_unitario_clp'], 55000)
+        self.assertIn('Se buscó', por_id['rep-pastillas']['motivo_seleccion'])
+        self.assertNotIn('Juego completo', por_id['rep-pastillas']['motivo_seleccion'])
+        self.assertEqual(por_id['rep-aceite']['precio_unitario_clp'], 9990)
+        self.assertEqual(por_id['rep-aceite']['proveedor_nombre'], 'Todoautochile')
+        self.assertNotIn('Bomba', por_id['rep-aceite'].get('nombre_producto') or '')
+        self.assertNotEqual(por_id['rep-aceite']['precio_unitario_clp'], 62991)
