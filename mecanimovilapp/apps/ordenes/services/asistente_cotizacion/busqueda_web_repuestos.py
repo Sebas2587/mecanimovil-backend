@@ -1514,6 +1514,31 @@ def _precio_plausible_para_linea(nombre: str, precio: int) -> bool:
     return lo <= precio <= hi
 
 
+def _precio_de_candidato(candidato: dict[str, Any], nombre_linea: str) -> int:
+    """Precio del snippet, y si la ficha extraída lo tapó, el que ya habíamos leído."""
+    visto = _precio_desde_texto(str((candidato or {}).get('content') or ''), nombre_linea)
+    if _precio_plausible_para_linea(nombre_linea, visto):
+        return visto
+    guardado = _to_int_clp((candidato or {}).get('precio_snippet'))
+    if _precio_plausible_para_linea(nombre_linea, guardado):
+        return guardado
+    return 0
+
+
+def _linea_duena_de_url(
+    candidatos_por_nombre: dict[str, list[dict[str, Any]]],
+    url: str,
+) -> str:
+    """La línea cuya lista contiene esa URL. Vacío si la comparten dos líneas."""
+    encontrada = ''
+    for nombre, candidatos in (candidatos_por_nombre or {}).items():
+        if any(str(c.get('url') or '') == url for c in candidatos):
+            if encontrada:
+                return ''
+            encontrada = nombre
+    return encontrada
+
+
 def _precio_desde_texto(texto: str, nombre_linea: str = '') -> int:
     """Precio de VENTA de la ficha. No el primer `$` del snippet (relacionados/cuotas)."""
     raw = texto or ''
@@ -1966,7 +1991,7 @@ def _hits_desde_candidatos(
             (
                 (c, precio)
                 for c, precio in (
-                    (c, _precio_desde_texto(c.get('content') or '', nombre)) for c in candidatos
+                    (c, _precio_de_candidato(c, nombre)) for c in candidatos
                 )
                 if _precio_plausible_para_linea(nombre, precio)
                 and _candidato_sirve_linea(
@@ -2161,6 +2186,7 @@ def _buscar_repuestos_web_tavily(
         ordenados = _ordenar_candidatos(
             crudos,
             tokens_vehiculo=tokens_veh,
+            priorizar_precio=True,
             nombre_linea=nombre,
             anio=anio,
             cilindraje=cilindraje,
@@ -2174,6 +2200,10 @@ def _buscar_repuestos_web_tavily(
             and _titulo_nombra_pieza(nombre, str(c.get('title') or ''))
         ][:4]
         if servir:
+            for cand in servir:
+                cand['precio_snippet'] = _precio_desde_texto(
+                    str(cand.get('content') or ''), nombre,
+                )
             candidatos_por_nombre[nombre] = servir
         else:
             notas[nombre] = _aviso_sin_ficha(
@@ -2208,10 +2238,18 @@ def _buscar_repuestos_web_tavily(
     )
     if fichas:
         for nombre, candidatos in candidatos_por_nombre.items():
-            con_ficha = [
-                {**c, 'content': fichas[c['url']]} if c['url'] in fichas else c
-                for c in candidatos
-            ]
+            con_ficha = []
+            for c in candidatos:
+                extra = fichas.get(c['url']) or ''
+                if not extra:
+                    con_ficha.append(c)
+                    continue
+                # La ficha completa no borra el precio que ya venía en el snippet.
+                snippet = str(c.get('content') or '')
+                con_ficha.append({
+                    **c,
+                    'content': f'{snippet}\n{extra}'.strip() if snippet else extra,
+                })
             candidatos_por_nombre[nombre] = _ordenar_candidatos(
                 con_ficha,
                 tokens_vehiculo=tokens_veh,
@@ -2298,9 +2336,26 @@ def _buscar_repuestos_web_tavily(
         nombre_prod = str(item.get('nombre_producto') or item.get('nombre_buscado') or '').strip()[:200]
         if not nombre_prod:
             continue
-        nombre_linea = str(item.get('nombre_buscado') or '')
-        candidatos_linea = _candidatos_de_linea(candidatos_por_nombre, item.get('nombre_buscado'))
-        snippet = next((c.get('content') or '' for c in candidatos_linea if c['url'] == url), '')
+        dicha = str(item.get('nombre_buscado') or '')
+        duena = _linea_duena_de_url(candidatos_por_nombre, url)
+        # La URL es de UNA línea. El nombre que escribió el modelo, o el
+        # orden del JSON, no puede dejar el aceite en las pastillas.
+        nombre_linea = duena or dicha
+        if duena:
+            candidatos_linea = list(candidatos_por_nombre.get(duena) or [])
+            if _clave_fuzzy(dicha) and _clave_fuzzy(dicha) != _clave_fuzzy(duena):
+                logger.info(
+                    'busqueda_web_repuestos[tavily] reasignado dicho=%s duena=%s url=%s',
+                    dicha[:80],
+                    duena[:80],
+                    url[:180],
+                )
+        else:
+            candidatos_linea = _candidatos_de_linea(candidatos_por_nombre, dicha)
+            if not any(str(c.get('url') or '') == url for c in candidatos_linea):
+                continue
+        ficha = next((c for c in candidatos_linea if c.get('url') == url), None)
+        snippet = str((ficha or {}).get('content') or '')
         if not _candidato_sirve_linea(
             nombre_linea,
             {'title': nombre_prod, 'content': snippet, 'url': url},
@@ -2324,12 +2379,12 @@ def _buscar_repuestos_web_tavily(
         calidad_it, pais_it = _calidad_pais_de_item(item, attrs)
         precio = _to_int_clp(item.get('precio_clp'))
         if not _precio_plausible_para_linea(nombre_linea, precio):
-            precio = _precio_desde_texto(snippet, nombre_linea)
+            precio = _precio_de_candidato(ficha or {}, nombre_linea)
         if not _precio_plausible_para_linea(nombre_linea, precio):
             # El modelo eligió una ficha sin monto creíble habiendo otra:
             # se cambia de candidato, porque una línea en $0 no sirve.
             with_precio = [
-                (c, _precio_desde_texto(c.get('content') or '', nombre_linea))
+                (c, _precio_de_candidato(c, nombre_linea))
                 for c in candidatos_linea if c['url'] != url
             ]
             alternativa = next(
@@ -2358,14 +2413,14 @@ def _buscar_repuestos_web_tavily(
         if compat not in ('alta', 'media', 'baja'):
             compat = 'media'
         conf = 0.85 if compat == 'alta' else (0.75 if compat == 'media' else 0.6)
-        clave = _clave_fuzzy(str(item.get('nombre_buscado') or nombre_prod))
+        clave = _clave_fuzzy(nombre_linea)
         if not clave:
             continue
         prev = out.get(clave)
         if prev and float(prev.get('confianza') or 0) >= conf:
             continue
         hit_out = {
-            'nombre_buscado': str(item.get('nombre_buscado') or '').strip()[:200],
+            'nombre_buscado': str(nombre_linea or '').strip()[:200],
             'nombre_producto': nombre_prod,
             'marca_repuesto': marca_it,
             'precio_clp': precio,
@@ -2383,7 +2438,7 @@ def _buscar_repuestos_web_tavily(
         # Aprendizaje: si la ficha nombraba al auto, esa casa sirve para la
         # marca y en la próxima cotización se la consulta primero.
         candidato = next(
-            (c for c in candidatos_por_nombre.get(item.get('nombre_buscado') or '', []) if c['url'] == url),
+            (c for c in candidatos_linea if c.get('url') == url),
             None,
         )
         calce = _calce_vehiculo(candidato or {'title': nombre_prod}, tokens_veh)
@@ -2408,6 +2463,14 @@ def _buscar_repuestos_web_tavily(
         out[clave] = hit
         rescatadas += 1
 
+    for hit in out.values():
+        logger.info(
+            'busqueda_web_repuestos[tavily] elegido linea=%s producto=%s url=%s precio=%s',
+            str(hit.get('nombre_buscado') or '')[:80],
+            str(hit.get('nombre_producto') or '')[:80],
+            str(hit.get('url') or '')[:180],
+            hit.get('precio_clp') or 0,
+        )
     sin_hit = [n for n in nombres_limpios if _clave_fuzzy(n) not in out]
     logger.info(
         'busqueda_web_repuestos[tavily]: %s hits válidos de %s repuestos consultados '

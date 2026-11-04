@@ -470,9 +470,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
         enriquecer_repuestos_cotizacion,
         linea_necesita_busqueda_web,
-        min_score_web_para,
         _clave_fuzzy,
-        _mejor_hit,
         _nombre_con_marca,
         _to_int_clp,
     )
@@ -777,7 +775,23 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                 if rid and rid in by_cand:
                     reps_enriquecidos[i] = by_cand[rid]
 
-        # Si el enrich por cache no matcheó, aplicar hits directos por clave fuzzy.
+        # Cada hit pertenece a la línea que se buscó (id), no a la posición
+        # del JSON ni a un nombre que el modelo reescribió.
+        id_por_fuzzy = {}
+        for rep in candidatos:
+            if not isinstance(rep, dict):
+                continue
+            fid = str(rep.get('id') or '').strip()
+            fuzzy = _clave_fuzzy(str(rep.get('nombre') or ''))
+            if fid and fuzzy and fuzzy not in id_por_fuzzy:
+                id_por_fuzzy[fuzzy] = fid
+        for clave, hit in (resultados or {}).items():
+            if not isinstance(hit, dict) or str(hit.get('linea_id') or '').strip():
+                continue
+            buscado = _clave_fuzzy(str(hit.get('nombre_buscado') or '')) or str(clave)
+            hit['linea_id'] = id_por_fuzzy.get(buscado) or id_por_fuzzy.get(str(clave)) or ''
+
+        # Si el enrich por cache no matcheó, aplicar el hit de ESA línea.
         if resultados:
             urls_usadas: set[str] = set()
             for i, rep in enumerate(reps_enriquecidos):
@@ -787,9 +801,31 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                 if cand_ids and rid not in cand_ids:
                     continue
                 if str(rep.get('fuente_marketplace') or '') in ('catalogo', 'historial', 'web'):
+                    # El enrich ya escribió la ficha. Igual queda en el log
+                    # qué candidato se quedó esta línea.
+                    if rid:
+                        ya = next(
+                            (
+                                v for v in resultados.values()
+                                if isinstance(v, dict) and str(v.get('linea_id') or '') == rid
+                            ),
+                            None,
+                        )
+                        if isinstance(ya, dict) and str(ya.get('nombre_producto') or '') == str(
+                            rep.get('nombre_producto') or '',
+                        ):
+                            logger.info(
+                                'buscar_precios_web_cotizacion_task(%s): elegido id=%s linea=%s '
+                                'producto=%s url=%s precio=%s',
+                                cotizacion_id,
+                                rid,
+                                str(rep.get('nombre') or '')[:80],
+                                str(ya.get('nombre_producto') or '')[:80],
+                                str(ya.get('url') or '')[:180],
+                                ya.get('precio_clp') or 0,
+                            )
                     continue
                 from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
-                    _ficha_cubre_pieza,
                     _precio_plausible_para_linea,
                 )
                 from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
@@ -798,48 +834,36 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
 
                 nombre_linea = str(rep.get('nombre') or '')
                 q = _clave_fuzzy(nombre_linea)
-                hit = resultados.get(q)
+                hit = None
+                if rid:
+                    hit = next(
+                        (
+                            v for v in resultados.values()
+                            if isinstance(v, dict) and str(v.get('linea_id') or '') == rid
+                        ),
+                        None,
+                    )
+                if hit is None:
+                    exacto = resultados.get(q)
+                    if isinstance(exacto, dict) and (
+                        not rid or not exacto.get('linea_id') or str(exacto.get('linea_id')) == rid
+                    ):
+                        hit = exacto
                 if hit and not _producto_es_la_pieza(
                     nombre_linea,
                     str(hit.get('nombre_producto') or ''),
                     fuente='web',
                 ):
+                    logger.info(
+                        'buscar_precios_web_cotizacion_task(%s): rechazado id=%s linea=%s producto=%s',
+                        cotizacion_id,
+                        rid,
+                        nombre_linea[:80],
+                        str(hit.get('nombre_producto') or '')[:80],
+                    )
                     hit = None
                 if not hit:
-                    cands = [
-                        {
-                            'clave': k,
-                            'marca_repuesto': v.get('marca_repuesto'),
-                            'precio_unitario_clp': v.get('precio_clp'),
-                            'fuente_marketplace': 'web',
-                            'proveedor_nombre': v.get('tienda'),
-                            'url_producto': v.get('url'),
-                            'nombre_producto': v.get('nombre_producto'),
-                            'confianza': v.get('confianza') or 0.8,
-                        }
-                        for k, v in resultados.items()
-                        if isinstance(v, dict)
-                        and _producto_es_la_pieza(
-                            nombre_linea,
-                            str(v.get('nombre_producto') or ''),
-                            fuente='web',
-                        )
-                        and str(v.get('url') or '') not in urls_usadas
-                    ]
-                    best = _mejor_hit(
-                        nombre_linea,
-                        cands,
-                        min_score=min_score_web_para(nombre_linea),
-                    )
-                    if not best:
-                        continue
-                    hit = {
-                        'marca_repuesto': best.get('marca_repuesto'),
-                        'precio_clp': best.get('precio_unitario_clp'),
-                        'tienda': best.get('proveedor_nombre'),
-                        'url': best.get('url_producto'),
-                        'nombre_producto': best.get('nombre_producto'),
-                    }
+                    continue
                 if str(hit.get('url') or '') in urls_usadas:
                     continue
                 next_rep = dict(rep)
@@ -887,6 +911,15 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                         next_rep['comentario'] = nota_envase[:300]
                 next_rep['fuente_marketplace'] = 'web'
                 reps_enriquecidos[i] = next_rep
+                logger.info(
+                    'buscar_precios_web_cotizacion_task(%s): elegido id=%s linea=%s producto=%s url=%s precio=%s',
+                    cotizacion_id,
+                    rid,
+                    nombre_linea[:80],
+                    str(hit.get('nombre_producto') or '')[:80],
+                    str(hit.get('url') or '')[:180],
+                    hit.get('precio_clp') or 0,
+                )
 
         if avisos_busqueda:
             from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
@@ -962,9 +995,13 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                 merged_save.append(rep)
                 continue
             rid = str(rep.get('id') or '')
-            src = by_id.get(rid) if rid else (
-                reps_enriquecidos[i] if i < len(reps_enriquecidos) else None
-            )
+            src = by_id.get(rid) if rid else None
+            # Sin id no se toma la línea de al lado: un filtro agregado en el
+            # medio desplazaba pastillas y les escribía el aceite.
+            if src is None and not rid and i < len(reps_enriquecidos):
+                otro = reps_enriquecidos[i]
+                if isinstance(otro, dict) and not otro.get('id'):
+                    src = otro
             merged_save.append(src if isinstance(src, dict) else rep)
         cot.repuestos = merged_save
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.resolver_precio import (

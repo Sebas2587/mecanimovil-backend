@@ -2417,3 +2417,121 @@ class CoberturaPiezasComunesTests(SimpleTestCase):
                 'pastillas freno fiat bravo',
             ],
         )
+
+    def test_el_modelo_no_cruza_pastillas_aceite_y_filtro_por_nombre_o_indice(self):
+        """Cotización 9: 8 fichas de pastillas y el JSON de Gemini las pierde.
+
+        El modelo devuelve el aceite en el primer ítem con el nombre de las
+        pastillas, las pastillas con el nombre ya renombrado del aceite, y el
+        filtro al final. La URL de cada ficha es la que manda, no el índice.
+        Los snippets no traen precio: si el cruce se descarta, no hay rescate.
+        """
+        import json
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        pad_url = 'https://frenosvergara.shop/products/pastillas-fiat-bravo'
+        oil_url = 'https://www.mundorepuestos.cl/producto/aceite-liqui-moly-5w40-4l'
+        filter_url = 'https://www.todoautochile.cl/filtro-aceite-bravo'
+
+        def fake_buscar(query, **kwargs):
+            q = query.lower()
+            if 'pastilla' in q:
+                return [{
+                    'title': 'Pastillas de Freno Delanteras Fiat Bravo 1.4 T-Jet',
+                    'url': pad_url,
+                    'content': 'Juego delantero Fiat Bravo. Consultar stock en tienda.',
+                    'score': 0.9,
+                }]
+            if 'filtro' in q:
+                return [{
+                    'title': 'Filtro de aceite Mann Fiat Bravo',
+                    'url': filter_url,
+                    'content': 'Filtro de aceite para Fiat Bravo. Consultar stock.',
+                    'score': 0.8,
+                }]
+            if 'aceite' in q:
+                return [{
+                    'title': 'Aceite Para Motor Liqui Moly Sintético 5w-40 4L',
+                    'url': oil_url,
+                    'content': 'Lubricante sintético. Consultar stock.',
+                    'score': 0.9,
+                }]
+            return []
+
+        gemini = {
+            'candidates': [{
+                'content': {
+                    'parts': [{
+                        'text': json.dumps({'resultados': [
+                            {
+                                'nombre_buscado': 'Pastillas de freno delanteras',
+                                'encontrado': True,
+                                'nombre_producto': 'Aceite Para Motor Liqui Moly Sintético 5w-40 4L',
+                                'precio_clp': 39960,
+                                'tienda': 'Mundo Repuestos',
+                                'url': oil_url,
+                                'compatibilidad': 'alta',
+                            },
+                            {
+                                'nombre_buscado': 'Aceite de motor Liqui Moly',
+                                'encontrado': True,
+                                'nombre_producto': 'Pastillas de Freno Delanteras Fiat Bravo 1.4 T-Jet',
+                                'precio_clp': 28990,
+                                'tienda': 'Frenos Vergara',
+                                'url': pad_url,
+                                'compatibilidad': 'alta',
+                            },
+                            {
+                                'nombre_buscado': 'Pastillas de freno delanteras',
+                                'encontrado': True,
+                                'nombre_producto': 'Filtro de aceite Mann Fiat Bravo',
+                                'precio_clp': 10990,
+                                'tienda': 'Todoautochile',
+                                'url': filter_url,
+                                'compatibilidad': 'media',
+                            },
+                        ]}),
+                    }],
+                },
+            }],
+        }
+        with patch.object(bw, '_tavily_buscar_uno', side_effect=fake_buscar), patch.object(
+            bw, '_tavily_extraer', return_value={},
+        ), patch.object(bw, '_gemini_generar', return_value=gemini), self.assertLogs(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos',
+            level='INFO',
+        ) as logs:
+            out = bw._buscar_repuestos_web_tavily(
+                [
+                    'Pastillas de freno delanteras',
+                    'Filtro de aceite',
+                    'Aceite de motor',
+                ],
+                marca='FIAT',
+                modelo='BRAVO SPORT TJET',
+                anio=2010,
+                cilindraje='1.4',
+                tipo_motor='TJET',
+                servicio_nombre='Cambio de pastillas, filtro y aceite',
+                timeout=5,
+                plan={'piezas': []},
+            )
+
+        texto = '\n'.join(logs.output)
+        pads = out[bw._clave_fuzzy('Pastillas de freno delanteras')]
+        aceite = out[bw._clave_fuzzy('Aceite de motor')]
+        filtro = out[bw._clave_fuzzy('Filtro de aceite')]
+        self.assertEqual(pads['url'], pad_url)
+        self.assertIn('Pastillas', pads['nombre_producto'])
+        self.assertNotIn('Liqui', pads['nombre_producto'])
+        self.assertEqual(pads['precio_clp'], 28990)
+        self.assertEqual(aceite['url'], oil_url)
+        self.assertIn('Liqui Moly', aceite['nombre_producto'])
+        self.assertEqual(aceite['precio_clp'], 39960)
+        self.assertEqual(aceite['nombre_buscado'], 'Aceite de motor')
+        self.assertEqual(filtro['url'], filter_url)
+        self.assertIn('Filtro', filtro['nombre_producto'])
+        self.assertIn('elegido linea=Pastillas de freno delanteras', texto)
+        self.assertIn(pad_url, texto)
+        self.assertIn('reasignado', texto)
