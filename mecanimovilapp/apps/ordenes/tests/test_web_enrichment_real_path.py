@@ -248,7 +248,7 @@ class WebEnrichmentRealPathTestCase(TestCase):
 
         cot.refresh_from_db()
         por_id = {r['id']: r for r in cot.repuestos}
-        nota_indra = 'Indra: especialista Fiat, tiene todos los repuestos. Precio a consultar.'
+        nota_indra = 'Indra (especialista Fiat): consulta disponibilidad y precio.'
         self.assertEqual(por_id['rep-pastillas']['precio_unitario_clp'], 70000)
         self.assertEqual(por_id['rep-pastillas']['motivo_seleccion'], nota_indra)
         self.assertEqual(por_id['rep-pastillas']['casa_repuesto_nombre'], 'Indra')
@@ -305,7 +305,7 @@ class WebEnrichmentRealPathTestCase(TestCase):
         self.assertEqual(por_id['rep-aceite']['precio_unitario_clp'], 42000)
         self.assertEqual(
             por_id['rep-aceite']['motivo_seleccion'],
-            'Indra: especialista Fiat, tiene todos los repuestos. Precio a consultar.',
+            'Indra (especialista Fiat): consulta disponibilidad y precio.',
         )
         self.assertNotIn('Se buscó', por_id['rep-aceite']['motivo_seleccion'])
         self.assertEqual(por_id['rep-pastillas']['precio_unitario_clp'], 70000)
@@ -414,7 +414,7 @@ class WebEnrichmentRealPathTestCase(TestCase):
         self.assertEqual(por_id['rep-pastillas']['precio_unitario_clp'], 55000)
         self.assertEqual(
             por_id['rep-pastillas']['motivo_seleccion'],
-            'Indra: especialista Fiat, tiene todos los repuestos. Precio a consultar.',
+            'Indra (especialista Fiat): consulta disponibilidad y precio.',
         )
         self.assertTrue(por_id['rep-pastillas']['precio_a_consultar'])
         self.assertNotIn('Se buscó', por_id['rep-pastillas']['motivo_seleccion'])
@@ -571,7 +571,7 @@ class WebEnrichmentRealPathTestCase(TestCase):
         self.assertEqual(aceite.get('precio_referencia_clp'), 13162)
         self.assertEqual(
             aceite.get('motivo_seleccion'),
-            'Indra: especialista Fiat, precio a consultar.',
+            'Indra (especialista Fiat): consulta disponibilidad y precio. Referencia: Repuestos Sergio Escobar $13.162.',
         )
         fila = PrecioRepuestoWeb.objects.get(dominio='repuestos.sergioescobar.cl')
         self.assertEqual(fila.precio_clp, 52650)
@@ -689,13 +689,13 @@ class WebEnrichmentRealPathTestCase(TestCase):
         filtro = por_id['rep-filtro']
         self.assertEqual(
             bujias['motivo_seleccion'],
-            'Indra: especialista Fiat, precio a consultar.',
+            'Indra (especialista Fiat): consulta disponibilidad y precio.',
         )
         self.assertTrue(bujias['precio_a_consultar'])
         self.assertLessEqual(len(bujias['comentario']), 160)
         self.assertEqual(
             filtro['motivo_seleccion'],
-            'Indra: especialista Fiat, precio a consultar.',
+            'Indra (especialista Fiat): consulta disponibilidad y precio. Referencia: Comercial Ramírez $14.990.',
         )
         self.assertEqual(filtro['casa_repuesto_nombre'], 'Indra')
         self.assertEqual(filtro['proveedor_nombre'], 'Comercial Ramírez')

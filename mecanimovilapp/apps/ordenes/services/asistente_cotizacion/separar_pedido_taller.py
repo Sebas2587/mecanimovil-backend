@@ -154,6 +154,22 @@ def misma_pieza(a: str, b: str) -> bool:
     tb = _tokens(b)
     if not ta or not tb:
         return False
+    # El filtro de aire y el de aceite comparten «filtro» y no son la misma pieza.
+    if ('aire' in ta) != ('aire' in tb) and ('filtro' in ta or 'filtro' in tb):
+        return False
+    # «Aceite» y «Filtro de aceite» se compran juntos y no son la misma línea.
+    # «Aceite de motor con filtro» sí sigue siendo el aceite.
+    fa = _fold(a)
+    fb = _fold(b)
+
+    def _filtro_pieza(texto: str) -> bool:
+        return 'filtro' in texto and 'con filtro' not in texto
+
+    def _aceite_sin_filtro(texto: str) -> bool:
+        return 'aceite' in texto and 'filtro' not in texto
+
+    if (_filtro_pieza(fa) and _aceite_sin_filtro(fb)) or (_filtro_pieza(fb) and _aceite_sin_filtro(fa)):
+        return False
     distintivos_a = ta & _DISTINTIVOS_PIEZA
     distintivos_b = tb & _DISTINTIVOS_PIEZA
     if distintivos_a and distintivos_b and distintivos_a.isdisjoint(distintivos_b):
@@ -164,6 +180,9 @@ def misma_pieza(a: str, b: str) -> bool:
         return bool(nucleo_a & nucleo_b)
     if not nucleo_a and not nucleo_b:
         return bool(ta & tb)
+    # «Aceite» es el mismo repuesto que «Aceite de motor», no una tercera línea.
+    if _aceite_sin_filtro(fa) and _aceite_sin_filtro(fb) and (ta <= tb or tb <= ta):
+        return True
     return False
 
 
@@ -271,11 +290,18 @@ def interpretar_pedido_taller(texto: str) -> dict[str, list[str]]:
     conjuntas: list[str] = []
     chunks = [c.strip() for c in _split_servicios(texto) if c.strip()]
     lista = len(chunks) > 1
+    verbo_lista = ''
     for frase in chunks:
         frase = _sin_conector(frase)
         if not frase:
             continue
+        # «Cambio de pastillas, aceite y filtro, bujías»: el verbo abre toda la lista.
+        if lista and verbo_lista and not _VERBO_PIEZA.match(frase) and not es_solo_mano(frase):
+            frase = f'{verbo_lista} {frase}'.strip()
         titulo = _titulo_faena(frase)
+        abierto = _VERBO_PIEZA.match(frase)
+        if abierto:
+            verbo_lista = frase[:abierto.start(1)].strip()
         if es_solo_mano(frase) or es_solo_mano(titulo):
             mano.append(titulo)
             continue

@@ -100,10 +100,23 @@ def _partir_bujia_asumida(next_rep: dict[str, Any]) -> dict[str, Any]:
         tiene_ficha=tiene_ficha,
     )
     if not nota or nuevo == unit:
+        nuevo = unit
+    else:
+        next_rep['precio_unitario_clp'] = nuevo
+        if not str(next_rep.get('comentario') or '').strip():
+            next_rep['comentario'] = nota[:300]
+    if tiene_ficha:
         return next_rep
-    next_rep['precio_unitario_clp'] = nuevo
-    if not str(next_rep.get('comentario') or '').strip():
-        next_rep['comentario'] = nota[:300]
+    from .busqueda_web_repuestos import _monto_banda_por_unidad
+
+    techo = _monto_banda_por_unidad(
+        str(next_rep.get('nombre') or ''),
+        _to_int_clp(next_rep.get('precio_max_clp')),
+        next_rep.get('cantidad'),
+    )
+    unitario = _to_int_clp(next_rep.get('precio_unitario_clp'))
+    if techo > 0 and unitario > techo:
+        next_rep['precio_unitario_clp'] = techo
     return next_rep
 
 

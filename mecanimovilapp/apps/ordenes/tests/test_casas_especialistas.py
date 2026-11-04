@@ -128,7 +128,10 @@ class CasasEspecialistasTests(TestCase):
         self.assertEqual(linea['precio_unitario_clp'], 4990)
         self.assertEqual(linea['referencia_tienda'], 'TodoAuto')
         self.assertEqual(linea['precio_referencia_clp'], 4990)
-        self.assertEqual(linea['motivo_seleccion'], 'Indra: especialista Fiat, precio a consultar.')
+        self.assertEqual(
+            linea['motivo_seleccion'],
+            'Indra (especialista Fiat): consulta disponibilidad y precio. Referencia: TodoAuto $4.990.',
+        )
         self.assertLessEqual(len(linea['motivo_seleccion']), 160)
         self.assertIn('Lira 664', linea['casa_sucursal'])
 
@@ -149,6 +152,86 @@ class CasasEspecialistasTests(TestCase):
             'fuente_marketplace': 'estimado',
         }], marca_vehiculo='Fiat', taller=taller)[0]
         self.assertIn('Vicuña Mackenna', linea['casa_sucursal'])
+
+    def test_la_florida_en_la_calle_gana_a_santiago(self):
+        user = User.objects.create_user(username='taller_kennedy', password='x', email='k@test.cl')
+        taller = Taller.objects.create(usuario=user, nombre='MecaniMovil', telefono='1')
+        TallerDireccion.objects.create(
+            taller=taller,
+            calle='John Kennedy 709, La Florida',
+            numero='709',
+            comuna='Santiago',
+            ciudad='Santiago',
+            region='Metropolitana',
+        )
+        linea = _aplicar_seleccion_casa_repuestos([{
+            'nombre': 'Filtro de aceite',
+            'cantidad': 1,
+            'precio_unitario_clp': 0,
+            'fuente_marketplace': 'estimado',
+        }], marca_vehiculo='FIAT', taller=taller)[0]
+        self.assertIn('Vicuña Mackenna 8580', linea['casa_sucursal'])
+        self.assertIn('La Florida', linea['casa_sucursal'])
+        self.assertNotIn('Lira', linea['casa_sucursal'])
+        self.assertIn('Fiat', linea['motivo_seleccion'])
+        self.assertNotIn('FIAT', linea['motivo_seleccion'])
+
+    def test_sin_ficha_cada_linea_conserva_su_referencia(self):
+        out = _aplicar_seleccion_casa_repuestos([
+            {
+                'nombre': 'Pastillas de freno delanteras',
+                'cantidad': 1,
+                'precio_unitario_clp': 21390,
+                'fuente_marketplace': 'web',
+                'proveedor_nombre': 'Lider',
+                'url_producto': 'https://www.lider.cl/pastillas',
+            },
+            {
+                'nombre': 'Filtro de aire',
+                'cantidad': 1,
+                'precio_unitario_clp': 15000,
+                'fuente_marketplace': 'estimado',
+            },
+        ], marca_vehiculo='FIAT')
+        self.assertEqual(
+            out[0]['motivo_seleccion'],
+            'Indra (especialista Fiat): consulta disponibilidad y precio. Referencia: Lider $21.390.',
+        )
+        self.assertEqual(
+            out[1]['motivo_seleccion'],
+            'Indra (especialista Fiat): consulta disponibilidad y precio.',
+        )
+        self.assertNotIn('tiene todos', out[0]['motivo_seleccion'].lower())
+        self.assertNotIn('tiene todos', out[1]['motivo_seleccion'].lower())
+        self.assertLessEqual(len(out[0]['motivo_seleccion']), 160)
+
+    def test_la_especialista_no_sube_la_bujia_asumida(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.resolver_precio import (
+            aplicar_techo_ia_si_falta_unitario,
+        )
+
+        asumida = aplicar_techo_ia_si_falta_unitario({
+            'nombre': 'Bujías iridium',
+            'cantidad': 4,
+            'precio_unitario_clp': 15000,
+            'precio_min_clp': 8000,
+            'precio_max_clp': 11250,
+        })
+        self.assertEqual(asumida['precio_unitario_clp'], 11250)
+        juego = aplicar_techo_ia_si_falta_unitario({
+            'nombre': 'Bujías iridium',
+            'cantidad': 4,
+            'precio_unitario_clp': 60000,
+            'precio_min_clp': 8000,
+            'precio_max_clp': 45000,
+        })
+        self.assertEqual(juego['precio_unitario_clp'], 11250)
+        linea = _aplicar_seleccion_casa_repuestos(
+            [asumida], marca_vehiculo='Fiat',
+        )[0]
+        self.assertEqual(linea['precio_unitario_clp'], 11250)
+        self.assertTrue(linea['precio_a_consultar'])
+        self.assertEqual(linea['casa_repuesto_nombre'], 'Indra')
 
     def test_dos_fichas_de_indra_dicen_que_tiene_todo(self):
         nota = nota_especialista('Indra', 'Fiat', cubre_todo=True, a_consultar=False)
@@ -294,6 +377,19 @@ class OrdenCompraPdfTests(TestCase):
         self.assertNotIn('margen', texto.lower())
         self.assertNotIn('80.000', texto)
         self.assertNotIn('150.000', texto)
+
+    def test_el_pdf_usa_la_sucursal_de_la_florida(self):
+        TallerDireccion.objects.create(
+            taller=self.taller,
+            calle='John Kennedy',
+            numero='709',
+            comuna='La Florida',
+            ciudad='Santiago',
+            region='Metropolitana',
+        )
+        texto = _texto_pdf(generar_pdf_orden_compra(self.cot))
+        self.assertIn('Av. Vicuña Mackenna 8580, La Florida', texto)
+        self.assertNotIn('Lira 664', texto)
 
     def test_el_taller_descarga_el_pdf(self):
         client = APIClient()

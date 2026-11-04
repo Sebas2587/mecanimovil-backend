@@ -1230,6 +1230,62 @@ class SepararPedidoTallerTestCase(SimpleTestCase):
         )
         self.assertEqual(interp['repuestos'], ['Bujías', 'Bobinas', 'Batería'])
 
+    def test_cotizacion_208_tiene_una_faena_por_trabajo(self):
+        pedido = (
+            'Cambio de pastillas de freno delanteras, aceite y filtro de aceite, '
+            'bujías y filtro de aire'
+        )
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.separar_pedido_taller import (
+            interpretar_pedido_taller,
+        )
+
+        interp = interpretar_pedido_taller(pedido)
+        self.assertEqual(
+            interp['mano_obra'],
+            [
+                'Cambio de pastillas de freno delanteras',
+                'Cambio de aceite y filtro de aceite',
+                'Cambio de bujías',
+                'Cambio de filtro de aire',
+            ],
+        )
+        self.assertEqual(
+            interp['repuestos'],
+            [
+                'Pastillas de freno delanteras',
+                'Aceite',
+                'Filtro de aceite',
+                'Bujías',
+                'Filtro de aire',
+            ],
+        )
+        out = normalizar_cotizacion_ia(
+            {
+                'servicio_nombre': pedido,
+                'mano_obra_clp': 50000,
+                'servicios_lineas': [
+                    {'nombre': 'Cambio de pastillas de freno delanteras', 'monto_clp': 35000},
+                    {'nombre': 'Cambio de filtro de aire', 'monto_clp': 15000},
+                ],
+                'repuestos': [],
+            },
+            {'servicio_nombre': pedido},
+        )
+        montos = {lin['nombre']: lin['monto_clp'] for lin in out['servicios_lineas']}
+        self.assertEqual(
+            list(montos),
+            [
+                'Cambio de pastillas de freno delanteras',
+                'Cambio de aceite y filtro de aceite',
+                'Cambio de bujías',
+                'Cambio de filtro de aire',
+            ],
+        )
+        self.assertEqual(montos['Cambio de pastillas de freno delanteras'], 35000)
+        self.assertEqual(montos['Cambio de filtro de aire'], 15000)
+        self.assertIn('Cambio de aceite y filtro de aceite', montos)
+        self.assertIn('Cambio de bujías', montos)
+
     def test_no_guarda_la_faena_como_repuesto(self):
         ctx = {'servicio_nombre': self.PEDIDO}
         out = normalizar_cotizacion_ia(

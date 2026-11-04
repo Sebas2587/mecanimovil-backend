@@ -4299,7 +4299,7 @@ class NotaMecanicoTests(SimpleTestCase):
         self.assertEqual(linea['proveedor_nombre'], 'TodoAuto')
         self.assertEqual(
             linea['motivo_seleccion'],
-            'Indra: especialista Fiat, precio a consultar.',
+            'Indra (especialista Fiat): consulta disponibilidad y precio. Referencia: TodoAuto $8.990.',
         )
         self.assertNotEqual(linea['precio_unitario_clp'], 0)
         self.assertNotIn('http', linea['motivo_seleccion'])
@@ -4319,7 +4319,7 @@ class NotaMecanicoTests(SimpleTestCase):
         self.assertEqual(lider['proveedor_nombre'], 'Lider')
         self.assertEqual(
             lider['motivo_seleccion'],
-            'Indra: especialista Fiat, precio a consultar.',
+            'Indra (especialista Fiat): consulta disponibilidad y precio. Referencia: Lider $24.990.',
         )
         self.assertNotIn('lider.cl', lider['motivo_seleccion'])
         comercial = nota_con_tienda(
@@ -4424,7 +4424,7 @@ class NotaMecanicoTests(SimpleTestCase):
         self.assertEqual(aplicada['referencia_tienda'], 'Comercial Ramírez')
         self.assertEqual(
             aplicada['motivo_seleccion'],
-            'Indra: especialista Fiat, precio a consultar.',
+            'Indra (especialista Fiat): consulta disponibilidad y precio. Referencia: Comercial Ramírez $4.990.',
         )
         self.assertEqual(aplicada['precio_unitario_clp'], 4990)
         self.assertNotIn('comercialramirezspa', aplicada['motivo_seleccion'].lower())
