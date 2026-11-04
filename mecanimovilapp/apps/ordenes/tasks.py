@@ -448,6 +448,7 @@ def _soltar_ficha_mercado(rep: dict) -> dict:
     for campo in (
         'proveedor_nombre', 'url_producto', 'nombre_producto',
         'fuente_marketplace', 'fuente_repuesto', 'tienda_ml',
+        'referencia_tienda', 'precio_referencia_clp',
     ):
         limpio.pop(campo, None)
     limpio.pop('precio_referencia_mercado', None)
@@ -470,8 +471,13 @@ def _candidato_de_hit(hit: dict) -> dict:
 def _motivo_hit(hit: dict, rep: dict, cot) -> str:
     """La misma compuerta de la selección y de la caché. '' si el hit se queda."""
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+        _RE_PACK,
         _monto_banda_por_unidad,
         _motivo_calidad_pastilla,
+        _norm,
+    )
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+        _to_int_clp,
     )
 
     nombre_linea = str(rep.get('nombre') or '')
@@ -485,8 +491,19 @@ def _motivo_hit(hit: dict, rep: dict, cot) -> str:
         techo_linea = 0
     piso_linea = _monto_banda_por_unidad(nombre_linea, piso_linea, rep.get('cantidad'))
     techo_linea = _monto_banda_por_unidad(nombre_linea, techo_linea, rep.get('cantidad'))
+    plano = nombre_linea.lower().replace('í', 'i').replace('Í', 'i')
+    if techo_linea <= 0 and 'bujia' in plano:
+        propio = _to_int_clp(rep.get('precio_unitario_clp'))
+        if 0 < propio < 22_000:
+            techo_linea = propio
+    candidato = _candidato_de_hit(hit)
+    # El enrich ya partió el juego. El título puede seguir diciendo x4.
+    if techo_linea > 0 and 'bujia' in _norm(nombre_linea):
+        estante = int(candidato.get('precio_snippet') or 0)
+        if 0 < estante <= techo_linea:
+            candidato['title'] = _RE_PACK.sub(' ', str(candidato.get('title') or ''))
     return _motivo_calidad_pastilla(
-        _candidato_de_hit(hit),
+        candidato,
         nombre=nombre_linea,
         modelo=cot.vehiculo_modelo or '',
         tipo_motor=' '.join(
@@ -1053,6 +1070,14 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                             ),
                             cilindraje=cot.vehiculo_cilindraje or '',
                         )
+                    guardada = reps_enriquecidos[i]
+                    if isinstance(guardada, dict) and (
+                        guardada.get('referencia_tienda') or guardada.get('precio_referencia_clp')
+                    ):
+                        guardada = dict(guardada)
+                        guardada.pop('referencia_tienda', None)
+                        guardada.pop('precio_referencia_clp', None)
+                        reps_enriquecidos[i] = guardada
                     continue
                 if str(hit.get('url') or '') in urls_usadas:
                     continue
@@ -1087,25 +1112,50 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                 if hit.get('pais_origen'):
                     next_rep['pais_origen'] = str(hit['pais_origen'])[:40]
                 precio = int(hit.get('precio_clp') or 0)
-                if precio > 0 and not _precio_plausible_para_linea(nombre_linea, precio):
-                    continue
                 from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+                    _monto_banda_por_unidad,
+                    monto_por_unidad_citable,
                     precio_unitario_desde_envase,
-                    precio_unitario_desde_pack,
                 )
 
-                precio, nota_envase = precio_unitario_desde_envase(
+                try:
+                    piso_cita = int(rep.get('precio_min_clp') or 0)
+                    techo_cita = int(rep.get('precio_max_clp') or 0)
+                except (TypeError, ValueError):
+                    piso_cita, techo_cita = 0, 0
+                piso_cita = _monto_banda_por_unidad(nombre_linea, piso_cita, rep.get('cantidad'))
+                techo_cita = _monto_banda_por_unidad(nombre_linea, techo_cita, rep.get('cantidad'))
+                citado = monto_por_unidad_citable(
+                    _candidato_de_hit(hit),
+                    nombre=nombre_linea,
+                    modelo=cot.vehiculo_modelo or '',
+                    tipo_motor=' '.join(
+                        p for p in (
+                            cot.tipo_motor or '',
+                            getattr(cot, 'tipo_motor_label', '') or '',
+                        ) if p
+                    ),
+                    banda_min=piso_cita,
+                    banda_max=techo_cita,
+                    anio=cot.vehiculo_anio or '',
+                    cilindraje=cot.vehiculo_cilindraje or '',
+                    cantidad=next_rep.get('cantidad'),
+                    unitario_linea=int(rep.get('precio_unitario_clp') or 0),
+                )
+                if precio > 0 and citado <= 0:
+                    guardada = dict(reps_enriquecidos[i])
+                    guardada.pop('referencia_tienda', None)
+                    guardada.pop('precio_referencia_clp', None)
+                    reps_enriquecidos[i] = guardada
+                    continue
+                precio = citado or precio
+                unit_envase, nota_envase = precio_unitario_desde_envase(
                     nombre_linea,
                     precio,
                     str(hit.get('nombre_producto') or ''),
                 )
-                if not nota_envase:
-                    precio, nota_envase = precio_unitario_desde_pack(
-                        nombre_linea,
-                        precio,
-                        str(hit.get('nombre_producto') or ''),
-                        next_rep.get('cantidad'),
-                    )
+                if nota_envase and unit_envase > 0:
+                    precio = unit_envase
                 url_hit = str(hit.get('url') or '').strip()
                 if url_hit:
                     urls_usadas.add(url_hit)
@@ -1116,8 +1166,6 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                     next_rep['precio_unitario_clp'] = precio
                     next_rep['precio_referencia_mercado'] = True
                     next_rep['precio_estimado'] = True
-                    if nota_envase:
-                        next_rep['comentario'] = nota_envase[:300]
                 estante = int(hit.get('precio_clp') or 0)
                 normal = int(hit.get('precio_normal_clp') or 0)
                 if normal > estante > 0 and normal < estante * 3:

@@ -57,13 +57,27 @@ def _grupos(repuestos: list[dict]) -> list[tuple[str, list[dict]]]:
     return [(casa, grupos[casa]) for casa in orden]
 
 
-def _precio_linea(rep: dict) -> str:
+def _precio_linea(rep: dict, cotizacion=None) -> str:
     if rep.get('precio_a_consultar'):
-        ref_tienda = _txt(rep.get('referencia_tienda'))
-        try:
-            ref = int(rep.get('precio_referencia_clp') or 0)
-        except (TypeError, ValueError):
-            ref = 0
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            _referencia_consulta,
+        )
+
+        tipo = ''
+        if cotizacion is not None:
+            tipo = ' '.join(
+                parte for parte in (
+                    str(getattr(cotizacion, 'tipo_motor', '') or ''),
+                    str(getattr(cotizacion, 'tipo_motor_label', '') or ''),
+                ) if parte
+            )
+        ref_tienda, ref = _referencia_consulta(
+            rep,
+            modelo=str(getattr(cotizacion, 'vehiculo_modelo', '') or '') if cotizacion is not None else '',
+            anio=getattr(cotizacion, 'vehiculo_anio', None) if cotizacion is not None else None,
+            tipo_motor=tipo,
+            cilindraje=getattr(cotizacion, 'vehiculo_cilindraje', '') if cotizacion is not None else '',
+        )
         if ref_tienda and ref > 0:
             return f'A consultar. Referencia en {ref_tienda}: {_pesos(ref)} (no es el precio de esta casa).'
         return 'A consultar'
@@ -164,7 +178,7 @@ def generar_pdf_orden_compra(cotizacion) -> bytes:
             )
             if spec:
                 pdf._parrafo(spec, size=9)
-            pdf._parrafo(_precio_linea(rep), size=9)
+            pdf._parrafo(_precio_linea(rep, cotizacion), size=9)
         pdf.ln(1)
 
     pdf.ln(2)

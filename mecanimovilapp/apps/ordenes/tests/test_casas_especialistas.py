@@ -673,3 +673,222 @@ class NotaViejaYSucursalEnLaTareaTests(TestCase):
         texto = _texto_pdf(generar_pdf_orden_compra(cot))
         self.assertIn('Lira 664, Santiago', texto)
         self.assertNotIn('Avenida Brasil 28', texto)
+
+
+class ReferenciaBujiaEnLaTareaTests(TestCase):
+    """La re-búsqueda al abrir no cita ni pega un hit de bujía que no pasó la banda."""
+
+    def _cot(self, user, taller, repuestos):
+        return CotizacionCanal.objects.create(
+            taller=taller,
+            creado_por=user,
+            estado='borrador',
+            modalidad='taller',
+            vehiculo_marca='FIAT',
+            vehiculo_modelo='Bravo',
+            vehiculo_anio=2010,
+            vehiculo_cilindraje='1.4',
+            tipo_motor='T-Jet',
+            servicio_nombre='Cambio de bujías',
+            repuestos=repuestos,
+            metadata={'busqueda_web_estado': 'pendiente'},
+        )
+
+    def _linea(self, **extra):
+        base = {
+            'id': 'bujias',
+            'nombre': 'Bujías',
+            'cantidad': 4,
+            'precio_unitario_clp': 12000,
+            'precio_min_clp': 8000,
+            'precio_max_clp': 12000,
+            'certeza': 'asumido',
+            'precio_estimado': True,
+            'fuente_marketplace': 'estimado',
+            'precio_a_consultar': True,
+            'referencia_tienda': 'Lider',
+            'precio_referencia_clp': 28432,
+            'motivo_seleccion': (
+                'Indra (especialista Fiat): consulta disponibilidad y precio. '
+                'Referencia: Lider $28.432.'
+            ),
+            'comentario': (
+                'Indra (especialista Fiat): consulta disponibilidad y precio. '
+                'Referencia: Lider $28.432.'
+            ),
+        }
+        base.update(extra)
+        return base
+
+    def test_la_banda_rechaza_la_bujia_suelta_y_parte_el_juego(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+            _motivo_calidad_pastilla,
+            monto_por_unidad_citable,
+        )
+
+        suelta = {
+            'title': 'Bujía Iridium Fiat Bravo 1.4 T-Jet',
+            'url': 'https://www.lider.cl/bujia-iridium-bravo',
+            'content': 'Bujía Iridium Fiat Bravo 1.4 T-Jet. Precio $ 28.432',
+            'ficha_leida': True,
+            'precio_snippet': 28432,
+        }
+        self.assertEqual(
+            _motivo_calidad_pastilla(
+                suelta,
+                nombre='Bujías',
+                modelo='Bravo',
+                tipo_motor='T-Jet',
+                banda_min=8000,
+                banda_max=12000,
+                anio=2010,
+                cilindraje='1.4',
+            ),
+            'precio_alto_banda',
+        )
+        self.assertEqual(
+            monto_por_unidad_citable(
+                suelta,
+                nombre='Bujías',
+                modelo='Bravo',
+                tipo_motor='T-Jet',
+                banda_min=8000,
+                banda_max=12000,
+                anio=2010,
+                cilindraje='1.4',
+                cantidad=4,
+                unitario_linea=12000,
+            ),
+            0,
+        )
+        juego = {
+            'title': 'Juego de 4 bujías NGK Fiat Bravo 1.4 T-Jet',
+            'url': 'https://www.lider.cl/juego-4-bujias-bravo',
+            'content': 'Juego de 4 bujías NGK Fiat Bravo 1.4 T-Jet. Precio $ 36.000',
+            'ficha_leida': True,
+            'precio_snippet': 36000,
+        }
+        self.assertEqual(
+            _motivo_calidad_pastilla(
+                juego,
+                nombre='Bujías',
+                modelo='Bravo',
+                tipo_motor='T-Jet',
+                banda_min=8000,
+                banda_max=12000,
+                anio=2010,
+                cilindraje='1.4',
+            ),
+            '',
+        )
+        self.assertEqual(
+            monto_por_unidad_citable(
+                juego,
+                nombre='Bujías',
+                modelo='Bravo',
+                tipo_motor='T-Jet',
+                banda_min=8000,
+                banda_max=12000,
+                anio=2010,
+                cilindraje='1.4',
+                cantidad=4,
+                unitario_linea=12000,
+            ),
+            9000,
+        )
+
+    def test_la_tarea_no_cita_el_hit_de_28432_y_el_pdf_tampoco(self):
+        user = User.objects.create_user(
+            username='bujia_28432', password='x', email='b28432@test.cl',
+        )
+        taller = Taller.objects.create(usuario=user, nombre='Mecanimovil', telefono='1')
+        cot = self._cot(user, taller, [self._linea()])
+
+        def _hit_suelto(nombres, **kwargs):
+            return {
+                'bujias': {
+                    'nombre_producto': 'Bujía Iridium Fiat Bravo 1.4 T-Jet',
+                    'nombre_buscado': 'Bujías',
+                    'url': 'https://www.lider.cl/bujia-iridium-bravo',
+                    'tienda': 'Lider',
+                    'dominio': 'lider.cl',
+                    'precio_clp': 28432,
+                    'compatibilidad': 'alta',
+                    'confianza': 0.9,
+                },
+            }
+
+        from mecanimovilapp.apps.ordenes.tasks import buscar_precios_web_cotizacion_task
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.busqueda_web_habilitada',
+            return_value=True,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.buscar_repuestos_web',
+            side_effect=_hit_suelto,
+        ):
+            result = buscar_precios_web_cotizacion_task(cot.id)
+
+        self.assertTrue(result.get('ok'), result)
+        cot.refresh_from_db()
+        linea = cot.repuestos[0]
+        self.assertEqual(linea['precio_unitario_clp'], 12000)
+        self.assertNotIn('28.432', linea.get('motivo_seleccion') or '')
+        self.assertNotIn('Referencia: Lider', linea.get('motivo_seleccion') or '')
+        self.assertFalse(linea.get('referencia_tienda'))
+        self.assertNotEqual(linea.get('proveedor_nombre'), 'Lider')
+        texto = _texto_pdf(generar_pdf_orden_compra(cot))
+        self.assertNotIn('28.432', texto)
+        self.assertNotIn('Lider', texto)
+
+    def test_la_tarea_cita_el_juego_de_4_por_unidad(self):
+        user = User.objects.create_user(
+            username='bujia_juego', password='x', email='bjuego@test.cl',
+        )
+        taller = Taller.objects.create(usuario=user, nombre='Mecanimovil', telefono='1')
+        linea = self._linea()
+        linea['referencia_tienda'] = ''
+        linea['precio_referencia_clp'] = 0
+        linea['motivo_seleccion'] = 'Indra (especialista Fiat): consulta disponibilidad y precio.'
+        linea['comentario'] = linea['motivo_seleccion']
+        cot = self._cot(user, taller, [linea])
+
+        def _hit_juego(nombres, **kwargs):
+            return {
+                'bujias': {
+                    'nombre_producto': 'Juego de 4 bujías NGK Fiat Bravo 1.4 T-Jet',
+                    'nombre_buscado': 'Bujías',
+                    'url': 'https://www.lider.cl/juego-4-bujias-bravo',
+                    'tienda': 'Lider',
+                    'dominio': 'lider.cl',
+                    'precio_clp': 36000,
+                    'compatibilidad': 'alta',
+                    'confianza': 0.9,
+                },
+            }
+
+        from mecanimovilapp.apps.ordenes.tasks import buscar_precios_web_cotizacion_task
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.busqueda_web_habilitada',
+            return_value=True,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.buscar_repuestos_web',
+            side_effect=_hit_juego,
+        ):
+            result = buscar_precios_web_cotizacion_task(cot.id)
+
+        self.assertTrue(result.get('ok'), result)
+        cot.refresh_from_db()
+        linea = cot.repuestos[0]
+        self.assertEqual(linea.get('referencia_tienda'), 'Lider')
+        self.assertEqual(linea.get('precio_referencia_clp'), 9000)
+        self.assertIn('$9.000', linea.get('motivo_seleccion') or '')
+        self.assertNotIn('36.000', linea.get('motivo_seleccion') or '')
+        self.assertNotIn('28.432', linea.get('motivo_seleccion') or '')
+        self.assertNotEqual(linea.get('precio_unitario_clp'), 36000)
+        self.assertNotEqual(linea.get('precio_unitario_clp'), 28432)
+        texto = _texto_pdf(generar_pdf_orden_compra(cot))
+        self.assertIn('$9.000', texto)
+        self.assertNotIn('36.000', texto)
+        self.assertNotIn('28.432', texto)
