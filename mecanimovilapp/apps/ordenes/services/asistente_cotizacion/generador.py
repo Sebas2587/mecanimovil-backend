@@ -828,8 +828,9 @@ def _aplicar_seleccion_casa_repuestos(
             resultado = resultados_consolidados[rep_id]
             casa = str(resultado.casa_elegida or '').strip()
             if _casa_es_tienda(rep, casa):
-                rep['casa_repuesto_nombre'] = nombre_tienda_visible(casa) or casa
-                rep['proveedor_nombre'] = casa
+                visible = nombre_tienda_visible(casa) or casa
+                rep['casa_repuesto_nombre'] = visible
+                rep['proveedor_nombre'] = visible
                 rep['motivo_seleccion'] = _nota_de_linea_con_tienda(
                     rep,
                     resultado.motivo_seleccion,
@@ -863,8 +864,9 @@ def _aplicar_seleccion_casa_repuestos(
             resultado = seleccionar_casa_optima(opciones)
             casa = str(resultado.casa_elegida or '').strip()
             if _casa_es_tienda(rep, casa):
-                rep['casa_repuesto_nombre'] = nombre_tienda_visible(casa) or casa
-                rep['proveedor_nombre'] = casa
+                visible = nombre_tienda_visible(casa) or casa
+                rep['casa_repuesto_nombre'] = visible
+                rep['proveedor_nombre'] = visible
                 rep['motivo_seleccion'] = _nota_de_linea_con_tienda(
                     rep,
                     resultado.motivo_seleccion,

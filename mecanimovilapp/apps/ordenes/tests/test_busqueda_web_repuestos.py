@@ -4336,3 +4336,84 @@ class NotaMecanicoTests(SimpleTestCase):
             todoauto,
             'TodoAuto: compatible con Fiat Bravo 1.4 T-Jet, mejor precio encontrado.',
         )
+
+    def test_el_slug_no_se_muestra_en_ningun_nombre_de_tienda(self):
+        from django.test import override_settings
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+            _especialistas,
+            _fuentes,
+            _tienda_por_dominio,
+        )
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            nombre_tienda_visible,
+            sanear_notas_linea,
+        )
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador import (
+            _aplicar_seleccion_casa_repuestos,
+        )
+
+        self.assertEqual(nombre_tienda_visible('Todoautochile'), 'TodoAuto')
+        self.assertEqual(nombre_tienda_visible('Comercialramirezspa'), 'Comercial Ramírez')
+        self.assertEqual(_tienda_por_dominio('www.todoautochile.cl'), 'TodoAuto')
+        self.assertEqual(_tienda_por_dominio('comercialramirezspa.cl'), 'Comercial Ramírez')
+        self.assertEqual(_tienda_por_dominio('mundorepuestos.com'), 'Mundo Repuestos')
+
+        for fuente in _fuentes() + _especialistas():
+            nombre = fuente['nombre']
+            self.assertEqual(nombre, nombre_tienda_visible(nombre), nombre)
+            self.assertNotIn('todoautochile', nombre.lower())
+            self.assertNotIn('comercialramirez', nombre.lower())
+
+        with override_settings(BUSQUEDA_WEB_REPUESTOS_FUENTES=[{
+            'nombre': 'Todoautochile',
+            'dominio': 'todoautochile.cl',
+            'plantilla': 'https://todoautochile.cl/buscar?q={q}',
+        }, {
+            'nombre': 'Comercialramirezspa',
+            'dominio': 'comercialramirezspa.cl',
+            'plantilla': 'https://comercialramirezspa.cl/?s={q}',
+        }]):
+            self.assertEqual(
+                [f['nombre'] for f in _fuentes()],
+                ['TodoAuto', 'Comercial Ramírez'],
+            )
+
+        nota_slug = (
+            'Todoautochile: compatible con Fiat Bravo 1.4 T-Jet, mejor precio encontrado.'
+        )
+        linea = sanear_notas_linea({
+            'nombre': 'Filtro de aceite',
+            'proveedor_nombre': 'Todoautochile',
+            'fuente_marketplace': 'web',
+            'url_producto': 'https://todoautochile.cl/filtro-aceite',
+            'precio_unitario_clp': 4990,
+            'motivo_seleccion': nota_slug,
+            'comentario': nota_slug,
+        }, marca='Fiat', modelo='Bravo', tipo_motor='T-Jet', cilindraje='1.4')
+        self.assertEqual(linea['proveedor_nombre'], 'TodoAuto')
+        self.assertEqual(linea['casa_repuesto_nombre'], 'TodoAuto')
+        self.assertEqual(
+            linea['motivo_seleccion'],
+            'TodoAuto: compatible con Fiat Bravo 1.4 T-Jet, mejor precio encontrado.',
+        )
+        self.assertEqual(linea['comentario'], linea['motivo_seleccion'])
+        for campo in ('proveedor_nombre', 'casa_repuesto_nombre', 'motivo_seleccion', 'comentario'):
+            self.assertNotIn('todoautochile', linea[campo].lower())
+
+        aplicada = _aplicar_seleccion_casa_repuestos([{
+            'id': 'filtro',
+            'nombre': 'Filtro de aceite',
+            'cantidad': 1,
+            'precio_unitario_clp': 4990,
+            'fuente_marketplace': 'web',
+            'proveedor_nombre': 'Comercialramirezspa',
+            'url_producto': 'https://comercialramirezspa.cl/filtro',
+        }], marca_vehiculo='Fiat', modelo_vehiculo='Bravo', tipo_motor='T-Jet', cilindraje='1.4')[0]
+        self.assertEqual(aplicada['proveedor_nombre'], 'Comercial Ramírez')
+        self.assertEqual(aplicada['casa_repuesto_nombre'], 'Comercial Ramírez')
+        self.assertEqual(
+            aplicada['motivo_seleccion'],
+            'Comercial Ramírez: compatible con Fiat Bravo 1.4 T-Jet, mejor precio encontrado.',
+        )
+        self.assertNotIn('comercialramirezspa', aplicada['motivo_seleccion'].lower())

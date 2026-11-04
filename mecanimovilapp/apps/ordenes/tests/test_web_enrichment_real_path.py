@@ -265,7 +265,7 @@ class WebEnrichmentRealPathTestCase(TestCase):
         self.assertIn('Precio estimado', por_id['rep-aceite']['motivo_seleccion'])
         self.assertNotIn('Se buscó', por_id['rep-aceite']['motivo_seleccion'])
         self.assertEqual(por_id['rep-filtro']['precio_unitario_clp'], 10990)
-        self.assertEqual(por_id['rep-filtro']['proveedor_nombre'], 'Todoautochile')
+        self.assertEqual(por_id['rep-filtro']['proveedor_nombre'], 'TodoAuto')
 
         cot.metadata = {
             **(cot.metadata or {}),
@@ -302,7 +302,7 @@ class WebEnrichmentRealPathTestCase(TestCase):
         self.assertIn('Precio estimado', por_id['rep-aceite']['motivo_seleccion'])
         self.assertNotIn('Se buscó', por_id['rep-aceite']['motivo_seleccion'])
         self.assertEqual(por_id['rep-pastillas']['precio_unitario_clp'], 70000)
-        self.assertEqual(por_id['rep-filtro']['proveedor_nombre'], 'Todoautochile')
+        self.assertEqual(por_id['rep-filtro']['proveedor_nombre'], 'TodoAuto')
 
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web import (
             _marcar_cola_caida,
@@ -318,7 +318,7 @@ class WebEnrichmentRealPathTestCase(TestCase):
         self.assertEqual(por_id['rep-aceite']['precio_unitario_clp'], 42000)
         self.assertIn('No pudimos consultar tiendas', por_id['rep-aceite']['motivo_seleccion'])
         self.assertEqual(por_id['rep-filtro']['precio_unitario_clp'], 10990)
-        self.assertEqual(por_id['rep-filtro']['proveedor_nombre'], 'Todoautochile')
+        self.assertEqual(por_id['rep-filtro']['proveedor_nombre'], 'TodoAuto')
         self.assertNotIn('No pudimos consultar tiendas', por_id['rep-filtro'].get('motivo_seleccion') or '')
 
     def test_pastillas_asumidas_se_buscan_y_la_bomba_no_cotiza_el_aceite(self):
@@ -410,7 +410,7 @@ class WebEnrichmentRealPathTestCase(TestCase):
         self.assertNotIn('Juego completo', por_id['rep-pastillas']['motivo_seleccion'])
         self.assertIn('Juego completo', por_id['rep-pastillas'].get('comentario') or '')
         self.assertEqual(por_id['rep-aceite']['precio_unitario_clp'], 9990)
-        self.assertEqual(por_id['rep-aceite']['proveedor_nombre'], 'Todoautochile')
+        self.assertEqual(por_id['rep-aceite']['proveedor_nombre'], 'TodoAuto')
         self.assertNotIn('Bomba', por_id['rep-aceite'].get('nombre_producto') or '')
         self.assertNotEqual(por_id['rep-aceite']['precio_unitario_clp'], 62991)
 
@@ -500,7 +500,7 @@ class WebEnrichmentRealPathTestCase(TestCase):
         self.assertIn('Liqui Moly', aceite.get('nombre_producto') or '')
         self.assertNotIn('Pastillas', aceite.get('nombre_producto') or '')
         filtro_guardado = next(r for r in cot.repuestos if r.get('nombre') == 'Filtro de aceite')
-        self.assertEqual(filtro_guardado.get('proveedor_nombre'), 'Todoautochile')
+        self.assertEqual(filtro_guardado.get('proveedor_nombre'), 'TodoAuto')
         self.assertNotIn('frenosvergara', filtro_guardado.get('url_producto') or '')
         texto = '\n'.join(logs.output)
         self.assertIn('elegido id=rep-pastillas', texto)
