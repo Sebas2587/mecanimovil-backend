@@ -5,6 +5,7 @@ import logging
 from django.db.models import F
 
 logger = logging.getLogger(__name__)
+from django.http import HttpResponse
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -1140,6 +1141,20 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             conversation=conversation,
         ).order_by('-creado_en')[:20]
         return Response(CotizacionCanalSerializer(qs, many=True).data)
+
+    @action(detail=True, methods=['get'], url_path='orden-compra-pdf')
+    def orden_compra_pdf(self, request, pk=None):
+        """PDF para llevar a la casa de repuestos. Sin mano de obra ni margen."""
+        cotizacion = self.get_object()
+        from mecanimovilapp.apps.ordenes.services.orden_compra_pdf import generar_pdf_orden_compra
+
+        pdf_bytes = generar_pdf_orden_compra(cotizacion)
+        patente = (cotizacion.vehiculo_patente or str(cotizacion.pk)).strip()
+        response = HttpResponse(pdf_bytes, content_type='application/pdf')
+        response['Content-Disposition'] = (
+            f'attachment; filename="Orden-compra-{patente}.pdf"'
+        )
+        return response
 
     @action(detail=True, methods=['post'], url_path='consultar-casas')
     def consultar_casas(self, request, pk=None):

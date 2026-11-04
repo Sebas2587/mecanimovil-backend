@@ -803,6 +803,10 @@ def _es_nota_mecanico(texto: str) -> bool:
         or bajo.startswith('no pudimos consultar')
         or 'mejor precio encontrado' in bajo
         or 'precio en oferta' in bajo
+        or 'precio a consultar' in bajo
+        or 'especialista ' in bajo
+        or 'solo en línea' in bajo
+        or 'tiene todos los repuestos' in bajo
     )
 
 
@@ -1008,6 +1012,17 @@ def _nota_corta_para_linea(
     cilindraje: Any,
     motivo_interno: str = '',
 ) -> str:
+    if rep.get('precio_a_consultar'):
+        from mecanimovilapp.apps.ordenes.casas_especialistas import (
+            nota_especialista,
+            perfil_de,
+        )
+
+        casa = nombre_tienda_visible(str(rep.get('casa_repuesto_nombre') or ''))
+        if casa and perfil_de(casa):
+            return recortar_nota(nota_especialista(
+                casa, marca, cubre_todo=False, a_consultar=True,
+            ))
     if _hay_tienda_en_linea(rep):
         return nota_visible_con_tienda(
             rep,
@@ -1083,13 +1098,31 @@ def sanear_notas_linea(
     if not isinstance(rep, dict):
         return rep
     linea = copy.deepcopy(rep)
-    cruda = str(linea.get('proveedor_nombre') or linea.get('casa_repuesto_nombre') or '')
-    tienda = nombre_tienda_visible(cruda)
+    casa_vis = nombre_tienda_visible(str(linea.get('casa_repuesto_nombre') or ''))
+    prov_vis = nombre_tienda_visible(str(linea.get('proveedor_nombre') or ''))
+    if casa_vis:
+        linea['casa_repuesto_nombre'] = casa_vis
+    if prov_vis and str(linea.get('proveedor_nombre') or '').strip():
+        linea['proveedor_nombre'] = prov_vis
+    elif not casa_vis and prov_vis:
+        linea['casa_repuesto_nombre'] = prov_vis
+        casa_vis = prov_vis
+    if not casa_vis and prov_vis:
+        casa_vis = prov_vis
+        if not str(linea.get('casa_repuesto_nombre') or '').strip():
+            linea['casa_repuesto_nombre'] = casa_vis
+    tienda = casa_vis or prov_vis
     hay = _hay_tienda_en_linea(linea)
-    if hay and tienda:
-        linea['casa_repuesto_nombre'] = tienda
-        if str(linea.get('proveedor_nombre') or '').strip():
-            linea['proveedor_nombre'] = tienda
+    for fuente in linea.get('fuentes_detalle') or []:
+        if isinstance(fuente, dict) and str(fuente.get('tienda') or '').strip():
+            fuente['tienda'] = nombre_tienda_visible(str(fuente.get('tienda') or '')) or fuente['tienda']
+    if str(linea.get('tienda_ml') or '').strip():
+        linea['tienda_ml'] = nombre_tienda_visible(str(linea.get('tienda_ml') or '')) or linea['tienda_ml']
+    if str(linea.get('referencia_tienda') or '').strip():
+        linea['referencia_tienda'] = (
+            nombre_tienda_visible(str(linea.get('referencia_tienda') or ''))
+            or linea['referencia_tienda']
+        )
     motivo = str(linea.get('motivo_seleccion') or '')
     if not _motivo_ya_es_corto(motivo, tienda=tienda, hay_tienda=hay):
         linea['motivo_seleccion'] = _nota_corta_para_linea(

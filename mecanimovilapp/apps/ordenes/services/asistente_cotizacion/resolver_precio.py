@@ -191,7 +191,12 @@ def _detalle_fuentes(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for hit in hits[:_MAX_FUENTES_DETALLE]:
         fuente = str(hit.get('fuente_marketplace') or '').strip()
-        tienda = str(hit.get('proveedor_nombre') or hit.get('tienda_ml') or '').strip()
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            nombre_tienda_visible,
+        )
+
+        cruda = str(hit.get('proveedor_nombre') or hit.get('tienda_ml') or hit.get('tienda') or '').strip()
+        tienda = nombre_tienda_visible(cruda) or cruda
         url = str(hit.get('url_producto') or hit.get('url') or '').strip()[:500]
         nombre = str(hit.get('nombre_producto') or hit.get('nombre') or '').strip()[:200]
         row = {

@@ -1282,7 +1282,8 @@ class BuscarRepuestosWebTavilyTestCase(SimpleTestCase):
                 timeout=5,
             )
 
-        self.assertEqual(calls['n'], bw._MAX_CONSULTAS_TAVILY_POR_LINEA)
+        # La escalera sigue en 3. Kia tiene catálogo en Ciper: una consulta site: extra.
+        self.assertEqual(calls['n'], bw._MAX_CONSULTAS_TAVILY_POR_LINEA + 1)
 
     def test_tavily_corta_cuando_hay_dos_fichas_de_kit_sin_precio(self):
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
@@ -4292,10 +4293,15 @@ class NotaMecanicoTests(SimpleTestCase):
             'precio_normal_clp': 10990,
             'comentario': 'Juego completo para eje delantero',
         }], marca_vehiculo='Fiat', modelo_vehiculo='Bravo', tipo_motor='T-Jet', cilindraje='1.4')[0]
+        self.assertEqual(linea['casa_repuesto_nombre'], 'Indra')
+        self.assertTrue(linea['precio_a_consultar'])
+        self.assertEqual(linea['referencia_tienda'], 'TodoAuto')
+        self.assertEqual(linea['proveedor_nombre'], 'TodoAuto')
         self.assertEqual(
             linea['motivo_seleccion'],
-            'TodoAuto, precio en oferta (normal $10.990).',
+            'Indra: especialista Fiat, precio a consultar.',
         )
+        self.assertNotEqual(linea['precio_unitario_clp'], 0)
         self.assertNotIn('http', linea['motivo_seleccion'])
         self.assertEqual(linea['comentario'], 'Juego completo para eje delantero')
         self.assertTrue(linea['consolidacion_aplicada'] is False)
@@ -4309,9 +4315,11 @@ class NotaMecanicoTests(SimpleTestCase):
             'proveedor_nombre': 'Lider',
             'url_producto': 'https://www.lider.cl/pastillas',
         }], marca_vehiculo='Fiat', modelo_vehiculo='Bravo', tipo_motor='T-Jet', cilindraje='1.4')[0]
+        self.assertEqual(lider['casa_repuesto_nombre'], 'Indra')
+        self.assertEqual(lider['proveedor_nombre'], 'Lider')
         self.assertEqual(
             lider['motivo_seleccion'],
-            'Lider: compatible con Fiat Bravo 1.4 T-Jet, mejor precio encontrado.',
+            'Indra: especialista Fiat, precio a consultar.',
         )
         self.assertNotIn('lider.cl', lider['motivo_seleccion'])
         comercial = nota_con_tienda(
@@ -4411,9 +4419,12 @@ class NotaMecanicoTests(SimpleTestCase):
             'url_producto': 'https://comercialramirezspa.cl/filtro',
         }], marca_vehiculo='Fiat', modelo_vehiculo='Bravo', tipo_motor='T-Jet', cilindraje='1.4')[0]
         self.assertEqual(aplicada['proveedor_nombre'], 'Comercial Ramírez')
-        self.assertEqual(aplicada['casa_repuesto_nombre'], 'Comercial Ramírez')
+        self.assertEqual(aplicada['casa_repuesto_nombre'], 'Indra')
+        self.assertTrue(aplicada['precio_a_consultar'])
+        self.assertEqual(aplicada['referencia_tienda'], 'Comercial Ramírez')
         self.assertEqual(
             aplicada['motivo_seleccion'],
-            'Comercial Ramírez: compatible con Fiat Bravo 1.4 T-Jet, mejor precio encontrado.',
+            'Indra: especialista Fiat, precio a consultar.',
         )
+        self.assertEqual(aplicada['precio_unitario_clp'], 4990)
         self.assertNotIn('comercialramirezspa', aplicada['motivo_seleccion'].lower())

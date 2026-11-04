@@ -901,8 +901,142 @@ def _aplicar_seleccion_casa_repuestos(
             rep['consolidacion_aplicada'] = False
         
         repuestos_finales.append(rep)
-    
+
+    _aplicar_prioridad_de_taller(
+        repuestos_finales,
+        marca=marca_vehiculo,
+        taller=taller,
+    )
     return repuestos_finales
+
+
+def _comuna_del_taller(taller) -> str:
+    if taller is None:
+        return ''
+    try:
+        direccion = taller.direccion_fisica
+    except Exception:
+        return ''
+    return str(getattr(direccion, 'comuna', '') or '')
+
+
+def _aplicar_prioridad_de_taller(repuestos: list[dict[str, Any]], *, marca: str, taller) -> None:
+    """Especialista de la marca, y la tienda solo en línea al final.
+
+    No pisa una ficha de casa física. No inventa el precio: si no hay ficha
+    de la especialista, la línea queda a consultar y el monto anterior queda
+    como referencia de la otra tienda.
+    """
+    from mecanimovilapp.apps.ordenes.casas_especialistas import (
+        es_fisica,
+        es_solo_en_linea,
+        especialista_de_la_ficha,
+        especialistas_de_marca,
+        nota_especialista,
+        nota_solo_en_linea,
+        sucursal_para,
+        texto_sucursal,
+    )
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+        _es_nota_mecanico,
+        nombre_tienda_visible,
+        recortar_nota,
+    )
+
+    marca = str(marca or '').strip()
+    if not marca or not repuestos:
+        return
+    comuna = _comuna_del_taller(taller)
+    especialistas = especialistas_de_marca(marca)
+    perfil_marca = especialistas[0] if especialistas else None
+
+    for rep in repuestos:
+        if not isinstance(rep, dict) or rep.get('_config_modelo'):
+            continue
+        fuente = str(rep.get('fuente_marketplace') or rep.get('fuente_repuesto') or '').strip().lower()
+        if fuente in ('catalogo', 'historial', 'proveedor'):
+            continue
+        casa = str(rep.get('casa_repuesto_nombre') or rep.get('proveedor_nombre') or '').strip()
+        url = str(rep.get('url_producto') or '').strip()
+        perfil = especialista_de_la_ficha(casa, url, marca)
+        if perfil:
+            sucursal = sucursal_para(perfil, marca, comuna)
+            rep['casa_sucursal'] = texto_sucursal(sucursal)
+            rep['casa_telefono'] = str(perfil.get('telefono') or '')
+            rep['precio_a_consultar'] = False
+            rep['_perfil_especialista'] = perfil['nombre']
+            continue
+        if es_fisica(casa, url):
+            from mecanimovilapp.apps.ordenes.casas_especialistas import perfil_de
+
+            perfil_fisico = perfil_de(casa, url)
+            if perfil_fisico:
+                sucursal = sucursal_para(perfil_fisico, marca, comuna)
+                rep['casa_sucursal'] = texto_sucursal(sucursal)
+                rep['casa_telefono'] = str(perfil_fisico.get('telefono') or '')
+            continue
+        # Sin ficha de una casa física: la especialista de la marca, a consultar.
+        # El monto que ya había queda como referencia de la otra tienda.
+        if perfil_marca:
+            sucursal = sucursal_para(perfil_marca, marca, comuna)
+            visible_ref = nombre_tienda_visible(casa) or casa
+            try:
+                precio = int(rep.get('precio_unitario_clp') or 0)
+            except (TypeError, ValueError):
+                precio = 0
+            rep['casa_repuesto_nombre'] = perfil_marca['nombre']
+            rep['precio_a_consultar'] = True
+            rep['casa_sucursal'] = texto_sucursal(sucursal)
+            rep['casa_telefono'] = str(perfil_marca.get('telefono') or '')
+            if visible_ref and precio > 0 and not es_fisica(visible_ref, url):
+                rep['referencia_tienda'] = visible_ref
+                rep['precio_referencia_clp'] = precio
+            rep['_perfil_especialista'] = perfil_marca['nombre']
+            rep['_a_consultar'] = True
+            continue
+        if casa and es_solo_en_linea(casa, url):
+            rep['_solo_en_linea'] = nombre_tienda_visible(casa) or casa
+
+    nombres = [
+        str(rep.get('_perfil_especialista') or '')
+        for rep in repuestos
+        if isinstance(rep, dict)
+    ]
+    cubre_todo = (
+        len(repuestos) >= 2
+        and len(nombres) == len(repuestos)
+        and len(set(nombres)) == 1
+        and '' not in nombres
+    )
+    for rep in repuestos:
+        if not isinstance(rep, dict):
+            continue
+        perfil_nombre = str(rep.pop('_perfil_especialista', '') or '')
+        a_consultar = bool(rep.pop('_a_consultar', False))
+        solo = str(rep.pop('_solo_en_linea', '') or '')
+        if perfil_nombre:
+            nota = recortar_nota(nota_especialista(
+                perfil_nombre,
+                marca,
+                cubre_todo=cubre_todo and not a_consultar,
+                a_consultar=a_consultar or (cubre_todo and a_consultar),
+            ))
+            if cubre_todo and a_consultar:
+                nota = recortar_nota(nota_especialista(
+                    perfil_nombre, marca, cubre_todo=True, a_consultar=True,
+                ))
+            elif cubre_todo:
+                nota = recortar_nota(nota_especialista(
+                    perfil_nombre, marca, cubre_todo=True, a_consultar=False,
+                ))
+        elif solo:
+            nota = recortar_nota(nota_solo_en_linea(solo))
+        else:
+            continue
+        rep['motivo_seleccion'] = nota
+        comentario = str(rep.get('comentario') or '')
+        if not comentario.strip() or _es_nota_mecanico(comentario):
+            rep['comentario'] = nota
 
 
 def generar_cotizacion_ia(

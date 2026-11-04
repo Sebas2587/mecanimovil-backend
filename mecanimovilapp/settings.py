@@ -861,27 +861,9 @@ def _parse_tiendas_especialistas_default():
                 return data
         except Exception:
             pass
-    return [
-        {'nombre': 'Indra', 'alias': 'indra repuestos', 'dominio': 'indra.cl',
-         'marcas': ['fiat', 'alfa romeo', 'lancia']},
-        {'nombre': 'Suzukistore20', 'alias': 'suzukistore20', 'dominio': '',
-         'marcas': ['suzuki']},
-        {'nombre': 'Miktares', 'alias': 'miktares', 'dominio': '', 'marcas': []},
-        {'nombre': 'Frenos Vergara', 'alias': 'frenos vergara', 'dominio': 'frenosvergara.shop',
-         'marcas': []},
-        {'nombre': 'Mundo Repuestos', 'alias': 'mundo repuestos', 'dominio': 'mundorepuestos.cl',
-         'marcas': []},
-        {'nombre': 'Repuestos Sergio Escobar', 'alias': 'sergio escobar',
-         'dominio': 'sergioescobar.cl', 'marcas': []},
-        {'nombre': 'Repuestos Ank', 'alias': 'repuestos ank', 'dominio': 'repuestosank.cl',
-         'marcas': []},
-        {'nombre': 'Emasa', 'alias': 'emasa', 'dominio': 'emasa.cl', 'marcas': []},
-        {'nombre': 'Todo Embragues', 'alias': 'todo embragues', 'dominio': 'todoembragues.cl',
-         'marcas': []},
-        {'nombre': 'Casa del Embrague', 'alias': 'casa del embrague',
-         'dominio': 'casadelembrague.cl', 'marcas': []},
-        {'nombre': 'Ciper', 'alias': 'ciper', 'dominio': 'ciper.cl', 'marcas': []},
-    ]
+    from mecanimovilapp.apps.ordenes.casas_especialistas import perfiles_para_settings
+
+    return perfiles_para_settings()
 
 
 REPUESTOS_TIENDAS_ESPECIALISTAS = _parse_tiendas_especialistas_default()
