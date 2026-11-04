@@ -3810,3 +3810,160 @@ class Quote19HolguraMotorTests(SimpleTestCase):
         self.assertIn(f'url={url_95} motivo=anio_incompatible', texto)
         self.assertIn(f'url={url_16} motivo=motor_incompatible', texto)
         self.assertNotIn(f'url={self._URL} motivo=anio_incompatible', texto)
+
+
+class Quote21EscaleraHolguraTests(SimpleTestCase):
+    """Cotización 21: la escalera de Tavily aplica el año de borde.
+
+    El log de producción rechazó 'Bujía Original Fiat Bravo Sport 1.4t
+    2011-2014' en `rechazos=` para un BRAVO SPORT TJET 2010. 1368 cc es el
+    1.4 T-Jet. La banda $32.000 con cantidad 4 es el juego, no cada bujía.
+    """
+
+    _BUJIA = 'Bujías'
+    _TITULO = 'Bujía Original Fiat Bravo Sport 1.4t 2011-2014'
+    _URL = (
+        'https://www.mercadolibre.cl/bujia-original-fiat-bravo-sport-14t-20112014'
+        '/up/MLCU67593706'
+    )
+
+    def test_1368_cc_es_el_1_4_y_el_1_4t_calza_el_tjet(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        self.assertEqual(bw._cilindraje_litros('1368'), '1.4')
+        self.assertEqual(bw._cilindraje_litros('1.368 cc'), '1.4')
+        self.assertEqual(bw._cilindraje_litros('1.4L'), '1.4')
+        cand = {
+            'title': self._TITULO,
+            'url': self._URL,
+            'content': f'{self._TITULO}. Precio $ 9.990',
+            'ficha_leida': True,
+        }
+        for modelo, tipo, cil in (
+            ('BRAVO SPORT TJET', 'T-Jet', '1.4'),
+            ('BRAVO SPORT TJET', '', '1368'),
+            ('Bravo', 'T-Jet', ''),
+            ('Bravo', '', '1368'),
+        ):
+            self.assertEqual(
+                bw._motivo_calidad_pastilla(
+                    cand,
+                    nombre=self._BUJIA,
+                    modelo=modelo,
+                    tipo_motor=tipo,
+                    banda_min=32000,
+                    banda_max=40000,
+                    anio=2010,
+                    cilindraje=cil,
+                ),
+                '',
+                f'{modelo} {tipo} {cil}',
+            )
+        self.assertEqual(
+            bw._monto_banda_por_unidad(self._BUJIA, 32000, 4),
+            8000,
+        )
+        self.assertEqual(
+            bw._monto_banda_por_unidad(self._BUJIA, 40000, 4),
+            10000,
+        )
+        self.assertEqual(bw._monto_banda_por_unidad(self._BUJIA, 8000, 4), 8000)
+
+    def _buscar(self, html_side_effect):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        def fake_buscar(query, **kwargs):
+            if query.lower().startswith('bujias'):
+                return [{
+                    'title': self._TITULO,
+                    'url': self._URL,
+                    'content': self._TITULO,
+                    'score': 0.9,
+                }]
+            return []
+
+        with patch.object(bw, '_tavily_buscar_uno', side_effect=fake_buscar), patch.object(
+            bw, '_tavily_extraer', return_value={},
+        ), patch.object(bw, '_leer_html_fichas', side_effect=html_side_effect), patch.object(
+            bw, '_gemini_generar', return_value=None,
+        ), self.assertLogs(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos',
+            level='INFO',
+        ) as logs:
+            out = bw._buscar_repuestos_web_tavily(
+                [self._BUJIA],
+                marca='FIAT',
+                modelo='BRAVO SPORT TJET',
+                anio=2010,
+                cilindraje='1368',
+                tipo_motor='GASOLINA',
+                servicio_nombre='Cambio de bujías y filtro de aire',
+                timeout=5,
+                plan={'piezas': []},
+                bandas_min={self._BUJIA: 32000},
+                bandas_max={self._BUJIA: 40000},
+                cantidades={self._BUJIA: 4},
+            )
+        return out, '\n'.join(logs.output)
+
+    def test_la_escalera_no_marca_anio_incompatible_y_la_banda_es_por_bujia(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        html = """
+        <html><head>
+          <meta property="og:price:amount" content="9990">
+        </head><body><h1>Bujía Original Fiat Bravo Sport 1.4t 2011-2014</h1>
+        <p>Valor unitario</p></body></html>
+        """
+
+        def fake_html(urls):
+            bw._FICHAS_BLOQUEADAS.clear()
+            return {self._URL: html}
+
+        out, texto = self._buscar(fake_html)
+        self.assertNotIn(f'{self._TITULO}: anio_incompatible', texto)
+        self.assertNotIn(f'url={self._URL} motivo=anio_incompatible', texto)
+        self.assertIn('banda_min=8000', texto)
+        hit = out[bw._clave_fuzzy(self._BUJIA)]
+        self.assertEqual(hit['url'], self._URL)
+        self.assertEqual(hit['precio_clp'], 9990)
+
+    def test_muro_de_mercadolibre_deja_la_bujia_sin_precio(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        def fake_html(urls):
+            bw._FICHAS_BLOQUEADAS = set(urls)
+            return {}
+
+        out, texto = self._buscar(fake_html)
+        self.assertEqual(out, {})
+        self.assertNotIn(f'{self._TITULO}: anio_incompatible', texto)
+        self.assertIn('banda_min=8000', texto)
+
+        class _Prev:
+            def __init__(self, url):
+                self.url = url
+                self.headers = {'Location': 'https://www.mercadolibre.cl/gz/account-verification?go=1'}
+
+        class _Resp:
+            status_code = 200
+            url = 'https://www.mercadolibre.cl/gz/account-verification?go=1'
+            text = '<html><span class="andes-money-amount__fraction">12345</span></html>'
+            history = [_Prev(self._URL)]
+
+        self.assertTrue(bw._respuesta_sin_ficha(_Resp()))
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.requests.get',
+            return_value=_Resp(),
+        ):
+            htmls = bw._leer_html_fichas([self._URL])
+        self.assertEqual(htmls, {})
+        self.assertIn(self._URL, bw._FICHAS_BLOQUEADAS)
+
+        class _Deny:
+            status_code = 403
+            url = self._URL
+            text = 'forbidden'
+            history = []
+
+        self.assertTrue(bw._respuesta_sin_ficha(_Deny()))

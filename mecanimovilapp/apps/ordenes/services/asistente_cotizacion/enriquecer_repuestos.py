@@ -1422,6 +1422,8 @@ def enriquecer_repuestos_cotizacion(
     nombres_lineas = [
         str(r.get('nombre') or '') for r in repuestos if isinstance(r, dict)
     ]
+    from .busqueda_web_repuestos import _monto_banda_por_unidad
+
     bandas_min: dict[str, int] = {}
     bandas_max: dict[str, int] = {}
     for r in repuestos:
@@ -1438,6 +1440,8 @@ def enriquecer_repuestos_cotizacion(
             techo = int(r.get('precio_max_clp') or 0)
         except (TypeError, ValueError):
             techo = 0
+        piso = _monto_banda_por_unidad(nombre_banda, piso, r.get('cantidad'))
+        techo = _monto_banda_por_unidad(nombre_banda, techo, r.get('cantidad'))
         if piso > 0:
             bandas_min[nombre_banda] = piso
         if techo > 0:
@@ -1504,7 +1508,10 @@ def enriquecer_repuestos_cotizacion(
 
         web_hit = None
         if usar_web and not grounded_taller and web_cands:
-            from .busqueda_web_repuestos import _candidato_sirve_linea
+            from .busqueda_web_repuestos import (
+                _candidato_sirve_linea,
+                _monto_banda_por_unidad,
+            )
 
             try:
                 piso_linea = int(next_rep.get('precio_min_clp') or 0)
@@ -1514,6 +1521,8 @@ def enriquecer_repuestos_cotizacion(
                 techo_linea = int(next_rep.get('precio_max_clp') or 0)
             except (TypeError, ValueError):
                 techo_linea = 0
+            piso_linea = _monto_banda_por_unidad(nombre, piso_linea, next_rep.get('cantidad'))
+            techo_linea = _monto_banda_por_unidad(nombre, techo_linea, next_rep.get('cantidad'))
             prohibidas = urls_rechazadas or set()
             web_ok = [
                 c for c in web_cands

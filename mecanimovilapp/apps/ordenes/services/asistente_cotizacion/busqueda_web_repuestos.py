@@ -489,6 +489,10 @@ def precio_unitario_desde_pack(
     return unit, nota
 
 
+# Sin ficha, $32.000 con cantidad 4 es el juego de bujías, no cada una.
+_BUJIA_JUEGO_DESDE = 22_000
+
+
 def precio_unitario_bujia_asumido(
     nombre: str,
     precio: int,
@@ -502,7 +506,7 @@ def precio_unitario_bujia_asumido(
     tampoco: el corte está en $22.000 y hace falta cantidad 2 o más.
     """
     monto = int(precio or 0)
-    if tiene_ficha or monto < 22_000 or 'bujia' not in _norm(nombre):
+    if tiene_ficha or monto < _BUJIA_JUEGO_DESDE or 'bujia' not in _norm(nombre):
         return monto, ''
     try:
         cant = int(float(cantidad))
@@ -516,6 +520,24 @@ def precio_unitario_bujia_asumido(
         f'Se cotiza ${unit:,} por unidad.'
     ).replace(',', '.')
     return unit, nota
+
+
+def _monto_banda_por_unidad(nombre: str, monto: int, cantidad: Any) -> int:
+    """La banda de la IA a veces es el juego (4 × $8.000 = $32.000).
+
+    La ficha se compara por bujía. $32.000 con cantidad 4 pasa a $8.000.
+    Un piso de $8.000 ya es unitario y no se vuelve a partir.
+    """
+    valor = int(monto or 0)
+    if valor < _BUJIA_JUEGO_DESDE or 'bujia' not in _norm(nombre):
+        return valor
+    try:
+        cant = int(float(cantidad))
+    except (TypeError, ValueError):
+        return valor
+    if cant < 2:
+        return valor
+    return max(1, int(round(valor / cant)))
 
 
 def _query_repuesto(
@@ -1006,6 +1028,13 @@ _CILINDRAJE_RE = re.compile(r'(?<!\d)([1-4])[.,\-]([0-9])(?!\d)')
 _MOTOR_CODE_RE = re.compile(r'\bg[0-9][a-z0-9]{2,4}\b', re.I)
 
 
+def _litros_desde_cc(cc: int) -> str | None:
+    """1368 cc es el 1.4 T-Jet. Un año (2010) no es una cilindrada."""
+    if cc < 1000 or cc > 4500 or 1900 <= cc <= 2035:
+        return None
+    return f'{round(cc / 1000, 1):.1f}'
+
+
 def _cilindraje_litros(raw: Any) -> str | None:
     s = str(raw or '').strip().lower().replace(',', '.')
     if not s:
@@ -1016,6 +1045,15 @@ def _cilindraje_litros(raw: Any) -> str | None:
     m = re.search(r'\b([1-4])([0-9])00(?:\s*cc)?\b', s)
     if m:
         return f'{m.group(1)}.{m.group(2)}'
+    m = re.search(r'\b([1-4])\.(\d{3})\b', s)
+    if m:
+        return _litros_desde_cc(int(m.group(1)) * 1000 + int(m.group(2)))
+    m = re.search(r'\b([1-4])\.(\d)\s*[a-z]*\b', s)
+    if m:
+        return f'{m.group(1)}.{m.group(2)}'
+    m = re.search(r'\b(\d{3,4})\s*(?:cc)?\b', s)
+    if m:
+        return _litros_desde_cc(int(m.group(1)))
     return None
 
 
@@ -1387,10 +1425,18 @@ def _token_modelo_exacto(modelo: str, tipo_motor: str) -> str:
 
 
 def _litros_en_titulo(titulo: str) -> set[str]:
-    """1.4, 1,4 y 1.4t son 1.4. Un rango 2011-2014 no es una cilindrada."""
-    return {
-        f'{a}.{b}' for a, b in re.findall(r'\b([1-4]) (\d)t?\b', _norm(titulo))
-    }
+    """1.4, 1,4, 1.4t y 14t son 1.4. Un rango 2011-2014 no es una cilindrada."""
+    n = _norm(titulo)
+    found = {f'{a}.{b}' for a, b in re.findall(r'\b([1-4]) (\d)t?\b', n)}
+    if re.search(r'\b14t\b', n):
+        found.add('1.4')
+    return found
+
+
+def _titulo_es_14_turbo(titulo: str) -> bool:
+    """'1.4t' y el slug '14t' son el T-Jet, no el 1.4 atmosférico."""
+    n = _norm(titulo)
+    return bool(re.search(r'\b1 4t\b', n) or re.search(r'\b14t\b', n))
 
 
 def _auto_es_tjet(modelo: str, tipo_motor: str) -> bool:
@@ -1419,7 +1465,10 @@ def _titulo_calza_motor(
     cil = _cilindraje_litros(cilindraje) or ''
     if cil and cil in _litros_en_titulo(titulo):
         return True
-    if _auto_es_tjet(modelo, tipo_motor) and 'tjet' in n.replace(' ', ''):
+    # '1.4t' es el motor del T-Jet aunque el campo diga 1368 cc o solo 'T-Jet'.
+    if _auto_es_tjet(modelo, tipo_motor) and (
+        _titulo_es_14_turbo(titulo) or 'tjet' in n.replace(' ', '')
+    ):
         return True
     if _auto_es_sport(modelo, tipo_motor) and re.search(r'\bsport\b', n):
         return True
@@ -2102,9 +2151,39 @@ _FICHA_UA = (
 )
 
 
+# La última descarga. Un 403 o el muro de Mercado Libre no trae ficha.
+_FICHAS_BLOQUEADAS: set[str] = set()
+
+
+def _respuesta_sin_ficha(resp: Any) -> bool:
+    """403, o el 302 de Mercado Libre hacia account-verification."""
+    try:
+        status = int(getattr(resp, 'status_code', 0) or 0)
+    except (TypeError, ValueError):
+        status = 0
+    if status in (401, 403, 429):
+        return True
+    urls = [str(getattr(resp, 'url', '') or '')]
+    for prev in getattr(resp, 'history', None) or []:
+        urls.append(str(getattr(prev, 'url', '') or ''))
+        headers = getattr(prev, 'headers', None) or {}
+        try:
+            urls.append(str(headers.get('Location') or headers.get('location') or ''))
+        except Exception:
+            continue
+    blob = ' '.join(urls).lower()
+    return 'account-verification' in blob or 'login.mercadolibre' in blob
+
+
 def _leer_html_fichas(urls: list[str]) -> dict[str, str]:
-    """HTML de las URLs que Tavily ya devolvió. No inventa direcciones."""
+    """HTML de las URLs que Tavily ya devolvió. No inventa direcciones.
+
+    Un 403 o el muro de verificación de Mercado Libre no se lee: la ficha
+    queda sin precio y no se cotiza. `_FICHAS_BLOQUEADAS` lista esas URLs.
+    """
+    global _FICHAS_BLOQUEADAS
     out: dict[str, str] = {}
+    bloqueadas: set[str] = set()
     for url in list(dict.fromkeys(u for u in urls if u))[:20]:
         try:
             resp = requests.get(
@@ -2118,9 +2197,18 @@ def _leer_html_fichas(urls: list[str]) -> dict[str, str]:
             )
         except requests.RequestException:
             continue
+        if _respuesta_sin_ficha(resp):
+            bloqueadas.add(url)
+            logger.info(
+                'busqueda_web_repuestos[html] bloqueada status=%s url=%s',
+                getattr(resp, 'status_code', ''),
+                str(url)[:180],
+            )
+            continue
         if resp.status_code != 200 or not (resp.text or '').strip():
             continue
         out[url] = resp.text[:_FICHA_HTML_BYTES]
+    _FICHAS_BLOQUEADAS = bloqueadas
     return out
 
 
@@ -3368,6 +3456,7 @@ def _buscar_repuestos_web_tavily(
     especificaciones: dict[str, str] | None = None,
     bandas_min: dict[str, int] | None = None,
     bandas_max: dict[str, int] | None = None,
+    cantidades: dict[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Agregador Tavily (JSON real) + Gemini solo como filtro/formateador."""
     whitelist = _dominios_whitelist()
@@ -3390,12 +3479,40 @@ def _buscar_repuestos_web_tavily(
     notas = avisos if avisos is not None else {}
     pisos = bandas_min or {}
     techos = bandas_max or {}
+    cant_por_nombre = cantidades or {}
+
+    def _cantidad(nombre_linea: str) -> Any:
+        if nombre_linea in cant_por_nombre:
+            return cant_por_nombre[nombre_linea]
+        clave = _clave_fuzzy(nombre_linea)
+        for llave, valor in cant_por_nombre.items():
+            if clave and _clave_fuzzy(str(llave)) == clave:
+                return valor
+        return 1
 
     def _piso(nombre_linea: str) -> int:
-        return _banda_min_de(pisos, nombre_linea)
+        return _monto_banda_por_unidad(
+            nombre_linea, _banda_min_de(pisos, nombre_linea), _cantidad(nombre_linea),
+        )
 
     def _techo(nombre_linea: str) -> int:
-        return _banda_min_de(techos, nombre_linea)
+        return _monto_banda_por_unidad(
+            nombre_linea, _banda_min_de(techos, nombre_linea), _cantidad(nombre_linea),
+        )
+
+    def _bandas_unidad(fuente: dict[str, int]) -> dict[str, int]:
+        """La banda que ve el hit ya está por bujía, no por el juego de 4."""
+        nombres = list(dict.fromkeys([*fuente, *nombres_limpios]))
+        return {
+            nombre: _monto_banda_por_unidad(
+                nombre, _banda_min_de(fuente, nombre), _cantidad(nombre),
+            )
+            for nombre in nombres
+            if _banda_min_de(fuente, nombre) > 0
+        }
+
+    pisos_unidad = _bandas_unidad(pisos)
+    techos_unidad = _bandas_unidad(techos)
 
     def _cerrar_sin_hit(hits: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
         """Si la línea quedó sin ficha, el motivo dice qué se buscó y qué se botó."""
@@ -3727,7 +3844,9 @@ def _buscar_repuestos_web_tavily(
             if (not hay_precio and sin_precio) or quiere_modelo:
                 pedidas.append(url_cand)
     if pedidas:
+        _FICHAS_BLOQUEADAS.clear()
         htmls = _leer_html_fichas(pedidas)
+        bloqueadas = set(_FICHAS_BLOQUEADAS)
         pedidas_set_html = set(pedidas)
         for nombre, candidatos in list(candidatos_por_nombre.items()):
             cambio = False
@@ -3735,6 +3854,14 @@ def _buscar_repuestos_web_tavily(
             for cand in candidatos:
                 url_cand = str(cand.get('url') or '')
                 if url_cand not in pedidas_set_html:
+                    continue
+                if url_cand in bloqueadas:
+                    # El muro no trae precio. Si el snippet tampoco, no se cotiza.
+                    if not _precio_plausible_para_linea(
+                        nombre, _precio_de_candidato(cand, nombre),
+                    ):
+                        cand['bloqueada'] = True
+                    cambio = True
                     continue
                 cand['ficha_leida'] = True
                 html = htmls.get(url_cand) or ''
@@ -3815,6 +3942,11 @@ def _buscar_repuestos_web_tavily(
                 if str(cand.get('url') or '') not in prohibidas
             ]
 
+    for nombre_linea, candidatos in list(candidatos_por_nombre.items()):
+        candidatos_por_nombre[nombre_linea] = [
+            cand for cand in candidatos if not cand.get('bloqueada')
+        ]
+
     _sellar_lista_negra()
 
     preliminar = _hits_desde_candidatos(
@@ -3825,8 +3957,8 @@ def _buscar_repuestos_web_tavily(
         cilindraje=cilindraje,
         modelo=modelo,
         tipo_motor=tipo_motor,
-        bandas_min=pisos,
-        bandas_max=techos,
+        bandas_min=pisos_unidad,
+        bandas_max=techos_unidad,
     )
     if preliminar and all(
         _clave_fuzzy(nombre) in preliminar for nombre in candidatos_por_nombre
@@ -4040,8 +4172,8 @@ def _buscar_repuestos_web_tavily(
         cilindraje=cilindraje,
         modelo=modelo,
         tipo_motor=tipo_motor,
-        bandas_min=pisos,
-        bandas_max=techos,
+        bandas_min=pisos_unidad,
+        bandas_max=techos_unidad,
     ).items():
         if clave in out:
             continue
@@ -4174,6 +4306,7 @@ def buscar_repuestos_web(
     especificaciones: dict[str, str] | None = None,
     bandas_min: dict[str, int] | None = None,
     bandas_max: dict[str, int] | None = None,
+    cantidades: dict[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Tavily si hay API key. url_context solo si Tavily no está configurada."""
     nombres_limpios = [str(n).strip()[:200] for n in nombres if str(n).strip()]
@@ -4186,6 +4319,9 @@ def buscar_repuestos_web(
     anio = veh.get('anio') or ''
     cilindraje = str(veh.get('cilindraje') or '').strip()
     tipo_motor = str(veh.get('tipo_motor') or '').strip()
+    etiqueta_motor = str(veh.get('tipo_motor_label') or '').strip()
+    if etiqueta_motor and _auto_es_tjet(etiqueta_motor, '') and not _auto_es_tjet(modelo, tipo_motor):
+        tipo_motor = f'{tipo_motor} {etiqueta_motor}'.strip()
     timeout = int(getattr(settings, 'BUSQUEDA_WEB_REPUESTOS_TIMEOUT', 45) or 45)
 
     resultados: dict[str, dict[str, Any]] = {}
@@ -4225,6 +4361,7 @@ def buscar_repuestos_web(
                 especificaciones=especificaciones,
                 bandas_min=bandas_min,
                 bandas_max=bandas_max,
+                cantidades=cantidades,
             )
             tavily_listo = True
         except BusquedaWebCancelada:
