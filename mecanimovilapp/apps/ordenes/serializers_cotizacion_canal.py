@@ -409,7 +409,19 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
         for key in ('total_min_clp', 'total_max_clp'):
             if data.get(key) is not None:
                 data[key] = int(data[key])
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            contexto_nota_cotizacion,
+            sanear_notas_linea,
+        )
+
+        nota_kw = contexto_nota_cotizacion(instance)
+        saneados = []
         for rep in data.get('repuestos') or []:
+            if not isinstance(rep, dict):
+                saneados.append(rep)
+                continue
+            rep = sanear_notas_linea(rep, **nota_kw)
+            saneados.append(rep)
             if rep.get('precio_unitario_clp') is not None:
                 rep['precio_unitario_clp'] = int(rep['precio_unitario_clp'])
             ref = rep.get('precio_referencia_ia')
@@ -421,6 +433,7 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
                         rep[extra] = int(rep[extra])
                     except (TypeError, ValueError):
                         pass
+        data['repuestos'] = saneados
         for lin in data.get('mano_obra_lineas') or []:
             if isinstance(lin, dict) and lin.get('monto_clp') is not None:
                 lin['monto_clp'] = int(lin['monto_clp'] or 0)

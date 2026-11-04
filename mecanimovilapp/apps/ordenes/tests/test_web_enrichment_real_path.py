@@ -562,6 +562,213 @@ class WebEnrichmentRealPathTestCase(TestCase):
         self.assertIn('litros=4', texto)
         self.assertIn('precio_unitario=13162', texto)
 
+    def test_el_payload_final_no_trae_la_nota_larga(self):
+        """La tarea, la consulta que corre después y el GET no muestran el párrafo viejo."""
+        from mecanimovilapp.apps.ordenes.models import ProveedorRepuestos
+        from mecanimovilapp.apps.ordenes.serializers_cotizacion_canal import (
+            CotizacionCanalSerializer,
+        )
+        from mecanimovilapp.apps.ordenes.services.consulta_casas import (
+            _aplicar_en_cotizacion,
+        )
+        from mecanimovilapp.apps.ordenes.services.cotizacion_publica import (
+            _repuestos_publicos,
+        )
+        from mecanimovilapp.apps.ordenes.tasks import buscar_precios_web_cotizacion_task
+        from mecanimovilapp.apps.ordenes.models import ConsultaRepuesto
+
+        largo = (
+            'Se buscó "bujias fiat bravo 1.4", "bujias fiat bravo". '
+            'Sin ficha de Bujías para BRAVO SPORT TJET (2010). '
+            '"Bujía Champion Fiat Bravo 1.4 1995-2001" cubre otros años y no incluye este auto. '
+            '"Bujía Original Fiat Linea 1.4 Fire 8v" nombra otro motor.'
+        )
+        selector = 'Única casa con stock disponible (Comercialramirezspa)'
+        cot = self._crear_cotizacion_base([
+            {
+                'id': 'rep-bujias',
+                'nombre': 'Bujías',
+                'cantidad': 4,
+                'precio_unitario_clp': 0,
+                'certeza': 'sin_precio',
+                'motivo_seleccion': largo,
+                'comentario': largo,
+            },
+            {
+                'id': 'rep-filtro',
+                'nombre': 'Filtro de aire',
+                'cantidad': 1,
+                'precio_unitario_clp': 0,
+                'certeza': 'sin_precio',
+                'comentario': 'Elemento del filtro',
+            },
+        ])
+        cot.vehiculo_modelo = 'Bravo'
+        cot.vehiculo_cilindraje = '1.4'
+        cot.tipo_motor = 'T-Jet'
+        cot.vehiculo_anio = 2010
+        cot.save(update_fields=[
+            'vehiculo_modelo', 'vehiculo_cilindraje', 'tipo_motor', 'vehiculo_anio',
+        ])
+
+        def _tavily(nombres, **kwargs):
+            avisos = kwargs.get('avisos')
+            if isinstance(avisos, dict):
+                for nombre in nombres:
+                    if 'buj' in nombre.lower():
+                        avisos[nombre] = {
+                            'motivo': 'sin_ficha',
+                            'detalle': largo,
+                            'descarte': 'Lo encontrado era para otro año o modelo.',
+                        }
+            return {
+                'filtro aire': {
+                    'linea_id': 'rep-filtro',
+                    'nombre_buscado': 'Filtro de aire',
+                    'nombre_producto': 'Filtro de aire Fiat Bravo 1.4 T-Jet',
+                    'precio_clp': 14990,
+                    'tienda': 'Comercialramirezspa',
+                    'url': 'https://comercialramirezspa.cl/filtro-aire-bravo',
+                    'dominio': 'comercialramirezspa.cl',
+                    'calidad': 'alternativo',
+                },
+            }
+
+        def _ensucia(cotizacion):
+            reps = []
+            for rep in cotizacion.repuestos or []:
+                actual = dict(rep)
+                if actual.get('id') == 'rep-bujias':
+                    actual['motivo_seleccion'] = largo
+                    actual['comentario'] = largo
+                    actual['razon'] = largo
+                if actual.get('id') == 'rep-filtro':
+                    actual['motivo_seleccion'] = selector
+                    actual['comentario'] = f'Cotizado: {selector}'
+                reps.append(actual)
+            cotizacion.repuestos = reps
+            cotizacion.save(update_fields=['repuestos', 'actualizado_en'])
+            return {'lanzadas': []}
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.busqueda_web_habilitada',
+            return_value=True,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.buscar_repuestos_web',
+            side_effect=_tavily,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.consulta_casas.consultar_lineas_sin_precio_si_automatico',
+            side_effect=_ensucia,
+        ):
+            result = buscar_precios_web_cotizacion_task(cot.id)
+
+        self.assertTrue(result.get('ok'))
+        cot.refresh_from_db()
+        por_id = {r['id']: r for r in cot.repuestos}
+        self._assert_payload_sin_nota_larga(por_id['rep-bujias'])
+        self._assert_payload_sin_nota_larga(por_id['rep-filtro'])
+        bujias = por_id['rep-bujias']
+        filtro = por_id['rep-filtro']
+        self.assertTrue(bujias['motivo_seleccion'].startswith('Precio estimado.'))
+        self.assertIn('Bravo 1.4 T-Jet 2010', bujias['motivo_seleccion'])
+        self.assertIn('otro año o modelo', bujias['motivo_seleccion'])
+        self.assertLessEqual(len(bujias['comentario']), 160)
+        self.assertEqual(
+            filtro['motivo_seleccion'],
+            'Comercial Ramírez: compatible con Fiat Bravo 1.4 T-Jet, mejor precio encontrado.',
+        )
+        self.assertEqual(filtro['casa_repuesto_nombre'], 'Comercial Ramírez')
+        self.assertEqual(filtro['comentario'], filtro['motivo_seleccion'])
+        for linea in (cot.metadata.get('busqueda_web_progreso') or {}).get('lineas') or []:
+            self.assertNotIn('se buscó', str(linea.get('fuente') or '').lower())
+            self.assertNotIn('única casa con stock', str(linea.get('fuente') or '').lower())
+
+        casa = ProveedorRepuestos.objects.create(
+            taller=self.taller,
+            nombre='Todoautochile',
+            telefono='944445555',
+        )
+        consulta = ConsultaRepuesto.objects.create(
+            taller=self.taller,
+            proveedor=casa,
+            cotizacion=cot,
+            repuesto_id='rep-bujias',
+            pieza_nombre='Bujías',
+            vehiculo_snapshot={'marca': 'Fiat', 'modelo': 'Bravo'},
+            estado=ConsultaRepuesto.ESTADO_ESPERANDO,
+            unica=True,
+        )
+        with patch('mecanimovilapp.apps.ordenes.services.consulta_casas._avisar'):
+            _aplicar_en_cotizacion(consulta, {
+                'estado': ConsultaRepuesto.ESTADO_RESPONDIDA,
+                'precio_clp': 18900,
+                'confianza': 0.9,
+                'calidad': '',
+            })
+        cot.refresh_from_db()
+        respondida = next(r for r in cot.repuestos if r.get('id') == 'rep-bujias')
+        self._assert_payload_sin_nota_larga(respondida)
+        self.assertEqual(
+            respondida['motivo_seleccion'],
+            'TodoAuto: compatible con Fiat Bravo 1.4 T-Jet, mejor precio encontrado.',
+        )
+        self.assertEqual(respondida['casa_repuesto_nombre'], 'TodoAuto')
+
+        guardada = dict(respondida)
+        guardada['motivo_seleccion'] = largo
+        guardada['comentario'] = largo
+        guardada['proveedor_nombre'] = ''
+        guardada['casa_repuesto_nombre'] = ''
+        guardada['url_producto'] = ''
+        guardada['fuente_marketplace'] = ''
+        cot.repuestos = [guardada, filtro]
+        cot.save(update_fields=['repuestos'])
+        data = CotizacionCanalSerializer(cot).data
+        leida = next(r for r in data['repuestos'] if r.get('id') == 'rep-bujias')
+        self._assert_payload_sin_nota_larga(leida)
+        self.assertTrue(leida['motivo_seleccion'].startswith('Precio estimado.'))
+        pubs = _repuestos_publicos(
+            cot.repuestos,
+            marca='Fiat',
+            modelo='Bravo',
+            anio=2010,
+            tipo_motor='T-Jet',
+            cilindraje='1.4',
+        )
+        self.assertNotIn('Se buscó', pubs[0].get('comentario') or '')
+        self.assertLessEqual(len(pubs[0].get('comentario') or ''), 160)
+
+    def _assert_payload_sin_nota_larga(self, rep: dict) -> None:
+        frases = (
+            'se buscó',
+            'sin ficha de',
+            'cubre otros años',
+            'nombra otro motor',
+            'nombra otro modelo',
+            'única casa con stock',
+        )
+        textos: list[str] = []
+
+        def walk(valor) -> None:
+            if isinstance(valor, str):
+                textos.append(valor)
+            elif isinstance(valor, dict):
+                for item in valor.values():
+                    walk(item)
+            elif isinstance(valor, list):
+                for item in valor:
+                    walk(item)
+
+        walk(rep)
+        for texto in textos:
+            bajo = texto.lower()
+            for frase in frases:
+                self.assertNotIn(frase, bajo, texto)
+        for campo in ('motivo_seleccion', 'comentario'):
+            nota = str(rep.get(campo) or '')
+            if nota:
+                self.assertLessEqual(len(nota), 160, nota)
+
 
 _HTML_ACEITE_ESCOBAR = """
 <html><head>

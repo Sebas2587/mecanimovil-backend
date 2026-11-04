@@ -716,6 +716,9 @@ def _aplicar_seleccion_casa_repuestos(
             consolidar_si_posible,
             seleccionar_casa_optima,
         )
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            nombre_tienda_visible,
+        )
     except ImportError as exc:
         logger.warning('No se pudo importar seleccion_casa_repuestos: %s, omitiendo selección', exc)
         return repuestos
@@ -825,7 +828,7 @@ def _aplicar_seleccion_casa_repuestos(
             resultado = resultados_consolidados[rep_id]
             casa = str(resultado.casa_elegida or '').strip()
             if _casa_es_tienda(rep, casa):
-                rep['casa_repuesto_nombre'] = casa
+                rep['casa_repuesto_nombre'] = nombre_tienda_visible(casa) or casa
                 rep['proveedor_nombre'] = casa
                 rep['motivo_seleccion'] = _nota_de_linea_con_tienda(
                     rep,
@@ -860,7 +863,7 @@ def _aplicar_seleccion_casa_repuestos(
             resultado = seleccionar_casa_optima(opciones)
             casa = str(resultado.casa_elegida or '').strip()
             if _casa_es_tienda(rep, casa):
-                rep['casa_repuesto_nombre'] = casa
+                rep['casa_repuesto_nombre'] = nombre_tienda_visible(casa) or casa
                 rep['proveedor_nombre'] = casa
                 rep['motivo_seleccion'] = _nota_de_linea_con_tienda(
                     rep,
