@@ -497,3 +497,58 @@ class WebEnrichmentRealPathTestCase(TestCase):
         self.assertIn('elegido id=rep-pastillas', texto)
         self.assertIn('Pastillas de Freno Delanteras Fiat Bravo', texto)
         self.assertIn('elegido id=rep-aceite', texto)
+
+    def test_bidon_de_4l_guarda_el_estante_y_cotiza_el_litro(self):
+        """$52.650 / 4 = $13.162. El cache se queda con el precio de la ficha."""
+        from mecanimovilapp.apps.ordenes.tasks import buscar_precios_web_cotizacion_task
+
+        cot = self._crear_cotizacion_base([
+            {
+                'id': 'rep-aceite',
+                'nombre': 'Aceite de motor',
+                'cantidad': 3,
+                'precio_unitario_clp': 0,
+                'precio_min_clp': 8000,
+                'precio_max_clp': 20000,
+                'certeza': 'sin_precio',
+            },
+        ])
+
+        def _tavily(nombres, **kwargs):
+            self.assertEqual(kwargs.get('bandas_min', {}).get('Aceite de motor'), 8000)
+            return {
+                'aceite motor': {
+                    'linea_id': 'rep-aceite',
+                    'nombre_buscado': 'Aceite de motor',
+                    'nombre_producto': 'Aceite Para Motor Liqui Moly Sintético 5w-40 4L',
+                    'marca_repuesto': 'Liqui',
+                    'precio_clp': 52650,
+                    'tienda': 'Repuestos Sergio Escobar',
+                    'url': 'https://repuestos.sergioescobar.cl/tienda/lubricantes/aceite-4l/',
+                    'dominio': 'repuestos.sergioescobar.cl',
+                },
+            }
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.busqueda_web_habilitada',
+            return_value=True,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.buscar_repuestos_web',
+            side_effect=_tavily,
+        ), self.assertLogs('mecanimovilapp.apps.ordenes.tasks', level='INFO') as logs:
+            result = buscar_precios_web_cotizacion_task(cot.id)
+
+        self.assertTrue(result.get('ok'))
+        cot.refresh_from_db()
+        aceite = next(r for r in cot.repuestos if r.get('id') == 'rep-aceite')
+        self.assertEqual(aceite.get('precio_unitario_clp'), 13162)
+        self.assertEqual(aceite.get('nombre'), 'Aceite de motor Liqui Moly')
+        self.assertNotEqual(aceite.get('nombre'), 'Aceite de motor Liqui')
+        self.assertEqual(aceite.get('proveedor_nombre'), 'Repuestos Sergio Escobar')
+        self.assertIn('Repuestos Sergio Escobar', aceite.get('motivo_seleccion') or '')
+        fila = PrecioRepuestoWeb.objects.get(dominio='repuestos.sergioescobar.cl')
+        self.assertEqual(fila.precio_clp, 52650)
+        texto = '\n'.join(logs.output)
+        self.assertIn('precio_estante=52650', texto)
+        self.assertIn('litros=4', texto)
+        self.assertIn('precio_unitario=13162', texto)

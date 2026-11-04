@@ -43,17 +43,25 @@ _MARCAS_REPUESTO_CONOCIDAS = (
     'Wix', 'Fram', 'Purflux', 'Hengst', 'Corteco', 'Elring', 'Victor Reinz',
     'ATE', 'Zimmermann', 'Pilenga', 'SNR', 'Ruville', 'Optimal',
     'Magneti Marelli', 'Champion', 'Mobis', 'Motorcraft', 'Febest', 'Nakata',
-    'Cofap', 'Mando', 'TISS', 'Walker', 'CTR',
+    'Cofap', 'Mando', 'TISS', 'Walker', 'CTR', 'Liqui Moly',
 )
 
+# Hasta tres palabras: "Marca: Liqui Moly" y la tabla "Marca | Liqui Moly".
+# Un solo token ("Liqui", "Stp") no es la marca.
 _MARCA_ETIQUETA_RE = re.compile(
-    r'(?:marca(?!\s*veh[ií]culo)(?:\s+del\s+producto)?|fabricante|brand)\s*[:\-]\s*'
-    r'([A-Za-z][A-Za-z0-9.\-]{1,39})',
+    r'(?:marca(?!\s*veh[ií]culo)(?:\s+del\s+producto)?|fabricante|brand)\s*[:|\-]\s*'
+    r'([A-Za-z][A-Za-z0-9.\-]{1,39}(?:\s+[A-Za-z][A-Za-z0-9.\-]{1,39}){0,2})',
     re.I,
 )
 _MARCA_ETIQUETA_BASURA = frozenset({
     'image', 'slider', 'logo', 'icon', 'foto', 'photo', 'vehiculo', 'auto',
     'producto', 'repuesto', 'original', 'oem', 'generico',
+})
+# La etiqueta sigue con el campo de al lado: "Marca: Stp Origen: China".
+_CAMPOS_FICHA_MARCA = frozenset({
+    'origen', 'tipo', 'calidad', 'precio', 'pais', 'procedencia', 'china',
+    'alemania', 'japon', 'japan', 'original', 'alternativo', 'oem', 'sintetico',
+    'semisintetico', 'mineral',
 })
 
 # Placeholders del maestro / JSON que NUNCA deben mostrarse como marca verificada.
@@ -193,17 +201,56 @@ def limpiar_precio_para_nueva_busqueda(rep: dict) -> dict:
 
 def _inferir_marca_desde_nombre(nombre: str) -> str:
     raw = nombre or ''
-    for marca in _MARCAS_REPUESTO_CONOCIDAS:
+    # La más larga primero: "Liqui Moly" gana sobre un token suelto.
+    for marca in sorted(_MARCAS_REPUESTO_CONOCIDAS, key=len, reverse=True):
         if re.search(rf'\b{re.escape(marca)}\b', raw, flags=re.IGNORECASE):
             return marca if marca != 'Luk' else 'LuK'
     return ''
 
 
+def _marca_canonica(marca: str | None, texto: str = '') -> str:
+    """Marca de la pieza con su nombre completo, o '' si el token está cortado.
+
+    'Liqui' junto a 'Liqui Moly' queda 'Liqui Moly'. 'Stp' o 'Liqui' solos
+    no se pegan al nombre de la línea. NGK, ATE y el resto de la lista
+    conservan su grafía. Una marca de varias palabras que no está en la
+    lista (Repstock no entra: es una sola palabra larga) se conserva.
+    """
+    base = _marca_repuesto_valida(marca)
+    blob = f'{texto or ""} {base}'.strip()
+    if not blob:
+        return ''
+    for conocida in sorted(_MARCAS_REPUESTO_CONOCIDAS, key=len, reverse=True):
+        if not re.search(rf'\b{re.escape(conocida)}\b', blob, flags=re.IGNORECASE):
+            continue
+        canon = 'LuK' if conocida == 'Luk' else conocida
+        if not base:
+            return canon
+        nb, nk = _norm(base), _norm(conocida)
+        if nk == nb or nk.startswith(f'{nb} ') or nb.startswith(nk):
+            return canon
+    if not base:
+        return ''
+    if len(base.split()) == 1:
+        nb = _norm(base)
+        conocidas_norm = {_norm(item) for item in _MARCAS_REPUESTO_CONOCIDAS}
+        if any(_norm(item).startswith(f'{nb} ') for item in _MARCAS_REPUESTO_CONOCIDAS):
+            return ''
+        if len(nb) <= 4 and nb not in conocidas_norm:
+            return ''
+    return base
+
+
 def _marca_desde_etiqueta(texto: str, marca_vehiculo: str = '') -> str:
-    """Lee 'Marca: Bosch' / 'Fabricante: NGK' y descarta la marca del auto."""
+    """Lee 'Marca: Bosch' / 'Marca | Liqui Moly' y descarta la marca del auto."""
     veh = _norm(marca_vehiculo)
     for match in _MARCA_ETIQUETA_RE.finditer(texto or ''):
-        cand = _marca_repuesto_valida(match.group(1))
+        palabras = []
+        for palabra in match.group(1).split():
+            if palabras and _norm(palabra) in _CAMPOS_FICHA_MARCA:
+                break
+            palabras.append(palabra)
+        cand = _marca_canonica(' '.join(palabras), texto)
         if not cand or _norm(cand) in _MARCA_ETIQUETA_BASURA:
             continue
         if veh and (_norm(cand) == veh or veh in _norm(cand)):
@@ -212,14 +259,15 @@ def _marca_desde_etiqueta(texto: str, marca_vehiculo: str = '') -> str:
     return ''
 
 
-def _nombre_con_marca(nombre: str, marca: str | None) -> str:
+def _nombre_con_marca(nombre: str, marca: str | None, texto: str = '') -> str:
     """Incluye la marca en el nombre visible al cliente si aún no está.
 
-    'Discos de freno delanteros' + 'Repstock' → 'Discos de freno delanteros Repstock'
-    No duplica si el nombre ya contiene la marca (case-insensitive).
+    'Discos de freno delanteros' + 'Repstock' → 'Discos de freno delanteros Repstock'.
+    'Aceite de motor' + 'Liqui' no agrega el token cortado. Si el texto de la
+    ficha dice 'Liqui Moly', el nombre queda con la marca completa.
     """
     base = str(nombre or '').strip()
-    marca_ok = _marca_repuesto_valida(marca)
+    marca_ok = _marca_canonica(marca, f'{texto} {marca or ""}')
     if not base:
         return marca_ok
     if not marca_ok:
@@ -1176,12 +1224,17 @@ def _aplicar_hit_campos(next_rep: dict[str, Any], hit: dict[str, Any]) -> None:
     puede_reemplazar = hit_grounded and not actual_grounded
 
     marca_actual = str(next_rep.get('marca_repuesto') or '').strip()
-    if hit.get('marca_repuesto') and (not marca_actual or puede_reemplazar):
-        next_rep['marca_repuesto'] = hit['marca_repuesto']
+    marca_hit = _marca_canonica(
+        str(hit.get('marca_repuesto') or ''),
+        f"{hit.get('nombre_producto') or ''} {hit.get('marca_repuesto') or ''}",
+    )
+    if marca_hit and (not marca_actual or puede_reemplazar):
+        next_rep['marca_repuesto'] = marca_hit
         # El cliente ve el nombre del ítem: la marca debe ir ahí, no solo en un tag.
         next_rep['nombre'] = _nombre_con_marca(
             str(next_rep.get('nombre') or ''),
-            hit['marca_repuesto'],
+            marca_hit,
+            str(hit.get('nombre_producto') or ''),
         )
 
     if hit.get('fuente_marketplace') and (not fuente_actual or puede_reemplazar):
