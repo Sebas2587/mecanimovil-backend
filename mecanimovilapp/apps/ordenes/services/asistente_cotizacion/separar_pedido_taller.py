@@ -262,6 +262,7 @@ def texto_pedido_taller(servicio: str, descripcion: str = '') -> str:
 def interpretar_pedido_taller(texto: str) -> dict[str, list[str]]:
     """Separa el campo del taller en líneas de mano de obra y nombres de pieza."""
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.aplicar_catalogo import (
+        _FILTRO_HABITACULO_RE,
         _split_servicios,
     )
 
@@ -286,6 +287,13 @@ def interpretar_pedido_taller(texto: str) -> dict[str, list[str]]:
             for pieza in nombres:
                 if not any(misma_pieza(pieza, previa) for previa in piezas):
                     piezas.append(pieza)
+            continue
+        if lista and _FILTRO_HABITACULO_RE.match(frase):
+            # "y filtro de aire" ya se partió de la faena anterior. Sin verbo
+            # quedaba solo como repuesto y el taller no veía la mano de obra.
+            mano.append(_titulo(f'Cambio de {frase}'))
+            if not any(misma_pieza(titulo, previa) for previa in piezas):
+                piezas.append(titulo)
             continue
         if lista:
             piezas.append(titulo)

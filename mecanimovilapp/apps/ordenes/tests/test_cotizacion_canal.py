@@ -1258,6 +1258,20 @@ class SepararPedidoTallerTestCase(SimpleTestCase):
         )
         self.assertEqual(out['mano_obra_clp'], 80000)
 
+    def test_filtro_de_aire_es_otra_faena_aunque_no_traiga_verbo(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.separar_pedido_taller import (
+            interpretar_pedido_taller,
+        )
+
+        interp = interpretar_pedido_taller('Cambio de bujías y filtro de aire')
+        self.assertEqual(
+            interp['mano_obra'],
+            ['Cambio de bujías', 'Cambio de filtro de aire'],
+        )
+        self.assertEqual(interp['repuestos'], ['Bujías', 'Filtro de aire'])
+        juntas = interpretar_pedido_taller('Cambio de bujías y bobinas')
+        self.assertEqual(juntas['mano_obra'], ['Cambio de bujías y bobinas'])
+
 
 class FaenaConjuntaNoEsRepuestoTestCase(SimpleTestCase):
     PEDIDO = (
