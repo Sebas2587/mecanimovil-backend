@@ -906,6 +906,10 @@ def _aplicar_seleccion_casa_repuestos(
         repuestos_finales,
         marca=marca_vehiculo,
         taller=taller,
+        modelo=modelo_vehiculo,
+        anio=anio_vehiculo,
+        tipo_motor=tipo_motor,
+        cilindraje=cilindraje,
     )
     return repuestos_finales
 
@@ -937,7 +941,16 @@ def _lugar_del_taller(taller) -> str:
     return ' '.join(p.strip() for p in partes if p and str(p).strip())
 
 
-def _aplicar_prioridad_de_taller(repuestos: list[dict[str, Any]], *, marca: str, taller) -> None:
+def _aplicar_prioridad_de_taller(
+    repuestos: list[dict[str, Any]],
+    *,
+    marca: str,
+    taller,
+    modelo: str = '',
+    anio: Any = None,
+    tipo_motor: str = '',
+    cilindraje: Any = None,
+) -> None:
     """Especialista de la marca, y la tienda solo en línea al final.
 
     No pisa una ficha de casa física. No inventa el precio: si no hay ficha
@@ -1007,8 +1020,42 @@ def _aplicar_prioridad_de_taller(repuestos: list[dict[str, Any]], *, marca: str,
             rep['casa_sucursal'] = texto_sucursal(sucursal)
             rep['casa_telefono'] = str(perfil_marca.get('telefono') or '')
             if visible_ref and precio > 0 and not es_fisica(visible_ref, url):
-                rep['referencia_tienda'] = visible_ref
-                rep['precio_referencia_clp'] = precio
+                from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+                    _monto_banda_por_unidad,
+                    monto_por_unidad_citable,
+                )
+
+                try:
+                    piso_ref = int(rep.get('precio_min_clp') or 0)
+                    techo_ref = int(rep.get('precio_max_clp') or 0)
+                except (TypeError, ValueError):
+                    piso_ref, techo_ref = 0, 0
+                piso_ref = _monto_banda_por_unidad(str(rep.get('nombre') or ''), piso_ref, rep.get('cantidad'))
+                techo_ref = _monto_banda_por_unidad(str(rep.get('nombre') or ''), techo_ref, rep.get('cantidad'))
+                citado = monto_por_unidad_citable(
+                    {
+                        'title': str(rep.get('nombre_producto') or ''),
+                        'content': '',
+                        'url': url,
+                        'ficha_leida': bool(str(rep.get('nombre_producto') or '').strip() or url),
+                        'precio_snippet': precio,
+                    },
+                    nombre=str(rep.get('nombre') or ''),
+                    modelo=modelo,
+                    tipo_motor=tipo_motor,
+                    banda_min=piso_ref,
+                    banda_max=techo_ref,
+                    anio=anio,
+                    cilindraje=cilindraje,
+                    cantidad=rep.get('cantidad'),
+                    unitario_linea=precio,
+                )
+                if citado > 0:
+                    rep['referencia_tienda'] = visible_ref
+                    rep['precio_referencia_clp'] = citado
+                else:
+                    rep.pop('referencia_tienda', None)
+                    rep.pop('precio_referencia_clp', None)
             rep['_perfil_especialista'] = perfil_marca['nombre']
             rep['_a_consultar'] = True
             continue
@@ -1034,14 +1081,27 @@ def _aplicar_prioridad_de_taller(repuestos: list[dict[str, Any]], *, marca: str,
         solo = str(rep.pop('_solo_en_linea', '') or '')
         if perfil_nombre:
             if a_consultar:
-                try:
-                    ref_precio = int(rep.get('precio_referencia_clp') or 0)
-                except (TypeError, ValueError):
-                    ref_precio = 0
+                from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+                    _referencia_consulta,
+                )
+
+                ref_tienda, ref_precio = _referencia_consulta(
+                    rep,
+                    modelo=modelo,
+                    anio=anio,
+                    tipo_motor=tipo_motor,
+                    cilindraje=cilindraje,
+                )
+                if ref_tienda and ref_precio > 0:
+                    rep['referencia_tienda'] = ref_tienda
+                    rep['precio_referencia_clp'] = ref_precio
+                else:
+                    rep.pop('referencia_tienda', None)
+                    rep.pop('precio_referencia_clp', None)
                 nota = recortar_nota(nota_consulta_especialista(
                     perfil_nombre,
                     marca,
-                    tienda=str(rep.get('referencia_tienda') or ''),
+                    tienda=ref_tienda,
                     precio=ref_precio,
                 ))
             elif cubre_todo:

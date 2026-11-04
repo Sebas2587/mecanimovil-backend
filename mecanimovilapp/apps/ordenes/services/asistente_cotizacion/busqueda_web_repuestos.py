@@ -1420,6 +1420,11 @@ def _rechazo_precio_pastilla(
         and not (candidato or {}).get('respaldo_alto')
     ):
         return 'precio_alto_banda'
+    # Una bujía por encima de la banda por unidad no se cita ni se elige.
+    # El juego de 4 ya quedó partido: $36.000 son $9.000, y eso sí entra.
+    # $28.432 suelto queda justo bajo 2,5× $12.000 y antes pasaba igual.
+    if 'bujia' in _norm(nombre) and techo > 0 and precio > techo:
+        return 'precio_alto_banda'
     if piso <= 0:
         return ''
     # La banda 28.000–55.000 deja afuera fichas reales de Bravo 1.4.
@@ -1618,6 +1623,68 @@ def _motivo_calidad_pastilla(
     if compat is None:
         return 'sin_modelo'
     return ''
+
+
+def monto_por_unidad_citable(
+    candidato: dict[str, Any],
+    *,
+    nombre: str,
+    modelo: str = '',
+    tipo_motor: str = '',
+    banda_min: int = 0,
+    banda_max: int = 0,
+    anio: Any = None,
+    cilindraje: Any = None,
+    cantidad: Any = 1,
+    unitario_linea: int = 0,
+) -> int:
+    """Precio por unidad que pasó las mismas compuertas que una ficha elegida.
+
+    0 si no se puede citar. El estante de un juego de bujías no se cita:
+    se parte y, si esa unidad queda fuera de la banda, no hay referencia.
+    """
+    techo = int(banda_max or 0)
+    piso = int(banda_min or 0)
+    if techo <= 0 and 'bujia' in _norm(nombre):
+        try:
+            propio = int(unitario_linea or 0)
+        except (TypeError, ValueError):
+            propio = 0
+        if 0 < propio < _BUJIA_JUEGO_DESDE:
+            techo = propio
+    estante = _precio_de_candidato(candidato, nombre)
+    if estante <= 0:
+        return 0
+    titulo = str((candidato or {}).get('title') or '')
+    monto = estante
+    if 'bujia' in _norm(nombre) and techo > 0 and estante > techo:
+        partido = _monto_bujia_por_unidad(nombre, estante, titulo)
+        if partido == estante or partido > techo or (piso > 0 and partido < piso):
+            return 0
+        monto = partido
+        titulo = _RE_PACK.sub(' ', titulo)
+    elif 'bujia' in _norm(nombre) and techo > 0 and estante <= techo:
+        # El precio ya es por unidad. El título puede seguir diciendo x4.
+        titulo = _RE_PACK.sub(' ', titulo)
+    revisado = dict(candidato or {})
+    revisado['title'] = titulo
+    revisado['content'] = ''
+    revisado['precio_snippet'] = monto
+    revisado['ficha_leida'] = bool(str(titulo).strip())
+    if _motivo_calidad_pastilla(
+        revisado,
+        nombre=nombre,
+        modelo=modelo,
+        tipo_motor=tipo_motor,
+        banda_min=piso,
+        banda_max=techo,
+        anio=anio,
+        cilindraje=cilindraje,
+    ):
+        return 0
+    if 'bujia' in _norm(nombre) and techo > 0 and monto > techo:
+        return 0
+    return monto
 
 
 def _candidato_sirve_linea(
