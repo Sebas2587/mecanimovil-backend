@@ -525,6 +525,25 @@ def _producto_menciona_pieza(nombre_repuesto: str, producto_matched: str) -> boo
     return any(k in prod for k in keywords)
 
 
+def _familia_de(nombre: str) -> str:
+    """Familia de la pieza. Vacío si el texto no nombra una familia conocida."""
+    from .familias_sensibles import detectar_familia_sensible
+
+    fam = detectar_familia_sensible(nombre) or ''
+    if fam:
+        return fam
+    if 'filtro' in _norm(nombre):
+        return 'filtro'
+    return ''
+
+
+def _familia_distinta(linea: str, otro: str) -> bool:
+    """True si los dos textos son piezas distintas (pastillas contra aceite)."""
+    a = _familia_de(linea)
+    b = _familia_de(otro)
+    return bool(a and b and a != b)
+
+
 def _producto_es_la_pieza(nombre_repuesto: str, producto_matched: str, *, fuente: str = '') -> bool:
     """Tipo de parte + keyword. Rechaza enfriador-por-aceite y listados genéricos."""
     producto = str(producto_matched or '').strip()
@@ -571,6 +590,12 @@ def _mejor_hit(nombre: str, candidatos: list[dict[str, Any]], *, min_score: int 
         if score < min_score:
             continue
         producto_nombre = str(cand.get('nombre_producto') or cand.get('nombre') or '')
+        # El aceite de la línea de al lado no se prueba contra las pastillas:
+        # ese intento logueaba listado_generico y no puede ganar el match.
+        if _familia_distinta(nombre, producto_nombre) or _familia_distinta(
+            nombre, str(cand.get('clave') or ''),
+        ):
+            continue
         fuente = str(cand.get('fuente_marketplace') or '')
         if not _producto_es_la_pieza(nombre, producto_nombre, fuente=fuente):
             continue
@@ -818,6 +843,8 @@ def _candidatos_historial_taller(
                 fuente_linea = str(
                     raw.get('fuente_marketplace') or raw.get('fuente_repuesto') or '',
                 ).strip()
+                if nombre_producto and _familia_distinta(nombre, nombre_producto):
+                    continue
                 if nombre_producto and not _producto_es_la_pieza(
                     nombre, nombre_producto, fuente=fuente_linea or 'historial',
                 ):
@@ -1314,7 +1341,11 @@ def enriquecer_repuestos_cotizacion(
 
             web_ok = [
                 c for c in web_cands
-                if _candidato_sirve_linea(
+                if not _familia_distinta(nombre, str(c.get('clave') or ''))
+                and not _familia_distinta(
+                    nombre, str(c.get('nombre_producto') or c.get('nombre') or ''),
+                )
+                and _candidato_sirve_linea(
                     nombre,
                     {
                         'title': str(c.get('nombre_producto') or c.get('nombre') or ''),
