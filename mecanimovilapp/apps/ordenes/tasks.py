@@ -442,6 +442,70 @@ def revisar_seguimiento_pipeline_comercial_task():
         return {'error': str(e)}
 
 
+def _soltar_ficha_mercado(rep: dict) -> dict:
+    """Saca una ficha web que las compuertas ya rechazaron. La banda de la IA queda."""
+    limpio = dict(rep)
+    for campo in (
+        'proveedor_nombre', 'url_producto', 'nombre_producto',
+        'fuente_marketplace', 'fuente_repuesto', 'tienda_ml',
+    ):
+        limpio.pop(campo, None)
+    limpio.pop('precio_referencia_mercado', None)
+    limpio['precio_unitario_clp'] = 0
+    limpio['precio_estimado'] = True
+    limpio['certeza'] = 'sin_precio'
+    return limpio
+
+
+def _candidato_de_hit(hit: dict) -> dict:
+    return {
+        'title': str(hit.get('nombre_producto') or ''),
+        'content': '',
+        'url': str(hit.get('url') or ''),
+        'ficha_leida': True,
+        'precio_snippet': int(hit.get('precio_clp') or 0),
+    }
+
+
+def _hit_sirve_linea(hit: dict, rep: dict, cot) -> bool:
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+        _candidato_sirve_linea,
+    )
+
+    try:
+        piso_linea = int(rep.get('precio_min_clp') or 0)
+    except (TypeError, ValueError):
+        piso_linea = 0
+    return _candidato_sirve_linea(
+        str(rep.get('nombre') or ''),
+        _candidato_de_hit(hit),
+        anio=cot.vehiculo_anio or '',
+        cilindraje=cot.vehiculo_cilindraje or '',
+        modelo=cot.vehiculo_modelo or '',
+        tipo_motor=cot.tipo_motor or '',
+        banda_min=piso_linea,
+    )
+
+
+def _pad_web_no_sirve(rep: dict, cot) -> bool:
+    """La ficha que el enrich acaba de escribir no pasa la compuerta de pastillas."""
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+        _es_pastillas_freno,
+    )
+
+    if not _es_pastillas_freno(str(rep.get('nombre') or '')):
+        return False
+    return not _hit_sirve_linea(
+        {
+            'nombre_producto': rep.get('nombre_producto') or '',
+            'url': rep.get('url_producto') or '',
+            'precio_clp': rep.get('precio_unitario_clp') or 0,
+        },
+        rep,
+        cot,
+    )
+
+
 @shared_task(bind=True, max_retries=1, default_retry_delay=30)
 def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
     """Enriquece cotización con precios/marcas/tiendas vía Gemini URL Context.
@@ -463,6 +527,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
         cuota_diaria_disponible,
         litros_envase,
         nombres_sin_cache_vigente,
+        urls_rechazadas_de,
     )
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web import (
         construir_progreso_busqueda,
@@ -702,6 +767,15 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                 cotizacion_id,
                 len(nombres),
             )
+        rechazadas = urls_rechazadas_de(avisos_busqueda)
+        if avisos_busqueda.get('_urls_rechazadas'):
+            resultados = {
+                clave: hit for clave, hit in (resultados or {}).items()
+                if str((hit or {}).get('url') or '') not in urls_rechazadas_de(
+                    avisos_busqueda,
+                    str((hit or {}).get('nombre_buscado') or ''),
+                )
+            }
 
         _abortar_si_cancelada()
         ttl_dias = max(1, int(getattr(settings, 'BUSQUEDA_WEB_REPUESTOS_TTL_DIAS', 14) or 14))
@@ -773,6 +847,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                 taller=cot.taller,
                 usar_ml=False,
                 usar_web=True,
+                urls_rechazadas=rechazadas,
             )
             by_cand = {
                 str(r.get('id')): r
@@ -811,6 +886,17 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                 rid = str(rep.get('id') or '')
                 if cand_ids and rid not in cand_ids:
                     continue
+                fuente_linea = str(rep.get('fuente_marketplace') or '')
+                url_linea = str(rep.get('url_producto') or '')
+                if fuente_linea in ('web', 'ml', 'mercadolibre') and (
+                    (url_linea and url_linea in rechazadas)
+                    or (
+                        str(rep.get('nombre_producto') or '').strip()
+                        and _pad_web_no_sirve(rep, cot)
+                    )
+                ):
+                    rep = _soltar_ficha_mercado(rep)
+                    reps_enriquecidos[i] = rep
                 if str(rep.get('fuente_marketplace') or '') in ('catalogo', 'historial', 'web'):
                     # El enrich ya escribió la ficha. Igual queda en el log
                     # qué candidato se quedó esta línea.
@@ -878,38 +964,15 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                     hit = None
                 if not hit:
                     continue
-                if hit.get('desde_cache'):
-                    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
-                        _candidato_sirve_linea,
+                if str(hit.get('url') or '') in rechazadas or not _hit_sirve_linea(hit, rep, cot):
+                    logger.info(
+                        'buscar_precios_web_cotizacion_task(%s): hit rechazado id=%s linea=%s producto=%s',
+                        cotizacion_id,
+                        rid,
+                        nombre_linea[:80],
+                        str(hit.get('nombre_producto') or '')[:80],
                     )
-
-                    try:
-                        piso_linea = int(rep.get('precio_min_clp') or 0)
-                    except (TypeError, ValueError):
-                        piso_linea = 0
-                    if not _candidato_sirve_linea(
-                        nombre_linea,
-                        {
-                            'title': str(hit.get('nombre_producto') or ''),
-                            'content': '',
-                            'url': str(hit.get('url') or ''),
-                            'ficha_leida': True,
-                            'precio_snippet': int(hit.get('precio_clp') or 0),
-                        },
-                        anio=cot.vehiculo_anio or '',
-                        cilindraje=cot.vehiculo_cilindraje or '',
-                        modelo=cot.vehiculo_modelo or '',
-                        tipo_motor=cot.tipo_motor or '',
-                        banda_min=piso_linea,
-                    ):
-                        logger.info(
-                            'buscar_precios_web_cotizacion_task(%s): cache rechazado id=%s linea=%s producto=%s',
-                            cotizacion_id,
-                            rid,
-                            nombre_linea[:80],
-                            str(hit.get('nombre_producto') or '')[:80],
-                        )
-                        continue
+                    continue
                 if str(hit.get('url') or '') in urls_usadas:
                     continue
                 next_rep = dict(rep)
@@ -986,7 +1049,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
             por_clave = {
                 _clave_aviso(nombre): nota
                 for nombre, nota in avisos_busqueda.items()
-                if isinstance(nota, dict)
+                if isinstance(nota, dict) and not str(nombre).startswith('_')
             }
             for i, rep in enumerate(reps_enriquecidos):
                 if not isinstance(rep, dict):
@@ -1002,8 +1065,9 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
             cotizacion_id,
             sorted(str(k) for k in (resultados or {})),
             {
-                str(k)[:80]: str((v or {}).get('motivo') or '')
+                str(k)[:80]: str(v.get('motivo') or '')
                 for k, v in (avisos_busqueda or {}).items()
+                if isinstance(v, dict) and not str(k).startswith('_')
             },
         )
 
