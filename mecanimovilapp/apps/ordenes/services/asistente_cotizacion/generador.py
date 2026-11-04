@@ -760,10 +760,16 @@ def _aplicar_seleccion_casa_repuestos(
             rep['motivo_seleccion'] = resultado.motivo_seleccion
             rep['alternativas_descartadas'] = resultado.alternativas_descartadas
             rep['consolidacion_aplicada'] = False
-        # Sin opciones: explicar por qué
+        # Sin opciones: decir qué se buscó y qué se descartó, si la búsqueda lo dejó.
         else:
             rep['casa_repuesto_nombre'] = ''
-            rep['motivo_seleccion'] = 'No se encontraron proveedores con este repuesto en stock para el vehículo'
+            detalle = str(rep.get('comentario') or '').strip()
+            if detalle:
+                rep['motivo_seleccion'] = detalle[:300]
+            else:
+                rep['motivo_seleccion'] = (
+                    'No se encontraron proveedores con este repuesto en stock para el vehículo'
+                )
             rep['alternativas_descartadas'] = []
             rep['consolidacion_aplicada'] = False
         

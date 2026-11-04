@@ -1809,3 +1809,242 @@ class RazonarYCortarBusquedaTests(SimpleTestCase):
         self.assertEqual(out, {})
         self.assertEqual(avisos['Kit de embrague']['motivo'], 'sin_ficha')
         self.assertIn('piola', avisos['Kit de embrague']['detalle'].lower())
+
+
+class CoberturaPiezasComunesTests(SimpleTestCase):
+    """Cotización 184: pastillas y aceite 5W40 quedaron sin tienda.
+
+    La escalera gastaba las 3 consultas en 'cerámica' / 'TISS' / 'Sport T-Jet'.
+    La casa publica 'Pastilla freno delantera Fiat Bravo' y 'Aceite 5W40 4L'.
+    """
+
+    def test_escalera_de_pastillas_no_lleva_ceramica_ni_la_version(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        qs = bw._escalera_consultas(
+            'Pastillas de freno cerámica delanteras',
+            marca='Fiat',
+            modelo='BRAVO SPORT TJET',
+            cilindraje='1.4',
+            casas=[{'alias': 'indra repuestos', 'nombre': 'Indra'}],
+        )
+        primera = bw._norm(qs[0])
+        self.assertIn('pastillas', primera)
+        self.assertIn('freno', primera)
+        self.assertIn('fiat', primera)
+        self.assertIn('bravo', primera)
+        self.assertNotIn('ceramica', primera)
+        self.assertNotIn('sport', primera)
+        self.assertNotIn('tjet', primera)
+        self.assertNotIn('indra', primera)
+
+    def test_escalera_de_aceite_guarda_la_viscosidad_y_suelta_la_marca(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        qs = bw._escalera_consultas(
+            'Aceite de motor TISS 5W40 sintético',
+            marca='Fiat',
+            modelo='BRAVO SPORT TJET',
+            cilindraje='1.4',
+            casas=[{'alias': 'indra repuestos', 'nombre': 'Indra'}],
+        )
+        primera = bw._norm(qs[0])
+        self.assertIn('aceite', primera)
+        self.assertIn('5w40', primera)
+        self.assertIn('fiat', primera)
+        self.assertIn('bravo', primera)
+        self.assertNotIn('tiss', primera)
+        self.assertNotIn('sintetico', primera)
+        self.assertNotIn('sport', primera)
+
+        corta = bw._escalera_consultas(
+            'Aceite 5W-40 sintético',
+            marca='Fiat',
+            modelo='Bravo',
+            cilindraje='',
+            casas=[],
+        )
+        self.assertIn('5w40', bw._norm(corta[0]))
+        self.assertNotIn('sintetico', bw._norm(corta[0]))
+
+    def test_titulos_de_tienda_si_son_la_pieza(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+            _titulo_nombra_pieza,
+        )
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            _producto_es_la_pieza,
+        )
+
+        pastillas = 'Pastillas de freno cerámica delanteras'
+        aceite = 'Aceite 5W40 sintético'
+        self.assertTrue(_titulo_nombra_pieza(pastillas, 'Pastilla freno delantera Fiat Bravo'))
+        self.assertTrue(_producto_es_la_pieza(
+            pastillas, 'Pastilla freno delantera Fiat Bravo', fuente='web',
+        ))
+        self.assertTrue(_titulo_nombra_pieza(aceite, 'Aceite 5W40 4L'))
+        self.assertTrue(_producto_es_la_pieza(aceite, 'Aceite 5W40 4L', fuente='web'))
+        self.assertFalse(_titulo_nombra_pieza(
+            pastillas, 'Repuestos Fiat Bravo | Mundo Repuestos Chile',
+        ))
+        self.assertFalse(_producto_es_la_pieza(
+            aceite, 'Enfriador aceite Fiat Bravo 1.4', fuente='web',
+        ))
+        self.assertFalse(_producto_es_la_pieza(
+            'Filtro de aceite', 'Aceite 5W40 4L', fuente='web',
+        ))
+
+    def test_bidon_de_4_litros_se_cotiza_por_litro(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+            precio_unitario_desde_envase,
+        )
+
+        unit, nota = precio_unitario_desde_envase(
+            'Aceite 5W40 sintético', 39960, 'Aceite 5W40 4L',
+        )
+        self.assertEqual(unit, 9990)
+        self.assertIn('4 L', nota)
+        self.assertIn('39.960', nota)
+        self.assertIn('9.990', nota)
+        self.assertIn('litro', nota)
+
+        igual, sin_nota = precio_unitario_desde_envase(
+            'Aceite 5W40 sintético', 12990, 'Aceite 5W40 1L',
+        )
+        self.assertEqual(igual, 12990)
+        self.assertEqual(sin_nota, '')
+
+        pastilla, nota_pastilla = precio_unitario_desde_envase(
+            'Pastillas de freno cerámica delanteras', 24990, 'Pastilla freno delantera Fiat Bravo',
+        )
+        self.assertEqual(pastilla, 24990)
+        self.assertEqual(nota_pastilla, '')
+
+        litros, nota_lts = precio_unitario_desde_envase(
+            'Aceite de motor', 40000, 'Aceite motor 5W40 4 litros',
+        )
+        self.assertEqual(litros, 10000)
+        self.assertIn('litro', nota_lts)
+
+    def test_plan_largo_no_pisa_la_consulta_corta_y_acepta_la_ficha(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        calls: list[str] = []
+
+        def fake_validos(query, _whitelist):
+            calls.append(query)
+            q = bw._norm(query)
+            if 'ceramica' in q or 'sport' in q or 'tjet' in q:
+                return [{
+                    'title': 'Repuestos Fiat Bravo | Mundo Repuestos Chile',
+                    'url': 'https://www.mundorepuestos.cl/repuestos-fiat-bravo',
+                    'content': 'Catálogo. Precio $ 15.990',
+                }]
+            return [{
+                'title': 'Pastilla freno delantera Fiat Bravo',
+                'url': 'https://www.mundorepuestos.cl/pastilla-freno-delantera-fiat-bravo',
+                'content': 'Pastilla de freno delantera. Precio $ 24.990',
+            }]
+
+        plan = {
+            'piezas': [{
+                'nombre': 'Pastillas de freno cerámica delanteras',
+                'consulta': 'Pastillas de freno cerámica delanteras Fiat Bravo Sport Tjet 1.4',
+                'escasa': False,
+            }],
+        }
+        with patch.object(bw, '_candidatos_validos', side_effect=fake_validos), patch.object(
+            bw, '_tavily_extraer', return_value={},
+        ), patch.object(bw, '_gemini_generar', return_value=None):
+            out = bw._buscar_repuestos_web_tavily(
+                ['Pastillas de freno cerámica delanteras'],
+                marca='Fiat',
+                modelo='BRAVO SPORT TJET',
+                anio=2010,
+                cilindraje='1.4',
+                tipo_motor='',
+                servicio_nombre='Mantención',
+                timeout=5,
+                plan=plan,
+            )
+
+        self.assertTrue(calls)
+        self.assertNotIn('ceramica', bw._norm(calls[0]))
+        self.assertNotIn('sport', bw._norm(calls[0]))
+        self.assertIn('pastilla', bw._norm(calls[0]))
+        self.assertIn('bravo', bw._norm(calls[0]))
+        hit = out[bw._clave_fuzzy('Pastillas de freno cerámica delanteras')]
+        self.assertEqual(hit['precio_clp'], 24990)
+        self.assertIn('Pastilla', hit['nombre_producto'])
+        self.assertNotIn('Mundo Repuestos Chile', hit['nombre_producto'])
+
+    def test_listado_generico_no_corta_la_busqueda_y_el_aviso_dice_por_que(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        calls: list[str] = []
+
+        def fake_validos(query, _whitelist):
+            calls.append(query)
+            return [{
+                'title': 'Repuestos Fiat Bravo | Mundo Repuestos Chile',
+                'url': f'https://www.mundorepuestos.cl/listado-{len(calls)}',
+                'content': 'Repuestos para Fiat Bravo. Precio $ 15.990',
+            }]
+
+        avisos: dict = {}
+        with patch.object(bw, '_candidatos_validos', side_effect=fake_validos), patch.object(
+            bw, '_tavily_extraer', return_value={},
+        ), patch.object(bw, '_gemini_generar', return_value=None):
+            out = bw._buscar_repuestos_web_tavily(
+                ['Pastillas de freno cerámica delanteras'],
+                marca='Fiat',
+                modelo='Bravo',
+                anio=2010,
+                cilindraje='1.4',
+                tipo_motor='',
+                servicio_nombre='Mantención',
+                timeout=5,
+                avisos=avisos,
+            )
+
+        self.assertEqual(out, {})
+        self.assertEqual(len(calls), bw._MAX_CONSULTAS_TAVILY_POR_LINEA)
+        detalle = avisos['Pastillas de freno cerámica delanteras']['detalle']
+        self.assertIn('Se buscó', detalle)
+        self.assertIn('pastillas freno', detalle.lower())
+        self.assertIn('Repuestos Fiat Bravo', detalle)
+        self.assertIn('no es esa pieza', detalle)
+        self.assertNotIn('No se encontraron proveedores con este repuesto en stock', detalle)
+
+    def test_aceite_5w40_acepta_la_ficha_del_bidon(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        calls: list[str] = []
+
+        def fake_validos(query, _whitelist):
+            calls.append(query)
+            if 'tiss' in bw._norm(query) or 'sintetico' in bw._norm(query):
+                return []
+            return [{
+                'title': 'Aceite 5W40 4L',
+                'url': 'https://www.todoautochile.cl/aceite-5w40-4l',
+                'content': 'Aceite sintético 5W40 envase 4 litros. Precio $ 39.960',
+            }]
+
+        with patch.object(bw, '_candidatos_validos', side_effect=fake_validos), patch.object(
+            bw, '_tavily_extraer', return_value={},
+        ), patch.object(bw, '_gemini_generar', return_value=None):
+            out = bw._buscar_repuestos_web_tavily(
+                ['Aceite de motor TISS 5W40 sintético'],
+                marca='Fiat',
+                modelo='BRAVO SPORT TJET',
+                anio=2010,
+                cilindraje='1.4',
+                tipo_motor='',
+                servicio_nombre='Mantención',
+                timeout=5,
+            )
+
+        self.assertNotIn('tiss', bw._norm(calls[0]))
+        hit = out[bw._clave_fuzzy('Aceite de motor TISS 5W40 sintético')]
+        self.assertEqual(hit['precio_clp'], 39960)
+        self.assertEqual(hit['nombre_producto'], 'Aceite 5W40 4L')

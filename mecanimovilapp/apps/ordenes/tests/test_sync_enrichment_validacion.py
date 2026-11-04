@@ -301,3 +301,65 @@ class SyncEnrichmentValidacionTestCase(TestCase):
         self.assertLessEqual(aceite['precio_min_clp'], total)
         self.assertGreaterEqual(aceite['precio_max_clp'], total)
         self.assertGreater(aceite['precio_min_clp'], 14000)
+
+    def test_sin_tienda_el_motivo_dice_que_se_busco(self):
+        detalle = (
+            'Se buscó "pastillas freno delanteras fiat bravo". '
+            'Se descartó "Repuestos Fiat Bravo | Mundo Repuestos Chile" '
+            'porque el título no es esa pieza.'
+        )
+        out = _aplicar_seleccion_casa_repuestos([{
+            'id': 'pastillas',
+            'nombre': 'Pastillas de freno cerámica delanteras',
+            'cantidad': 1,
+            'precio_unitario_clp': 0,
+            'comentario': detalle,
+        }])
+        motivo = out[0]['motivo_seleccion']
+        self.assertIn('Se buscó', motivo)
+        self.assertIn('pastillas freno', motivo.lower())
+        self.assertIn('Repuestos Fiat Bravo', motivo)
+        self.assertNotEqual(
+            motivo,
+            'No se encontraron proveedores con este repuesto en stock para el vehículo',
+        )
+
+    def test_cache_de_bidon_4l_se_guarda_como_precio_por_litro(self):
+        expira = timezone.now() + timedelta(days=7)
+        clave = clave_cache_repuesto(
+            'Aceite 5W40 sintético',
+            marca_vehiculo='Fiat',
+            modelo_vehiculo='Bravo',
+            anio=2010,
+            cilindraje='1.4',
+        )
+        PrecioRepuestoWeb.objects.create(
+            clave=clave,
+            dominio='todoautochile.cl',
+            nombre_producto='Aceite 5W40 4L',
+            precio_clp=39960,
+            tienda='Todoautochile',
+            url='https://todoautochile.cl/aceite-5w40-4l',
+            confianza=0.8,
+            cilindraje='1.4',
+            expira_en=expira,
+        )
+        out = enriquecer_repuestos_cotizacion(
+            [{
+                'nombre': 'Aceite 5W40 sintético',
+                'cantidad': 3,
+                'precio_unitario_clp': 0,
+            }],
+            marca_vehiculo='Fiat',
+            modelo_vehiculo='Bravo',
+            anio_vehiculo=2010,
+            cilindraje='1.4',
+            taller=self.taller,
+            usar_ml=False,
+            usar_web=True,
+        )
+        aceite = out[0]
+        self.assertEqual(aceite.get('proveedor_nombre'), 'Todoautochile')
+        self.assertEqual(aceite.get('precio_unitario_clp'), 9990)
+        self.assertIn('litro', (aceite.get('comentario') or '').lower())
+        self.assertIn('4 L', aceite.get('comentario') or '')

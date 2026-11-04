@@ -1248,6 +1248,17 @@ def enriquecer_repuestos_cotizacion(
             _aplicar_hit_campos(next_rep, hit)
         next_rep.pop('precio_referencia_mercado', None)
         _aplicar_precio(next_rep, hits)
+        if str(next_rep.get('fuente_marketplace') or '') == 'web':
+            from .busqueda_web_repuestos import precio_unitario_desde_envase
+
+            unit, nota_envase = precio_unitario_desde_envase(
+                nombre,
+                _to_int_clp(next_rep.get('precio_unitario_clp')),
+                str(next_rep.get('nombre_producto') or ''),
+            )
+            if nota_envase and unit > 0:
+                next_rep['precio_unitario_clp'] = unit
+                next_rep['comentario'] = nota_envase[:300]
         from .calidad_repuesto import anotar_calidad_en_linea
         from .opciones_repuesto import poblar_opciones_en_linea
 
