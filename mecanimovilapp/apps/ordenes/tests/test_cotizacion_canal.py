@@ -1946,3 +1946,62 @@ class ManoObraLineasTestCase(SimpleTestCase):
             {'nombre': 'Diagnóstico', 'monto_clp': 12000},
         ]})
         self.assertIsNone(validar_nombres_mano_obra_para_enviar(cot_ok))
+
+
+class Quote210FaenaUnicaYPastillasTests(SimpleTestCase):
+    """La cotización 210 duplicó la mano de obra y se quedó sin pastillas."""
+
+    PEDIDO = (
+        'mantención con pastillas de freno, cambio de aceite y filtro, '
+        'bujías y filtro de aire'
+    )
+    DESCRIPCION = (
+        'Cambio de pastillas de freno, cambio de aceite y filtro de aceite, '
+        'cambio de bujías y cambio de filtro de aire'
+    )
+
+    def test_un_trabajo_una_faena_y_la_pastilla_sigue_en_el_pedido(self):
+        ia = [
+            {'nombre': 'Mantención: pastillas de freno', 'monto_clp': 45000},
+            {'nombre': 'Cambio de aceite y filtro', 'monto_clp': 30000},
+            {'nombre': 'Cambio de bujías', 'monto_clp': 30000},
+            {'nombre': 'Cambio de filtro de aire', 'monto_clp': 15000},
+        ]
+        out = normalizar_cotizacion_ia(
+            {
+                'servicio_nombre': self.PEDIDO,
+                'descripcion_problema': self.DESCRIPCION,
+                'mano_obra_clp': 120000,
+                'servicios_lineas': ia,
+                'repuestos': [
+                    {'nombre': 'Aceite de motor', 'cantidad': 4, 'precio_unitario_clp': 9990},
+                    {'nombre': 'Filtro de aceite', 'cantidad': 1, 'precio_unitario_clp': 4990},
+                    {'nombre': 'Bujías', 'cantidad': 4, 'precio_unitario_clp': 12000},
+                    {'nombre': 'Filtro de aire', 'cantidad': 1, 'precio_unitario_clp': 8990},
+                ],
+            },
+            {
+                'servicio_nombre': self.PEDIDO,
+                'descripcion_problema': self.DESCRIPCION,
+                'marca': 'Fiat',
+                'modelo': 'Bravo',
+            },
+        )
+        lineas = out['servicios_lineas']
+        self.assertEqual(len(lineas), 4)
+        montos = [lin['monto_clp'] for lin in lineas]
+        self.assertEqual(montos, [45000, 30000, 30000, 15000])
+        self.assertEqual(out['mano_obra_clp'], sum(montos))
+        self.assertEqual(out['mano_obra_clp'], 120000)
+        nombres = [lin['nombre'] for lin in lineas]
+        self.assertEqual(nombres.count('Cambio de bujías'), 1)
+        self.assertEqual(nombres.count('Cambio de filtro de aire'), 1)
+        self.assertTrue(any('pastilla' in n.lower() for n in nombres))
+        self.assertEqual(
+            sum(1 for n in nombres if 'aceite' in n.lower() and 'filtro' in n.lower()),
+            1,
+        )
+        piezas = [r['nombre'].lower() for r in out['repuestos']]
+        self.assertTrue(any('pastilla' in n for n in piezas))
+        self.assertTrue(any('buj' in n for n in piezas))
+        self.assertTrue(any('filtro de aire' in n for n in piezas))

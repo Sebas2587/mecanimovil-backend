@@ -195,8 +195,32 @@ def _mismo_objeto(a: str, b: str) -> bool:
     return ta <= tb or tb <= ta
 
 
+_RE_PARTE_COMPRABLE = re.compile(
+    r'(pastillas?(?:\s+de\s+freno)?(?:\s+(?:delanter[oa]s?|traser[oa]s?))?|'
+    r'discos?(?:\s+de\s+freno)?(?:\s+(?:delanter[oa]s?|traser[oa]s?))?|'
+    r'buj[ií]as?|bobinas?|bater[ií]as?|'
+    r'filtro\s+de\s+(?:aceite|aire|polen|habit[aá]culo|cabina|combustible|bencina|gasolina)|'
+    r'aceite(?:\s+de\s+motor)?|'
+    r'amortiguadores?)',
+    re.IGNORECASE,
+)
+
+
+def _objeto_comprable(texto: str) -> str:
+    """La pieza que nombra una mantención. Vacío si el trabajo no lleva repuesto."""
+    resto = _objeto_solo_mano(texto)
+    hallado = _RE_PARTE_COMPRABLE.search(resto)
+    if not hallado:
+        return ''
+    return hallado.group(1).strip()
+
+
 def es_solo_mano(texto: str) -> bool:
-    return bool(_SOLO_MANO.match((texto or '').strip()))
+    """Revisión o limpieza sin pieza. «Mantención con pastillas» sí compra la pieza."""
+    limpio = (texto or '').strip()
+    if not _SOLO_MANO.match(limpio):
+        return False
+    return not _objeto_comprable(limpio)
 
 
 def _sin_conector(texto: str) -> str:
@@ -234,8 +258,11 @@ def _objeto_solo_mano(texto: str) -> str:
 def piezas_de_faena(texto: str) -> list[str]:
     """Piezas que se compran para esta faena. Vacío si el trabajo no lleva repuesto."""
     limpio = (texto or '').strip()
-    if not limpio or es_solo_mano(limpio):
+    if not limpio:
         return []
+    if _SOLO_MANO.match(limpio):
+        objeto = _objeto_comprable(limpio)
+        return [_titulo(objeto)] if objeto else []
     match = _VERBO_PIEZA.match(limpio)
     if not match:
         return []
@@ -339,7 +366,48 @@ def interpretar_pedido_taller(texto: str) -> dict[str, list[str]]:
             piezas.append(titulo)
             continue
         mano.append(titulo)
-    return {'mano_obra': mano, 'repuestos': piezas, 'conjuntas': conjuntas}
+    return {
+        'mano_obra': _dedupe_faenas(mano),
+        'repuestos': piezas,
+        'conjuntas': conjuntas,
+    }
+
+
+def _misma_faena(a: str, b: str) -> bool:
+    """El mismo trabajo aunque uno diga mantención y el otro cambio.
+
+    El filtro de aire no es el de aceite. Bujías y bobinas juntas no se
+    tragan un cambio de bujías pedido aparte.
+    """
+    ta = _tokens_distintivos(a)
+    tb = _tokens_distintivos(b)
+    if not ta or not tb:
+        return False
+    if ('aire' in ta) != ('aire' in tb):
+        return False
+    if ('polen' in ta) != ('polen' in tb):
+        return False
+    if ta == tb:
+        return True
+    menor, mayor = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
+    if not menor <= mayor:
+        return False
+    extra = mayor - menor
+    if extra & {'bujia', 'bobina', 'bateria', 'pastilla', 'disco', 'amortiguador', 'correa'}:
+        return False
+    if menor <= {'filtro', 'freno'} and extra:
+        return False
+    return True
+
+
+def _dedupe_faenas(nombres: list[str]) -> list[str]:
+    """Una línea por trabajo. La primera redacción se queda; la repetición no."""
+    out: list[str] = []
+    for nombre in nombres:
+        if any(_misma_faena(nombre, previa) for previa in out):
+            continue
+        out.append(nombre)
+    return out
 
 
 def _verbo(texto: str) -> str:
@@ -535,13 +603,21 @@ def _lineas_mano(
     out: list[dict] = []
     for nombre in nombres:
         monto = 0
+        ya_sumadas: list[str] = []
         for i, lin in enumerate(lineas_in or []):
             if i in usadas:
                 continue
-            if not _linea_de_faena(nombre, str(lin.get('nombre') or '')):
+            linea_nombre = str(lin.get('nombre') or '')
+            if not _linea_de_faena(nombre, linea_nombre):
+                continue
+            # La misma faena dicha dos veces (mantención y cambio) no se suma.
+            # Bujías y bobinas sí: son piezas distintas de un solo trabajo.
+            if any(_misma_faena(linea_nombre, previa) for previa in ya_sumadas):
+                usadas.add(i)
                 continue
             monto += _monto(lin.get('monto_clp') or lin.get('precio_mano_obra_clp'))
             usadas.add(i)
+            ya_sumadas.append(linea_nombre)
         out.append({'nombre': nombre, 'monto_clp': monto})
     lineas, total = completar_montos_mano(
         out, taller=taller, marca=marca, modelo=modelo, tipo_motor=tipo_motor,
