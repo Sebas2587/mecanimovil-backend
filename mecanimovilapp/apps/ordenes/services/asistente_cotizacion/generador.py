@@ -422,7 +422,7 @@ REGLAS:
    - "cambio de correa de distribución con bomba de agua" → repuestos: "Correa de distribución" + "Bomba de agua"
    Las palabras "con", "incluye", "y", "más" indican parte adicional que DEBE estar en repuestos[] como línea separada.
 5e. CANTIDADES REALISTAS POR CAPACIDAD:
-   - Aceite de motor: cantidad en LITROS según capacidad del motor para ESTE vehículo (ej. motor 1.4L = 4 litros, 1.6L = 4.5 litros, 2.0L = 5 litros). NO uses cantidad=4 si vendes un bidón de 4L completo (marca cantidad=1, precio del bidón). Cantidad es lo que el motor necesita, no el tamaño del envase.
+   - Aceite de motor: cantidad en LITROS de la capacidad de ESTE motor con filtro. Fiat Bravo 1.4 T-Jet: 4 litros (el cárter lleva unos 3,5 L; se cotizan 4 para no quedar corto). Un bidón de 4 L o de 1 L NO fija la cantidad. Si no conoces la capacidad, estima por el motor y deja el envase fuera.
    - Líquido refrigerante: ~5-7 litros típico (depende del vehículo)
    - Aceite de caja: cantidad según capacidad de transmisión (ej. 2-3 litros manual, 4-6 litros automática)
 6. REPUESTOS POR VEHÍCULO (CRÍTICO): SOLO piezas compatibles con marca/modelo/año/cilindrada/motor. Nombra la pieza con precisión (posición: delantero/trasero, lado).

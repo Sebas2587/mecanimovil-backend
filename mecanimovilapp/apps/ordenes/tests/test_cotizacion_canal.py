@@ -1636,7 +1636,7 @@ class FuenteWebEnrichTestCase(SimpleTestCase):
         )
 
         web = [{
-            'nombre': 'Pastillas freno',
+            'nombre': 'Pastillas freno delanteras Hyundai Accent',
             'marca_repuesto': 'Bosch',
             'precio_unitario_clp': 38000,
             'fuente_marketplace': 'web',

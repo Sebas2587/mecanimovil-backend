@@ -552,3 +552,332 @@ class WebEnrichmentRealPathTestCase(TestCase):
         self.assertIn('precio_estante=52650', texto)
         self.assertIn('litros=4', texto)
         self.assertIn('precio_unitario=13162', texto)
+
+
+_HTML_ACEITE_ESCOBAR = """
+<html><head>
+  <title>Aceite Para Motor Liqui Moly Sintético 5w-40 4L | Sergio Escobar Repuestos</title>
+  <script type="application/ld+json">
+    {"@type":"Product","name":"Aceite Para Motor Liqui Moly Sintético 5w-40 4L",
+     "offers":{"@type":"Offer","price":"58500","priceCurrency":"CLP"}}
+  </script>
+</head><body>
+  <h1>Aceite Para Motor Liqui Moly Sintético 5w-40 4L</h1>
+  <p class="price">
+    <del><span class="woocommerce-Price-amount amount"><bdi>$58.500</bdi></span></del>
+    <ins><span class="woocommerce-Price-amount amount"><bdi>$52.650</bdi></span></ins>
+  </p>
+  <p>El precio original era: $58.500. El precio actual es: $52.650.</p>
+  <p>Marca: Liqui Moly</p>
+</body></html>
+"""
+
+_URL_ACEITE_ESCOBAR = (
+    'https://repuestos.sergioescobar.cl/tienda/lubricantes/'
+    'aceite-para-motor-liqui-moly-sintetico-5w-40-para-auto-camioneta-x-4l/'
+)
+_URL_PASTILLA_LISTADO = (
+    'https://www.mundorepuestos.com/producto/juego-pastillas-freno-fiat/'
+)
+_TITULO_PASTILLA_LISTADO = (
+    'Juego Pastillas Freno Fiat | Envío gratis - Mundo Repuestos Chile'
+)
+
+
+def _html_cache_quote12(urls):
+    out = {}
+    for url in urls:
+        if 'sergioescobar' in str(url):
+            out[url] = _HTML_ACEITE_ESCOBAR
+    return out
+
+
+class Quote12CachePathTests(TestCase):
+    """Cotización 12: la caché vigente se saltaba el modelo de la pastilla y el precio actual."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='quote12_cache',
+            email='quote12@test.com',
+            password='test123',
+        )
+        self.taller = Taller.objects.create(
+            usuario=self.user,
+            nombre='Taller Quote 12',
+            telefono='+56912345678',
+            estado_verificacion='aprobado',
+        )
+
+    def _crear_cotizacion_base(self, repuestos_list):
+        return CotizacionCanal.objects.create(
+            taller=self.taller,
+            creado_por=self.user,
+            estado='borrador',
+            modalidad='taller',
+            vehiculo_marca='Fiat',
+            vehiculo_modelo='Bravo',
+            vehiculo_anio=2010,
+            vehiculo_cilindraje='1.4',
+            tipo_motor='',
+            servicio_nombre='Cambio aceite y pastillas',
+            repuestos=repuestos_list,
+            costo_repuestos_clp=0,
+            mano_obra_clp=25000,
+            descuento_clp=0,
+            total_clp=25000,
+            metadata={'busqueda_web_estado': 'pendiente'},
+        )
+
+    def test_la_cantidad_sale_de_la_capacidad_y_no_del_bidon(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            aplicar_cantidad_aceite_motor,
+            cantidad_aceite_segun_motor,
+        )
+
+        kwargs = dict(marca='Fiat', modelo='Bravo', cilindraje='1.4', tipo_motor='T-Jet')
+        self.assertEqual(cantidad_aceite_segun_motor('Aceite de motor', **kwargs), 4)
+        self.assertEqual(
+            cantidad_aceite_segun_motor(
+                'Aceite de motor',
+                marca='Fiat',
+                modelo='BRAVO SPORT TJET',
+                cilindraje='',
+                tipo_motor='',
+            ),
+            4,
+        )
+        self.assertIsNone(cantidad_aceite_segun_motor(
+            'Aceite de motor', marca='Fiat', modelo='Bravo', cilindraje='1.4', tipo_motor='',
+        ))
+        self.assertIsNone(cantidad_aceite_segun_motor(
+            'Aceite de motor', marca='Fiat', modelo='Bravo', cilindraje='1.6', tipo_motor='T-Jet',
+        ))
+        self.assertIsNone(cantidad_aceite_segun_motor('Filtro de aceite', **kwargs))
+        # 1 L y 8 L son el envase o un estimado; la capacidad del T-Jet es 4.
+        for llegada in (1, 8):
+            linea = aplicar_cantidad_aceite_motor(
+                {'nombre': 'Aceite de motor', 'cantidad': llegada},
+                **kwargs,
+            )
+            self.assertEqual(linea['cantidad'], 4)
+        otro = aplicar_cantidad_aceite_motor(
+            {'nombre': 'Aceite de motor', 'cantidad': 3},
+            marca='Fiat',
+            modelo='Bravo',
+            cilindraje='1.4',
+            tipo_motor='',
+        )
+        self.assertEqual(otro['cantidad'], 3)
+
+    def _sembrar_cache_quote12(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+            clave_cache_repuesto,
+        )
+
+        veh = dict(
+            marca_vehiculo='Fiat',
+            modelo_vehiculo='Bravo',
+            anio=2010,
+            tipo_motor='T-Jet',
+            cilindraje='1.4',
+        )
+        expira = timezone.now() + timedelta(days=14)
+        viejo = timezone.now() - timedelta(days=3)
+        pastilla = PrecioRepuestoWeb.objects.create(
+            clave=clave_cache_repuesto('Pastillas de freno delanteras', **veh),
+            dominio='mundorepuestos.com',
+            nombre_producto=_TITULO_PASTILLA_LISTADO,
+            precio_clp=11920,
+            tienda='Mundo Repuestos',
+            url=_URL_PASTILLA_LISTADO,
+            confianza=0.9,
+            cilindraje='1.4',
+            tipo_motor='T-Jet',
+            expira_en=expira,
+        )
+        aceite = PrecioRepuestoWeb.objects.create(
+            clave=clave_cache_repuesto('Aceite de motor', **veh),
+            dominio='repuestos.sergioescobar.cl',
+            nombre_producto='Aceite Para Motor Liqui Moly Sintético 5w-40 4L',
+            marca_repuesto='Liqui Moly',
+            precio_clp=58500,
+            tienda='Repuestos Sergio Escobar',
+            url=_URL_ACEITE_ESCOBAR,
+            confianza=0.9,
+            cilindraje='1.4',
+            tipo_motor='T-Jet',
+            expira_en=expira,
+        )
+        # auto_now deja consultado_en en este instante. La relectura es para filas viejas.
+        PrecioRepuestoWeb.objects.filter(pk__in=[pastilla.pk, aceite.pk]).update(consultado_en=viejo)
+        pastilla.refresh_from_db()
+        aceite.refresh_from_db()
+        return pastilla, aceite
+
+    def _lineas_quote12(self):
+        return [
+            {
+                'id': 'rep-pastillas',
+                'nombre': 'Pastillas de freno delanteras',
+                'cantidad': 1,
+                'precio_unitario_clp': 0,
+                'precio_min_clp': 28000,
+                'precio_max_clp': 55000,
+                'certeza': 'sin_precio',
+            },
+            {
+                'id': 'rep-aceite',
+                'nombre': 'Aceite de motor',
+                'cantidad': 5,
+                'precio_unitario_clp': 0,
+                'precio_min_clp': 8000,
+                'precio_max_clp': 20000,
+                'certeza': 'sin_precio',
+            },
+        ]
+
+    def test_cache_rechaza_listado_y_relee_el_precio_actual(self):
+        """El task no puede volver a cotizar el listado ni el $58.500 tachado."""
+        from mecanimovilapp.apps.ordenes.tasks import buscar_precios_web_cotizacion_task
+
+        pastilla, aceite = self._sembrar_cache_quote12()
+        cot = self._crear_cotizacion_base(self._lineas_quote12())
+        cot.tipo_motor = 'T-Jet'
+        cot.save(update_fields=['tipo_motor'])
+        consultadas: list[str] = []
+
+        def _vacio(nombres, **kwargs):
+            consultadas.extend(nombres)
+            return {}
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.busqueda_web_habilitada',
+            return_value=True,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.buscar_repuestos_web',
+            side_effect=_vacio,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos._leer_html_fichas',
+            side_effect=_html_cache_quote12,
+        ), self.assertLogs(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos',
+            level='INFO',
+        ) as logs:
+            result = buscar_precios_web_cotizacion_task(cot.id)
+
+        self.assertTrue(result.get('ok'))
+        self.assertTrue(any('Pastilla' in nombre for nombre in consultadas))
+        self.assertFalse(any('Aceite' in nombre for nombre in consultadas))
+        cot.refresh_from_db()
+        por_id = {r['id']: r for r in cot.repuestos}
+        pads = por_id['rep-pastillas']
+        aceite_linea = por_id['rep-aceite']
+        self.assertNotIn('mundo', (pads.get('proveedor_nombre') or '').lower())
+        self.assertNotIn('mundorepuestos', (pads.get('url_producto') or '').lower())
+        self.assertNotEqual(pads.get('precio_unitario_clp'), 11920)
+        self.assertNotIn('Envío gratis', pads.get('nombre_producto') or '')
+        self.assertEqual(aceite_linea.get('precio_unitario_clp'), 13162)
+        self.assertEqual(aceite_linea.get('cantidad'), 4)
+        self.assertEqual(aceite_linea.get('proveedor_nombre'), 'Repuestos Sergio Escobar')
+        self.assertEqual(aceite_linea.get('nombre'), 'Aceite de motor Liqui Moly')
+        self.assertIn('52.650', aceite_linea.get('comentario') or '')
+        self.assertNotIn('58.500', aceite_linea.get('comentario') or '')
+        pastilla.refresh_from_db()
+        aceite.refresh_from_db()
+        self.assertLessEqual(pastilla.expira_en, timezone.now())
+        self.assertEqual(aceite.precio_clp, 52650)
+        texto = '\n'.join(logs.output)
+        self.assertIn('motivo=listado', texto)
+        self.assertIn('precio_actualizado', texto)
+        self.assertIn('guardado=58500', texto)
+        self.assertIn('actual=52650', texto)
+
+    def test_enrich_sincrono_tampoco_aplica_la_cache_vieja(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            enriquecer_repuestos_cotizacion,
+        )
+
+        pastilla, aceite = self._sembrar_cache_quote12()
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos._leer_html_fichas',
+            side_effect=_html_cache_quote12,
+        ):
+            out = enriquecer_repuestos_cotizacion(
+                self._lineas_quote12(),
+                marca_vehiculo='Fiat',
+                modelo_vehiculo='Bravo',
+                anio_vehiculo=2010,
+                cilindraje='1.4',
+                tipo_motor='T-Jet',
+                taller=self.taller,
+                usar_ml=False,
+                usar_web=True,
+            )
+        por_id = {r['id']: r for r in out}
+        pads = por_id['rep-pastillas']
+        aceite_linea = por_id['rep-aceite']
+        self.assertNotIn('mundo', (pads.get('proveedor_nombre') or '').lower())
+        self.assertNotEqual(pads.get('precio_unitario_clp'), 11920)
+        self.assertEqual(aceite_linea.get('precio_unitario_clp'), 13162)
+        self.assertEqual(aceite_linea.get('cantidad'), 4)
+        self.assertEqual(aceite_linea.get('proveedor_nombre'), 'Repuestos Sergio Escobar')
+        self.assertIn('Liqui Moly', aceite_linea.get('nombre') or '')
+        pastilla.refresh_from_db()
+        aceite.refresh_from_db()
+        self.assertLessEqual(pastilla.expira_en, timezone.now())
+        self.assertEqual(aceite.precio_clp, 52650)
+
+    def test_cache_sin_modelo_y_precio_bajo_banda_vencen_la_fila(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+            clave_cache_repuesto,
+            hits_cache_vigentes_para_nombres,
+        )
+
+        veh = dict(
+            marca_vehiculo='Fiat',
+            modelo_vehiculo='Bravo',
+            anio=2010,
+            tipo_motor='T-Jet',
+            cilindraje='1.4',
+        )
+        expira = timezone.now() + timedelta(days=7)
+        barata = PrecioRepuestoWeb.objects.create(
+            clave=clave_cache_repuesto('Pastillas de freno baratas', **veh),
+            dominio='tienda-barata.cl',
+            nombre_producto='Juego Pastillas Freno Fiat',
+            precio_clp=11920,
+            tienda='Tienda Barata',
+            url='https://tienda-barata.cl/pastillas-fiat',
+            confianza=0.8,
+            expira_en=expira,
+        )
+        sin_modelo = PrecioRepuestoWeb.objects.create(
+            clave=clave_cache_repuesto('Pastillas de freno genericas', **veh),
+            dominio='tienda-generica.cl',
+            nombre_producto='Juego Pastillas Freno Fiat',
+            precio_clp=45000,
+            tienda='Tienda Generica',
+            url='https://tienda-generica.cl/pastillas-fiat',
+            confianza=0.8,
+            expira_en=expira,
+        )
+        with self.assertLogs(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos',
+            level='INFO',
+        ) as logs:
+            hits = hits_cache_vigentes_para_nombres(
+                ['Pastillas de freno baratas', 'Pastillas de freno genericas'],
+                **veh,
+                bandas_min={
+                    'Pastillas de freno baratas': 28000,
+                    'Pastillas de freno genericas': 28000,
+                },
+            )
+        self.assertEqual(hits, {})
+        barata.refresh_from_db()
+        sin_modelo.refresh_from_db()
+        self.assertLessEqual(barata.expira_en, timezone.now())
+        self.assertLessEqual(sin_modelo.expira_en, timezone.now())
+        texto = '\n'.join(logs.output)
+        self.assertIn('motivo=precio_bajo_banda', texto)
+        self.assertIn('motivo=sin_modelo', texto)
