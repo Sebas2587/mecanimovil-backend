@@ -550,6 +550,48 @@ def _texto_con_adjunto(message, texto: str) -> str:
     return texto
 
 
+def _notar_precio_de_casa(
+    cot: CotizacionCanal,
+    rep: dict,
+    tienda: str,
+    motivo_interno: str,
+) -> None:
+    """La línea muestra la frase corta. El motivo del selector queda en el log."""
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+        nombre_tienda_visible,
+        nota_de_busqueda,
+        nota_visible_con_tienda,
+        nota_visible_debe_reemplazarse,
+    )
+
+    visible = nombre_tienda_visible(tienda) or str(tienda or '').strip()
+    if visible:
+        rep['proveedor_nombre'] = visible
+        rep['casa_repuesto_nombre'] = visible
+    tipo = ' '.join(
+        parte for parte in (
+            cot.tipo_motor or '',
+            getattr(cot, 'tipo_motor_label', '') or '',
+        ) if parte
+    )
+    rep['motivo_seleccion'] = nota_visible_con_tienda(
+        rep,
+        motivo_interno,
+        marca=cot.vehiculo_marca or '',
+        modelo=cot.vehiculo_modelo or '',
+        anio=cot.vehiculo_anio,
+        tipo_motor=tipo,
+        cilindraje=cot.vehiculo_cilindraje or '',
+    )
+    comentario = str(rep.get('comentario') or '')
+    if (
+        not comentario.strip()
+        or nota_visible_debe_reemplazarse(comentario)
+        or nota_de_busqueda(comentario)
+    ):
+        rep['comentario'] = rep['motivo_seleccion']
+
+
 def _aplicar_en_cotizacion(consulta: ConsultaRepuesto, parsed: dict) -> None:
     with transaction.atomic():
         cot = CotizacionCanal.objects.select_for_update().get(pk=consulta.cotizacion_id)
@@ -576,7 +618,9 @@ def _aplicar_en_cotizacion(consulta: ConsultaRepuesto, parsed: dict) -> None:
         opciones = list(rep.get('opciones_casa') or [])
         opciones.append(opcion)
         rep['opciones_casa'] = opciones[-8:]
-        
+        alta = False
+        precio = int(parsed.get('precio_clp') or 0)
+
         # Aplicar selección inteligente si hay múltiples opciones
         if len(rep['opciones_casa']) > 1:
             try:
@@ -588,17 +632,21 @@ def _aplicar_en_cotizacion(consulta: ConsultaRepuesto, parsed: dict) -> None:
                 opciones_obj = [OpcionCasa.from_dict(o) for o in rep['opciones_casa']]
                 resultado = seleccionar_casa_optima(opciones_obj)
                 
-                rep['casa_repuesto_nombre'] = resultado.casa_elegida
-                rep['motivo_seleccion'] = resultado.motivo_seleccion
                 rep['alternativas_descartadas'] = resultado.alternativas_descartadas
                 rep['consolidacion_aplicada'] = resultado.consolidacion_aplicada
                 rep['precio_unitario_clp'] = resultado.precio_final_clp
                 rep['proveedor_id'] = resultado.proveedor_id
-                rep['proveedor_nombre'] = resultado.casa_elegida
                 rep['fuente_marketplace'] = 'casa_repuestos'
                 rep['certeza'] = 'referencial'
                 rep['precio_estimado'] = True
-                rep['comentario'] = f'Cotizado: {resultado.motivo_seleccion}'
+                _notar_precio_de_casa(
+                    cot,
+                    rep,
+                    resultado.casa_elegida,
+                    resultado.motivo_seleccion,
+                )
+                precio = int(resultado.precio_final_clp or 0)
+                alta = precio > 0
                 
                 logger.info(
                     'ordenes[consulta_casas] seleccion_aplicada rep=%s casa=%s precio=%d alternativas=%d',
@@ -620,12 +668,16 @@ def _aplicar_en_cotizacion(consulta: ConsultaRepuesto, parsed: dict) -> None:
                 precio_previo = int(rep.get('precio_unitario_clp') or 0)
                 if alta and precio_previo <= 0:
                     rep['precio_unitario_clp'] = precio
-                    rep['proveedor_nombre'] = consulta.proveedor.nombre
                     rep['proveedor_id'] = consulta.proveedor_id
                     rep['fuente_marketplace'] = 'casa_repuestos'
                     rep['certeza'] = 'referencial'
                     rep['precio_estimado'] = True
-                    rep['comentario'] = f'Cotizado por {consulta.proveedor.nombre}'
+                    _notar_precio_de_casa(
+                        cot,
+                        rep,
+                        consulta.proveedor.nombre,
+                        'Precio de la casa',
+                    )
                     if parsed.get('calidad'):
                         rep['calidad'] = parsed['calidad']
         else:
@@ -635,16 +687,18 @@ def _aplicar_en_cotizacion(consulta: ConsultaRepuesto, parsed: dict) -> None:
             precio_previo = int(rep.get('precio_unitario_clp') or 0)
             if alta and precio_previo <= 0:
                 rep['precio_unitario_clp'] = precio
-                rep['proveedor_nombre'] = consulta.proveedor.nombre
                 rep['proveedor_id'] = consulta.proveedor_id
                 rep['fuente_marketplace'] = 'casa_repuestos'
                 rep['certeza'] = 'referencial'
                 rep['precio_estimado'] = True
-                rep['comentario'] = f'Cotizado por {consulta.proveedor.nombre}'
-                rep['casa_repuesto_nombre'] = consulta.proveedor.nombre
-                rep['motivo_seleccion'] = 'Única casa consultada'
                 rep['alternativas_descartadas'] = []
                 rep['consolidacion_aplicada'] = False
+                _notar_precio_de_casa(
+                    cot,
+                    rep,
+                    consulta.proveedor.nombre,
+                    'Única casa consultada',
+                )
                 if parsed.get('calidad'):
                     rep['calidad'] = parsed['calidad']
         

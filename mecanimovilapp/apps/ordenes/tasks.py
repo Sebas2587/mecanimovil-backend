@@ -706,10 +706,12 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                 )
             extra = str(linea.get('especificacion') or '').strip()
             comentario = str(linea.get('comentario') or '').strip()
-            bajo = comentario.lower()
-            if comentario and not (
-                bajo.startswith('se busc') or bajo.startswith('no se pudo consultar')
-            ):
+            from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+                nota_de_busqueda,
+            )
+
+            # Una nota corta o el párrafo viejo de la búsqueda no es una especificación.
+            if comentario and not nota_de_busqueda(comentario):
                 extra = f'{extra} {comentario}'.strip()
             if extra:
                 especificaciones[nombre_linea] = extra[:200]
@@ -1296,6 +1298,29 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
             consultar_lineas_sin_precio_si_automatico(cot)
         except Exception:
             logger.exception('consulta automática de casas cot=%s', cotizacion_id)
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            contexto_nota_cotizacion,
+            sanear_notas_linea,
+        )
+
+        cot.refresh_from_db(fields=['repuestos', 'metadata'])
+        nota_kw = contexto_nota_cotizacion(cot)
+        saneados = [
+            sanear_notas_linea(r, **nota_kw) if isinstance(r, dict) else r
+            for r in (cot.repuestos or [])
+        ]
+        meta_final = dict(cot.metadata or {})
+        progreso = dict(meta_final.get('busqueda_web_progreso') or {})
+        if progreso:
+            progreso['lineas'] = lineas_progreso_desde_repuestos(
+                saneados,
+                resultados=resultados,
+                terminado=True,
+            )
+            meta_final['busqueda_web_progreso'] = progreso
+        cot.repuestos = saneados
+        cot.metadata = meta_final
+        cot.save(update_fields=['repuestos', 'metadata', 'actualizado_en'])
         return {
             'ok': True,
             'estado': meta['busqueda_web_estado'],

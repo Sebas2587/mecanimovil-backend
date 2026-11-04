@@ -1693,6 +1693,10 @@ def _canon_nombre_tienda(nombre: str) -> str:
         return 'Mundo Repuestos'
     if 'frenos' in n and 'vergara' in n:
         return 'Frenos Vergara'
+    if 'comercial' in n and 'ramirez' in n:
+        return 'Comercial Ramírez'
+    if 'todoauto' in n:
+        return 'TodoAuto'
     limpio = re.sub(r'\s+chile\s*$', '', crudo, flags=re.I).strip(' |-')
     return limpio[:200]
 
@@ -4369,7 +4373,7 @@ def _aviso_sin_ficha(
         descarte=descarte,
     )
     logger.info(
-        'busqueda_web_repuestos[aviso] linea=%s motivo=%s descarte=%s detalle=%s',
+        'busqueda_web_repuestos[aviso] linea=%s motivo=%s descarte=%s tecnico=%s',
         str(nombre)[:80],
         motivo,
         descarte,

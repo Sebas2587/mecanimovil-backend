@@ -215,12 +215,29 @@ def _repuestos_publicos(
     repuestos: list | None,
     *,
     como_estimacion: bool = False,
+    marca: str = '',
+    modelo: str = '',
+    anio=None,
+    tipo_motor: str = '',
+    cilindraje: str = '',
 ) -> list[dict]:
     """Repuestos para vista pública del cliente (lista blanca; sin datos internos)."""
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+        sanear_notas_linea,
+    )
+
     out: list[dict] = []
     for item in repuestos or []:
         if not isinstance(item, dict):
             continue
+        item = sanear_notas_linea(
+            item,
+            marca=marca,
+            modelo=modelo,
+            anio=anio,
+            tipo_motor=tipo_motor,
+            cilindraje=cilindraje,
+        )
         pub = {k: item[k] for k in _REPUESTO_PUBLICO_KEYS if k in item}
         if como_estimacion:
             lo, hi = rango_publico_repuesto(item)
@@ -516,6 +533,16 @@ def _serializar_cotizacion_publica_live(cotizacion: CotizacionCanal, request=Non
         'repuestos': _repuestos_publicos(
             cotizacion.repuestos or [],
             como_estimacion=tipo_doc == 'estimacion',
+            marca=cotizacion.vehiculo_marca or '',
+            modelo=cotizacion.vehiculo_modelo or '',
+            anio=cotizacion.vehiculo_anio,
+            tipo_motor=' '.join(
+                p for p in (
+                    cotizacion.tipo_motor or '',
+                    getattr(cotizacion, 'tipo_motor_label', '') or '',
+                ) if p
+            ),
+            cilindraje=cotizacion.vehiculo_cilindraje or '',
         ),
         'mano_obra_lineas': _mano_obra_lineas_publicas(cotizacion),
         'mano_obra_clp': mano,

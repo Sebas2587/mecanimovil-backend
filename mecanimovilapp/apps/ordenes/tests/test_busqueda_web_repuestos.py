@@ -4266,6 +4266,9 @@ class NotaMecanicoTests(SimpleTestCase):
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
             _precio_normal_tachado,
         )
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            nota_con_tienda,
+        )
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador import (
             _aplicar_seleccion_casa_repuestos,
         )
@@ -4311,3 +4314,25 @@ class NotaMecanicoTests(SimpleTestCase):
             'Lider: compatible con Fiat Bravo 1.4 T-Jet, mejor precio encontrado.',
         )
         self.assertNotIn('lider.cl', lider['motivo_seleccion'])
+        comercial = nota_con_tienda(
+            'Comercialramirezspa',
+            marca='Fiat',
+            modelo='Bravo',
+            tipo_motor='T-Jet',
+            cilindraje='1.4',
+        )
+        self.assertEqual(
+            comercial,
+            'Comercial Ramírez: compatible con Fiat Bravo 1.4 T-Jet, mejor precio encontrado.',
+        )
+        todoauto = nota_con_tienda(
+            'Todoautochile',
+            marca='Fiat',
+            modelo='Bravo',
+            tipo_motor='T-Jet',
+            cilindraje='1.4',
+        )
+        self.assertEqual(
+            todoauto,
+            'TodoAuto: compatible con Fiat Bravo 1.4 T-Jet, mejor precio encontrado.',
+        )

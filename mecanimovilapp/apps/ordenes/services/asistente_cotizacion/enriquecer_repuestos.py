@@ -22,6 +22,7 @@ catálogo/historial del taller quedan marcados precio_estimado=True.
 """
 from __future__ import annotations
 
+import copy
 import logging
 import re
 import statistics
@@ -740,6 +741,15 @@ def nota_sin_tienda(
         auto = auto.rsplit(' ', 1)[0]
 
 
+def nombre_tienda_visible(nombre: str) -> str:
+    """Nombre de la casa, no el dominio pegado. «Comercialramirezspa» → «Comercial Ramírez»."""
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+        _canon_nombre_tienda,
+    )
+
+    return _canon_nombre_tienda(nombre)
+
+
 def nota_con_tienda(
     tienda: str,
     *,
@@ -751,7 +761,7 @@ def nota_con_tienda(
 ) -> str:
     """Con ficha: la casa, el auto y que es el mejor precio hallado."""
     del anio
-    casa = re.sub(r'\s+', ' ', str(tienda or '')).strip()
+    casa = nombre_tienda_visible(tienda) or re.sub(r'\s+', ' ', str(tienda or '')).strip()
     auto = etiqueta_auto(
         marca=marca,
         modelo=modelo,
@@ -776,7 +786,7 @@ def _formatear_pesos(monto: int) -> str:
 
 def nota_oferta(tienda: str, precio_normal: int) -> str:
     """El precio cobrado está bajo el de lista."""
-    casa = re.sub(r'\s+', ' ', str(tienda or '')).strip() or 'Tienda'
+    casa = nombre_tienda_visible(tienda) or re.sub(r'\s+', ' ', str(tienda or '')).strip() or 'Tienda'
     return recortar_nota(
         f'{casa}, precio en oferta (normal {_formatear_pesos(precio_normal)}).'
     )
@@ -890,6 +900,229 @@ def nota_visible_sin_tienda(
         cilindraje=cilindraje,
         descarte=_descarte_desde_texto(previo),
     )
+
+
+_FRASES_PROHIBIDAS = (
+    'se buscó',
+    'se busco',
+    'sin ficha de',
+    'cubre otros años',
+    'nombra otro motor',
+    'nombra otro modelo',
+    'única casa con stock',
+    'unica casa con stock',
+    'única casa consultada',
+    'unica casa consultada',
+)
+
+# Identidad de la pieza. Una nota larga no se escribe encima del nombre ni de la URL.
+_CLAVES_INTOCABLES = frozenset({
+    'id',
+    'nombre',
+    'nombre_producto',
+    'url_producto',
+    'imagen_url',
+    'marca_repuesto',
+    'fuente_marketplace',
+    'fuente_repuesto',
+    'calidad',
+    'pais_origen',
+    'unidad_medida',
+    'especificacion',
+    'tienda_ml',
+    'proveedor_nombre',
+    'codigo_parte',
+    'categoria',
+    'compatibilidad',
+    'motivo_sin_precio',
+    'certeza',
+    'precio_capturado_en',
+    'seleccion_cliente_en',
+    'familia_sensible',
+    'casa_repuesto_nombre',
+    'motivo_seleccion',
+    'comentario',
+})
+
+
+def contiene_nota_prohibida(texto: str) -> bool:
+    bajo = str(texto or '').lower()
+    return any(frase in bajo for frase in _FRASES_PROHIBIDAS)
+
+
+def _es_nota_de_selector(texto: str) -> bool:
+    bajo = str(texto or '').strip().lower()
+    if not bajo:
+        return False
+    return (
+        contiene_nota_prohibida(bajo)
+        or bajo.startswith('cotizado:')
+        or bajo.startswith('cotizado por ')
+        or 'única casa' in bajo
+        or 'unica casa' in bajo
+        or bajo.startswith('mejor precio con stock')
+        or bajo.startswith('balance precio')
+        or bajo.startswith('proveedor confiable')
+        or bajo.startswith('stock inmediato')
+        or bajo.startswith('consolidado')
+        or 'una sola casa' in bajo
+        or bajo.startswith('no se encontraron proveedores')
+        or bajo.startswith('no hay opciones')
+    )
+
+
+def nota_visible_debe_reemplazarse(texto: str) -> bool:
+    """True si el texto es una nota que no puede verse. La descripción de la pieza no."""
+    t = str(texto or '').strip()
+    if not t:
+        return False
+    if t.lower().startswith('precio del taller'):
+        return contiene_nota_prohibida(t) or len(t) > _NOTA_MAX
+    if contiene_nota_prohibida(t) or _es_nota_de_selector(t):
+        return True
+    if _es_nota_mecanico(t):
+        return len(t) > _NOTA_MAX
+    if nota_de_busqueda(t):
+        return True
+    return False
+
+
+def _hay_tienda_en_linea(rep: dict) -> bool:
+    """Hay casa si el nombre no es el placeholder Estimado. Un precio solo no alcanza."""
+    casa = str(rep.get('proveedor_nombre') or rep.get('casa_repuesto_nombre') or '').strip()
+    if not casa or casa.lower() == 'estimado':
+        return False
+    fuente = str(rep.get('fuente_marketplace') or rep.get('fuente_repuesto') or '').strip().lower()
+    if fuente == 'estimado' and not str(rep.get('url_producto') or '').strip():
+        return False
+    return True
+
+
+def _nota_corta_para_linea(
+    rep: dict,
+    *,
+    marca: str,
+    modelo: str,
+    anio: Any,
+    tipo_motor: str,
+    cilindraje: Any,
+    motivo_interno: str = '',
+) -> str:
+    if _hay_tienda_en_linea(rep):
+        return nota_visible_con_tienda(
+            rep,
+            motivo_interno,
+            marca=marca,
+            modelo=modelo,
+            anio=anio,
+            tipo_motor=tipo_motor,
+            cilindraje=cilindraje,
+        )
+    return nota_visible_sin_tienda(
+        rep,
+        marca=marca,
+        modelo=modelo,
+        anio=anio,
+        tipo_motor=tipo_motor,
+        cilindraje=cilindraje,
+    )
+
+
+def _motivo_ya_es_corto(texto: str, *, tienda: str, hay_tienda: bool) -> bool:
+    t = str(texto or '').strip()
+    if not t:
+        return True
+    if t.lower().startswith('precio del taller'):
+        return len(t) <= _NOTA_MAX and not contiene_nota_prohibida(t)
+    if not (_es_nota_mecanico(t) and len(t) <= _NOTA_MAX and not contiene_nota_prohibida(t)):
+        return False
+    if hay_tienda and tienda:
+        return t.lower().startswith(tienda.lower())
+    return True
+
+
+def _reemplazar_frases_prohibidas(valor: Any, nota: str) -> Any:
+    if isinstance(valor, str):
+        if contiene_nota_prohibida(valor):
+            return nota
+        return valor
+    if isinstance(valor, dict):
+        for clave, item in list(valor.items()):
+            if clave in _CLAVES_INTOCABLES:
+                continue
+            valor[clave] = _reemplazar_frases_prohibidas(item, nota)
+        return valor
+    if isinstance(valor, list):
+        return [_reemplazar_frases_prohibidas(item, nota) for item in valor]
+    return valor
+
+
+def sanear_notas_linea(
+    rep: dict,
+    *,
+    marca: str = '',
+    modelo: str = '',
+    anio: Any = None,
+    tipo_motor: str = '',
+    cilindraje: Any = None,
+) -> dict:
+    """Deja la línea sin el párrafo largo ni el motivo interno del selector.
+
+    Devuelve una copia. No pisa el nombre, la URL ni una descripción de la pieza.
+    """
+    if not isinstance(rep, dict):
+        return rep
+    linea = copy.deepcopy(rep)
+    cruda = str(linea.get('proveedor_nombre') or linea.get('casa_repuesto_nombre') or '')
+    tienda = nombre_tienda_visible(cruda)
+    hay = _hay_tienda_en_linea(linea)
+    if hay and tienda:
+        linea['casa_repuesto_nombre'] = tienda
+    motivo = str(linea.get('motivo_seleccion') or '')
+    if not _motivo_ya_es_corto(motivo, tienda=tienda, hay_tienda=hay):
+        linea['motivo_seleccion'] = _nota_corta_para_linea(
+            linea,
+            marca=marca,
+            modelo=modelo,
+            anio=anio,
+            tipo_motor=tipo_motor,
+            cilindraje=cilindraje,
+            motivo_interno=motivo,
+        )
+    comentario = str(linea.get('comentario') or '')
+    if nota_visible_debe_reemplazarse(comentario):
+        linea['comentario'] = str(linea.get('motivo_seleccion') or '') or _nota_corta_para_linea(
+            linea,
+            marca=marca,
+            modelo=modelo,
+            anio=anio,
+            tipo_motor=tipo_motor,
+            cilindraje=cilindraje,
+        )
+    nota = str(linea.get('motivo_seleccion') or linea.get('comentario') or '')
+    if nota:
+        for clave, valor in list(linea.items()):
+            if clave in _CLAVES_INTOCABLES:
+                continue
+            linea[clave] = _reemplazar_frases_prohibidas(valor, nota)
+    return linea
+
+
+def contexto_nota_cotizacion(cot: Any) -> dict[str, Any]:
+    """Marca, modelo y motor de la cotización, para armar la nota al leer o al guardar."""
+    tipo = ' '.join(
+        parte for parte in (
+            str(getattr(cot, 'tipo_motor', '') or ''),
+            str(getattr(cot, 'tipo_motor_label', '') or ''),
+        ) if parte
+    )
+    return {
+        'marca': getattr(cot, 'vehiculo_marca', '') or '',
+        'modelo': getattr(cot, 'vehiculo_modelo', '') or '',
+        'anio': getattr(cot, 'vehiculo_anio', None),
+        'tipo_motor': tipo,
+        'cilindraje': getattr(cot, 'vehiculo_cilindraje', '') or '',
+    }
 
 
 _STOP_PIEZA = frozenset({
