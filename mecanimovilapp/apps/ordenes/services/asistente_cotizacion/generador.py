@@ -479,6 +479,14 @@ def _ajustar_rangos_consistentes(repuestos: list[dict[str, Any]]) -> list[dict[s
         # Si no hay precio unitario, mantener el rango de Gemini
         if precio_unit <= 0:
             continue
+
+        # La banda es de la IA o de la config. Un hit de tienda no la reescribe:
+        # $11.920 pasaba a $9.536–$14.304 (±20% del precio elegido).
+        # precio_referencia_mercado también lo pone un unitario de la IA sin ficha;
+        # ese rango sí se abre para cubrir cantidad × unitario.
+        fuente = str(rep.get('fuente_marketplace') or '').strip().lower()
+        if fuente in ('web', 'ml', 'mercadolibre'):
+            continue
         
         # Precio total de la línea
         precio_total = precio_unit * cantidad

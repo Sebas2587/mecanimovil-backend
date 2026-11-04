@@ -943,3 +943,302 @@ class Quote12CachePathTests(TestCase):
         self.assertIn('guardado=10990', texto)
         self.assertIn('leido=4990', texto)
         self.assertNotIn('actual=4990', texto)
+
+
+_URL_LIDER = 'https://www.lider.cl/pastillas-freno-delantera-fiat-bravo-14'
+_URL_MUNDO = (
+    'https://mundorepuestos.com/producto/9971766272027220102014/'
+    'juego-pastillas-freno-delanteras-semimetalica-fiat-linea-active-1400-'
+    'sohc-t-jet-198-a4-000-italia'
+)
+_TITULO_MUNDO = 'Juego Pastillas Freno Fiat | Envío gratis - Mundo Repuestos Chile'
+_TITULO_LIDER = 'Pastillas De Freno Delantera Fiat Bravo 1.4 08/15'
+_URL_FILTRO = 'https://www.todoauto.cl/filtro-aceite-fiat-bravo-14-2008-2014'
+_HTML_FILTRO_4990 = """
+<html><head>
+  <title>FILTRO ACEITE FIAT BRAVO 1.4 2008/2014</title>
+  <script type="application/ld+json">
+    {"@type":"Product","name":"FILTRO ACEITE FIAT BRAVO 1.4 2008/2014",
+     "offers":{"@type":"Offer","price":"4990","priceCurrency":"CLP"}}
+  </script>
+</head><body>
+  <h1>FILTRO ACEITE FIAT BRAVO 1.4 2008/2014</h1>
+  <p>3 cuotas de $4.990</p>
+  <p>Envío a domicilio $4.990</p>
+</body></html>
+"""
+
+
+class Quote14TaskPathTests(TestCase):
+    """Cotización 14: el task volvía a pegar el listado que la compuerta acababa de botar."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='quote14_task',
+            email='quote14@test.com',
+            password='test123',
+        )
+        self.taller = Taller.objects.create(
+            usuario=self.user,
+            nombre='Taller Quote 14',
+            telefono='+56912345678',
+            estado_verificacion='aprobado',
+        )
+
+    def _lineas(self):
+        return [
+            {
+                'id': 'rep-0',
+                'nombre': 'Pastillas de freno delanteras',
+                'cantidad': 1,
+                'precio_unitario_clp': 0,
+                'precio_min_clp': 28000,
+                'precio_max_clp': 55000,
+                'certeza': 'sin_precio',
+            },
+            {
+                'id': 'rep-filtro',
+                'nombre': 'Filtro de aceite',
+                'cantidad': 1,
+                'precio_unitario_clp': 10990,
+                'precio_min_clp': 8000,
+                'precio_max_clp': 15000,
+                'fuente_marketplace': 'web',
+                'proveedor_nombre': 'TodoAuto',
+                'url_producto': _URL_FILTRO,
+                'nombre_producto': 'FILTRO ACEITE FIAT BRAVO 1.4 2008/2014',
+                'certeza': 'referencial',
+            },
+            {
+                # Sin precio: obliga a Gemini. Si elige el listado, no puede pisar a Lider.
+                'id': 'rep-sensor',
+                'nombre': 'Sensor de temperatura',
+                'cantidad': 1,
+                'precio_unitario_clp': 0,
+                'certeza': 'sin_precio',
+            },
+        ]
+
+    def _sembrar_cache(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+            clave_cache_repuesto,
+        )
+
+        veh = dict(
+            marca_vehiculo='Fiat',
+            modelo_vehiculo='Sport Bravo',
+            anio=2010,
+            tipo_motor='T-Jet',
+            cilindraje='1.4',
+        )
+        expira = timezone.now() + timedelta(days=14)
+        viejo = timezone.now() - timedelta(days=2)
+        mundo = PrecioRepuestoWeb.objects.create(
+            clave=clave_cache_repuesto('Pastillas de freno delanteras', **veh),
+            dominio='mundorepuestos.com',
+            nombre_producto=_TITULO_MUNDO,
+            precio_clp=11920,
+            tienda='Mundo Repuestos',
+            url=_URL_MUNDO,
+            confianza=0.9,
+            cilindraje='1.4',
+            tipo_motor='T-Jet',
+            expira_en=expira,
+        )
+        filtro = PrecioRepuestoWeb.objects.create(
+            clave=clave_cache_repuesto('Filtro de aceite', **veh),
+            dominio='todoauto.cl',
+            nombre_producto='FILTRO ACEITE FIAT BRAVO 1.4 2008/2014',
+            precio_clp=10990,
+            tienda='TodoAuto',
+            url=_URL_FILTRO,
+            confianza=0.9,
+            cilindraje='1.4',
+            tipo_motor='T-Jet',
+            expira_en=expira,
+        )
+        PrecioRepuestoWeb.objects.filter(pk__in=[mundo.pk, filtro.pk]).update(consultado_en=viejo)
+        return mundo, filtro
+
+    def _candidatos_tavily(self):
+        filas = [
+            (_TITULO_MUNDO, _URL_MUNDO, 'Juego pastillas Fiat. Precio: $11.920'),
+            (
+                'Pastillas de freno Delantera Fiat Bravo 1.4 08/15',
+                'https://www.sodimac.cl/sodimac-cl/articulo/123/pastillas-bravo-14',
+                'Fiat Bravo 1.4. Precio: $10.000',
+            ),
+            (_TITULO_LIDER, _URL_LIDER, 'Fiat Bravo 1.4 08/15. Precio: $21.390'),
+            (
+                'Pastillas de freno Delantera Fiat Bravo 1.4 T-Jet',
+                'https://www.gmak.cl/pastillas-freno-fiat-bravo-14-t-jet',
+                'Consultar stock en tienda.',
+            ),
+            (
+                'Pastillas de freno Fiat Bravo 1.4 2007',
+                'https://www.repuestosdelsol.cl/pastillas-freno-fiat-bravo-14-2007',
+                'Consultar stock en tienda.',
+            ),
+            (
+                'Pastillas de Freno Delanteras Fiat Linea 1.4 T-Jet',
+                'https://articulo.mercadolibre.cl/MLC-123-pastillas-freno-fiat-linea-t-jet',
+                'Consultar stock en tienda.',
+            ),
+            (
+                'Pastillas de freno Fiat Bravo 1.4',
+                'https://www.imaparts.cl/pastillas-freno-fiat-bravo-14',
+                'Consultar stock en tienda.',
+            ),
+        ]
+        return [
+            {'title': titulo, 'url': url, 'content': content, 'score': 0.8}
+            for titulo, url, content in filas
+        ]
+
+    def test_el_task_se_queda_con_lider_y_no_reescribe_la_banda(self):
+        import json
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            enriquecer_repuestos_cotizacion,
+        )
+        from mecanimovilapp.apps.ordenes.tasks import buscar_precios_web_cotizacion_task
+
+        self._sembrar_cache()
+
+        def fake_html(urls):
+            return {
+                url: _HTML_FILTRO_4990 if 'todoauto' in str(url) else '<html><body></body></html>'
+                for url in urls
+            }
+
+        def fake_buscar(query, **kwargs):
+            texto = (query or '').lower()
+            if 'pastilla' in texto:
+                return self._candidatos_tavily()
+            if 'sensor' in texto:
+                return [{
+                    'title': 'Sensor de temperatura Fiat',
+                    'url': 'https://www.repuestosdelsol.cl/sensor-temperatura-fiat',
+                    'content': 'Consultar stock en tienda.',
+                    'score': 0.5,
+                }]
+            return []
+
+        gemini = {
+            'candidates': [{
+                'content': {
+                    'parts': [{
+                        'text': json.dumps({'resultados': [
+                            {
+                                'nombre_buscado': 'Pastillas de freno delanteras',
+                                'encontrado': True,
+                                'nombre_producto': _TITULO_MUNDO,
+                                'precio_clp': 11920,
+                                'tienda': 'Mundo Repuestos',
+                                'url': _URL_MUNDO,
+                                'compatibilidad': 'alta',
+                            },
+                        ]}),
+                    }],
+                },
+            }],
+        }
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos._leer_html_fichas',
+            side_effect=fake_html,
+        ), self.assertLogs(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos',
+            level='INFO',
+        ) as logs_sync:
+            sincronico = enriquecer_repuestos_cotizacion(
+                self._lineas(),
+                marca_vehiculo='Fiat',
+                modelo_vehiculo='Sport Bravo',
+                anio_vehiculo=2010,
+                cilindraje='1.4',
+                tipo_motor='T-Jet',
+                taller=self.taller,
+                usar_ml=False,
+                usar_web=True,
+            )
+        por_sync = {r['id']: r for r in sincronico}
+        pads_sync = por_sync['rep-0']
+        self.assertNotEqual(pads_sync.get('precio_unitario_clp'), 11920)
+        self.assertNotIn('mundo', (pads_sync.get('proveedor_nombre') or '').lower())
+        self.assertEqual(pads_sync['precio_min_clp'], 28000)
+        self.assertEqual(pads_sync['precio_max_clp'], 55000)
+        self.assertEqual(por_sync['rep-filtro']['precio_unitario_clp'], 10990)
+        texto_sync = '\n'.join(logs_sync.output)
+        self.assertIn('motivo=listado', texto_sync)
+        self.assertIn('caida_ignorada', texto_sync)
+        self.assertNotIn('actual=4990', texto_sync)
+
+        cot = CotizacionCanal.objects.create(
+            taller=self.taller,
+            creado_por=self.user,
+            estado='borrador',
+            modalidad='taller',
+            vehiculo_marca='Fiat',
+            vehiculo_modelo='Sport Bravo',
+            vehiculo_anio=2010,
+            vehiculo_cilindraje='1.4',
+            tipo_motor='T-Jet',
+            servicio_nombre='Pastillas y filtro',
+            repuestos=self._lineas(),
+            costo_repuestos_clp=10990,
+            mano_obra_clp=0,
+            descuento_clp=0,
+            total_clp=10990,
+            metadata={'busqueda_web_estado': 'pendiente'},
+        )
+        gemini_mock = MagicMock(return_value=gemini)
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.tavily_habilitada',
+            return_value=True,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.busqueda_web_habilitada',
+            return_value=True,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.razonar_pedido._plan_llm',
+            return_value=None,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos._tavily_buscar_uno',
+            side_effect=fake_buscar,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos._tavily_extraer',
+            return_value={},
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos._leer_html_fichas',
+            side_effect=fake_html,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos._gemini_generar',
+            gemini_mock,
+        ), self.assertLogs('mecanimovilapp.apps.ordenes', level='INFO') as logs_task:
+            result = buscar_precios_web_cotizacion_task(cot.id)
+
+        self.assertTrue(result.get('ok'))
+        gemini_mock.assert_called()
+        cot.refresh_from_db()
+        por_id = {r['id']: r for r in cot.repuestos}
+        pads = por_id['rep-0']
+        self.assertIn('lider.cl', (pads.get('url_producto') or '').lower())
+        self.assertEqual(pads.get('precio_unitario_clp'), 21390)
+        self.assertEqual(pads.get('precio_min_clp'), 28000)
+        self.assertEqual(pads.get('precio_max_clp'), 55000)
+        self.assertNotIn('Envío gratis', pads.get('nombre_producto') or '')
+        self.assertNotIn('mundo', (pads.get('proveedor_nombre') or '').lower())
+        self.assertNotIn('mundorepuestos', (pads.get('url_producto') or '').lower())
+        self.assertEqual(por_id['rep-filtro']['precio_unitario_clp'], 10990)
+        self.assertEqual(por_id['rep-filtro']['proveedor_nombre'], 'TodoAuto')
+        texto = '\n'.join(logs_task.output)
+        self.assertIn(f'url={_URL_LIDER} motivo=', texto)
+        self.assertNotIn(f'url={_URL_LIDER} motivo=fuera_del_cupo', texto)
+        self.assertIn(f'url={_URL_MUNDO} motivo=listado', texto)
+        elegidos = [linea for linea in logs_task.output if 'elegido id=rep-0' in linea]
+        self.assertTrue(elegidos)
+        self.assertTrue(all('Envío gratis' not in linea for linea in elegidos))
+        self.assertTrue(all('lider' in linea.lower() for linea in elegidos))
+        self.assertNotIn('actual=4990', texto)
+        self.assertFalse(
+            PrecioRepuestoWeb.objects.filter(url=_URL_MUNDO, expira_en__gt=timezone.now()).exists(),
+        )

@@ -359,6 +359,20 @@ class SyncEnrichmentValidacionTestCase(TestCase):
         self.assertGreaterEqual(aceite['precio_max_clp'], total)
         self.assertGreater(aceite['precio_min_clp'], 14000)
 
+    def test_la_banda_de_un_hit_web_no_se_recalcula(self):
+        # $11.920 elegido reescribía la banda de la IA a $9.536–$14.304.
+        out = _ajustar_rangos_consistentes([{
+            'nombre': 'Pastillas de freno delanteras',
+            'cantidad': 1,
+            'precio_unitario_clp': 11920,
+            'precio_min_clp': 28000,
+            'precio_max_clp': 55000,
+            'fuente_marketplace': 'web',
+            'precio_referencia_mercado': True,
+        }])
+        self.assertEqual(out[0]['precio_min_clp'], 28000)
+        self.assertEqual(out[0]['precio_max_clp'], 55000)
+
     def test_sin_tienda_el_motivo_dice_que_se_busco(self):
         detalle = (
             'Se buscó "pastillas freno delanteras fiat bravo". '

@@ -1378,6 +1378,7 @@ def enriquecer_repuestos_cotizacion(
     taller=None,
     usar_ml: bool = True,
     usar_web: bool = True,
+    urls_rechazadas: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Devuelve nueva lista de repuestos enriquecida multi-fuente.
 
@@ -1497,9 +1498,11 @@ def enriquecer_repuestos_cotizacion(
                 piso_linea = int(next_rep.get('precio_min_clp') or 0)
             except (TypeError, ValueError):
                 piso_linea = 0
+            prohibidas = urls_rechazadas or set()
             web_ok = [
                 c for c in web_cands
-                if not _familia_distinta(nombre, str(c.get('clave') or ''))
+                if str(c.get('url_producto') or '') not in prohibidas
+                and not _familia_distinta(nombre, str(c.get('clave') or ''))
                 and not _familia_distinta(
                     nombre, str(c.get('nombre_producto') or c.get('nombre') or ''),
                 )

@@ -996,11 +996,14 @@ def _compat_pastilla(
 
     El cruce Linea/Punto T-Jet solo vale en el título o el cuerpo. El slug
     de la URL no alcanza: un listado 'Envío gratis' no es la pastilla del Bravo
-    porque la ruta dice fiat-linea-t-jet.
+    porque la ruta dice fiat-linea-t-jet. "Bravo" en el texto sí cuenta aunque
+    el modelo guardado empiece por el trim ("Sport Bravo"), no por Bravo.
     """
     norm = _norm(texto)
     if not norm:
         return None
+    if 'bravo' in _norm(f'{modelo} {tipo_motor}') and re.search(r'\bbravo\b', norm):
+        return True
     token = _norm(_modelo_busqueda(modelo))
     if len(token) >= 3 and re.search(rf'\b{re.escape(token)}\b', norm):
         return True
@@ -1021,13 +1024,33 @@ def _titulo_nombra_modelo(titulo: str, modelo: str) -> bool:
     return re.search(rf'\b{re.escape(token)}\b', _norm(titulo)) is not None
 
 
+def _titulo_es_del_auto(titulo: str, modelo: str, tipo_motor: str = '') -> bool:
+    """El título nombra este auto, no solo la primera palabra del modelo.
+
+    "Sport Bravo" tiene como primera palabra Sport, que no está en
+    "Pastillas Fiat Bravo 1.4". Lider y Sodimac se caían del cupo por eso.
+    """
+    norm = _norm(titulo)
+    if not norm:
+        return False
+    if 'bravo' in _norm(f'{modelo} {tipo_motor}') and re.search(r'\bbravo\b', norm):
+        return True
+    for parte in (modelo, tipo_motor):
+        for tok in _tokens_modelo(parte):
+            n = _norm(tok)
+            if len(n) >= 3 and re.search(rf'\b{re.escape(n)}\b', norm):
+                return True
+    return False
+
+
 def _titulo_nombra_bravo_14(titulo: str, modelo: str) -> bool:
     """El título dice Bravo 1.4. El slug de otro modelo no cuenta."""
     if 'bravo' not in _norm(modelo):
         return False
-    if not _titulo_nombra_modelo(titulo, modelo):
+    norm = _norm(titulo)
+    if not re.search(r'\bbravo\b', norm):
         return False
-    return re.search(r'\b1\s+4\b', _norm(titulo)) is not None
+    return re.search(r'\b1\s+4\b', norm) is not None
 
 
 def _titulo_es_cruce_tjet(titulo: str, modelo: str, tipo_motor: str) -> bool:
@@ -1127,12 +1150,14 @@ def _rechazo_precio_pastilla(
     piso = int(banda_min or 0)
     if piso <= 0 or precio <= 0:
         return ''
+    titulo = str((candidato or {}).get('title') or '')
+    # La banda 28.000–55.000 deja afuera fichas reales de Bravo 1.4.
+    # Con Bravo 1.4 en el título, el piso baja al 40% ($10.000 no, $21.390 sí).
+    if _titulo_nombra_bravo_14(titulo, f'{modelo} {tipo_motor}') and precio < piso * 2 // 5:
+        return 'precio_bajo_banda'
+    if _titulo_nombra_bravo_14(titulo, f'{modelo} {tipo_motor}'):
+        return ''
     if _ficha_nombra_modelo_pedido(candidato, modelo, tipo_motor):
-        titulo = str((candidato or {}).get('title') or '')
-        # La banda 28.000–55.000 deja afuera fichas reales de Bravo 1.4.
-        # Con el modelo en el título, el piso baja al 40% ($10.000 no, $21.390 sí).
-        if _titulo_nombra_bravo_14(titulo, modelo) and precio < piso * 2 // 5:
-            return 'precio_bajo_banda'
         return ''
     if _ficha_es_cruce_tjet(candidato, modelo, tipo_motor):
         if precio < piso:
@@ -1153,10 +1178,11 @@ def _motivo_calidad_pastilla(
 ) -> str:
     """Por qué una pastilla no se cotiza. '' si todavía puede servir.
 
-    Sin la página leída no se descarta un título genérico: la tabla de
-    compatibilidad puede nombrar al Bravo. Un título que ya dice Bravo 1.4,
-    o Linea/Punto T-Jet, sí se mide contra la banda. Ya leída, 'Envío gratis'
-    sin el auto en el título es listado aunque el slug diga linea-t-jet.
+    Sin la página leída no se descarta un título genérico sin precio: la
+    tabla de compatibilidad puede nombrar al Bravo. Un título 'Envío gratis'
+    que ya trae monto es listado aunque nadie haya abierto la ficha: el
+    snippet no le presta el cruce Linea T-Jet. Bravo 1.4 y el cruce con
+    precio se miden contra la banda antes de leer.
     """
     if not _es_pastillas_freno(nombre):
         return ''
@@ -1167,20 +1193,19 @@ def _motivo_calidad_pastilla(
     if compat is False:
         return 'modelo_incompatible'
     leida = bool((candidato or {}).get('ficha_leida'))
-    if not leida:
-        if _precio_de_candidato(candidato, nombre) <= 0:
-            return ''
-        if _titulo_nombra_modelo(titulo, modelo) or _titulo_es_cruce_tjet(titulo, modelo, tipo_motor):
-            return _rechazo_precio_pastilla(
-                candidato,
-                nombre=nombre,
-                modelo=modelo,
-                tipo_motor=tipo_motor,
-                banda_min=banda_min,
-            )
-        return ''
-    if _es_listado_pastilla(candidato, modelo, tipo_motor):
+    precio = _precio_de_candidato(candidato, nombre)
+    if _es_listado_pastilla(candidato, modelo, tipo_motor) and (leida or precio > 0):
         return 'listado'
+    if not leida:
+        if precio <= 0:
+            return ''
+        return _rechazo_precio_pastilla(
+            candidato,
+            nombre=nombre,
+            modelo=modelo,
+            tipo_motor=tipo_motor,
+            banda_min=banda_min,
+        )
     bajo = _rechazo_precio_pastilla(
         candidato,
         nombre=nombre,
@@ -2680,7 +2705,7 @@ def _ordenar_candidatos(
                 return True
             if not _es_pastillas_freno(nombre_linea):
                 return False
-            return _titulo_nombra_modelo(str(c.get('title') or ''), modelo)
+            return _titulo_es_del_auto(str(c.get('title') or ''), modelo, tipo_motor)
 
         candidatos = [c for c in candidatos if _se_queda(c)]
     tokens = tokens_vehiculo or []
@@ -2699,7 +2724,7 @@ def _ordenar_candidatos(
         # fuera_del_cupo (no están entre las 5 URLs que se abren).
         if _es_pastillas_freno(nombre_linea):
             titulo_c = str(c.get('title') or '')
-            if _titulo_nombra_modelo(titulo_c, modelo):
+            if _titulo_es_del_auto(titulo_c, modelo, tipo_motor):
                 rango_modelo = 0
             elif _titulo_es_cruce_tjet(titulo_c, modelo, tipo_motor):
                 rango_modelo = 1
@@ -2712,6 +2737,118 @@ def _ordenar_candidatos(
         return (no_sirve, rango_modelo, calce, no_esp, sin_precio)
 
     return sorted(candidatos, key=rango)
+
+
+def _seleccionar_cupo(
+    ordenados: list[dict[str, Any]],
+    *,
+    nombre: str,
+    anio: Any = None,
+    cilindraje: Any = None,
+    modelo: str = '',
+    tipo_motor: str = '',
+    banda_min: int = 0,
+) -> list[dict[str, Any]]:
+    """Las 5 fichas que se abren. Un Bravo con precio no pierde contra una sin monto."""
+    sirven = [
+        c for c in ordenados
+        if _candidato_sirve_linea(
+            nombre, c, anio=anio, cilindraje=cilindraje, modelo=modelo,
+            tipo_motor=tipo_motor, banda_min=banda_min,
+        )
+        and _titulo_nombra_pieza(nombre, str(c.get('title') or ''))
+    ]
+    if not _es_pastillas_freno(nombre):
+        return sirven[:_FICHA_HTML_MAX]
+    con_precio: list[dict[str, Any]] = []
+    sin_precio: list[dict[str, Any]] = []
+    cruce: list[dict[str, Any]] = []
+    resto: list[dict[str, Any]] = []
+    for cand in sirven:
+        titulo = str(cand.get('title') or '')
+        if _titulo_es_del_auto(titulo, modelo, tipo_motor):
+            if _precio_de_candidato(cand, nombre) > 0:
+                con_precio.append(cand)
+            else:
+                sin_precio.append(cand)
+        elif _titulo_es_cruce_tjet(titulo, modelo, tipo_motor):
+            cruce.append(cand)
+        else:
+            resto.append(cand)
+    return (con_precio + sin_precio + cruce + resto)[:_FICHA_HTML_MAX]
+
+
+def _anotar_url_rechazada(notas: dict[str, Any], url: str, *, linea: str = '') -> None:
+    """La URL ya no puede volver en Gemini, el cache ni el apply de este request.
+
+    Sin línea, queda vedada en todo el request (listado, precio bajo, otro
+    modelo). Con línea, solo en esa línea: el disco no es el termostato, pero
+    sí puede cotizar la línea de discos.
+    """
+    limpia = str(url or '').strip()
+    if not limpia:
+        return
+    bolsa = notas.get('_urls_rechazadas')
+    if not isinstance(bolsa, dict):
+        bolsa = {'motivo': 'rechazadas', 'urls': []}
+        notas['_urls_rechazadas'] = bolsa
+    if linea:
+        por_linea = bolsa.setdefault('por_linea', {})
+        lista = por_linea.setdefault(str(linea), [])
+        if limpia not in lista:
+            lista.append(limpia)
+        return
+    urls = bolsa.setdefault('urls', [])
+    if limpia not in urls:
+        urls.append(limpia)
+
+
+def urls_rechazadas_de(notas: dict[str, Any] | None, linea: str = '') -> set[str]:
+    if not isinstance(notas, dict):
+        return set()
+    bolsa = notas.get('_urls_rechazadas')
+    if isinstance(bolsa, (list, set, tuple)):
+        return {str(url) for url in bolsa if url}
+    if not isinstance(bolsa, dict):
+        return set()
+    urls = {str(url) for url in (bolsa.get('urls') or []) if url}
+    if not linea:
+        return urls
+    clave = _clave_fuzzy(linea)
+    for nombre, lista in (bolsa.get('por_linea') or {}).items():
+        if nombre == linea or (clave and _clave_fuzzy(str(nombre)) == clave):
+            urls.update(str(url) for url in (lista or []) if url)
+    return urls
+
+
+def _motivo_rechazo_duro(
+    cand: dict[str, Any],
+    *,
+    nombre: str,
+    anio: Any = None,
+    cilindraje: Any = None,
+    modelo: str = '',
+    tipo_motor: str = '',
+    banda_min: int = 0,
+) -> str:
+    """Motivo que saca la URL del request. '' si todavía puede cotizarse.
+
+    fuera_del_cupo no entra: esa ficha no se abrió, no está rechazada.
+    """
+    motivo = _motivo_calidad_pastilla(
+        cand, nombre=nombre, modelo=modelo, tipo_motor=tipo_motor, banda_min=banda_min,
+    )
+    if motivo:
+        return motivo
+    if not _candidato_sirve_linea(
+        nombre, cand, anio=anio, cilindraje=cilindraje, modelo=modelo,
+        tipo_motor=tipo_motor, banda_min=banda_min,
+    ):
+        return 'otra_pieza'
+    titulo = str(cand.get('title') or '')
+    if titulo and not _titulo_nombra_pieza(nombre, titulo):
+        return 'titulo_no_es_la_pieza'
+    return ''
 
 
 def _candidatos_de_linea(
@@ -2844,6 +2981,12 @@ def _buscar_repuestos_web_tavily(
 
     def _cerrar_sin_hit(hits: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
         """Si la línea quedó sin ficha, el motivo dice qué se buscó y qué se botó."""
+        rechazadas = urls_rechazadas_de(notas)
+        if rechazadas:
+            hits = {
+                clave: hit for clave, hit in (hits or {}).items()
+                if str((hit or {}).get('url') or '') not in rechazadas
+            }
         elegido: dict[str, str] = {}
         for hit in (hits or {}).values():
             if not isinstance(hit, dict):
@@ -2885,6 +3028,16 @@ def _buscar_repuestos_web_tavily(
                     _precio_de_candidato(cand, nombre_linea) or int(cand.get('precio_fuera_banda') or 0) or '',
                     _piso(nombre_linea) or '',
                 )
+                if motivo in ('listado', 'precio_bajo_banda', 'modelo_incompatible', 'sin_modelo'):
+                    _anotar_url_rechazada(notas, url)
+                elif motivo in ('otra_pieza', 'titulo_no_es_la_pieza'):
+                    _anotar_url_rechazada(notas, url, linea=nombre_linea)
+        hits = {
+            clave: hit for clave, hit in (hits or {}).items()
+            if str((hit or {}).get('url') or '') not in urls_rechazadas_de(
+                notas, str((hit or {}).get('nombre_buscado') or ''),
+            )
+        }
         for nombre_linea in nombres_limpios:
             if _clave_fuzzy(nombre_linea) in hits or nombre_linea in notas:
                 continue
@@ -3026,14 +3179,15 @@ def _buscar_repuestos_web_tavily(
             tipo_motor=tipo_motor,
             banda_min=_piso(nombre),
         )
-        servir = [
-            c for c in ordenados
-            if _candidato_sirve_linea(
-                nombre, c, anio=anio, cilindraje=cilindraje, modelo=modelo,
-                tipo_motor=tipo_motor, banda_min=_piso(nombre),
-            )
-            and _titulo_nombra_pieza(nombre, str(c.get('title') or ''))
-        ][:_FICHA_HTML_MAX]
+        servir = _seleccionar_cupo(
+            ordenados,
+            nombre=nombre,
+            anio=anio,
+            cilindraje=cilindraje,
+            modelo=modelo,
+            tipo_motor=tipo_motor,
+            banda_min=_piso(nombre),
+        )
         cupo_por_nombre[nombre] = [str(c.get('url') or '') for c in servir if c.get('url')]
         if servir:
             for cand in servir:
@@ -3179,6 +3333,39 @@ def _buscar_repuestos_web_tavily(
                     banda_min=piso,
                 )
 
+    def _sellar_lista_negra() -> None:
+        for nombre_linea, crudos_linea in crudos_por_nombre.items():
+            piso = _piso(nombre_linea)
+            vistos_rechazo: set[str] = set()
+            for cand in crudos_linea:
+                url_cand = str(cand.get('url') or '')
+                if not url_cand or url_cand in vistos_rechazo:
+                    continue
+                vistos_rechazo.add(url_cand)
+                motivo = _motivo_rechazo_duro(
+                    cand,
+                    nombre=nombre_linea,
+                    anio=anio,
+                    cilindraje=cilindraje,
+                    modelo=modelo,
+                    tipo_motor=tipo_motor,
+                    banda_min=piso,
+                )
+                if motivo in ('listado', 'precio_bajo_banda', 'modelo_incompatible', 'sin_modelo'):
+                    _anotar_url_rechazada(notas, url_cand)
+                elif motivo:
+                    _anotar_url_rechazada(notas, url_cand, linea=nombre_linea)
+        if not notas.get('_urls_rechazadas'):
+            return
+        for nombre_linea, candidatos in list(candidatos_por_nombre.items()):
+            prohibidas = urls_rechazadas_de(notas, nombre_linea)
+            candidatos_por_nombre[nombre_linea] = [
+                cand for cand in candidatos
+                if str(cand.get('url') or '') not in prohibidas
+            ]
+
+    _sellar_lista_negra()
+
     preliminar = _hits_desde_candidatos(
         candidatos_por_nombre,
         tokens_veh,
@@ -3247,7 +3434,7 @@ def _buscar_repuestos_web_tavily(
             continue
         url = str(item.get('url') or '').strip()
         # Los candidatos ya pasaron el filtro de tienda antes del prompt.
-        if url not in urls_reales:
+        if url not in urls_reales or url in urls_rechazadas_de(notas):
             continue
         if _es_listado_sin_vendedor(url) or _es_pagina_sin_ficha(url):
             # Sin ficha de una tienda concreta no hay precio atribuible.
@@ -3262,6 +3449,8 @@ def _buscar_repuestos_web_tavily(
         # La URL es de UNA línea. El nombre que escribió el modelo, o el
         # orden del JSON, no puede dejar el aceite en las pastillas.
         nombre_linea = duena or dicha
+        if url in urls_rechazadas_de(notas, nombre_linea):
+            continue
         if duena:
             candidatos_linea = list(candidatos_por_nombre.get(duena) or [])
             if _clave_fuzzy(dicha) and _clave_fuzzy(dicha) != _clave_fuzzy(duena):

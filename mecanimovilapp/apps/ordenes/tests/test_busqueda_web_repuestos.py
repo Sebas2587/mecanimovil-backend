@@ -3196,7 +3196,7 @@ class Quote13PadCandidatesTests(SimpleTestCase):
         self.assertIn(urls['ml'], pedidos)
         self.assertNotIn(urls['listado'], pedidos)
         texto = '\n'.join(logs.output)
-        self.assertIn(f"url={urls['listado']} motivo=fuera_del_cupo", texto)
+        self.assertIn(f"url={urls['listado']} motivo=listado", texto)
         self.assertIn(f"url={urls['sodimac']} motivo=precio_bajo_banda", texto)
         self.assertNotIn(f"url={urls['lider']} motivo=fuera_del_cupo", texto)
         self.assertNotIn(f"url={urls['gmak']} motivo=fuera_del_cupo", texto)
