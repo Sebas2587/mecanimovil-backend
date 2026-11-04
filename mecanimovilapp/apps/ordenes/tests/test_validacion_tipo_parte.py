@@ -4,6 +4,7 @@ Tests para validación de tipo de parte en matching de repuestos.
 from django.test import TestCase
 
 from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+    _producto_es_la_pieza,
     _validar_tipo_parte,
 )
 
@@ -14,15 +15,18 @@ class ValidacionTipoParteTestCase(TestCase):
     def test_aceite_no_matcha_con_enfriador(self):
         """Test: Aceite de motor NO debe matchear con Enfriador de aceite."""
         # Caso real producción: FIAT Bravo "Aceite de motor" → "Enfriador aceite"
-        assert _validar_tipo_parte("Aceite de motor", "Aceite sintético 5W30") == True
-        assert _validar_tipo_parte("Aceite de motor", "Aceite Shell Helix 5W40") == True
+        assert _validar_tipo_parte("Aceite de motor", "Aceite sintético 5W30 4L") == True
+        assert _validar_tipo_parte("Aceite de motor", "Aceite Shell Helix 5W40 4 litros") == True
         assert _validar_tipo_parte("Aceite de motor", "Enfriador aceite Fiat Bravo") == False
         assert _validar_tipo_parte("Aceite de motor", "Radiador enfriador aceite") == False
         assert _validar_tipo_parte("Aceite de motor TISS", "Oil cooler") == False
+        assert _validar_tipo_parte(
+            "Aceite de motor TISS", "Bomba de aceite Fiat Bravo 1.4",
+        ) == False
 
     def test_aceite_no_matcha_con_filtro(self):
         """Test: Aceite NO debe matchear con Filtro de aceite."""
-        assert _validar_tipo_parte("Aceite sintético", "Aceite Mobil 1 5W30") == True
+        assert _validar_tipo_parte("Aceite sintético", "Aceite Mobil 1 5W30 4L") == True
         assert _validar_tipo_parte("Aceite sintético", "Filtro de aceite Mann") == False
         assert _validar_tipo_parte("Aceite de motor", "Filtro de aceite") == False
         assert _validar_tipo_parte("Aceite", "Depósito de aceite") == False
@@ -69,10 +73,17 @@ class ValidacionTipoParteTestCase(TestCase):
     def test_casos_validos_aceites(self):
         """Test: Casos válidos de aceites deben pasar."""
         # Diferentes marcas/especificaciones de aceite son válidas
-        assert _validar_tipo_parte("Aceite de motor", "Aceite Castrol Edge 5W30") == True
-        assert _validar_tipo_parte("Aceite sintético", "Aceite Mobil Super 3000") == True
-        assert _validar_tipo_parte("Aceite mineral", "Aceite Chevron Supreme") == True
-        assert _validar_tipo_parte("Aceite TISS", "Aceite TISS 15W40") == True
+        assert _validar_tipo_parte("Aceite de motor", "Aceite Castrol Edge 5W30 4L") == True
+        assert _validar_tipo_parte("Aceite sintético", "Aceite de motor Mobil Super 3000 4L") == True
+        assert _validar_tipo_parte("Aceite mineral", "Aceite de motor Chevron Supreme 4L") == True
+        assert _validar_tipo_parte("Aceite TISS", "Aceite TISS 15W40 4L") == True
+        assert _producto_es_la_pieza("Aceite de motor", "Aceite 5W40", fuente="web") == False
+        assert _producto_es_la_pieza(
+            "Aceite de motor TISS", "Bomba de aceite Fiat Bravo 1.4", fuente="web",
+        ) == False
+        assert _validar_tipo_parte("Aceite de motor", "Tapa de aceite") == False
+        assert _validar_tipo_parte("Aceite de motor", "Sensor de aceite") == False
+        assert _validar_tipo_parte("Aceite de motor", "Cárter de aceite") == False
 
     def test_caso_embrague(self):
         """Test: Kit de embrague vs volante bimasa."""

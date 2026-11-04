@@ -106,9 +106,16 @@ class CotizarItemsFaltantesServiceTests(TestCase):
             'precio_unitario_clp': 0,
             'fuente_marketplace': 'catalogo',
         }))
+        self.assertTrue(linea_necesita_busqueda_web({
+            'nombre': 'Pastillas de freno delanteras',
+            'precio_unitario_clp': 55000,
+            'certeza': 'sin_precio',
+            'comentario': 'Juego completo para eje delantero',
+        }))
         self.assertFalse(linea_necesita_busqueda_web({
             'nombre': 'Pastillas de freno',
             'precio_unitario_clp': 45000,
+            'certeza': 'confirmado',
         }))
 
     def test_linea_con_precio_estimado_no_se_recotiza(self):

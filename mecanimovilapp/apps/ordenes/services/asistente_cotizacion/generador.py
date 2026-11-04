@@ -763,11 +763,15 @@ def _aplicar_seleccion_casa_repuestos(
         # Sin opciones: decir qué se buscó y qué se descartó, si la búsqueda lo dejó.
         else:
             rep['casa_repuesto_nombre'] = ''
-            detalle = str(rep.get('comentario') or '').strip()
-            previo = str(rep.get('motivo_seleccion') or '').strip()
+            from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+                nota_de_busqueda,
+            )
+
+            detalle = nota_de_busqueda(rep.get('comentario'))
+            previo = nota_de_busqueda(rep.get('motivo_seleccion'))
             if detalle:
                 rep['motivo_seleccion'] = detalle[:300]
-            elif previo.lower().startswith('se busc'):
+            elif previo:
                 rep['motivo_seleccion'] = previo[:300]
             else:
                 rep['motivo_seleccion'] = (

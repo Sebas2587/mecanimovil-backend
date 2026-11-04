@@ -133,9 +133,10 @@ def _linea_tiene_ficha_tienda(rep: dict) -> bool:
 def linea_necesita_busqueda_web(rep: Any) -> bool:
     """True si falta una ficha de tienda.
 
-    Un unitario asumido ($70.000, certeza asumido, sin URL) sigue buscándose:
-    si no aparece ficha, ese monto se conserva. Catálogo, historial, un precio
-    escrito a mano y una banda que ya viene de una tienda no se recotizan.
+    Un unitario sin tienda ($55.000, certeza asumido o sin_precio) sigue
+    buscándose: si no aparece ficha, ese monto se conserva. Catálogo,
+    historial, un precio confirmado y una banda que ya viene de una tienda
+    no se recotizan.
     """
     if not isinstance(rep, dict):
         return False
@@ -146,9 +147,6 @@ def linea_necesita_busqueda_web(rep: Any) -> bool:
         return False
     if _linea_tiene_ficha_tienda(rep):
         return False
-    unit = _to_int_clp(rep.get('precio_unitario_clp'))
-    if unit > 0 and str(rep.get('certeza') or '') != 'asumido':
-        return False
     return True
 
 
@@ -156,8 +154,10 @@ def anotar_busqueda_sin_ficha(rep: dict, nota: dict | None) -> dict:
     """Escribe qué se buscó. No borra el unitario ni la banda de la IA."""
     detalle = str((nota or {}).get('detalle') or '').strip()
     if detalle:
-        rep['comentario'] = detalle[:500]
         rep['motivo_seleccion'] = detalle[:300]
+        # La descripción de la pieza ("Juego completo…") no es la búsqueda.
+        if not str(rep.get('comentario') or '').strip() or nota_de_busqueda(rep.get('comentario')):
+            rep['comentario'] = detalle[:500]
     if _to_int_clp(rep.get('precio_unitario_clp')) > 0:
         return rep
     if _to_int_clp(rep.get('precio_min_clp')) > 0 or _to_int_clp(rep.get('precio_max_clp')) > 0:
@@ -365,6 +365,13 @@ def _validar_tipo_parte(nombre_repuesto: str, producto_matched: str) -> bool:
             if not tipos_filtro_rep & tipos_filtro_prod:
                 return False
     
+    # "Bomba de aceite", "cárter", "enfriador": el sustantivo es otra pieza.
+    # La viscosidad y el envase se exigen en _ficha_es_aceite_de_motor, no aquí:
+    # un "Aceite 5W40" sin litros no corta la escalera, se sigue buscando el bidón.
+    if _es_linea_aceite_motor(nombre_repuesto) and prod_norm:
+        if _titulo_es_otra_pieza_de_aceite(producto_matched):
+            return False
+
     # Pares mutuamente exclusivos: A no puede matchear con B, ni B con A
     exclusiones_bidireccionales = [
         # Aceites
@@ -405,6 +412,61 @@ def _validar_tipo_parte(nombre_repuesto: str, producto_matched: str) -> bool:
                 return False
     
     return True
+
+
+_OTRA_PIEZA_DEL_ACEITE = (
+    'bomba', 'enfriador', 'cooler', 'carter', 'tapa', 'tapon', 'sensor',
+    'radiador', 'filtro', 'junta', 'reten', 'deposito', 'varilla', 'sello',
+    'empaque', 'valvula', 'manguera', 'intercooler', 'ciguenal', 'multiple',
+    'refrigerante', 'anticongelante', 'compresor', 'condensador',
+)
+
+
+def _es_linea_aceite_motor(nombre: str) -> bool:
+    """Lubricante del motor. No el filtro, la bomba ni el aceite de caja."""
+    n = _norm(nombre)
+    if 'aceite' not in n or 'filtro' in n:
+        return False
+    if any(k in n for k in (
+        'caja', 'transmision', 'diferencial', 'direccion', 'hidraulic', 'bomba',
+    )):
+        return False
+    return True
+
+
+def _titulo_es_otra_pieza_de_aceite(titulo: str) -> bool:
+    n = _norm(titulo)
+    if not n:
+        return False
+    return any(
+        re.search(rf'\b{re.escape(pieza)}\b', n)
+        for pieza in _OTRA_PIEZA_DEL_ACEITE
+    )
+
+
+def _ficha_es_aceite_de_motor(titulo: str) -> bool:
+    """True solo si el título es el lubricante: viscosidad o 'aceite motor', y envase."""
+    n = _norm(titulo)
+    if not n:
+        return True
+    if _titulo_es_otra_pieza_de_aceite(titulo):
+        return False
+    viscosidad = re.search(r'\b\d{1,2}\s*w\s*\d{2}\b', n)
+    dice_aceite_motor = 'aceite' in n and 'motor' in n
+    if not (viscosidad or dice_aceite_motor):
+        return False
+    from .busqueda_web_repuestos import litros_envase
+
+    return litros_envase(titulo) > 0
+
+
+def nota_de_busqueda(texto: str) -> str:
+    """Nota de la búsqueda web. La descripción de la pieza no lo es."""
+    t = str(texto or '').strip()
+    bajo = t.lower()
+    if bajo.startswith('se busc') or bajo.startswith('no se pudo consultar'):
+        return t
+    return ''
 
 
 _STOP_PIEZA = frozenset({
@@ -469,6 +531,18 @@ def _producto_es_la_pieza(nombre_repuesto: str, producto_matched: str, *, fuente
     if not _validar_tipo_parte(nombre_repuesto, producto):
         logger.warning(
             'ordenes[enrich] mismatch_tipo_rechazado repuesto=%s producto=%s fuente=%s',
+            (nombre_repuesto or '')[:50],
+            producto[:50],
+            (fuente or '')[:15],
+        )
+        return False
+    if (
+        producto
+        and _es_linea_aceite_motor(nombre_repuesto)
+        and not _ficha_es_aceite_de_motor(producto)
+    ):
+        logger.warning(
+            'ordenes[enrich] ficha_aceite_rechazada repuesto=%s producto=%s fuente=%s',
             (nombre_repuesto or '')[:50],
             producto[:50],
             (fuente or '')[:15],
@@ -969,20 +1043,25 @@ def _candidatos_web_cache(
 
         now = timezone.now()
         qs = PrecioRepuestoWeb.objects.filter(expira_en__gt=now)
+        clave_a_nombre: dict[str, str] = {}
         if nombres:
             claves: list[str] = []
             for nom in nombres:
                 if not str(nom or '').strip():
                     continue
-                claves.append(clave_cache_repuesto(
+                clave_nom = clave_cache_repuesto(
                     nom,
                     marca_vehiculo=marca_vehiculo,
                     modelo_vehiculo=modelo_vehiculo,
                     anio=anio_vehiculo,
                     tipo_motor=tipo_motor,
                     cilindraje=cilindraje,
-                ))
-            qs = qs.filter(clave__in=[c for c in claves if c])
+                )
+                if not clave_nom:
+                    continue
+                claves.append(clave_nom)
+                clave_a_nombre[clave_nom] = str(nom)
+            qs = qs.filter(clave__in=claves)
         qs = qs.order_by('-confianza')[:400]
         out: list[dict[str, Any]] = []
         from .vehiculo_exacto import clave_historial_cubre_vehiculo
@@ -1004,6 +1083,19 @@ def _candidatos_web_cache(
                 continue
             elif _es_listado_sin_vendedor(str(row.url or '') or f'https://{dominio}/'):
                 # Fila cacheada de un listado: no dice de qué tienda es el precio.
+                continue
+            linea_cache = clave_a_nombre.get(clave, '')
+            producto_cache = str(row.nombre_producto or '').strip()
+            if linea_cache and producto_cache and not _producto_es_la_pieza(
+                linea_cache, producto_cache, fuente='web',
+            ):
+                logger.info(
+                    'ordenes[enrich] cache_ignorada linea=%s producto=%s',
+                    linea_cache[:80],
+                    producto_cache[:80],
+                )
+                row.expira_en = now
+                row.save(update_fields=['expira_en'])
                 continue
             marca = _marca_repuesto_valida(row.marca_repuesto)
             clave_nombre = clave.split('|', 1)[0] if '|' in clave else clave

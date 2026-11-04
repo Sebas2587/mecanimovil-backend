@@ -96,7 +96,7 @@ class SyncEnrichmentValidacionTestCase(TestCase):
             estado='enviada',
             repuestos=[{
                 'nombre': 'Aceite de motor',
-                'nombre_producto': 'Aceite sintetico 5W30 TISS',
+                'nombre_producto': 'Aceite de motor 5W30 1L',
                 'cantidad': 3,
                 'precio_unitario_clp': 8900,
                 'proveedor_nombre': 'Casa Aceites',
@@ -180,6 +180,62 @@ class SyncEnrichmentValidacionTestCase(TestCase):
         self.assertNotIn('Mundorepuestos', pastillas.get('proveedor_nombre') or '')
         self.assertNotIn('Mundo Repuestos', pastillas.get('nombre_producto') or '')
         self.assertEqual(pastillas.get('precio_unitario_clp') or 0, 0)
+
+    def test_bomba_de_aceite_no_cotiza_el_lubricante_y_el_bidon_queda_por_litro(self):
+        expira = timezone.now() + timedelta(days=7)
+        clave = clave_cache_repuesto(
+            'Aceite de motor TISS',
+            marca_vehiculo='Fiat',
+            modelo_vehiculo='Bravo',
+            anio=2010,
+            cilindraje='1.4',
+        )
+        bomba = PrecioRepuestoWeb.objects.create(
+            clave=clave,
+            dominio='euroespecialista.cl',
+            nombre_producto='Bomba de aceite Fiat Bravo 1.4',
+            precio_clp=62991,
+            tienda='Euroespecialista',
+            url='https://euroespecialista.cl/bomba-aceite-fiat-bravo-1-4',
+            confianza=0.9,
+            cilindraje='1.4',
+            expira_en=expira,
+        )
+        PrecioRepuestoWeb.objects.create(
+            clave=clave,
+            dominio='todoautochile.cl',
+            nombre_producto='Aceite 5W40 4L',
+            precio_clp=39960,
+            tienda='Todoautochile',
+            url='https://todoautochile.cl/aceite-5w40-4l',
+            confianza=0.8,
+            cilindraje='1.4',
+            expira_en=expira,
+        )
+        out = enriquecer_repuestos_cotizacion(
+            [{
+                'nombre': 'Aceite de motor TISS',
+                'cantidad': 3,
+                'precio_unitario_clp': 0,
+                'precio_min_clp': 8000,
+                'precio_max_clp': 15000,
+            }],
+            marca_vehiculo='Fiat',
+            modelo_vehiculo='Bravo',
+            anio_vehiculo=2010,
+            cilindraje='1.4',
+            taller=self.taller,
+            usar_ml=False,
+            usar_web=True,
+        )
+        aceite = out[0]
+        self.assertEqual(aceite.get('proveedor_nombre'), 'Todoautochile')
+        self.assertEqual(aceite.get('nombre_producto'), 'Aceite 5W40 4L')
+        self.assertEqual(aceite.get('precio_unitario_clp'), 9990)
+        self.assertNotIn('Bomba', aceite.get('nombre_producto') or '')
+        self.assertNotEqual(aceite.get('precio_unitario_clp'), 62991)
+        bomba.refresh_from_db()
+        self.assertLessEqual(bomba.expira_en, timezone.now())
 
     def test_cobertura_parcial_no_se_reporta_como_una_sola_casa(self):
         repuestos = [
