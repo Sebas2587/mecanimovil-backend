@@ -3471,13 +3471,170 @@ class Quote16BujiasYFiltroAireTests(SimpleTestCase):
         )
         self.assertEqual(unit, 8000)
         self.assertIn('juego de 4', nota)
-        barato, sin_nota = bw.precio_unitario_desde_pack(
+        barato, nota_barato = bw.precio_unitario_desde_pack(
             self._BUJIA, 8000, 'Juego de 4 bujías NGK', 4,
         )
-        self.assertEqual(barato, 8000)
-        self.assertEqual(sin_nota, '')
+        self.assertEqual(barato, 2000)
+        self.assertIn('juego de 4', nota_barato)
         uno, sin_nota_uno = bw.precio_unitario_desde_pack(
             self._BUJIA, 32000, 'Juego de 4 bujías NGK', 1,
         )
         self.assertEqual(uno, 32000)
         self.assertEqual(sin_nota_uno, '')
+
+
+class Quote17AnioYPackTests(SimpleTestCase):
+    """Cotización 17: el Bravo 1995-2001 no es el Bravo 2010 T-Jet."""
+
+    _BUJIA = 'Bujías'
+    _FILTRO = 'Filtro de aire'
+    _TITULO_BUJIA = 'Bujía Champion Fiat Bravo 1.4 1995-2001 x4'
+    _TITULO_FILTRO = 'FILTRO AIRE FIAT BRAVO 1996/2000'
+    _URL_BUJIA = 'https://www.entretuercas.cl/producto/bujia-champion-fiat-bravo-14-1995-2001'
+    _URL_FILTRO = 'https://todoautochile.cl/producto/filtro-aire-fiat-bravo-1996-2000/'
+
+    def test_formatos_de_anio_y_un_rango_que_no_incluye_el_auto_se_rechaza(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        self.assertTrue(bw._ficha_cubre_anio('Fiat Bravo 1.4 08/15', 2010))
+        self.assertTrue(bw._ficha_cubre_anio('FILTRO ACEITE FIAT BRAVO 1.4 2008-2014', 2010))
+        self.assertTrue(bw._ficha_cubre_anio('FILTRO ACEITE FIAT BRAVO 1.4 2008/2014', 2010))
+        self.assertFalse(bw._ficha_cubre_anio(self._TITULO_FILTRO, 2010))
+        self.assertFalse(bw._ficha_cubre_anio('Bujía Fiat Bravo 95-01', 2010))
+        self.assertFalse(bw._ficha_cubre_anio(self._TITULO_BUJIA, 2010))
+        self.assertEqual(
+            bw.unidades_pack(self._TITULO_BUJIA), 4,
+        )
+        self.assertEqual(bw.unidades_pack('Bujías NGK x 4'), 4)
+        self.assertEqual(bw.unidades_pack('kit 4 bujías'), 4)
+        self.assertEqual(bw.unidades_pack('Bujías 4 unidades'), 4)
+        self.assertEqual(bw.unidades_pack('Juego de 4 bujías'), 4)
+        self.assertEqual(bw.unidades_pack('Fiat Bravo 1.4'), 0)
+        unit, nota = bw.precio_unitario_desde_pack(self._BUJIA, 9641, self._TITULO_BUJIA, 4)
+        self.assertEqual(unit, 2410)
+        self.assertIn('juego de 4', nota)
+        self.assertIn('2.410', nota)
+
+    def test_bujia_1995_y_filtro_1996_no_cotizan_el_bravo_2010(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        bujia = {
+            'title': self._TITULO_BUJIA,
+            'url': self._URL_BUJIA,
+            'content': f'{self._TITULO_BUJIA}. Precio $ 9.641',
+            'ficha_leida': True,
+        }
+        filtro = {
+            'title': self._TITULO_FILTRO,
+            'url': self._URL_FILTRO,
+            'content': f'{self._TITULO_FILTRO}. Precio $ 7.990',
+            'ficha_leida': True,
+        }
+        for cand, nombre in ((bujia, self._BUJIA), (filtro, self._FILTRO)):
+            self.assertEqual(
+                bw._motivo_calidad_pastilla(
+                    cand,
+                    nombre=nombre,
+                    modelo='BRAVO SPORT TJET',
+                    tipo_motor='T-Jet',
+                    banda_min=8000,
+                    banda_max=18000,
+                    anio=2010,
+                ),
+                'anio_incompatible',
+                nombre,
+            )
+        # El mismo set, con años del Bravo II, igual cae: $9.641 / 4 = $2.410.
+        vigente = {
+            'title': 'Bujía Champion Fiat Bravo 1.4 2008-2014 x4',
+            'url': self._URL_BUJIA,
+            'content': 'Bujía Champion Fiat Bravo 1.4 2008-2014 x4. Precio $ 9.641',
+            'ficha_leida': True,
+        }
+        self.assertEqual(
+            bw._motivo_calidad_pastilla(
+                vigente,
+                nombre=self._BUJIA,
+                modelo='Bravo',
+                tipo_motor='T-Jet',
+                banda_min=8000,
+                banda_max=18000,
+                anio=2010,
+            ),
+            'precio_bajo_banda',
+        )
+        # 08/15 sigue siendo el Bravo de 2010. No es un rechazo de año.
+        lider = {
+            'title': 'Pastillas De Freno Delantera Fiat Bravo 1.4 08/15',
+            'url': 'https://www.lider.cl/producto/pastillas-bravo-14',
+            'content': 'Pastillas De Freno Delantera Fiat Bravo 1.4 08/15. Precio $ 21.390',
+            'ficha_leida': True,
+        }
+        self.assertNotEqual(
+            bw._motivo_calidad_pastilla(
+                lider,
+                nombre='Pastillas de freno delanteras',
+                modelo='BRAVO SPORT TJET',
+                tipo_motor='T-Jet',
+                banda_min=28000,
+                banda_max=55000,
+                anio=2010,
+            ),
+            'anio_incompatible',
+        )
+
+    def test_busqueda_de_la_cotizacion_17_deja_las_lineas_sin_tienda(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        def fake_buscar(query, **kwargs):
+            q = query.lower()
+            if q.startswith('bujias'):
+                return [{
+                    'title': self._TITULO_BUJIA,
+                    'url': self._URL_BUJIA,
+                    'content': f'{self._TITULO_BUJIA}. Precio $ 9.641',
+                    'score': 0.9,
+                }]
+            if q.startswith('filtro aire'):
+                return [{
+                    'title': self._TITULO_FILTRO,
+                    'url': self._URL_FILTRO,
+                    'content': f'{self._TITULO_FILTRO}. Precio $ 7.990',
+                    'score': 0.8,
+                }]
+            return []
+
+        avisos: dict = {}
+        with patch.object(bw, '_tavily_buscar_uno', side_effect=fake_buscar), patch.object(
+            bw, '_tavily_extraer', return_value={},
+        ), patch.object(bw, '_leer_html_fichas', return_value={}), patch.object(
+            bw, '_gemini_generar', return_value=None,
+        ), self.assertLogs(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos',
+            level='INFO',
+        ) as logs:
+            out = bw._buscar_repuestos_web_tavily(
+                [self._BUJIA, self._FILTRO],
+                marca='FIAT',
+                modelo='BRAVO SPORT TJET',
+                anio=2010,
+                cilindraje='1.4',
+                tipo_motor='T-Jet',
+                servicio_nombre='Cambio de bujías y filtro de aire',
+                timeout=5,
+                plan={'piezas': []},
+                bandas_min={self._BUJIA: 8000, self._FILTRO: 8000},
+                bandas_max={self._BUJIA: 18000, self._FILTRO: 15000},
+                avisos=avisos,
+            )
+
+        self.assertEqual(out, {})
+        texto = '\n'.join(logs.output)
+        self.assertIn(f'url={self._URL_BUJIA} motivo=anio_incompatible', texto)
+        self.assertIn(f'url={self._URL_FILTRO} motivo=anio_incompatible', texto)
+        nota_bujia = avisos[self._BUJIA]['detalle']
+        nota_filtro = avisos[self._FILTRO]['detalle']
+        self.assertIn('2010', nota_bujia)
+        self.assertIn('1995-2001', nota_bujia)
+        self.assertIn('2010', nota_filtro)
+        self.assertIn('1996/2000', nota_filtro)

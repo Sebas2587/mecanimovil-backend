@@ -429,9 +429,11 @@ def precio_unitario_desde_envase(nombre: str, precio_ficha: int, titulo: str) ->
 
 
 _RE_PACK = re.compile(
-    r'(?:juego|set|pack|kit)\s+de\s+(\d{1,2})'
+    r'(?:juego|set|pack|kit)\s+de\s+(\d{1,2})(?!\d)'
+    r'|(?:juego|set|pack|kit)\s+(\d{1,2})(?!\d)'
     r'|(\d{1,2})\s+unidades'
-    r'|(?:^|[^0-9])x\s*(\d{1,2})(?:[^0-9]|$)',
+    r'|(?:^|[^0-9a-z])x\s*(\d{1,2})(?!\d)'
+    r'|(?:^|[^0-9])(\d{1,2})\s*x(?![0-9a-z])',
     re.IGNORECASE,
 )
 
@@ -451,9 +453,9 @@ def unidades_pack(titulo: str) -> int:
 
 
 def _monto_bujia_por_unidad(nombre: str, precio: int, titulo: str) -> int:
-    """Un juego de 4 a $32.000 se compara con la banda por bujía, no por el set."""
+    """Un 'x4' a $9.641 se compara con la banda por bujía ($2.410), no por el set."""
     pack = unidades_pack(titulo)
-    if pack < 2 or int(precio or 0) < 20_000 or 'bujia' not in _norm(nombre):
+    if pack < 2 or int(precio or 0) <= 0 or 'bujia' not in _norm(nombre):
         return int(precio or 0)
     return max(1, int(round(int(precio) / pack)))
 
@@ -466,7 +468,7 @@ def precio_unitario_desde_pack(
 ) -> tuple[int, str]:
     """La línea pide N bujías y la ficha vende el juego. Se cotiza cada una.
 
-    Un 'juego de 4' barato no se parte: puede ser el precio de una sola.
+    'x4', 'x 4', 'kit 4' y '4 unidades' son el set. $9.641 entre 4 es $2.410.
     Cantidad 1 deja el set como está: el taller está comprando el juego.
     """
     precio = int(precio_ficha or 0)
@@ -477,7 +479,7 @@ def precio_unitario_desde_pack(
         cant = int(float(cantidad))
     except (TypeError, ValueError):
         cant = 0
-    if pack < 2 or cant < pack or precio < 20_000:
+    if pack < 2 or cant < pack:
         return precio, ''
     unit = max(1, int(round(precio / pack)))
     nota = (
@@ -885,6 +887,10 @@ _ANIO_RANGO_RE = re.compile(
     r'\b((?:19|20)\d{2})\s*(?:-|–|/|a)\s*((?:19|20)\d{2})\b',
     re.I,
 )
+# '08/15' y '95-01' en la ficha chilena. No es '1.4': hacen falta dos dígitos.
+_ANIO_CORTO_RE = re.compile(
+    r'(?<!\d)(\d{2})\s*(?:-|–|/)\s*(\d{2})(?!\d)',
+)
 _ANIO_SOLO_RE = re.compile(r'\b((?:19|20)\d{2})\b')
 _KIT_RE = re.compile(r'\b(kit|juego|set)\b')
 _COMPONENTE_EMBRAGUE = frozenset({
@@ -903,23 +909,84 @@ def _anio_vehiculo_int(anio: Any) -> int | None:
     return None
 
 
-def _ficha_cubre_anio(texto: str, anio: Any, *, holgura: int = 0) -> bool | None:
-    """True/False si la ficha declara años; None si no se puede saber.
-
-    `holgura`: años de borde (un Morning 2011 vs ficha 2012-2016). 0 = estricto.
-    """
-    y = _anio_vehiculo_int(anio)
-    if y is None:
+def _expandir_anio_corto(yy: int) -> int | None:
+    """08 → 2008, 95 → 1995, 01 → 2001. 36–79 no es un año de ficha."""
+    if yy >= 80:
+        full = 1900 + yy
+    elif yy <= 35:
+        full = 2000 + yy
+    else:
         return None
-    extra = max(0, int(holgura or 0))
+    if 1980 <= full <= 2035:
+        return full
+    return None
+
+
+def _rangos_anio(texto: str) -> list[tuple[int, int]]:
+    """Rangos de la ficha: 1996/2000, 2008-2014, 08/15, 95-01."""
     raw = texto or ''
     rangos: list[tuple[int, int]] = []
+    ocupados: list[tuple[int, int]] = []
     for match in _ANIO_RANGO_RE.finditer(raw):
         a, b = int(match.group(1)), int(match.group(2))
         if a > b:
             a, b = b, a
         if 1980 <= a <= 2035 and 1980 <= b <= 2035:
             rangos.append((a, b))
+            ocupados.append((match.start(), match.end()))
+    for match in _ANIO_CORTO_RE.finditer(raw):
+        if any(ini <= match.start() < fin for ini, fin in ocupados):
+            continue
+        a = _expandir_anio_corto(int(match.group(1)))
+        b = _expandir_anio_corto(int(match.group(2)))
+        if a is None or b is None:
+            continue
+        if a > b:
+            a, b = b, a
+        rangos.append((a, b))
+    return rangos
+
+
+def _texto_anio_ficha(candidato: dict[str, Any]) -> str:
+    """El rango del título manda. Si el título no trae años, se mira la ficha."""
+    titulo = str((candidato or {}).get('title') or '')
+    if _rangos_anio(titulo):
+        return titulo
+    return ' '.join(
+        str((candidato or {}).get(campo) or '')
+        for campo in ('title', 'cuerpo', 'content')
+    )
+
+
+def _anio_fuera_de_rango(
+    candidato: dict[str, Any],
+    anio: Any,
+    *,
+    holgura: int = 0,
+) -> bool:
+    """True si la ficha declara un rango y el año del auto queda fuera."""
+    y = _anio_vehiculo_int(anio)
+    if y is None:
+        return False
+    rangos = _rangos_anio(_texto_anio_ficha(candidato))
+    if not rangos:
+        return False
+    extra = max(0, int(holgura or 0))
+    return not any(lo - extra <= y <= hi + extra for lo, hi in rangos)
+
+
+def _ficha_cubre_anio(texto: str, anio: Any, *, holgura: int = 0) -> bool | None:
+    """True/False si la ficha declara años; None si no se puede saber.
+
+    `holgura`: años de borde (un Morning 2011 vs ficha 2012-2016). 0 = estricto.
+    '08/15' es 2008-2015. '95-01' es 1995-2001.
+    """
+    y = _anio_vehiculo_int(anio)
+    if y is None:
+        return None
+    extra = max(0, int(holgura or 0))
+    raw = texto or ''
+    rangos = _rangos_anio(raw)
     if rangos:
         return any(lo - extra <= y <= hi + extra for lo, hi in rangos)
     solos = [
@@ -1276,17 +1343,17 @@ def _rechazo_precio_pastilla(
     categoría. Una sola ficha de Mercado Libre a $81.900 no alcanza: hacen
     falta dos tiendas distintas con montos parecidos.
     """
-    precio = _precio_de_candidato(candidato, nombre)
+    estante = _precio_de_candidato(candidato, nombre)
     piso = int(banda_min or 0)
     techo = int(banda_max or 0)
-    if precio <= 0:
+    if estante <= 0:
         return ''
     titulo = str((candidato or {}).get('title') or '')
-    # El set de 4 se mide por bujía. El estante sigue siendo el de la ficha.
-    precio_alto = _monto_bujia_por_unidad(nombre, precio, titulo)
+    # 'x4' a $9.641 es $2.410 la unidad. El estante de la ficha no se reescribe.
+    precio = _monto_bujia_por_unidad(nombre, estante, titulo)
     if (
         techo > 0
-        and precio_alto * 2 > techo * 5
+        and precio * 2 > techo * 5
         and not (candidato or {}).get('respaldo_alto')
     ):
         return 'precio_alto_banda'
@@ -1301,7 +1368,7 @@ def _rechazo_precio_pastilla(
     if _ficha_nombra_modelo_pedido(candidato, modelo, tipo_motor):
         return ''
     if _ficha_es_cruce_tjet(candidato, modelo, tipo_motor):
-        if precio < piso or (techo > 0 and precio_alto > techo):
+        if precio < piso or (techo > 0 and precio > techo):
             return 'precio_bajo_banda' if precio < piso else 'precio_alto_banda'
         return ''
     if precio * 2 < piso:
@@ -1317,6 +1384,7 @@ def _motivo_calidad_pastilla(
     tipo_motor: str = '',
     banda_min: int = 0,
     banda_max: int = 0,
+    anio: Any = None,
 ) -> str:
     """Por qué una ficha no se cotiza. '' si todavía puede servir.
 
@@ -1329,6 +1397,12 @@ def _motivo_calidad_pastilla(
     """
     from .enriquecer_repuestos import _es_linea_aceite_motor
 
+    # 1995-2001 no es el Bravo 2010. El aviso de la ficha no alcanza: se bota.
+    # Un kit conserva un año de borde (Morning 2011 vs ficha 2012-2016).
+    if _anio_fuera_de_rango(
+        candidato, anio, holgura=1 if _linea_es_kit(nombre) else 0,
+    ):
+        return 'anio_incompatible'
     if _es_linea_aceite_motor(nombre):
         return ''
     if _es_pastillas_freno(nombre):
@@ -1395,6 +1469,7 @@ def _candidato_sirve_linea(
             tipo_motor=tipo_motor,
             banda_min=banda_min,
             banda_max=banda_max,
+            anio=anio,
         ):
             return False
         return True
@@ -2457,6 +2532,7 @@ def _motivo_de_candidato(
         tipo_motor=tipo_motor,
         banda_min=banda_min,
         banda_max=banda_max,
+        anio=anio,
     )
     if motivo_pad:
         return motivo_pad
@@ -3062,7 +3138,7 @@ def _motivo_rechazo_duro(
     """
     motivo = _motivo_calidad_pastilla(
         cand, nombre=nombre, modelo=modelo, tipo_motor=tipo_motor,
-        banda_min=banda_min, banda_max=banda_max,
+        banda_min=banda_min, banda_max=banda_max, anio=anio,
     )
     if motivo:
         return motivo
@@ -3264,7 +3340,7 @@ def _buscar_repuestos_web_tavily(
                 )
                 if motivo in (
                     'listado', 'precio_bajo_banda', 'precio_alto_banda',
-                    'modelo_incompatible', 'sin_modelo',
+                    'modelo_incompatible', 'sin_modelo', 'anio_incompatible',
                 ):
                     _anotar_url_rechazada(notas, url)
                 elif motivo in ('otra_pieza', 'titulo_no_es_la_pieza'):
@@ -3280,10 +3356,11 @@ def _buscar_repuestos_web_tavily(
                 continue
             notas[nombre_linea] = _aviso_sin_ficha(
                 nombre_linea,
-                candidatos_por_nombre.get(nombre_linea) or [],
+                candidatos_por_nombre.get(nombre_linea) or crudos_por_nombre.get(nombre_linea) or [],
                 modelo,
                 False,
                 consultas=consultas_usadas.get(nombre_linea),
+                anio=anio,
             )
         return hits
 
@@ -3387,6 +3464,7 @@ def _buscar_repuestos_web_tavily(
                 detalle = _motivo_calidad_pastilla(
                     cand, nombre=nombre, modelo=modelo, tipo_motor=tipo_motor,
                     banda_min=_piso(nombre), banda_max=_techo(nombre),
+                    anio=anio,
                 ) or 'otra pieza'
                 rechazos.append(f'{etiqueta}: {detalle}')
             elif titulo and not _titulo_nombra_pieza(nombre, titulo):
@@ -3449,6 +3527,7 @@ def _buscar_repuestos_web_tavily(
                 modelo,
                 corto_mal,
                 consultas=consultas[:n_consultas],
+                anio=anio,
             )
 
     if not candidatos_por_nombre:
@@ -3567,7 +3646,7 @@ def _buscar_repuestos_web_tavily(
                 cand['precio_snippet'] = monto
                 if _motivo_calidad_pastilla(
                     cand, nombre=nombre, modelo=modelo, tipo_motor=tipo_motor,
-                    banda_min=piso, banda_max=_techo(nombre),
+                    banda_min=piso, banda_max=_techo(nombre), anio=anio,
                 ):
                     continue
             if cambio:
@@ -3606,7 +3685,7 @@ def _buscar_repuestos_web_tavily(
                 )
                 if motivo in (
                     'listado', 'precio_bajo_banda', 'precio_alto_banda',
-                    'modelo_incompatible', 'sin_modelo',
+                    'modelo_incompatible', 'sin_modelo', 'anio_incompatible',
                 ):
                     _anotar_url_rechazada(notas, url_cand)
                 elif motivo:
@@ -3897,19 +3976,21 @@ def _aviso_sin_ficha(
     modelo: str,
     otra_pieza: bool,
     consultas: list[str] | None = None,
+    anio: Any = None,
 ) -> dict[str, str]:
     """Lo que el taller debe leer cuando no hay ficha de ESA pieza para ESTE auto."""
     vistos: list[str] = []
     descartados: list[str] = []
+    fuera_anio: list[str] = []
     for cand in crudos:
         titulo = str(cand.get('title') or '').strip()
         if not titulo or titulo in vistos:
             continue
         vistos.append(titulo[:90])
+        if _anio_fuera_de_rango(cand, anio):
+            fuera_anio.append(titulo[:90])
         if not _titulo_nombra_pieza(nombre, titulo):
             descartados.append(titulo[:90])
-        if len(descartados) >= 3:
-            break
     auto = modelo or 'este auto'
     buscadas = [q for q in (consultas or []) if str(q).strip()][:3]
     busqueda = ''
@@ -3917,6 +3998,16 @@ def _aviso_sin_ficha(
         citas = ', '.join(f'"{q}"' for q in buscadas)
         busqueda = f'Se buscó {citas}. '
     titulos_rechazados = ', '.join(f'"{t}"' for t in (descartados or vistos)[:3])
+    anio_auto = _anio_vehiculo_int(anio)
+    if fuera_anio:
+        citados = ', '.join(f'"{t}"' for t in fuera_anio[:3])
+        detalle = (
+            f'{busqueda}Sin ficha de {nombre} para {auto}'
+            f'{f" ({anio_auto})" if anio_auto else ""}. '
+            f'{citados} cubre otros años y no incluye este auto. '
+            'Escribe el precio y la casa.'
+        )
+        return {'motivo': 'sin_ficha', 'detalle': detalle[:500]}
     if otra_pieza and vistos:
         detalle = (
             f'{busqueda}Sin ficha de {nombre} para {auto}. '
@@ -4238,6 +4329,7 @@ def _fila_cache_utilizable(
     tipo_motor: str = '',
     banda_min: int = 0,
     banda_max: int = 0,
+    anio: Any = None,
     now,
     cupo: list[int] | None = None,
 ) -> int | None:
@@ -4269,6 +4361,7 @@ def _fila_cache_utilizable(
             tipo_motor=tipo_motor,
             banda_min=banda_min,
             banda_max=banda_max,
+            anio=anio,
         )
         if motivo:
             _expirar_fila_cache(
@@ -4315,6 +4408,7 @@ def _fila_cache_utilizable(
             tipo_motor=tipo_motor,
             banda_min=banda_min,
             banda_max=banda_max,
+            anio=anio,
         )
         if motivo:
             _expirar_fila_cache(
@@ -4436,6 +4530,7 @@ def hits_cache_vigentes_para_nombres(
                 tipo_motor=tipo_motor,
                 banda_min=_banda_min_de(bandas_min, nombre_linea),
                 banda_max=_banda_min_de(bandas_max, nombre_linea),
+                anio=anio,
                 now=now,
                 cupo=cupo,
             )
