@@ -443,7 +443,9 @@ class GeneradorCasosRealesTestCase(TestCase):
             self.assertIn('consolidacion_aplicada', rep)
             if rep['consolidacion_aplicada']:
                 # Si hay consolidación, el motivo debe mencionarlo en español
-                self.assertIn('consolidado', rep['motivo_seleccion'].lower())
+                self.assertIn('mejor precio encontrado', rep['motivo_seleccion'].lower())
+                self.assertLessEqual(len(rep['motivo_seleccion']), 160)
+                self.assertNotIn('una sola casa', rep['motivo_seleccion'].lower())
 
     @patch('django.conf.settings.ASISTENTE_COTIZACION_IA_ENABLED', True)
     @patch('mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador._llamar_gemini')

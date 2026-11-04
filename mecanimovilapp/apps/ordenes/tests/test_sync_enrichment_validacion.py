@@ -272,9 +272,12 @@ class SyncEnrichmentValidacionTestCase(TestCase):
         self.assertEqual(out[0]['proveedor_nombre'], 'Mundorepuestos')
         self.assertEqual(out[0]['casa_repuesto_nombre'], 'Mundorepuestos')
         self.assertIn('mundorepuestos', out[0]['motivo_seleccion'].lower())
+        self.assertIn('mejor precio encontrado', out[0]['motivo_seleccion'].lower())
+        self.assertLessEqual(len(out[0]['motivo_seleccion']), 160)
         self.assertEqual(out[1]['proveedor_nombre'], 'Todoautochile')
         self.assertIn('todoautochile', out[1]['motivo_seleccion'].lower())
-        self.assertIn('no se encontraron', out[2]['motivo_seleccion'].lower())
+        self.assertIn('no encontramos', out[2]['motivo_seleccion'].lower())
+        self.assertLessEqual(len(out[2]['motivo_seleccion']), 160)
 
     def test_tiendas_distintas_no_se_consolidan_aunque_el_id_sea_cero(self):
         repuestos = [
@@ -342,7 +345,10 @@ class SyncEnrichmentValidacionTestCase(TestCase):
             self.assertTrue(rep['consolidacion_aplicada'])
             self.assertEqual(rep['proveedor_nombre'], 'Mundorepuestos')
             self.assertEqual(rep['casa_repuesto_nombre'], 'Mundorepuestos')
-            self.assertIn('una sola casa', rep['motivo_seleccion'].lower())
+            self.assertIn('mundorepuestos', rep['motivo_seleccion'].lower())
+            self.assertIn('mejor precio encontrado', rep['motivo_seleccion'].lower())
+            self.assertLessEqual(len(rep['motivo_seleccion']), 160)
+            self.assertNotIn('una sola casa', rep['motivo_seleccion'].lower())
         self.assertEqual(out[2]['precio_unitario_clp'], 31490)
 
     def test_rango_aceite_cubre_cantidad_por_unitario(self):
@@ -387,9 +393,12 @@ class SyncEnrichmentValidacionTestCase(TestCase):
             'comentario': detalle,
         }])
         motivo = out[0]['motivo_seleccion']
-        self.assertIn('Se buscó', motivo)
-        self.assertIn('pastillas freno', motivo.lower())
-        self.assertIn('Repuestos Fiat Bravo', motivo)
+        self.assertLessEqual(len(motivo), 160)
+        self.assertIn('Precio estimado', motivo)
+        self.assertIn('otra pieza', motivo)
+        self.assertNotIn('Se buscó', motivo)
+        self.assertNotIn('Repuestos Fiat Bravo', motivo)
+        self.assertNotIn('http', motivo)
         self.assertNotEqual(
             motivo,
             'No se encontraron proveedores con este repuesto en stock para el vehículo',
@@ -408,19 +417,29 @@ class SyncEnrichmentValidacionTestCase(TestCase):
                 'Se descartó "Enfriador aceite Fiat Bravo" porque el título no es esa pieza.'
             ),
         }
-        aceite = anotar_busqueda_sin_ficha({
-            'nombre': 'Aceite 5W40 sintético',
-            'cantidad': 4,
-            'precio_unitario_clp': 0,
-            'precio_min_clp': 18000,
-            'precio_max_clp': 42000,
-            'certeza': 'sin_precio',
-        }, nota)
+        with self.assertLogs(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos',
+            level='INFO',
+        ) as logs:
+            aceite = anotar_busqueda_sin_ficha({
+                'nombre': 'Aceite 5W40 sintético',
+                'cantidad': 4,
+                'precio_unitario_clp': 0,
+                'precio_min_clp': 18000,
+                'precio_max_clp': 42000,
+                'certeza': 'sin_precio',
+            }, nota, modelo='Bravo', anio=2010, tipo_motor='T-Jet', cilindraje='1.4')
         self.assertEqual(aceite['precio_min_clp'], 18000)
         self.assertEqual(aceite['precio_max_clp'], 42000)
-        self.assertIn('Se buscó', aceite['motivo_seleccion'])
-        self.assertIn('5w40', aceite['motivo_seleccion'].lower())
-        self.assertIn('Enfriador', aceite['comentario'])
+        self.assertLessEqual(len(aceite['motivo_seleccion']), 160)
+        self.assertIn('Precio estimado', aceite['motivo_seleccion'])
+        self.assertIn('Bravo 1.4 T-Jet 2010', aceite['motivo_seleccion'])
+        self.assertIn('otra pieza', aceite['motivo_seleccion'])
+        self.assertNotIn('Se buscó', aceite['motivo_seleccion'])
+        self.assertNotIn('Enfriador', aceite['comentario'])
+        self.assertNotIn('5w40', aceite['motivo_seleccion'].lower())
+        self.assertIn('Enfriador', '\n'.join(logs.output))
+        self.assertIn('5w40', '\n'.join(logs.output).lower())
 
         pastillas = {
             'nombre': 'Pastillas de freno cerámica delanteras',
@@ -434,11 +453,15 @@ class SyncEnrichmentValidacionTestCase(TestCase):
             'detalle': 'Se buscó "pastillas freno delanteras fiat bravo". Sin ficha.',
         })
         self.assertEqual(pastillas['precio_unitario_clp'], 70000)
-        self.assertIn('Se buscó', pastillas['motivo_seleccion'])
+        self.assertIn('Precio estimado', pastillas['motivo_seleccion'])
+        self.assertNotIn('Se buscó', pastillas['motivo_seleccion'])
+        self.assertLessEqual(len(pastillas['motivo_seleccion']), 160)
 
         out = _aplicar_seleccion_casa_repuestos([pastillas, aceite])
         for rep in out:
-            self.assertIn('Se buscó', rep['motivo_seleccion'])
+            self.assertIn('Precio estimado', rep['motivo_seleccion'])
+            self.assertNotIn('Se buscó', rep['motivo_seleccion'])
+            self.assertLessEqual(len(rep['motivo_seleccion']), 160)
             self.assertNotEqual(
                 rep['motivo_seleccion'],
                 'No se encontraron proveedores con este repuesto en stock para el vehículo',

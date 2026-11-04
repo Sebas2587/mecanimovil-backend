@@ -1031,7 +1031,20 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                             ),
                             cilindraje=cot.vehiculo_cilindraje or '',
                         )
-                        reps_enriquecidos[i] = anotar_busqueda_sin_ficha(dict(rep), nota)
+                        reps_enriquecidos[i] = anotar_busqueda_sin_ficha(
+                            dict(rep),
+                            nota,
+                            marca=cot.vehiculo_marca or '',
+                            modelo=cot.vehiculo_modelo or '',
+                            anio=cot.vehiculo_anio or '',
+                            tipo_motor=' '.join(
+                                p for p in (
+                                    cot.tipo_motor or '',
+                                    getattr(cot, 'tipo_motor_label', '') or '',
+                                ) if p
+                            ),
+                            cilindraje=cot.vehiculo_cilindraje or '',
+                        )
                     continue
                 if str(hit.get('url') or '') in urls_usadas:
                     continue
@@ -1091,6 +1104,17 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                     next_rep['precio_estimado'] = True
                     if nota_envase:
                         next_rep['comentario'] = nota_envase[:300]
+                estante = int(hit.get('precio_clp') or 0)
+                normal = int(hit.get('precio_normal_clp') or 0)
+                if normal > estante > 0 and normal < estante * 3:
+                    next_rep['precio_normal_clp'] = normal
+                    logger.info(
+                        'buscar_precios_web_cotizacion_task(%s): oferta id=%s normal=%s cobrado=%s',
+                        cotizacion_id,
+                        rid,
+                        normal,
+                        estante,
+                    )
                 next_rep['fuente_marketplace'] = 'web'
                 reps_enriquecidos[i] = next_rep
                 litros_hit = litros_envase(str(hit.get('nombre_producto') or ''))
@@ -1127,7 +1151,20 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                 nota = por_clave.get(_clave_aviso(str(rep.get('nombre') or '')))
                 if not nota:
                     continue
-                reps_enriquecidos[i] = anotar_busqueda_sin_ficha(rep, nota)
+                reps_enriquecidos[i] = anotar_busqueda_sin_ficha(
+                    rep,
+                    nota,
+                    marca=cot.vehiculo_marca or '',
+                    modelo=cot.vehiculo_modelo or '',
+                    anio=cot.vehiculo_anio or '',
+                    tipo_motor=' '.join(
+                        p for p in (
+                            cot.tipo_motor or '',
+                            getattr(cot, 'tipo_motor_label', '') or '',
+                        ) if p
+                    ),
+                    cilindraje=cot.vehiculo_cilindraje or '',
+                )
         logger.info(
             'buscar_precios_web_cotizacion_task(%s): tavily hits=%s avisos=%s',
             cotizacion_id,
@@ -1222,6 +1259,14 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                 taller=cot.taller,
                 marca_vehiculo=cot.vehiculo_marca or '',
                 modelo_vehiculo=cot.vehiculo_modelo or '',
+                anio_vehiculo=cot.vehiculo_anio or '',
+                tipo_motor=' '.join(
+                    p for p in (
+                        cot.tipo_motor or '',
+                        getattr(cot, 'tipo_motor_label', '') or '',
+                    ) if p
+                ),
+                cilindraje=cot.vehiculo_cilindraje or '',
             )
             cot.repuestos = _ajustar_rangos_consistentes(list(cot.repuestos or []))
         except Exception as exc:

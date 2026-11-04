@@ -1805,7 +1805,10 @@ class RazonarYCortarBusquedaTests(SimpleTestCase):
         avisos: dict = {}
         with patch.object(bw, '_candidatos_validos', side_effect=fake_validos), patch.object(
             bw, '_tavily_extraer', return_value={},
-        ), patch.object(bw, '_gemini_generar', return_value=None):
+        ), patch.object(bw, '_gemini_generar', return_value=None), self.assertLogs(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos',
+            level='INFO',
+        ) as logs:
             out = bw._buscar_repuestos_web_tavily(
                 ['Kit de embrague'],
                 marca='Suzuki',
@@ -1821,7 +1824,11 @@ class RazonarYCortarBusquedaTests(SimpleTestCase):
         self.assertEqual(calls['n'], 1)
         self.assertEqual(out, {})
         self.assertEqual(avisos['Kit de embrague']['motivo'], 'sin_ficha')
-        self.assertIn('piola', avisos['Kit de embrague']['detalle'].lower())
+        detalle = avisos['Kit de embrague']['detalle']
+        self.assertLessEqual(len(detalle), 160)
+        self.assertIn('otra pieza', detalle.lower())
+        self.assertNotIn('piola', detalle.lower())
+        self.assertIn('piola', '\n'.join(logs.output).lower())
 
 
 class CoberturaPiezasComunesTests(SimpleTestCase):
@@ -2043,7 +2050,10 @@ class CoberturaPiezasComunesTests(SimpleTestCase):
         avisos: dict = {}
         with patch.object(bw, '_candidatos_validos', side_effect=fake_validos), patch.object(
             bw, '_tavily_extraer', return_value={},
-        ), patch.object(bw, '_gemini_generar', return_value=None):
+        ), patch.object(bw, '_gemini_generar', return_value=None), self.assertLogs(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos',
+            level='INFO',
+        ) as logs:
             out = bw._buscar_repuestos_web_tavily(
                 ['Pastillas de freno cerámica delanteras'],
                 marca='Fiat',
@@ -2059,11 +2069,18 @@ class CoberturaPiezasComunesTests(SimpleTestCase):
         self.assertEqual(out, {})
         self.assertEqual(len(calls), 2)
         detalle = avisos['Pastillas de freno cerámica delanteras']['detalle']
-        self.assertIn('Se buscó', detalle)
-        self.assertIn('pastillas freno delanteras fiat bravo 1.4', detalle)
-        self.assertIn('pastillas freno fiat bravo', detalle)
-        self.assertIn('Repuestos Fiat Bravo', detalle)
-        self.assertIn('no es esa pieza', detalle)
+        texto = '\n'.join(logs.output)
+        self.assertLessEqual(len(detalle), 160)
+        self.assertIn('Precio estimado', detalle)
+        self.assertIn('otra pieza', detalle)
+        self.assertNotIn('Se buscó', detalle)
+        self.assertNotIn('pastillas freno delanteras fiat bravo 1.4', detalle)
+        self.assertNotIn('Repuestos Fiat Bravo', detalle)
+        self.assertNotIn('http', detalle)
+        self.assertIn('pastillas freno delanteras fiat bravo 1.4', texto)
+        self.assertIn('pastillas freno fiat bravo', texto)
+        self.assertIn('Repuestos Fiat Bravo', texto)
+        self.assertIn('no es esa pieza', texto)
         self.assertNotIn('No se encontraron proveedores con este repuesto en stock', detalle)
 
     def test_log_de_tavily_lista_consultas_y_el_rechazo(self):
@@ -2302,13 +2319,20 @@ class CoberturaPiezasComunesTests(SimpleTestCase):
 
         self.assertEqual(out, {})
         detalle = avisos['Aceite de motor']['detalle']
-        self.assertIn('aceite 5w40 sintetico 4 litros', detalle)
-        self.assertIn('aceite motor 5w40 1 litro', detalle)
-        self.assertIn('Enfriador aceite Fiat Bravo 1.4', detalle)
-        self.assertIn('Bomba de aceite Fiat Bravo 1.4', detalle)
+        texto = '\n'.join(logs.output)
+        self.assertLessEqual(len(detalle), 160)
+        self.assertIn('Precio estimado', detalle)
+        self.assertIn('otra pieza', detalle)
+        self.assertNotIn('Se buscó', detalle)
+        self.assertNotIn('Enfriador', detalle)
+        self.assertNotIn('Bomba de aceite', detalle)
+        self.assertNotIn('http', detalle)
+        self.assertIn('aceite 5w40 sintetico 4 litros', texto)
+        self.assertIn('aceite motor 5w40 1 litro', texto)
+        self.assertIn('Enfriador aceite Fiat Bravo 1.4', texto)
+        self.assertIn('Bomba de aceite Fiat Bravo 1.4', texto)
         self.assertNotIn('Frenos Vergara', detalle)
-        self.assertNotIn('2010', detalle)
-        self.assertIn('resultados=', '\n'.join(logs.output))
+        self.assertIn('resultados=', texto)
 
     def test_pastillas_recorren_la_escalera_aunque_la_primera_tenga_precio(self):
         """Cotización 8: un snippet con precio no puede comerse las otras consultas."""
@@ -3634,10 +3658,17 @@ class Quote17AnioYPackTests(SimpleTestCase):
         self.assertIn(f'url={self._URL_FILTRO} motivo=anio_incompatible', texto)
         nota_bujia = avisos[self._BUJIA]['detalle']
         nota_filtro = avisos[self._FILTRO]['detalle']
+        self.assertLessEqual(len(nota_bujia), 160)
+        self.assertLessEqual(len(nota_filtro), 160)
         self.assertIn('2010', nota_bujia)
-        self.assertIn('1995-2001', nota_bujia)
+        self.assertIn('otro año o modelo', nota_bujia)
+        self.assertNotIn('1995-2001', nota_bujia)
+        self.assertNotIn('Se buscó', nota_bujia)
         self.assertIn('2010', nota_filtro)
-        self.assertIn('1996/2000', nota_filtro)
+        self.assertIn('otro año o modelo', nota_filtro)
+        self.assertNotIn('1996/2000', nota_filtro)
+        self.assertIn('1995-2001', texto)
+        self.assertIn('1996/2000', texto)
 
 
 class Quote19HolguraMotorTests(SimpleTestCase):
@@ -4125,11 +4156,18 @@ class Quote22MismaCompuertaTests(SimpleTestCase):
         self.assertIn(f'{self._TITULO}: anio_incompatible', texto)
         self.assertNotIn('elegido linea=Bujías', texto)
         detalle = avisos[self._BUJIA]['detalle']
-        self.assertIn('Se buscó', detalle)
-        self.assertIn('bujias', detalle.lower())
-        self.assertIn('LINEA 1.4 2013 2017', detalle)
-        self.assertIn('otros años', detalle)
-        self.assertIn('otro modelo', detalle)
+        self.assertLessEqual(len(detalle), 160)
+        self.assertIn('Precio estimado', detalle)
+        self.assertIn('2010', detalle)
+        self.assertIn('otro año o modelo', detalle)
+        self.assertNotIn('Se buscó', detalle)
+        self.assertNotIn('LINEA', detalle)
+        self.assertNotIn('anio_incompatible', detalle)
+        self.assertNotIn('http', detalle)
+        self.assertIn('bujias', texto.lower())
+        self.assertIn('LINEA 1.4 2013 2017', texto)
+        self.assertIn('otros años', texto)
+        self.assertIn('otro modelo', texto)
         self.assertNotIn(
             'No se encontraron proveedores con este repuesto en stock',
             detalle,
@@ -4159,6 +4197,8 @@ class Quote22MismaCompuertaTests(SimpleTestCase):
             cilindraje='1368',
         )['detalle']
         self.assertTrue(nota_de_busqueda(tardia))
+        self.assertLessEqual(len(tardia), 160)
+        self.assertNotIn(self._TITULO, tardia)
         conservada = _aplicar_seleccion_casa_repuestos([{
             'id': 'rep-0',
             'nombre': self._BUJIA,
@@ -4167,3 +4207,107 @@ class Quote22MismaCompuertaTests(SimpleTestCase):
             'motivo_seleccion': tardia,
         }])[0]
         self.assertEqual(conservada['motivo_seleccion'], tardia)
+
+
+class NotaMecanicoTests(SimpleTestCase):
+    """La nota de la línea cabe en pantalla y no trae códigos ni búsquedas."""
+
+    def test_los_tres_ejemplos_del_taller(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            nota_cola_caida,
+            nota_con_tienda,
+            nota_oferta,
+            nota_sin_tienda,
+        )
+
+        con_tienda = nota_con_tienda(
+            'Lider',
+            marca='Fiat',
+            modelo='Bravo',
+            tipo_motor='T-Jet',
+            cilindraje='1.4',
+        )
+        sin_tienda = nota_sin_tienda(
+            modelo='Bravo',
+            anio=2010,
+            tipo_motor='T-Jet',
+            cilindraje='1.4',
+        )
+        oferta = nota_oferta('TodoAuto', 10990)
+        self.assertEqual(
+            con_tienda,
+            'Lider: compatible con Fiat Bravo 1.4 T-Jet, mejor precio encontrado.',
+        )
+        self.assertEqual(
+            sin_tienda,
+            'Precio estimado. No encontramos este repuesto para tu auto '
+            '(Bravo 1.4 T-Jet 2010); confirma precio y tienda.',
+        )
+        self.assertEqual(oferta, 'TodoAuto, precio en oferta (normal $10.990).')
+        for nota in (con_tienda, sin_tienda, oferta, nota_cola_caida()):
+            self.assertLessEqual(len(nota), 160)
+            self.assertNotIn('http', nota)
+            self.assertNotIn('anio_incompatible', nota)
+            self.assertNotIn('precio_bajo_banda', nota)
+            self.assertNotIn('Se buscó', nota)
+
+        con_por_que = nota_sin_tienda(
+            modelo='Bravo',
+            anio=2010,
+            tipo_motor='T-Jet',
+            cilindraje='1.4',
+            descarte='Lo encontrado era para otro año o modelo.',
+        )
+        self.assertLessEqual(len(con_por_que), 160)
+        self.assertEqual(con_por_que.count('Lo encontrado'), 1)
+        self.assertIn('otro año o modelo', con_por_que)
+
+    def test_el_tachado_de_la_ficha_arma_la_nota_de_oferta(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+            _precio_normal_tachado,
+        )
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador import (
+            _aplicar_seleccion_casa_repuestos,
+        )
+
+        html = (
+            '<del><span class="woocommerce-Price-amount amount"><bdi>$10.990</bdi></span></del>'
+            '<ins><span class="woocommerce-Price-amount amount"><bdi>$8.990</bdi></span></ins>'
+            '<p>El precio original era: $10.990. El precio actual es: $8.990.</p>'
+        )
+        self.assertEqual(_precio_normal_tachado(html, 8990), 10990)
+        self.assertEqual(_precio_normal_tachado(html, 1000), 0)
+
+        linea = _aplicar_seleccion_casa_repuestos([{
+            'id': 'rep',
+            'nombre': 'Pastillas de freno',
+            'cantidad': 1,
+            'precio_unitario_clp': 8990,
+            'fuente_marketplace': 'web',
+            'proveedor_nombre': 'TodoAuto',
+            'url_producto': 'https://todoauto.cl/pastillas-bravo',
+            'precio_normal_clp': 10990,
+            'comentario': 'Juego completo para eje delantero',
+        }], marca_vehiculo='Fiat', modelo_vehiculo='Bravo', tipo_motor='T-Jet', cilindraje='1.4')[0]
+        self.assertEqual(
+            linea['motivo_seleccion'],
+            'TodoAuto, precio en oferta (normal $10.990).',
+        )
+        self.assertNotIn('http', linea['motivo_seleccion'])
+        self.assertEqual(linea['comentario'], 'Juego completo para eje delantero')
+        self.assertTrue(linea['consolidacion_aplicada'] is False)
+
+        lider = _aplicar_seleccion_casa_repuestos([{
+            'id': 'rep',
+            'nombre': 'Pastillas de freno',
+            'cantidad': 1,
+            'precio_unitario_clp': 24990,
+            'fuente_marketplace': 'web',
+            'proveedor_nombre': 'Lider',
+            'url_producto': 'https://www.lider.cl/pastillas',
+        }], marca_vehiculo='Fiat', modelo_vehiculo='Bravo', tipo_motor='T-Jet', cilindraje='1.4')[0]
+        self.assertEqual(
+            lider['motivo_seleccion'],
+            'Lider: compatible con Fiat Bravo 1.4 T-Jet, mejor precio encontrado.',
+        )
+        self.assertNotIn('lider.cl', lider['motivo_seleccion'])
