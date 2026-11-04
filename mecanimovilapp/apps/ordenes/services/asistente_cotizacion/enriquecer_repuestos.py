@@ -482,6 +482,67 @@ def _es_linea_aceite_motor(nombre: str) -> bool:
     return True
 
 
+def _es_bravo_14_tjet(
+    modelo: str = '',
+    tipo_motor: str = '',
+    cilindraje: str = '',
+) -> bool:
+    """Bravo II 1.4 T-Jet. Un Bravo sin T-Jet, o un 1.6, no usa esta capacidad."""
+    from .busqueda_web_repuestos import _bravo_tjet
+
+    if not _bravo_tjet(modelo, tipo_motor):
+        return False
+    cil = _norm(cilindraje)
+    if not cil:
+        return True
+    return '1 4' in f' {cil} ' or cil in ('14', '1400', '1400cc')
+
+
+def cantidad_aceite_segun_motor(
+    nombre: str,
+    *,
+    marca: str = '',
+    modelo: str = '',
+    cilindraje: str = '',
+    tipo_motor: str = '',
+) -> int | None:
+    """Litros de servicio de este motor. None si no hay ficha de capacidad.
+
+    Fiat Bravo 1.4 T-Jet: el cárter con filtro lleva unos 3,5 L y el
+    llenado de taller es 4 L. El envase de la ficha (1 L, 4 L, 5 L) no entra.
+    """
+    del marca
+    if not _es_linea_aceite_motor(nombre):
+        return None
+    if not _es_bravo_14_tjet(modelo, tipo_motor, cilindraje):
+        return None
+    return 4
+
+
+def aplicar_cantidad_aceite_motor(
+    rep: dict[str, Any],
+    *,
+    marca: str = '',
+    modelo: str = '',
+    cilindraje: str = '',
+    tipo_motor: str = '',
+) -> dict[str, Any]:
+    """Deja la cantidad del aceite en la capacidad del motor, no en el bidón."""
+    if not isinstance(rep, dict):
+        return rep
+    litros = cantidad_aceite_segun_motor(
+        str(rep.get('nombre') or ''),
+        marca=marca,
+        modelo=modelo,
+        cilindraje=cilindraje,
+        tipo_motor=tipo_motor,
+    )
+    if litros is None:
+        return rep
+    rep['cantidad'] = litros
+    return rep
+
+
 def _titulo_es_otra_pieza_de_aceite(titulo: str) -> bool:
     n = _norm(titulo)
     if not n:
@@ -1110,11 +1171,19 @@ def _candidatos_web_cache(
     tipo_motor: str = '',
     cilindraje: str = '',
     nombres: list[str] | None = None,
+    bandas_min: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
     """Hits vigentes desde PrecioRepuestoWeb (rellenado por Celery/Gemini URL Context)."""
     try:
         from mecanimovilapp.apps.ordenes.models import PrecioRepuestoWeb
-        from .busqueda_web_repuestos import _es_listado_sin_vendedor, clave_cache_repuesto
+        from .busqueda_web_repuestos import (
+            _CACHE_RELECTURA_CUPO,
+            _banda_min_de,
+            _es_listado_sin_vendedor,
+            _expirar_fila_cache,
+            _fila_cache_utilizable,
+            clave_cache_repuesto,
+        )
 
         now = timezone.now()
         qs = PrecioRepuestoWeb.objects.filter(expira_en__gt=now)
@@ -1144,6 +1213,7 @@ def _candidatos_web_cache(
         veh_norm = _norm(
             ' '.join(str(p) for p in (marca_vehiculo, modelo_vehiculo, anio_vehiculo or '') if p),
         )
+        cupo = [_CACHE_RELECTURA_CUPO]
         for row in qs:
             clave = str(row.clave or '')
             dominio = str(row.dominio or '').strip().lower()
@@ -1161,17 +1231,27 @@ def _candidatos_web_cache(
                 continue
             linea_cache = clave_a_nombre.get(clave, '')
             producto_cache = str(row.nombre_producto or '').strip()
-            if linea_cache and producto_cache and not _producto_es_la_pieza(
-                linea_cache, producto_cache, fuente='web',
-            ):
-                logger.info(
-                    'ordenes[enrich] cache_ignorada linea=%s producto=%s',
-                    linea_cache[:80],
-                    producto_cache[:80],
+            if dominio in ('historial-taller', 'historial_taller'):
+                if linea_cache and producto_cache and not _producto_es_la_pieza(
+                    linea_cache, producto_cache, fuente='web',
+                ):
+                    _expirar_fila_cache(
+                        row, now, linea=linea_cache, producto=producto_cache, motivo='otra_pieza',
+                    )
+                    continue
+                precio_usar = int(row.precio_clp or 0)
+            else:
+                precio_usar = _fila_cache_utilizable(
+                    row,
+                    linea_cache,
+                    modelo=modelo_vehiculo,
+                    tipo_motor=tipo_motor,
+                    banda_min=_banda_min_de(bandas_min, linea_cache),
+                    now=now,
+                    cupo=cupo,
                 )
-                row.expira_en = now
-                row.save(update_fields=['expira_en'])
-                continue
+                if precio_usar is None:
+                    continue
             marca = _marca_repuesto_valida(row.marca_repuesto)
             clave_nombre = clave.split('|', 1)[0] if '|' in clave else clave
             dominio = str(row.dominio or '').strip().lower()
@@ -1187,7 +1267,7 @@ def _candidatos_web_cache(
             hit = _hit(
                 nombre=str(row.nombre_producto or '')[:200],
                 marca_repuesto=marca,
-                precio_unitario_clp=int(row.precio_clp or 0),
+                precio_unitario_clp=int(precio_usar or 0),
                 fuente_marketplace=fuente,
                 proveedor_nombre=proveedor,
                 url_producto=str(row.url or '')[:500],
@@ -1337,6 +1417,19 @@ def enriquecer_repuestos_cotizacion(
     nombres_lineas = [
         str(r.get('nombre') or '') for r in repuestos if isinstance(r, dict)
     ]
+    bandas_min: dict[str, int] = {}
+    for r in repuestos:
+        if not isinstance(r, dict):
+            continue
+        nombre_banda = str(r.get('nombre') or '').strip()
+        if not nombre_banda:
+            continue
+        try:
+            piso = int(r.get('precio_min_clp') or 0)
+        except (TypeError, ValueError):
+            piso = 0
+        if piso > 0:
+            bandas_min[nombre_banda] = piso
     web_cands = (
         _candidatos_web_cache(
             marca_vehiculo=marca_vehiculo,
@@ -1345,6 +1438,7 @@ def enriquecer_repuestos_cotizacion(
             tipo_motor=tipo_motor,
             cilindraje=cilindraje,
             nombres=nombres_lineas,
+            bandas_min=bandas_min,
         )
         if usar_web
         else []
@@ -1355,6 +1449,13 @@ def enriquecer_repuestos_cotizacion(
         if not isinstance(rep, dict):
             continue
         next_rep = dict(rep)
+        aplicar_cantidad_aceite_motor(
+            next_rep,
+            marca=marca_vehiculo,
+            modelo=modelo_vehiculo,
+            cilindraje=cilindraje,
+            tipo_motor=tipo_motor,
+        )
         # Descarta proveedor falso del maestro global (nunca es fuente del taller).
         if _norm(str(next_rep.get('proveedor_nombre') or '')) in (
             'catalogo mecanimovil', 'catálogo mecanimovil',
@@ -1392,6 +1493,10 @@ def enriquecer_repuestos_cotizacion(
         if usar_web and not grounded_taller and web_cands:
             from .busqueda_web_repuestos import _candidato_sirve_linea
 
+            try:
+                piso_linea = int(next_rep.get('precio_min_clp') or 0)
+            except (TypeError, ValueError):
+                piso_linea = 0
             web_ok = [
                 c for c in web_cands
                 if not _familia_distinta(nombre, str(c.get('clave') or ''))
@@ -1404,10 +1509,15 @@ def enriquecer_repuestos_cotizacion(
                         'title': str(c.get('nombre_producto') or c.get('nombre') or ''),
                         'content': '',
                         'url': str(c.get('url_producto') or ''),
+                        # La caché no trae el cuerpo. Un título sin el auto no pasa.
+                        'ficha_leida': True,
+                        'precio_snippet': int(c.get('precio_unitario_clp') or 0),
                     },
                     anio=anio_vehiculo,
                     cilindraje=cilindraje,
                     modelo=modelo_vehiculo,
+                    tipo_motor=tipo_motor,
+                    banda_min=piso_linea,
                 )
             ]
             web_hit = _mejor_hit(nombre, web_ok, min_score=min_score_web_para(nombre))

@@ -599,6 +599,29 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
         )
 
         nombres = [str(r.get('nombre') or '').strip() for r in candidatos if str(r.get('nombre') or '').strip()]
+        especificaciones = {}
+        bandas_min: dict[str, int] = {}
+        for linea in candidatos:
+            if not isinstance(linea, dict):
+                continue
+            nombre_linea = str(linea.get('nombre') or '').strip()
+            if not nombre_linea:
+                continue
+            try:
+                piso_linea = int(linea.get('precio_min_clp') or 0)
+            except (TypeError, ValueError):
+                piso_linea = 0
+            if piso_linea > 0:
+                bandas_min[nombre_linea] = piso_linea
+            extra = str(linea.get('especificacion') or '').strip()
+            comentario = str(linea.get('comentario') or '').strip()
+            bajo = comentario.lower()
+            if comentario and not (
+                bajo.startswith('se busc') or bajo.startswith('no se pudo consultar')
+            ):
+                extra = f'{extra} {comentario}'.strip()
+            if extra:
+                especificaciones[nombre_linea] = extra[:200]
         faltantes, cache_hits = nombres_sin_cache_vigente(
             nombres,
             marca_vehiculo=cot.vehiculo_marca or '',
@@ -606,6 +629,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
             anio=cot.vehiculo_anio or '',
             tipo_motor=cot.tipo_motor or '',
             cilindraje=cot.vehiculo_cilindraje or '',
+            bandas_min=bandas_min,
         )
         resultados: dict = dict(cache_hits or {})
 
@@ -654,29 +678,6 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                     faltantes,
                     solo_ids,
                 )
-                especificaciones = {}
-                bandas_min: dict[str, int] = {}
-                for linea in candidatos:
-                    if not isinstance(linea, dict):
-                        continue
-                    nombre_linea = str(linea.get('nombre') or '').strip()
-                    if not nombre_linea:
-                        continue
-                    try:
-                        piso_linea = int(linea.get('precio_min_clp') or 0)
-                    except (TypeError, ValueError):
-                        piso_linea = 0
-                    if piso_linea > 0:
-                        bandas_min[nombre_linea] = piso_linea
-                    extra = str(linea.get('especificacion') or '').strip()
-                    comentario = str(linea.get('comentario') or '').strip()
-                    bajo = comentario.lower()
-                    if comentario and not (
-                        bajo.startswith('se busc') or bajo.startswith('no se pudo consultar')
-                    ):
-                        extra = f'{extra} {comentario}'.strip()
-                    if extra:
-                        especificaciones[nombre_linea] = extra[:200]
                 nuevos = buscar_repuestos_web(
                     faltantes,
                     vehiculo={
@@ -877,6 +878,38 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                     hit = None
                 if not hit:
                     continue
+                if hit.get('desde_cache'):
+                    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+                        _candidato_sirve_linea,
+                    )
+
+                    try:
+                        piso_linea = int(rep.get('precio_min_clp') or 0)
+                    except (TypeError, ValueError):
+                        piso_linea = 0
+                    if not _candidato_sirve_linea(
+                        nombre_linea,
+                        {
+                            'title': str(hit.get('nombre_producto') or ''),
+                            'content': '',
+                            'url': str(hit.get('url') or ''),
+                            'ficha_leida': True,
+                            'precio_snippet': int(hit.get('precio_clp') or 0),
+                        },
+                        anio=cot.vehiculo_anio or '',
+                        cilindraje=cot.vehiculo_cilindraje or '',
+                        modelo=cot.vehiculo_modelo or '',
+                        tipo_motor=cot.tipo_motor or '',
+                        banda_min=piso_linea,
+                    ):
+                        logger.info(
+                            'buscar_precios_web_cotizacion_task(%s): cache rechazado id=%s linea=%s producto=%s',
+                            cotizacion_id,
+                            rid,
+                            nombre_linea[:80],
+                            str(hit.get('nombre_producto') or '')[:80],
+                        )
+                        continue
                 if str(hit.get('url') or '') in urls_usadas:
                     continue
                 next_rep = dict(rep)
@@ -1031,7 +1064,21 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
         )
 
         cot.repuestos = aplicar_techo_ia_en_repuestos(list(cot.repuestos or []))
-        
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            aplicar_cantidad_aceite_motor,
+        )
+
+        cot.repuestos = [
+            aplicar_cantidad_aceite_motor(
+                r,
+                marca=cot.vehiculo_marca or '',
+                modelo=cot.vehiculo_modelo or '',
+                cilindraje=cot.vehiculo_cilindraje or '',
+                tipo_motor=cot.tipo_motor or '',
+            ) if isinstance(r, dict) else r
+            for r in (cot.repuestos or [])
+        ]
+
         # Aplicar selección de casa y consolidación DESPUÉS del enriquecimiento web
         try:
             from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador import (

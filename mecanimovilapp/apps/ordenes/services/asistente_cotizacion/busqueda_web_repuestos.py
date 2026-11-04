@@ -20,7 +20,7 @@ import json
 import logging
 import re
 import unicodedata
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 from urllib.parse import quote_plus, urlparse
 
@@ -3554,6 +3554,149 @@ def clave_cache_repuesto(
     return '|'.join(p for p in parts if p)[:240]
 
 
+# Una fila recién escrita en este mismo request ya trae el precio parseado.
+# Una fila de un request anterior puede guardar el tachado ($58.500).
+_CACHE_RELECTURA_PRECIO = timedelta(seconds=90)
+_CACHE_RELECTURA_CUPO = 4
+
+
+def _candidato_desde_cache(row: Any, precio: int) -> dict[str, Any]:
+    """La caché no tiene el cuerpo de la ficha. Un título genérico ya se puede botar."""
+    return {
+        'title': str(getattr(row, 'nombre_producto', '') or ''),
+        'url': str(getattr(row, 'url', '') or ''),
+        'content': '',
+        'cuerpo': '',
+        'ficha_leida': True,
+        'precio_snippet': int(precio or 0),
+    }
+
+
+def _precio_cache_esta_viejo(row: Any, now) -> bool:
+    consultado = getattr(row, 'consultado_en', None)
+    if consultado is None:
+        return True
+    try:
+        return (now - consultado) >= _CACHE_RELECTURA_PRECIO
+    except TypeError:
+        return True
+
+
+def _expirar_fila_cache(row: Any, now, *, linea: str, producto: str, motivo: str) -> None:
+    logger.info(
+        'busqueda_web_repuestos[cache] ignorada linea=%s producto=%s motivo=%s',
+        str(linea)[:80],
+        str(producto)[:80],
+        motivo,
+    )
+    row.expira_en = now
+    row.save(update_fields=['expira_en'])
+
+
+def _fila_cache_utilizable(
+    row: Any,
+    nombre_linea: str,
+    *,
+    modelo: str = '',
+    tipo_motor: str = '',
+    banda_min: int = 0,
+    now,
+    cupo: list[int] | None = None,
+) -> int | None:
+    """Precio vigente de la fila, o None si no se puede cotizar (queda vencida).
+
+    Pastillas: sin el cuerpo de la página, un título que no nombra el auto
+    es sin_modelo, un 'Envío gratis' es listado, y un monto bajo la mitad
+    de la banda es precio_bajo_banda. Aceite y el resto, si la pieza es la
+    correcta, releen el HTML cuando la fila no es de este request y se
+    quedan con el precio actual (<ins> / 'precio actual'), no con el tachado.
+    """
+    from .enriquecer_repuestos import _producto_es_la_pieza
+
+    producto = str(getattr(row, 'nombre_producto', '') or '')
+    if nombre_linea and producto and not _producto_es_la_pieza(
+        nombre_linea, producto, fuente='web',
+    ):
+        _expirar_fila_cache(row, now, linea=nombre_linea, producto=producto, motivo='otra_pieza')
+        return None
+
+    precio = int(getattr(row, 'precio_clp', 0) or 0)
+    cand = _candidato_desde_cache(row, precio)
+    if nombre_linea and _es_pastillas_freno(nombre_linea):
+        motivo = _motivo_calidad_pastilla(
+            cand,
+            nombre=nombre_linea,
+            modelo=modelo,
+            tipo_motor=tipo_motor,
+            banda_min=banda_min,
+        )
+        if motivo:
+            _expirar_fila_cache(
+                row, now, linea=nombre_linea, producto=producto, motivo=motivo,
+            )
+            return None
+
+    url = str(getattr(row, 'url', '') or '').strip()
+    if (
+        not url.startswith('http')
+        or not _precio_cache_esta_viejo(row, now)
+        or (cupo is not None and cupo[0] <= 0)
+    ):
+        return precio
+
+    if cupo is not None:
+        cupo[0] -= 1
+    try:
+        htmls = _leer_html_fichas([url])
+    except Exception:
+        htmls = {}
+    html = htmls.get(url) or ''
+    if not html:
+        try:
+            row.save(update_fields=['consultado_en'])
+        except Exception:
+            pass
+        return precio
+
+    cuerpo = _cuerpo_compatibilidad(html)
+    if cuerpo:
+        cand['cuerpo'] = cuerpo
+        cand['content'] = cuerpo
+    monto = _precio_desde_html(html, nombre_linea, url)
+    if monto and _precio_plausible_para_linea(nombre_linea, monto):
+        cand['precio_snippet'] = monto
+    else:
+        monto = precio
+    if nombre_linea and _es_pastillas_freno(nombre_linea):
+        motivo = _motivo_calidad_pastilla(
+            cand,
+            nombre=nombre_linea,
+            modelo=modelo,
+            tipo_motor=tipo_motor,
+            banda_min=banda_min,
+        )
+        if motivo:
+            _expirar_fila_cache(
+                row, now, linea=nombre_linea, producto=producto, motivo=motivo,
+            )
+            return None
+    if monto and monto != precio:
+        logger.info(
+            'busqueda_web_repuestos[cache] precio_actualizado linea=%s guardado=%s actual=%s',
+            str(nombre_linea)[:80],
+            precio,
+            monto,
+        )
+        row.precio_clp = monto
+        row.save(update_fields=['precio_clp'])
+        return monto
+    try:
+        row.save(update_fields=['consultado_en'])
+    except Exception:
+        pass
+    return precio
+
+
 def hits_cache_vigentes_para_nombres(
     nombres: list[str],
     *,
@@ -3563,6 +3706,7 @@ def hits_cache_vigentes_para_nombres(
     especificacion: str = '',
     tipo_motor: str = '',
     cilindraje: str = '',
+    bandas_min: dict[str, int] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Devuelve mapa clave_fuzzy → hit vigente de PrecioRepuestoWeb (sin llamar Gemini)."""
     nombres_limpios = [str(n).strip() for n in nombres if str(n).strip()]
@@ -3607,6 +3751,7 @@ def hits_cache_vigentes_para_nombres(
     from .enriquecer_repuestos import _producto_es_la_pieza
     from .vehiculo_exacto import clave_historial_cubre_vehiculo
 
+    cupo = [_CACHE_RELECTURA_CUPO]
     for row in rows:
         clave = str(row.clave or '')
         dominio = str(row.dominio or '').strip().lower()
@@ -3619,19 +3764,29 @@ def hits_cache_vigentes_para_nombres(
             continue
         nombre_linea = claves_objetivo.get(clave) or claves_objetivo.get(fuzzy) or ''
         producto = str(row.nombre_producto or '')
-        if nombre_linea and producto and not _producto_es_la_pieza(
-            nombre_linea, producto, fuente='web',
-        ):
-            # Fila vieja (bomba de aceite guardada como aceite). No se reusa
-            # y deja de contar como caché vigente para que Tavily vuelva a buscar.
-            logger.info(
-                'busqueda_web_repuestos[cache] ignorada linea=%s producto=%s',
-                str(nombre_linea)[:80],
-                producto[:80],
+        if dominio in ('historial-taller', 'historial_taller'):
+            if nombre_linea and producto and not _producto_es_la_pieza(
+                nombre_linea, producto, fuente='web',
+            ):
+                _expirar_fila_cache(
+                    row, now, linea=nombre_linea, producto=producto, motivo='otra_pieza',
+                )
+                continue
+            precio_usar = int(row.precio_clp or 0)
+        else:
+            # Fila vieja: listado sin modelo, precio tachado, bomba guardada
+            # como aceite. Se vence para que Tavily vuelva a buscar.
+            precio_usar = _fila_cache_utilizable(
+                row,
+                nombre_linea,
+                modelo=modelo_vehiculo,
+                tipo_motor=tipo_motor,
+                banda_min=_banda_min_de(bandas_min, nombre_linea),
+                now=now,
+                cupo=cupo,
             )
-            row.expira_en = now
-            row.save(update_fields=['expira_en'])
-            continue
+            if precio_usar is None:
+                continue
         # Preferir primer hit (mayor confianza) por fuzzy.
         if fuzzy in out:
             continue
@@ -3640,7 +3795,7 @@ def hits_cache_vigentes_para_nombres(
             'nombre_buscado': claves_objetivo.get(clave) or claves_objetivo.get(fuzzy) or row.nombre_producto,
             'nombre_producto': str(row.nombre_producto or '')[:200],
             'marca_repuesto': marca,
-            'precio_clp': int(row.precio_clp or 0),
+            'precio_clp': int(precio_usar or 0),
             'tienda': str(row.tienda or '')[:200],
             'dominio': str(row.dominio or '')[:200],
             'url': str(row.url or '')[:500],
@@ -3660,6 +3815,7 @@ def nombres_sin_cache_vigente(
     especificacion: str = '',
     tipo_motor: str = '',
     cilindraje: str = '',
+    bandas_min: dict[str, int] | None = None,
 ) -> tuple[list[str], dict[str, dict[str, Any]]]:
     """Separa nombres que aún requieren Gemini vs hits ya cacheados."""
     cache_hits = hits_cache_vigentes_para_nombres(
@@ -3670,6 +3826,7 @@ def nombres_sin_cache_vigente(
         especificacion=especificacion,
         tipo_motor=tipo_motor,
         cilindraje=cilindraje,
+        bandas_min=bandas_min,
     )
     faltantes: list[str] = []
     for nombre in nombres:
