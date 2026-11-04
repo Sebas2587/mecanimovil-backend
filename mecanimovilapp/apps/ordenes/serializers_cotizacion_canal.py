@@ -82,6 +82,11 @@ class RepuestoCotizacionSerializer(serializers.Serializer):
         default=list,
     )
     consolidacion_aplicada = serializers.BooleanField(required=False, default=False)
+    precio_a_consultar = serializers.BooleanField(required=False, default=False)
+    casa_sucursal = serializers.CharField(required=False, allow_blank=True, default='')
+    casa_telefono = serializers.CharField(required=False, allow_blank=True, default='')
+    referencia_tienda = serializers.CharField(required=False, allow_blank=True, default='')
+    precio_referencia_clp = serializers.IntegerField(required=False, allow_null=True, min_value=0)
     certeza = serializers.ChoiceField(
         choices=('confirmado', 'asumido', 'referencial', 'sin_precio'),
         required=False,

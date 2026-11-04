@@ -115,6 +115,11 @@ def _especialistas() -> list[dict[str, Any]]:
             'alias': alias,
             'dominio': str(item.get('dominio') or '').strip().lower(),
             'marcas': [_norm(m) for m in marcas if str(m or '').strip()],
+            'fisica': item.get('fisica'),
+            'catalogo_online': bool(item.get('catalogo_online')),
+            'telefono': str(item.get('telefono') or ''),
+            'sitio': str(item.get('sitio') or ''),
+            'sucursales': item.get('sucursales') or [],
         })
     return out
 
@@ -1692,7 +1697,12 @@ _ALIAS_TIENDA = (
     ('casadelembrague', 'Casa del Embrague'),
     ('mundorepuestos', 'Mundo Repuestos'),
     ('todoautochile', 'TodoAuto'),
+    ('adriazolarepuestos', 'Adriazola'),
+    ('casacitroen', 'Casa Citroën'),
     ('todoembragues', 'Todo Embragues'),
+    ('adriazola', 'Adriazola'),
+    ('comauto', 'Comauto'),
+    ('vimae', 'Vimae'),
     ('frenosvergara', 'Frenos Vergara'),
     ('repuestosank', 'Repuestos Ank'),
     ('mercadolibre', 'Mercado Libre'),
@@ -3125,6 +3135,33 @@ def _consultas_consumible(
     return consultas
 
 
+def _consultas_sitio_especialista(
+    nombre: str,
+    *,
+    marca: str,
+    modelo: str,
+    cilindraje: str,
+    tipo_motor: str = '',
+    especificacion: str = '',
+) -> list[str]:
+    """Una consulta al sitio de la especialista, solo si publica catálogo."""
+    del especificacion
+    casas = [
+        casa for casa in _especialistas()
+        if casa.get('catalogo_online') and casa.get('dominio')
+        and any(
+            mk in _norm(marca) or _norm(marca) in mk
+            for mk in (casa.get('marcas') or [])
+        )
+    ][:2]
+    if not casas:
+        return []
+    modelo_corto = _modelo_corto_auto(modelo, tipo_motor) if modelo else ''
+    nucleo = _nombre_busqueda_corto(nombre) or str(nombre or '').strip()
+    base = ' '.join(p for p in [nucleo, str(marca or '').strip(), modelo_corto, str(cilindraje or '').strip()] if p)
+    return [f'{base} site:{casa["dominio"]}' for casa in casas if base]
+
+
 def _escalera_consultas(
     nombre: str,
     *,
@@ -3270,6 +3307,7 @@ def _ordenar_candidatos(
     tipo_motor: str = '',
     banda_min: int = 0,
     banda_max: int = 0,
+    marca: str = '',
 ) -> list[dict[str, Any]]:
     """Manda la ficha que nombra a ESTE auto; después la casa y el precio.
 
@@ -3315,9 +3353,14 @@ def _ordenar_candidatos(
                 rango_modelo = 2
         else:
             rango_modelo = 0
+        from mecanimovilapp.apps.ordenes.casas_especialistas import prioridad_candidato
+
+        preferencia = prioridad_candidato(
+            str(c.get('url') or ''), str(c.get('title') or ''), marca,
+        )
         if priorizar_precio:
-            return (no_sirve, rango_modelo, sin_precio, calce, no_esp)
-        return (no_sirve, rango_modelo, calce, no_esp, sin_precio)
+            return (no_sirve, rango_modelo, *preferencia, sin_precio, calce, no_esp)
+        return (no_sirve, rango_modelo, *preferencia, calce, no_esp, sin_precio)
 
     return sorted(candidatos, key=rango)
 
@@ -3736,6 +3779,7 @@ def _buscar_repuestos_web_tavily(
         )
         n_consultas = 0
         corto_mal = False
+        ya_sirve = False
         for i_query, query in enumerate(consultas):
             _cortar()
             if i_query >= max_q:
@@ -3756,8 +3800,10 @@ def _buscar_repuestos_web_tavily(
             # con precio que no es la ficha, y ahí se cortaba el resto.
             if not (_es_pastillas_freno(nombre) or _es_consumible_corto(nombre)):
                 if any(_precio_desde_texto(c.get('content') or '', nombre) > 0 for c in sirven):
+                    ya_sirve = True
                     break
                 if len({c['url'] for c in sirven}) >= 2:
+                    ya_sirve = True
                     break
             # Otra pieza (enfriador, piola) corta. Un listado genérico no:
             # la consulta siguiente puede ser la ficha real.
@@ -3772,6 +3818,22 @@ def _buscar_repuestos_web_tavily(
             if crudos and not sirven and len(otra_pieza) == len(crudos) and not pieza_de_spec:
                 corto_mal = True
                 break
+        # El site: de la especialista no roba el cupo ni alarga un corte temprano.
+        if not ya_sirve and not corto_mal:
+            for consulta_sitio in _consultas_sitio_especialista(
+                nombre,
+                marca=marca,
+                modelo=modelo,
+                cilindraje=cilindraje,
+                tipo_motor=tipo_motor,
+                especificacion=spec,
+            ):
+                dominio_sitio = consulta_sitio.rsplit('site:', 1)[-1].strip()
+                if any(dominio_sitio and dominio_sitio in str(c.get('url') or '') for c in crudos):
+                    continue
+                _cortar()
+                n_consultas += 1
+                crudos += _candidatos_validos(consulta_sitio, whitelist)
         rechazos: list[str] = []
         for cand in crudos:
             titulo = str(cand.get('title') or '').strip()
@@ -3822,6 +3884,7 @@ def _buscar_repuestos_web_tavily(
             tipo_motor=tipo_motor,
             banda_min=_piso(nombre),
             banda_max=_techo(nombre),
+            marca=marca,
         )
         servir = _seleccionar_cupo(
             ordenados,
@@ -3899,6 +3962,7 @@ def _buscar_repuestos_web_tavily(
                 tipo_motor=tipo_motor,
                 banda_min=_piso(nombre),
                 banda_max=_techo(nombre),
+                marca=marca,
             )
 
     # Snippet sin monto, o pastilla cuyo título no nombra el auto: se lee
@@ -3997,6 +4061,7 @@ def _buscar_repuestos_web_tavily(
                     tipo_motor=tipo_motor,
                     banda_min=piso,
                     banda_max=_techo(nombre),
+                    marca=marca,
                 )
 
     def _sellar_lista_negra() -> None:
