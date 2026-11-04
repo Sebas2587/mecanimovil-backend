@@ -324,6 +324,55 @@ class SyncEnrichmentValidacionTestCase(TestCase):
             'No se encontraron proveedores con este repuesto en stock para el vehículo',
         )
 
+    def test_reintento_vacio_conserva_el_precio_asumido_y_el_motivo(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            anotar_busqueda_sin_ficha,
+            linea_necesita_busqueda_web,
+        )
+
+        nota = {
+            'motivo': 'sin_ficha',
+            'detalle': (
+                'Se buscó "aceite motor 5w40 fiat bravo". '
+                'Se descartó "Enfriador aceite Fiat Bravo" porque el título no es esa pieza.'
+            ),
+        }
+        aceite = anotar_busqueda_sin_ficha({
+            'nombre': 'Aceite 5W40 sintético',
+            'cantidad': 4,
+            'precio_unitario_clp': 0,
+            'precio_min_clp': 18000,
+            'precio_max_clp': 42000,
+            'certeza': 'sin_precio',
+        }, nota)
+        self.assertEqual(aceite['precio_min_clp'], 18000)
+        self.assertEqual(aceite['precio_max_clp'], 42000)
+        self.assertIn('Se buscó', aceite['motivo_seleccion'])
+        self.assertIn('5w40', aceite['motivo_seleccion'].lower())
+        self.assertIn('Enfriador', aceite['comentario'])
+
+        pastillas = {
+            'nombre': 'Pastillas de freno cerámica delanteras',
+            'precio_unitario_clp': 70000,
+            'certeza': 'asumido',
+            'precio_estimado': True,
+        }
+        self.assertTrue(linea_necesita_busqueda_web(pastillas))
+        pastillas = anotar_busqueda_sin_ficha(pastillas, {
+            'motivo': 'sin_ficha',
+            'detalle': 'Se buscó "pastillas freno delanteras fiat bravo". Sin ficha.',
+        })
+        self.assertEqual(pastillas['precio_unitario_clp'], 70000)
+        self.assertIn('Se buscó', pastillas['motivo_seleccion'])
+
+        out = _aplicar_seleccion_casa_repuestos([pastillas, aceite])
+        for rep in out:
+            self.assertIn('Se buscó', rep['motivo_seleccion'])
+            self.assertNotEqual(
+                rep['motivo_seleccion'],
+                'No se encontraron proveedores con este repuesto en stock para el vehículo',
+            )
+
     def test_cache_de_bidon_4l_se_guarda_como_precio_por_litro(self):
         expira = timezone.now() + timedelta(days=7)
         clave = clave_cache_repuesto(

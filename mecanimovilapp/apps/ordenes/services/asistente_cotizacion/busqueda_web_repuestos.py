@@ -1954,13 +1954,26 @@ def _buscar_repuestos_web_tavily(
             if crudos and not sirven and len(otra_pieza) == len(crudos):
                 corto_mal = True
                 break
+        rechazos: list[str] = []
+        for cand in crudos:
+            titulo = str(cand.get('title') or '').strip()
+            etiqueta = titulo[:80] or '(sin título)'
+            if not _candidato_sirve_linea(
+                nombre, cand, anio=anio, cilindraje=cilindraje, modelo=modelo,
+            ):
+                rechazos.append(f'{etiqueta}: otra pieza')
+            elif titulo and not _titulo_nombra_pieza(nombre, titulo):
+                rechazos.append(f'{etiqueta}: el título no es esa pieza')
         logger.info(
-            'busqueda_web_repuestos[tavily]: %s consultas=%s/%s candidatos=%s corte=%s',
+            'busqueda_web_repuestos[tavily] linea=%s queries=%s n=%s/%s candidatos=%s '
+            'corte=%s rechazos=%s',
             nombre[:80],
+            consultas[:n_consultas],
             n_consultas,
             max_q,
             len({c['url'] for c in crudos}),
             'mal_clasificado' if corto_mal else 'ok',
+            rechazos[:6],
         )
         consultas_usadas[nombre] = list(consultas[:n_consultas])
         ordenados = _ordenar_candidatos(

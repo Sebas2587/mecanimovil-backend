@@ -2015,6 +2015,45 @@ class CoberturaPiezasComunesTests(SimpleTestCase):
         self.assertIn('no es esa pieza', detalle)
         self.assertNotIn('No se encontraron proveedores con este repuesto en stock', detalle)
 
+    def test_log_de_tavily_lista_consultas_y_el_rechazo(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        def fake_validos(query, _whitelist):
+            return [{
+                'title': 'Enfriador aceite Fiat Bravo 1.4',
+                'url': 'https://euroespecialista.cl/enfriador-aceite-fiat-bravo',
+                'content': 'Enfriador de aceite. Precio $ 31.490',
+            }]
+
+        with patch.object(bw, '_candidatos_validos', side_effect=fake_validos), patch.object(
+            bw, '_tavily_extraer', return_value={},
+        ), patch.object(bw, '_gemini_generar', return_value=None), self.assertLogs(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos',
+            level='INFO',
+        ) as logs:
+            bw._buscar_repuestos_web_tavily(
+                ['Aceite 5W40 sintético'],
+                marca='Fiat',
+                modelo='Bravo',
+                anio=2010,
+                cilindraje='1.4',
+                tipo_motor='',
+                servicio_nombre='Mantención',
+                timeout=5,
+            )
+
+        texto = '\n'.join(logs.output)
+        self.assertIn('busqueda_web_repuestos[tavily]', texto)
+        self.assertIn('queries=', texto)
+        self.assertIn('5w', texto.lower())
+        self.assertIn('Enfriador', texto)
+        self.assertTrue(
+            'otra pieza' in texto or 'no es esa pieza' in texto,
+            texto,
+        )
+        self.assertRegex(texto, r'n=\d+/\d+')
+        self.assertIn('candidatos=', texto)
+
     def test_aceite_5w40_acepta_la_ficha_del_bidon(self):
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
 
