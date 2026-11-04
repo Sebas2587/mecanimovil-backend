@@ -1014,14 +1014,21 @@ def _nota_corta_para_linea(
 ) -> str:
     if rep.get('precio_a_consultar'):
         from mecanimovilapp.apps.ordenes.casas_especialistas import (
-            nota_especialista,
+            nota_consulta_especialista,
             perfil_de,
         )
 
         casa = nombre_tienda_visible(str(rep.get('casa_repuesto_nombre') or ''))
         if casa and perfil_de(casa):
-            return recortar_nota(nota_especialista(
-                casa, marca, cubre_todo=False, a_consultar=True,
+            try:
+                ref_precio = int(rep.get('precio_referencia_clp') or 0)
+            except (TypeError, ValueError):
+                ref_precio = 0
+            return recortar_nota(nota_consulta_especialista(
+                casa,
+                marca,
+                tienda=str(rep.get('referencia_tienda') or ''),
+                precio=ref_precio,
             ))
     if _hay_tienda_en_linea(rep):
         return nota_visible_con_tienda(

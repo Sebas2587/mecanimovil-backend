@@ -334,6 +334,17 @@ def especialista_de_la_ficha(nombre: str, url: str, marca: str) -> dict[str, Any
     return perfil
 
 
+def marca_visible(marca: str) -> str:
+    palabras = [p for p in str(marca or '').split() if p]
+    if not palabras:
+        return 'la marca'
+    return ' '.join(p[:1].upper() + p[1:].lower() for p in palabras)
+
+
+def _pesos(monto: int) -> str:
+    return '$' + f'{int(monto):,}'.replace(',', '.')
+
+
 def sucursal_para(perfil: dict[str, Any], marca: str = '', comuna_taller: str = '') -> dict[str, Any]:
     sucursales = list(perfil.get('sucursales') or [])
     if not sucursales:
@@ -346,11 +357,26 @@ def sucursal_para(perfil: dict[str, Any], marca: str = '', comuna_taller: str = 
         return True
 
     candidatas = [s for s in sucursales if _sirve(s)] or sucursales
-    comuna = _norm(comuna_taller)
-    if comuna:
-        for sucursal in candidatas:
-            if _norm(sucursal.get('comuna') or '') == comuna:
-                return sucursal
+    texto = _norm(comuna_taller)
+    if texto:
+        especificas: list[dict[str, Any]] = []
+        generica: dict[str, Any] | None = None
+        for sucursal in sorted(
+            candidatas,
+            key=lambda s: len(_norm(s.get('comuna') or '')),
+            reverse=True,
+        ):
+            comuna = _norm(sucursal.get('comuna') or '')
+            if not comuna or (comuna != texto and comuna not in texto):
+                continue
+            if comuna == 'santiago':
+                generica = sucursal
+            else:
+                especificas.append(sucursal)
+        if especificas:
+            return especificas[0]
+        if generica is not None:
+            return generica
     for sucursal in candidatas:
         if _norm(sucursal.get('comuna') or '') != 'concepcion':
             return sucursal
@@ -370,14 +396,33 @@ def texto_sucursal(sucursal: dict[str, Any] | None) -> str:
 
 def nota_especialista(nombre: str, marca: str, *, cubre_todo: bool, a_consultar: bool) -> str:
     casa = str(nombre or '').strip() or 'La casa'
-    auto = ' '.join(str(marca or '').split()) or 'la marca'
-    if cubre_todo and a_consultar:
-        return f'{casa}: especialista {auto}, tiene todos los repuestos. Precio a consultar.'
-    if cubre_todo:
+    auto = marca_visible(marca)
+    if cubre_todo and not a_consultar:
         return f'{casa}: especialista {auto}, tiene todos los repuestos de esta cotización.'
     if a_consultar:
-        return f'{casa}: especialista {auto}, precio a consultar.'
+        return nota_consulta_especialista(casa, auto)
     return f'{casa}: especialista {auto}, mejor precio encontrado.'
+
+
+def nota_consulta_especialista(
+    nombre: str,
+    marca: str,
+    *,
+    tienda: str = '',
+    precio: int = 0,
+) -> str:
+    """Sin ficha no hay stock verificado. La referencia es la de esta línea."""
+    casa = str(nombre or '').strip() or 'La casa'
+    auto = marca_visible(marca)
+    base = f'{casa} (especialista {auto}): consulta disponibilidad y precio.'
+    casa_ref = str(tienda or '').strip()
+    try:
+        monto = int(precio or 0)
+    except (TypeError, ValueError):
+        monto = 0
+    if not casa_ref or monto <= 0:
+        return base
+    return f'{base} Referencia: {casa_ref} {_pesos(monto)}.'
 
 
 def nota_solo_en_linea(nombre: str) -> str:

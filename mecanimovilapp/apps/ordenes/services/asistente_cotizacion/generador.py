@@ -910,14 +910,24 @@ def _aplicar_seleccion_casa_repuestos(
     return repuestos_finales
 
 
-def _comuna_del_taller(taller) -> str:
+def _lugar_del_taller(taller) -> str:
+    """Calle, número, comuna y ciudad configurados. Vacío si no hay dirección."""
     if taller is None:
         return ''
+    partes: list[str] = []
     try:
         direccion = taller.direccion_fisica
     except Exception:
-        return ''
-    return str(getattr(direccion, 'comuna', '') or '')
+        direccion = None
+    if direccion is not None:
+        partes.extend(
+            str(getattr(direccion, campo, '') or '')
+            for campo in ('calle', 'numero', 'comuna', 'ciudad', 'detalles_adicionales')
+        )
+    usuario = getattr(taller, 'usuario', None)
+    if usuario is not None:
+        partes.append(str(getattr(usuario, 'direccion', '') or ''))
+    return ' '.join(p.strip() for p in partes if p and str(p).strip())
 
 
 def _aplicar_prioridad_de_taller(repuestos: list[dict[str, Any]], *, marca: str, taller) -> None:
@@ -932,6 +942,7 @@ def _aplicar_prioridad_de_taller(repuestos: list[dict[str, Any]], *, marca: str,
         es_solo_en_linea,
         especialista_de_la_ficha,
         especialistas_de_marca,
+        nota_consulta_especialista,
         nota_especialista,
         nota_solo_en_linea,
         sucursal_para,
@@ -946,7 +957,7 @@ def _aplicar_prioridad_de_taller(repuestos: list[dict[str, Any]], *, marca: str,
     marca = str(marca or '').strip()
     if not marca or not repuestos:
         return
-    comuna = _comuna_del_taller(taller)
+    lugar = _lugar_del_taller(taller)
     especialistas = especialistas_de_marca(marca)
     perfil_marca = especialistas[0] if especialistas else None
 
@@ -960,7 +971,7 @@ def _aplicar_prioridad_de_taller(repuestos: list[dict[str, Any]], *, marca: str,
         url = str(rep.get('url_producto') or '').strip()
         perfil = especialista_de_la_ficha(casa, url, marca)
         if perfil:
-            sucursal = sucursal_para(perfil, marca, comuna)
+            sucursal = sucursal_para(perfil, marca, lugar)
             rep['casa_sucursal'] = texto_sucursal(sucursal)
             rep['casa_telefono'] = str(perfil.get('telefono') or '')
             rep['precio_a_consultar'] = False
@@ -971,14 +982,14 @@ def _aplicar_prioridad_de_taller(repuestos: list[dict[str, Any]], *, marca: str,
 
             perfil_fisico = perfil_de(casa, url)
             if perfil_fisico:
-                sucursal = sucursal_para(perfil_fisico, marca, comuna)
+                sucursal = sucursal_para(perfil_fisico, marca, lugar)
                 rep['casa_sucursal'] = texto_sucursal(sucursal)
                 rep['casa_telefono'] = str(perfil_fisico.get('telefono') or '')
             continue
         # Sin ficha de una casa física: la especialista de la marca, a consultar.
         # El monto que ya había queda como referencia de la otra tienda.
         if perfil_marca:
-            sucursal = sucursal_para(perfil_marca, marca, comuna)
+            sucursal = sucursal_para(perfil_marca, marca, lugar)
             visible_ref = nombre_tienda_visible(casa) or casa
             try:
                 precio = int(rep.get('precio_unitario_clp') or 0)
@@ -997,16 +1008,16 @@ def _aplicar_prioridad_de_taller(repuestos: list[dict[str, Any]], *, marca: str,
         if casa and es_solo_en_linea(casa, url):
             rep['_solo_en_linea'] = nombre_tienda_visible(casa) or casa
 
-    nombres = [
-        str(rep.get('_perfil_especialista') or '')
-        for rep in repuestos
+    verificados = [
+        rep for rep in repuestos
         if isinstance(rep, dict)
+        and rep.get('_perfil_especialista')
+        and not rep.get('_a_consultar')
     ]
     cubre_todo = (
         len(repuestos) >= 2
-        and len(nombres) == len(repuestos)
-        and len(set(nombres)) == 1
-        and '' not in nombres
+        and len(verificados) == len(repuestos)
+        and len({str(rep.get('_perfil_especialista') or '') for rep in verificados}) == 1
     )
     for rep in repuestos:
         if not isinstance(rep, dict):
@@ -1015,19 +1026,24 @@ def _aplicar_prioridad_de_taller(repuestos: list[dict[str, Any]], *, marca: str,
         a_consultar = bool(rep.pop('_a_consultar', False))
         solo = str(rep.pop('_solo_en_linea', '') or '')
         if perfil_nombre:
-            nota = recortar_nota(nota_especialista(
-                perfil_nombre,
-                marca,
-                cubre_todo=cubre_todo and not a_consultar,
-                a_consultar=a_consultar or (cubre_todo and a_consultar),
-            ))
-            if cubre_todo and a_consultar:
-                nota = recortar_nota(nota_especialista(
-                    perfil_nombre, marca, cubre_todo=True, a_consultar=True,
+            if a_consultar:
+                try:
+                    ref_precio = int(rep.get('precio_referencia_clp') or 0)
+                except (TypeError, ValueError):
+                    ref_precio = 0
+                nota = recortar_nota(nota_consulta_especialista(
+                    perfil_nombre,
+                    marca,
+                    tienda=str(rep.get('referencia_tienda') or ''),
+                    precio=ref_precio,
                 ))
             elif cubre_todo:
                 nota = recortar_nota(nota_especialista(
                     perfil_nombre, marca, cubre_todo=True, a_consultar=False,
+                ))
+            else:
+                nota = recortar_nota(nota_especialista(
+                    perfil_nombre, marca, cubre_todo=False, a_consultar=False,
                 ))
         elif solo:
             nota = recortar_nota(nota_solo_en_linea(solo))
@@ -1267,6 +1283,8 @@ def generar_cotizacion_ia(
             'valores_estimativos': bool(contenido.get('valores_estimativos', True)),
         }
 
+    if taller is not None:
+        ctx = {**ctx, 'taller': taller}
     contenido = normalizar_cotizacion_ia(crudo, ctx)
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.completar_pedido import (
         completar_pedido_con_faena,

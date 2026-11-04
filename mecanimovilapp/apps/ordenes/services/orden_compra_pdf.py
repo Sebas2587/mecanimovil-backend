@@ -76,6 +76,34 @@ def _precio_linea(rep: dict) -> str:
     return f'Referencia {_pesos(monto)}'
 
 
+def _sucursal_para_pdf(cotizacion, casa: str, muestra: dict) -> tuple[str, str]:
+    """La sucursal sigue la dirección actual del taller, no la que quedó guardada."""
+    from mecanimovilapp.apps.ordenes.casas_especialistas import (
+        perfil_de,
+        sucursal_para,
+        texto_sucursal,
+    )
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador import (
+        _lugar_del_taller,
+    )
+
+    guardada = _txt(muestra.get('casa_sucursal'))
+    telefono = _txt(muestra.get('casa_telefono'))
+    lugar = _lugar_del_taller(getattr(cotizacion, 'taller', None))
+    perfil = perfil_de(casa) if lugar else None
+    if not perfil:
+        return guardada, telefono
+    sucursal = sucursal_para(
+        perfil,
+        str(getattr(cotizacion, 'vehiculo_marca', '') or ''),
+        lugar,
+    )
+    texto = texto_sucursal(sucursal)
+    if texto:
+        return texto, str(perfil.get('telefono') or telefono)
+    return guardada, telefono
+
+
 def generar_pdf_orden_compra(cotizacion) -> bytes:
     taller = getattr(cotizacion, 'taller', None)
     nombre_taller = _txt(getattr(taller, 'nombre', '') or '') or 'Taller'
@@ -114,8 +142,7 @@ def generar_pdf_orden_compra(cotizacion) -> bytes:
     for casa, lineas in grupos:
         pdf._parrafo(casa, bold=True, size=12)
         muestra = next((r for r in lineas if _txt(r.get('casa_sucursal') or r.get('casa_telefono'))), lineas[0])
-        sucursal = _txt(muestra.get('casa_sucursal'))
-        telefono = _txt(muestra.get('casa_telefono'))
+        sucursal, telefono = _sucursal_para_pdf(cotizacion, casa, muestra)
         if sucursal:
             pdf._parrafo(sucursal)
         if telefono:
