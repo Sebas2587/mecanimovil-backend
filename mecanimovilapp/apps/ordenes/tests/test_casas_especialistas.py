@@ -892,3 +892,72 @@ class ReferenciaBujiaEnLaTareaTests(TestCase):
         self.assertIn('$9.000', texto)
         self.assertNotIn('36.000', texto)
         self.assertNotIn('28.432', texto)
+
+
+class PastillaRechazadaSigueEnElPedidoTests(TestCase):
+    """Una ficha que no pasa la compuerta no se lleva la línea de pastillas."""
+
+    def test_el_hit_viejo_no_borra_la_linea_ni_el_pdf(self):
+        user = User.objects.create_user(
+            username='pastilla_210', password='x', email='p210@test.cl',
+        )
+        taller = Taller.objects.create(usuario=user, nombre='Mecanimovil', telefono='1')
+        cot = CotizacionCanal.objects.create(
+            taller=taller,
+            creado_por=user,
+            estado='borrador',
+            modalidad='taller',
+            vehiculo_marca='FIAT',
+            vehiculo_modelo='Bravo',
+            vehiculo_anio=2010,
+            vehiculo_cilindraje='1.4',
+            tipo_motor='T-Jet',
+            servicio_nombre='Mantención con pastillas de freno',
+            repuestos=[{
+                'id': 'pastillas',
+                'nombre': 'Pastillas de freno',
+                'cantidad': 1,
+                'precio_unitario_clp': 55000,
+                'precio_min_clp': 28000,
+                'precio_max_clp': 55000,
+                'certeza': 'asumido',
+                'precio_estimado': True,
+                'fuente_marketplace': 'estimado',
+            }],
+            metadata={'busqueda_web_estado': 'pendiente'},
+        )
+
+        def _hit_viejo(nombres, **kwargs):
+            return {
+                'pastillas freno': {
+                    'nombre_producto': 'Pastillas Fiat Linea 1.4 1995-2001',
+                    'nombre_buscado': 'Pastillas de freno',
+                    'url': 'https://www.lider.cl/pastillas-linea-1995',
+                    'tienda': 'Lider',
+                    'dominio': 'lider.cl',
+                    'precio_clp': 21390,
+                    'compatibilidad': 'alta',
+                    'confianza': 0.9,
+                },
+            }
+
+        from mecanimovilapp.apps.ordenes.tasks import buscar_precios_web_cotizacion_task
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.busqueda_web_habilitada',
+            return_value=True,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.buscar_repuestos_web',
+            side_effect=_hit_viejo,
+        ):
+            result = buscar_precios_web_cotizacion_task(cot.id)
+
+        self.assertTrue(result.get('ok'), result)
+        cot.refresh_from_db()
+        nombres = [str(r.get('nombre') or '') for r in cot.repuestos if isinstance(r, dict)]
+        self.assertTrue(any('pastilla' in n.lower() for n in nombres), nombres)
+        linea = next(r for r in cot.repuestos if 'pastilla' in str(r.get('nombre') or '').lower())
+        self.assertNotEqual(linea.get('proveedor_nombre'), 'Lider')
+        self.assertNotIn('1995', linea.get('motivo_seleccion') or '')
+        texto = _texto_pdf(generar_pdf_orden_compra(cot))
+        self.assertIn('Pastillas', texto)
