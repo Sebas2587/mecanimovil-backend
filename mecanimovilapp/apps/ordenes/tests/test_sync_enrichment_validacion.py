@@ -230,7 +230,7 @@ class SyncEnrichmentValidacionTestCase(TestCase):
             usar_web=True,
         )
         aceite = out[0]
-        self.assertEqual(aceite.get('proveedor_nombre'), 'Todoautochile')
+        self.assertEqual(aceite.get('proveedor_nombre'), 'TodoAuto')
         self.assertEqual(aceite.get('nombre_producto'), 'Aceite 5W40 4L')
         self.assertEqual(aceite.get('precio_unitario_clp'), 9990)
         self.assertNotIn('Bomba', aceite.get('nombre_producto') or '')
@@ -269,13 +269,13 @@ class SyncEnrichmentValidacionTestCase(TestCase):
         for rep in out:
             self.assertFalse(rep['consolidacion_aplicada'])
             self.assertNotIn('una sola casa', (rep.get('motivo_seleccion') or '').lower())
-        self.assertEqual(out[0]['proveedor_nombre'], 'Mundorepuestos')
+        self.assertEqual(out[0]['proveedor_nombre'], 'Mundo Repuestos')
         self.assertEqual(out[0]['casa_repuesto_nombre'], 'Mundo Repuestos')
         self.assertIn('mundo repuestos', out[0]['motivo_seleccion'].lower())
         self.assertNotIn('mundorepuestos', out[0]['motivo_seleccion'].lower())
         self.assertIn('mejor precio encontrado', out[0]['motivo_seleccion'].lower())
         self.assertLessEqual(len(out[0]['motivo_seleccion']), 160)
-        self.assertEqual(out[1]['proveedor_nombre'], 'Todoautochile')
+        self.assertEqual(out[1]['proveedor_nombre'], 'TodoAuto')
         self.assertIn('todoauto', out[1]['motivo_seleccion'].lower())
         self.assertNotIn('todoautochile', out[1]['motivo_seleccion'].lower())
         self.assertIn('no encontramos', out[2]['motivo_seleccion'].lower())
@@ -305,8 +305,8 @@ class SyncEnrichmentValidacionTestCase(TestCase):
             },
         ]
         out = _aplicar_seleccion_casa_repuestos(repuestos)
-        self.assertEqual(out[0]['proveedor_nombre'], 'Mundorepuestos')
-        self.assertEqual(out[1]['proveedor_nombre'], 'Todoautochile')
+        self.assertEqual(out[0]['proveedor_nombre'], 'Mundo Repuestos')
+        self.assertEqual(out[1]['proveedor_nombre'], 'TodoAuto')
         for rep in out:
             self.assertFalse(rep['consolidacion_aplicada'])
             self.assertNotIn('una sola casa', rep['motivo_seleccion'].lower())
@@ -345,7 +345,7 @@ class SyncEnrichmentValidacionTestCase(TestCase):
         self.assertEqual(len(out), 3)
         for rep in out:
             self.assertTrue(rep['consolidacion_aplicada'])
-            self.assertEqual(rep['proveedor_nombre'], 'Mundorepuestos')
+            self.assertEqual(rep['proveedor_nombre'], 'Mundo Repuestos')
             self.assertEqual(rep['casa_repuesto_nombre'], 'Mundo Repuestos')
             self.assertIn('mundo repuestos', rep['motivo_seleccion'].lower())
             self.assertNotIn('mundorepuestos', rep['motivo_seleccion'].lower())
@@ -505,7 +505,7 @@ class SyncEnrichmentValidacionTestCase(TestCase):
             usar_web=True,
         )
         aceite = out[0]
-        self.assertEqual(aceite.get('proveedor_nombre'), 'Todoautochile')
+        self.assertEqual(aceite.get('proveedor_nombre'), 'TodoAuto')
         self.assertEqual(aceite.get('precio_unitario_clp'), 9990)
         self.assertIn('litro', (aceite.get('comentario') or '').lower())
 

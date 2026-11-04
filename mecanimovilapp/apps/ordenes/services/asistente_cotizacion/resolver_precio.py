@@ -215,7 +215,12 @@ def _anotar_ficha_en_linea(next_rep: dict[str, Any], hit: dict[str, Any]) -> Non
     nombre_prod = str(hit.get('nombre_producto') or hit.get('nombre') or '').strip()[:200]
     if nombre_prod:
         next_rep['nombre_producto'] = nombre_prod
-    tienda = str(hit.get('proveedor_nombre') or hit.get('tienda') or hit.get('tienda_ml') or '').strip()[:200]
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+        nombre_tienda_visible,
+    )
+
+    cruda = str(hit.get('proveedor_nombre') or hit.get('tienda') or hit.get('tienda_ml') or '').strip()
+    tienda = (nombre_tienda_visible(cruda) or cruda)[:200]
     if tienda and not str(next_rep.get('proveedor_nombre') or '').strip():
         next_rep['proveedor_nombre'] = tienda
 

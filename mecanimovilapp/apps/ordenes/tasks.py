@@ -822,6 +822,9 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
             from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.calidad_repuesto import (
                 detectar_calidad,
             )
+            from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+                nombre_tienda_visible,
+            )
 
             calidad = str(hit.get('calidad') or '').strip().lower()
             if calidad not in ('original', 'oem', 'alternativo'):
@@ -845,7 +848,10 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                     'nombre_producto': str(hit.get('nombre_producto') or '')[:200],
                     'marca_repuesto': str(hit.get('marca_repuesto') or '')[:100],
                     'precio_clp': int(hit.get('precio_clp') or 0),
-                    'tienda': str(hit.get('tienda') or '')[:200],
+                    'tienda': (
+                        nombre_tienda_visible(str(hit.get('tienda') or ''))
+                        or str(hit.get('tienda') or '')
+                    )[:200],
                     'url': str(hit.get('url') or '')[:500],
                     'compatibilidad': str(hit.get('compatibilidad') or '')[:20],
                     'confianza': float(hit.get('confianza') or 0.8),
@@ -1063,7 +1069,13 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                         str(hit.get('nombre_producto') or ''),
                     )
                 if hit.get('tienda'):
-                    next_rep['proveedor_nombre'] = str(hit['tienda'])[:200]
+                    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+                        nombre_tienda_visible,
+                    )
+
+                    next_rep['proveedor_nombre'] = (
+                        nombre_tienda_visible(str(hit['tienda'])) or str(hit['tienda'])
+                    )[:200]
                 if hit.get('url'):
                     next_rep['url_producto'] = str(hit['url'])[:500]
                 if hit.get('nombre_producto'):

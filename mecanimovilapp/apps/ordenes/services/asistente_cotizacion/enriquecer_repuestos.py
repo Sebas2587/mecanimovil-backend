@@ -1028,6 +1028,16 @@ def _nota_corta_para_linea(
     )
 
 
+def _nota_empieza_con_tienda(texto: str, tienda: str) -> bool:
+    """«TodoAuto: …» sí. «Todoautochile: …» no, aunque empiece por las mismas letras."""
+    bajo = str(texto or '').strip().lower()
+    casa = str(tienda or '').strip().lower()
+    if not bajo or not casa or not bajo.startswith(casa):
+        return False
+    resto = bajo[len(casa):]
+    return resto[:1] in ('', ':', ',', '.', ' ')
+
+
 def _motivo_ya_es_corto(texto: str, *, tienda: str, hay_tienda: bool) -> bool:
     t = str(texto or '').strip()
     if not t:
@@ -1037,7 +1047,7 @@ def _motivo_ya_es_corto(texto: str, *, tienda: str, hay_tienda: bool) -> bool:
     if not (_es_nota_mecanico(t) and len(t) <= _NOTA_MAX and not contiene_nota_prohibida(t)):
         return False
     if hay_tienda and tienda:
-        return t.lower().startswith(tienda.lower())
+        return _nota_empieza_con_tienda(t, tienda)
     return True
 
 
@@ -1078,6 +1088,8 @@ def sanear_notas_linea(
     hay = _hay_tienda_en_linea(linea)
     if hay and tienda:
         linea['casa_repuesto_nombre'] = tienda
+        if str(linea.get('proveedor_nombre') or '').strip():
+            linea['proveedor_nombre'] = tienda
     motivo = str(linea.get('motivo_seleccion') or '')
     if not _motivo_ya_es_corto(motivo, tienda=tienda, hay_tienda=hay):
         linea['motivo_seleccion'] = _nota_corta_para_linea(
@@ -1090,7 +1102,11 @@ def sanear_notas_linea(
             motivo_interno=motivo,
         )
     comentario = str(linea.get('comentario') or '')
-    if nota_visible_debe_reemplazarse(comentario):
+    nota_con_slug = (
+        hay and tienda and _es_nota_mecanico(comentario)
+        and not _nota_empieza_con_tienda(comentario, tienda)
+    )
+    if nota_visible_debe_reemplazarse(comentario) or nota_con_slug:
         linea['comentario'] = str(linea.get('motivo_seleccion') or '') or _nota_corta_para_linea(
             linea,
             marca=marca,
@@ -1810,11 +1826,14 @@ def _candidatos_web_cache(
             if dominio in ('historial-taller', 'historial_taller'):
                 fuente = 'historial'
                 conf = float(row.confianza or _CONF_HISTORIAL)
-                proveedor = str(row.tienda or 'Historial del taller')[:200]
+                proveedor = (
+                    nombre_tienda_visible(str(row.tienda or ''))
+                    or 'Historial del taller'
+                )[:200]
             else:
                 fuente = 'web'
                 conf = float(row.confianza or _CONF_WEB)
-                proveedor = str(row.tienda or '')[:200]
+                proveedor = (nombre_tienda_visible(str(row.tienda or '')) or str(row.tienda or ''))[:200]
             hit = _hit(
                 nombre=str(row.nombre_producto or '')[:200],
                 marca_repuesto=marca,
@@ -1874,13 +1893,15 @@ def _aplicar_hit_campos(next_rep: dict[str, Any], hit: dict[str, Any]) -> None:
 
     proveedor_actual = str(next_rep.get('proveedor_nombre') or '').strip()
     if hit.get('proveedor_nombre') and (not proveedor_actual or puede_reemplazar):
-        next_rep['proveedor_nombre'] = hit['proveedor_nombre']
+        crudo = str(hit['proveedor_nombre'])
+        next_rep['proveedor_nombre'] = (nombre_tienda_visible(crudo) or crudo)[:200]
 
     tienda_actual = str(next_rep.get('tienda_ml') or '').strip()
     if hit.get('tienda_ml') and (not tienda_actual or puede_reemplazar):
         next_rep['tienda_ml'] = hit['tienda_ml']
         if not str(next_rep.get('proveedor_nombre') or '').strip():
-            next_rep['proveedor_nombre'] = hit['tienda_ml']
+            crudo_ml = str(hit['tienda_ml'])
+            next_rep['proveedor_nombre'] = (nombre_tienda_visible(crudo_ml) or crudo_ml)[:200]
 
     url_actual = str(next_rep.get('url_producto') or '').strip()
     if hit.get('url_producto') and (not url_actual or puede_reemplazar):

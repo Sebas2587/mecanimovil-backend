@@ -56,15 +56,20 @@ def lineas_progreso_desde_repuestos(
         fuente_linea = str(
             raw.get('proveedor_nombre') or raw.get('fuente_marketplace') or '',
         ).strip()
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            nombre_tienda_visible,
+        )
+
         if precio_hit > 0:
             estado = 'ok'
-            fuente = str((hit or {}).get('tienda') or fuente_linea)[:80]
+            cruda = str((hit or {}).get('tienda') or fuente_linea)
+            fuente = (nombre_tienda_visible(cruda) or cruda)[:80]
             precio = precio_hit
         elif precio_linea > 0 and str(raw.get('fuente_marketplace') or '') in (
             'catalogo', 'historial', 'proveedor', 'web', 'mercadolibre',
         ):
             estado = 'ok'
-            fuente = fuente_linea[:80]
+            fuente = (nombre_tienda_visible(fuente_linea) or fuente_linea)[:80]
             precio = precio_linea
         elif buscando_clave and clave == buscando_clave:
             estado = 'buscando'

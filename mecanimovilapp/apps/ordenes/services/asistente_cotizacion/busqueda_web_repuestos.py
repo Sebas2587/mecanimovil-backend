@@ -87,7 +87,8 @@ def _fuentes() -> list[dict[str, str]]:
         plantilla = str(item.get('plantilla') or '').strip()
         if not dominio or not plantilla or '{q}' not in plantilla:
             continue
-        out.append({'nombre': nombre or dominio, 'dominio': dominio, 'plantilla': plantilla})
+        visible = _canon_nombre_tienda(nombre) or nombre or dominio
+        out.append({'nombre': visible, 'dominio': dominio, 'plantilla': plantilla})
     return out
 
 
@@ -108,8 +109,9 @@ def _especialistas() -> list[dict[str, Any]]:
         if not alias:
             continue
         marcas = item.get('marcas') or []
+        crudo = str(item.get('nombre') or alias).strip()
         out.append({
-            'nombre': str(item.get('nombre') or alias).strip(),
+            'nombre': _canon_nombre_tienda(crudo) or crudo,
             'alias': alias,
             'dominio': str(item.get('dominio') or '').strip().lower(),
             'marcas': [_norm(m) for m in marcas if str(m or '').strip()],
@@ -1681,11 +1683,45 @@ def _sld_host(host: str) -> str:
     return base[-1] if base else ''
 
 
+# Slug compacto (sin espacios) → nombre que ve el taller. El más largo primero.
+_ALIAS_TIENDA = (
+    ('comercialramirezspa', 'Comercial Ramírez'),
+    ('comercialramirez', 'Comercial Ramírez'),
+    ('repuestossergioescobar', 'Repuestos Sergio Escobar'),
+    ('sergioescobar', 'Repuestos Sergio Escobar'),
+    ('casadelembrague', 'Casa del Embrague'),
+    ('mundorepuestos', 'Mundo Repuestos'),
+    ('todoautochile', 'TodoAuto'),
+    ('todoembragues', 'Todo Embragues'),
+    ('frenosvergara', 'Frenos Vergara'),
+    ('repuestosank', 'Repuestos Ank'),
+    ('mercadolibre', 'Mercado Libre'),
+    ('autoplanet', 'AutoPlanet'),
+    ('todoauto', 'TodoAuto'),
+    ('lider', 'Lider'),
+    ('refax', 'Refax'),
+    ('indra', 'Indra'),
+    ('emasa', 'Emasa'),
+    ('ciper', 'Ciper'),
+)
+_SUFIJOS_SLUG_TIENDA = ('chile', 'spa', 'shop', 'store', 'online', 'cl')
+
+
+def _compacto_tienda(nombre: str) -> str:
+    return re.sub(r'[^a-z0-9]', '', _norm(nombre))
+
+
 def _canon_nombre_tienda(nombre: str) -> str:
-    """El nombre que ya usa la cotización, no el primer rótulo DNS."""
+    """El nombre que ya usa la cotización, no el slug del dominio."""
     crudo = str(nombre or '').strip()
     if not crudo:
         return ''
+    compacto = _compacto_tienda(crudo)
+    for slug, visible in _ALIAS_TIENDA:
+        if compacto == slug or compacto.startswith(slug):
+            resto = compacto[len(slug):]
+            if resto == '' or resto in _SUFIJOS_SLUG_TIENDA:
+                return visible
     n = _norm(crudo)
     if 'sergio' in n and 'escobar' in n:
         return 'Repuestos Sergio Escobar'
@@ -1695,8 +1731,6 @@ def _canon_nombre_tienda(nombre: str) -> str:
         return 'Frenos Vergara'
     if 'comercial' in n and 'ramirez' in n:
         return 'Comercial Ramírez'
-    if 'todoauto' in n:
-        return 'TodoAuto'
     limpio = re.sub(r'\s+chile\s*$', '', crudo, flags=re.I).strip(' |-')
     return limpio[:200]
 
@@ -1706,9 +1740,9 @@ def _tienda_por_dominio(dominio: str) -> str:
     for fuente in _fuentes():
         d = fuente['dominio']
         if host == d or host.endswith('.' + d.lstrip('www.')) or d in host:
-            return fuente['nombre']
+            return _canon_nombre_tienda(fuente['nombre']) or fuente['nombre']
         if _sld_host(host) and _sld_host(host) == _sld_host(d):
-            return fuente['nombre']
+            return _canon_nombre_tienda(fuente['nombre']) or fuente['nombre']
     if 'mercadolibre' in host:
         return 'Mercado Libre'
     sld = _sld_host(host)
@@ -1717,7 +1751,7 @@ def _tienda_por_dominio(dominio: str) -> str:
         if d and (
             host == d or host.endswith('.' + d) or d in host or (sld and sld == _sld_host(d))
         ):
-            return esp.get('nombre') or d
+            return _canon_nombre_tienda(esp.get('nombre') or d) or (esp.get('nombre') or d)
     # 'repuestos.sergioescobar.cl' no se llama "Repuestos": esa etiqueta es genérica.
     labels = host.removeprefix('www.').split('.')
     raiz = (labels[0] if labels else '').replace('-', ' ').strip()
@@ -1923,7 +1957,10 @@ def _validar_resultado(
     if not marca:
         marca = attrs['marca_repuesto']
     calidad, pais = _calidad_pais_de_item(item, attrs)
-    tienda = str(item.get('tienda') or '').strip()[:200] or _tienda_por_dominio(host)
+    tienda = (
+        _canon_nombre_tienda(str(item.get('tienda') or '').strip())
+        or _tienda_por_dominio(host)
+    )[:200]
     if not marca and not tienda and not precio_ok:
         return None
     compat = str(item.get('compatibilidad') or '').strip().lower()[:20]
@@ -4911,7 +4948,7 @@ def hits_cache_vigentes_para_nombres(
             'nombre_producto': str(row.nombre_producto or '')[:200],
             'marca_repuesto': marca,
             'precio_clp': int(precio_usar or 0),
-            'tienda': str(row.tienda or '')[:200],
+            'tienda': (_canon_nombre_tienda(str(row.tienda or '')) or str(row.tienda or ''))[:200],
             'dominio': str(row.dominio or '')[:200],
             'url': str(row.url or '')[:500],
             'compatibilidad': str(row.compatibilidad or 'media')[:20],
