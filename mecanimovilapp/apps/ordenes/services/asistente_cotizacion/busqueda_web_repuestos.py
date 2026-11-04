@@ -1718,16 +1718,27 @@ def _consultas_aceite_motor(nombre: str, especificacion: str = '') -> list[str]:
     return ['aceite motor 4 litros', 'aceite motor 1 litro']
 
 
+def _bravo_tjet(modelo: str, tipo_motor: str) -> bool:
+    """Bravo II T-Jet. El 1.4 atmosférico usa otra pastilla."""
+    texto = _norm(f'{modelo} {tipo_motor}')
+    return 'bravo' in texto and ('tjet' in texto or 't jet' in texto)
+
+
 def _consultas_pastillas(
     nombre: str,
     *,
     marca: str,
     modelo: str,
     cilindraje: str,
+    tipo_motor: str = '',
 ) -> list[str]:
-    """'pastillas freno delanteras fiat bravo 1.4' y 'pastillas freno fiat bravo'.
+    """Toda la escalera corta, no solo la primera frase.
 
-    El trim (Sport T-Jet) y el año no están en el título de la tienda.
+    'pastillas freno delanteras fiat bravo 1.4', 'pastillas freno fiat bravo'
+    y, si el auto es un Bravo T-Jet, 'pastillas freno fiat linea t-jet'.
+    Fras-le PD/92 (Teves) lista juntos el Bravo 1.4, el Linea 1.4 T-Jet y el
+    Punto 1.4 T-Jet. El Stilo 1.4 no entra: comparte la pastilla chica Bosch
+    (ATE 603982) con el Bravo II 1.4 de 90 hp, no con el T-Jet.
     """
     n = _norm(nombre)
     if 'traser' in n:
@@ -1743,7 +1754,10 @@ def _consultas_pastillas(
         p for p in ['pastillas freno', posicion, marca_q, modelo_corto, cil] if p
     )
     corta = ' '.join(p for p in ['pastillas freno', marca_q, modelo_corto] if p)
-    return [especifica, corta]
+    consultas = [especifica, corta]
+    if posicion != 'traseras' and _bravo_tjet(modelo, tipo_motor):
+        consultas.append('pastillas freno fiat linea t-jet')
+    return consultas
 
 
 def _escalera_consultas(
@@ -1769,7 +1783,11 @@ def _escalera_consultas(
         consultas = _consultas_aceite_motor(nombre, especificacion)
     elif _es_pastillas_freno(nombre):
         consultas = _consultas_pastillas(
-            nombre, marca=marca, modelo=modelo, cilindraje=cilindraje,
+            nombre,
+            marca=marca,
+            modelo=modelo,
+            cilindraje=cilindraje,
+            tipo_motor=tipo_motor,
         )
     else:
         consultas = _escalera_consultas_vehiculo(
@@ -2098,11 +2116,15 @@ def _buscar_repuestos_web_tavily(
                 )
                 and _titulo_nombra_pieza(nombre, str(c.get('title') or ''))
             ]
-            # Ficha de LA MISMA pieza con monto: listo.
-            if any(_precio_desde_texto(c.get('content') or '', nombre) > 0 for c in sirven):
-                break
-            if len({c['url'] for c in sirven}) >= 2:
-                break
+            # Ficha de LA MISMA pieza con monto: listo, salvo pastillas.
+            # La primera consulta ("...delanteras fiat bravo 1.4") puede traer
+            # un snippet con precio que no es la ficha, y ahí se cortaba antes
+            # de "pastillas freno fiat bravo".
+            if not _es_pastillas_freno(nombre):
+                if any(_precio_desde_texto(c.get('content') or '', nombre) > 0 for c in sirven):
+                    break
+                if len({c['url'] for c in sirven}) >= 2:
+                    break
             # Otra pieza (enfriador, piola) corta. Un listado genérico no:
             # la consulta siguiente puede ser la ficha real.
             otra_pieza = [
