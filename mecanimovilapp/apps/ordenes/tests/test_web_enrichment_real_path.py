@@ -404,3 +404,96 @@ class WebEnrichmentRealPathTestCase(TestCase):
         self.assertEqual(por_id['rep-aceite']['proveedor_nombre'], 'Todoautochile')
         self.assertNotIn('Bomba', por_id['rep-aceite'].get('nombre_producto') or '')
         self.assertNotEqual(por_id['rep-aceite']['precio_unitario_clp'], 62991)
+
+    def test_filtro_en_el_medio_no_le_pasa_el_aceite_a_las_pastillas(self):
+        """Tres líneas: el filtro se inserta al medio y el aceite vuelve renombrado.
+
+        El write-back tiene que usar el id de la línea. Por posición, el
+        filtro nuevo se quedaría con las pastillas y las pastillas con el aceite.
+        """
+        from mecanimovilapp.apps.ordenes.tasks import buscar_precios_web_cotizacion_task
+
+        cot = self._crear_cotizacion_base([
+            {
+                'id': 'rep-pastillas',
+                'nombre': 'Pastillas de freno delanteras',
+                'cantidad': 1,
+                'precio_unitario_clp': 0,
+                'precio_min_clp': 28000,
+                'precio_max_clp': 70000,
+                'certeza': 'sin_precio',
+            },
+            {
+                'id': 'rep-aceite',
+                'nombre': 'Aceite de motor',
+                'cantidad': 3,
+                'precio_unitario_clp': 0,
+                'precio_min_clp': 8000,
+                'precio_max_clp': 15000,
+                'certeza': 'sin_precio',
+            },
+        ])
+        filtro = {
+            'nombre': 'Filtro de aceite',
+            'cantidad': 1,
+            'precio_unitario_clp': 10990,
+            'proveedor_nombre': 'Todoautochile',
+            'fuente_marketplace': 'catalogo',
+            'nombre_producto': 'Filtro de aceite Mann',
+            'url_producto': 'https://www.todoautochile.cl/filtro-aceite-bravo',
+        }
+
+        def _tavily(nombres, **kwargs):
+            cot.repuestos = [filtro, *list(cot.repuestos or [])]
+            cot.save(update_fields=['repuestos', 'actualizado_en'])
+            return {
+                'aceite motor liqui moly': {
+                    'linea_id': 'rep-aceite',
+                    'nombre_buscado': 'Aceite de motor Liqui Moly',
+                    'nombre_producto': 'Aceite Para Motor Liqui Moly Sintético 5w-40 4L',
+                    'precio_clp': 39960,
+                    'tienda': 'Repuestos Sergio Escobar',
+                    'url': 'https://www.mundorepuestos.cl/producto/aceite-liqui-moly-5w40-4l',
+                    'dominio': 'mundorepuestos.cl',
+                },
+                'pastillas freno delanteras': {
+                    'linea_id': 'rep-pastillas',
+                    'nombre_buscado': 'Pastillas de freno delanteras',
+                    'nombre_producto': 'Pastillas de Freno Delanteras Fiat Bravo 1.4 T-Jet',
+                    'precio_clp': 28990,
+                    'tienda': 'Frenos Vergara',
+                    'url': 'https://frenosvergara.shop/products/pastillas-fiat-bravo',
+                    'dominio': 'frenosvergara.shop',
+                },
+            }
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.busqueda_web_habilitada',
+            return_value=True,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.buscar_repuestos_web',
+            side_effect=_tavily,
+        ), self.assertLogs('mecanimovilapp.apps.ordenes.tasks', level='INFO') as logs:
+            result = buscar_precios_web_cotizacion_task(cot.id)
+
+        self.assertTrue(result.get('ok'))
+        cot.refresh_from_db()
+        nombres = [r.get('nombre') for r in cot.repuestos]
+        self.assertIn('Filtro de aceite', nombres)
+        por_id = {r['id']: r for r in cot.repuestos if r.get('id')}
+        pads = por_id['rep-pastillas']
+        aceite = por_id['rep-aceite']
+        self.assertIn('frenosvergara.shop', pads.get('url_producto') or '')
+        self.assertIn('Pastillas', pads.get('nombre_producto') or '')
+        self.assertNotIn('Liqui', pads.get('nombre_producto') or '')
+        self.assertEqual(pads.get('precio_unitario_clp'), 28990)
+        self.assertIn('mundorepuestos.cl', aceite.get('url_producto') or '')
+        self.assertIn('Liqui Moly', aceite.get('nombre_producto') or '')
+        self.assertNotIn('Pastillas', aceite.get('nombre_producto') or '')
+        filtro_guardado = next(r for r in cot.repuestos if r.get('nombre') == 'Filtro de aceite')
+        self.assertEqual(filtro_guardado.get('proveedor_nombre'), 'Todoautochile')
+        self.assertNotIn('frenosvergara', filtro_guardado.get('url_producto') or '')
+        texto = '\n'.join(logs.output)
+        self.assertIn('elegido id=rep-pastillas', texto)
+        self.assertIn('Pastillas de Freno Delanteras Fiat Bravo', texto)
+        self.assertIn('elegido id=rep-aceite', texto)
