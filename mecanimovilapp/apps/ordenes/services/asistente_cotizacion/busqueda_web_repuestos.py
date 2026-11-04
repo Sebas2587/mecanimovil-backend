@@ -428,6 +428,94 @@ def precio_unitario_desde_envase(nombre: str, precio_ficha: int, titulo: str) ->
     return por_litro, nota
 
 
+_RE_PACK = re.compile(
+    r'(?:juego|set|pack|kit)\s+de\s+(\d{1,2})'
+    r'|(\d{1,2})\s+unidades'
+    r'|(?:^|[^0-9])x\s*(\d{1,2})(?:[^0-9]|$)',
+    re.IGNORECASE,
+)
+
+
+def unidades_pack(titulo: str) -> int:
+    """Cuántas unidades trae el título. 0 si no es un juego, set o pack."""
+    mejor = 0
+    for match in _RE_PACK.finditer(titulo or ''):
+        raw = next((grupo for grupo in match.groups() if grupo), '')
+        try:
+            n = int(raw)
+        except ValueError:
+            continue
+        if 2 <= n <= 12:
+            mejor = max(mejor, n)
+    return mejor
+
+
+def _monto_bujia_por_unidad(nombre: str, precio: int, titulo: str) -> int:
+    """Un juego de 4 a $32.000 se compara con la banda por bujía, no por el set."""
+    pack = unidades_pack(titulo)
+    if pack < 2 or int(precio or 0) < 20_000 or 'bujia' not in _norm(nombre):
+        return int(precio or 0)
+    return max(1, int(round(int(precio) / pack)))
+
+
+def precio_unitario_desde_pack(
+    nombre: str,
+    precio_ficha: int,
+    titulo: str,
+    cantidad,
+) -> tuple[int, str]:
+    """La línea pide N bujías y la ficha vende el juego. Se cotiza cada una.
+
+    Un 'juego de 4' barato no se parte: puede ser el precio de una sola.
+    Cantidad 1 deja el set como está: el taller está comprando el juego.
+    """
+    precio = int(precio_ficha or 0)
+    if precio <= 0 or 'bujia' not in _norm(nombre):
+        return precio, ''
+    pack = unidades_pack(titulo)
+    try:
+        cant = int(float(cantidad))
+    except (TypeError, ValueError):
+        cant = 0
+    if pack < 2 or cant < pack or precio < 20_000:
+        return precio, ''
+    unit = max(1, int(round(precio / pack)))
+    nota = (
+        f'La ficha es un juego de {pack} bujías a ${precio:,} CLP. '
+        f'Se cotiza ${unit:,} por unidad.'
+    ).replace(',', '.')
+    return unit, nota
+
+
+def precio_unitario_bujia_asumido(
+    nombre: str,
+    precio: int,
+    cantidad,
+    *,
+    tiene_ficha: bool,
+) -> tuple[int, str]:
+    """Sin tienda, $32.000 × 4 en un 1.4 T-Jet es el juego, no cada NGK.
+
+    Una bujía publicada (aunque sea cara) no se parte. Una sola a $15.000
+    tampoco: el corte está en $22.000 y hace falta cantidad 2 o más.
+    """
+    monto = int(precio or 0)
+    if tiene_ficha or monto < 22_000 or 'bujia' not in _norm(nombre):
+        return monto, ''
+    try:
+        cant = int(float(cantidad))
+    except (TypeError, ValueError):
+        return monto, ''
+    if cant < 2:
+        return monto, ''
+    unit = max(1, int(round(monto / cant)))
+    nota = (
+        f'El monto de la IA (${monto:,} CLP) corresponde al juego de {cant} bujías. '
+        f'Se cotiza ${unit:,} por unidad.'
+    ).replace(',', '.')
+    return unit, nota
+
+
 def _query_repuesto(
     nombre: str,
     *,
@@ -1132,6 +1220,44 @@ def _pastilla_es_exacta(candidato: dict[str, Any], modelo: str, tipo_motor: str)
     return _ficha_nombra_modelo_pedido(candidato, modelo, tipo_motor)
 
 
+def _host_de_url(url: str) -> str:
+    try:
+        from urllib.parse import urlparse
+
+        host = (urlparse(url or '').hostname or '').lower()
+    except Exception:
+        return ''
+    return host[4:] if host.startswith('www.') else host
+
+
+def _marcar_respaldo_alto(
+    crudos: list[dict[str, Any]],
+    nombre: str,
+    banda_max: int,
+) -> None:
+    """Dos tiendas distintas, con montos a menos de 40%, sostienen un precio alto.
+
+    Una sola publicación de Mercado Libre a 5× la banda no es evidencia.
+    """
+    techo = int(banda_max or 0)
+    if techo <= 0:
+        return
+    altos: list[tuple[str, int, dict[str, Any]]] = []
+    for cand in crudos:
+        precio = _precio_de_candidato(cand, nombre)
+        if precio <= 0 or precio * 2 <= techo * 5:
+            continue
+        altos.append((_host_de_url(str(cand.get('url') or '')), precio, cand))
+    hosts = {host for host, _, _ in altos if host}
+    if len(hosts) < 2:
+        return
+    precios = [precio for _, precio, _ in altos]
+    if max(precios) * 10 > min(precios) * 14:
+        return
+    for _, _, cand in altos:
+        cand['respaldo_alto'] = True
+
+
 def _rechazo_precio_pastilla(
     candidato: dict[str, Any],
     *,
@@ -1139,18 +1265,33 @@ def _rechazo_precio_pastilla(
     modelo: str,
     tipo_motor: str,
     banda_min: int,
+    banda_max: int = 0,
 ) -> str:
-    """Piso de la banda de la IA. '' si el monto todavía puede cotizarse.
+    """Piso y techo de la banda de la IA. '' si el monto todavía puede cotizarse.
 
     Un título que dice Bravo 1.4 baja el piso al 40%: la banda 28.000–55.000
     deja afuera fichas reales de ese auto. Linea/Punto T-Jet solo calza si el
     precio está dentro de la banda. Un listado genérico sigue en el 50%.
+    Por encima, 2,5× el máximo de la IA es precio_alto_banda en cualquier
+    categoría. Una sola ficha de Mercado Libre a $81.900 no alcanza: hacen
+    falta dos tiendas distintas con montos parecidos.
     """
     precio = _precio_de_candidato(candidato, nombre)
     piso = int(banda_min or 0)
-    if piso <= 0 or precio <= 0:
+    techo = int(banda_max or 0)
+    if precio <= 0:
         return ''
     titulo = str((candidato or {}).get('title') or '')
+    # El set de 4 se mide por bujía. El estante sigue siendo el de la ficha.
+    precio_alto = _monto_bujia_por_unidad(nombre, precio, titulo)
+    if (
+        techo > 0
+        and precio_alto * 2 > techo * 5
+        and not (candidato or {}).get('respaldo_alto')
+    ):
+        return 'precio_alto_banda'
+    if piso <= 0:
+        return ''
     # La banda 28.000–55.000 deja afuera fichas reales de Bravo 1.4.
     # Con Bravo 1.4 en el título, el piso baja al 40% ($10.000 no, $21.390 sí).
     if _titulo_nombra_bravo_14(titulo, f'{modelo} {tipo_motor}') and precio < piso * 2 // 5:
@@ -1160,8 +1301,8 @@ def _rechazo_precio_pastilla(
     if _ficha_nombra_modelo_pedido(candidato, modelo, tipo_motor):
         return ''
     if _ficha_es_cruce_tjet(candidato, modelo, tipo_motor):
-        if precio < piso:
-            return 'precio_bajo_banda'
+        if precio < piso or (techo > 0 and precio_alto > techo):
+            return 'precio_bajo_banda' if precio < piso else 'precio_alto_banda'
         return ''
     if precio * 2 < piso:
         return 'precio_bajo_banda'
@@ -1175,19 +1316,26 @@ def _motivo_calidad_pastilla(
     modelo: str,
     tipo_motor: str = '',
     banda_min: int = 0,
+    banda_max: int = 0,
 ) -> str:
-    """Por qué una pastilla no se cotiza. '' si todavía puede servir.
+    """Por qué una ficha no se cotiza. '' si todavía puede servir.
 
-    Sin la página leída no se descarta un título genérico sin precio: la
-    tabla de compatibilidad puede nombrar al Bravo. Un título 'Envío gratis'
-    que ya trae monto es listado aunque nadie haya abierto la ficha: el
-    snippet no le presta el cruce Linea T-Jet. Bravo 1.4 y el cruce con
-    precio se miden contra la banda antes de leer.
+    La compuerta vale para cualquier pieza, no solo pastillas. El aceite de
+    motor no nombra el auto: esa línea no entra. Sin la página leída no se
+    descarta un título genérico sin precio: la tabla de compatibilidad puede
+    nombrar al Bravo. Un título 'Envío gratis' que ya trae monto es listado
+    aunque nadie haya abierto la ficha. El cruce Linea/Punto T-Jet y el
+    monto se miden contra la banda de la IA.
     """
-    if not _es_pastillas_freno(nombre):
+    from .enriquecer_repuestos import _es_linea_aceite_motor
+
+    if _es_linea_aceite_motor(nombre):
         return ''
-    titulo = str((candidato or {}).get('title') or '')
-    if titulo and not _es_pastillas_freno(titulo):
+    if _es_pastillas_freno(nombre):
+        titulo = str((candidato or {}).get('title') or '')
+        if titulo and not _es_pastillas_freno(titulo):
+            return ''
+    elif _pieza_exige_compatibilidad(nombre):
         return ''
     compat = _compat_pastilla_candidato(candidato, modelo, tipo_motor)
     if compat is False:
@@ -1205,6 +1353,7 @@ def _motivo_calidad_pastilla(
             modelo=modelo,
             tipo_motor=tipo_motor,
             banda_min=banda_min,
+            banda_max=banda_max,
         )
     bajo = _rechazo_precio_pastilla(
         candidato,
@@ -1212,6 +1361,7 @@ def _motivo_calidad_pastilla(
         modelo=modelo,
         tipo_motor=tipo_motor,
         banda_min=banda_min,
+        banda_max=banda_max,
     )
     if bajo:
         return bajo
@@ -1229,6 +1379,7 @@ def _candidato_sirve_linea(
     modelo: str = '',
     tipo_motor: str = '',
     banda_min: int = 0,
+    banda_max: int = 0,
 ) -> bool:
     titulo = str(candidato.get('title') or '')
     texto = f'{titulo} {candidato.get("content") or ""} {candidato.get("url") or ""}'
@@ -1243,6 +1394,7 @@ def _candidato_sirve_linea(
             modelo=modelo,
             tipo_motor=tipo_motor,
             banda_min=banda_min,
+            banda_max=banda_max,
         ):
             return False
         return True
@@ -2292,6 +2444,7 @@ def _motivo_de_candidato(
     modelo: str = '',
     tipo_motor: str = '',
     banda_min: int = 0,
+    banda_max: int = 0,
 ) -> str:
     """Por qué esta URL quedó o se botó. Una línea de log por candidato."""
     url = str(cand.get('url') or '')
@@ -2303,12 +2456,13 @@ def _motivo_de_candidato(
         modelo=modelo,
         tipo_motor=tipo_motor,
         banda_min=banda_min,
+        banda_max=banda_max,
     )
     if motivo_pad:
         return motivo_pad
     if not _candidato_sirve_linea(
         nombre, cand, anio=anio, cilindraje=cilindraje, modelo=modelo,
-        tipo_motor=tipo_motor, banda_min=banda_min,
+        tipo_motor=tipo_motor, banda_min=banda_min, banda_max=banda_max,
     ):
         return 'otra_pieza'
     titulo = str(cand.get('title') or '')
@@ -2549,6 +2703,68 @@ def _consultas_pastillas(
     return consultas
 
 
+_SPEC_BUJIA = frozenset({
+    'iridio', 'iridium', 'platino', 'cobre', 'niquel', 'nickel',
+})
+
+
+def _es_consumible_corto(nombre: str) -> bool:
+    """Bujías y filtros. La casa no los publica con el año ni con la marca NGK."""
+    n = _norm(nombre)
+    return 'bujia' in n or 'filtro' in n
+
+
+def _nucleo_consumible(nombre: str) -> str:
+    n = _norm(nombre)
+    if 'bujia' in n:
+        return 'bujias'
+    if 'filtro' in n and 'aire' in n:
+        return 'filtro aire'
+    if 'filtro' in n and any(k in n for k in ('polen', 'habitaculo', 'cabina')):
+        return 'filtro polen'
+    if 'filtro' in n and any(k in n for k in ('combustible', 'bencina', 'gasolina', 'nafta')):
+        return 'filtro combustible'
+    if 'filtro' in n and 'aceite' in n:
+        return 'filtro aceite'
+    amplia, _ = _nombre_busqueda_amplia(nombre)
+    tokens = [t for t in amplia.split() if t not in _SPEC_BUJIA]
+    return ' '.join(tokens[:3]) or _nombre_busqueda_corto(nombre)
+
+
+def _modelo_corto_auto(modelo: str, tipo_motor: str = '') -> str:
+    """'Sport Bravo' y 'BRAVO SPORT TJET' se buscan como bravo."""
+    if 'bravo' in _norm(f'{modelo} {tipo_motor}'):
+        return 'bravo'
+    return _modelo_busqueda(modelo).lower()
+
+
+def _consultas_consumible(
+    nombre: str,
+    *,
+    marca: str,
+    modelo: str,
+    cilindraje: str,
+    tipo_motor: str = '',
+) -> list[str]:
+    """Igual que las pastillas: pieza + auto, sin año, sin trim y sin NGK.
+
+    'bujias fiat bravo 1.4', 'bujias fiat bravo' y, en un Bravo T-Jet,
+    'bujias fiat linea t-jet'. El filtro de aire usa la misma escalera.
+    """
+    nucleo = _nucleo_consumible(nombre)
+    modelo_corto = _modelo_corto_auto(modelo, tipo_motor)
+    marca_q = str(marca or '').strip().lower()
+    cil = str(cilindraje or '').strip()
+    especifica = ' '.join(p for p in [nucleo, marca_q, modelo_corto, cil] if p)
+    corta = ' '.join(p for p in [nucleo, marca_q, modelo_corto] if p)
+    consultas = [especifica, corta]
+    if _bravo_tjet(modelo, tipo_motor):
+        consultas.append(f'{nucleo} fiat linea t-jet')
+    if nucleo:
+        consultas.append(nucleo)
+    return consultas
+
+
 def _escalera_consultas(
     nombre: str,
     *,
@@ -2572,6 +2788,14 @@ def _escalera_consultas(
         consultas = _consultas_aceite_motor(nombre, especificacion)
     elif _es_pastillas_freno(nombre):
         consultas = _consultas_pastillas(
+            nombre,
+            marca=marca,
+            modelo=modelo,
+            cilindraje=cilindraje,
+            tipo_motor=tipo_motor,
+        )
+    elif _es_consumible_corto(nombre):
+        consultas = _consultas_consumible(
             nombre,
             marca=marca,
             modelo=modelo,
@@ -2685,6 +2909,7 @@ def _ordenar_candidatos(
     modelo: str = '',
     tipo_motor: str = '',
     banda_min: int = 0,
+    banda_max: int = 0,
 ) -> list[dict[str, Any]]:
     """Manda la ficha que nombra a ESTE auto; después la casa y el precio.
 
@@ -2703,8 +2928,6 @@ def _ordenar_candidatos(
         def _se_queda(c: dict[str, Any]) -> bool:
             if not _es_generalista(c['url']):
                 return True
-            if not _es_pastillas_freno(nombre_linea):
-                return False
             return _titulo_es_del_auto(str(c.get('title') or ''), modelo, tipo_motor)
 
         candidatos = [c for c in candidatos if _se_queda(c)]
@@ -2713,7 +2936,7 @@ def _ordenar_candidatos(
     def rango(c: dict[str, Any]) -> tuple[int, ...]:
         no_sirve = 0 if _candidato_sirve_linea(
             nombre_linea, c, anio=anio, cilindraje=cilindraje, modelo=modelo,
-            tipo_motor=tipo_motor, banda_min=banda_min,
+            tipo_motor=tipo_motor, banda_min=banda_min, banda_max=banda_max,
         ) else 1
         calce = -_calce_vehiculo(c, tokens)
         precio = _precio_desde_texto(c.get('content') or '', nombre_linea)
@@ -2722,7 +2945,7 @@ def _ordenar_candidatos(
         # Pastillas: un título que dice Bravo entra al cupo antes que un
         # listado con precio. Sin esto, GMAK y Repuestos del Sol quedan
         # fuera_del_cupo (no están entre las 5 URLs que se abren).
-        if _es_pastillas_freno(nombre_linea):
+        if _es_pastillas_freno(nombre_linea) or _es_consumible_corto(nombre_linea):
             titulo_c = str(c.get('title') or '')
             if _titulo_es_del_auto(titulo_c, modelo, tipo_motor):
                 rango_modelo = 0
@@ -2748,17 +2971,18 @@ def _seleccionar_cupo(
     modelo: str = '',
     tipo_motor: str = '',
     banda_min: int = 0,
+    banda_max: int = 0,
 ) -> list[dict[str, Any]]:
     """Las 5 fichas que se abren. Un Bravo con precio no pierde contra una sin monto."""
     sirven = [
         c for c in ordenados
         if _candidato_sirve_linea(
             nombre, c, anio=anio, cilindraje=cilindraje, modelo=modelo,
-            tipo_motor=tipo_motor, banda_min=banda_min,
+            tipo_motor=tipo_motor, banda_min=banda_min, banda_max=banda_max,
         )
         and _titulo_nombra_pieza(nombre, str(c.get('title') or ''))
     ]
-    if not _es_pastillas_freno(nombre):
+    if not (_es_pastillas_freno(nombre) or _es_consumible_corto(nombre)):
         return sirven[:_FICHA_HTML_MAX]
     con_precio: list[dict[str, Any]] = []
     sin_precio: list[dict[str, Any]] = []
@@ -2830,19 +3054,21 @@ def _motivo_rechazo_duro(
     modelo: str = '',
     tipo_motor: str = '',
     banda_min: int = 0,
+    banda_max: int = 0,
 ) -> str:
     """Motivo que saca la URL del request. '' si todavía puede cotizarse.
 
     fuera_del_cupo no entra: esa ficha no se abrió, no está rechazada.
     """
     motivo = _motivo_calidad_pastilla(
-        cand, nombre=nombre, modelo=modelo, tipo_motor=tipo_motor, banda_min=banda_min,
+        cand, nombre=nombre, modelo=modelo, tipo_motor=tipo_motor,
+        banda_min=banda_min, banda_max=banda_max,
     )
     if motivo:
         return motivo
     if not _candidato_sirve_linea(
         nombre, cand, anio=anio, cilindraje=cilindraje, modelo=modelo,
-        tipo_motor=tipo_motor, banda_min=banda_min,
+        tipo_motor=tipo_motor, banda_min=banda_min, banda_max=banda_max,
     ):
         return 'otra_pieza'
     titulo = str(cand.get('title') or '')
@@ -2881,6 +3107,7 @@ def _hits_desde_candidatos(
     modelo: str = '',
     tipo_motor: str = '',
     bandas_min: dict[str, int] | None = None,
+    bandas_max: dict[str, int] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Arma hits desde snippet/ficha Tavily cuando el monto ya es legible."""
     out: dict[str, dict[str, Any]] = {}
@@ -2889,6 +3116,7 @@ def _hits_desde_candidatos(
         if not clave:
             continue
         piso = _banda_min_de(bandas_min, nombre)
+        techo = _banda_min_de(bandas_max, nombre)
         rescate = next(
             (
                 (c, precio)
@@ -2898,7 +3126,7 @@ def _hits_desde_candidatos(
                 if _precio_plausible_para_linea(nombre, precio)
                 and _candidato_sirve_linea(
                     nombre, c, anio=anio, cilindraje=cilindraje, modelo=modelo,
-                    tipo_motor=tipo_motor, banda_min=piso,
+                    tipo_motor=tipo_motor, banda_min=piso, banda_max=techo,
                 )
                 and _titulo_nombra_pieza(nombre, str(c.get('title') or ''))
             ),
@@ -2954,6 +3182,7 @@ def _buscar_repuestos_web_tavily(
     plan: dict[str, Any] | None = None,
     especificaciones: dict[str, str] | None = None,
     bandas_min: dict[str, int] | None = None,
+    bandas_max: dict[str, int] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Agregador Tavily (JSON real) + Gemini solo como filtro/formateador."""
     whitelist = _dominios_whitelist()
@@ -2975,9 +3204,13 @@ def _buscar_repuestos_web_tavily(
     htmls: dict[str, str] = {}
     notas = avisos if avisos is not None else {}
     pisos = bandas_min or {}
+    techos = bandas_max or {}
 
     def _piso(nombre_linea: str) -> int:
         return _banda_min_de(pisos, nombre_linea)
+
+    def _techo(nombre_linea: str) -> int:
+        return _banda_min_de(techos, nombre_linea)
 
     def _cerrar_sin_hit(hits: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
         """Si la línea quedó sin ficha, el motivo dice qué se buscó y qué se botó."""
@@ -3017,6 +3250,7 @@ def _buscar_repuestos_web_tavily(
                     modelo=modelo,
                     tipo_motor=tipo_motor,
                     banda_min=_piso(nombre_linea),
+                    banda_max=_techo(nombre_linea),
                 )
                 logger.info(
                     'busqueda_web_repuestos[tavily] candidato linea=%s titulo=%s url=%s motivo=%s '
@@ -3028,7 +3262,10 @@ def _buscar_repuestos_web_tavily(
                     _precio_de_candidato(cand, nombre_linea) or int(cand.get('precio_fuera_banda') or 0) or '',
                     _piso(nombre_linea) or '',
                 )
-                if motivo in ('listado', 'precio_bajo_banda', 'modelo_incompatible', 'sin_modelo'):
+                if motivo in (
+                    'listado', 'precio_bajo_banda', 'precio_alto_banda',
+                    'modelo_incompatible', 'sin_modelo',
+                ):
                     _anotar_url_rechazada(notas, url)
                 elif motivo in ('otra_pieza', 'titulo_no_es_la_pieza'):
                     _anotar_url_rechazada(notas, url, linea=nombre_linea)
@@ -3068,9 +3305,14 @@ def _buscar_repuestos_web_tavily(
         from .enriquecer_repuestos import _es_linea_aceite_motor
 
         spec = str((especificaciones or {}).get(nombre) or '')
-        # Aceite y pastillas no usan la frase del plan (modelo + año + trim)
-        # ni el tope de "escasa": esa frase es la que llegó a producción.
-        pieza_de_spec = _es_linea_aceite_motor(nombre) or _es_pastillas_freno(nombre)
+        # Aceite, pastillas, bujías y filtros no usan la frase del plan
+        # (NGK + año + trim) ni el tope de "escasa": esa frase es la que
+        # llegó a producción como única consulta.
+        pieza_de_spec = (
+            _es_linea_aceite_motor(nombre)
+            or _es_pastillas_freno(nombre)
+            or _es_consumible_corto(nombre)
+        )
         consultas = _escalera_consultas(
             nombre,
             marca=marca,
@@ -3108,14 +3350,14 @@ def _buscar_repuestos_web_tavily(
                 if _candidato_sirve_linea(
                     nombre, c, anio=anio, cilindraje=cilindraje, modelo=modelo,
                     tipo_motor=tipo_motor, banda_min=_piso(nombre),
+                    banda_max=_techo(nombre),
                 )
                 and _titulo_nombra_pieza(nombre, str(c.get('title') or ''))
             ]
-            # Ficha de LA MISMA pieza con monto: listo, salvo pastillas.
-            # La primera consulta ("...delanteras fiat bravo 1.4") puede traer
-            # un snippet con precio que no es la ficha, y ahí se cortaba antes
-            # de "pastillas freno fiat bravo".
-            if not _es_pastillas_freno(nombre):
+            # Ficha de LA MISMA pieza con monto: listo, salvo pastillas,
+            # bujías y filtros. La primera consulta puede traer un snippet
+            # con precio que no es la ficha, y ahí se cortaba el resto.
+            if not (_es_pastillas_freno(nombre) or _es_consumible_corto(nombre)):
                 if any(_precio_desde_texto(c.get('content') or '', nombre) > 0 for c in sirven):
                     break
                 if len({c['url'] for c in sirven}) >= 2:
@@ -3127,6 +3369,7 @@ def _buscar_repuestos_web_tavily(
                 if not _candidato_sirve_linea(
                     nombre, c, anio=anio, cilindraje=cilindraje, modelo=modelo,
                     tipo_motor=tipo_motor, banda_min=_piso(nombre),
+                    banda_max=_techo(nombre),
                 )
             ]
             if crudos and not sirven and len(otra_pieza) == len(crudos) and not pieza_de_spec:
@@ -3139,10 +3382,11 @@ def _buscar_repuestos_web_tavily(
             if not _candidato_sirve_linea(
                 nombre, cand, anio=anio, cilindraje=cilindraje, modelo=modelo,
                 tipo_motor=tipo_motor, banda_min=_piso(nombre),
+                banda_max=_techo(nombre),
             ):
                 detalle = _motivo_calidad_pastilla(
                     cand, nombre=nombre, modelo=modelo, tipo_motor=tipo_motor,
-                    banda_min=_piso(nombre),
+                    banda_min=_piso(nombre), banda_max=_techo(nombre),
                 ) or 'otra pieza'
                 rechazos.append(f'{etiqueta}: {detalle}')
             elif titulo and not _titulo_nombra_pieza(nombre, titulo):
@@ -3168,6 +3412,7 @@ def _buscar_repuestos_web_tavily(
             vistos_url.add(url_cand)
             unicos_linea.append(cand)
         crudos_por_nombre[nombre] = unicos_linea
+        _marcar_respaldo_alto(unicos_linea, nombre, _techo(nombre))
         ordenados = _ordenar_candidatos(
             crudos,
             tokens_vehiculo=tokens_veh,
@@ -3178,6 +3423,7 @@ def _buscar_repuestos_web_tavily(
             modelo=modelo,
             tipo_motor=tipo_motor,
             banda_min=_piso(nombre),
+            banda_max=_techo(nombre),
         )
         servir = _seleccionar_cupo(
             ordenados,
@@ -3187,6 +3433,7 @@ def _buscar_repuestos_web_tavily(
             modelo=modelo,
             tipo_motor=tipo_motor,
             banda_min=_piso(nombre),
+            banda_max=_techo(nombre),
         )
         cupo_por_nombre[nombre] = [str(c.get('url') or '') for c in servir if c.get('url')]
         if servir:
@@ -3218,6 +3465,7 @@ def _buscar_repuestos_web_tavily(
         servir = [c for c in candidatos if _candidato_sirve_linea(
             nombre, c, anio=anio, cilindraje=cilindraje, modelo=modelo,
             tipo_motor=tipo_motor, banda_min=_piso(nombre),
+            banda_max=_techo(nombre),
         )]
         if not servir:
             continue
@@ -3249,6 +3497,7 @@ def _buscar_repuestos_web_tavily(
                 modelo=modelo,
                 tipo_motor=tipo_motor,
                 banda_min=_piso(nombre),
+                banda_max=_techo(nombre),
             )
 
     # Snippet sin monto, o pastilla cuyo título no nombra el auto: se lee
@@ -3317,7 +3566,8 @@ def _buscar_repuestos_web_tavily(
                 cand['content'] = f'{snippet}\nPrecio: ${monto}'.strip()
                 cand['precio_snippet'] = monto
                 if _motivo_calidad_pastilla(
-                    cand, nombre=nombre, modelo=modelo, tipo_motor=tipo_motor, banda_min=piso,
+                    cand, nombre=nombre, modelo=modelo, tipo_motor=tipo_motor,
+                    banda_min=piso, banda_max=_techo(nombre),
                 ):
                     continue
             if cambio:
@@ -3331,11 +3581,13 @@ def _buscar_repuestos_web_tavily(
                     modelo=modelo,
                     tipo_motor=tipo_motor,
                     banda_min=piso,
+                    banda_max=_techo(nombre),
                 )
 
     def _sellar_lista_negra() -> None:
         for nombre_linea, crudos_linea in crudos_por_nombre.items():
             piso = _piso(nombre_linea)
+            techo = _techo(nombre_linea)
             vistos_rechazo: set[str] = set()
             for cand in crudos_linea:
                 url_cand = str(cand.get('url') or '')
@@ -3350,8 +3602,12 @@ def _buscar_repuestos_web_tavily(
                     modelo=modelo,
                     tipo_motor=tipo_motor,
                     banda_min=piso,
+                    banda_max=techo,
                 )
-                if motivo in ('listado', 'precio_bajo_banda', 'modelo_incompatible', 'sin_modelo'):
+                if motivo in (
+                    'listado', 'precio_bajo_banda', 'precio_alto_banda',
+                    'modelo_incompatible', 'sin_modelo',
+                ):
                     _anotar_url_rechazada(notas, url_cand)
                 elif motivo:
                     _anotar_url_rechazada(notas, url_cand, linea=nombre_linea)
@@ -3375,6 +3631,7 @@ def _buscar_repuestos_web_tavily(
         modelo=modelo,
         tipo_motor=tipo_motor,
         bandas_min=pisos,
+        bandas_max=techos,
     )
     if preliminar and all(
         _clave_fuzzy(nombre) in preliminar for nombre in candidatos_por_nombre
@@ -3480,6 +3737,7 @@ def _buscar_repuestos_web_tavily(
             modelo=modelo,
             tipo_motor=tipo_motor,
             banda_min=_piso(nombre_linea),
+            banda_max=_techo(nombre_linea),
         ):
             continue
         if not _titulo_nombra_pieza(nombre_linea, nombre_prod):
@@ -3516,6 +3774,7 @@ def _buscar_repuestos_web_tavily(
                     and _candidato_sirve_linea(
                         nombre_linea, c, anio=anio, cilindraje=cilindraje, modelo=modelo,
                         tipo_motor=tipo_motor, banda_min=_piso(nombre_linea),
+                        banda_max=_techo(nombre_linea),
                     )
                     and _titulo_nombra_pieza(nombre_linea, str(c.get('title') or ''))
                 ),
@@ -3587,6 +3846,7 @@ def _buscar_repuestos_web_tavily(
         modelo=modelo,
         tipo_motor=tipo_motor,
         bandas_min=pisos,
+        bandas_max=techos,
     ).items():
         if clave in out:
             continue
@@ -3689,6 +3949,7 @@ def buscar_repuestos_web(
     avisos: dict[str, dict[str, str]] | None = None,
     especificaciones: dict[str, str] | None = None,
     bandas_min: dict[str, int] | None = None,
+    bandas_max: dict[str, int] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Tavily si hay API key. url_context solo si Tavily no está configurada."""
     nombres_limpios = [str(n).strip()[:200] for n in nombres if str(n).strip()]
@@ -3739,6 +4000,7 @@ def buscar_repuestos_web(
                 plan=plan,
                 especificaciones=especificaciones,
                 bandas_min=bandas_min,
+                bandas_max=bandas_max,
             )
             tavily_listo = True
         except BusquedaWebCancelada:
@@ -3975,16 +4237,18 @@ def _fila_cache_utilizable(
     modelo: str = '',
     tipo_motor: str = '',
     banda_min: int = 0,
+    banda_max: int = 0,
     now,
     cupo: list[int] | None = None,
 ) -> int | None:
     """Precio vigente de la fila, o None si no se puede cotizar (queda vencida).
 
-    Pastillas: sin el cuerpo de la página, un título que no nombra el auto
-    es sin_modelo, un 'Envío gratis' es listado, y un monto bajo la mitad
-    de la banda es precio_bajo_banda. Aceite y el resto, si la pieza es la
-    correcta, releen el HTML cuando la fila no es de este request y se
-    quedan con el precio actual (<ins> / 'precio actual'), no con el tachado.
+    Sin el cuerpo de la página, un título que no nombra el auto es
+    sin_modelo, un 'Envío gratis' es listado, un monto bajo la banda es
+    precio_bajo_banda y uno por encima de 2,5× el máximo es
+    precio_alto_banda. El aceite de motor no nombra el auto y no entra
+    en esa compuerta. Si la pieza es la correcta, se relee el HTML cuando
+    la fila no es de este request y se queda el precio actual.
     """
     from .enriquecer_repuestos import _producto_es_la_pieza
 
@@ -3997,13 +4261,14 @@ def _fila_cache_utilizable(
 
     precio = int(getattr(row, 'precio_clp', 0) or 0)
     cand = _candidato_desde_cache(row, precio)
-    if nombre_linea and _es_pastillas_freno(nombre_linea):
+    if nombre_linea:
         motivo = _motivo_calidad_pastilla(
             cand,
             nombre=nombre_linea,
             modelo=modelo,
             tipo_motor=tipo_motor,
             banda_min=banda_min,
+            banda_max=banda_max,
         )
         if motivo:
             _expirar_fila_cache(
@@ -4042,13 +4307,14 @@ def _fila_cache_utilizable(
         cand['precio_snippet'] = monto
     else:
         monto = precio
-    if nombre_linea and _es_pastillas_freno(nombre_linea):
+    if nombre_linea:
         motivo = _motivo_calidad_pastilla(
             cand,
             nombre=nombre_linea,
             modelo=modelo,
             tipo_motor=tipo_motor,
             banda_min=banda_min,
+            banda_max=banda_max,
         )
         if motivo:
             _expirar_fila_cache(
@@ -4093,6 +4359,7 @@ def hits_cache_vigentes_para_nombres(
     tipo_motor: str = '',
     cilindraje: str = '',
     bandas_min: dict[str, int] | None = None,
+    bandas_max: dict[str, int] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Devuelve mapa clave_fuzzy → hit vigente de PrecioRepuestoWeb (sin llamar Gemini)."""
     nombres_limpios = [str(n).strip() for n in nombres if str(n).strip()]
@@ -4168,6 +4435,7 @@ def hits_cache_vigentes_para_nombres(
                 modelo=modelo_vehiculo,
                 tipo_motor=tipo_motor,
                 banda_min=_banda_min_de(bandas_min, nombre_linea),
+                banda_max=_banda_min_de(bandas_max, nombre_linea),
                 now=now,
                 cupo=cupo,
             )
@@ -4202,6 +4470,7 @@ def nombres_sin_cache_vigente(
     tipo_motor: str = '',
     cilindraje: str = '',
     bandas_min: dict[str, int] | None = None,
+    bandas_max: dict[str, int] | None = None,
 ) -> tuple[list[str], dict[str, dict[str, Any]]]:
     """Separa nombres que aún requieren Gemini vs hits ya cacheados."""
     cache_hits = hits_cache_vigentes_para_nombres(
@@ -4213,6 +4482,7 @@ def nombres_sin_cache_vigente(
         tipo_motor=tipo_motor,
         cilindraje=cilindraje,
         bandas_min=bandas_min,
+        bandas_max=bandas_max,
     )
     faltantes: list[str] = []
     for nombre in nombres:

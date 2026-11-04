@@ -1172,6 +1172,7 @@ def _candidatos_web_cache(
     cilindraje: str = '',
     nombres: list[str] | None = None,
     bandas_min: dict[str, int] | None = None,
+    bandas_max: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
     """Hits vigentes desde PrecioRepuestoWeb (rellenado por Celery/Gemini URL Context)."""
     try:
@@ -1247,6 +1248,7 @@ def _candidatos_web_cache(
                     modelo=modelo_vehiculo,
                     tipo_motor=tipo_motor,
                     banda_min=_banda_min_de(bandas_min, linea_cache),
+                    banda_max=_banda_min_de(bandas_max, linea_cache),
                     now=now,
                     cupo=cupo,
                 )
@@ -1419,6 +1421,7 @@ def enriquecer_repuestos_cotizacion(
         str(r.get('nombre') or '') for r in repuestos if isinstance(r, dict)
     ]
     bandas_min: dict[str, int] = {}
+    bandas_max: dict[str, int] = {}
     for r in repuestos:
         if not isinstance(r, dict):
             continue
@@ -1429,8 +1432,14 @@ def enriquecer_repuestos_cotizacion(
             piso = int(r.get('precio_min_clp') or 0)
         except (TypeError, ValueError):
             piso = 0
+        try:
+            techo = int(r.get('precio_max_clp') or 0)
+        except (TypeError, ValueError):
+            techo = 0
         if piso > 0:
             bandas_min[nombre_banda] = piso
+        if techo > 0:
+            bandas_max[nombre_banda] = techo
     web_cands = (
         _candidatos_web_cache(
             marca_vehiculo=marca_vehiculo,
@@ -1440,6 +1449,7 @@ def enriquecer_repuestos_cotizacion(
             cilindraje=cilindraje,
             nombres=nombres_lineas,
             bandas_min=bandas_min,
+            bandas_max=bandas_max,
         )
         if usar_web
         else []
@@ -1498,6 +1508,10 @@ def enriquecer_repuestos_cotizacion(
                 piso_linea = int(next_rep.get('precio_min_clp') or 0)
             except (TypeError, ValueError):
                 piso_linea = 0
+            try:
+                techo_linea = int(next_rep.get('precio_max_clp') or 0)
+            except (TypeError, ValueError):
+                techo_linea = 0
             prohibidas = urls_rechazadas or set()
             web_ok = [
                 c for c in web_cands
@@ -1521,6 +1535,7 @@ def enriquecer_repuestos_cotizacion(
                     modelo=modelo_vehiculo,
                     tipo_motor=tipo_motor,
                     banda_min=piso_linea,
+                    banda_max=techo_linea,
                 )
             ]
             web_hit = _mejor_hit(nombre, web_ok, min_score=min_score_web_para(nombre))
@@ -1566,13 +1581,23 @@ def enriquecer_repuestos_cotizacion(
         next_rep.pop('precio_referencia_mercado', None)
         _aplicar_precio(next_rep, hits)
         if str(next_rep.get('fuente_marketplace') or '') == 'web':
-            from .busqueda_web_repuestos import precio_unitario_desde_envase
+            from .busqueda_web_repuestos import (
+                precio_unitario_desde_envase,
+                precio_unitario_desde_pack,
+            )
 
             unit, nota_envase = precio_unitario_desde_envase(
                 nombre,
                 _to_int_clp(next_rep.get('precio_unitario_clp')),
                 str(next_rep.get('nombre_producto') or ''),
             )
+            if not nota_envase:
+                unit, nota_envase = precio_unitario_desde_pack(
+                    nombre,
+                    unit,
+                    str(next_rep.get('nombre_producto') or ''),
+                    next_rep.get('cantidad'),
+                )
             if nota_envase and unit > 0:
                 next_rep['precio_unitario_clp'] = unit
                 next_rep['comentario'] = nota_envase[:300]

@@ -84,15 +84,39 @@ def aplicar_derivados_certeza(rep: dict[str, Any]) -> None:
         rep.pop('precio_referencia_mercado', None)
 
 
+def _partir_bujia_asumida(next_rep: dict[str, Any]) -> dict[str, Any]:
+    """$32.000 × 4 sin tienda es el juego de bujías, no cada una. La banda queda."""
+    from .busqueda_web_repuestos import precio_unitario_bujia_asumido
+
+    tiene_ficha = bool(
+        str(next_rep.get('url_producto') or '').strip()
+        or str(next_rep.get('proveedor_nombre') or '').strip()
+    )
+    unit = _to_int_clp(next_rep.get('precio_unitario_clp'))
+    nuevo, nota = precio_unitario_bujia_asumido(
+        str(next_rep.get('nombre') or ''),
+        unit,
+        next_rep.get('cantidad'),
+        tiene_ficha=tiene_ficha,
+    )
+    if not nota or nuevo == unit:
+        return next_rep
+    next_rep['precio_unitario_clp'] = nuevo
+    if not str(next_rep.get('comentario') or '').strip():
+        next_rep['comentario'] = nota[:300]
+    return next_rep
+
+
 def aplicar_techo_ia_si_falta_unitario(rep: dict[str, Any]) -> dict[str, Any]:
     """Si no hay ficha, cobra el techo del rango que Gemini ya entregó.
 
     Un techo fuera de la banda de esa pieza (aceite a $300.000, rodamiento
     piloto al precio de un volante) no se usa: queda sin precio para buscarlo.
+    En bujías, un techo de $32.000 con cantidad 4 es el juego, no cada NGK.
     """
     next_rep = dict(rep)
     if _to_int_clp(next_rep.get('precio_unitario_clp')) > 0:
-        return next_rep
+        return _partir_bujia_asumida(next_rep)
     techo = _to_int_clp(next_rep.get('precio_max_clp'))
     piso = _to_int_clp(next_rep.get('precio_min_clp'))
     if techo <= 0 and piso <= 0:
@@ -121,7 +145,7 @@ def aplicar_techo_ia_si_falta_unitario(rep: dict[str, Any]) -> dict[str, Any]:
     next_rep['certeza'] = CERTEZA_ASUMIDO
     next_rep.pop('motivo_sin_precio', None)
     aplicar_derivados_certeza(next_rep)
-    return next_rep
+    return _partir_bujia_asumida(next_rep)
 
 
 def _monto_en_banda_de_pieza(nombre: str, precio: int) -> bool:

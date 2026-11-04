@@ -3236,3 +3236,248 @@ class Quote13PadCandidatesTests(SimpleTestCase):
                 bandas_min={self._LINEA: 28000},
             )
         self.assertEqual(vacio, {})
+
+
+class Quote16BujiasYFiltroAireTests(SimpleTestCase):
+    """Cotización 16: las compuertas y la escalera corta valen para toda pieza."""
+
+    _BUJIA = 'Bujías NGK Iridium'
+    _FILTRO = 'Filtro de aire'
+    _ML = 'https://articulo.mercadolibre.cl/MLC-999888777-filtro-aire-fiat-bravo-14-turbo'
+    _BUJIA_URL = 'https://www.mundorepuestos.cl/producto/bujia-ngk-iridium-fiat-bravo-14'
+
+    def test_filtro_a_cinco_veces_la_banda_no_se_cotiza_y_la_bujia_usa_la_escalera_corta(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        calls: list[str] = []
+
+        def fake_buscar(query, **kwargs):
+            calls.append(query)
+            q = query.lower()
+            if q.startswith('bujias'):
+                return [{
+                    'title': 'Bujía NGK Iridium Fiat Bravo 1.4 T-Jet',
+                    'url': self._BUJIA_URL,
+                    'content': 'Bujía NGK para Fiat Bravo 1.4 T-Jet. Precio $ 12.990',
+                    'score': 0.9,
+                }]
+            if q.startswith('filtro aire'):
+                return [{
+                    'title': 'Filtro Aire Fiat Bravo 1.4 Turbo',
+                    'url': self._ML,
+                    'content': 'Filtro de aire Fiat Bravo 1.4 Turbo. Precio $ 81.900',
+                    'score': 0.8,
+                }]
+            return []
+
+        plan = {
+            'piezas': [
+                {
+                    'nombre': self._BUJIA,
+                    'consulta': 'Bujías NGK Iridium Fiat Bravo 1.4 T-Jet 2010',
+                    'escasa': True,
+                },
+                {
+                    'nombre': self._FILTRO,
+                    'consulta': 'Filtro de aire Fiat Bravo 1.4 Turbo 2010',
+                    'escasa': True,
+                },
+            ],
+        }
+        with patch.object(bw, '_tavily_buscar_uno', side_effect=fake_buscar), patch.object(
+            bw, '_tavily_extraer', return_value={},
+        ), patch.object(bw, '_leer_html_fichas', return_value={}), patch.object(
+            bw, '_gemini_generar', return_value=None,
+        ), self.assertLogs(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos',
+            level='INFO',
+        ) as logs:
+            out = bw._buscar_repuestos_web_tavily(
+                [self._BUJIA, self._FILTRO],
+                marca='FIAT',
+                modelo='BRAVO SPORT TJET',
+                anio=2010,
+                cilindraje='1.4',
+                tipo_motor='T-Jet',
+                servicio_nombre='Cambio de bujías y filtro de aire',
+                timeout=5,
+                plan=plan,
+                bandas_min={self._BUJIA: 8000, self._FILTRO: 8000},
+                bandas_max={self._BUJIA: 18000, self._FILTRO: 15000},
+            )
+
+        self.assertEqual(calls, [
+            'bujias fiat bravo 1.4',
+            'bujias fiat bravo',
+            'bujias fiat linea t-jet',
+            'filtro aire fiat bravo 1.4',
+            'filtro aire fiat bravo',
+            'filtro aire fiat linea t-jet',
+        ])
+        self.assertNotIn('iridium', ' '.join(calls))
+        self.assertNotIn('2010', ' '.join(calls))
+        self.assertNotIn('ngk', ' '.join(calls))
+        hit = out[bw._clave_fuzzy(self._BUJIA)]
+        self.assertEqual(hit['url'], self._BUJIA_URL)
+        self.assertEqual(hit['precio_clp'], 12990)
+        self.assertNotIn(bw._clave_fuzzy(self._FILTRO), out)
+        texto = '\n'.join(logs.output)
+        self.assertIn(f'url={self._ML} motivo=precio_alto_banda', texto)
+
+    def test_una_sola_tienda_no_respalda_el_techo_y_dos_si(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        uno = {
+            'title': 'Filtro Aire Fiat Bravo 1.4 Turbo',
+            'url': self._ML,
+            'content': 'Precio $ 81.900',
+            'ficha_leida': True,
+        }
+        self.assertEqual(
+            bw._motivo_calidad_pastilla(
+                uno,
+                nombre=self._FILTRO,
+                modelo='BRAVO SPORT TJET',
+                tipo_motor='T-Jet',
+                banda_min=8000,
+                banda_max=15000,
+            ),
+            'precio_alto_banda',
+        )
+        otro = {
+            'title': 'Filtro de aire Fiat Bravo 1.4 Turbo',
+            'url': 'https://www.mundorepuestos.cl/producto/filtro-aire-bravo-14',
+            'content': 'Precio $ 84.900',
+            'ficha_leida': True,
+        }
+        bw._marcar_respaldo_alto([uno, otro], self._FILTRO, 15000)
+        self.assertTrue(uno.get('respaldo_alto'))
+        self.assertEqual(
+            bw._motivo_calidad_pastilla(
+                uno,
+                nombre=self._FILTRO,
+                modelo='BRAVO SPORT TJET',
+                tipo_motor='T-Jet',
+                banda_min=8000,
+                banda_max=15000,
+            ),
+            '',
+        )
+
+    def test_cruce_linea_dentro_de_banda_sirve_y_por_encima_no(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        dentro = {
+            'title': 'Filtro de aire Fiat Linea 1.4 T-Jet',
+            'url': 'https://www.todoautochile.cl/producto/filtro-aire-linea-tjet',
+            'content': 'Filtro de aire Fiat Linea T-Jet. Precio $ 12.000',
+            'ficha_leida': True,
+        }
+        self.assertEqual(
+            bw._motivo_calidad_pastilla(
+                dentro,
+                nombre=self._FILTRO,
+                modelo='Bravo',
+                tipo_motor='T-Jet',
+                banda_min=8000,
+                banda_max=15000,
+            ),
+            '',
+        )
+        arriba = dict(dentro)
+        arriba['content'] = 'Filtro de aire Fiat Linea T-Jet. Precio $ 20.000'
+        self.assertEqual(
+            bw._motivo_calidad_pastilla(
+                arriba,
+                nombre=self._FILTRO,
+                modelo='Bravo',
+                tipo_motor='T-Jet',
+                banda_min=8000,
+                banda_max=15000,
+            ),
+            'precio_alto_banda',
+        )
+        barato = {
+            'title': 'Filtro de aire universal',
+            'url': 'https://www.todoautochile.cl/producto/filtro-aire-universal',
+            'content': 'Precio $ 3.000',
+            'ficha_leida': True,
+        }
+        self.assertEqual(
+            bw._motivo_calidad_pastilla(
+                barato,
+                nombre=self._FILTRO,
+                modelo='Bravo',
+                tipo_motor='T-Jet',
+                banda_min=8000,
+                banda_max=15000,
+            ),
+            'precio_bajo_banda',
+        )
+        listado = {
+            'title': 'Filtro de aire | Envío gratis',
+            'url': 'https://www.mundorepuestos.cl/producto/filtro-aire',
+            'content': 'Precio $ 12.000',
+            'ficha_leida': True,
+        }
+        self.assertEqual(
+            bw._motivo_calidad_pastilla(
+                listado,
+                nombre=self._FILTRO,
+                modelo='Bravo',
+                tipo_motor='T-Jet',
+                banda_min=8000,
+                banda_max=15000,
+            ),
+            'listado',
+        )
+
+    def test_juego_de_4_se_mide_por_bujia_y_se_parte_si_la_linea_pide_cuatro(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        juego = {
+            'title': 'Juego de 4 bujías NGK Fiat Bravo 1.4',
+            'url': 'https://www.mundorepuestos.cl/producto/juego-4-bujias-ngk-bravo',
+            'content': 'Juego de 4 bujías NGK Fiat Bravo 1.4. Precio $ 40.000',
+            'ficha_leida': True,
+        }
+        self.assertEqual(
+            bw._motivo_calidad_pastilla(
+                juego,
+                nombre=self._BUJIA,
+                modelo='Bravo',
+                tipo_motor='T-Jet',
+                banda_min=8000,
+                banda_max=12000,
+            ),
+            '',
+        )
+        suelta = dict(juego)
+        suelta['title'] = 'Bujía NGK Fiat Bravo 1.4'
+        suelta['content'] = 'Bujía NGK Fiat Bravo 1.4. Precio $ 40.000'
+        self.assertEqual(
+            bw._motivo_calidad_pastilla(
+                suelta,
+                nombre=self._BUJIA,
+                modelo='Bravo',
+                tipo_motor='T-Jet',
+                banda_min=8000,
+                banda_max=12000,
+            ),
+            'precio_alto_banda',
+        )
+        unit, nota = bw.precio_unitario_desde_pack(
+            self._BUJIA, 32000, 'Juego de 4 bujías NGK', 4,
+        )
+        self.assertEqual(unit, 8000)
+        self.assertIn('juego de 4', nota)
+        barato, sin_nota = bw.precio_unitario_desde_pack(
+            self._BUJIA, 8000, 'Juego de 4 bujías NGK', 4,
+        )
+        self.assertEqual(barato, 8000)
+        self.assertEqual(sin_nota, '')
+        uno, sin_nota_uno = bw.precio_unitario_desde_pack(
+            self._BUJIA, 32000, 'Juego de 4 bujías NGK', 1,
+        )
+        self.assertEqual(uno, 32000)
+        self.assertEqual(sin_nota_uno, '')

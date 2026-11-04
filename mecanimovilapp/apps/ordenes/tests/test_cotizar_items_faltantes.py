@@ -852,6 +852,52 @@ class TechoIaYLineasAgenteTests(SimpleTestCase):
         self.assertEqual(rodamiento['precio_unitario_clp'], 0)
         self.assertEqual(rodamiento['precio_max_clp'], 0)
 
+    def test_bujias_asumidas_a_32000_por_4_se_cotizan_por_unidad(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.resolver_precio import (
+            aplicar_techo_ia_si_falta_unitario,
+        )
+
+        out = aplicar_techo_ia_si_falta_unitario({
+            'nombre': 'Bujías NGK Iridium',
+            'cantidad': 4,
+            'precio_unitario_clp': 0,
+            'precio_min_clp': 8000,
+            'precio_max_clp': 32000,
+        })
+        self.assertEqual(out['precio_unitario_clp'], 8000)
+        self.assertEqual(out['precio_min_clp'], 8000)
+        self.assertEqual(out['precio_max_clp'], 32000)
+        self.assertEqual(out['certeza'], 'asumido')
+        self.assertIn('juego de 4', out['comentario'])
+
+        ya_puesto = aplicar_techo_ia_si_falta_unitario({
+            'nombre': 'Bujías',
+            'cantidad': 4,
+            'precio_unitario_clp': 32000,
+            'precio_min_clp': 8000,
+            'precio_max_clp': 32000,
+        })
+        self.assertEqual(ya_puesto['precio_unitario_clp'], 8000)
+        self.assertEqual(ya_puesto['precio_max_clp'], 32000)
+
+        una = aplicar_techo_ia_si_falta_unitario({
+            'nombre': 'Bujías',
+            'cantidad': 4,
+            'precio_unitario_clp': 15000,
+            'precio_min_clp': 8000,
+            'precio_max_clp': 18000,
+        })
+        self.assertEqual(una['precio_unitario_clp'], 15000)
+
+        con_tienda = aplicar_techo_ia_si_falta_unitario({
+            'nombre': 'Bujías',
+            'cantidad': 4,
+            'precio_unitario_clp': 32000,
+            'precio_max_clp': 32000,
+            'url_producto': 'https://www.mundorepuestos.cl/producto/bujia',
+        })
+        self.assertEqual(con_tienda['precio_unitario_clp'], 32000)
+
     def test_asegurar_montos_reparte_lump_en_lineas_vacias(self):
         from mecanimovilapp.apps.agente_ia.services.cotizacion_borrador import (
             _asegurar_montos_en_lineas,

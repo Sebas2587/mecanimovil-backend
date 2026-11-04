@@ -476,6 +476,10 @@ def _hit_sirve_linea(hit: dict, rep: dict, cot) -> bool:
         piso_linea = int(rep.get('precio_min_clp') or 0)
     except (TypeError, ValueError):
         piso_linea = 0
+    try:
+        techo_linea = int(rep.get('precio_max_clp') or 0)
+    except (TypeError, ValueError):
+        techo_linea = 0
     return _candidato_sirve_linea(
         str(rep.get('nombre') or ''),
         _candidato_de_hit(hit),
@@ -484,16 +488,13 @@ def _hit_sirve_linea(hit: dict, rep: dict, cot) -> bool:
         modelo=cot.vehiculo_modelo or '',
         tipo_motor=cot.tipo_motor or '',
         banda_min=piso_linea,
+        banda_max=techo_linea,
     )
 
 
 def _pad_web_no_sirve(rep: dict, cot) -> bool:
-    """La ficha que el enrich acaba de escribir no pasa la compuerta de pastillas."""
-    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
-        _es_pastillas_freno,
-    )
-
-    if not _es_pastillas_freno(str(rep.get('nombre') or '')):
+    """La ficha que el enrich acaba de escribir no pasa la compuerta de la pieza."""
+    if not str(rep.get('nombre_producto') or '').strip():
         return False
     return not _hit_sirve_linea(
         {
@@ -666,6 +667,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
         nombres = [str(r.get('nombre') or '').strip() for r in candidatos if str(r.get('nombre') or '').strip()]
         especificaciones = {}
         bandas_min: dict[str, int] = {}
+        bandas_max: dict[str, int] = {}
         for linea in candidatos:
             if not isinstance(linea, dict):
                 continue
@@ -676,8 +678,14 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                 piso_linea = int(linea.get('precio_min_clp') or 0)
             except (TypeError, ValueError):
                 piso_linea = 0
+            try:
+                techo_linea = int(linea.get('precio_max_clp') or 0)
+            except (TypeError, ValueError):
+                techo_linea = 0
             if piso_linea > 0:
                 bandas_min[nombre_linea] = piso_linea
+            if techo_linea > 0:
+                bandas_max[nombre_linea] = techo_linea
             extra = str(linea.get('especificacion') or '').strip()
             comentario = str(linea.get('comentario') or '').strip()
             bajo = comentario.lower()
@@ -695,6 +703,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
             tipo_motor=cot.tipo_motor or '',
             cilindraje=cot.vehiculo_cilindraje or '',
             bandas_min=bandas_min,
+            bandas_max=bandas_max,
         )
         resultados: dict = dict(cache_hits or {})
 
@@ -758,6 +767,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                     avisos=avisos_busqueda,
                     especificaciones=especificaciones,
                     bandas_min=bandas_min,
+                    bandas_max=bandas_max,
                 )
                 if nuevos:
                     resultados.update(nuevos)
@@ -1004,6 +1014,7 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                     continue
                 from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
                     precio_unitario_desde_envase,
+                    precio_unitario_desde_pack,
                 )
 
                 precio, nota_envase = precio_unitario_desde_envase(
@@ -1011,6 +1022,13 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                     precio,
                     str(hit.get('nombre_producto') or ''),
                 )
+                if not nota_envase:
+                    precio, nota_envase = precio_unitario_desde_pack(
+                        nombre_linea,
+                        precio,
+                        str(hit.get('nombre_producto') or ''),
+                        next_rep.get('cantidad'),
+                    )
                 url_hit = str(hit.get('url') or '').strip()
                 if url_hit:
                     urls_usadas.add(url_hit)
