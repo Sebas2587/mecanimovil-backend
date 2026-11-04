@@ -676,8 +676,10 @@ def _notar_linea_sin_tienda(
 
 def _casa_es_tienda(rep: dict[str, Any], casa: str) -> bool:
     """Una fuente 'estimado' no es una casa. No se le inventa el nombre Estimado."""
+    from mecanimovilapp.apps.ordenes.casas_especialistas import es_etiqueta_historial
+
     nombre = str(casa or '').strip()
-    if not nombre or nombre.lower() == 'estimado':
+    if not nombre or nombre.lower() == 'estimado' or es_etiqueta_historial(nombre):
         return False
     fuente = str(
         rep.get('fuente_marketplace') or rep.get('fuente_repuesto') or ''
@@ -958,6 +960,7 @@ def _aplicar_prioridad_de_taller(
     como referencia de la otra tienda.
     """
     from mecanimovilapp.apps.ordenes.casas_especialistas import (
+        es_etiqueta_historial,
         es_fisica,
         es_solo_en_linea,
         especialista_de_la_ficha,
@@ -985,8 +988,28 @@ def _aplicar_prioridad_de_taller(
         if not isinstance(rep, dict) or rep.get('_config_modelo'):
             continue
         fuente = str(rep.get('fuente_marketplace') or rep.get('fuente_repuesto') or '').strip().lower()
-        if fuente in ('catalogo', 'historial', 'proveedor'):
+        if fuente in ('catalogo', 'proveedor'):
             continue
+        # El historial cotiza un monto. La casa donde se compra es la especialista.
+        if fuente == 'historial' or es_etiqueta_historial(
+            str(rep.get('casa_repuesto_nombre') or ''),
+        ) or es_etiqueta_historial(str(rep.get('proveedor_nombre') or '')):
+            try:
+                precio_hist = int(rep.get('precio_unitario_clp') or 0)
+            except (TypeError, ValueError):
+                precio_hist = 0
+            rep['casa_repuesto_nombre'] = ''
+            rep['proveedor_nombre'] = ''
+            rep.pop('casa_sucursal', None)
+            if precio_hist > 0:
+                rep['referencia_tienda'] = 'historial del taller'
+                rep['precio_referencia_clp'] = precio_hist
+            for detalle in rep.get('fuentes_detalle') or []:
+                if isinstance(detalle, dict) and (
+                    str(detalle.get('fuente') or '') == 'historial'
+                    or es_etiqueta_historial(str(detalle.get('tienda') or ''))
+                ):
+                    detalle['tienda'] = ''
         casa = str(rep.get('casa_repuesto_nombre') or rep.get('proveedor_nombre') or '').strip()
         url = str(rep.get('url_producto') or '').strip()
         perfil = especialista_de_la_ficha(casa, url, marca)
@@ -1019,6 +1042,11 @@ def _aplicar_prioridad_de_taller(
             rep['precio_a_consultar'] = True
             rep['casa_sucursal'] = texto_sucursal(sucursal)
             rep['casa_telefono'] = str(perfil_marca.get('telefono') or '')
+            if es_etiqueta_historial(str(rep.get('referencia_tienda') or '')):
+                rep['proveedor_nombre'] = perfil_marca['nombre']
+                for detalle in rep.get('fuentes_detalle') or []:
+                    if isinstance(detalle, dict) and not str(detalle.get('tienda') or '').strip():
+                        detalle['tienda'] = perfil_marca['nombre']
             if visible_ref and precio > 0 and not es_fisica(visible_ref, url):
                 from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
                     _monto_banda_por_unidad,

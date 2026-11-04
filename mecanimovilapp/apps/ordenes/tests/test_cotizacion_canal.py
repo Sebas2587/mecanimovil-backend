@@ -2005,3 +2005,59 @@ class Quote210FaenaUnicaYPastillasTests(SimpleTestCase):
         self.assertTrue(any('pastilla' in n for n in piezas))
         self.assertTrue(any('buj' in n for n in piezas))
         self.assertTrue(any('filtro de aire' in n for n in piezas))
+
+
+class Quote211ServicioGenericoTests(SimpleTestCase):
+    """La cotización 211 sumó el nombre del servicio y dejó la mantención sin normalizar."""
+
+    DETALLE = (
+        'mantención con pastillas de freno, cambio de aceite y filtro, '
+        'bujías y filtro de aire'
+    )
+
+    def test_el_rotulo_no_suma_faena_y_la_pastilla_se_llama_cambio(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
+            normalizar_cotizacion_ia,
+        )
+
+        out = normalizar_cotizacion_ia(
+            {
+                'servicio_nombre': 'Mantención',
+                'descripcion_problema': self.DETALLE,
+                'mano_obra_clp': 165000,
+                'servicios_lineas': [
+                    {'nombre': 'Mantención', 'monto_clp': 45000},
+                    {'nombre': 'Mantención con pastillas de freno', 'monto_clp': 40000},
+                    {'nombre': 'Cambio de aceite y filtro', 'monto_clp': 30000},
+                    {'nombre': 'Cambio de bujías', 'monto_clp': 35000},
+                    {'nombre': 'Cambio de filtro de aire', 'monto_clp': 15000},
+                ],
+                'repuestos': [],
+            },
+            {
+                'servicio_nombre': 'Mantención',
+                'descripcion_problema': self.DETALLE,
+                'marca': 'Fiat',
+                'modelo': 'Bravo',
+            },
+        )
+        nombres = [lin['nombre'] for lin in out['servicios_lineas']]
+        self.assertEqual(nombres, [
+            'Cambio de pastillas de freno',
+            'Cambio de aceite y filtro',
+            'Cambio de bujías',
+            'Cambio de filtro de aire',
+        ])
+        montos = [lin['monto_clp'] for lin in out['servicios_lineas']]
+        self.assertEqual(montos, [40000, 30000, 35000, 15000])
+        self.assertEqual(out['mano_obra_clp'], sum(montos))
+        self.assertNotIn('Mantención', nombres)
+        self.assertNotIn('Mantención con pastillas de freno', nombres)
+
+    def test_mantencion_sola_sigue_siendo_la_faena(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.separar_pedido_taller import (
+            interpretar_pedido_taller,
+        )
+
+        interp = interpretar_pedido_taller('Mantención')
+        self.assertEqual(interp['mano_obra'], ['Mantención'])

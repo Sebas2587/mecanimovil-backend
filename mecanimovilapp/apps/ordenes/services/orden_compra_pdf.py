@@ -40,7 +40,39 @@ class _OrdenPdf(FPDF):
         self.multi_cell(0, 5.5, texto, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
 
-def _grupos(repuestos: list[dict]) -> list[tuple[str, list[dict]]]:
+def _linea_es_historial(rep: dict) -> bool:
+    from mecanimovilapp.apps.ordenes.casas_especialistas import es_etiqueta_historial
+
+    fuente = _txt(rep.get('fuente_marketplace') or rep.get('fuente_repuesto')).lower()
+    if fuente == 'historial':
+        return True
+    return any(
+        es_etiqueta_historial(_txt(rep.get(campo)))
+        for campo in ('casa_repuesto_nombre', 'proveedor_nombre', 'referencia_tienda')
+    )
+
+
+def _casa_grupo(rep: dict, marca: str) -> str:
+    from mecanimovilapp.apps.ordenes.casas_especialistas import (
+        es_etiqueta_historial,
+        especialistas_de_marca,
+    )
+
+    casa = _txt(rep.get('casa_repuesto_nombre'))
+    proveedor = _txt(rep.get('proveedor_nombre'))
+    if casa and not es_etiqueta_historial(casa):
+        return casa
+    if proveedor and not es_etiqueta_historial(proveedor) and not _linea_es_historial(rep):
+        return proveedor
+    perfiles = especialistas_de_marca(marca) if marca else []
+    if perfiles:
+        return str(perfiles[0].get('nombre') or '')
+    if proveedor and not es_etiqueta_historial(proveedor):
+        return proveedor
+    return 'Casa por confirmar'
+
+
+def _grupos(repuestos: list[dict], marca: str = '') -> list[tuple[str, list[dict]]]:
     orden: list[str] = []
     grupos: dict[str, list[dict]] = {}
     for rep in repuestos:
@@ -49,7 +81,7 @@ def _grupos(repuestos: list[dict]) -> list[tuple[str, list[dict]]]:
         nombre = _txt(rep.get('nombre'))
         if not nombre:
             continue
-        casa = _txt(rep.get('casa_repuesto_nombre') or rep.get('proveedor_nombre')) or 'Casa por confirmar'
+        casa = _casa_grupo(rep, marca) or 'Casa por confirmar'
         if casa not in grupos:
             orden.append(casa)
             grupos[casa] = []
@@ -57,7 +89,23 @@ def _grupos(repuestos: list[dict]) -> list[tuple[str, list[dict]]]:
     return [(casa, grupos[casa]) for casa in orden]
 
 
+def _monto_historial(rep: dict) -> int:
+    for campo in ('precio_referencia_clp', 'precio_unitario_clp'):
+        try:
+            monto = int(rep.get(campo) or 0)
+        except (TypeError, ValueError):
+            monto = 0
+        if monto > 0:
+            return monto
+    return 0
+
+
 def _precio_linea(rep: dict, cotizacion=None) -> str:
+    if _linea_es_historial(rep):
+        monto = _monto_historial(rep)
+        if monto > 0:
+            return f'A consultar. Referencia: historial del taller {_pesos(monto)}.'
+        return 'A consultar'
     if rep.get('precio_a_consultar'):
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
             _referencia_consulta,
@@ -150,17 +198,39 @@ def generar_pdf_orden_compra(cotizacion) -> bytes:
     pdf._parrafo(f'VIN {vin}')
     pdf.ln(2)
 
-    grupos = _grupos(list(getattr(cotizacion, 'repuestos', None) or []))
+    marca = _txt(getattr(cotizacion, 'vehiculo_marca', ''))
+    grupos = _grupos(list(getattr(cotizacion, 'repuestos', None) or []), marca)
     if not grupos:
         pdf._parrafo('Esta cotización no tiene repuestos.')
+    emitidos: list[dict] = []
     for casa, lineas in grupos:
-        pdf._parrafo(casa, bold=True, size=12)
         muestra = next((r for r in lineas if _txt(r.get('casa_sucursal') or r.get('casa_telefono'))), lineas[0])
         sucursal, telefono = _sucursal_para_pdf(cotizacion, casa, muestra)
-        if sucursal:
-            pdf._parrafo(sucursal)
-        if telefono:
-            pdf._parrafo(f'Teléfono {telefono}')
+        previo = next(
+            (item for item in emitidos if sucursal and item['sucursal'].casefold() == sucursal.casefold()),
+            None,
+        )
+        if previo is not None:
+            from mecanimovilapp.apps.ordenes.casas_especialistas import perfil_de
+
+            if perfil_de(casa) and not perfil_de(previo['casa']):
+                previo['casa'] = casa
+                previo['telefono'] = telefono or previo['telefono']
+            previo['lineas'].extend(lineas)
+            continue
+        emitidos.append({
+            'casa': casa,
+            'lineas': list(lineas),
+            'sucursal': sucursal,
+            'telefono': telefono,
+        })
+    for item in emitidos:
+        pdf._parrafo(item['casa'], bold=True, size=12)
+        if item['sucursal']:
+            pdf._parrafo(item['sucursal'])
+        if item['telefono']:
+            pdf._parrafo(f'Teléfono {item["telefono"]}')
+        lineas = item['lineas']
         for rep in lineas:
             try:
                 cantidad = int(rep.get('cantidad') or 1)
