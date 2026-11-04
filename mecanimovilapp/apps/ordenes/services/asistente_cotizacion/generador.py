@@ -764,8 +764,11 @@ def _aplicar_seleccion_casa_repuestos(
         else:
             rep['casa_repuesto_nombre'] = ''
             detalle = str(rep.get('comentario') or '').strip()
+            previo = str(rep.get('motivo_seleccion') or '').strip()
             if detalle:
                 rep['motivo_seleccion'] = detalle[:300]
+            elif previo.lower().startswith('se busc'):
+                rep['motivo_seleccion'] = previo[:300]
             else:
                 rep['motivo_seleccion'] = (
                     'No se encontraron proveedores con este repuesto en stock para el vehículo'

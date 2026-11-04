@@ -514,6 +514,10 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
 
     try:
         if not busqueda_web_habilitada():
+            logger.info(
+                'buscar_precios_web_cotizacion_task(%s): Tavily no corre, búsqueda web deshabilitada',
+                cotizacion_id,
+            )
             return {'ok': False, 'reason': 'disabled'}
 
         cot = CotizacionCanal.objects.filter(pk=cotizacion_id).first()
@@ -558,6 +562,10 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
         candidatos = candidatos[:max_lineas]
 
         if not candidatos:
+            logger.info(
+                'buscar_precios_web_cotizacion_task(%s): sin líneas para Tavily',
+                cotizacion_id,
+            )
             from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.resolver_precio import (
                 aplicar_techo_ia_en_repuestos,
             )
@@ -640,6 +648,12 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                         return
 
                 _abortar_si_cancelada()
+                logger.info(
+                    'buscar_precios_web_cotizacion_task(%s): Tavily lineas=%s solo_ids=%s',
+                    cotizacion_id,
+                    faltantes,
+                    solo_ids,
+                )
                 nuevos = buscar_repuestos_web(
                     faltantes,
                     vehiculo={
@@ -860,6 +874,8 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
         if avisos_busqueda:
             from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
                 _clave_fuzzy as _clave_aviso,
+                _linea_tiene_ficha_tienda,
+                anotar_busqueda_sin_ficha,
             )
 
             por_clave = {
@@ -870,18 +886,21 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
             for i, rep in enumerate(reps_enriquecidos):
                 if not isinstance(rep, dict):
                     continue
-                if _to_int_clp(rep.get('precio_unitario_clp')) > 0:
+                if _linea_tiene_ficha_tienda(rep):
                     continue
                 nota = por_clave.get(_clave_aviso(str(rep.get('nombre') or '')))
                 if not nota:
                     continue
-                rep['precio_unitario_clp'] = 0
-                rep['precio_min_clp'] = 0
-                rep['precio_max_clp'] = 0
-                rep['certeza'] = 'sin_precio'
-                rep['motivo_sin_precio'] = str(nota.get('motivo') or 'sin_ficha')[:40]
-                rep['comentario'] = str(nota.get('detalle') or '')[:500]
-                reps_enriquecidos[i] = rep
+                reps_enriquecidos[i] = anotar_busqueda_sin_ficha(rep, nota)
+        logger.info(
+            'buscar_precios_web_cotizacion_task(%s): tavily hits=%s avisos=%s',
+            cotizacion_id,
+            sorted(str(k) for k in (resultados or {})),
+            {
+                str(k)[:80]: str((v or {}).get('motivo') or '')
+                for k, v in (avisos_busqueda or {}).items()
+            },
+        )
 
         _abortar_si_cancelada()
         progreso_lineas = [

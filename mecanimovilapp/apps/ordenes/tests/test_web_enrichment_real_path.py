@@ -172,3 +172,144 @@ class WebEnrichmentRealPathTestCase(TestCase):
         # Verificación 3: no se queda el precio del enfriador. La banda de la IA
         # puede seguir en la línea; el hit rechazado no.
         self.assertNotEqual(rep_enriquecido.get('precio_unitario_clp'), 31490)
+
+    def test_busqueda_vacia_conserva_el_precio_asumido_y_escribe_el_motivo(self):
+        """Cotización 5: pastillas asumidas se buscan; un reintento vacío no las borra."""
+        from mecanimovilapp.apps.ordenes.tasks import buscar_precios_web_cotizacion_task
+
+        pastillas = {
+            'id': 'rep-pastillas',
+            'nombre': 'Pastillas de freno cerámica delanteras',
+            'cantidad': 1,
+            'precio_unitario_clp': 70000,
+            'certeza': 'asumido',
+            'precio_estimado': True,
+            'motivo_seleccion': (
+                'No se encontraron proveedores con este repuesto en stock para el vehículo'
+            ),
+        }
+        aceite = {
+            'id': 'rep-aceite',
+            'nombre': 'Aceite 5W40 sintético',
+            'cantidad': 4,
+            'precio_unitario_clp': 0,
+            'precio_min_clp': 18000,
+            'precio_max_clp': 42000,
+            'certeza': 'sin_precio',
+            'motivo_seleccion': (
+                'No se encontraron proveedores con este repuesto en stock para el vehículo'
+            ),
+        }
+        filtro = {
+            'id': 'rep-filtro',
+            'nombre': 'Filtro de aceite',
+            'cantidad': 1,
+            'precio_unitario_clp': 10990,
+            'fuente_marketplace': 'web',
+            'proveedor_nombre': 'Todoautochile',
+            'url_producto': 'https://todoautochile.cl/filtro-aceite',
+            'certeza': 'referencial',
+        }
+        cot = self._crear_cotizacion_base([pastillas, aceite, filtro])
+        consultadas: list[str] = []
+
+        def _vacio(nombres, **kwargs):
+            consultadas.extend(nombres)
+            avisos = kwargs.get('avisos')
+            if isinstance(avisos, dict):
+                for nombre in nombres:
+                    avisos[nombre] = {
+                        'motivo': 'sin_ficha',
+                        'detalle': (
+                            f'Se buscó "{nombre}" en tiendas de Chile. '
+                            'Se descartó "Enfriador aceite Fiat Bravo" '
+                            'porque el título no es esa pieza.'
+                        ),
+                    }
+            return {}
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.busqueda_web_habilitada',
+            return_value=True,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.buscar_repuestos_web',
+            side_effect=_vacio,
+        ), self.assertLogs('mecanimovilapp.apps.ordenes.tasks', level='INFO') as logs:
+            result = buscar_precios_web_cotizacion_task(cot.id)
+
+        self.assertTrue(result.get('ok'))
+        self.assertIn('Pastillas de freno cerámica delanteras', consultadas)
+        self.assertIn('Aceite 5W40 sintético', consultadas)
+        self.assertNotIn('Filtro de aceite', consultadas)
+        texto = '\n'.join(logs.output)
+        self.assertIn('Tavily lineas=', texto)
+        self.assertIn('Pastillas de freno cerámica delanteras', texto)
+        self.assertIn('tavily hits=', texto)
+
+        cot.refresh_from_db()
+        por_id = {r['id']: r for r in cot.repuestos}
+        self.assertEqual(por_id['rep-pastillas']['precio_unitario_clp'], 70000)
+        self.assertIn('Se buscó', por_id['rep-pastillas']['motivo_seleccion'])
+        self.assertNotIn(
+            'No se encontraron proveedores con este repuesto en stock',
+            por_id['rep-pastillas']['motivo_seleccion'],
+        )
+        self.assertEqual(por_id['rep-aceite']['precio_unitario_clp'], 42000)
+        self.assertGreater(por_id['rep-aceite']['precio_min_clp'], 0)
+        self.assertGreater(por_id['rep-aceite']['precio_max_clp'], 0)
+        self.assertEqual(por_id['rep-aceite']['certeza'], 'asumido')
+        self.assertIn('Se buscó', por_id['rep-aceite']['motivo_seleccion'])
+        self.assertEqual(por_id['rep-filtro']['precio_unitario_clp'], 10990)
+        self.assertEqual(por_id['rep-filtro']['proveedor_nombre'], 'Todoautochile')
+
+        cot.metadata = {
+            **(cot.metadata or {}),
+            'busqueda_web_estado': 'pendiente',
+            'busqueda_web_ids': ['rep-aceite'],
+        }
+        cot.save(update_fields=['metadata'])
+        consultadas.clear()
+
+        def _reintento_vacio(nombres, **kwargs):
+            consultadas.extend(nombres)
+            avisos = kwargs.get('avisos')
+            if isinstance(avisos, dict):
+                for nombre in nombres:
+                    avisos[nombre] = {
+                        'motivo': 'sin_ficha',
+                        'detalle': f'Se buscó "{nombre}" otra vez. Sin ficha de tienda.',
+                    }
+            return {}
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.busqueda_web_habilitada',
+            return_value=True,
+        ), patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.buscar_repuestos_web',
+            side_effect=_reintento_vacio,
+        ):
+            buscar_precios_web_cotizacion_task(cot.id)
+
+        cot.refresh_from_db()
+        por_id = {r['id']: r for r in cot.repuestos}
+        self.assertEqual(consultadas, ['Aceite 5W40 sintético'])
+        self.assertEqual(por_id['rep-aceite']['precio_unitario_clp'], 42000)
+        self.assertIn('Se buscó', por_id['rep-aceite']['motivo_seleccion'])
+        self.assertEqual(por_id['rep-pastillas']['precio_unitario_clp'], 70000)
+        self.assertEqual(por_id['rep-filtro']['proveedor_nombre'], 'Todoautochile')
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web import (
+            _marcar_cola_caida,
+        )
+
+        _marcar_cola_caida(cot.id, TimeoutError('Timeout reading from redis:6379'))
+        cot.refresh_from_db()
+        por_id = {r['id']: r for r in cot.repuestos}
+        self.assertEqual(cot.metadata.get('busqueda_web_estado'), 'error')
+        self.assertIn('cola no respondió', por_id['rep-pastillas']['motivo_seleccion'])
+        self.assertEqual(por_id['rep-pastillas']['precio_unitario_clp'], 70000)
+        self.assertEqual(por_id['rep-aceite']['precio_unitario_clp'], 42000)
+        self.assertIn('cola no respondió', por_id['rep-aceite']['motivo_seleccion'])
+        self.assertEqual(por_id['rep-filtro']['precio_unitario_clp'], 10990)
+        self.assertEqual(por_id['rep-filtro']['proveedor_nombre'], 'Todoautochile')
+        self.assertNotIn('cola no respondió', por_id['rep-filtro'].get('motivo_seleccion') or '')

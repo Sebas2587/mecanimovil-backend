@@ -116,12 +116,26 @@ def nombre_repuesto_buscable(nombre: str | None) -> bool:
     return bool(n) and n not in _NOMBRES_PLACEHOLDER
 
 
-def linea_necesita_busqueda_web(rep: Any) -> bool:
-    """True si falta un precio de ficha/tienda. El rango de Gemini no cuenta.
+def _linea_tiene_ficha_tienda(rep: dict) -> bool:
+    """True si el monto ya viene de una casa. Un precio asumido sin tienda no."""
+    fuente = str(rep.get('fuente_marketplace') or '').strip().lower()
+    unit = _to_int_clp(rep.get('precio_unitario_clp'))
+    if fuente in ('web', 'ml', 'mercadolibre'):
+        if unit > 0:
+            return True
+        if _to_int_clp(rep.get('precio_min_clp')) > 0 or _to_int_clp(rep.get('precio_max_clp')) > 0:
+            return True
+    if str(rep.get('certeza') or '') == 'confirmado' and unit > 0:
+        return True
+    return False
 
-    Gemini deja min/max y unitario 0 a propósito; eso no es una búsqueda previa.
-    No recotiza catálogo/historial/proveedor ni una línea que ya tiene unitario
-    o una banda con fuente de tienda.
+
+def linea_necesita_busqueda_web(rep: Any) -> bool:
+    """True si falta una ficha de tienda.
+
+    Un unitario asumido ($70.000, certeza asumido, sin URL) sigue buscándose:
+    si no aparece ficha, ese monto se conserva. Catálogo, historial, un precio
+    escrito a mano y una banda que ya viene de una tienda no se recotizan.
     """
     if not isinstance(rep, dict):
         return False
@@ -130,13 +144,27 @@ def linea_necesita_busqueda_web(rep: Any) -> bool:
     fuente = str(rep.get('fuente_marketplace') or '').strip().lower()
     if fuente in ('catalogo', 'historial', 'proveedor'):
         return False
-    if _to_int_clp(rep.get('precio_unitario_clp')) > 0:
+    if _linea_tiene_ficha_tienda(rep):
         return False
-    if fuente in ('web', 'ml', 'mercadolibre') and (
-        _to_int_clp(rep.get('precio_min_clp')) > 0 or _to_int_clp(rep.get('precio_max_clp')) > 0
-    ):
+    unit = _to_int_clp(rep.get('precio_unitario_clp'))
+    if unit > 0 and str(rep.get('certeza') or '') != 'asumido':
         return False
     return True
+
+
+def anotar_busqueda_sin_ficha(rep: dict, nota: dict | None) -> dict:
+    """Escribe qué se buscó. No borra el unitario ni la banda de la IA."""
+    detalle = str((nota or {}).get('detalle') or '').strip()
+    if detalle:
+        rep['comentario'] = detalle[:500]
+        rep['motivo_seleccion'] = detalle[:300]
+    if _to_int_clp(rep.get('precio_unitario_clp')) > 0:
+        return rep
+    if _to_int_clp(rep.get('precio_min_clp')) > 0 or _to_int_clp(rep.get('precio_max_clp')) > 0:
+        return rep
+    rep['certeza'] = 'sin_precio'
+    rep['motivo_sin_precio'] = str((nota or {}).get('motivo') or 'sin_ficha')[:40]
+    return rep
 
 
 def limpiar_precio_para_nueva_busqueda(rep: dict) -> dict:
