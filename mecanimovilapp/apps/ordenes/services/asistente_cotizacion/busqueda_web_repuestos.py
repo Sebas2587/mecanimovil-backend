@@ -5,12 +5,12 @@ Arquitectura (en orden de preferencia):
    resultados REALES (título, url, snippet) buscando en Chile (`country`), y
    la validación se queda solo con tiendas .cl que no sean listados. Gemini
    SOLO filtra compatibilidad y da formato al JSON final (sin tool
-   `url_context`, sin re-fetch de páginas).
+   `url_context`). Si el snippet y el extract no traen monto, se descarga el
+   HTML de las URLs que Tavily sí devolvió (JSON-LD, og:price, WooCommerce,
+   Mercado Libre o Shopify) y se queda la ficha con precio válido.
 2. Fallback (solo si no hay `TAVILY_API_KEY`): Gemini con `url_context` sobre
-   URLs de tiendas construidas por nosotros. Si Tavily ya corrió y no halló
-   ficha, un segundo round de Gemini no inventa el kit y suma 45–135s. Es más
-   frágil (Mercado Libre bloquea slugs; SPA como AutoPlanet no muestran el
-   producto en el HTML), por eso Tavily es la ruta cuando hay API key.
+   URLs de tiendas construidas por nosotros. Si Tavily ya corrió, no se
+   inventan URLs: ese round alucinaba fichas y sumaba 45–135s.
 
 `TAVILY_API_KEY` se obtiene gratis (sin tarjeta) en https://app.tavily.com
 """
@@ -54,6 +54,11 @@ _MAX_CONSULTAS_TAVILY_POR_LINEA = 3
 _TAVILY_SEARCH_TIMEOUT = 12
 _TAVILY_EXTRACT_TIMEOUT = 18
 _GEMINI_FORMATEO_TIMEOUT = 22
+# Una línea con candidatos y sin monto lee hasta 5 fichas. Más que eso
+# deja al worker colgado en tiendas lentas.
+_FICHA_HTML_MAX = 5
+_FICHA_HTML_TIMEOUT = 6
+_FICHA_HTML_BYTES = 400_000
 _URL_RETRIEVAL_OK = frozenset({
     'URL_RETRIEVAL_STATUS_SUCCESS',
     'url_retrieval_status_success',
@@ -1424,6 +1429,34 @@ def _tavily_extraer(
     return out
 
 
+_FICHA_UA = (
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+    '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+)
+
+
+def _leer_html_fichas(urls: list[str]) -> dict[str, str]:
+    """HTML de las URLs que Tavily ya devolvió. No inventa direcciones."""
+    out: dict[str, str] = {}
+    for url in list(dict.fromkeys(u for u in urls if u))[:20]:
+        try:
+            resp = requests.get(
+                url,
+                timeout=_FICHA_HTML_TIMEOUT,
+                headers={
+                    'User-Agent': _FICHA_UA,
+                    'Accept': 'text/html,application/xhtml+xml',
+                    'Accept-Language': 'es-CL,es;q=0.9',
+                },
+            )
+        except requests.RequestException:
+            continue
+        if resp.status_code != 200 or not (resp.text or '').strip():
+            continue
+        out[url] = resp.text[:_FICHA_HTML_BYTES]
+    return out
+
+
 # El `$` no puede venir pegado a letras: así "US$ 45.00" y "R$ 45,00" no entran
 # como pesos. "CLP" sí es prefijo válido, con o sin signo.
 _PRECIO_CLP_RE = re.compile(r'(?:(?<![A-Za-z])\$|CLP\s?\$?)\s?([\d.,]{4,10})')
@@ -1564,6 +1597,241 @@ def _precio_desde_texto(texto: str, nombre_linea: str = '') -> int:
         centro = (piso + techo) / 2
         return min(en_banda, key=lambda v: abs(v - centro))
     return en_banda[0]
+
+
+_JSONLD_RE = re.compile(
+    r'<script[^>]*type\s*=\s*["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+    re.I | re.S,
+)
+_META_TAG_RE = re.compile(r'<meta\b[^>]*>', re.I)
+_JSON_APP_RE = re.compile(
+    r'<script[^>]*type\s*=\s*["\']application/json["\'][^>]*>(.*?)</script>',
+    re.I | re.S,
+)
+_WOO_AMOUNT_RE = re.compile(
+    r'woocommerce-Price-amount\b[^>]*>.{0,400}?(\d{1,3}(?:\.\d{3})+|\d+[.,]\d{2})',
+    re.I | re.S,
+)
+_ML_FRACTION_RE = re.compile(
+    r'andes-money-amount__fraction[^>]*>\s*([\d.]+)',
+    re.I,
+)
+_SHOPIFY_PRICE_RE = re.compile(r'"price"\s*:\s*"?(\d+)"?')
+_MONEDAS_EXTRANJERAS = frozenset({
+    'USD', 'US', 'EUR', 'BRL', 'ARS', 'MXN', 'COP', 'PEN', 'UYU', 'GBP',
+})
+
+
+def _parse_monto_clp(raw: Any) -> int:
+    """28.990 → 28990. 28990.00 y 28990,00 → 28990. No junta los decimales."""
+    if isinstance(raw, bool) or raw is None:
+        return 0
+    if isinstance(raw, int):
+        return raw if raw > 0 else 0
+    if isinstance(raw, float):
+        return int(round(raw)) if raw > 0 else 0
+    texto = str(raw).strip()
+    texto = re.sub(r'(?i)\bclp\b', '', texto)
+    texto = texto.replace('$', '')
+    texto = re.sub(r'\s+', '', texto)
+    if not texto:
+        return 0
+    if re.fullmatch(r'\d{1,3}(\.\d{3})+', texto):
+        return int(texto.replace('.', ''))
+    if re.fullmatch(r'\d{1,3}(,\d{3})+', texto):
+        return int(texto.replace(',', ''))
+    decimal = re.fullmatch(r'(\d+)[.,](\d{2})', texto)
+    if decimal:
+        return int(decimal.group(1))
+    if re.fullmatch(r'\d+', texto):
+        return int(texto)
+    return 0
+
+
+def _moneda_es_clp(currency: Any) -> bool:
+    letras = re.sub(r'[^A-Za-z]', '', str(currency or '')).upper()
+    if not letras:
+        return True
+    if letras in ('CLP', 'CLF'):
+        return True
+    return letras not in _MONEDAS_EXTRANJERAS and not letras.startswith('US')
+
+
+def _iter_jsonld(html: str):
+    for raw in _JSONLD_RE.findall(html or ''):
+        texto = (raw or '').strip()
+        if not texto:
+            continue
+        try:
+            yield json.loads(texto)
+        except ValueError:
+            continue
+
+
+def _recolectar_precios_jsonld(node: Any, found: list[tuple[int, str]]) -> None:
+    if isinstance(node, list):
+        for item in node:
+            _recolectar_precios_jsonld(item, found)
+        return
+    if not isinstance(node, dict):
+        return
+    if '@graph' in node:
+        _recolectar_precios_jsonld(node.get('@graph'), found)
+    tipo = node.get('@type') or ''
+    if isinstance(tipo, list):
+        tipo_s = ' '.join(str(t) for t in tipo)
+    else:
+        tipo_s = str(tipo)
+    es_oferta = any(t in tipo_s for t in ('Product', 'Offer', 'AggregateOffer'))
+    if es_oferta or 'price' in node or 'lowPrice' in node:
+        if _moneda_es_clp(node.get('priceCurrency')):
+            nombre = str(node.get('name') or '')
+            for key in ('lowPrice', 'price'):
+                if node.get(key) in (None, ''):
+                    continue
+                monto = _parse_monto_clp(node.get(key))
+                if monto > 0:
+                    found.append((monto, nombre))
+                    break
+        if node.get('priceSpecification'):
+            _recolectar_precios_jsonld(node.get('priceSpecification'), found)
+        if node.get('offers'):
+            _recolectar_precios_jsonld(node.get('offers'), found)
+
+
+def _precio_meta(html: str) -> int:
+    for tag in _META_TAG_RE.findall(html or ''):
+        low = tag.lower()
+        if 'og:price:amount' not in low and 'product:price:amount' not in low:
+            continue
+        content = re.search(r'\bcontent\s*=\s*["\']([^"\']+)["\']', tag, flags=re.I)
+        if not content:
+            continue
+        monto = _parse_monto_clp(content.group(1))
+        if monto > 0:
+            return monto
+    return 0
+
+
+def _meta_moneda_extranjera(html: str) -> bool:
+    for tag in _META_TAG_RE.findall(html or ''):
+        low = tag.lower()
+        if 'price:currency' not in low:
+            continue
+        content = re.search(r'\bcontent\s*=\s*["\']([^"\']+)["\']', tag, flags=re.I)
+        moneda = (content.group(1) if content else '').strip().upper()
+        if moneda in _MONEDAS_EXTRANJERAS or 'usd' in low:
+            return True
+    return False
+
+
+def _precio_woo(html: str) -> int:
+    match = _WOO_AMOUNT_RE.search(html or '')
+    if not match:
+        return 0
+    return _parse_monto_clp(match.group(1))
+
+
+def _precio_ml_visible(html: str, url: str) -> int:
+    blob = f'{url} {html or ""}'[:800].lower()
+    if 'mercadolibre' not in blob and 'andes-money-amount__fraction' not in (html or ''):
+        return 0
+    match = _ML_FRACTION_RE.search(html or '')
+    if not match:
+        return 0
+    return _parse_monto_clp(match.group(1))
+
+
+def _precio_shopify(html: str, url: str, nombre_linea: str) -> int:
+    """El variant de Shopify guarda centavos. El JSON-LD de la misma ficha no."""
+    blob = f'{url}\n{(html or "")[:12000]}'.lower()
+    if 'shopify' not in blob:
+        return 0
+    for bloque in _JSON_APP_RE.findall(html or ''):
+        for match in _SHOPIFY_PRICE_RE.finditer(bloque):
+            valor = int(match.group(1))
+            if _precio_plausible_para_linea(nombre_linea, valor):
+                return valor
+            if valor % 100 == 0:
+                mayor = valor // 100
+                if _precio_plausible_para_linea(nombre_linea, mayor):
+                    return mayor
+    return 0
+
+
+def _precio_desde_html(html: str, nombre_linea: str = '', url: str = '') -> int:
+    """Precio de ESTA ficha. No el primer `$` de los relacionados."""
+    pagina = html or ''
+    if not pagina.strip():
+        return 0
+    jsonld: list[tuple[int, str]] = []
+    for data in _iter_jsonld(pagina):
+        _recolectar_precios_jsonld(data, jsonld)
+    respaldo = 0
+    if jsonld:
+        con_nombre = [
+            (monto, nom) for monto, nom in jsonld
+            if nom and _titulo_nombra_pieza(nombre_linea, nom)
+        ]
+        pool = con_nombre or jsonld
+        en_banda = [
+            monto for monto, _nom in pool
+            if _precio_plausible_para_linea(nombre_linea, monto)
+        ]
+        if en_banda:
+            return en_banda[0]
+        respaldo = pool[0][0]
+    if not _meta_moneda_extranjera(pagina):
+        meta = _precio_meta(pagina)
+        if meta and _precio_plausible_para_linea(nombre_linea, meta):
+            return meta
+        if meta and not jsonld:
+            return meta
+    for lector in (
+        _precio_woo(pagina),
+        _precio_ml_visible(pagina, url),
+        _precio_shopify(pagina, url, nombre_linea),
+    ):
+        if lector and _precio_plausible_para_linea(nombre_linea, lector):
+            return lector
+    return respaldo
+
+
+def _motivo_de_candidato(
+    cand: dict[str, Any],
+    *,
+    nombre: str,
+    cupo: set[str],
+    url_elegida: str,
+    pedidas: set[str],
+    htmls: dict[str, str],
+    anio: Any = None,
+    cilindraje: Any = None,
+    modelo: str = '',
+) -> str:
+    """Por qué esta URL quedó o se botó. Una línea de log por candidato."""
+    url = str(cand.get('url') or '')
+    if url_elegida and url == url_elegida:
+        return 'elegido'
+    if not _candidato_sirve_linea(
+        nombre, cand, anio=anio, cilindraje=cilindraje, modelo=modelo,
+    ):
+        return 'otra_pieza'
+    titulo = str(cand.get('title') or '')
+    if titulo and not _titulo_nombra_pieza(nombre, titulo):
+        return 'titulo_no_es_la_pieza'
+    if url not in cupo:
+        return 'fuera_del_cupo'
+    if int(cand.get('precio_fuera_banda') or 0) > 0:
+        return 'precio_fuera_de_banda'
+    precio = _precio_de_candidato(cand, nombre)
+    if precio and not _precio_plausible_para_linea(nombre, precio):
+        return 'precio_fuera_de_banda'
+    if url in pedidas and url not in htmls and not precio:
+        return 'ficha_no_leida'
+    if not precio:
+        return 'sin_precio'
+    return 'otra_ficha_mejor'
 
 
 def _construir_prompt_tavily(
@@ -2065,10 +2333,50 @@ def _buscar_repuestos_web_tavily(
 
     candidatos_por_nombre: dict[str, list[dict[str, str]]] = {}
     consultas_usadas: dict[str, list[str]] = {}
+    crudos_por_nombre: dict[str, list[dict[str, Any]]] = {}
+    cupo_por_nombre: dict[str, list[str]] = {}
+    pedidas: list[str] = []
+    htmls: dict[str, str] = {}
     notas = avisos if avisos is not None else {}
 
     def _cerrar_sin_hit(hits: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
         """Si la línea quedó sin ficha, el motivo dice qué se buscó y qué se botó."""
+        elegido: dict[str, str] = {}
+        for hit in (hits or {}).values():
+            if not isinstance(hit, dict):
+                continue
+            clave_hit = _clave_fuzzy(str(hit.get('nombre_buscado') or ''))
+            url_hit = str(hit.get('url') or '')
+            if clave_hit and url_hit:
+                elegido[clave_hit] = url_hit
+        pedidas_set = set(pedidas)
+        for nombre_linea, crudos_linea in crudos_por_nombre.items():
+            cupo = set(cupo_por_nombre.get(nombre_linea) or [])
+            url_elegida = elegido.get(_clave_fuzzy(nombre_linea), '')
+            vistos: set[str] = set()
+            for cand in crudos_linea:
+                url = str(cand.get('url') or '')
+                if not url or url in vistos:
+                    continue
+                vistos.add(url)
+                motivo = _motivo_de_candidato(
+                    cand,
+                    nombre=nombre_linea,
+                    cupo=cupo,
+                    url_elegida=url_elegida,
+                    pedidas=pedidas_set,
+                    htmls=htmls,
+                    anio=anio,
+                    cilindraje=cilindraje,
+                    modelo=modelo,
+                )
+                logger.info(
+                    'busqueda_web_repuestos[tavily] candidato linea=%s titulo=%s url=%s motivo=%s',
+                    nombre_linea[:80],
+                    str(cand.get('title') or '')[:120],
+                    url[:180],
+                    motivo,
+                )
         for nombre_linea in nombres_limpios:
             if _clave_fuzzy(nombre_linea) in hits or nombre_linea in notas:
                 continue
@@ -2183,6 +2491,15 @@ def _buscar_repuestos_web_tavily(
             rechazos[:6],
         )
         consultas_usadas[nombre] = list(consultas[:n_consultas])
+        vistos_url: set[str] = set()
+        unicos_linea: list[dict[str, Any]] = []
+        for cand in crudos:
+            url_cand = str(cand.get('url') or '')
+            if not url_cand or url_cand in vistos_url:
+                continue
+            vistos_url.add(url_cand)
+            unicos_linea.append(cand)
+        crudos_por_nombre[nombre] = unicos_linea
         ordenados = _ordenar_candidatos(
             crudos,
             tokens_vehiculo=tokens_veh,
@@ -2198,7 +2515,8 @@ def _buscar_repuestos_web_tavily(
                 nombre, c, anio=anio, cilindraje=cilindraje, modelo=modelo,
             )
             and _titulo_nombra_pieza(nombre, str(c.get('title') or ''))
-        ][:4]
+        ][:_FICHA_HTML_MAX]
+        cupo_por_nombre[nombre] = [str(c.get('url') or '') for c in servir if c.get('url')]
         if servir:
             for cand in servir:
                 cand['precio_snippet'] = _precio_desde_texto(
@@ -2246,10 +2564,8 @@ def _buscar_repuestos_web_tavily(
                     continue
                 # La ficha completa no borra el precio que ya venía en el snippet.
                 snippet = str(c.get('content') or '')
-                con_ficha.append({
-                    **c,
-                    'content': f'{snippet}\n{extra}'.strip() if snippet else extra,
-                })
+                c['content'] = f'{snippet}\n{extra}'.strip() if snippet else extra
+                con_ficha.append(c)
             candidatos_por_nombre[nombre] = _ordenar_candidatos(
                 con_ficha,
                 tokens_vehiculo=tokens_veh,
@@ -2259,6 +2575,43 @@ def _buscar_repuestos_web_tavily(
                 cilindraje=cilindraje,
                 modelo=modelo,
             )
+
+    # Snippet y extract sin monto: se leen las URLs reales (no url_context).
+    for nombre, candidatos in candidatos_por_nombre.items():
+        if any(
+            _precio_plausible_para_linea(nombre, _precio_de_candidato(c, nombre))
+            for c in candidatos
+        ):
+            continue
+        pedidas.extend(str(c.get('url') or '') for c in candidatos[:_FICHA_HTML_MAX] if c.get('url'))
+    if pedidas:
+        htmls = _leer_html_fichas(pedidas)
+        for nombre, candidatos in list(candidatos_por_nombre.items()):
+            cambio = False
+            for cand in candidatos:
+                html = htmls.get(str(cand.get('url') or '')) or ''
+                if not html:
+                    continue
+                monto = _precio_desde_html(html, nombre, url=str(cand.get('url') or ''))
+                if not monto:
+                    continue
+                cambio = True
+                if not _precio_plausible_para_linea(nombre, monto):
+                    cand['precio_fuera_banda'] = monto
+                    continue
+                snippet = str(cand.get('content') or '')
+                cand['content'] = f'{snippet}\nPrecio: ${monto}'.strip()
+                cand['precio_snippet'] = monto
+            if cambio:
+                candidatos_por_nombre[nombre] = _ordenar_candidatos(
+                    candidatos,
+                    tokens_vehiculo=tokens_veh,
+                    priorizar_precio=True,
+                    nombre_linea=nombre,
+                    anio=anio,
+                    cilindraje=cilindraje,
+                    modelo=modelo,
+                )
 
     preliminar = _hits_desde_candidatos(
         candidatos_por_nombre,

@@ -890,7 +890,7 @@ class BuscarRepuestosWebTavilyTestCase(SimpleTestCase):
         with patch(
             'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.requests.post',
             side_effect=fake_post,
-        ):
+        ), patch.object(bw, '_leer_html_fichas', return_value={}):
             out = bw._buscar_repuestos_web_tavily(
                 ['Termostato de refrigerante'],
                 marca='Fiat',
@@ -1048,7 +1048,7 @@ class BuscarRepuestosWebTavilyTestCase(SimpleTestCase):
         with patch(
             'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos.requests.post',
             side_effect=fake_post,
-        ):
+        ), patch.object(bw, '_leer_html_fichas', return_value={}):
             out = bw._buscar_repuestos_web_tavily(
                 ['Pastillas de freno'],
                 marca='Fiat',
@@ -1308,7 +1308,9 @@ class BuscarRepuestosWebTavilyTestCase(SimpleTestCase):
 
         with patch.object(bw, '_tavily_buscar_uno', side_effect=fake_buscar), patch.object(
             bw, '_tavily_extraer', return_value={},
-        ), patch.object(bw, '_gemini_generar', return_value=None):
+        ), patch.object(bw, '_leer_html_fichas', return_value={}), patch.object(
+            bw, '_gemini_generar', return_value=None,
+        ):
             bw._buscar_repuestos_web_tavily(
                 ['Kit de embrague'],
                 marca='Kia',
@@ -1736,7 +1738,9 @@ class CoberturaPreciosComunesTests(SimpleTestCase):
 
         with patch.object(bw, '_candidatos_validos', side_effect=fake_cands), patch.object(
             bw, '_tavily_extraer', return_value={},
-        ), patch.object(bw, '_gemini_generar', return_value=None):
+        ), patch.object(bw, '_leer_html_fichas', return_value={}), patch.object(
+            bw, '_gemini_generar', return_value=None,
+        ):
             out = bw._buscar_repuestos_web_tavily(
                 ['Termostato', 'Filtro de aceite'],
                 marca='Fiat',
@@ -2498,7 +2502,9 @@ class CoberturaPiezasComunesTests(SimpleTestCase):
         }
         with patch.object(bw, '_tavily_buscar_uno', side_effect=fake_buscar), patch.object(
             bw, '_tavily_extraer', return_value={},
-        ), patch.object(bw, '_gemini_generar', return_value=gemini), self.assertLogs(
+        ), patch.object(bw, '_leer_html_fichas', return_value={}), patch.object(
+            bw, '_gemini_generar', return_value=gemini,
+        ), self.assertLogs(
             'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos',
             level='INFO',
         ) as logs:
@@ -2535,3 +2541,213 @@ class CoberturaPiezasComunesTests(SimpleTestCase):
         self.assertIn('elegido linea=Pastillas de freno delanteras', texto)
         self.assertIn(pad_url, texto)
         self.assertIn('reasignado', texto)
+
+
+class PrecioDesdeHtmlTestCase(SimpleTestCase):
+    """28990.00 es 28990. _to_int_clp juntaría los decimales y daría 2.899.000."""
+
+    def test_shopify_jsonld_y_og_no_toman_el_relacionado_ni_los_centavos(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            _to_int_clp,
+        )
+
+        self.assertEqual(_to_int_clp('28990.00'), 2899000)
+        self.assertEqual(bw._parse_monto_clp('28990.00'), 28990)
+        self.assertEqual(bw._parse_monto_clp('28.990'), 28990)
+        html = """
+        <html><head>
+          <link href="https://cdn.shopify.com/s/files/theme.css">
+          <meta content="28990.00" property="og:price:amount">
+          <script type="application/ld+json">
+          {"@context":"https://schema.org","@graph":[{
+            "@type":"Product",
+            "name":"Pastillas de Freno Delanteras Fiat Bravo 1.4 T-Jet",
+            "offers":{"@type":"Offer","price":"28990.00","priceCurrency":"CLP"}
+          }]}
+          </script>
+        </head><body>
+          <script type="application/json">{"variants":[{"price":2899000}]}</script>
+          <p>Relacionados $ 99.990</p>
+        </body></html>
+        """
+        self.assertEqual(
+            bw._precio_desde_html(
+                html,
+                'Pastillas de freno delanteras',
+                url='https://frenosvergara.shop/products/pastillas-fiat-bravo',
+            ),
+            28990,
+        )
+
+    def test_shopify_solo_centavos_del_variant(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        html = """
+        <html><head><link href="https://cdn.shopify.com/s/files/theme.css"></head>
+        <body>
+          <script type="application/json">
+            {"title":"Pastillas de Freno Delanteras Fiat Bravo","variants":[{"price":2899000,"compare_at_price":3599000}]}
+          </script>
+          <p>También $ 99.990</p>
+        </body></html>
+        """
+        self.assertEqual(
+            bw._precio_desde_html(html, 'Pastillas de freno delanteras', url='https://frenosvergara.shop/products/x'),
+            28990,
+        )
+
+    def test_mercadolibre_jsonld(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        html = """
+        <html><head>
+          <script type="application/ld+json">
+            {"@type":"Product","name":"Pastillas Frasle PD/92 Fiat Bravo",
+             "offers":{"@type":"Offer","price":32990,"priceCurrency":"CLP"}}
+          </script>
+        </head><body>
+          <span class="andes-money-amount__fraction">32.990</span>
+          <span class="andes-money-amount__fraction">1.990</span>
+        </body></html>
+        """
+        self.assertEqual(
+            bw._precio_desde_html(
+                html,
+                'Pastillas de freno delanteras',
+                url='https://articulo.mercadolibre.cl/MLC-998877-pastillas-bravo',
+            ),
+            32990,
+        )
+
+    def test_woocommerce_toma_el_primer_monto_de_la_ficha(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        html = """
+        <div class="summary">
+          <p class="price"><span class="woocommerce-Price-amount amount"><bdi>
+            <span class="woocommerce-Price-currencySymbol">$</span>24.990
+          </bdi></span></p>
+        </div>
+        <ul class="products"><span class="woocommerce-Price-amount amount"><bdi>$9.990</bdi></span></ul>
+        """
+        self.assertEqual(
+            bw._precio_desde_html(html, 'Pastillas de freno delanteras', url='https://www.mundorepuestos.cl/producto/pastillas'),
+            24990,
+        )
+
+    def test_jsonld_en_dolares_no_es_precio(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        html = """
+        <script type="application/ld+json">
+          {"@type":"Product","offers":{"price":"45.00","priceCurrency":"USD"}}
+        </script>
+        """
+        self.assertEqual(bw._precio_desde_html(html, 'Pastillas de freno delanteras'), 0)
+
+
+class FichaSinPrecioEnSnippetTests(SimpleTestCase):
+    def test_pastillas_sin_precio_leen_la_ficha_y_dejan_el_aceite_fuera(self):
+        """Cotización 10: 8 candidatos, snippets sin monto, y se saltaba la página."""
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        urls = [
+            'https://frenosvergara.shop/products/pastillas-fiat-bravo',
+            'https://frenosvergara.shop/products/pastillas-bravo-2',
+            'https://frenosvergara.shop/products/pastillas-bravo-3',
+            'https://frenosvergara.shop/products/pastillas-bravo-4',
+            'https://frenosvergara.shop/products/pastillas-fuera-de-banda',
+            'https://frenosvergara.shop/products/pastillas-bravo-6',
+            'https://frenosvergara.shop/products/pastillas-bravo-7',
+            'https://www.mundorepuestos.cl/producto/aceite-liqui-moly-5w40-4l',
+        ]
+        # Mismo calce de auto y la misma casa: el orden de entrada es el cupo.
+        titulos = [
+            'Pastillas de freno delanteras Fiat Bravo 1.4 T-Jet',
+            'Pastillas de freno delanteras Fiat Bravo 1.4 T-Jet dos',
+            'Pastillas de freno delanteras Fiat Bravo 1.4 T-Jet tres',
+            'Pastillas de freno delanteras Fiat Bravo 1.4 T-Jet cuatro',
+            'Pastillas de freno delanteras Fiat Bravo 1.4 T-Jet cinco',
+            'Pastillas de freno delanteras Fiat Bravo 1.4 T-Jet seis',
+            'Pastillas de freno delanteras Fiat Bravo 1.4 T-Jet siete',
+            'Aceite Para Motor Liqui Moly Sintético 5w-40 4L',
+        ]
+        ficha = """
+        <html><head>
+          <link href="https://cdn.shopify.com/s/files/theme.css">
+          <meta property="og:price:amount" content="28990.00">
+          <script type="application/ld+json">
+            {"@type":"Product","name":"Pastillas de Freno Delanteras Fiat Bravo 1.4 T-Jet",
+             "offers":{"@type":"Offer","price":"28990.00","priceCurrency":"CLP"}}
+          </script>
+        </head><body>
+          <script type="application/json">{"variants":[{"price":2899000}]}</script>
+          Relacionados $ 99.990
+        </body></html>
+        """
+        fuera = '<html><head><meta property="og:price:amount" content="900000"></head></html>'
+        vacia = '<html><body>Consultar stock en tienda</body></html>'
+        paginas = {urls[0]: ficha, urls[1]: vacia, urls[2]: vacia, urls[4]: fuera}
+        pedidos: list[str] = []
+
+        def fake_buscar(query, **kwargs):
+            if 'pastilla' not in query.lower():
+                return []
+            return [
+                {'title': titulos[i], 'url': urls[i], 'content': 'Consultar stock en tienda.', 'score': 0.8}
+                for i in range(8)
+            ]
+
+        def fake_html(lista):
+            pedidos.extend(lista)
+            return {url: paginas[url] for url in lista if url in paginas}
+
+        gemini = MagicMock()
+        with patch.object(bw, '_tavily_buscar_uno', side_effect=fake_buscar), patch.object(
+            bw, '_tavily_extraer', return_value={},
+        ), patch.object(bw, '_leer_html_fichas', side_effect=fake_html), patch.object(
+            bw, '_gemini_generar', gemini,
+        ), self.assertLogs(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos',
+            level='INFO',
+        ) as logs:
+            out = bw._buscar_repuestos_web_tavily(
+                ['Pastillas de freno delanteras'],
+                marca='FIAT',
+                modelo='BRAVO SPORT TJET',
+                anio=2010,
+                cilindraje='1.4',
+                tipo_motor='TJET',
+                servicio_nombre='Cambio de pastillas',
+                timeout=5,
+                plan={'piezas': []},
+            )
+
+        hit = out[bw._clave_fuzzy('Pastillas de freno delanteras')]
+        self.assertEqual(hit['url'], urls[0])
+        self.assertEqual(hit['precio_clp'], 28990)
+        self.assertIn('Pastillas', hit['nombre_producto'])
+        self.assertNotIn('Liqui', hit['nombre_producto'])
+        gemini.assert_not_called()
+        self.assertIn(urls[0], pedidos)
+        self.assertIn(urls[3], pedidos)
+        self.assertNotIn(urls[5], pedidos)
+        self.assertNotIn(urls[7], pedidos)
+        texto = '\n'.join(logs.output)
+        motivos = {
+            urls[0]: 'elegido',
+            urls[1]: 'sin_precio',
+            urls[2]: 'sin_precio',
+            urls[3]: 'ficha_no_leida',
+            urls[4]: 'precio_fuera_de_banda',
+            urls[5]: 'fuera_del_cupo',
+            urls[6]: 'fuera_del_cupo',
+            urls[7]: 'titulo_no_es_la_pieza',
+        }
+        for url, titulo, motivo in zip(urls, titulos, (motivos[u] for u in urls)):
+            self.assertIn(titulo, texto)
+            self.assertIn(
+                f'url={url} motivo={motivo}',
+                texto,
+            )

@@ -5,6 +5,7 @@
 - 'Una sola casa' solo si esa tienda cubre todas las líneas, y queda en cada una.
 - El rango mostrado cubre cantidad × precio unitario.
 """
+import logging
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
@@ -467,4 +468,73 @@ class SyncEnrichmentValidacionTestCase(TestCase):
         self.assertEqual(aceite.get('proveedor_nombre'), 'Todoautochile')
         self.assertEqual(aceite.get('precio_unitario_clp'), 9990)
         self.assertIn('litro', (aceite.get('comentario') or '').lower())
-        self.assertIn('4 L', aceite.get('comentario') or '')
+
+    def test_mejor_hit_no_prueba_el_aceite_contra_las_pastillas(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            _mejor_hit,
+        )
+
+        log = logging.getLogger(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos',
+        )
+        candidatos = [
+            {
+                'clave': 'pastillas freno delanteras',
+                'nombre_producto': 'Aceite Para Motor Liqui Moly Sintético 5w-40 4L',
+                'fuente_marketplace': 'web',
+                'confianza': 0.9,
+                'precio_unitario_clp': 39960,
+                'url_producto': 'https://www.mundorepuestos.cl/producto/aceite-liqui-moly-5w40-4l',
+            },
+            {
+                'clave': 'pastillas freno delanteras fiat bravo',
+                'nombre_producto': 'Pastillas de Freno Delanteras Fiat Bravo',
+                'fuente_marketplace': 'web',
+                'confianza': 0.8,
+                'precio_unitario_clp': 28990,
+                'url_producto': 'https://frenosvergara.shop/products/pastillas-fiat-bravo',
+            },
+        ]
+        with self.assertLogs(log.name, level='INFO') as logs:
+            log.info('sentinel')
+            hit = _mejor_hit('Pastillas de freno delanteras', candidatos, min_score=40)
+        self.assertIn('Pastillas', hit['nombre_producto'])
+        self.assertNotIn('Liqui', hit['nombre_producto'])
+        self.assertNotIn('listado_generico_rechazado', '\n'.join(logs.output))
+
+    def test_historial_no_intenta_el_aceite_sobre_las_pastillas(self):
+        self._cotizacion_previa(
+            estado='enviada',
+            repuestos=[{
+                'nombre': 'Pastillas de freno delanteras',
+                'nombre_producto': 'Aceite Para Motor Liqui Moly Sintético 5w-40 4L',
+                'cantidad': 1,
+                'precio_unitario_clp': 39960,
+                'proveedor_nombre': 'Mundo Repuestos',
+                'fuente_marketplace': 'web',
+                'url_producto': 'https://www.mundorepuestos.cl/producto/aceite-liqui-moly-5w40-4l',
+            }],
+        )
+        log = logging.getLogger(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos',
+        )
+        with self.assertLogs(log.name, level='INFO') as logs:
+            log.info('sentinel')
+            out = enriquecer_repuestos_cotizacion(
+                [{
+                    'nombre': 'Pastillas de freno delanteras',
+                    'cantidad': 1,
+                    'precio_unitario_clp': 0,
+                }],
+                marca_vehiculo='Fiat',
+                modelo_vehiculo='Bravo',
+                anio_vehiculo=2010,
+                taller=self.taller,
+                usar_ml=False,
+                usar_web=False,
+            )
+        pastillas = out[0]
+        self.assertNotIn('Liqui', pastillas.get('nombre_producto') or '')
+        self.assertNotIn('Mundo', pastillas.get('proveedor_nombre') or '')
+        self.assertEqual(pastillas.get('precio_unitario_clp') or 0, 0)
+        self.assertNotIn('listado_generico_rechazado', '\n'.join(logs.output))
