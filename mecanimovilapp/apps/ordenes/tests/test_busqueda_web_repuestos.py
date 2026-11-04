@@ -1093,11 +1093,17 @@ class BuscarRepuestosWebTavilyTestCase(SimpleTestCase):
                 vehiculo={'marca': 'Fiat', 'modelo': 'BRAVO SPORT TJET', 'cilindraje': '1.4'},
             )
 
-        self.assertEqual(len(queries), 1, 'con precio legible no se gasta una segunda búsqueda')
-        # La pastilla se publica sin el trim y sin el alias de la casa.
-        self.assertEqual(queries[0], 'pastillas freno delanteras fiat bravo 1.4')
-        self.assertNotIn('indra', queries[0].lower())
-        self.assertNotIn('sport', queries[0].lower())
+        self.assertEqual(
+            queries,
+            [
+                'pastillas freno delanteras fiat bravo 1.4',
+                'pastillas freno fiat bravo',
+                'pastillas freno fiat linea t-jet',
+            ],
+        )
+        self.assertNotIn('indra', ' '.join(queries).lower())
+        self.assertNotIn('sport', ' '.join(queries).lower())
+        self.assertNotIn('stilo', ' '.join(queries).lower())
         hit = out[bw._clave_fuzzy('Pastillas de freno delanteras')]
         self.assertEqual(hit['precio_clp'], 24990)
         self.assertIn('Bravo', hit['nombre_producto'])
@@ -1834,6 +1840,8 @@ class CoberturaPiezasComunesTests(SimpleTestCase):
         )
         self.assertEqual(qs[0], 'pastillas freno delanteras fiat bravo 1.4')
         self.assertEqual(qs[1], 'pastillas freno fiat bravo')
+        self.assertEqual(qs[2], 'pastillas freno fiat linea t-jet')
+        self.assertNotIn('stilo', ' '.join(qs).lower())
         for q in qs:
             self.assertNotIn('ceramica', bw._norm(q))
             self.assertNotIn('sport', q.lower())
@@ -2297,3 +2305,115 @@ class CoberturaPiezasComunesTests(SimpleTestCase):
         self.assertNotIn('Frenos Vergara', detalle)
         self.assertNotIn('2010', detalle)
         self.assertIn('resultados=', '\n'.join(logs.output))
+
+    def test_pastillas_recorren_la_escalera_aunque_la_primera_tenga_precio(self):
+        """Cotización 8: un snippet con precio no puede comerse las otras consultas."""
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        calls: list[str] = []
+
+        def fake_buscar(query, **kwargs):
+            calls.append(query)
+            q = query.lower()
+            if q == 'pastillas freno delanteras fiat bravo 1.4':
+                return [{
+                    'title': 'Pastillas de freno',
+                    'url': 'https://www.sodimac.cl/sodimac-cl/articulo/123/pastillas',
+                    'content': 'Pastillas de freno genéricas. Precio $ 18.990',
+                    'score': 0.5,
+                }]
+            if q == 'pastillas freno fiat bravo':
+                return [{
+                    'title': 'Pastillas de Freno Delanteras Fiat Bravo 1.4 T-Jet',
+                    'url': 'https://frenosvergara.shop/products/pastillas-fiat-bravo',
+                    'content': 'Juego delantero Fiat Bravo. Precio $ 28.990',
+                    'score': 0.9,
+                }]
+            if 'linea' in q:
+                return [{
+                    'title': 'Pastillas de Freno Delanteras Fiat Bravo, Linea y Punto 1.4 T-Jet',
+                    'url': 'https://www.mundorepuestos.cl/producto/pastillas-bravo-linea-punto',
+                    'content': 'Compatibles Fiat Bravo T-Jet, Linea T-Jet y Punto T-Jet. Precio $ 32.990',
+                    'score': 0.8,
+                }]
+            return []
+
+        plan = {
+            'piezas': [{
+                'nombre': 'Pastillas de freno delanteras',
+                'consulta': 'Pastillas de freno delanteras FIAT BRAVO SPORT TJET 2010 1.4',
+                'escasa': True,
+            }],
+        }
+        with patch.object(bw, '_tavily_buscar_uno', side_effect=fake_buscar), patch.object(
+            bw, '_tavily_extraer', return_value={},
+        ), patch.object(bw, '_gemini_generar', return_value=None), self.assertLogs(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos',
+            level='INFO',
+        ) as logs:
+            out = bw._buscar_repuestos_web_tavily(
+                ['Pastillas de freno delanteras'],
+                marca='FIAT',
+                modelo='BRAVO SPORT TJET',
+                anio=2010,
+                cilindraje='1.4',
+                tipo_motor='TJET',
+                servicio_nombre='Cambio de pastillas de freno delanteras',
+                timeout=5,
+                plan=plan,
+            )
+
+        self.assertEqual(calls, [
+            'pastillas freno delanteras fiat bravo 1.4',
+            'pastillas freno fiat bravo',
+            'pastillas freno fiat linea t-jet',
+        ])
+        self.assertNotIn('stilo', ' '.join(calls))
+        texto = '\n'.join(logs.output)
+        self.assertIn('resultados=1', texto)
+        self.assertIn('fichas=1', texto)
+        hit = out[bw._clave_fuzzy('Pastillas de freno delanteras')]
+        self.assertIn('frenosvergara.shop', hit['url'])
+        self.assertEqual(hit['precio_clp'], 28990)
+        self.assertIn('Bravo', hit['nombre_producto'])
+        self.assertNotIn('sodimac', hit['url'])
+
+    def test_fichas_chilenas_de_pastillas_no_las_bota_el_filtro(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import busqueda_web_repuestos as bw
+
+        wl = bw._dominios_whitelist()
+        tiendas = [
+            'https://frenosvergara.shop/products/pastillas-fiat-bravo',
+            'https://www.mundorepuestos.cl/producto/pastillas-freno-delanteras-fiat-bravo',
+            'https://articulo.mercadolibre.cl/MLC-123456789-pastillas-freno-fiat-bravo',
+        ]
+        for url in tiendas:
+            self.assertTrue(bw._es_tienda_chilena(url, wl, ''), url)
+            self.assertFalse(bw._es_pagina_sin_ficha(url), url)
+            self.assertFalse(bw._es_listado_sin_vendedor(url), url)
+        self.assertTrue(bw._es_listado_sin_vendedor(
+            'https://listado.mercadolibre.cl/pastillas-fiat-bravo',
+        ))
+        self.assertTrue(bw._candidato_sirve_linea(
+            'Pastillas de freno delanteras',
+            {
+                'title': 'Pastillas de Freno Delanteras Fiat Bravo, Linea y Punto 1.4 T-Jet',
+                'content': 'Compatibles con Fiat Bravo T-Jet y Fiat Linea T-Jet.',
+                'url': 'https://www.mundorepuestos.cl/producto/pastillas-bravo-linea',
+            },
+            anio=2010,
+            cilindraje='1.4',
+            modelo='BRAVO SPORT TJET',
+        ))
+        self.assertEqual(
+            bw._consultas_pastillas(
+                'Pastillas de freno delanteras',
+                marca='Fiat',
+                modelo='Bravo',
+                cilindraje='1.4',
+            ),
+            [
+                'pastillas freno delanteras fiat bravo 1.4',
+                'pastillas freno fiat bravo',
+            ],
+        )
