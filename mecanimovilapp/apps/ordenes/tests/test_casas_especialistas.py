@@ -399,3 +399,48 @@ class OrdenCompraPdfTests(TestCase):
         self.assertEqual(res['Content-Type'], 'application/pdf')
         self.assertIn('CJXP98', res['Content-Disposition'])
         self.assertTrue(res.content.startswith(b'%PDF'))
+
+
+class TarifaManoObraTests(TestCase):
+    def test_la_tarifa_del_taller_llena_la_faena_que_el_modelo_no_cotizo(self):
+        from decimal import Decimal
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
+            normalizar_cotizacion_ia,
+        )
+        from mecanimovilapp.apps.servicios.models import OfertaServicio, Servicio
+
+        user = User.objects.create_user(username='taller_mo', password='x', email='mo@test.cl')
+        taller = Taller.objects.create(usuario=user, nombre='MecaniMovil', telefono='1')
+        servicio = Servicio.objects.create(nombre='Cambio de aceite y filtro de aceite')
+        OfertaServicio.objects.bulk_create([
+            OfertaServicio(
+                tipo_proveedor='taller',
+                taller=taller,
+                servicio=servicio,
+                disponible=True,
+                precio_sin_repuestos=Decimal('28000'),
+                precio_con_repuestos=Decimal('45000'),
+            ),
+        ])
+        pedido = (
+            'Cambio de pastillas de freno delanteras, aceite y filtro de aceite, '
+            'bujías y filtro de aire'
+        )
+        out = normalizar_cotizacion_ia(
+            {
+                'servicio_nombre': pedido,
+                'mano_obra_clp': 50000,
+                'servicios_lineas': [
+                    {'nombre': 'Cambio de pastillas de freno delanteras', 'monto_clp': 35000},
+                    {'nombre': 'Cambio de filtro de aire', 'monto_clp': 15000},
+                ],
+                'repuestos': [],
+            },
+            {'servicio_nombre': pedido, 'taller': taller, 'marca': 'Fiat', 'modelo': 'Bravo'},
+        )
+        montos = {lin['nombre']: lin['monto_clp'] for lin in out['servicios_lineas']}
+        self.assertEqual(montos['Cambio de aceite y filtro de aceite'], 28000)
+        self.assertTrue(all(monto > 0 for monto in montos.values()))
+        self.assertEqual(out['mano_obra_clp'], sum(montos.values()))
+        self.assertGreater(out['mano_obra_clp'], 50000)

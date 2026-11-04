@@ -280,6 +280,10 @@ def normalizar_cotizacion_ia(data: dict[str, Any], ctx: dict[str, Any]) -> dict[
         data.get('servicios_lineas'),
         mano_obra,
         pedido=lectura,
+        taller=ctx.get('taller'),
+        marca=str(ctx.get('marca') or ''),
+        modelo=str(ctx.get('modelo') or ''),
+        tipo_motor=str(ctx.get('tipo_motor_efectivo') or ''),
     )
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
         aplicar_cantidad_aceite_motor,

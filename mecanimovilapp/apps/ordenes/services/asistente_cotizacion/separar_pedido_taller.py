@@ -288,15 +288,29 @@ def interpretar_pedido_taller(texto: str) -> dict[str, list[str]]:
     mano: list[str] = []
     piezas: list[str] = []
     conjuntas: list[str] = []
-    chunks = [c.strip() for c in _split_servicios(texto) if c.strip()]
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.aplicar_catalogo import (
+        _SEP_OTRO_SERVICIO_RE,
+    )
+
+    # «también rodamiento de volante» es una pieza del trabajo, no otra faena.
+    # El verbo se hereda solo dentro de la lista inicial («cambio de A, B y C»).
+    segmentos = _SEP_OTRO_SERVICIO_RE.split(texto) or [texto]
+    chunks: list[str] = []
+    hereda_verbo: list[bool] = []
+    for i, segmento in enumerate(segmentos):
+        for frase in _split_servicios(segmento):
+            if not frase.strip():
+                continue
+            chunks.append(frase.strip())
+            hereda_verbo.append(i == 0)
     lista = len(chunks) > 1
     verbo_lista = ''
-    for frase in chunks:
+    for frase, puede_heredar in zip(chunks, hereda_verbo):
         frase = _sin_conector(frase)
         if not frase:
             continue
         # «Cambio de pastillas, aceite y filtro, bujías»: el verbo abre toda la lista.
-        if lista and verbo_lista and not _VERBO_PIEZA.match(frase) and not es_solo_mano(frase):
+        if lista and puede_heredar and verbo_lista and not _VERBO_PIEZA.match(frase) and not es_solo_mano(frase):
             frase = f'{verbo_lista} {frase}'.strip()
         titulo = _titulo_faena(frase)
         abierto = _VERBO_PIEZA.match(frase)
@@ -369,41 +383,170 @@ def _monto(valor) -> int:
         return 0
 
 
-def _lineas_mano(nombres: list[str], lineas_in: list[dict], mano_obra: int) -> tuple[list[dict], int]:
+# Sin tarifa del taller y sin faenas cotizadas por el modelo, una hora de taller.
+_HORA_TALLER_FALLBACK = 15_000
+
+
+def _mediana(valores: list[int]) -> int:
+    ordered = sorted(v for v in valores if v > 0)
+    if not ordered:
+        return 0
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return int(round((ordered[mid - 1] + ordered[mid]) / 2))
+
+
+def _minutos_faena(nombre: str) -> int:
+    from mecanimovilapp.apps.agente_ia.services.duracion_trabajo import duracion_familia_desde_texto
+    from mecanimovilapp.apps.usuarios.services.disponibilidad_proveedor import (
+        DURACION_DEFAULT_MINUTOS,
+    )
+
+    return duracion_familia_desde_texto(nombre) or DURACION_DEFAULT_MINUTOS
+
+
+def _tarifa_hora_taller(taller) -> int:
+    """La hora configurada del taller, si existe. Cero si no está."""
+    if taller is None:
+        return 0
+    fuentes = [taller]
+    config = getattr(taller, 'agente_config', None)
+    if config is not None:
+        fuentes.append(config)
+    for fuente in fuentes:
+        for campo in ('tarifa_hora_clp', 'valor_hora_clp', 'precio_hora_clp'):
+            try:
+                valor = int(getattr(fuente, campo, 0) or 0)
+            except (TypeError, ValueError):
+                valor = 0
+            if valor > 0:
+                return valor
+    return 0
+
+
+def _tarifa_servicio(taller, nombre: str, *, marca: str, modelo: str, tipo_motor: str) -> int:
+    if taller is None or not getattr(taller, 'pk', None):
+        return 0
+    try:
+        from mecanimovilapp.apps.ordenes.services.catalogo_pricing import (
+            buscar_oferta_exacta,
+            precio_publico_oferta,
+        )
+
+        oferta = buscar_oferta_exacta(
+            taller=taller,
+            servicio_nombre=nombre,
+            marca=marca,
+            modelo=modelo,
+            tipo_motor=tipo_motor,
+        )
+        if oferta is None:
+            return 0
+        precio, _ = precio_publico_oferta(oferta, con_repuestos=False)
+        return precio if precio > 0 else 0
+    except Exception:
+        return 0
+
+
+def completar_montos_mano(
+    lineas: list[dict],
+    *,
+    taller=None,
+    marca: str = '',
+    modelo: str = '',
+    tipo_motor: str = '',
+) -> tuple[list[dict], int]:
+    """Cada faena pedida cobra. La suma manda; un total del modelo no la recorta.
+
+    Orden: tarifa del servicio, hora configurada × horas estándar, estimado del
+    modelo para esa faena, y si el modelo no la cotizó, las horas estándar a la
+    mediana de lo que sí cotizó (o $15.000/h si no cotizó ninguna).
+    """
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.mano_obra_lineas import (
+        monto_linea_mo,
+    )
+
+    hora = _tarifa_hora_taller(taller)
+    preparados: list[tuple[dict, int, int, bool]] = []
+    tarifas_hora_modelo: list[int] = []
+    for lin in lineas or []:
+        if not isinstance(lin, dict):
+            continue
+        row = dict(lin)
+        nombre = str(row.get('nombre') or '').strip()
+        minutos = _minutos_faena(nombre) if nombre else 60
+        actual = monto_linea_mo(row)
+        desde_catalogo = bool(row.get('precio_desde_catalogo')) and actual > 0
+        tarifa = 0 if desde_catalogo else _tarifa_servicio(
+            taller, nombre, marca=marca, modelo=modelo, tipo_motor=tipo_motor,
+        )
+        if desde_catalogo:
+            monto = actual
+            faltaba = False
+        elif tarifa > 0:
+            monto = tarifa
+            faltaba = False
+        elif hora > 0:
+            monto = max(1, int(round(hora * minutos / 60)))
+            faltaba = False
+        elif actual > 0:
+            monto = actual
+            faltaba = False
+            if minutos > 0:
+                tarifas_hora_modelo.append(int(round(actual * 60 / minutos)))
+        else:
+            monto = 0
+            faltaba = True
+        preparados.append((row, monto, minutos, faltaba))
+
+    hora_recalc = _mediana(tarifas_hora_modelo) or _HORA_TALLER_FALLBACK
+    out: list[dict] = []
+    for row, monto, minutos, faltaba in preparados:
+        if faltaba:
+            monto = max(1, int(round(hora_recalc * minutos / 60)))
+        row['monto_clp'] = monto
+        row['precio_mano_obra_clp'] = monto
+        out.append(row)
+    return out, sum(int(lin['monto_clp']) for lin in out)
+
+
+def _lineas_mano(
+    nombres: list[str],
+    lineas_in: list[dict],
+    mano_obra: int,
+    *,
+    taller=None,
+    marca: str = '',
+    modelo: str = '',
+    tipo_motor: str = '',
+) -> tuple[list[dict], int]:
     if not nombres:
         if lineas_in:
-            return lineas_in, mano_obra
+            lineas, total = completar_montos_mano(
+                lineas_in, taller=taller, marca=marca, modelo=modelo, tipo_motor=tipo_motor,
+            )
+            return lineas, total or int(mano_obra or 0)
         return [{'nombre': 'Mano de obra', 'monto_clp': max(0, int(mano_obra or 0))}], mano_obra
-    if not lineas_in:
-        if len(nombres) == 1:
-            return [{'nombre': nombres[0], 'monto_clp': max(0, int(mano_obra or 0))}], mano_obra
-        return [{'nombre': nombre, 'monto_clp': 0} for nombre in nombres], mano_obra
+    if not lineas_in and len(nombres) == 1:
+        return [{'nombre': nombres[0], 'monto_clp': max(0, int(mano_obra or 0))}], mano_obra
 
     usadas: set[int] = set()
     out: list[dict] = []
     for nombre in nombres:
         monto = 0
-        for i, lin in enumerate(lineas_in):
+        for i, lin in enumerate(lineas_in or []):
             if i in usadas:
                 continue
             if not _linea_de_faena(nombre, str(lin.get('nombre') or '')):
                 continue
-            monto += _monto(lin.get('monto_clp'))
+            monto += _monto(lin.get('monto_clp') or lin.get('precio_mano_obra_clp'))
             usadas.add(i)
         out.append({'nombre': nombre, 'monto_clp': monto})
-    suma = sum(lin['monto_clp'] for lin in out)
-    total = int(mano_obra or 0)
-    if suma > 0 and total > suma:
-        ceros = [i for i, lin in enumerate(out) if lin['monto_clp'] == 0]
-        if ceros:
-            resto = total - suma
-            base, extra = divmod(resto, len(ceros))
-            for j, i in enumerate(ceros):
-                out[i]['monto_clp'] = base + (extra if j == 0 else 0)
-            suma = total
-    if suma > 0:
-        mano_obra = suma
-    return out, int(mano_obra or 0)
+    lineas, total = completar_montos_mano(
+        out, taller=taller, marca=marca, modelo=modelo, tipo_motor=tipo_motor,
+    )
+    return lineas, total
 
 
 def _es_objeto_de_servicio(nombre: str, objetos: list[str]) -> bool:
@@ -422,6 +565,10 @@ def aplicar_lectura_taller(
     mano_obra: int,
     *,
     pedido: str,
+    taller=None,
+    marca: str = '',
+    modelo: str = '',
+    tipo_motor: str = '',
 ) -> tuple[list[dict], list[dict], int]:
     """Corrige nombres de pieza y arma la mano de obra que el taller escribió."""
     interp = interpretar_pedido_taller(pedido)
@@ -472,7 +619,15 @@ def aplicar_lectura_taller(
         })
 
     lineas_in = [lin for lin in (servicios_lineas or []) if isinstance(lin, dict)]
-    lineas, mano_obra = _lineas_mano(interp['mano_obra'], lineas_in, int(mano_obra or 0))
+    lineas, mano_obra = _lineas_mano(
+        interp['mano_obra'],
+        lineas_in,
+        int(mano_obra or 0),
+        taller=taller,
+        marca=marca,
+        modelo=modelo,
+        tipo_motor=tipo_motor,
+    )
     return limpios[:12], lineas, int(mano_obra or 0)
 
 

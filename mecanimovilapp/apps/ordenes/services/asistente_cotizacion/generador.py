@@ -1283,6 +1283,8 @@ def generar_cotizacion_ia(
             'valores_estimativos': bool(contenido.get('valores_estimativos', True)),
         }
 
+    if taller is not None:
+        ctx = {**ctx, 'taller': taller}
     contenido = normalizar_cotizacion_ia(crudo, ctx)
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.completar_pedido import (
         completar_pedido_con_faena,

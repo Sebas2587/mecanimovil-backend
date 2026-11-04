@@ -941,34 +941,25 @@ def _asegurar_montos_en_lineas(
     lineas: list[dict[str, Any]],
     mano_obra: int,
 ) -> list[dict[str, Any]]:
-    """El taller lee servicios_lineas; el lump mano_obra_clp no basta si hay líneas en $0."""
+    """Cada faena cobra. Un total del modelo no se reparte sobre las que faltan."""
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.mano_obra_lineas import (
         monto_linea_mo,
     )
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.separar_pedido_taller import (
+        completar_montos_mano,
+    )
 
-    out = [dict(lin) for lin in (lineas or [])]
+    out = [dict(lin) for lin in (lineas or []) if isinstance(lin, dict)]
     if not out:
         return out
-    for lin in out:
-        monto = monto_linea_mo(lin)
-        if monto > 0:
-            lin['monto_clp'] = monto
-            lin['precio_mano_obra_clp'] = monto
-    asignado = sum(monto_linea_mo(lin) for lin in out)
     vacias = [lin for lin in out if monto_linea_mo(lin) <= 0]
-    if not vacias:
+    if len(out) == 1 and vacias and int(mano_obra or 0) > 0:
+        monto = int(mano_obra)
+        out[0]['monto_clp'] = monto
+        out[0]['precio_mano_obra_clp'] = monto
         return out
-    faltante = max(0, int(mano_obra or 0) - asignado)
-    if faltante <= 0:
-        return out
-    n = len(vacias)
-    base = faltante // n
-    resto = faltante - base * n
-    for i, lin in enumerate(vacias):
-        monto = base + (resto if i == 0 else 0)
-        lin['monto_clp'] = monto
-        lin['precio_mano_obra_clp'] = monto
-    return out
+    completas, _total = completar_montos_mano(out)
+    return completas
 
 
 def _finalizar_precios_borrador_agente(cotizacion: CotizacionCanal) -> CotizacionCanal:

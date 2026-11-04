@@ -923,5 +923,6 @@ class TechoIaYLineasAgenteTests(SimpleTestCase):
             80000,
         )
         self.assertEqual(out[0]['monto_clp'], 25000)
-        self.assertEqual(out[1]['monto_clp'], 55000)
+        self.assertEqual(out[1]['monto_clp'], 25000)
+        self.assertGreater(out[1]['monto_clp'], 0)
 

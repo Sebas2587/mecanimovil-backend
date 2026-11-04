@@ -1283,8 +1283,39 @@ class SepararPedidoTallerTestCase(SimpleTestCase):
         )
         self.assertEqual(montos['Cambio de pastillas de freno delanteras'], 35000)
         self.assertEqual(montos['Cambio de filtro de aire'], 15000)
-        self.assertIn('Cambio de aceite y filtro de aceite', montos)
-        self.assertIn('Cambio de bujías', montos)
+        self.assertEqual(montos['Cambio de aceite y filtro de aceite'], 20625)
+        self.assertEqual(montos['Cambio de bujías'], 20625)
+        self.assertTrue(all(monto > 0 for monto in montos.values()))
+        self.assertEqual(out['mano_obra_clp'], sum(montos.values()))
+
+    def test_la_hora_del_taller_precio_cada_faena(self):
+        pedido = (
+            'Cambio de pastillas de freno delanteras, aceite y filtro de aceite, '
+            'bujías y filtro de aire'
+        )
+
+        class _Taller:
+            tarifa_hora_clp = 20_000
+
+        out = normalizar_cotizacion_ia(
+            {
+                'servicio_nombre': pedido,
+                'mano_obra_clp': 50000,
+                'servicios_lineas': [
+                    {'nombre': 'Cambio de pastillas de freno delanteras', 'monto_clp': 35000},
+                    {'nombre': 'Cambio de filtro de aire', 'monto_clp': 15000},
+                ],
+                'repuestos': [],
+            },
+            {'servicio_nombre': pedido, 'taller': _Taller()},
+        )
+        montos = {lin['nombre']: lin['monto_clp'] for lin in out['servicios_lineas']}
+        self.assertEqual(montos['Cambio de pastillas de freno delanteras'], 40000)
+        self.assertEqual(montos['Cambio de aceite y filtro de aceite'], 30000)
+        self.assertEqual(montos['Cambio de bujías'], 30000)
+        self.assertEqual(montos['Cambio de filtro de aire'], 30000)
+        self.assertTrue(all(monto > 0 for monto in montos.values()))
+        self.assertEqual(out['mano_obra_clp'], 130000)
 
     def test_no_guarda_la_faena_como_repuesto(self):
         ctx = {'servicio_nombre': self.PEDIDO}
@@ -1312,7 +1343,10 @@ class SepararPedidoTallerTestCase(SimpleTestCase):
                 'Revisión electromecánica',
             ],
         )
-        self.assertEqual(out['mano_obra_clp'], 80000)
+        montos = [lin['monto_clp'] for lin in out['servicios_lineas']]
+        self.assertEqual(montos, [22500, 15000, 15000, 15000])
+        self.assertTrue(all(monto > 0 for monto in montos))
+        self.assertEqual(out['mano_obra_clp'], sum(montos))
 
     def test_filtro_de_aire_es_otra_faena_aunque_no_traiga_verbo(self):
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.separar_pedido_taller import (
