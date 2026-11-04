@@ -796,6 +796,52 @@ def nota_cola_caida() -> str:
     return _NOTA_COLA
 
 
+def _sin_acentos(texto: str) -> str:
+    plano = unicodedata.normalize('NFD', str(texto or '').lower())
+    return ''.join(c for c in plano if unicodedata.category(c) != 'Mn')
+
+
+def _nota_reclama_stock_sin_verificar(texto: str) -> bool:
+    """«Tiene todos… Precio a consultar» afirma stock que nadie verificó."""
+    bajo = _sin_acentos(texto)
+    if 'tiene todos los repuestos' not in bajo:
+        return False
+    return 'de esta cotizacion' not in bajo
+
+
+def _nota_consulta_vieja(texto: str) -> bool:
+    """La frase anterior interpolaba la marca cruda y cerraba en precio a consultar."""
+    bajo = _sin_acentos(texto)
+    if 'precio a consultar' not in bajo or 'especialista' not in bajo:
+        return False
+    return 'consulta disponibilidad y precio' not in bajo
+
+
+def _es_nota_consulta_actual(texto: str) -> bool:
+    bajo = _sin_acentos(texto)
+    return 'consulta disponibilidad y precio' in bajo and 'especialista' in bajo
+
+
+def _referencia_consulta(linea: dict) -> tuple[str, int]:
+    """Tienda y monto validados de esta línea. Sin eso, no hay cláusula Referencia."""
+    tienda = nombre_tienda_visible(str(linea.get('referencia_tienda') or ''))
+    try:
+        precio = int(linea.get('precio_referencia_clp') or 0)
+    except (TypeError, ValueError):
+        precio = 0
+    if tienda and precio > 0:
+        return tienda, precio
+    casa = nombre_tienda_visible(str(linea.get('casa_repuesto_nombre') or ''))
+    prov = nombre_tienda_visible(str(linea.get('proveedor_nombre') or ''))
+    try:
+        unitario = int(linea.get('precio_unitario_clp') or 0)
+    except (TypeError, ValueError):
+        unitario = 0
+    if prov and prov.lower() != (casa or '').lower() and unitario > 0:
+        return prov, unitario
+    return '', 0
+
+
 def _es_nota_mecanico(texto: str) -> bool:
     bajo = str(texto or '').strip().lower()
     return (
@@ -1131,6 +1177,40 @@ def sanear_notas_linea(
             or linea['referencia_tienda']
         )
     motivo = str(linea.get('motivo_seleccion') or '')
+    comentario_previo = str(linea.get('comentario') or '')
+    reclama = (
+        _nota_reclama_stock_sin_verificar(motivo)
+        or _nota_reclama_stock_sin_verificar(comentario_previo)
+        or _nota_consulta_vieja(motivo)
+        or _nota_consulta_vieja(comentario_previo)
+    )
+    consulta_pendiente = (
+        bool(linea.get('precio_a_consultar'))
+        and not _es_nota_consulta_actual(motivo)
+    )
+    if (reclama or consulta_pendiente) and tienda:
+        from mecanimovilapp.apps.ordenes.casas_especialistas import (
+            nota_consulta_especialista,
+            perfil_de,
+        )
+
+        if perfil_de(tienda):
+            ref_tienda, ref_precio = _referencia_consulta(linea)
+            nota_consulta = recortar_nota(nota_consulta_especialista(
+                tienda,
+                marca,
+                tienda=ref_tienda,
+                precio=ref_precio,
+            ))
+            linea['motivo_seleccion'] = nota_consulta
+            if (
+                not comentario_previo.strip()
+                or _es_nota_mecanico(comentario_previo)
+                or _nota_reclama_stock_sin_verificar(comentario_previo)
+                or _nota_consulta_vieja(comentario_previo)
+            ):
+                linea['comentario'] = nota_consulta
+            motivo = nota_consulta
     if not _motivo_ya_es_corto(motivo, tienda=tienda, hay_tienda=hay):
         linea['motivo_seleccion'] = _nota_corta_para_linea(
             linea,
