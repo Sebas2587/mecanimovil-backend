@@ -881,3 +881,65 @@ class Quote12CachePathTests(TestCase):
         texto = '\n'.join(logs.output)
         self.assertIn('motivo=precio_bajo_banda', texto)
         self.assertIn('motivo=sin_modelo', texto)
+
+    def test_cache_no_cree_una_caida_grande_del_filtro(self):
+        """10.990 → 4.990 en TodoAuto es cuota, envío o un relacionado."""
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+            clave_cache_repuesto,
+            hits_cache_vigentes_para_nombres,
+        )
+
+        veh = dict(
+            marca_vehiculo='Fiat',
+            modelo_vehiculo='Bravo',
+            anio=2010,
+            tipo_motor='T-Jet',
+            cilindraje='1.4',
+        )
+        url = 'https://www.todoauto.cl/filtro-aceite-fiat-bravo-14-2008-2014'
+        html = """
+        <html><head>
+          <title>FILTRO ACEITE FIAT BRAVO 1.4 2008/2014</title>
+          <script type="application/ld+json">
+            {"@type":"Product","name":"FILTRO ACEITE FIAT BRAVO 1.4 2008/2014",
+             "offers":{"@type":"Offer","price":"4990","priceCurrency":"CLP"}}
+          </script>
+        </head><body>
+          <h1>FILTRO ACEITE FIAT BRAVO 1.4 2008/2014</h1>
+          <p>3 cuotas de $4.990</p>
+          <p>Envío a domicilio $4.990</p>
+          <p>También te puede interesar: filtro de aire $4.990</p>
+        </body></html>
+        """
+        expira = timezone.now() + timedelta(days=14)
+        viejo = timezone.now() - timedelta(days=2)
+        fila = PrecioRepuestoWeb.objects.create(
+            clave=clave_cache_repuesto('Filtro de aceite', **veh),
+            dominio='todoauto.cl',
+            nombre_producto='FILTRO ACEITE FIAT BRAVO 1.4 2008/2014',
+            precio_clp=10990,
+            tienda='TodoAuto',
+            url=url,
+            confianza=0.9,
+            cilindraje='1.4',
+            tipo_motor='T-Jet',
+            expira_en=expira,
+        )
+        PrecioRepuestoWeb.objects.filter(pk=fila.pk).update(consultado_en=viejo)
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos._leer_html_fichas',
+            return_value={url: html},
+        ), self.assertLogs(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos',
+            level='INFO',
+        ) as logs:
+            hits = hits_cache_vigentes_para_nombres(['Filtro de aceite'], **veh)
+        fila.refresh_from_db()
+        self.assertEqual(fila.precio_clp, 10990)
+        hit = next(iter(hits.values()))
+        self.assertEqual(hit['precio_clp'], 10990)
+        texto = '\n'.join(logs.output)
+        self.assertIn('caida_ignorada', texto)
+        self.assertIn('guardado=10990', texto)
+        self.assertIn('leido=4990', texto)
+        self.assertNotIn('actual=4990', texto)
