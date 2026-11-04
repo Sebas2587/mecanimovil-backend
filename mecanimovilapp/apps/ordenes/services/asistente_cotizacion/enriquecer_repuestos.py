@@ -154,7 +154,7 @@ def anotar_busqueda_sin_ficha(rep: dict, nota: dict | None) -> dict:
     """Escribe qué se buscó. No borra el unitario ni la banda de la IA."""
     detalle = str((nota or {}).get('detalle') or '').strip()
     if detalle:
-        rep['motivo_seleccion'] = detalle[:300]
+        rep['motivo_seleccion'] = detalle[:500]
         # La descripción de la pieza ("Juego completo…") no es la búsqueda.
         if not str(rep.get('comentario') or '').strip() or nota_de_busqueda(rep.get('comentario')):
             rep['comentario'] = detalle[:500]
