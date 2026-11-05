@@ -663,6 +663,89 @@ class OrdenCompraPdfTests(TestCase):
         self.assertEqual(data['ganancia_repuestos_clp'], 6000)
         self.assertEqual(data['margen_repuestos_pct'], 37.5)
 
+    def test_el_pack_de_bujias_champion_se_cotiza_por_unidad(self):
+        from mecanimovilapp.apps.ordenes.serializers_cotizacion_canal import (
+            CotizacionCanalSerializer,
+        )
+
+        self.cot.repuestos = [{
+            'id': 'bujias',
+            'nombre': 'Bujías Champion Iridio',
+            'cantidad': 4,
+            'precio_unitario_clp': 3956,
+            'precio_a_consultar': True,
+            'certeza': 'asumido',
+            'nombre_producto': 'Bujías Champion Iridium x4',
+            'fuentes_detalle': [{
+                'fuente': 'web',
+                'tienda': 'Entretuercas',
+                'precio_clp': 15826,
+                'url': 'https://www.entretuercas.cl/bujias-champion-iridium-x4',
+                'nombre': 'Bujías Champion Iridium x4',
+            }],
+        }]
+        self.cot.save(update_fields=['repuestos'])
+        data = CotizacionCanalSerializer(self.cot).data
+        linea = data['repuestos'][0]
+        self.assertEqual(linea['url_referencia'], 'https://www.entretuercas.cl/bujias-champion-iridium-x4')
+        self.assertIn('entretuerca', linea['tienda_referencia'].lower())
+        self.assertEqual(linea['precio_verificado_clp'], round(15826 / 4))
+        self.assertEqual(linea['costo_unitario_clp'], round(15826 / 4))
+        self.assertEqual(linea['precio_cobrado_clp'], 3956)
+        self.assertGreaterEqual(linea['margen_pct'], -100)
+        self.assertEqual(linea['casa_sugerida'], 'Indra')
+        self.assertEqual(linea['validacion_estado'], 'ok')
+        self.assertTrue(any('juego' in alerta.lower() for alerta in linea['alertas']))
+        self.assertTrue(any(
+            item['estado'] == 'ok' and 'juego' in ' '.join(item['alertas']).lower()
+            for item in data['alertas_validacion']
+        ))
+
+    def test_una_ficha_de_otros_anios_no_se_cita(self):
+        from mecanimovilapp.apps.ordenes.serializers_cotizacion_canal import (
+            CotizacionCanalSerializer,
+        )
+
+        self.cot.repuestos = [{
+            'nombre': 'Bujías Champion Iridio',
+            'cantidad': 4,
+            'precio_unitario_clp': 3956,
+            'nombre_producto': 'Bujías Champion Fiat Bravo 1995-2001 x4',
+            'fuentes_detalle': [{
+                'tienda': 'Entretuercas',
+                'precio_clp': 15826,
+                'url': 'https://www.entretuercas.cl/bujias-champion-1995-2001',
+                'nombre': 'Bujías Champion Fiat Bravo 1995-2001 x4',
+            }],
+        }]
+        self.cot.save(update_fields=['repuestos'])
+        linea = CotizacionCanalSerializer(self.cot).data['repuestos'][0]
+        self.assertEqual(linea['validacion_estado'], 'sin_referencia_valida')
+        self.assertEqual(linea['url_referencia'], '')
+        self.assertIsNone(linea['precio_verificado_clp'])
+        self.assertIn('otros años', linea['validacion_motivo'].lower())
+        self.assertGreaterEqual(linea['margen_pct'], -100)
+        self.assertNotEqual(linea['costo_unitario_clp'], 15826)
+
+    def test_el_filtro_asumido_sin_casa_sugiere_indra(self):
+        from mecanimovilapp.apps.ordenes.serializers_cotizacion_canal import (
+            CotizacionCanalSerializer,
+        )
+
+        self.cot.repuestos = [{
+            'nombre': 'Filtro de aire',
+            'cantidad': 1,
+            'precio_unitario_clp': 8990,
+            'certeza': 'asumido',
+            'comentario': 'Precio asumido',
+        }]
+        self.cot.save(update_fields=['repuestos'])
+        linea = CotizacionCanalSerializer(self.cot).data['repuestos'][0]
+        self.assertEqual(linea['casa_sugerida'], 'Indra')
+        self.assertEqual(linea['validacion_estado'], 'asumido')
+        self.assertIn('no hay ficha', linea['validacion_motivo'].lower())
+        self.assertEqual(linea['url_referencia'], '')
+
 
 class DireccionEncabezadoTests(SimpleTestCase):
     def test_kennedy_queda_en_una_sola_linea(self):
