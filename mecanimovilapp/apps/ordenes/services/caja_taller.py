@@ -83,13 +83,22 @@ def interpretar_fecha_efectiva(valor) -> tuple[datetime, date]:
         texto = str(valor or '').strip()
         if not texto:
             raise CajaError('fecha_requerida', 'Indica la fecha efectiva del movimiento.')
-        if 'T' in texto or ' ' in texto:
-            momento = datetime.fromisoformat(texto.replace('Z', '+00:00'))
+        try:
+            if 'T' in texto or ' ' in texto:
+                momento = datetime.fromisoformat(texto.replace('Z', '+00:00'))
+            else:
+                dia = date.fromisoformat(texto[:10])
+                momento = None
+        except ValueError as exc:
+            raise CajaError(
+                'fecha_invalida',
+                'La fecha efectiva no existe en el calendario.',
+            ) from exc
+        if momento is not None:
             if momento.tzinfo is None:
                 momento = momento.replace(tzinfo=ZONA)
             momento = momento.astimezone(ZONA)
             return momento, momento.date()
-        dia = date.fromisoformat(texto[:10])
     mediodia = datetime(dia.year, dia.month, dia.day, 12, 0, tzinfo=ZONA)
     return mediodia, dia
 

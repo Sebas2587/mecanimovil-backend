@@ -299,6 +299,24 @@ class CajaTallerAPITest(TestCase):
         escritura = self._post(ajeno, idempotency_key='ajeno')
         self.assertEqual(escritura.status_code, 404)
 
+    def test_fecha_imposible_responde_400_y_no_inserta(self):
+        antes = CobroTaller.objects.count()
+        for fecha in ('2026-02-30', '2026-02-30T15:04:00'):
+            respuesta = self._post(
+                self.client,
+                fecha_efectiva=fecha,
+                idempotency_key=f'fecha-imposible-{fecha}',
+            )
+            self.assertEqual(respuesta.status_code, 400, respuesta.data)
+            self.assertEqual(respuesta.data['code'], 'fecha_invalida')
+            self.assertLess(respuesta.status_code, 500)
+        self.assertEqual(CobroTaller.objects.count(), antes)
+        lectura = self.client.get('/api/ordenes/caja/', {
+            'desde': '2026-02-30', 'hasta': '2026-02-30',
+        })
+        self.assertEqual(lectura.status_code, 400)
+        self.assertEqual(lectura.data['code'], 'periodo_invalido')
+
     def test_identidad_legible_sin_inventar_ni_salir_del_taller(self):
         self.cita.numero_publico = 'TC-000007'
         self.cita.save(update_fields=['numero_publico'])

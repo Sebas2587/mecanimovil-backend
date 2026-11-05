@@ -56,6 +56,13 @@ Un POST manual MUST exigir `Idempotency-Key`. La misma clave y el mismo cuerpo M
 - WHEN la misma clave llega con otro monto
 - THEN la respuesta es 409 y la fila original no cambia
 
+#### Scenario: Fecha que no existe
+
+- GIVEN un cobro manual con `fecha_efectiva` `2026-02-30`
+- WHEN se envía el POST
+- THEN la respuesta es 400 `fecha_invalida`
+- AND no se crea un movimiento
+
 #### Scenario: Mecánico y taller ajeno
 
 - GIVEN un movimiento con costo registrado
