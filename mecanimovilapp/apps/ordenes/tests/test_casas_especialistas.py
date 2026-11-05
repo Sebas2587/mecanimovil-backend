@@ -701,6 +701,87 @@ class OrdenCompraPdfTests(TestCase):
             for item in data['alertas_validacion']
         ))
 
+    def test_el_detalle_cita_la_ficha_aunque_la_banda_sea_el_pack(self):
+        titulo = 'Bujía Iridio Champion Fiat Bravo 1.4 2007-2014 x4'
+        url = 'https://www.entretuercas.cl/producto/bujia-iridio-champion-fiat-bravo-14-2007-2014'
+        self.cot.repuestos = [{
+            'id': 'bujias',
+            'nombre': 'Bujías',
+            'cantidad': 4,
+            'precio_unitario_clp': 3956,
+            'precio_min_clp': 15000,
+            'precio_max_clp': 25000,
+            'precio_a_consultar': True,
+            'nombre_producto': titulo,
+            'casa_repuesto_nombre': 'Indra',
+            'url_producto': url,
+            'fuentes_detalle': [{
+                'fuente': 'web',
+                'tienda': 'Entretuercas',
+                'dominio': 'entretuercas.cl',
+                'precio_clp': 15826,
+                'url': url,
+                'nombre': titulo,
+            }],
+        }]
+        self.cot.save(update_fields=['repuestos'])
+        client = APIClient()
+        client.force_authenticate(self.user)
+        res = client.get(f'/api/ordenes/cotizaciones-canal/{self.cot.pk}/?sin_retry=1')
+        self.assertEqual(res.status_code, 200, getattr(res, 'data', None))
+        cuerpo = res.json()
+        linea = cuerpo['repuestos'][0]
+        self.assertEqual(linea['url_referencia'], url)
+        self.assertIn('entretuerca', linea['tienda_referencia'].lower())
+        self.assertEqual(linea['precio_verificado_clp'], 3956)
+        self.assertEqual(linea['costo_unitario_clp'], 3956)
+        self.assertEqual(linea['validacion_estado'], 'ok')
+        self.assertIn('validacion_motivo', linea)
+        self.assertIsInstance(linea['alertas'], list)
+        self.assertTrue(any('juego' in alerta.lower() for alerta in linea['alertas']))
+        self.assertTrue(any(
+            item['repuesto'] == 'Bujías' and item['estado'] == 'ok'
+            for item in cuerpo['alertas_validacion']
+        ))
+        previa = client.get(f'/api/ordenes/cotizaciones-canal/{self.cot.pk}/vista-previa/')
+        self.assertEqual(previa.status_code, 200, getattr(previa, 'data', None))
+        publico = previa.json()['repuestos'][0]
+        self.assertNotIn('url_referencia', publico)
+        self.assertNotIn('tienda_referencia', publico)
+        self.assertNotIn('precio_verificado_clp', publico)
+        self.assertNotIn('validacion_estado', publico)
+        self.assertNotIn('alertas_validacion', previa.json())
+
+    def test_un_precio_ya_unitario_no_se_parte_otra_vez(self):
+        titulo = 'Bujía Iridio Champion Fiat Bravo 1.4 2007-2014 x4'
+        url = 'https://www.entretuercas.cl/producto/bujia-iridio-champion-fiat-bravo-14-2007-2014'
+        self.cot.repuestos = [{
+            'nombre': 'Bujías',
+            'cantidad': 4,
+            'precio_unitario_clp': 3956,
+            'precio_min_clp': 15000,
+            'precio_max_clp': 25000,
+            'nombre_producto': titulo,
+            'url_producto': url,
+            'fuentes_detalle': [{
+                'tienda': 'Entretuercas',
+                'precio_clp': 3956,
+                'url': url,
+                'nombre': titulo,
+            }],
+        }]
+        self.cot.save(update_fields=['repuestos'])
+        client = APIClient()
+        client.force_authenticate(self.user)
+        res = client.get(f'/api/ordenes/cotizaciones-canal/{self.cot.pk}/?sin_retry=1')
+        self.assertEqual(res.status_code, 200, getattr(res, 'data', None))
+        linea = res.json()['repuestos'][0]
+        self.assertEqual(linea['url_referencia'], url)
+        self.assertEqual(linea['precio_verificado_clp'], 3956)
+        self.assertEqual(linea['costo_unitario_clp'], 3956)
+        self.assertNotEqual(linea['precio_verificado_clp'], 989)
+        self.assertEqual(linea['validacion_estado'], 'ok')
+
     def test_una_ficha_de_otros_anios_no_se_cita(self):
         from mecanimovilapp.apps.ordenes.serializers_cotizacion_canal import (
             CotizacionCanalSerializer,

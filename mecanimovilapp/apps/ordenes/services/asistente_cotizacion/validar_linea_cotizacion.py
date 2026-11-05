@@ -82,6 +82,19 @@ def _precio_en_unidad(rep: dict, monto: int, titulo: str) -> tuple[int, str]:
     nombre = str(rep.get('nombre') or '')
     cant = _cantidad(rep)
     pack = _pack_de(nombre, titulo, cant)
+    cobrado = _entero(rep.get('precio_unitario_clp'))
+    if (
+        pack >= 2
+        and 'bujia' in _norm(nombre)
+        and cobrado > 0
+        and abs(monto - cobrado) <= max(2, int(cobrado * 0.08))
+        and not any(crudo > monto for crudo in _estantes(rep))
+    ):
+        nota = (
+            f'El título dice un juego de {pack}. '
+            f'El precio guardado ya es ${monto:,} por unidad.'
+        ).replace(',', '.')
+        return monto, nota
     if pack >= 2:
         for crudo in _estantes(rep):
             unidad = max(1, round(crudo / pack))
@@ -239,6 +252,10 @@ def _codigo_rechazo(
     ) or ''
     if motivo in ('sin_modelo', 'listado') and not _es_pastillas_freno(nombre):
         return ''
+    if motivo in ('precio_bajo_banda', 'precio_alto_banda'):
+        cobrado = _entero(rep.get('precio_unitario_clp'))
+        if cobrado > 0 and abs(unit - cobrado) <= max(2, int(cobrado * 0.08)):
+            return ''
     if motivo == 'precio_alto_banda' and techo > 0 and unit <= int(techo * 1.03) + 1:
         return ''
     return motivo
