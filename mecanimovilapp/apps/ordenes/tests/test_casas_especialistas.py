@@ -27,7 +27,10 @@ from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repues
 from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador import (
     _aplicar_seleccion_casa_repuestos,
 )
-from mecanimovilapp.apps.ordenes.services.orden_compra_pdf import generar_pdf_orden_compra
+from mecanimovilapp.apps.ordenes.services.orden_compra_pdf import (
+    _direccion_encabezado,
+    generar_pdf_orden_compra,
+)
 from mecanimovilapp.apps.usuarios.models import DireccionUsuario, Taller, TallerDireccion
 from mecanimovilapp.apps.agente_ia.services.agente_dueno_cotizacion import _origen_precio
 
@@ -468,6 +471,21 @@ class OrdenCompraPdfTests(TestCase):
         self.assertIn('Av. Vicuña Mackenna 8580, La Florida', texto)
         self.assertNotIn('Lira 664', texto)
 
+    def test_el_encabezado_no_repite_numero_ni_ciudad(self):
+        TallerDireccion.objects.create(
+            taller=self.taller,
+            calle='John Kennedy, 709, La Florida, Santiago, Santiago',
+            numero='709',
+            comuna='La Florida',
+            ciudad='Santiago',
+            region='Santiago',
+        )
+        texto = _texto_pdf(generar_pdf_orden_compra(self.cot))
+        self.assertIn('John Kennedy 709, La Florida, Santiago', texto)
+        self.assertNotIn('709, 709', texto)
+        self.assertNotIn('Santiago, Santiago', texto)
+        self.assertNotIn('John Kennedy, 709, La Florida, Santiago, Santiago', texto)
+
     def test_el_taller_descarga_el_pdf(self):
         client = APIClient()
         client.force_authenticate(self.user)
@@ -590,6 +608,25 @@ class OrdenCompraPdfTests(TestCase):
         self.assertEqual(por_nombre['Pastillas de freno']['url_referencia'], '')
         self.assertEqual(por_nombre['Pastillas de freno']['tienda_referencia'], '')
         self.assertIsNone(por_nombre['Pastillas de freno']['precio_verificado_clp'])
+
+
+class DireccionEncabezadoTests(SimpleTestCase):
+    def test_kennedy_queda_en_una_sola_linea(self):
+        texto = _direccion_encabezado(
+            'John Kennedy, 709, La Florida, Santiago, Santiago',
+            numero='709',
+            extras=('La Florida', 'Santiago', 'Santiago'),
+        )
+        self.assertEqual(texto, 'John Kennedy 709, La Florida, Santiago')
+
+    def test_la_comuna_repetida_no_cambia_de_mayusculas(self):
+        texto = _direccion_encabezado(
+            'John Kennedy 709, La Florida',
+            numero='709',
+            extras=('la florida', 'Santiago'),
+        )
+        self.assertEqual(texto, 'John Kennedy 709, La Florida, Santiago')
+        self.assertEqual(texto.casefold().count('la florida'), 1)
 
 
 class ReferenciaFichaTests(SimpleTestCase):
