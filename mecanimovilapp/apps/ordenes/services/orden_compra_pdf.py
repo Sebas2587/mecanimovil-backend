@@ -153,18 +153,27 @@ def _contexto(cotizacion) -> dict[str, Any]:
 def _referencia(rep: dict, cotizacion) -> dict[str, Any]:
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
         _referencia_consulta,
-        referencia_de_linea,
+    )
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.validar_linea_cotizacion import (
+        validar_repuesto,
     )
 
-    ficha = referencia_de_linea(rep, **_contexto(cotizacion))
-    if rep.get('precio_a_consultar') and not _linea_es_historial(rep):
+    ctx = _contexto(cotizacion)
+    ctx['marca'] = str(getattr(cotizacion, 'vehiculo_marca', '') or '')
+    ficha = validar_repuesto(rep, **ctx)
+    # Sin página de producto, el PDF igual puede nombrar la tienda de la referencia.
+    # Una ficha descartada no se vuelve a imprimir.
+    if (
+        ficha.get('validacion_estado') != 'sin_referencia_valida'
+        and not ficha.get('tienda_referencia')
+        and rep.get('precio_a_consultar')
+        and not _linea_es_historial(rep)
+    ):
         tienda, precio = _referencia_consulta(rep, **_contexto(cotizacion))
-        if tienda and precio > 0 and not ficha.get('tienda_referencia'):
-            ficha = {
-                'url_referencia': ficha.get('url_referencia') or '',
-                'tienda_referencia': tienda,
-                'precio_verificado_clp': int(precio),
-            }
+        if tienda and precio > 0:
+            ficha['tienda_referencia'] = tienda
+            ficha['precio_verificado_clp'] = int(precio)
+            ficha['url_referencia'] = ''
     return ficha
 
 

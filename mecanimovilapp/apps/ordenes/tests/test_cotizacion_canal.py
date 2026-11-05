@@ -1858,6 +1858,9 @@ class FuenteWebEnrichTestCase(SimpleTestCase):
                 'precio_cobrado_clp': 120000,
                 'margen_clp': 30000,
                 'margen_pct': 25.0,
+                'validacion_estado': 'ok',
+                'validacion_motivo': '',
+                'alertas': ['La ficha es un juego de 4.'],
             },
         ])
         self.assertEqual(len(pubs), 1)
@@ -1871,6 +1874,9 @@ class FuenteWebEnrichTestCase(SimpleTestCase):
         self.assertNotIn('precio_cobrado_clp', pubs[0])
         self.assertNotIn('margen_clp', pubs[0])
         self.assertNotIn('margen_pct', pubs[0])
+        self.assertNotIn('validacion_estado', pubs[0])
+        self.assertNotIn('validacion_motivo', pubs[0])
+        self.assertNotIn('alertas', pubs[0])
         self.assertNotIn('tienda_ml', pubs[0])
         self.assertNotIn('proveedor_nombre', pubs[0])
         self.assertEqual(pubs[0].get('marca_repuesto'), 'Sachs')

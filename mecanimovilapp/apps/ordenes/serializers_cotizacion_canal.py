@@ -79,6 +79,13 @@ class RepuestoCotizacionSerializer(serializers.Serializer):
     precio_cobrado_clp = serializers.IntegerField(required=False, allow_null=True, min_value=0)
     margen_clp = serializers.IntegerField(required=False, allow_null=True)
     margen_pct = serializers.FloatField(required=False, allow_null=True)
+    validacion_estado = serializers.CharField(required=False, allow_blank=True, default='')
+    validacion_motivo = serializers.CharField(required=False, allow_blank=True, default='')
+    alertas = serializers.ListField(
+        child=serializers.CharField(),
+        required=False,
+        default=list,
+    )
     nombre_producto = serializers.CharField(required=False, allow_blank=True, default='')
     precio_estimado = serializers.BooleanField(required=False, default=True)
     precio_referencia_mercado = serializers.BooleanField(required=False, default=False)
@@ -454,8 +461,10 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             contexto_nota_cotizacion,
             economia_cotizacion,
             economia_repuesto,
-            referencia_de_linea,
             sanear_notas_linea,
+        )
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.validar_linea_cotizacion import (
+            validar_repuesto,
         )
 
         nota_kw = contexto_nota_cotizacion(instance)
@@ -465,7 +474,8 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
                 saneados.append(rep)
                 continue
             rep = sanear_notas_linea(rep, **nota_kw)
-            rep.update(referencia_de_linea(rep, **{
+            rep.update(validar_repuesto(rep, **{
+                'marca': nota_kw.get('marca') or '',
                 'modelo': nota_kw.get('modelo') or '',
                 'anio': nota_kw.get('anio'),
                 'tipo_motor': nota_kw.get('tipo_motor') or '',
@@ -486,6 +496,18 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
                         pass
         data['repuestos'] = saneados
         data.update(economia_cotizacion(saneados))
+        data['alertas_validacion'] = [
+            {
+                'repuesto': rep.get('nombre') or '',
+                'estado': rep.get('validacion_estado') or '',
+                'motivo': rep.get('validacion_motivo') or '',
+                'alertas': list(rep.get('alertas') or []),
+            }
+            for rep in saneados
+            if isinstance(rep, dict) and (
+                (rep.get('validacion_estado') or 'ok') != 'ok' or rep.get('alertas')
+            )
+        ]
         for lin in data.get('mano_obra_lineas') or []:
             if isinstance(lin, dict) and lin.get('monto_clp') is not None:
                 lin['monto_clp'] = int(lin['monto_clp'] or 0)
