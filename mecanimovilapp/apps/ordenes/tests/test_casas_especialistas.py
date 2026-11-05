@@ -3,7 +3,7 @@ from io import BytesIO
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 from pypdf import PdfReader
 from rest_framework.test import APIClient
@@ -37,6 +37,17 @@ User = get_user_model()
 def _texto_pdf(pdf: bytes) -> str:
     reader = PdfReader(BytesIO(pdf))
     return '\n'.join(page.extract_text() or '' for page in reader.pages)
+
+
+def _enlaces_pdf(pdf: bytes) -> list[str]:
+    reader = PdfReader(BytesIO(pdf))
+    urls = []
+    for page in reader.pages:
+        for annot in page.get('/Annots') or []:
+            action = annot.get_object().get('/A')
+            if action and action.get('/URI'):
+                urls.append(str(action['/URI']))
+    return urls
 
 
 class CasasEspecialistasTests(TestCase):
@@ -440,8 +451,9 @@ class OrdenCompraPdfTests(TestCase):
         self.assertIn('Indra', texto)
         self.assertIn('A consultar', texto)
         self.assertIn('40.000', texto)
+        self.assertIn('John Kennedy', texto)
         self.assertEqual(texto.count('Vicuña Mackenna 8580'), 1)
-        self.assertEqual(texto.count('La Florida'), 1)
+        self.assertEqual(texto.count('La Florida'), 2)
 
     def test_el_pdf_usa_la_sucursal_de_la_florida(self):
         TallerDireccion.objects.create(
@@ -464,6 +476,156 @@ class OrdenCompraPdfTests(TestCase):
         self.assertEqual(res['Content-Type'], 'application/pdf')
         self.assertIn('CJXP98', res['Content-Disposition'])
         self.assertTrue(res.content.startswith(b'%PDF'))
+
+    def test_el_documento_separa_casas_y_enlaza_la_ficha(self):
+        self.taller.rut = '76.123.456-7'
+        self.taller.save(update_fields=['rut'])
+        self.cot.numero_publico = 'MM-000212'
+        self.cot.repuestos = [
+            {
+                'nombre': 'Filtro de aceite',
+                'cantidad': 1,
+                'especificacion': 'OEM 71751176',
+                'codigo_parte': '71751176',
+                'precio_unitario_clp': 4990,
+                'precio_a_consultar': True,
+                'precio_referencia_clp': 4990,
+                'referencia_tienda': 'TodoAuto',
+                'casa_repuesto_nombre': 'Indra',
+                'casa_sucursal': 'Lira 664, Santiago',
+                'casa_telefono': '+56 2 2783 8300',
+                'url_producto': 'https://www.todoauto.cl/filtro-71751176',
+                'precio_min_clp': 4000,
+                'precio_max_clp': 9000,
+            },
+            {
+                'nombre': 'Pastillas de freno',
+                'cantidad': 1,
+                'especificacion': 'Delanteras',
+                'marca_repuesto': 'Bosch',
+                'precio_unitario_clp': 22000,
+                'casa_repuesto_nombre': 'Refax',
+                'proveedor_nombre': 'Refax',
+                'casa_sucursal': 'Av. Apoquindo 4500, Las Condes',
+                'casa_telefono': '+56 2 2222 3333',
+                'casa_horario': 'Lun a vie 9:00 a 18:00',
+                'url_producto': 'https://www.refax.cl/pastillas-bravo',
+            },
+        ]
+        self.cot.save(update_fields=['numero_publico', 'repuestos'])
+        pdf = generar_pdf_orden_compra(self.cot)
+        texto = _texto_pdf(pdf)
+        self.assertIn('Orden de compra de repuestos', texto)
+        self.assertIn('RUT 76.123.456-7', texto)
+        self.assertIn('oc@mecanimovil.test', texto)
+        self.assertIn('900000009', texto)
+        self.assertIn('Nº MM-000212', texto)
+        self.assertIn('Repuesto', texto)
+        self.assertIn('Especificación', texto)
+        self.assertIn('Referencia', texto)
+        self.assertIn('No incluye mano de obra ni el valor cobrado al cliente.', texto)
+        self.assertIn('1 / 1', texto)
+        self.assertIn('Especialista Fiat', texto)
+        self.assertIn('Ver ficha', texto)
+        self.assertIn('Lun a vie 9:00 a 18:00', texto)
+        self.assertIn('Av. Apoquindo 4500, Las Condes', texto)
+        self.assertNotIn('Mano de obra', texto)
+        self.assertNotIn('80.000', texto)
+        self.assertNotIn('150.000', texto)
+        self.assertEqual(
+            _enlaces_pdf(pdf),
+            [
+                'https://www.todoauto.cl/filtro-71751176',
+                'https://www.refax.cl/pastillas-bravo',
+            ],
+        )
+        plano = _texto_pdf(generar_pdf_orden_compra(CotizacionCanal.objects.get(pk=self.cot.pk)))
+        self.assertEqual(plano.count('Lun a vie'), 1)
+
+    def test_la_api_expone_url_tienda_y_precio_verificado(self):
+        from mecanimovilapp.apps.ordenes.serializers_cotizacion_canal import (
+            CotizacionCanalSerializer,
+        )
+
+        self.cot.repuestos = [
+            {
+                'nombre': 'Filtro de aceite',
+                'cantidad': 1,
+                'precio_unitario_clp': 4990,
+                'precio_a_consultar': True,
+                'precio_referencia_clp': 4990,
+                'referencia_tienda': 'TodoAuto',
+                'casa_repuesto_nombre': 'Indra',
+                'url_producto': 'https://www.todoauto.cl/filtro-71751176',
+                'precio_min_clp': 4000,
+                'precio_max_clp': 9000,
+            },
+            {
+                'nombre': 'Aceite de motor',
+                'cantidad': 4,
+                'precio_unitario_clp': 9990,
+                'casa_repuesto_nombre': 'Indra',
+            },
+            {
+                'nombre': 'Pastillas de freno',
+                'cantidad': 1,
+                'precio_unitario_clp': 40000,
+                'fuente_marketplace': 'historial',
+                'proveedor_nombre': 'Historial del taller',
+                'casa_repuesto_nombre': 'Indra',
+                'url_producto': 'https://indra.cl/p/pastillas',
+            },
+        ]
+        self.cot.save(update_fields=['repuestos'])
+        por_nombre = {
+            linea['nombre']: linea
+            for linea in CotizacionCanalSerializer(self.cot).data['repuestos']
+        }
+        ficha = por_nombre['Filtro de aceite']
+        self.assertEqual(ficha['url_referencia'], 'https://www.todoauto.cl/filtro-71751176')
+        self.assertEqual(ficha['tienda_referencia'], 'TodoAuto')
+        self.assertEqual(ficha['precio_verificado_clp'], 4990)
+        self.assertEqual(por_nombre['Aceite de motor']['url_referencia'], '')
+        self.assertIsNone(por_nombre['Aceite de motor']['precio_verificado_clp'])
+        self.assertEqual(por_nombre['Pastillas de freno']['url_referencia'], '')
+        self.assertEqual(por_nombre['Pastillas de freno']['tienda_referencia'], '')
+        self.assertIsNone(por_nombre['Pastillas de freno']['precio_verificado_clp'])
+
+
+class ReferenciaFichaTests(SimpleTestCase):
+    def test_la_portada_del_sitio_no_cuenta_como_ficha(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            referencia_de_linea,
+        )
+
+        out = referencia_de_linea({
+            'nombre': 'Filtro de aceite',
+            'precio_unitario_clp': 4990,
+            'proveedor_nombre': 'Indra',
+            'url_producto': 'https://indra.cl/',
+        })
+        self.assertEqual(out['url_referencia'], '')
+        self.assertEqual(out['tienda_referencia'], '')
+        self.assertIsNone(out['precio_verificado_clp'])
+
+    def test_el_historial_no_llena_la_ficha_aunque_traiga_url(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            referencia_de_linea,
+        )
+
+        out = referencia_de_linea({
+            'nombre': 'Pastillas de freno',
+            'fuente_marketplace': 'historial',
+            'referencia_tienda': 'historial del taller',
+            'precio_referencia_clp': 40000,
+            'precio_unitario_clp': 40000,
+            'url_producto': 'https://indra.cl/producto/pastillas',
+        })
+        self.assertEqual(out, {
+            'url_referencia': '',
+            'tienda_referencia': '',
+            'precio_verificado_clp': None,
+        })
 
 
 class TarifaManoObraTests(TestCase):
