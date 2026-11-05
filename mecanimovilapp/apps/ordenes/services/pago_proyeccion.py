@@ -4,8 +4,11 @@ from __future__ import annotations
 from mecanimovilapp.apps.ordenes.models_caja import CobroTaller
 from mecanimovilapp.apps.ordenes.services.caja_taller import (
     SALIDAS,
+    CajaError,
+    _efecto_contable,
     _neto_movimientos,
-    monto_exigible,
+    canonizar_ancla,
+    explicar_exigible,
 )
 
 UI_SIN_INFORMACION = 'pago_sin_informacion'
@@ -20,13 +23,21 @@ UI_REEMBOLSADO = 'reembolsado'
 
 def proyeccion_ancla(*, taller, ancla_tipo: str, ancla_id: str, legacy: dict | None = None) -> dict:
     legacy = legacy or {}
-    ancla_id = str(ancla_id)
+    try:
+        ancla_tipo, ancla_id = canonizar_ancla(taller, ancla_tipo, str(ancla_id))
+    except CajaError:
+        return _vacio()['pago_provenance']
     movimientos = list(CobroTaller.objects.filter(
         taller=taller, ancla_tipo=ancla_tipo, ancla_id=ancla_id,
     ))
-    hay = bool(movimientos)
-    _bruto, _reembolsos, neto = _neto_movimientos(movimientos) if hay else (0, 0, 0)
-    exigible, exigible_conocido = monto_exigible(taller, ancla_tipo, ancla_id)
+    contables = [m for m in movimientos if _efecto_contable(m)]
+    sin_efecto = [m for m in movimientos if not _efecto_contable(m)]
+    hay = bool(contables)
+    _bruto, _reembolsos, neto_num = _neto_movimientos(contables) if hay else (0, 0, 0)
+    neto = neto_num if hay else None
+    explicacion = explicar_exigible(taller, ancla_tipo, ancla_id)
+    exigible = explicacion['monto_exigible_clp']
+    exigible_conocido = explicacion['exigible_conocido']
     flags = legacy.get('flags')
     mp_status = legacy.get('mp_status')
     anotacion = legacy.get('anotacion')
@@ -37,31 +48,30 @@ def proyeccion_ancla(*, taller, ancla_tipo: str, ancla_id: str, legacy: dict | N
     mp_reverso = mp_status in {'refunded', 'charged_back'}
     mp_approved = mp_status == 'approved'
     anot_completa = _anotacion_completa(anotacion)
-    contabilizable = any(
-        m.estado == CobroTaller.ESTADO_CONFIRMADO and m.contabiliza_clp and int(m.monto_clp) > 0
-        for m in movimientos
-    )
-    hubo_reverso = any(
-        m.tipo in SALIDAS and m.estado == CobroTaller.ESTADO_CONFIRMADO
-        for m in movimientos
+    contabilizable = bool(contables)
+    hubo_reverso = any(m.tipo in SALIDAS for m in contables)
+    pendientes = sum(
+        int(m.monto_clp)
+        for m in sin_efecto
+        if m.estado == CobroTaller.ESTADO_PENDIENTE and m.contabiliza_clp
     )
 
     if mp_reverso:
         ui = UI_REEMBOLSADO
         dominio = 'mercadopago_reverso'
-    elif hay and exigible_conocido and exigible is not None and neto >= exigible and neto > 0:
+    elif hay and exigible_conocido and exigible is not None and neto is not None and neto >= exigible and neto > 0:
         ui = UI_PAGADO
         dominio = 'movimiento'
-    elif hay and exigible_conocido and exigible is not None and 0 < neto < exigible:
+    elif hay and exigible_conocido and exigible is not None and neto is not None and 0 < neto < exigible:
         ui = UI_PARCIAL
         dominio = 'movimiento'
-    elif hay and neto > 0 and not exigible_conocido:
+    elif hay and neto is not None and neto > 0 and not exigible_conocido:
         ui = UI_PARCIAL
         dominio = 'movimiento'
-    elif hay and hubo_reverso and neto <= 0:
+    elif hay and hubo_reverso and neto is not None and neto <= 0:
         ui = UI_REEMBOLSADO
         dominio = 'movimiento'
-    elif hay and exigible_conocido and exigible is not None and neto < exigible:
+    elif hay and exigible_conocido and exigible is not None and neto is not None and neto < exigible:
         ui = UI_POR_COBRAR
         dominio = 'movimiento'
     elif mp_approved:
@@ -90,9 +100,14 @@ def proyeccion_ancla(*, taller, ancla_tipo: str, ancla_id: str, legacy: dict | N
         'dominio': dominio,
         'monto_exigible_clp': exigible if exigible_conocido else None,
         'exigible_conocido': bool(exigible_conocido),
+        'exigible_fuente': explicacion['exigible_fuente'],
+        'exigible_faltantes': explicacion['exigible_faltantes'],
         'neto_acumulado_clp': neto if hay else None,
         'saldo_clp': saldo,
         'saldo_conocido': saldo_conocido,
+        'filas_sin_efecto_contable': len(sin_efecto),
+        'pendientes_no_sumados_clp': pendientes,
+        'aviso_libro': 'sin_efecto_contable' if sin_efecto and not hay else None,
         'flags_oferta': flags,
         'anotacion': anotacion,
         'mercadopago_status': mp_status,

@@ -61,14 +61,44 @@ Aceptar, ejecutar o completar un trabajo no crea un cobro.
 }
 ```
 
-`ancla_tipo` es `cita`, `solicitud` u `oferta`. El monto es CLP entero. La misma clave y el mismo cuerpo devuelven la misma fila. Otro cuerpo con la misma clave responde 409 `idempotencia_conflicto`. Un reembolso manual apunta a `movimiento_origen_id`, no borra la entrada y no puede superar su monto (`reverso_excede_original`). Un reembolso de Mercado Pago no se carga a mano (`reverso_mp_solo_webhook`). Sin `confirmar_sobrepago`, un abono sobre el exigible responde 409 `sobrepago`.
+`ancla_tipo` de entrada es `cita`, `solicitud` u `oferta`. Si la solicitud tiene oferta del mismo taller, el movimiento se guarda en la oferta: la respuesta trae `ancla_tipo=oferta` y el `ancla_id` de esa oferta. Cita, adicional `misma_visita` y cita hija `nueva_fecha` no se mezclan con la oferta ni entre sí. Un reverso de otra ancla responde 409 `reverso_ancla_distinta`.
 
-`POST /api/ordenes/caja/costos/` guarda `tipo` `registrado` o `estimado` para `repuestos` o `servicio`. El precio de tienda no es costo real. Sin costo registrado, `margen_real_clp` es null.
+El monto es CLP entero. La misma clave y el mismo cuerpo devuelven la misma fila. Otro cuerpo con la misma clave responde 409 `idempotencia_conflicto`. Dos claves distintas del mismo caso se serializan sobre una fila de ancla, también si el libro estaba vacío: la segunda no pasa el saldo. Un reembolso manual apunta a `movimiento_origen_id`, no borra la entrada y no puede superar su monto (`reverso_excede_original`), aunque lleguen juntos. Un reembolso de Mercado Pago no se carga a mano (`reverso_mp_solo_webhook`). Sin `confirmar_sobrepago`, un abono sobre el exigible responde 409 `sobrepago`.
+
+Una fila `pendiente`, `rechazada`, `cancelada` o en otra moneda no abre el libro. El flag pagado sigue siendo `pagado_segun_oferta` (o la fuente que corresponda), el saldo queda null y `aviso_libro` es `sin_efecto_contable`. `pendientes_no_sumados_clp` informa ese monto sin tratarlo como deuda. Un webhook que pide bajar una entrada ya `confirmado` a `pending` o `in_mediation` no la saca de la caja: queda en `metadata.eventos_ignorados`. El reembolso es otra fila.
+
+`transaction_amount_refunded` de Mercado Pago es acumulado. La caja guarda solo el incremento. 10, luego 30, luego 100 dejan reembolsos que suman 100, nunca 140. Un 10 que llega después de un 30 no resta. El acumulado se persiste en `Pago.metadata` antes de contabilizar. Si la caja falla, el reintento reconstruye ese parcial sin el cuerpo del webhook.
+
+`POST /api/ordenes/caja/costos/` guarda `tipo` `registrado` o `estimado` para `repuestos` o `servicio`. El precio de tienda no es costo real.
+
+En el caso, para mandante y supervisor:
+
+| Campo | Significado |
+|---|---|
+| `margen_real_clp` y `resultado_caja_clp` | Neto confirmado menos costo registrado. Con obligación 100, cobro 30, reembolso 10 y costo 40, el valor es -20 |
+| `margen_contratado_clp` | Exigible menos costo registrado. En el ejemplo, 60. No es caja |
+| `margen_estimado_clp` | Exigible menos costo estimado. No es caja |
+| `margen_faltantes` | `costo_registrado`, `neto_no_confirmado` o `exigible_desconocido` cuando el número no se puede cerrar |
+
+Sin costo registrado o sin neto confirmado, `margen_real_clp` es null.
 
 Mandante y supervisor escriben y ven costos. El mecánico lee solo sus anclas y la respuesta no trae claves de costo ni margen. Un caso de otro taller responde 404.
 
 ## Totales de cotización del taller
 
 En lista y detalle, `total_clp` sale de las líneas de esa misma respuesta: precio unitario por cantidad, más la suma de `mano_obra_lineas`, menos el descuento. Los precios ya incluyen IVA. `total_persistido_clp` es el número guardado. `total_alineado` dice si coinciden. Si falta un precio, `total_clp` es null, `totales_completos` es false y `totales_faltantes` nombra la línea. `total_conocido_parcial_clp` es la parte que sí se pudo sumar. Leer la cotización no la guarda.
+
+La obligación de caja de una cita usa esa misma cuenta, no un total viejo distinto:
+
+| `obligacion_fuente` | Lectura |
+|---|---|
+| `lineas_respuesta` | Aceptada y alineada. `obligacion_clp` es el `total_clp` de la respuesta |
+| `congelada` | Había `metadata.obligacion_congelada_clp` escrito en un guardado previo. Un GET no la crea ni la cambia |
+| `discrepancia` | Aceptada, pero el total guardado no coincide con las líneas. `obligacion_clp` es null. El saldo de caja queda desconocido: no se cobra contra el número viejo ni contra el nuevo |
+| `incompleto` | Falta precio de una línea |
+| `no_aceptada` | La cotización todavía no es obligación |
+| `oferta_aceptada` | El caso canónico es una oferta y el exigible es `precio_total_ofrecido` |
+
+El caso de caja repite `exigible_fuente` y `exigible_faltantes`.
 
 La vista pública y el PDF no reciben costo ni margen.

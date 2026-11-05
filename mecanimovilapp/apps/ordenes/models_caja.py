@@ -136,6 +136,30 @@ class CobroTaller(models.Model):
         return f'{self.origen} {self.tipo} {self.monto_clp} {self.fecha_local}'
 
 
+class AnclaCaja(models.Model):
+    """Fila estable del caso. Existe aunque el libro todavía no tenga movimientos."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    taller = models.ForeignKey(
+        'usuarios.Taller',
+        on_delete=models.CASCADE,
+        related_name='anclas_caja',
+    )
+    ancla_tipo = models.CharField(max_length=16, choices=CobroTaller.ANCLA_CHOICES)
+    ancla_id = models.CharField(max_length=64)
+    creado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'ancla de caja'
+        verbose_name_plural = 'anclas de caja'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['taller', 'ancla_tipo', 'ancla_id'],
+                name='ancla_caja_uniq',
+            ),
+        ]
+
+
 class CostoTaller(models.Model):
     """Costo del caso. La fila anterior queda vigente=False: no se borra."""
 

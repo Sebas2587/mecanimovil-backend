@@ -3105,4 +3105,8 @@ class VistaTallerOculta(models.Model):
         ]
 
 
-from mecanimovilapp.apps.ordenes.models_caja import CobroTaller, CostoTaller  # noqa: E402, F401
+from mecanimovilapp.apps.ordenes.models_caja import (  # noqa: E402, F401
+    AnclaCaja,
+    CobroTaller,
+    CostoTaller,
+)

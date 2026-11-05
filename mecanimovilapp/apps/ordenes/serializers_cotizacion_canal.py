@@ -513,6 +513,7 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
                 lin['monto_clp'] = int(lin['monto_clp'] or 0)
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
             etiqueta_descuento,
+            resolver_obligacion_cotizacion,
             totales_desde_lineas_respuesta,
         )
 
@@ -531,6 +532,11 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             descuento_valor=data.get('descuento_valor') or 0,
             descuento_clp=int(canon.get('descuento_clp') or 0),
         )
+        obligacion = resolver_obligacion_cotizacion(instance)
+        data['obligacion_clp'] = obligacion['obligacion_clp']
+        data['obligacion_conocida'] = obligacion['obligacion_conocida']
+        data['obligacion_fuente'] = obligacion['obligacion_fuente']
+        data['obligacion_faltantes'] = obligacion['obligacion_faltantes']
         return data
 
     class Meta:
