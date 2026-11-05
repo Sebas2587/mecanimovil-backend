@@ -609,6 +609,60 @@ class OrdenCompraPdfTests(TestCase):
         self.assertEqual(por_nombre['Pastillas de freno']['tienda_referencia'], '')
         self.assertIsNone(por_nombre['Pastillas de freno']['precio_verificado_clp'])
 
+    def test_la_ficha_de_otra_tienda_no_se_atribuye_a_adriazola(self):
+        from mecanimovilapp.apps.ordenes.serializers_cotizacion_canal import (
+            CotizacionCanalSerializer,
+        )
+
+        self.cot.vehiculo_marca = 'Citroen'
+        self.cot.vehiculo_modelo = 'Berlingo'
+        self.cot.repuestos = [{
+            'id': 'filtro',
+            'nombre': 'Filtro de aceite',
+            'cantidad': 2,
+            'precio_unitario_clp': 5000,
+            'precio_a_consultar': True,
+            'precio_referencia_clp': 5000,
+            'referencia_tienda': 'TodoAuto',
+            'casa_repuesto_nombre': 'Adriazola',
+            'proveedor_nombre': 'TodoAuto',
+            'url_producto': 'https://www.todoauto.cl/filtro-berlingo',
+            'precio_min_clp': 4000,
+            'precio_max_clp': 9000,
+            'casa_sucursal': 'Diez de Julio 391, Santiago',
+            'casa_telefono': '+56 2 2350 3300',
+        }]
+        self.cot.save(update_fields=['vehiculo_marca', 'vehiculo_modelo', 'repuestos'])
+        data = CotizacionCanalSerializer(self.cot).data
+        linea = data['repuestos'][0]
+        self.assertEqual(linea['url_referencia'], 'https://www.todoauto.cl/filtro-berlingo')
+        self.assertEqual(linea['tienda_referencia'], 'TodoAuto')
+        self.assertEqual(linea['precio_verificado_clp'], 5000)
+        self.assertEqual(linea['casa_sugerida'], 'Adriazola')
+        self.assertFalse(linea['precio_verificado_en_casa'])
+        self.assertIn('no verificado en Adriazola', linea['nota_referencia'])
+        self.assertNotIn('adriazola', linea['url_referencia'])
+        pdf = _texto_pdf(generar_pdf_orden_compra(self.cot))
+        self.assertIn('Adriazola', pdf)
+        self.assertIn('TodoAuto', pdf)
+        self.assertIn('no verificado en Adriazola', pdf)
+        self.assertEqual(
+            _enlaces_pdf(generar_pdf_orden_compra(self.cot)),
+            ['https://www.todoauto.cl/filtro-berlingo'],
+        )
+        self.cot.repuestos[0]['precio_unitario_clp'] = 8000
+        self.cot.save(update_fields=['repuestos'])
+        data = CotizacionCanalSerializer(self.cot).data
+        linea = data['repuestos'][0]
+        self.assertEqual(linea['costo_unitario_clp'], 5000)
+        self.assertEqual(linea['precio_cobrado_clp'], 8000)
+        self.assertEqual(linea['margen_clp'], 6000)
+        self.assertEqual(linea['margen_pct'], 37.5)
+        self.assertEqual(data['costo_total_repuestos_clp'], 10000)
+        self.assertEqual(data['cobrado_total_repuestos_clp'], 16000)
+        self.assertEqual(data['ganancia_repuestos_clp'], 6000)
+        self.assertEqual(data['margen_repuestos_pct'], 37.5)
+
 
 class DireccionEncabezadoTests(SimpleTestCase):
     def test_kennedy_queda_en_una_sola_linea(self):
@@ -658,11 +712,10 @@ class ReferenciaFichaTests(SimpleTestCase):
             'precio_unitario_clp': 40000,
             'url_producto': 'https://indra.cl/producto/pastillas',
         })
-        self.assertEqual(out, {
-            'url_referencia': '',
-            'tienda_referencia': '',
-            'precio_verificado_clp': None,
-        })
+        self.assertEqual(out['url_referencia'], '')
+        self.assertEqual(out['tienda_referencia'], '')
+        self.assertIsNone(out['precio_verificado_clp'])
+        self.assertFalse(out['precio_verificado_en_casa'])
 
 
 class TarifaManoObraTests(TestCase):

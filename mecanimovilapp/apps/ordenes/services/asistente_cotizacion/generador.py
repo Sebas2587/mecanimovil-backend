@@ -1012,15 +1012,18 @@ def _aplicar_prioridad_de_taller(
                     detalle['tienda'] = ''
         casa = str(rep.get('casa_repuesto_nombre') or rep.get('proveedor_nombre') or '').strip()
         url = str(rep.get('url_producto') or '').strip()
-        perfil = especialista_de_la_ficha(casa, url, marca)
+        perfil = especialista_de_la_ficha('', url, marca)
         if perfil:
             sucursal = sucursal_para(perfil, marca, lugar)
+            rep['casa_repuesto_nombre'] = perfil['nombre']
+            if not es_etiqueta_historial(str(rep.get('proveedor_nombre') or '')):
+                rep['proveedor_nombre'] = perfil['nombre']
             rep['casa_sucursal'] = texto_sucursal(sucursal)
             rep['casa_telefono'] = str(perfil.get('telefono') or '')
             rep['precio_a_consultar'] = False
             rep['_perfil_especialista'] = perfil['nombre']
             continue
-        if es_fisica(casa, url):
+        if es_fisica('', url):
             from mecanimovilapp.apps.ordenes.casas_especialistas import perfil_de
 
             perfil_fisico = perfil_de(casa, url)
@@ -1047,7 +1050,7 @@ def _aplicar_prioridad_de_taller(
                 for detalle in rep.get('fuentes_detalle') or []:
                     if isinstance(detalle, dict) and not str(detalle.get('tienda') or '').strip():
                         detalle['tienda'] = perfil_marca['nombre']
-            if visible_ref and precio > 0 and not es_fisica(visible_ref, url):
+            if visible_ref and precio > 0 and not es_fisica('', url):
                 from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
                     _monto_banda_por_unidad,
                     monto_por_unidad_citable,

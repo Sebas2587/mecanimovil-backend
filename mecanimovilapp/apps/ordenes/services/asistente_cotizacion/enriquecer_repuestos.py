@@ -896,6 +896,9 @@ _REFERENCIA_VACIA = {
     'url_referencia': '',
     'tienda_referencia': '',
     'precio_verificado_clp': None,
+    'casa_sugerida': '',
+    'precio_verificado_en_casa': False,
+    'nota_referencia': '',
 }
 
 
@@ -938,6 +941,127 @@ def _linea_es_historial(rep: dict) -> bool:
     )
 
 
+def _casa_sugerida(rep: dict) -> str:
+    from mecanimovilapp.apps.ordenes.casas_especialistas import es_etiqueta_historial
+
+    casa = nombre_tienda_visible(str(rep.get('casa_repuesto_nombre') or ''))
+    if not casa or es_etiqueta_historial(casa):
+        return ''
+    return casa
+
+
+def _tienda_del_enlace(url: str, explicita: str = '') -> str:
+    from mecanimovilapp.apps.ordenes.casas_especialistas import _host
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+        _tienda_por_dominio,
+    )
+
+    por_url = nombre_tienda_visible(_tienda_por_dominio(_host(url)))
+    dicha = nombre_tienda_visible(explicita)
+    if por_url:
+        return por_url
+    return dicha
+
+
+def _url_es_de_casa(url: str, casa: str) -> bool:
+    from mecanimovilapp.apps.ordenes.casas_especialistas import _host, perfil_de
+
+    if not url or not casa:
+        return False
+    de_url = perfil_de('', url)
+    de_casa = perfil_de(casa, '')
+    if de_url and de_casa:
+        return _host(str(de_url.get('dominio') or '')) == _host(str(de_casa.get('dominio') or ''))
+    return _tienda_del_enlace(url).casefold() == casa.casefold()
+
+
+def _listados_de_linea(rep: dict) -> list[dict[str, Any]]:
+    """Cada ficha trae su propio enlace, tienda y monto."""
+    vistos: set[str] = set()
+    out: list[dict[str, Any]] = []
+
+    def agregar(url: str, tienda: str, precio: Any) -> None:
+        ficha = _url_ficha(url)
+        if not ficha or ficha in vistos:
+            return
+        try:
+            monto = int(precio or 0)
+        except (TypeError, ValueError):
+            monto = 0
+        if monto <= 0:
+            return
+        nombre = _tienda_del_enlace(ficha, tienda)
+        if not nombre:
+            return
+        vistos.add(ficha)
+        out.append({'url': ficha, 'tienda': nombre, 'precio': monto})
+
+    for fuente in rep.get('fuentes_detalle') or []:
+        if not isinstance(fuente, dict):
+            continue
+        agregar(str(fuente.get('url') or ''), str(fuente.get('tienda') or fuente.get('dominio') or ''), fuente.get('precio_clp'))
+    url_producto = str(rep.get('url_producto') or '')
+    if _url_ficha(url_producto) not in vistos:
+        try:
+            referencia = int(rep.get('precio_referencia_clp') or 0)
+        except (TypeError, ValueError):
+            referencia = 0
+        try:
+            unitario = int(rep.get('precio_unitario_clp') or 0)
+        except (TypeError, ValueError):
+            unitario = 0
+        agregar(
+            url_producto,
+            str(rep.get('referencia_tienda') or rep.get('proveedor_nombre') or ''),
+            referencia or unitario,
+        )
+    return out
+
+
+def _listado_citable(
+    rep: dict,
+    listado: dict[str, Any],
+    *,
+    modelo: str,
+    anio: Any,
+    tipo_motor: str,
+    cilindraje: Any,
+) -> int:
+    if not rep.get('precio_a_consultar'):
+        propia = _url_ficha(rep.get('url_producto'))
+        if propia and propia == listado['url']:
+            return int(listado['precio'])
+    fantasma = dict(rep)
+    fantasma['referencia_tienda'] = listado['tienda']
+    fantasma['precio_referencia_clp'] = listado['precio']
+    fantasma['url_producto'] = listado['url']
+    fantasma['precio_a_consultar'] = True
+    tienda, precio = _referencia_consulta(
+        fantasma,
+        modelo=modelo,
+        anio=anio,
+        tipo_motor=tipo_motor,
+        cilindraje=cilindraje,
+    )
+    from mecanimovilapp.apps.ordenes.casas_especialistas import es_etiqueta_historial
+
+    if not tienda or precio <= 0 or es_etiqueta_historial(tienda):
+        return 0
+    if tienda.casefold() != str(listado['tienda']).casefold():
+        return 0
+    return int(precio)
+
+
+def _nota_referencia(casa: str, tienda: str, *, en_casa: bool, historial: bool) -> str:
+    if not casa or en_casa:
+        return ''
+    if historial:
+        return f'Precio referencial del historial del taller, no verificado en {casa}.'
+    if tienda:
+        return f'Precio referencial de {tienda}, no verificado en {casa}.'
+    return f'Precio no verificado en {casa}.'
+
+
 def referencia_de_linea(
     rep: dict,
     *,
@@ -946,44 +1070,125 @@ def referencia_de_linea(
     tipo_motor: str = '',
     cilindraje: Any = None,
 ) -> dict[str, Any]:
-    """Ficha, tienda y monto verificado. Vacío si no hay una página de producto."""
-    if not isinstance(rep, dict) or _linea_es_historial(rep):
+    """Ficha, tienda y monto de un mismo enlace. La casa sugerida va aparte."""
+    if not isinstance(rep, dict):
         return dict(_REFERENCIA_VACIA)
-    urls = _urls_ficha(rep)
-    if not urls:
-        return dict(_REFERENCIA_VACIA)
-    from mecanimovilapp.apps.ordenes.casas_especialistas import es_etiqueta_historial
-
-    if rep.get('precio_a_consultar'):
-        tienda, precio = _referencia_consulta(
+    casa = _casa_sugerida(rep)
+    base = dict(_REFERENCIA_VACIA)
+    base['casa_sugerida'] = casa
+    if _linea_es_historial(rep):
+        base['nota_referencia'] = _nota_referencia(casa, '', en_casa=False, historial=True)
+        return base
+    candidatos = _listados_de_linea(rep)
+    candidatos.sort(key=lambda item: 0 if _url_es_de_casa(item['url'], casa) else 1)
+    elegido: dict[str, Any] | None = None
+    precio = 0
+    for item in candidatos:
+        citado = _listado_citable(
             rep,
+            item,
             modelo=modelo,
             anio=anio,
             tipo_motor=tipo_motor,
             cilindraje=cilindraje,
         )
-        if not tienda or precio <= 0 or es_etiqueta_historial(tienda):
-            return dict(_REFERENCIA_VACIA)
-        return {
-            'url_referencia': urls[0],
-            'tienda_referencia': tienda,
-            'precio_verificado_clp': int(precio),
-        }
-    tienda = nombre_tienda_visible(
-        str(rep.get('proveedor_nombre') or rep.get('casa_repuesto_nombre') or ''),
-    )
-    if not tienda or es_etiqueta_historial(tienda):
-        return dict(_REFERENCIA_VACIA)
-    try:
-        precio = int(rep.get('precio_unitario_clp') or 0)
-    except (TypeError, ValueError):
-        precio = 0
-    if precio <= 0:
-        return dict(_REFERENCIA_VACIA)
+        if citado <= 0:
+            continue
+        elegido = item
+        precio = citado
+        if _url_es_de_casa(item['url'], casa):
+            break
+    if elegido is None:
+        base['nota_referencia'] = _nota_referencia(casa, '', en_casa=False, historial=False)
+        return base
+    en_casa = _url_es_de_casa(elegido['url'], casa)
     return {
-        'url_referencia': urls[0],
-        'tienda_referencia': tienda,
+        'url_referencia': elegido['url'],
+        'tienda_referencia': elegido['tienda'],
         'precio_verificado_clp': precio,
+        'casa_sugerida': casa,
+        'precio_verificado_en_casa': en_casa,
+        'nota_referencia': _nota_referencia(
+            casa, elegido['tienda'], en_casa=en_casa, historial=False,
+        ),
+    }
+
+
+def _entero(valor: Any) -> int:
+    try:
+        return int(valor or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def costo_conocido(rep: dict) -> int:
+    """Precio de compra ya guardado, o el de la ficha. 0 si todavía no hay."""
+    if not isinstance(rep, dict):
+        return 0
+    for campo in (
+        'costo_unitario_clp',
+        'precio_verificado_clp',
+        'precio_referencia_clp',
+        'precio_marketplace_clp',
+    ):
+        monto = _entero(rep.get(campo))
+        if monto > 0:
+            return monto
+    return 0
+
+
+def congelar_costo(rep: dict) -> None:
+    """Deja el costo quieto antes de cambiar lo que se cobra al cliente."""
+    if not isinstance(rep, dict) or _entero(rep.get('costo_unitario_clp')) > 0:
+        return
+    monto = costo_conocido(rep)
+    if monto <= 0:
+        monto = _entero(rep.get('precio_unitario_clp'))
+    if monto > 0:
+        rep['costo_unitario_clp'] = monto
+
+
+def economia_repuesto(rep: dict) -> dict[str, Any]:
+    """Costo, cobrado y margen de la línea. El costo no sigue al precio editado."""
+    cobrado = _entero(rep.get('precio_unitario_clp'))
+    cantidad = max(1, _entero(rep.get('cantidad') or 1))
+    costo = costo_conocido(rep)
+    if costo <= 0 and cobrado > 0:
+        costo = cobrado
+    if cobrado <= 0 and costo <= 0:
+        return {
+            'costo_unitario_clp': None,
+            'precio_cobrado_clp': 0,
+            'margen_clp': None,
+            'margen_pct': None,
+        }
+    margen_unit = cobrado - costo
+    pct = round((margen_unit / cobrado) * 100, 1) if cobrado > 0 else None
+    return {
+        'costo_unitario_clp': costo,
+        'precio_cobrado_clp': cobrado,
+        'margen_clp': margen_unit * cantidad,
+        'margen_pct': pct,
+    }
+
+
+def economia_cotizacion(repuestos: list) -> dict[str, Any]:
+    costo = 0
+    cobrado = 0
+    for rep in repuestos or []:
+        if not isinstance(rep, dict):
+            continue
+        cantidad = max(1, _entero(rep.get('cantidad') or 1))
+        fila = economia_repuesto(rep)
+        costo += _entero(fila.get('costo_unitario_clp')) * cantidad
+        cobrado += _entero(fila.get('precio_cobrado_clp')) * cantidad
+    ganancia = cobrado - costo
+    pct = round((ganancia / cobrado) * 100, 1) if cobrado > 0 else None
+    return {
+        'costo_total_repuestos_clp': costo,
+        'cobrado_total_repuestos_clp': cobrado,
+        'ganancia_repuestos_clp': ganancia,
+        'margen_repuestos_pct': pct,
     }
 
 

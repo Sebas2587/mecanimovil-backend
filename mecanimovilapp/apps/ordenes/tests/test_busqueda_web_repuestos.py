@@ -1323,7 +1323,8 @@ class BuscarRepuestosWebTavilyTestCase(SimpleTestCase):
                 timeout=5,
             )
 
-        self.assertEqual(calls['n'], 1)
+        # Primero el site: de la especialista; la consulta general corta al tener dos fichas.
+        self.assertEqual(calls['n'], 2)
 
 
 class PrecioDesdeTextoTestCase(SimpleTestCase):
@@ -1822,7 +1823,8 @@ class RazonarYCortarBusquedaTests(SimpleTestCase):
                 avisos=avisos,
                 plan=plan,
             )
-        self.assertEqual(calls['n'], 1)
+        # Primero el site: de la especialista; la ficha ajena corta la consulta general.
+        self.assertEqual(calls['n'], 2)
         self.assertEqual(out, {})
         self.assertEqual(avisos['Kit de embrague']['motivo'], 'sin_ficha')
         detalle = avisos['Kit de embrague']['detalle']

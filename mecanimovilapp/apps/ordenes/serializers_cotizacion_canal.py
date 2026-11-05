@@ -72,6 +72,13 @@ class RepuestoCotizacionSerializer(serializers.Serializer):
     url_referencia = serializers.CharField(required=False, allow_blank=True, default='')
     tienda_referencia = serializers.CharField(required=False, allow_blank=True, default='')
     precio_verificado_clp = serializers.IntegerField(required=False, allow_null=True, min_value=0)
+    casa_sugerida = serializers.CharField(required=False, allow_blank=True, default='')
+    precio_verificado_en_casa = serializers.BooleanField(required=False, default=False)
+    nota_referencia = serializers.CharField(required=False, allow_blank=True, default='')
+    costo_unitario_clp = serializers.IntegerField(required=False, allow_null=True, min_value=0)
+    precio_cobrado_clp = serializers.IntegerField(required=False, allow_null=True, min_value=0)
+    margen_clp = serializers.IntegerField(required=False, allow_null=True)
+    margen_pct = serializers.FloatField(required=False, allow_null=True)
     nombre_producto = serializers.CharField(required=False, allow_blank=True, default='')
     precio_estimado = serializers.BooleanField(required=False, default=True)
     precio_referencia_mercado = serializers.BooleanField(required=False, default=False)
@@ -403,6 +410,32 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             return det.servicio_nombre.strip()
         return None
 
+    def update(self, instance, validated_data):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            congelar_costo,
+        )
+
+        nuevos = validated_data.get('repuestos')
+        if isinstance(nuevos, list):
+            previos = {
+                str(rep.get('id') or ''): rep
+                for rep in (instance.repuestos or [])
+                if isinstance(rep, dict) and rep.get('id')
+            }
+            for rep in nuevos:
+                if not isinstance(rep, dict):
+                    continue
+                if rep.get('costo_unitario_clp'):
+                    continue
+                previo = previos.get(str(rep.get('id') or ''))
+                if previo:
+                    congelar_costo(previo)
+                    if previo.get('costo_unitario_clp'):
+                        rep['costo_unitario_clp'] = previo['costo_unitario_clp']
+                else:
+                    congelar_costo(rep)
+        return super().update(instance, validated_data)
+
     def to_representation(self, instance):
         data = super().to_representation(instance)
         for key in ('mano_obra_clp', 'costo_repuestos_clp', 'total_clp', 'descuento_clp'):
@@ -419,6 +452,8 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
                 data[key] = int(data[key])
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
             contexto_nota_cotizacion,
+            economia_cotizacion,
+            economia_repuesto,
             referencia_de_linea,
             sanear_notas_linea,
         )
@@ -436,6 +471,7 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
                 'tipo_motor': nota_kw.get('tipo_motor') or '',
                 'cilindraje': nota_kw.get('cilindraje') or '',
             }))
+            rep.update(economia_repuesto(rep))
             saneados.append(rep)
             if rep.get('precio_unitario_clp') is not None:
                 rep['precio_unitario_clp'] = int(rep['precio_unitario_clp'])
@@ -449,6 +485,7 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
                     except (TypeError, ValueError):
                         pass
         data['repuestos'] = saneados
+        data.update(economia_cotizacion(saneados))
         for lin in data.get('mano_obra_lineas') or []:
             if isinstance(lin, dict) and lin.get('monto_clp') is not None:
                 lin['monto_clp'] = int(lin['monto_clp'] or 0)

@@ -214,6 +214,11 @@ def aplicar_confirmacion_linea(
     if precio <= 0:
         raise ValueError('Indica un precio mayor a cero.')
     linea = dict(reps[idx])
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+        congelar_costo,
+    )
+
+    congelar_costo(linea)
     proveedor = None
     if proveedor_id:
         proveedor = ProveedorRepuestos.objects.filter(
@@ -291,6 +296,11 @@ def aplicar_asumir_lineas(cotizacion, repuesto_ids: list[str], *, modo: str = 't
         if monto <= 0:
             continue
         linea = dict(r)
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            congelar_costo,
+        )
+
+        congelar_costo(linea)
         linea['precio_unitario_clp'] = monto
         if not usar_ficha:
             linea['precio_max_clp'] = monto
