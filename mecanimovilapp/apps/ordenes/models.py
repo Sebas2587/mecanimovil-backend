@@ -3103,3 +3103,10 @@ class VistaTallerOculta(models.Model):
         indexes = [
             models.Index(fields=['taller', 'tipo'], name='vista_taller_oculta_tipo_idx'),
         ]
+
+
+from mecanimovilapp.apps.ordenes.models_caja import (  # noqa: E402, F401
+    AnclaCaja,
+    CobroTaller,
+    CostoTaller,
+)

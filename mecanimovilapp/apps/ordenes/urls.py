@@ -25,6 +25,7 @@ from .views_vitrina_repuestos import (
 )
 from .views_pipeline_comercial import PipelineComercialViewSet
 from .views_vista_taller import VistaTallerLimpiarView, VistaTallerOcultarView
+from .views_caja import CajaCostoView, CajaCobroManualView, CajaPeriodoView
 
 app_name = 'ordenes'
 
@@ -90,6 +91,9 @@ router.register(
 # - /api/usuarios/mecanicos-domicilio/{id}/horarios_disponibles/
 
 urlpatterns = [
+    path('caja/', CajaPeriodoView.as_view(), name='caja-periodo'),
+    path('caja/cobros/', CajaCobroManualView.as_view(), name='caja-cobro-manual'),
+    path('caja/costos/', CajaCostoView.as_view(), name='caja-costo'),
     path('vista-taller/limpiar/', VistaTallerLimpiarView.as_view(), name='vista-taller-limpiar'),
     path('vista-taller/ocultar/', VistaTallerOcultarView.as_view(), name='vista-taller-ocultar'),
     # Incluir rutas del router
