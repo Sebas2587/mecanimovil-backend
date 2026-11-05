@@ -1849,10 +1849,16 @@ class FuenteWebEnrichTestCase(SimpleTestCase):
                 'tienda_ml': 'seller',
                 'proveedor_nombre': 'AutoPlanet',
                 'url_producto': 'https://www.autoplanet.cl/p/9',
+                'url_referencia': 'https://www.autoplanet.cl/p/9',
+                'tienda_referencia': 'AutoPlanet',
+                'precio_verificado_clp': 120000,
             },
         ])
         self.assertEqual(len(pubs), 1)
         self.assertNotIn('url_producto', pubs[0])
+        self.assertNotIn('url_referencia', pubs[0])
+        self.assertNotIn('tienda_referencia', pubs[0])
+        self.assertNotIn('precio_verificado_clp', pubs[0])
         self.assertNotIn('tienda_ml', pubs[0])
         self.assertNotIn('proveedor_nombre', pubs[0])
         self.assertEqual(pubs[0].get('marca_repuesto'), 'Sachs')

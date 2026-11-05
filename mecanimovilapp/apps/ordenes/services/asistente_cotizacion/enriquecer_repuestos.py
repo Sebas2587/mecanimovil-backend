@@ -892,6 +892,101 @@ def _referencia_consulta(
     return tienda, citado
 
 
+_REFERENCIA_VACIA = {
+    'url_referencia': '',
+    'tienda_referencia': '',
+    'precio_verificado_clp': None,
+}
+
+
+def _url_ficha(valor: Any) -> str:
+    """Una ficha de producto, no la portada del sitio."""
+    from urllib.parse import urlparse
+
+    url = str(valor or '').strip()
+    if not url.startswith(('http://', 'https://')):
+        return ''
+    if not urlparse(url).path.strip('/'):
+        return ''
+    return url[:500]
+
+
+def _urls_ficha(rep: dict) -> list[str]:
+    vistos: list[str] = []
+    for crudo in (rep.get('url_referencia'), rep.get('url_producto')):
+        url = _url_ficha(crudo)
+        if url and url not in vistos:
+            vistos.append(url)
+    for fuente in rep.get('fuentes_detalle') or []:
+        if not isinstance(fuente, dict):
+            continue
+        url = _url_ficha(fuente.get('url'))
+        if url and url not in vistos:
+            vistos.append(url)
+    return vistos
+
+
+def _linea_es_historial(rep: dict) -> bool:
+    from mecanimovilapp.apps.ordenes.casas_especialistas import es_etiqueta_historial
+
+    fuente = str(rep.get('fuente_marketplace') or rep.get('fuente_repuesto') or '').strip().lower()
+    if fuente == 'historial':
+        return True
+    return any(
+        es_etiqueta_historial(str(rep.get(campo) or ''))
+        for campo in ('casa_repuesto_nombre', 'proveedor_nombre', 'referencia_tienda')
+    )
+
+
+def referencia_de_linea(
+    rep: dict,
+    *,
+    modelo: str = '',
+    anio: Any = None,
+    tipo_motor: str = '',
+    cilindraje: Any = None,
+) -> dict[str, Any]:
+    """Ficha, tienda y monto verificado. Vacío si no hay una página de producto."""
+    if not isinstance(rep, dict) or _linea_es_historial(rep):
+        return dict(_REFERENCIA_VACIA)
+    urls = _urls_ficha(rep)
+    if not urls:
+        return dict(_REFERENCIA_VACIA)
+    from mecanimovilapp.apps.ordenes.casas_especialistas import es_etiqueta_historial
+
+    if rep.get('precio_a_consultar'):
+        tienda, precio = _referencia_consulta(
+            rep,
+            modelo=modelo,
+            anio=anio,
+            tipo_motor=tipo_motor,
+            cilindraje=cilindraje,
+        )
+        if not tienda or precio <= 0 or es_etiqueta_historial(tienda):
+            return dict(_REFERENCIA_VACIA)
+        return {
+            'url_referencia': urls[0],
+            'tienda_referencia': tienda,
+            'precio_verificado_clp': int(precio),
+        }
+    tienda = nombre_tienda_visible(
+        str(rep.get('proveedor_nombre') or rep.get('casa_repuesto_nombre') or ''),
+    )
+    if not tienda or es_etiqueta_historial(tienda):
+        return dict(_REFERENCIA_VACIA)
+    try:
+        precio = int(rep.get('precio_unitario_clp') or 0)
+    except (TypeError, ValueError):
+        precio = 0
+    if precio <= 0:
+        return dict(_REFERENCIA_VACIA)
+    return {
+        'url_referencia': urls[0],
+        'tienda_referencia': tienda,
+        'precio_verificado_clp': precio,
+    }
+
+
 def _es_nota_mecanico(texto: str) -> bool:
     bajo = str(texto or '').strip().lower()
     return (

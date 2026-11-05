@@ -69,6 +69,9 @@ class RepuestoCotizacionSerializer(serializers.Serializer):
     tienda_ml = serializers.CharField(required=False, allow_blank=True, default='')
     proveedor_nombre = serializers.CharField(required=False, allow_blank=True, default='')
     url_producto = serializers.CharField(required=False, allow_blank=True, default='')
+    url_referencia = serializers.CharField(required=False, allow_blank=True, default='')
+    tienda_referencia = serializers.CharField(required=False, allow_blank=True, default='')
+    precio_verificado_clp = serializers.IntegerField(required=False, allow_null=True, min_value=0)
     nombre_producto = serializers.CharField(required=False, allow_blank=True, default='')
     precio_estimado = serializers.BooleanField(required=False, default=True)
     precio_referencia_mercado = serializers.BooleanField(required=False, default=False)
@@ -416,6 +419,7 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
                 data[key] = int(data[key])
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
             contexto_nota_cotizacion,
+            referencia_de_linea,
             sanear_notas_linea,
         )
 
@@ -426,6 +430,12 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
                 saneados.append(rep)
                 continue
             rep = sanear_notas_linea(rep, **nota_kw)
+            rep.update(referencia_de_linea(rep, **{
+                'modelo': nota_kw.get('modelo') or '',
+                'anio': nota_kw.get('anio'),
+                'tipo_motor': nota_kw.get('tipo_motor') or '',
+                'cilindraje': nota_kw.get('cilindraje') or '',
+            }))
             saneados.append(rep)
             if rep.get('precio_unitario_clp') is not None:
                 rep['precio_unitario_clp'] = int(rep['precio_unitario_clp'])
