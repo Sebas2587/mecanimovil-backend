@@ -1277,6 +1277,8 @@ def construir_pipeline_comercial(
     filas = _ordenar_filas_recientes(filas)
     filas = _dedupe_pipeline_filas(filas)
     filas = filas[:limite]
+    from mecanimovilapp.apps.ordenes.services.pago_proyeccion import anotar_filas_pago
+    anotar_filas_pago(filas, taller)
 
     resumen: dict[str, int] = {k: 0 for k in ESTADOS_NORMALIZADOS}
     for f in filas:
@@ -1324,6 +1326,11 @@ _CASO_PUBLICO_KEYS = (
     'ejecucion_adicional',
     'fecha_agendada',
     'hora_agendada',
+    'estado_cobro_ui',
+    'pago_contabilizable',
+    'pago_provenance',
+    'estado_pago_repuestos',
+    'estado_pago_servicio',
 )
 
 
@@ -1595,6 +1602,8 @@ def construir_pipeline_clientes(
         ]
     filas = _ordenar_filas_recientes(filas)
     filas = _dedupe_pipeline_filas(filas)
+    from mecanimovilapp.apps.ordenes.services.pago_proyeccion import anotar_filas_pago
+    anotar_filas_pago(filas, taller)
     clientes = list(_agrupar_filas_por_cliente(filas).values())
     clientes.sort(key=lambda c: c.get('ultima_actividad') or '', reverse=True)
 
@@ -1682,6 +1691,8 @@ def construir_pipeline_cliente_detalle(
             if f.get('miembro_taller_id') in (None, miembro_taller_id)
         ]
     filas = _dedupe_pipeline_filas(filas)
+    from mecanimovilapp.apps.ordenes.services.pago_proyeccion import anotar_filas_pago
+    anotar_filas_pago(filas, taller)
     agrupados = _agrupar_filas_por_cliente(filas)
     cliente = agrupados.get(cliente_key.strip())
     if cliente is None:

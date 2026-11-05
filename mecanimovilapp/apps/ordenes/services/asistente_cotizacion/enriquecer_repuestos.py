@@ -1121,12 +1121,24 @@ def _entero(valor: Any) -> int:
         return 0
 
 
-def costo_conocido(rep: dict) -> int:
-    """Precio de compra ya guardado, o el de la ficha. 0 si todavía no hay."""
+def _monto_o_none(valor: Any) -> int | None:
+    if valor is None or valor == '':
+        return None
+    try:
+        numero = int(valor)
+    except (TypeError, ValueError):
+        return None
+    return numero if numero >= 0 else None
+
+
+def costo_estimado_linea(rep: dict) -> int | None:
+    """Precio de ficha o referencia. No es lo que el taller pagó."""
     if not isinstance(rep, dict):
-        return 0
+        return None
+    explicito = _monto_o_none(rep.get('costo_estimado_clp'))
+    if explicito is not None and explicito > 0:
+        return explicito
     for campo in (
-        'costo_unitario_clp',
         'precio_verificado_clp',
         'precio_referencia_clp',
         'precio_marketplace_clp',
@@ -1134,61 +1146,116 @@ def costo_conocido(rep: dict) -> int:
         monto = _entero(rep.get(campo))
         if monto > 0:
             return monto
-    return 0
+    return None
+
+
+def costo_registrado_linea(rep: dict) -> int | None:
+    """Solo un costo que el taller declaró. El precio cobrado no cuenta."""
+    if not isinstance(rep, dict):
+        return None
+    if rep.get('costo_registrado_clp') is not None and rep.get('costo_registrado_clp') != '':
+        return _monto_o_none(rep.get('costo_registrado_clp'))
+    if rep.get('costo_origen') == 'registrado':
+        return _monto_o_none(rep.get('costo_unitario_clp'))
+    return None
+
+
+def costo_conocido(rep: dict) -> int:
+    """Base estimada de la ficha. 0 si no hay referencia. No usa el precio cobrado."""
+    return costo_estimado_linea(rep) or 0
 
 
 def congelar_costo(rep: dict) -> None:
-    """Deja el costo quieto antes de cambiar lo que se cobra al cliente."""
-    if not isinstance(rep, dict) or _entero(rep.get('costo_unitario_clp')) > 0:
+    """Conserva la referencia de ficha antes de editar lo cobrado. No la llama costo real."""
+    if not isinstance(rep, dict):
         return
-    monto = costo_conocido(rep)
-    if monto <= 0:
-        monto = _entero(rep.get('precio_unitario_clp'))
-    if monto > 0:
-        rep['costo_unitario_clp'] = monto
+    if costo_registrado_linea(rep) is not None:
+        return
+    if _monto_o_none(rep.get('costo_estimado_clp')):
+        return
+    estimado = costo_estimado_linea(rep)
+    if estimado:
+        rep['costo_estimado_clp'] = estimado
 
 
 def economia_repuesto(rep: dict) -> dict[str, Any]:
-    """Costo, cobrado y margen de la línea. El costo no sigue al precio editado."""
+    """Registrado y estimado van separados. Sin evidencia, el margen real es null."""
     cobrado = _entero(rep.get('precio_unitario_clp'))
     cantidad = max(1, _entero(rep.get('cantidad') or 1))
-    costo = costo_conocido(rep)
-    if costo <= 0 and cobrado > 0:
-        costo = cobrado
-    if cobrado <= 0 and costo <= 0:
-        return {
-            'costo_unitario_clp': None,
-            'precio_cobrado_clp': 0,
-            'margen_clp': None,
-            'margen_pct': None,
-        }
-    margen_unit = cobrado - costo
-    pct = round((margen_unit / cobrado) * 100, 1) if cobrado > 0 else None
+    registrado = costo_registrado_linea(rep)
+    estimado = costo_estimado_linea(rep)
+    base = registrado if registrado is not None else estimado
+
+    def _margen(costo: int | None):
+        if costo is None or cobrado <= 0:
+            return None, None
+        unit = cobrado - costo
+        pct = round((unit / cobrado) * 100, 1)
+        return unit * cantidad, pct
+
+    margen_clp, margen_pct = _margen(base)
+    margen_real, margen_real_pct = _margen(registrado)
+    margen_est, margen_est_pct = _margen(estimado)
+    if registrado is not None:
+        origen = 'registrado'
+    elif estimado is not None:
+        origen = 'estimado'
+    else:
+        origen = 'desconocido'
     return {
-        'costo_unitario_clp': costo,
+        'costo_unitario_clp': base,
+        'costo_registrado_clp': registrado,
+        'costo_estimado_clp': estimado,
+        'costo_origen': origen,
         'precio_cobrado_clp': cobrado,
-        'margen_clp': margen_unit * cantidad,
-        'margen_pct': pct,
+        'margen_clp': margen_clp,
+        'margen_pct': margen_pct,
+        'margen_real_clp': margen_real,
+        'margen_real_pct': margen_real_pct,
+        'margen_estimado_clp': margen_est,
+        'margen_estimado_pct': margen_est_pct,
     }
 
 
 def economia_cotizacion(repuestos: list) -> dict[str, Any]:
     costo = 0
     cobrado = 0
+    costo_reg = 0
+    faltantes = 0
+    faltan_reg = 0
+    lineas = 0
     for rep in repuestos or []:
         if not isinstance(rep, dict):
             continue
+        lineas += 1
         cantidad = max(1, _entero(rep.get('cantidad') or 1))
         fila = economia_repuesto(rep)
-        costo += _entero(fila.get('costo_unitario_clp')) * cantidad
         cobrado += _entero(fila.get('precio_cobrado_clp')) * cantidad
-    ganancia = cobrado - costo
-    pct = round((ganancia / cobrado) * 100, 1) if cobrado > 0 else None
+        if fila.get('costo_unitario_clp') is None:
+            faltantes += 1
+        else:
+            costo += int(fila['costo_unitario_clp']) * cantidad
+        if fila.get('costo_registrado_clp') is None:
+            faltan_reg += 1
+        else:
+            costo_reg += int(fila['costo_registrado_clp']) * cantidad
+    completo = faltantes == 0
+    real_completo = faltan_reg == 0
+    ganancia = (cobrado - costo) if completo else None
+    pct = round((ganancia / cobrado) * 100, 1) if completo and cobrado > 0 and ganancia is not None else None
+    ganancia_real = (cobrado - costo_reg) if real_completo and lineas else None
+    if lineas == 0:
+        ganancia_real = 0
     return {
-        'costo_total_repuestos_clp': costo,
+        'costo_total_repuestos_clp': costo if completo else None,
+        'costo_conocido_parcial_clp': costo,
+        'costo_repuestos_completo': completo,
+        'costo_repuestos_faltantes': faltantes,
         'cobrado_total_repuestos_clp': cobrado,
         'ganancia_repuestos_clp': ganancia,
         'margen_repuestos_pct': pct,
+        'costo_registrado_total_clp': costo_reg if real_completo else None,
+        'margen_real_repuestos_clp': ganancia_real if real_completo else None,
     }
 
 

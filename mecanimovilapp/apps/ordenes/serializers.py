@@ -544,7 +544,12 @@ class SolicitudServicioProveedorSeguroSerializer(serializers.ModelSerializer):
     tiempo_respuesta_requerido = serializers.SerializerMethodField()
     informacion_disponible = serializers.SerializerMethodField()
     oferta_proveedor_id = serializers.SerializerMethodField()
-    mecanico_asignado_id = serializers.IntegerField(source='mecanico_asignado_id', read_only=True)
+    mecanico_asignado_id = serializers.IntegerField(read_only=True)
+    estado_pago_repuestos = serializers.SerializerMethodField()
+    estado_pago_servicio = serializers.SerializerMethodField()
+    estado_cobro_ui = serializers.SerializerMethodField()
+    pago_contabilizable = serializers.SerializerMethodField()
+    pago_provenance = serializers.SerializerMethodField()
     
     class Meta:
         model = SolicitudServicio
@@ -555,8 +560,43 @@ class SolicitudServicioProveedorSeguroSerializer(serializers.ModelSerializer):
             'metodo_pago', 'total', 'estado', 'estado_display',
             'notas_cliente', 'notas_proveedor', 'motivo_rechazo', 
             'lineas_detail', 'lineas', 'puede_gestionar', 'tiempo_respuesta_requerido',
-            'informacion_disponible', 'oferta_proveedor_id', 'mecanico_asignado_id'
+            'informacion_disponible', 'oferta_proveedor_id', 'mecanico_asignado_id',
+            'estado_pago_repuestos', 'estado_pago_servicio', 'estado_cobro_ui',
+            'pago_contabilizable', 'pago_provenance',
         )
+
+    def _pago(self, obj) -> dict:
+        cache = getattr(obj, '_pago_campos_cache', None)
+        if cache is None:
+            from mecanimovilapp.apps.ordenes.services.pago_proyeccion import (
+                campos_pago_solicitud,
+            )
+            cache = campos_pago_solicitud(obj)
+            obj._pago_campos_cache = cache
+        return cache
+
+    def get_estado_pago_repuestos(self, obj):
+        return self._pago(obj).get('estado_pago_repuestos')
+
+    def get_estado_pago_servicio(self, obj):
+        return self._pago(obj).get('estado_pago_servicio')
+
+    def get_estado_cobro_ui(self, obj):
+        return self._pago(obj).get('estado_cobro_ui')
+
+    def get_pago_contabilizable(self, obj):
+        return self._pago(obj).get('pago_contabilizable')
+
+    def get_pago_provenance(self, obj):
+        return self._pago(obj).get('pago_provenance')
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if data.get('estado_pago_repuestos') is None:
+            data.pop('estado_pago_repuestos', None)
+        if data.get('estado_pago_servicio') is None:
+            data.pop('estado_pago_servicio', None)
+        return data
     
     def get_cliente_detail(self, obj):
         """

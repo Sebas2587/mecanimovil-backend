@@ -893,6 +893,13 @@ def webhook_notification(request):
                                         
                                         pago.save()
 
+                                        from mecanimovilapp.apps.ordenes.services.caja_taller import (
+                                            intentar_contabilizar_pago_mp,
+                                        )
+                                        intentar_contabilizar_pago_mp(
+                                            pago, oferta, tipo_pago, payment_data,
+                                        )
+
                                         if pago.status == 'approved':
                                             from mecanimovilapp.apps.pagos.liquidacion_proveedor_service import (
                                                 registrar_liquidacion_desde_pago,
@@ -2813,6 +2820,13 @@ def verificar_pago_mercadopago(request):
                         
                         if not created:
                             logger.info(f"   - Pago  ya existía en BD: {pago.id}")
+
+                        from mecanimovilapp.apps.ordenes.services.caja_taller import (
+                            intentar_contabilizar_pago_mp,
+                        )
+                        intentar_contabilizar_pago_mp(
+                            pago, oferta, tipo_pago, payment_data,
+                        )
 
                         if pago.status == 'approved':
                             from mecanimovilapp.apps.pagos.liquidacion_proveedor_service import (

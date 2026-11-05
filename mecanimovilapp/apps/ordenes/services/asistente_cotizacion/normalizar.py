@@ -237,6 +237,56 @@ def descuento_visible_clp(
     return max(0, bruto - total)
 
 
+def totales_desde_lineas_respuesta(
+    repuestos,
+    mano_obra_lineas,
+    *,
+    descuento_tipo: str = '',
+    descuento_alcance: str = DESCUENTO_ALCANCE_MANO_OBRA,
+    descuento_valor=0,
+    total_persistido=0,
+) -> dict[str, Any]:
+    """Total de la respuesta. No persiste. IVA ya va dentro de los montos."""
+    faltantes: list[str] = []
+    costo_rep = 0
+    for i, rep in enumerate(repuestos or []):
+        if not isinstance(rep, dict):
+            faltantes.append(str(i))
+            continue
+        precio = rep.get('precio_unitario_clp')
+        if precio is None or (isinstance(precio, str) and not precio.strip()):
+            faltantes.append(str(rep.get('nombre') or rep.get('id') or i))
+            continue
+        cant = max(1, int(rep.get('cantidad') or 1))
+        costo_rep += cant * _to_int_clp(precio)
+    mo = 0
+    for lin in mano_obra_lineas or []:
+        if isinstance(lin, dict):
+            mo += _to_int_clp(lin.get('monto_clp'))
+    desc, total = calcular_descuento_aplicado(
+        costo_repuestos_clp=costo_rep,
+        mano_obra_clp=mo,
+        descuento_tipo=descuento_tipo or '',
+        descuento_alcance=descuento_alcance or DESCUENTO_ALCANCE_MANO_OBRA,
+        descuento_valor=descuento_valor or 0,
+    )
+    completo = not faltantes
+    persistido = _to_int_clp(total_persistido)
+    return {
+        'costo_repuestos_clp': costo_rep if completo else None,
+        'mano_obra_clp': mo,
+        'descuento_clp': desc,
+        'total_clp': total if completo else None,
+        'total_persistido_clp': persistido,
+        'total_conocido_parcial_clp': total,
+        'total_alineado': bool(completo and total == persistido),
+        'totales_completos': completo,
+        'totales_faltantes': faltantes,
+        'totales_fuente': 'lineas_respuesta',
+        'precios_iva': 'incluido',
+    }
+
+
 def aplicar_totales_cotizacion(cotizacion) -> None:
     """Recalcula repuestos, mano de obra bruta, descuento_clp y total a pagar."""
     costo_rep, mo, _bruto = recalcular_totales(

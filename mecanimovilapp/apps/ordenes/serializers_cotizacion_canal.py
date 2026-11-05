@@ -60,7 +60,7 @@ class RepuestoCotizacionSerializer(serializers.Serializer):
     id = serializers.CharField(required=False, allow_blank=True)
     nombre = serializers.CharField(max_length=200)
     cantidad = serializers.IntegerField(min_value=1, default=1)
-    precio_unitario_clp = serializers.IntegerField(min_value=0, default=0)
+    precio_unitario_clp = serializers.IntegerField(min_value=0, default=0, allow_null=True)
     precio_referencia_ia = serializers.IntegerField(required=False, min_value=0)
     precio_iva_incluido = serializers.BooleanField(required=False, default=True)
     fuente_marketplace = serializers.CharField(required=False, allow_blank=True, default='')
@@ -511,6 +511,26 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
         for lin in data.get('mano_obra_lineas') or []:
             if isinstance(lin, dict) and lin.get('monto_clp') is not None:
                 lin['monto_clp'] = int(lin['monto_clp'] or 0)
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
+            etiqueta_descuento,
+            totales_desde_lineas_respuesta,
+        )
+
+        canon = totales_desde_lineas_respuesta(
+            data.get('repuestos') or [],
+            data.get('mano_obra_lineas') or [],
+            descuento_tipo=data.get('descuento_tipo') or '',
+            descuento_alcance=data.get('descuento_alcance') or 'mano_obra',
+            descuento_valor=data.get('descuento_valor') or 0,
+            total_persistido=data.get('total_clp'),
+        )
+        data.update(canon)
+        data['descuento_etiqueta'] = etiqueta_descuento(
+            descuento_tipo=data.get('descuento_tipo') or '',
+            descuento_alcance=data.get('descuento_alcance') or 'mano_obra',
+            descuento_valor=data.get('descuento_valor') or 0,
+            descuento_clp=int(canon.get('descuento_clp') or 0),
+        )
         return data
 
     class Meta:
