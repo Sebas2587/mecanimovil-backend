@@ -87,6 +87,37 @@ class CotizarItemsFaltantesServiceTests(TestCase):
             'proveedor_nombre': 'AutoPlanet',
         }))
 
+    def test_precio_asumido_sin_tienda_sigue_buscandose(self):
+        self.assertTrue(linea_necesita_busqueda_web({
+            'nombre': 'Pastillas de freno cerámica delanteras',
+            'precio_unitario_clp': 70000,
+            'certeza': 'asumido',
+            'precio_estimado': True,
+        }))
+        self.assertFalse(linea_necesita_busqueda_web({
+            'nombre': 'Filtro de aceite',
+            'precio_unitario_clp': 10990,
+            'certeza': 'referencial',
+            'fuente_marketplace': 'web',
+            'url_producto': 'https://todoautochile.cl/filtro',
+        }))
+        self.assertFalse(linea_necesita_busqueda_web({
+            'nombre': 'Filtro de aceite',
+            'precio_unitario_clp': 0,
+            'fuente_marketplace': 'catalogo',
+        }))
+        self.assertTrue(linea_necesita_busqueda_web({
+            'nombre': 'Pastillas de freno delanteras',
+            'precio_unitario_clp': 55000,
+            'certeza': 'sin_precio',
+            'comentario': 'Juego completo para eje delantero',
+        }))
+        self.assertFalse(linea_necesita_busqueda_web({
+            'nombre': 'Pastillas de freno',
+            'precio_unitario_clp': 45000,
+            'certeza': 'confirmado',
+        }))
+
     def test_linea_con_precio_estimado_no_se_recotiza(self):
         self.assertFalse(linea_necesita_busqueda_web({
             'nombre': 'Refrigerante orgánico',
@@ -296,7 +327,10 @@ class CotizarItemsFaltantesServiceTests(TestCase):
         self.assertTrue(resultado['busqueda_web'])
         self.assertEqual(mock_marcar.call_args.kwargs.get('ids'), ['rep-aceite'])
         aceite = next(r for r in self.cot.repuestos if r['id'] == 'rep-aceite')
-        self.assertEqual(aceite.get('precio_min_clp') or 0, 0)
+        # La banda de la IA se cobra como precio asumido y no se borra al reintentar.
+        self.assertEqual(aceite.get('precio_min_clp'), 18000)
+        self.assertEqual(aceite.get('precio_unitario_clp'), 42000)
+        self.assertEqual(aceite.get('certeza'), 'asumido')
         self.assertTrue(aceite.get('especificacion_pendiente'))
 
     def test_rechaza_si_no_hay_nada_que_cotizar(self):
@@ -818,6 +852,52 @@ class TechoIaYLineasAgenteTests(SimpleTestCase):
         self.assertEqual(rodamiento['precio_unitario_clp'], 0)
         self.assertEqual(rodamiento['precio_max_clp'], 0)
 
+    def test_bujias_asumidas_a_32000_por_4_se_cotizan_por_unidad(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.resolver_precio import (
+            aplicar_techo_ia_si_falta_unitario,
+        )
+
+        out = aplicar_techo_ia_si_falta_unitario({
+            'nombre': 'Bujías NGK Iridium',
+            'cantidad': 4,
+            'precio_unitario_clp': 0,
+            'precio_min_clp': 8000,
+            'precio_max_clp': 32000,
+        })
+        self.assertEqual(out['precio_unitario_clp'], 8000)
+        self.assertEqual(out['precio_min_clp'], 8000)
+        self.assertEqual(out['precio_max_clp'], 32000)
+        self.assertEqual(out['certeza'], 'asumido')
+        self.assertIn('juego de 4', out['comentario'])
+
+        ya_puesto = aplicar_techo_ia_si_falta_unitario({
+            'nombre': 'Bujías',
+            'cantidad': 4,
+            'precio_unitario_clp': 32000,
+            'precio_min_clp': 8000,
+            'precio_max_clp': 32000,
+        })
+        self.assertEqual(ya_puesto['precio_unitario_clp'], 8000)
+        self.assertEqual(ya_puesto['precio_max_clp'], 32000)
+
+        una = aplicar_techo_ia_si_falta_unitario({
+            'nombre': 'Bujías',
+            'cantidad': 4,
+            'precio_unitario_clp': 15000,
+            'precio_min_clp': 8000,
+            'precio_max_clp': 18000,
+        })
+        self.assertEqual(una['precio_unitario_clp'], 15000)
+
+        con_tienda = aplicar_techo_ia_si_falta_unitario({
+            'nombre': 'Bujías',
+            'cantidad': 4,
+            'precio_unitario_clp': 32000,
+            'precio_max_clp': 32000,
+            'url_producto': 'https://www.mundorepuestos.cl/producto/bujia',
+        })
+        self.assertEqual(con_tienda['precio_unitario_clp'], 32000)
+
     def test_asegurar_montos_reparte_lump_en_lineas_vacias(self):
         from mecanimovilapp.apps.agente_ia.services.cotizacion_borrador import (
             _asegurar_montos_en_lineas,
@@ -843,5 +923,6 @@ class TechoIaYLineasAgenteTests(SimpleTestCase):
             80000,
         )
         self.assertEqual(out[0]['monto_clp'], 25000)
-        self.assertEqual(out[1]['monto_clp'], 55000)
+        self.assertEqual(out[1]['monto_clp'], 25000)
+        self.assertGreater(out[1]['monto_clp'], 0)
 

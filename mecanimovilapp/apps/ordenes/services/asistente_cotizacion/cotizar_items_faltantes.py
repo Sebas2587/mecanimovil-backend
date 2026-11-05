@@ -7,9 +7,7 @@ from typing import Any
 
 from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
     _clave_fuzzy,
-    _to_int_clp,
     enriquecer_repuestos_cotizacion,
-    limpiar_precio_para_nueva_busqueda,
     linea_necesita_busqueda_web,
     nombre_repuesto_buscable,
 )
@@ -102,14 +100,6 @@ def cotizar_items_faltantes(
             return True
         return str(rep.get('id') or '') in wanted
 
-    if wanted:
-        base = [
-            limpiar_precio_para_nueva_busqueda(r)
-            if _es_objetivo(r) and _to_int_clp(r.get('precio_unitario_clp')) <= 0
-            else r
-            for r in base
-        ]
-
     pendientes_antes = [
         str(r.get('nombre') or '').strip()
         for r in base
@@ -165,6 +155,23 @@ def cotizar_items_faltantes(
         )
         enriquecidos = base
 
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.resolver_precio import (
+        aplicar_techo_ia_en_repuestos,
+        aplicar_techo_ia_si_falta_unitario,
+    )
+
+    # El worker puede no llegar (Redis caído). El techo de la IA queda cobrado
+    # antes de encolar, y una búsqueda vacía no lo pisa. Un reintento por id
+    # no reescribe las otras líneas.
+    if wanted:
+        enriquecidos = [
+            aplicar_techo_ia_si_falta_unitario(r)
+            if isinstance(r, dict) and _es_objetivo(r)
+            else r
+            for r in enriquecidos
+        ]
+    else:
+        enriquecidos = aplicar_techo_ia_en_repuestos(enriquecidos)
     cotizacion.repuestos = enriquecidos
     aplicar_totales_cotizacion(cotizacion)
 

@@ -1360,20 +1360,35 @@ def _detalle_repuesto(rep: dict, buscando: bool) -> str:
 
 
 def _origen_precio(rep: dict, buscando: bool) -> str:
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+        nombre_tienda_visible,
+    )
+
     fuente = str(rep.get('fuente_marketplace') or '').strip().lower()
     precio = int(rep.get('precio_unitario_clp') or 0)
+    tienda = nombre_tienda_visible(
+        str(rep.get('casa_repuesto_nombre') or rep.get('proveedor_nombre') or rep.get('tienda_ml') or '')
+    )
     if fuente in ('catalogo', 'catálogo', 'proveedor'):
         return 'Precio del taller.'
     if fuente == 'historial':
         return 'Precio del historial del taller.'
+    if rep.get('precio_a_consultar') and tienda:
+        return f'Precio a consultar en {tienda}.'
     if fuente in ('web', 'ml', 'mercadolibre'):
+        if tienda:
+            return f'Precio en {tienda}.'
         return 'Precio consultado en tiendas.'
     if precio <= 0 and (buscando or rep.get('motivo_sin_precio')):
         return 'Buscando el precio en tiendas.'
     if precio <= 0:
         return 'Todavía sin precio de tienda.'
+    if tienda and (rep.get('precio_estimado') or rep.get('precio_referencia_mercado')):
+        return f'Precio de referencia en {tienda}.'
     if rep.get('precio_estimado') or rep.get('precio_referencia_mercado'):
         return 'Precio de referencia, hay que confirmarlo.'
+    if tienda:
+        return f'Precio en {tienda}.'
     return 'Precio de referencia.'
 
 

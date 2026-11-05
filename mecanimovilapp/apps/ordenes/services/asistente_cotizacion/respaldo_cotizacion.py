@@ -90,6 +90,8 @@ def contenido_respaldo_sin_gemini(
         except Exception as exc:
             logger.info('respaldo: enrich historial/catálogo omitido: %s', exc)
 
+    if taller is not None:
+        ctx = {**ctx, 'taller': taller}
     contenido = normalizar_cotizacion_ia(contenido, ctx)
     contenido['servicio_nombre'] = pedido[:255]
     contenido['respaldo_sin_gemini'] = True

@@ -56,15 +56,20 @@ def lineas_progreso_desde_repuestos(
         fuente_linea = str(
             raw.get('proveedor_nombre') or raw.get('fuente_marketplace') or '',
         ).strip()
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            nombre_tienda_visible,
+        )
+
         if precio_hit > 0:
             estado = 'ok'
-            fuente = str((hit or {}).get('tienda') or fuente_linea)[:80]
+            cruda = str((hit or {}).get('tienda') or fuente_linea)
+            fuente = (nombre_tienda_visible(cruda) or cruda)[:80]
             precio = precio_hit
         elif precio_linea > 0 and str(raw.get('fuente_marketplace') or '') in (
             'catalogo', 'historial', 'proveedor', 'web', 'mercadolibre',
         ):
             estado = 'ok'
-            fuente = fuente_linea[:80]
+            fuente = (nombre_tienda_visible(fuente_linea) or fuente_linea)[:80]
             precio = precio_linea
         elif buscando_clave and clave == buscando_clave:
             estado = 'buscando'
@@ -246,6 +251,41 @@ def cancelar_busqueda_web_cotizacion(cotizacion):
     return cotizacion
 
 
+def _marcar_cola_caida(cotizacion_id: int, exc: BaseException) -> None:
+    """La búsqueda no arrancó. El precio de la línea se queda y el motivo lo dice."""
+    from mecanimovilapp.apps.ordenes.models import CotizacionCanal
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+        linea_necesita_busqueda_web,
+        nota_cola_caida,
+    )
+
+    cot = CotizacionCanal.objects.filter(pk=cotizacion_id).first()
+    if cot is None:
+        return
+    nota = nota_cola_caida()
+    reps = []
+    for raw in cot.repuestos or []:
+        if not isinstance(raw, dict):
+            reps.append(raw)
+            continue
+        if not linea_necesita_busqueda_web(raw):
+            reps.append(raw)
+            continue
+        linea = dict(raw)
+        linea['comentario'] = nota
+        linea['motivo_seleccion'] = nota
+        reps.append(linea)
+    from django.utils import timezone
+
+    meta = dict(cot.metadata or {})
+    meta['busqueda_web_estado'] = 'error'
+    meta['busqueda_web_en'] = timezone.now().isoformat()
+    meta['busqueda_web_error'] = str(exc)[:240]
+    cot.repuestos = reps
+    cot.metadata = meta
+    cot.save(update_fields=['repuestos', 'metadata', 'actualizado_en'])
+
+
 def _ejecutar_task(cotizacion_id: int, *, sync: bool) -> None:
     from mecanimovilapp.apps.ordenes.tasks import buscar_precios_web_cotizacion_task
 
@@ -280,8 +320,8 @@ def disparar_busqueda_web_cotizacion(
             _ejecutar_task(int(cotizacion_id), sync=True)
             return True
         except Exception as exc:
-            logger.warning(
-                'Sync busqueda web cotizacion=%s falló: %s — encola async',
+            logger.error(
+                'buscar_precios_web_cotizacion_task(%s) sync falló; Tavily no corre: %s',
                 cotizacion_id,
                 exc,
             )
@@ -290,22 +330,24 @@ def disparar_busqueda_web_cotizacion(
                     lambda: _ejecutar_task(int(cotizacion_id), sync=False),
                 )
             except Exception as exc2:
-                logger.warning(
-                    'No se pudo encolar buscar_precios_web_cotizacion_task(%s): %s',
+                logger.error(
+                    'buscar_precios_web_cotizacion_task(%s) no se encoló; Tavily no corre: %s',
                     cotizacion_id,
                     exc2,
                 )
+                _marcar_cola_caida(int(cotizacion_id), exc2)
             return False
 
     def _enqueue() -> None:
         try:
             _ejecutar_task(int(cotizacion_id), sync=False)
         except Exception as exc:
-            logger.warning(
-                'No se pudo encolar buscar_precios_web_cotizacion_task(%s): %s',
+            logger.error(
+                'buscar_precios_web_cotizacion_task(%s) no se encoló; Tavily no corre: %s',
                 cotizacion_id,
                 exc,
             )
+            _marcar_cola_caida(int(cotizacion_id), exc)
 
     try:
         transaction.on_commit(_enqueue)

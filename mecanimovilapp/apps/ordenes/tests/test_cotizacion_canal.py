@@ -1230,6 +1230,93 @@ class SepararPedidoTallerTestCase(SimpleTestCase):
         )
         self.assertEqual(interp['repuestos'], ['Bujías', 'Bobinas', 'Batería'])
 
+    def test_cotizacion_208_tiene_una_faena_por_trabajo(self):
+        pedido = (
+            'Cambio de pastillas de freno delanteras, aceite y filtro de aceite, '
+            'bujías y filtro de aire'
+        )
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.separar_pedido_taller import (
+            interpretar_pedido_taller,
+        )
+
+        interp = interpretar_pedido_taller(pedido)
+        self.assertEqual(
+            interp['mano_obra'],
+            [
+                'Cambio de pastillas de freno delanteras',
+                'Cambio de aceite y filtro de aceite',
+                'Cambio de bujías',
+                'Cambio de filtro de aire',
+            ],
+        )
+        self.assertEqual(
+            interp['repuestos'],
+            [
+                'Pastillas de freno delanteras',
+                'Aceite',
+                'Filtro de aceite',
+                'Bujías',
+                'Filtro de aire',
+            ],
+        )
+        out = normalizar_cotizacion_ia(
+            {
+                'servicio_nombre': pedido,
+                'mano_obra_clp': 50000,
+                'servicios_lineas': [
+                    {'nombre': 'Cambio de pastillas de freno delanteras', 'monto_clp': 35000},
+                    {'nombre': 'Cambio de filtro de aire', 'monto_clp': 15000},
+                ],
+                'repuestos': [],
+            },
+            {'servicio_nombre': pedido},
+        )
+        montos = {lin['nombre']: lin['monto_clp'] for lin in out['servicios_lineas']}
+        self.assertEqual(
+            list(montos),
+            [
+                'Cambio de pastillas de freno delanteras',
+                'Cambio de aceite y filtro de aceite',
+                'Cambio de bujías',
+                'Cambio de filtro de aire',
+            ],
+        )
+        self.assertEqual(montos['Cambio de pastillas de freno delanteras'], 35000)
+        self.assertEqual(montos['Cambio de filtro de aire'], 15000)
+        self.assertEqual(montos['Cambio de aceite y filtro de aceite'], 20625)
+        self.assertEqual(montos['Cambio de bujías'], 20625)
+        self.assertTrue(all(monto > 0 for monto in montos.values()))
+        self.assertEqual(out['mano_obra_clp'], sum(montos.values()))
+
+    def test_la_hora_del_taller_precio_cada_faena(self):
+        pedido = (
+            'Cambio de pastillas de freno delanteras, aceite y filtro de aceite, '
+            'bujías y filtro de aire'
+        )
+
+        class _Taller:
+            tarifa_hora_clp = 20_000
+
+        out = normalizar_cotizacion_ia(
+            {
+                'servicio_nombre': pedido,
+                'mano_obra_clp': 50000,
+                'servicios_lineas': [
+                    {'nombre': 'Cambio de pastillas de freno delanteras', 'monto_clp': 35000},
+                    {'nombre': 'Cambio de filtro de aire', 'monto_clp': 15000},
+                ],
+                'repuestos': [],
+            },
+            {'servicio_nombre': pedido, 'taller': _Taller()},
+        )
+        montos = {lin['nombre']: lin['monto_clp'] for lin in out['servicios_lineas']}
+        self.assertEqual(montos['Cambio de pastillas de freno delanteras'], 40000)
+        self.assertEqual(montos['Cambio de aceite y filtro de aceite'], 30000)
+        self.assertEqual(montos['Cambio de bujías'], 30000)
+        self.assertEqual(montos['Cambio de filtro de aire'], 30000)
+        self.assertTrue(all(monto > 0 for monto in montos.values()))
+        self.assertEqual(out['mano_obra_clp'], 130000)
+
     def test_no_guarda_la_faena_como_repuesto(self):
         ctx = {'servicio_nombre': self.PEDIDO}
         out = normalizar_cotizacion_ia(
@@ -1256,7 +1343,24 @@ class SepararPedidoTallerTestCase(SimpleTestCase):
                 'Revisión electromecánica',
             ],
         )
-        self.assertEqual(out['mano_obra_clp'], 80000)
+        montos = [lin['monto_clp'] for lin in out['servicios_lineas']]
+        self.assertEqual(montos, [22500, 15000, 15000, 15000])
+        self.assertTrue(all(monto > 0 for monto in montos))
+        self.assertEqual(out['mano_obra_clp'], sum(montos))
+
+    def test_filtro_de_aire_es_otra_faena_aunque_no_traiga_verbo(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.separar_pedido_taller import (
+            interpretar_pedido_taller,
+        )
+
+        interp = interpretar_pedido_taller('Cambio de bujías y filtro de aire')
+        self.assertEqual(
+            interp['mano_obra'],
+            ['Cambio de bujías', 'Cambio de filtro de aire'],
+        )
+        self.assertEqual(interp['repuestos'], ['Bujías', 'Filtro de aire'])
+        juntas = interpretar_pedido_taller('Cambio de bujías y bobinas')
+        self.assertEqual(juntas['mano_obra'], ['Cambio de bujías y bobinas'])
 
 
 class FaenaConjuntaNoEsRepuestoTestCase(SimpleTestCase):
@@ -1636,7 +1740,7 @@ class FuenteWebEnrichTestCase(SimpleTestCase):
         )
 
         web = [{
-            'nombre': 'Pastillas freno',
+            'nombre': 'Pastillas freno delanteras Hyundai Accent',
             'marca_repuesto': 'Bosch',
             'precio_unitario_clp': 38000,
             'fuente_marketplace': 'web',
@@ -1745,10 +1849,16 @@ class FuenteWebEnrichTestCase(SimpleTestCase):
                 'tienda_ml': 'seller',
                 'proveedor_nombre': 'AutoPlanet',
                 'url_producto': 'https://www.autoplanet.cl/p/9',
+                'url_referencia': 'https://www.autoplanet.cl/p/9',
+                'tienda_referencia': 'AutoPlanet',
+                'precio_verificado_clp': 120000,
             },
         ])
         self.assertEqual(len(pubs), 1)
         self.assertNotIn('url_producto', pubs[0])
+        self.assertNotIn('url_referencia', pubs[0])
+        self.assertNotIn('tienda_referencia', pubs[0])
+        self.assertNotIn('precio_verificado_clp', pubs[0])
         self.assertNotIn('tienda_ml', pubs[0])
         self.assertNotIn('proveedor_nombre', pubs[0])
         self.assertEqual(pubs[0].get('marca_repuesto'), 'Sachs')
@@ -1842,3 +1952,118 @@ class ManoObraLineasTestCase(SimpleTestCase):
             {'nombre': 'Diagnóstico', 'monto_clp': 12000},
         ]})
         self.assertIsNone(validar_nombres_mano_obra_para_enviar(cot_ok))
+
+
+class Quote210FaenaUnicaYPastillasTests(SimpleTestCase):
+    """La cotización 210 duplicó la mano de obra y se quedó sin pastillas."""
+
+    PEDIDO = (
+        'mantención con pastillas de freno, cambio de aceite y filtro, '
+        'bujías y filtro de aire'
+    )
+    DESCRIPCION = (
+        'Cambio de pastillas de freno, cambio de aceite y filtro de aceite, '
+        'cambio de bujías y cambio de filtro de aire'
+    )
+
+    def test_un_trabajo_una_faena_y_la_pastilla_sigue_en_el_pedido(self):
+        ia = [
+            {'nombre': 'Mantención: pastillas de freno', 'monto_clp': 45000},
+            {'nombre': 'Cambio de aceite y filtro', 'monto_clp': 30000},
+            {'nombre': 'Cambio de bujías', 'monto_clp': 30000},
+            {'nombre': 'Cambio de filtro de aire', 'monto_clp': 15000},
+        ]
+        out = normalizar_cotizacion_ia(
+            {
+                'servicio_nombre': self.PEDIDO,
+                'descripcion_problema': self.DESCRIPCION,
+                'mano_obra_clp': 120000,
+                'servicios_lineas': ia,
+                'repuestos': [
+                    {'nombre': 'Aceite de motor', 'cantidad': 4, 'precio_unitario_clp': 9990},
+                    {'nombre': 'Filtro de aceite', 'cantidad': 1, 'precio_unitario_clp': 4990},
+                    {'nombre': 'Bujías', 'cantidad': 4, 'precio_unitario_clp': 12000},
+                    {'nombre': 'Filtro de aire', 'cantidad': 1, 'precio_unitario_clp': 8990},
+                ],
+            },
+            {
+                'servicio_nombre': self.PEDIDO,
+                'descripcion_problema': self.DESCRIPCION,
+                'marca': 'Fiat',
+                'modelo': 'Bravo',
+            },
+        )
+        lineas = out['servicios_lineas']
+        self.assertEqual(len(lineas), 4)
+        montos = [lin['monto_clp'] for lin in lineas]
+        self.assertEqual(montos, [45000, 30000, 30000, 15000])
+        self.assertEqual(out['mano_obra_clp'], sum(montos))
+        self.assertEqual(out['mano_obra_clp'], 120000)
+        nombres = [lin['nombre'] for lin in lineas]
+        self.assertEqual(nombres.count('Cambio de bujías'), 1)
+        self.assertEqual(nombres.count('Cambio de filtro de aire'), 1)
+        self.assertTrue(any('pastilla' in n.lower() for n in nombres))
+        self.assertEqual(
+            sum(1 for n in nombres if 'aceite' in n.lower() and 'filtro' in n.lower()),
+            1,
+        )
+        piezas = [r['nombre'].lower() for r in out['repuestos']]
+        self.assertTrue(any('pastilla' in n for n in piezas))
+        self.assertTrue(any('buj' in n for n in piezas))
+        self.assertTrue(any('filtro de aire' in n for n in piezas))
+
+
+class Quote211ServicioGenericoTests(SimpleTestCase):
+    """La cotización 211 sumó el nombre del servicio y dejó la mantención sin normalizar."""
+
+    DETALLE = (
+        'mantención con pastillas de freno, cambio de aceite y filtro, '
+        'bujías y filtro de aire'
+    )
+
+    def test_el_rotulo_no_suma_faena_y_la_pastilla_se_llama_cambio(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
+            normalizar_cotizacion_ia,
+        )
+
+        out = normalizar_cotizacion_ia(
+            {
+                'servicio_nombre': 'Mantención',
+                'descripcion_problema': self.DETALLE,
+                'mano_obra_clp': 165000,
+                'servicios_lineas': [
+                    {'nombre': 'Mantención', 'monto_clp': 45000},
+                    {'nombre': 'Mantención con pastillas de freno', 'monto_clp': 40000},
+                    {'nombre': 'Cambio de aceite y filtro', 'monto_clp': 30000},
+                    {'nombre': 'Cambio de bujías', 'monto_clp': 35000},
+                    {'nombre': 'Cambio de filtro de aire', 'monto_clp': 15000},
+                ],
+                'repuestos': [],
+            },
+            {
+                'servicio_nombre': 'Mantención',
+                'descripcion_problema': self.DETALLE,
+                'marca': 'Fiat',
+                'modelo': 'Bravo',
+            },
+        )
+        nombres = [lin['nombre'] for lin in out['servicios_lineas']]
+        self.assertEqual(nombres, [
+            'Cambio de pastillas de freno',
+            'Cambio de aceite y filtro',
+            'Cambio de bujías',
+            'Cambio de filtro de aire',
+        ])
+        montos = [lin['monto_clp'] for lin in out['servicios_lineas']]
+        self.assertEqual(montos, [40000, 30000, 35000, 15000])
+        self.assertEqual(out['mano_obra_clp'], sum(montos))
+        self.assertNotIn('Mantención', nombres)
+        self.assertNotIn('Mantención con pastillas de freno', nombres)
+
+    def test_mantencion_sola_sigue_siendo_la_faena(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.separar_pedido_taller import (
+            interpretar_pedido_taller,
+        )
+
+        interp = interpretar_pedido_taller('Mantención')
+        self.assertEqual(interp['mano_obra'], ['Mantención'])

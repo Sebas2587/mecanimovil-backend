@@ -69,10 +69,27 @@ class RepuestoCotizacionSerializer(serializers.Serializer):
     tienda_ml = serializers.CharField(required=False, allow_blank=True, default='')
     proveedor_nombre = serializers.CharField(required=False, allow_blank=True, default='')
     url_producto = serializers.CharField(required=False, allow_blank=True, default='')
+    url_referencia = serializers.CharField(required=False, allow_blank=True, default='')
+    tienda_referencia = serializers.CharField(required=False, allow_blank=True, default='')
+    precio_verificado_clp = serializers.IntegerField(required=False, allow_null=True, min_value=0)
     nombre_producto = serializers.CharField(required=False, allow_blank=True, default='')
     precio_estimado = serializers.BooleanField(required=False, default=True)
     precio_referencia_mercado = serializers.BooleanField(required=False, default=False)
     comentario = serializers.CharField(required=False, allow_blank=True, default='')
+    # Campos de selección inteligente de casa (PR #7)
+    casa_repuesto_nombre = serializers.CharField(required=False, allow_blank=True, default='')
+    motivo_seleccion = serializers.CharField(required=False, allow_blank=True, default='')
+    alternativas_descartadas = serializers.ListField(
+        child=serializers.DictField(),
+        required=False,
+        default=list,
+    )
+    consolidacion_aplicada = serializers.BooleanField(required=False, default=False)
+    precio_a_consultar = serializers.BooleanField(required=False, default=False)
+    casa_sucursal = serializers.CharField(required=False, allow_blank=True, default='')
+    casa_telefono = serializers.CharField(required=False, allow_blank=True, default='')
+    referencia_tienda = serializers.CharField(required=False, allow_blank=True, default='')
+    precio_referencia_clp = serializers.IntegerField(required=False, allow_null=True, min_value=0)
     certeza = serializers.ChoiceField(
         choices=('confirmado', 'asumido', 'referencial', 'sin_precio'),
         required=False,
@@ -400,7 +417,26 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
         for key in ('total_min_clp', 'total_max_clp'):
             if data.get(key) is not None:
                 data[key] = int(data[key])
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            contexto_nota_cotizacion,
+            referencia_de_linea,
+            sanear_notas_linea,
+        )
+
+        nota_kw = contexto_nota_cotizacion(instance)
+        saneados = []
         for rep in data.get('repuestos') or []:
+            if not isinstance(rep, dict):
+                saneados.append(rep)
+                continue
+            rep = sanear_notas_linea(rep, **nota_kw)
+            rep.update(referencia_de_linea(rep, **{
+                'modelo': nota_kw.get('modelo') or '',
+                'anio': nota_kw.get('anio'),
+                'tipo_motor': nota_kw.get('tipo_motor') or '',
+                'cilindraje': nota_kw.get('cilindraje') or '',
+            }))
+            saneados.append(rep)
             if rep.get('precio_unitario_clp') is not None:
                 rep['precio_unitario_clp'] = int(rep['precio_unitario_clp'])
             ref = rep.get('precio_referencia_ia')
@@ -412,6 +448,7 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
                         rep[extra] = int(rep[extra])
                     except (TypeError, ValueError):
                         pass
+        data['repuestos'] = saneados
         for lin in data.get('mano_obra_lineas') or []:
             if isinstance(lin, dict) and lin.get('monto_clp') is not None:
                 lin['monto_clp'] = int(lin['monto_clp'] or 0)

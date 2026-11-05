@@ -154,6 +154,22 @@ def misma_pieza(a: str, b: str) -> bool:
     tb = _tokens(b)
     if not ta or not tb:
         return False
+    # El filtro de aire y el de aceite comparten «filtro» y no son la misma pieza.
+    if ('aire' in ta) != ('aire' in tb) and ('filtro' in ta or 'filtro' in tb):
+        return False
+    # «Aceite» y «Filtro de aceite» se compran juntos y no son la misma línea.
+    # «Aceite de motor con filtro» sí sigue siendo el aceite.
+    fa = _fold(a)
+    fb = _fold(b)
+
+    def _filtro_pieza(texto: str) -> bool:
+        return 'filtro' in texto and 'con filtro' not in texto
+
+    def _aceite_sin_filtro(texto: str) -> bool:
+        return 'aceite' in texto and 'filtro' not in texto
+
+    if (_filtro_pieza(fa) and _aceite_sin_filtro(fb)) or (_filtro_pieza(fb) and _aceite_sin_filtro(fa)):
+        return False
     distintivos_a = ta & _DISTINTIVOS_PIEZA
     distintivos_b = tb & _DISTINTIVOS_PIEZA
     if distintivos_a and distintivos_b and distintivos_a.isdisjoint(distintivos_b):
@@ -164,6 +180,9 @@ def misma_pieza(a: str, b: str) -> bool:
         return bool(nucleo_a & nucleo_b)
     if not nucleo_a and not nucleo_b:
         return bool(ta & tb)
+    # «Aceite» es el mismo repuesto que «Aceite de motor», no una tercera línea.
+    if _aceite_sin_filtro(fa) and _aceite_sin_filtro(fb) and (ta <= tb or tb <= ta):
+        return True
     return False
 
 
@@ -176,12 +195,63 @@ def _mismo_objeto(a: str, b: str) -> bool:
     return ta <= tb or tb <= ta
 
 
+_RE_PARTE_COMPRABLE = re.compile(
+    r'(pastillas?(?:\s+de\s+freno)?(?:\s+(?:delanter[oa]s?|traser[oa]s?))?|'
+    r'discos?(?:\s+de\s+freno)?(?:\s+(?:delanter[oa]s?|traser[oa]s?))?|'
+    r'buj[ií]as?|bobinas?|bater[ií]as?|'
+    r'filtro\s+de\s+(?:aceite|aire|polen|habit[aá]culo|cabina|combustible|bencina|gasolina)|'
+    r'aceite(?:\s+de\s+motor)?|'
+    r'amortiguadores?)',
+    re.IGNORECASE,
+)
+
+
+def _objeto_comprable(texto: str) -> str:
+    """La pieza que nombra una mantención. Vacío si el trabajo no lleva repuesto."""
+    resto = _objeto_solo_mano(texto)
+    hallado = _RE_PARTE_COMPRABLE.search(resto)
+    if not hallado:
+        return ''
+    return hallado.group(1).strip()
+
+
 def es_solo_mano(texto: str) -> bool:
-    return bool(_SOLO_MANO.match((texto or '').strip()))
+    """Revisión o limpieza sin pieza. «Mantención con pastillas» sí compra la pieza."""
+    limpio = (texto or '').strip()
+    if not _SOLO_MANO.match(limpio):
+        return False
+    return not _objeto_comprable(limpio)
 
 
 def _sin_conector(texto: str) -> str:
     return _CONECTOR_INICIAL.sub('', (texto or '').strip()).strip()
+
+
+_ROTULO_GENERICO = re.compile(
+    r'^(?:mantenci[oó]n|servicio)'
+    r'(?:\s+(?:general|preventiva|b[aá]sica|del\s+veh[ií]culo|automotriz))?$',
+    re.IGNORECASE,
+)
+_PREFIJO_MANTENCION = re.compile(r'^(?:mantenci[oó]n|mantener)\b', re.IGNORECASE)
+
+
+def _titulo_de_faena_pedido(frase: str) -> str:
+    """«Mantención con pastillas» es el cambio de esa pieza, no otro título."""
+    titulo = _titulo_faena(frase)
+    base = (frase or titulo or '').strip()
+    if not _PREFIJO_MANTENCION.match(base):
+        return titulo
+    objeto = _objeto_comprable(base) or _objeto_comprable(titulo)
+    if not objeto:
+        return titulo
+    return _titulo(f'Cambio de {objeto}')
+
+
+def _sin_rotulo_generico(nombres: list[str]) -> list[str]:
+    """«Mantención» es el nombre del servicio. No suma una faena si hay trabajos."""
+    if not any(not _ROTULO_GENERICO.match(nombre.strip()) for nombre in nombres):
+        return nombres
+    return [nombre for nombre in nombres if not _ROTULO_GENERICO.match(nombre.strip())]
 
 
 def _titulo_faena(texto: str) -> str:
@@ -215,8 +285,11 @@ def _objeto_solo_mano(texto: str) -> str:
 def piezas_de_faena(texto: str) -> list[str]:
     """Piezas que se compran para esta faena. Vacío si el trabajo no lleva repuesto."""
     limpio = (texto or '').strip()
-    if not limpio or es_solo_mano(limpio):
+    if not limpio:
         return []
+    if _SOLO_MANO.match(limpio):
+        objeto = _objeto_comprable(limpio)
+        return [_titulo(objeto)] if objeto else []
     match = _VERBO_PIEZA.match(limpio)
     if not match:
         return []
@@ -262,19 +335,41 @@ def texto_pedido_taller(servicio: str, descripcion: str = '') -> str:
 def interpretar_pedido_taller(texto: str) -> dict[str, list[str]]:
     """Separa el campo del taller en líneas de mano de obra y nombres de pieza."""
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.aplicar_catalogo import (
+        _FILTRO_HABITACULO_RE,
         _split_servicios,
     )
 
     mano: list[str] = []
     piezas: list[str] = []
     conjuntas: list[str] = []
-    chunks = [c.strip() for c in _split_servicios(texto) if c.strip()]
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.aplicar_catalogo import (
+        _SEP_OTRO_SERVICIO_RE,
+    )
+
+    # «también rodamiento de volante» es una pieza del trabajo, no otra faena.
+    # El verbo se hereda solo dentro de la lista inicial («cambio de A, B y C»).
+    segmentos = _SEP_OTRO_SERVICIO_RE.split(texto) or [texto]
+    chunks: list[str] = []
+    hereda_verbo: list[bool] = []
+    for i, segmento in enumerate(segmentos):
+        for frase in _split_servicios(segmento):
+            if not frase.strip():
+                continue
+            chunks.append(frase.strip())
+            hereda_verbo.append(i == 0)
     lista = len(chunks) > 1
-    for frase in chunks:
+    verbo_lista = ''
+    for frase, puede_heredar in zip(chunks, hereda_verbo):
         frase = _sin_conector(frase)
         if not frase:
             continue
-        titulo = _titulo_faena(frase)
+        # «Cambio de pastillas, aceite y filtro, bujías»: el verbo abre toda la lista.
+        if lista and puede_heredar and verbo_lista and not _VERBO_PIEZA.match(frase) and not es_solo_mano(frase):
+            frase = f'{verbo_lista} {frase}'.strip()
+        titulo = _titulo_de_faena_pedido(frase)
+        abierto = _VERBO_PIEZA.match(frase)
+        if abierto:
+            verbo_lista = frase[:abierto.start(1)].strip()
         if es_solo_mano(frase) or es_solo_mano(titulo):
             mano.append(titulo)
             continue
@@ -287,11 +382,59 @@ def interpretar_pedido_taller(texto: str) -> dict[str, list[str]]:
                 if not any(misma_pieza(pieza, previa) for previa in piezas):
                     piezas.append(pieza)
             continue
+        if lista and _FILTRO_HABITACULO_RE.match(frase):
+            # "y filtro de aire" ya se partió de la faena anterior. Sin verbo
+            # quedaba solo como repuesto y el taller no veía la mano de obra.
+            mano.append(_titulo(f'Cambio de {frase}'))
+            if not any(misma_pieza(titulo, previa) for previa in piezas):
+                piezas.append(titulo)
+            continue
         if lista:
             piezas.append(titulo)
             continue
         mano.append(titulo)
-    return {'mano_obra': mano, 'repuestos': piezas, 'conjuntas': conjuntas}
+    return {
+        'mano_obra': _sin_rotulo_generico(_dedupe_faenas(mano)),
+        'repuestos': piezas,
+        'conjuntas': conjuntas,
+    }
+
+
+def _misma_faena(a: str, b: str) -> bool:
+    """El mismo trabajo aunque uno diga mantención y el otro cambio.
+
+    El filtro de aire no es el de aceite. Bujías y bobinas juntas no se
+    tragan un cambio de bujías pedido aparte.
+    """
+    ta = _tokens_distintivos(a)
+    tb = _tokens_distintivos(b)
+    if not ta or not tb:
+        return False
+    if ('aire' in ta) != ('aire' in tb):
+        return False
+    if ('polen' in ta) != ('polen' in tb):
+        return False
+    if ta == tb:
+        return True
+    menor, mayor = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
+    if not menor <= mayor:
+        return False
+    extra = mayor - menor
+    if extra & {'bujia', 'bobina', 'bateria', 'pastilla', 'disco', 'amortiguador', 'correa'}:
+        return False
+    if menor <= {'filtro', 'freno'} and extra:
+        return False
+    return True
+
+
+def _dedupe_faenas(nombres: list[str]) -> list[str]:
+    """Una línea por trabajo. La primera redacción se queda; la repetición no."""
+    out: list[str] = []
+    for nombre in nombres:
+        if any(_misma_faena(nombre, previa) for previa in out):
+            continue
+        out.append(nombre)
+    return out
 
 
 def _verbo(texto: str) -> str:
@@ -335,41 +478,178 @@ def _monto(valor) -> int:
         return 0
 
 
-def _lineas_mano(nombres: list[str], lineas_in: list[dict], mano_obra: int) -> tuple[list[dict], int]:
+# Sin tarifa del taller y sin faenas cotizadas por el modelo, una hora de taller.
+_HORA_TALLER_FALLBACK = 15_000
+
+
+def _mediana(valores: list[int]) -> int:
+    ordered = sorted(v for v in valores if v > 0)
+    if not ordered:
+        return 0
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return int(round((ordered[mid - 1] + ordered[mid]) / 2))
+
+
+def _minutos_faena(nombre: str) -> int:
+    from mecanimovilapp.apps.agente_ia.services.duracion_trabajo import duracion_familia_desde_texto
+    from mecanimovilapp.apps.usuarios.services.disponibilidad_proveedor import (
+        DURACION_DEFAULT_MINUTOS,
+    )
+
+    return duracion_familia_desde_texto(nombre) or DURACION_DEFAULT_MINUTOS
+
+
+def _tarifa_hora_taller(taller) -> int:
+    """La hora configurada del taller, si existe. Cero si no está."""
+    if taller is None:
+        return 0
+    fuentes = [taller]
+    config = getattr(taller, 'agente_config', None)
+    if config is not None:
+        fuentes.append(config)
+    for fuente in fuentes:
+        for campo in ('tarifa_hora_clp', 'valor_hora_clp', 'precio_hora_clp'):
+            try:
+                valor = int(getattr(fuente, campo, 0) or 0)
+            except (TypeError, ValueError):
+                valor = 0
+            if valor > 0:
+                return valor
+    return 0
+
+
+def _tarifa_servicio(taller, nombre: str, *, marca: str, modelo: str, tipo_motor: str) -> int:
+    if taller is None or not getattr(taller, 'pk', None):
+        return 0
+    try:
+        from mecanimovilapp.apps.ordenes.services.catalogo_pricing import (
+            buscar_oferta_exacta,
+            precio_publico_oferta,
+        )
+
+        oferta = buscar_oferta_exacta(
+            taller=taller,
+            servicio_nombre=nombre,
+            marca=marca,
+            modelo=modelo,
+            tipo_motor=tipo_motor,
+        )
+        if oferta is None:
+            return 0
+        precio, _ = precio_publico_oferta(oferta, con_repuestos=False)
+        return precio if precio > 0 else 0
+    except Exception:
+        return 0
+
+
+def completar_montos_mano(
+    lineas: list[dict],
+    *,
+    taller=None,
+    marca: str = '',
+    modelo: str = '',
+    tipo_motor: str = '',
+) -> tuple[list[dict], int]:
+    """Cada faena pedida cobra. La suma manda; un total del modelo no la recorta.
+
+    Orden: tarifa del servicio, hora configurada × horas estándar, estimado del
+    modelo para esa faena, y si el modelo no la cotizó, las horas estándar a la
+    mediana de lo que sí cotizó (o $15.000/h si no cotizó ninguna).
+    """
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.mano_obra_lineas import (
+        monto_linea_mo,
+    )
+
+    hora = _tarifa_hora_taller(taller)
+    preparados: list[tuple[dict, int, int, bool]] = []
+    tarifas_hora_modelo: list[int] = []
+    for lin in lineas or []:
+        if not isinstance(lin, dict):
+            continue
+        row = dict(lin)
+        nombre = str(row.get('nombre') or '').strip()
+        minutos = _minutos_faena(nombre) if nombre else 60
+        actual = monto_linea_mo(row)
+        desde_catalogo = bool(row.get('precio_desde_catalogo')) and actual > 0
+        tarifa = 0 if desde_catalogo else _tarifa_servicio(
+            taller, nombre, marca=marca, modelo=modelo, tipo_motor=tipo_motor,
+        )
+        if desde_catalogo:
+            monto = actual
+            faltaba = False
+        elif tarifa > 0:
+            monto = tarifa
+            faltaba = False
+        elif hora > 0:
+            monto = max(1, int(round(hora * minutos / 60)))
+            faltaba = False
+        elif actual > 0:
+            monto = actual
+            faltaba = False
+            if minutos > 0:
+                tarifas_hora_modelo.append(int(round(actual * 60 / minutos)))
+        else:
+            monto = 0
+            faltaba = True
+        preparados.append((row, monto, minutos, faltaba))
+
+    hora_recalc = _mediana(tarifas_hora_modelo) or _HORA_TALLER_FALLBACK
+    out: list[dict] = []
+    for row, monto, minutos, faltaba in preparados:
+        if faltaba:
+            monto = max(1, int(round(hora_recalc * minutos / 60)))
+        row['monto_clp'] = monto
+        row['precio_mano_obra_clp'] = monto
+        out.append(row)
+    return out, sum(int(lin['monto_clp']) for lin in out)
+
+
+def _lineas_mano(
+    nombres: list[str],
+    lineas_in: list[dict],
+    mano_obra: int,
+    *,
+    taller=None,
+    marca: str = '',
+    modelo: str = '',
+    tipo_motor: str = '',
+) -> tuple[list[dict], int]:
     if not nombres:
         if lineas_in:
-            return lineas_in, mano_obra
+            lineas, total = completar_montos_mano(
+                lineas_in, taller=taller, marca=marca, modelo=modelo, tipo_motor=tipo_motor,
+            )
+            return lineas, total or int(mano_obra or 0)
         return [{'nombre': 'Mano de obra', 'monto_clp': max(0, int(mano_obra or 0))}], mano_obra
-    if not lineas_in:
-        if len(nombres) == 1:
-            return [{'nombre': nombres[0], 'monto_clp': max(0, int(mano_obra or 0))}], mano_obra
-        return [{'nombre': nombre, 'monto_clp': 0} for nombre in nombres], mano_obra
+    if not lineas_in and len(nombres) == 1:
+        return [{'nombre': nombres[0], 'monto_clp': max(0, int(mano_obra or 0))}], mano_obra
 
     usadas: set[int] = set()
     out: list[dict] = []
     for nombre in nombres:
         monto = 0
-        for i, lin in enumerate(lineas_in):
+        ya_sumadas: list[str] = []
+        for i, lin in enumerate(lineas_in or []):
             if i in usadas:
                 continue
-            if not _linea_de_faena(nombre, str(lin.get('nombre') or '')):
+            linea_nombre = str(lin.get('nombre') or '')
+            if not _linea_de_faena(nombre, linea_nombre):
                 continue
-            monto += _monto(lin.get('monto_clp'))
+            # La misma faena dicha dos veces (mantención y cambio) no se suma.
+            # Bujías y bobinas sí: son piezas distintas de un solo trabajo.
+            if any(_misma_faena(linea_nombre, previa) for previa in ya_sumadas):
+                usadas.add(i)
+                continue
+            monto += _monto(lin.get('monto_clp') or lin.get('precio_mano_obra_clp'))
             usadas.add(i)
+            ya_sumadas.append(linea_nombre)
         out.append({'nombre': nombre, 'monto_clp': monto})
-    suma = sum(lin['monto_clp'] for lin in out)
-    total = int(mano_obra or 0)
-    if suma > 0 and total > suma:
-        ceros = [i for i, lin in enumerate(out) if lin['monto_clp'] == 0]
-        if ceros:
-            resto = total - suma
-            base, extra = divmod(resto, len(ceros))
-            for j, i in enumerate(ceros):
-                out[i]['monto_clp'] = base + (extra if j == 0 else 0)
-            suma = total
-    if suma > 0:
-        mano_obra = suma
-    return out, int(mano_obra or 0)
+    lineas, total = completar_montos_mano(
+        out, taller=taller, marca=marca, modelo=modelo, tipo_motor=tipo_motor,
+    )
+    return lineas, total
 
 
 def _es_objeto_de_servicio(nombre: str, objetos: list[str]) -> bool:
@@ -388,6 +668,10 @@ def aplicar_lectura_taller(
     mano_obra: int,
     *,
     pedido: str,
+    taller=None,
+    marca: str = '',
+    modelo: str = '',
+    tipo_motor: str = '',
 ) -> tuple[list[dict], list[dict], int]:
     """Corrige nombres de pieza y arma la mano de obra que el taller escribió."""
     interp = interpretar_pedido_taller(pedido)
@@ -438,7 +722,15 @@ def aplicar_lectura_taller(
         })
 
     lineas_in = [lin for lin in (servicios_lineas or []) if isinstance(lin, dict)]
-    lineas, mano_obra = _lineas_mano(interp['mano_obra'], lineas_in, int(mano_obra or 0))
+    lineas, mano_obra = _lineas_mano(
+        interp['mano_obra'],
+        lineas_in,
+        int(mano_obra or 0),
+        taller=taller,
+        marca=marca,
+        modelo=modelo,
+        tipo_motor=tipo_motor,
+    )
     return limpios[:12], lineas, int(mano_obra or 0)
 
 

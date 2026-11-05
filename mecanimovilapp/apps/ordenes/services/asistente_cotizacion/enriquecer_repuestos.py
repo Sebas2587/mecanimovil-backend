@@ -22,6 +22,7 @@ catálogo/historial del taller quedan marcados precio_estimado=True.
 """
 from __future__ import annotations
 
+import copy
 import logging
 import re
 import statistics
@@ -43,17 +44,25 @@ _MARCAS_REPUESTO_CONOCIDAS = (
     'Wix', 'Fram', 'Purflux', 'Hengst', 'Corteco', 'Elring', 'Victor Reinz',
     'ATE', 'Zimmermann', 'Pilenga', 'SNR', 'Ruville', 'Optimal',
     'Magneti Marelli', 'Champion', 'Mobis', 'Motorcraft', 'Febest', 'Nakata',
-    'Cofap', 'Mando', 'TISS', 'Walker', 'CTR',
+    'Cofap', 'Mando', 'TISS', 'Walker', 'CTR', 'Liqui Moly',
 )
 
+# Hasta tres palabras: "Marca: Liqui Moly" y la tabla "Marca | Liqui Moly".
+# Un solo token ("Liqui", "Stp") no es la marca.
 _MARCA_ETIQUETA_RE = re.compile(
-    r'(?:marca(?!\s*veh[ií]culo)(?:\s+del\s+producto)?|fabricante|brand)\s*[:\-]\s*'
-    r'([A-Za-z][A-Za-z0-9.\-]{1,39})',
+    r'(?:marca(?!\s*veh[ií]culo)(?:\s+del\s+producto)?|fabricante|brand)\s*[:|\-]\s*'
+    r'([A-Za-z][A-Za-z0-9.\-]{1,39}(?:\s+[A-Za-z][A-Za-z0-9.\-]{1,39}){0,2})',
     re.I,
 )
 _MARCA_ETIQUETA_BASURA = frozenset({
     'image', 'slider', 'logo', 'icon', 'foto', 'photo', 'vehiculo', 'auto',
     'producto', 'repuesto', 'original', 'oem', 'generico',
+})
+# La etiqueta sigue con el campo de al lado: "Marca: Stp Origen: China".
+_CAMPOS_FICHA_MARCA = frozenset({
+    'origen', 'tipo', 'calidad', 'precio', 'pais', 'procedencia', 'china',
+    'alemania', 'japon', 'japan', 'original', 'alternativo', 'oem', 'sintetico',
+    'semisintetico', 'mineral',
 })
 
 # Placeholders del maestro / JSON que NUNCA deben mostrarse como marca verificada.
@@ -116,12 +125,27 @@ def nombre_repuesto_buscable(nombre: str | None) -> bool:
     return bool(n) and n not in _NOMBRES_PLACEHOLDER
 
 
-def linea_necesita_busqueda_web(rep: Any) -> bool:
-    """True si falta un precio de ficha/tienda. El rango de Gemini no cuenta.
+def _linea_tiene_ficha_tienda(rep: dict) -> bool:
+    """True si el monto ya viene de una casa. Un precio asumido sin tienda no."""
+    fuente = str(rep.get('fuente_marketplace') or '').strip().lower()
+    unit = _to_int_clp(rep.get('precio_unitario_clp'))
+    if fuente in ('web', 'ml', 'mercadolibre'):
+        if unit > 0:
+            return True
+        if _to_int_clp(rep.get('precio_min_clp')) > 0 or _to_int_clp(rep.get('precio_max_clp')) > 0:
+            return True
+    if str(rep.get('certeza') or '') == 'confirmado' and unit > 0:
+        return True
+    return False
 
-    Gemini deja min/max y unitario 0 a propósito; eso no es una búsqueda previa.
-    No recotiza catálogo/historial/proveedor ni una línea que ya tiene unitario
-    o una banda con fuente de tienda.
+
+def linea_necesita_busqueda_web(rep: Any) -> bool:
+    """True si falta una ficha de tienda.
+
+    Un unitario sin tienda ($55.000, certeza asumido o sin_precio) sigue
+    buscándose: si no aparece ficha, ese monto se conserva. Catálogo,
+    historial, un precio confirmado y una banda que ya viene de una tienda
+    no se recotizan.
     """
     if not isinstance(rep, dict):
         return False
@@ -130,13 +154,54 @@ def linea_necesita_busqueda_web(rep: Any) -> bool:
     fuente = str(rep.get('fuente_marketplace') or '').strip().lower()
     if fuente in ('catalogo', 'historial', 'proveedor'):
         return False
-    if _to_int_clp(rep.get('precio_unitario_clp')) > 0:
-        return False
-    if fuente in ('web', 'ml', 'mercadolibre') and (
-        _to_int_clp(rep.get('precio_min_clp')) > 0 or _to_int_clp(rep.get('precio_max_clp')) > 0
-    ):
+    if _linea_tiene_ficha_tienda(rep):
         return False
     return True
+
+
+def anotar_busqueda_sin_ficha(
+    rep: dict,
+    nota: dict | None,
+    *,
+    marca: str = '',
+    modelo: str = '',
+    anio: Any = None,
+    tipo_motor: str = '',
+    cilindraje: Any = None,
+) -> dict:
+    """Deja la nota corta del mecánico. No borra el unitario ni la banda de la IA."""
+    crudo = str((nota or {}).get('detalle') or '').strip()
+    descarte = str((nota or {}).get('descarte') or '').strip()
+    if crudo and not (_es_nota_mecanico(crudo) and len(crudo) <= _NOTA_MAX):
+        logger.info(
+            'nota_busqueda_tecnica linea=%s detalle=%s',
+            str(rep.get('nombre') or '')[:80],
+            crudo[:500],
+        )
+        if not descarte:
+            descarte = _descarte_desde_texto(crudo)
+        crudo = ''
+    if not crudo:
+        crudo = nota_sin_tienda(
+            modelo=modelo,
+            anio=anio,
+            tipo_motor=tipo_motor,
+            cilindraje=cilindraje,
+            descarte=descarte,
+        )
+    detalle = recortar_nota(crudo)
+    if detalle:
+        rep['motivo_seleccion'] = detalle
+        # La descripción de la pieza ("Juego completo…") no es la búsqueda.
+        if not str(rep.get('comentario') or '').strip() or nota_de_busqueda(rep.get('comentario')):
+            rep['comentario'] = detalle
+    if _to_int_clp(rep.get('precio_unitario_clp')) > 0:
+        return rep
+    if _to_int_clp(rep.get('precio_min_clp')) > 0 or _to_int_clp(rep.get('precio_max_clp')) > 0:
+        return rep
+    rep['certeza'] = 'sin_precio'
+    rep['motivo_sin_precio'] = str((nota or {}).get('motivo') or 'sin_ficha')[:40]
+    return rep
 
 
 def limpiar_precio_para_nueva_busqueda(rep: dict) -> dict:
@@ -165,17 +230,56 @@ def limpiar_precio_para_nueva_busqueda(rep: dict) -> dict:
 
 def _inferir_marca_desde_nombre(nombre: str) -> str:
     raw = nombre or ''
-    for marca in _MARCAS_REPUESTO_CONOCIDAS:
+    # La más larga primero: "Liqui Moly" gana sobre un token suelto.
+    for marca in sorted(_MARCAS_REPUESTO_CONOCIDAS, key=len, reverse=True):
         if re.search(rf'\b{re.escape(marca)}\b', raw, flags=re.IGNORECASE):
             return marca if marca != 'Luk' else 'LuK'
     return ''
 
 
+def _marca_canonica(marca: str | None, texto: str = '') -> str:
+    """Marca de la pieza con su nombre completo, o '' si el token está cortado.
+
+    'Liqui' junto a 'Liqui Moly' queda 'Liqui Moly'. 'Stp' o 'Liqui' solos
+    no se pegan al nombre de la línea. NGK, ATE y el resto de la lista
+    conservan su grafía. Una marca de varias palabras que no está en la
+    lista (Repstock no entra: es una sola palabra larga) se conserva.
+    """
+    base = _marca_repuesto_valida(marca)
+    blob = f'{texto or ""} {base}'.strip()
+    if not blob:
+        return ''
+    for conocida in sorted(_MARCAS_REPUESTO_CONOCIDAS, key=len, reverse=True):
+        if not re.search(rf'\b{re.escape(conocida)}\b', blob, flags=re.IGNORECASE):
+            continue
+        canon = 'LuK' if conocida == 'Luk' else conocida
+        if not base:
+            return canon
+        nb, nk = _norm(base), _norm(conocida)
+        if nk == nb or nk.startswith(f'{nb} ') or nb.startswith(nk):
+            return canon
+    if not base:
+        return ''
+    if len(base.split()) == 1:
+        nb = _norm(base)
+        conocidas_norm = {_norm(item) for item in _MARCAS_REPUESTO_CONOCIDAS}
+        if any(_norm(item).startswith(f'{nb} ') for item in _MARCAS_REPUESTO_CONOCIDAS):
+            return ''
+        if len(nb) <= 4 and nb not in conocidas_norm:
+            return ''
+    return base
+
+
 def _marca_desde_etiqueta(texto: str, marca_vehiculo: str = '') -> str:
-    """Lee 'Marca: Bosch' / 'Fabricante: NGK' y descarta la marca del auto."""
+    """Lee 'Marca: Bosch' / 'Marca | Liqui Moly' y descarta la marca del auto."""
     veh = _norm(marca_vehiculo)
     for match in _MARCA_ETIQUETA_RE.finditer(texto or ''):
-        cand = _marca_repuesto_valida(match.group(1))
+        palabras = []
+        for palabra in match.group(1).split():
+            if palabras and _norm(palabra) in _CAMPOS_FICHA_MARCA:
+                break
+            palabras.append(palabra)
+        cand = _marca_canonica(' '.join(palabras), texto)
         if not cand or _norm(cand) in _MARCA_ETIQUETA_BASURA:
             continue
         if veh and (_norm(cand) == veh or veh in _norm(cand)):
@@ -184,14 +288,15 @@ def _marca_desde_etiqueta(texto: str, marca_vehiculo: str = '') -> str:
     return ''
 
 
-def _nombre_con_marca(nombre: str, marca: str | None) -> str:
+def _nombre_con_marca(nombre: str, marca: str | None, texto: str = '') -> str:
     """Incluye la marca en el nombre visible al cliente si aún no está.
 
-    'Discos de freno delanteros' + 'Repstock' → 'Discos de freno delanteros Repstock'
-    No duplica si el nombre ya contiene la marca (case-insensitive).
+    'Discos de freno delanteros' + 'Repstock' → 'Discos de freno delanteros Repstock'.
+    'Aceite de motor' + 'Liqui' no agrega el token cortado. Si el texto de la
+    ficha dice 'Liqui Moly', el nombre queda con la marca completa.
     """
     base = str(nombre or '').strip()
-    marca_ok = _marca_repuesto_valida(marca)
+    marca_ok = _marca_canonica(marca, f'{texto} {marca or ""}')
     if not base:
         return marca_ok
     if not marca_ok:
@@ -293,56 +398,1142 @@ def _hit(
     return out
 
 
-def _validar_tipo_parte(nombre_linea: str, titulo_ficha: str) -> bool:
-    """Validate that the listing title matches the part type.
+def _validar_tipo_parte(nombre_repuesto: str, producto_matched: str) -> bool:
+    """Rechaza mismatches obvios por tipo de parte incompatible.
     
-    Uses _ficha_cubre_pieza logic and requires the part-type keyword to appear
-    in the listing title. Rejects mismatches like 'Aceite de motor' matching
-    'Enfriador aceite Fiat Bravo 1.4' (oil cooler != motor oil).
+    Evita que "aceite de motor" matche con "enfriador de aceite" (oil cooler),
+    o "pastillas" con "discos", etc.
+    
+    Returns:
+        True si el match es válido, False si debe rechazarse
     """
-    from .busqueda_web_repuestos import _ficha_cubre_pieza
+    rep_norm = _norm(nombre_repuesto)
+    prod_norm = _norm(producto_matched)
     
-    # First check: does the listing cover the part type at all?
-    if not _ficha_cubre_pieza(nombre_linea, titulo_ficha):
+    # Lógica especial para aceite vs filtro de aceite: son mutuamente exclusivos
+    rep_tiene_filtro = 'filtro' in rep_norm
+    prod_tiene_filtro = 'filtro' in prod_norm
+    rep_tiene_aceite = 'aceite' in rep_norm
+    prod_tiene_aceite = 'aceite' in prod_norm
+    
+    # Caso 1: Si repuesto es "aceite" (sin filtro), NO debe matchear con producto "filtro de aceite"
+    if rep_tiene_aceite and not rep_tiene_filtro:
+        if prod_tiene_filtro:
+            return False  # "aceite de motor" NO matcha "filtro de aceite"
+    
+    # Caso 2: Si repuesto es "filtro de aceite", NO debe matchear con producto "aceite" (sin filtro)
+    if rep_tiene_filtro and rep_tiene_aceite:
+        if prod_tiene_aceite and not prod_tiene_filtro:
+            return False  # "filtro de aceite" NO matcha "aceite sintético"
+    
+    # Lógica especial para otros filtros: deben coincidir en tipo
+    if 'filtro' in rep_norm or 'filtro' in prod_norm:
+        tipos_filtro_rep = set()
+        tipos_filtro_prod = set()
+        
+        for tipo in ['aceite', 'aire', 'combustible', 'polen', 'cabina', 'gasolina', 'diesel', 'particulas']:
+            if tipo in rep_norm:
+                tipos_filtro_rep.add(tipo)
+            if tipo in prod_norm:
+                tipos_filtro_prod.add(tipo)
+        
+        # Si ambos mencionan filtro y tienen tipos, deben compartir al menos uno
+        if tipos_filtro_rep and tipos_filtro_prod:
+            if not tipos_filtro_rep & tipos_filtro_prod:
+                return False
+    
+    # "Bomba de aceite", "cárter", "enfriador": el sustantivo es otra pieza.
+    # La viscosidad y el envase se exigen en _ficha_es_aceite_de_motor, no aquí:
+    # un "Aceite 5W40" sin litros no corta la escalera, se sigue buscando el bidón.
+    if _es_linea_aceite_motor(nombre_repuesto) and prod_norm:
+        if _titulo_es_otra_pieza_de_aceite(producto_matched):
+            return False
+
+    # Pares mutuamente exclusivos: A no puede matchear con B, ni B con A
+    exclusiones_bidireccionales = [
+        # Aceites
+        (['aceite motor', 'aceite'], ['enfriador', 'cooler', 'radiador', 'deposito']),
+        
+        # Frenos
+        (['pastilla'], ['disco', 'tambor', 'campana', 'caliper', 'mordaza']),
+        (['disco freno'], ['pastilla', 'zapata', 'tambor', 'caliper']),
+        (['zapata'], ['disco', 'pastilla', 'caliper']),
+        
+        # Encendido
+        (['bujia'], ['bobina', 'cable', 'modulo encendido']),
+        (['bobina encendido', 'bobina'], ['bujia', 'cable']),
+        
+        # Suspensión
+        (['amortiguador'], ['resorte', 'espiral', 'barra estabilizadora']),
+        (['resorte', 'espiral'], ['amortiguador', 'barra']),
+        
+        # Embrague
+        (['kit embrague'], ['volante', 'bimasa', 'dual mass', 'flywheel']),
+        (['piola embrague', 'cable embrague', 'guaya embrague'], ['kit embrague', 'disco embrague', 'prensa']),
+        
+        # Motor
+        (['correa distribucion', 'kit distribucion'], ['tensor', 'bomba agua', 'polea']),
+        (['tensor'], ['correa', 'polea', 'bomba']),
+    ]
+    
+    # Verificar exclusiones en ambas direcciones
+    for grupo_a, grupo_b in exclusiones_bidireccionales:
+        # Si repuesto tiene términos de grupo A, producto NO debe tener términos de grupo B
+        if any(termino in rep_norm for termino in grupo_a):
+            if any(prohibido in prod_norm for prohibido in grupo_b):
+                return False
+        
+        # Y viceversa: si repuesto tiene términos de grupo B, producto NO debe tener términos de grupo A
+        if any(termino in rep_norm for termino in grupo_b):
+            if any(prohibido in prod_norm for prohibido in grupo_a):
+                return False
+    
+    return True
+
+
+_OTRA_PIEZA_DEL_ACEITE = (
+    'bomba', 'enfriador', 'cooler', 'carter', 'tapa', 'tapon', 'sensor',
+    'radiador', 'filtro', 'junta', 'reten', 'deposito', 'varilla', 'sello',
+    'empaque', 'valvula', 'manguera', 'intercooler', 'ciguenal', 'multiple',
+    'refrigerante', 'anticongelante', 'compresor', 'condensador',
+)
+
+
+def _es_linea_aceite_motor(nombre: str) -> bool:
+    """Lubricante del motor. No el filtro, la bomba ni el aceite de caja."""
+    n = _norm(nombre)
+    if 'aceite' not in n or 'filtro' in n:
         return False
-    
-    # Second check: does the title contain the part-type keyword?
-    linea_norm = _norm(nombre_linea)
-    titulo_norm = _norm(titulo_ficha)
-    
-    if not linea_norm or not titulo_norm:
+    if any(k in n for k in (
+        'caja', 'transmision', 'diferencial', 'direccion', 'hidraulic', 'bomba',
+    )):
+        return False
+    return True
+
+
+def _es_bravo_14_tjet(
+    modelo: str = '',
+    tipo_motor: str = '',
+    cilindraje: str = '',
+) -> bool:
+    """Bravo II 1.4 T-Jet. Un Bravo sin T-Jet, o un 1.6, no usa esta capacidad."""
+    from .busqueda_web_repuestos import _bravo_tjet
+
+    if not _bravo_tjet(modelo, tipo_motor):
+        return False
+    cil = _norm(cilindraje)
+    if not cil:
         return True
-    
-    tokens = linea_norm.split()
-    if not tokens:
+    return '1 4' in f' {cil} ' or cil in ('14', '1400', '1400cc')
+
+
+def cantidad_aceite_segun_motor(
+    nombre: str,
+    *,
+    marca: str = '',
+    modelo: str = '',
+    cilindraje: str = '',
+    tipo_motor: str = '',
+) -> int | None:
+    """Litros de servicio de este motor. None si no hay ficha de capacidad.
+
+    Fiat Bravo 1.4 T-Jet: el cárter con filtro lleva unos 3,5 L y el
+    llenado de taller es 4 L. El envase de la ficha (1 L, 4 L, 5 L) no entra.
+    """
+    del marca
+    if not _es_linea_aceite_motor(nombre):
+        return None
+    if not _es_bravo_14_tjet(modelo, tipo_motor, cilindraje):
+        return None
+    return 4
+
+
+def aplicar_cantidad_aceite_motor(
+    rep: dict[str, Any],
+    *,
+    marca: str = '',
+    modelo: str = '',
+    cilindraje: str = '',
+    tipo_motor: str = '',
+) -> dict[str, Any]:
+    """Deja la cantidad del aceite en la capacidad del motor, no en el bidón."""
+    if not isinstance(rep, dict):
+        return rep
+    litros = cantidad_aceite_segun_motor(
+        str(rep.get('nombre') or ''),
+        marca=marca,
+        modelo=modelo,
+        cilindraje=cilindraje,
+        tipo_motor=tipo_motor,
+    )
+    if litros is None:
+        return rep
+    rep['cantidad'] = litros
+    return rep
+
+
+def _titulo_es_otra_pieza_de_aceite(titulo: str) -> bool:
+    n = _norm(titulo)
+    if not n:
+        return False
+    return any(
+        re.search(rf'\b{re.escape(pieza)}\b', n)
+        for pieza in _OTRA_PIEZA_DEL_ACEITE
+    )
+
+
+def _ficha_es_aceite_de_motor(titulo: str) -> bool:
+    """True solo si el título es el lubricante: viscosidad o 'aceite motor', y envase."""
+    n = _norm(titulo)
+    if not n:
         return True
-    
-    # Extract part-type keyword (first significant word > 3 chars, or second if first is short)
-    keyword = ''
-    for token in tokens:
-        if len(token) > 3:
-            keyword = token
-            break
-    if not keyword and tokens:
-        keyword = tokens[0]
-    
-    if not keyword:
+    if _titulo_es_otra_pieza_de_aceite(titulo):
+        return False
+    viscosidad = re.search(r'\b\d{1,2}\s*w\s*\d{2}\b', n)
+    dice_aceite_motor = 'aceite' in n and 'motor' in n
+    if not (viscosidad or dice_aceite_motor):
+        return False
+    from .busqueda_web_repuestos import litros_envase
+
+    return litros_envase(titulo) > 0
+
+
+_NOTA_MAX = 160
+
+_NOTA_COLA = (
+    'Precio estimado. No pudimos consultar tiendas; confirma precio y tienda.'
+)
+
+
+def recortar_nota(texto: str, maximo: int = _NOTA_MAX) -> str:
+    """Corta en un espacio y deja la frase en una sola línea."""
+    t = re.sub(r'\s+', ' ', str(texto or '')).strip()
+    if len(t) <= maximo:
+        return t
+    corte = t[:maximo].rsplit(' ', 1)[0].rstrip(' ,;.')
+    if len(corte) < 40:
+        corte = t[: maximo - 1].rstrip(' ,;.')
+    if not corte.endswith('.'):
+        if len(corte) + 1 <= maximo:
+            corte += '.'
+        else:
+            corte = corte[: maximo - 1].rstrip(' ,;.') + '.'
+    return corte
+
+
+def _titulo_visible(palabra: str) -> str:
+    p = str(palabra or '').strip(' .,')
+    if not p:
+        return ''
+    if p.isupper() and len(p) <= 3:
+        return p
+    if p.isupper() or p.islower():
+        return p.capitalize()
+    return p
+
+
+def _tokens_modelo_visibles(modelo: str) -> list[str]:
+    raw = re.split(r'\s+', str(modelo or '').strip())
+    out: list[str] = []
+    i = 0
+    while i < len(raw):
+        tok = raw[i].strip('.,')
+        low = tok.lower()
+        if low in ('t-jet', 'tjet') or low.replace('-', '') == 'tjet':
+            i += 1
+            continue
+        if low == 't' and i + 1 < len(raw) and raw[i + 1].lower().strip('.,') == 'jet':
+            i += 2
+            continue
+        if re.fullmatch(r'\d+[.,]\d+', tok) or re.fullmatch(r'\d{3,4}', tok):
+            i += 1
+            continue
+        visible = _titulo_visible(tok)
+        if visible:
+            out.append(visible)
+        i += 1
+    return out
+
+
+def etiqueta_auto(
+    *,
+    marca: str = '',
+    modelo: str = '',
+    anio: Any = None,
+    tipo_motor: str = '',
+    cilindraje: Any = None,
+    incluir_marca: bool = False,
+    incluir_anio: bool = False,
+) -> str:
+    """Cómo nombra el taller al auto: 'Fiat Bravo 1.4 T-Jet' o 'Bravo 1.4 T-Jet 2010'."""
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+        _anio_vehiculo_int,
+        _auto_es_tjet,
+        _cilindraje_litros,
+    )
+
+    partes: list[str] = []
+    if incluir_marca:
+        marca_visible = _titulo_visible(marca)
+        if marca_visible:
+            partes.append(marca_visible)
+    partes.extend(_tokens_modelo_visibles(modelo))
+    litros = _cilindraje_litros(cilindraje) or _cilindraje_litros(modelo)
+    if litros and litros not in partes:
+        partes.append(litros)
+    if _auto_es_tjet(modelo, tipo_motor) and 'T-Jet' not in partes:
+        partes.append('T-Jet')
+    if incluir_anio:
+        year = _anio_vehiculo_int(anio)
+        if year:
+            partes.append(str(year))
+    return ' '.join(partes)
+
+
+def _base_sin_tienda(auto: str) -> str:
+    auto = str(auto or '').strip()
+    if auto:
+        return (
+            f'Precio estimado. No encontramos este repuesto para tu auto ({auto}); '
+            'confirma precio y tienda.'
+        )
+    return (
+        'Precio estimado. No encontramos este repuesto para tu auto; '
+        'confirma precio y tienda.'
+    )
+
+
+def _clausula_descarte(descarte: str) -> str:
+    texto = re.sub(r'\s+', ' ', str(descarte or '')).strip().rstrip('.')
+    if not texto:
+        return ''
+    return f'{texto}.'
+
+
+def nota_sin_tienda(
+    *,
+    marca: str = '',
+    modelo: str = '',
+    anio: Any = None,
+    tipo_motor: str = '',
+    cilindraje: Any = None,
+    descarte: str = '',
+) -> str:
+    """Sin ficha de tienda. Una frase, y como mucho un porqué genérico."""
+    del marca  # El ejemplo sin tienda nombra el modelo, no la marca.
+    auto = etiqueta_auto(
+        modelo=modelo,
+        anio=anio,
+        tipo_motor=tipo_motor,
+        cilindraje=cilindraje,
+        incluir_marca=False,
+        incluir_anio=True,
+    )
+    clausula = _clausula_descarte(descarte)
+    while True:
+        base = _base_sin_tienda(auto)
+        if clausula and len(base) + 1 + len(clausula) <= _NOTA_MAX:
+            return f'{base} {clausula}'
+        if len(base) <= _NOTA_MAX:
+            return base
+        if not auto:
+            return recortar_nota(base)
+        auto = auto.rsplit(' ', 1)[0]
+
+
+def nombre_tienda_visible(nombre: str) -> str:
+    """Nombre de la casa, no el dominio pegado. «Comercialramirezspa» → «Comercial Ramírez»."""
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+        _canon_nombre_tienda,
+    )
+
+    return _canon_nombre_tienda(nombre)
+
+
+def nota_con_tienda(
+    tienda: str,
+    *,
+    marca: str = '',
+    modelo: str = '',
+    anio: Any = None,
+    tipo_motor: str = '',
+    cilindraje: Any = None,
+) -> str:
+    """Con ficha: la casa, el auto y que es el mejor precio hallado."""
+    del anio
+    casa = nombre_tienda_visible(tienda) or re.sub(r'\s+', ' ', str(tienda or '')).strip()
+    auto = etiqueta_auto(
+        marca=marca,
+        modelo=modelo,
+        tipo_motor=tipo_motor,
+        cilindraje=cilindraje,
+        incluir_marca=True,
+        incluir_anio=False,
+    )
+    while auto and casa:
+        texto = f'{casa}: compatible con {auto}, mejor precio encontrado.'
+        if len(texto) <= _NOTA_MAX:
+            return texto
+        auto = auto.rsplit(' ', 1)[0]
+    if casa:
+        return recortar_nota(f'{casa}: mejor precio encontrado.')
+    return 'Mejor precio encontrado.'
+
+
+def _formatear_pesos(monto: int) -> str:
+    return '$' + f'{int(monto):,}'.replace(',', '.')
+
+
+def nota_oferta(tienda: str, precio_normal: int) -> str:
+    """El precio cobrado está bajo el de lista."""
+    casa = nombre_tienda_visible(tienda) or re.sub(r'\s+', ' ', str(tienda or '')).strip() or 'Tienda'
+    return recortar_nota(
+        f'{casa}, precio en oferta (normal {_formatear_pesos(precio_normal)}).'
+    )
+
+
+def nota_cola_caida() -> str:
+    return _NOTA_COLA
+
+
+def _sin_acentos(texto: str) -> str:
+    plano = unicodedata.normalize('NFD', str(texto or '').lower())
+    return ''.join(c for c in plano if unicodedata.category(c) != 'Mn')
+
+
+def _nota_reclama_stock_sin_verificar(texto: str) -> bool:
+    """«Tiene todos… Precio a consultar» afirma stock que nadie verificó."""
+    bajo = _sin_acentos(texto)
+    if 'tiene todos los repuestos' not in bajo:
+        return False
+    return 'de esta cotizacion' not in bajo
+
+
+def _nota_consulta_vieja(texto: str) -> bool:
+    """La frase anterior interpolaba la marca cruda y cerraba en precio a consultar."""
+    bajo = _sin_acentos(texto)
+    if 'precio a consultar' not in bajo or 'especialista' not in bajo:
+        return False
+    return 'consulta disponibilidad y precio' not in bajo
+
+
+def _es_nota_consulta_actual(texto: str) -> bool:
+    bajo = _sin_acentos(texto)
+    return 'consulta disponibilidad y precio' in bajo and 'especialista' in bajo
+
+
+def _referencia_consulta(
+    linea: dict,
+    *,
+    modelo: str = '',
+    anio: Any = None,
+    tipo_motor: str = '',
+    cilindraje: Any = None,
+) -> tuple[str, int]:
+    """Tienda y monto por unidad que pasaron las compuertas. Si no, no hay Referencia."""
+    tienda = nombre_tienda_visible(str(linea.get('referencia_tienda') or ''))
+    try:
+        precio = int(linea.get('precio_referencia_clp') or 0)
+    except (TypeError, ValueError):
+        precio = 0
+    from mecanimovilapp.apps.ordenes.casas_especialistas import es_etiqueta_historial
+
+    # El historial no es una ficha web: no se le aplican las compuertas de modelo.
+    if es_etiqueta_historial(tienda) and precio > 0:
+        return 'historial del taller', precio
+    if not (tienda and precio > 0):
+        casa = nombre_tienda_visible(str(linea.get('casa_repuesto_nombre') or ''))
+        prov = nombre_tienda_visible(str(linea.get('proveedor_nombre') or ''))
+        try:
+            unitario = int(linea.get('precio_unitario_clp') or 0)
+        except (TypeError, ValueError):
+            unitario = 0
+        if prov and prov.lower() != (casa or '').lower() and unitario > 0:
+            tienda, precio = prov, unitario
+    if not tienda or precio <= 0:
+        return '', 0
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+        _monto_banda_por_unidad,
+        monto_por_unidad_citable,
+    )
+
+    nombre = str(linea.get('nombre') or '')
+    try:
+        piso = int(linea.get('precio_min_clp') or 0)
+        techo = int(linea.get('precio_max_clp') or 0)
+        unitario = int(linea.get('precio_unitario_clp') or 0)
+    except (TypeError, ValueError):
+        piso, techo, unitario = 0, 0, 0
+    piso = _monto_banda_por_unidad(nombre, piso, linea.get('cantidad'))
+    techo = _monto_banda_por_unidad(nombre, techo, linea.get('cantidad'))
+    citado = monto_por_unidad_citable(
+        {
+            'title': str(linea.get('nombre_producto') or ''),
+            'content': '',
+            'url': str(linea.get('url_producto') or ''),
+            'ficha_leida': bool(
+                str(linea.get('nombre_producto') or '').strip()
+                or str(linea.get('url_producto') or '').strip()
+            ),
+            'precio_snippet': precio,
+        },
+        nombre=nombre,
+        modelo=modelo,
+        tipo_motor=tipo_motor,
+        banda_min=piso,
+        banda_max=techo,
+        anio=anio,
+        cilindraje=cilindraje,
+        cantidad=linea.get('cantidad'),
+        unitario_linea=unitario,
+    )
+    if citado <= 0:
+        return '', 0
+    return tienda, citado
+
+
+_REFERENCIA_VACIA = {
+    'url_referencia': '',
+    'tienda_referencia': '',
+    'precio_verificado_clp': None,
+}
+
+
+def _url_ficha(valor: Any) -> str:
+    """Una ficha de producto, no la portada del sitio."""
+    from urllib.parse import urlparse
+
+    url = str(valor or '').strip()
+    if not url.startswith(('http://', 'https://')):
+        return ''
+    if not urlparse(url).path.strip('/'):
+        return ''
+    return url[:500]
+
+
+def _urls_ficha(rep: dict) -> list[str]:
+    vistos: list[str] = []
+    for crudo in (rep.get('url_referencia'), rep.get('url_producto')):
+        url = _url_ficha(crudo)
+        if url and url not in vistos:
+            vistos.append(url)
+    for fuente in rep.get('fuentes_detalle') or []:
+        if not isinstance(fuente, dict):
+            continue
+        url = _url_ficha(fuente.get('url'))
+        if url and url not in vistos:
+            vistos.append(url)
+    return vistos
+
+
+def _linea_es_historial(rep: dict) -> bool:
+    from mecanimovilapp.apps.ordenes.casas_especialistas import es_etiqueta_historial
+
+    fuente = str(rep.get('fuente_marketplace') or rep.get('fuente_repuesto') or '').strip().lower()
+    if fuente == 'historial':
         return True
-    
-    # Common synonyms for Chilean market
-    synonyms = {
-        'aceite': ['lubricante', 'oil'],
-        'filtro': ['filter'],
-        'pastilla': ['balata', 'pad', 'pastillas'],
-        'disco': ['rotor', 'discos'],
-        'bujia': ['spark', 'plug', 'bujias'],
-        'correa': ['belt', 'correas'],
-        'amortiguador': ['shock', 'absorber', 'amortiguadores'],
-        'bateria': ['battery', 'baterias'],
+    return any(
+        es_etiqueta_historial(str(rep.get(campo) or ''))
+        for campo in ('casa_repuesto_nombre', 'proveedor_nombre', 'referencia_tienda')
+    )
+
+
+def referencia_de_linea(
+    rep: dict,
+    *,
+    modelo: str = '',
+    anio: Any = None,
+    tipo_motor: str = '',
+    cilindraje: Any = None,
+) -> dict[str, Any]:
+    """Ficha, tienda y monto verificado. Vacío si no hay una página de producto."""
+    if not isinstance(rep, dict) or _linea_es_historial(rep):
+        return dict(_REFERENCIA_VACIA)
+    urls = _urls_ficha(rep)
+    if not urls:
+        return dict(_REFERENCIA_VACIA)
+    from mecanimovilapp.apps.ordenes.casas_especialistas import es_etiqueta_historial
+
+    if rep.get('precio_a_consultar'):
+        tienda, precio = _referencia_consulta(
+            rep,
+            modelo=modelo,
+            anio=anio,
+            tipo_motor=tipo_motor,
+            cilindraje=cilindraje,
+        )
+        if not tienda or precio <= 0 or es_etiqueta_historial(tienda):
+            return dict(_REFERENCIA_VACIA)
+        return {
+            'url_referencia': urls[0],
+            'tienda_referencia': tienda,
+            'precio_verificado_clp': int(precio),
+        }
+    tienda = nombre_tienda_visible(
+        str(rep.get('proveedor_nombre') or rep.get('casa_repuesto_nombre') or ''),
+    )
+    if not tienda or es_etiqueta_historial(tienda):
+        return dict(_REFERENCIA_VACIA)
+    try:
+        precio = int(rep.get('precio_unitario_clp') or 0)
+    except (TypeError, ValueError):
+        precio = 0
+    if precio <= 0:
+        return dict(_REFERENCIA_VACIA)
+    return {
+        'url_referencia': urls[0],
+        'tienda_referencia': tienda,
+        'precio_verificado_clp': precio,
     }
-    
-    keywords_to_check = [keyword] + synonyms.get(keyword, [])
-    return any(kw in titulo_norm for kw in keywords_to_check if len(kw) > 2)
+
+
+def _es_nota_mecanico(texto: str) -> bool:
+    bajo = str(texto or '').strip().lower()
+    return (
+        bajo.startswith('precio estimado')
+        or bajo.startswith('no pudimos consultar')
+        or 'mejor precio encontrado' in bajo
+        or 'precio en oferta' in bajo
+        or 'precio a consultar' in bajo
+        or 'especialista ' in bajo
+        or 'solo en línea' in bajo
+        or 'tiene todos los repuestos' in bajo
+    )
+
+
+def _descarte_desde_texto(texto: str) -> str:
+    """Un solo resumen, si el texto viejo decía por qué se botó lo encontrado."""
+    bajo = str(texto or '').lower()
+    if (
+        'otros años' in bajo
+        or 'otro modelo' in bajo
+        or 'otro motor' in bajo
+        or 'otro año' in bajo
+    ):
+        return 'Lo encontrado era para otro año o modelo.'
+    if 'no es esa pieza' in bajo or 'otra pieza' in bajo:
+        return 'Lo encontrado era otra pieza.'
+    return ''
+
+
+def nota_de_busqueda(texto: str) -> str:
+    """Nota de la búsqueda web, vieja o corta. La descripción de la pieza no lo es."""
+    t = str(texto or '').strip()
+    bajo = t.lower()
+    if (
+        bajo.startswith('se busc')
+        or bajo.startswith('no se pudo consultar')
+        or bajo.startswith('sin ficha de')
+        or _es_nota_mecanico(t)
+    ):
+        return t
+    return ''
+
+
+def nota_visible_con_tienda(
+    rep: dict,
+    motivo_interno: str = '',
+    *,
+    marca: str = '',
+    modelo: str = '',
+    anio: Any = None,
+    tipo_motor: str = '',
+    cilindraje: Any = None,
+) -> str:
+    """La frase de la línea cuando ya hay casa. El motivo interno queda en el log."""
+    tienda = str(
+        rep.get('proveedor_nombre') or rep.get('casa_repuesto_nombre') or ''
+    ).strip()
+    normal = _to_int_clp(rep.get('precio_normal_clp'))
+    if tienda and normal > 0:
+        nota = nota_oferta(tienda, normal)
+    else:
+        nota = nota_con_tienda(
+            tienda,
+            marca=marca,
+            modelo=modelo,
+            tipo_motor=tipo_motor,
+            cilindraje=cilindraje,
+        )
+    interno = str(motivo_interno or '').strip()
+    if interno and interno != nota:
+        logger.info(
+            'nota_tienda linea=%s tienda=%s motivo_interno=%s nota=%s',
+            str(rep.get('nombre') or '')[:80],
+            tienda[:80],
+            interno[:240],
+            nota,
+        )
+    return nota
+
+
+def nota_visible_sin_tienda(
+    rep: dict,
+    *,
+    marca: str = '',
+    modelo: str = '',
+    anio: Any = None,
+    tipo_motor: str = '',
+    cilindraje: Any = None,
+) -> str:
+    """Conserva una nota corta ya escrita. Una nota larga se reemplaza."""
+    previo = nota_de_busqueda(rep.get('comentario')) or nota_de_busqueda(
+        rep.get('motivo_seleccion'),
+    )
+    if previo and _es_nota_mecanico(previo) and len(previo) <= _NOTA_MAX:
+        return previo
+    if previo:
+        logger.info(
+            'nota_busqueda_tecnica linea=%s detalle=%s',
+            str(rep.get('nombre') or '')[:80],
+            previo[:500],
+        )
+    return nota_sin_tienda(
+        modelo=modelo,
+        anio=anio,
+        tipo_motor=tipo_motor,
+        cilindraje=cilindraje,
+        descarte=_descarte_desde_texto(previo),
+    )
+
+
+_FRASES_PROHIBIDAS = (
+    'se buscó',
+    'se busco',
+    'sin ficha de',
+    'cubre otros años',
+    'nombra otro motor',
+    'nombra otro modelo',
+    'única casa con stock',
+    'unica casa con stock',
+    'única casa consultada',
+    'unica casa consultada',
+)
+
+# Identidad de la pieza. Una nota larga no se escribe encima del nombre ni de la URL.
+_CLAVES_INTOCABLES = frozenset({
+    'id',
+    'nombre',
+    'nombre_producto',
+    'url_producto',
+    'imagen_url',
+    'marca_repuesto',
+    'fuente_marketplace',
+    'fuente_repuesto',
+    'calidad',
+    'pais_origen',
+    'unidad_medida',
+    'especificacion',
+    'tienda_ml',
+    'proveedor_nombre',
+    'codigo_parte',
+    'categoria',
+    'compatibilidad',
+    'motivo_sin_precio',
+    'certeza',
+    'precio_capturado_en',
+    'seleccion_cliente_en',
+    'familia_sensible',
+    'casa_repuesto_nombre',
+    'motivo_seleccion',
+    'comentario',
+})
+
+
+def contiene_nota_prohibida(texto: str) -> bool:
+    bajo = str(texto or '').lower()
+    return any(frase in bajo for frase in _FRASES_PROHIBIDAS)
+
+
+def _es_nota_de_selector(texto: str) -> bool:
+    bajo = str(texto or '').strip().lower()
+    if not bajo:
+        return False
+    return (
+        contiene_nota_prohibida(bajo)
+        or bajo.startswith('cotizado:')
+        or bajo.startswith('cotizado por ')
+        or 'única casa' in bajo
+        or 'unica casa' in bajo
+        or bajo.startswith('mejor precio con stock')
+        or bajo.startswith('balance precio')
+        or bajo.startswith('proveedor confiable')
+        or bajo.startswith('stock inmediato')
+        or bajo.startswith('consolidado')
+        or 'una sola casa' in bajo
+        or bajo.startswith('no se encontraron proveedores')
+        or bajo.startswith('no hay opciones')
+    )
+
+
+def nota_visible_debe_reemplazarse(texto: str) -> bool:
+    """True si el texto es una nota que no puede verse. La descripción de la pieza no."""
+    t = str(texto or '').strip()
+    if not t:
+        return False
+    if t.lower().startswith('precio del taller'):
+        return contiene_nota_prohibida(t) or len(t) > _NOTA_MAX
+    if contiene_nota_prohibida(t) or _es_nota_de_selector(t):
+        return True
+    if _es_nota_mecanico(t):
+        return len(t) > _NOTA_MAX
+    if nota_de_busqueda(t):
+        return True
+    return False
+
+
+def _hay_tienda_en_linea(rep: dict) -> bool:
+    """Hay casa si el nombre no es el placeholder Estimado. Un precio solo no alcanza."""
+    casa = str(rep.get('proveedor_nombre') or rep.get('casa_repuesto_nombre') or '').strip()
+    if not casa or casa.lower() == 'estimado':
+        return False
+    fuente = str(rep.get('fuente_marketplace') or rep.get('fuente_repuesto') or '').strip().lower()
+    if fuente == 'estimado' and not str(rep.get('url_producto') or '').strip():
+        return False
+    return True
+
+
+def _nota_corta_para_linea(
+    rep: dict,
+    *,
+    marca: str,
+    modelo: str,
+    anio: Any,
+    tipo_motor: str,
+    cilindraje: Any,
+    motivo_interno: str = '',
+) -> str:
+    if rep.get('precio_a_consultar'):
+        from mecanimovilapp.apps.ordenes.casas_especialistas import (
+            nota_consulta_especialista,
+            perfil_de,
+        )
+
+        casa = nombre_tienda_visible(str(rep.get('casa_repuesto_nombre') or ''))
+        if casa and perfil_de(casa):
+            ref_tienda, ref_precio = _referencia_consulta(
+                rep,
+                modelo=modelo,
+                anio=anio,
+                tipo_motor=tipo_motor,
+                cilindraje=cilindraje,
+            )
+            return recortar_nota(nota_consulta_especialista(
+                casa,
+                marca,
+                tienda=ref_tienda,
+                precio=ref_precio,
+            ))
+    if _hay_tienda_en_linea(rep):
+        return nota_visible_con_tienda(
+            rep,
+            motivo_interno,
+            marca=marca,
+            modelo=modelo,
+            anio=anio,
+            tipo_motor=tipo_motor,
+            cilindraje=cilindraje,
+        )
+    return nota_visible_sin_tienda(
+        rep,
+        marca=marca,
+        modelo=modelo,
+        anio=anio,
+        tipo_motor=tipo_motor,
+        cilindraje=cilindraje,
+    )
+
+
+def _nota_empieza_con_tienda(texto: str, tienda: str) -> bool:
+    """«TodoAuto: …» sí. «Todoautochile: …» no, aunque empiece por las mismas letras."""
+    bajo = str(texto or '').strip().lower()
+    casa = str(tienda or '').strip().lower()
+    if not bajo or not casa or not bajo.startswith(casa):
+        return False
+    resto = bajo[len(casa):]
+    return resto[:1] in ('', ':', ',', '.', ' ')
+
+
+def _motivo_ya_es_corto(texto: str, *, tienda: str, hay_tienda: bool) -> bool:
+    t = str(texto or '').strip()
+    if not t:
+        return True
+    if t.lower().startswith('precio del taller'):
+        return len(t) <= _NOTA_MAX and not contiene_nota_prohibida(t)
+    if not (_es_nota_mecanico(t) and len(t) <= _NOTA_MAX and not contiene_nota_prohibida(t)):
+        return False
+    if hay_tienda and tienda:
+        return _nota_empieza_con_tienda(t, tienda)
+    return True
+
+
+def _reemplazar_frases_prohibidas(valor: Any, nota: str) -> Any:
+    if isinstance(valor, str):
+        if contiene_nota_prohibida(valor):
+            return nota
+        return valor
+    if isinstance(valor, dict):
+        for clave, item in list(valor.items()):
+            if clave in _CLAVES_INTOCABLES:
+                continue
+            valor[clave] = _reemplazar_frases_prohibidas(item, nota)
+        return valor
+    if isinstance(valor, list):
+        return [_reemplazar_frases_prohibidas(item, nota) for item in valor]
+    return valor
+
+
+def sanear_notas_linea(
+    rep: dict,
+    *,
+    marca: str = '',
+    modelo: str = '',
+    anio: Any = None,
+    tipo_motor: str = '',
+    cilindraje: Any = None,
+) -> dict:
+    """Deja la línea sin el párrafo largo ni el motivo interno del selector.
+
+    Devuelve una copia. No pisa el nombre, la URL ni una descripción de la pieza.
+    """
+    if not isinstance(rep, dict):
+        return rep
+    linea = copy.deepcopy(rep)
+    casa_vis = nombre_tienda_visible(str(linea.get('casa_repuesto_nombre') or ''))
+    prov_vis = nombre_tienda_visible(str(linea.get('proveedor_nombre') or ''))
+    if casa_vis:
+        linea['casa_repuesto_nombre'] = casa_vis
+    if prov_vis and str(linea.get('proveedor_nombre') or '').strip():
+        linea['proveedor_nombre'] = prov_vis
+    elif not casa_vis and prov_vis:
+        linea['casa_repuesto_nombre'] = prov_vis
+        casa_vis = prov_vis
+    if not casa_vis and prov_vis:
+        casa_vis = prov_vis
+        if not str(linea.get('casa_repuesto_nombre') or '').strip():
+            linea['casa_repuesto_nombre'] = casa_vis
+    tienda = casa_vis or prov_vis
+    hay = _hay_tienda_en_linea(linea)
+    for fuente in linea.get('fuentes_detalle') or []:
+        if isinstance(fuente, dict) and str(fuente.get('tienda') or '').strip():
+            fuente['tienda'] = nombre_tienda_visible(str(fuente.get('tienda') or '')) or fuente['tienda']
+    if str(linea.get('tienda_ml') or '').strip():
+        linea['tienda_ml'] = nombre_tienda_visible(str(linea.get('tienda_ml') or '')) or linea['tienda_ml']
+    if str(linea.get('referencia_tienda') or '').strip():
+        linea['referencia_tienda'] = (
+            nombre_tienda_visible(str(linea.get('referencia_tienda') or ''))
+            or linea['referencia_tienda']
+        )
+    motivo = str(linea.get('motivo_seleccion') or '')
+    comentario_previo = str(linea.get('comentario') or '')
+    reclama = (
+        _nota_reclama_stock_sin_verificar(motivo)
+        or _nota_reclama_stock_sin_verificar(comentario_previo)
+        or _nota_consulta_vieja(motivo)
+        or _nota_consulta_vieja(comentario_previo)
+    )
+    consulta_pendiente = (
+        bool(linea.get('precio_a_consultar'))
+        and not _es_nota_consulta_actual(motivo)
+    )
+    ref_tienda, ref_precio = _referencia_consulta(
+        linea,
+        modelo=modelo,
+        anio=anio,
+        tipo_motor=tipo_motor,
+        cilindraje=cilindraje,
+    )
+    try:
+        ref_guardada = int(linea.get('precio_referencia_clp') or 0)
+    except (TypeError, ValueError):
+        ref_guardada = 0
+    cita_no_pasa = ref_guardada > 0 and ref_precio != ref_guardada
+    if (reclama or consulta_pendiente or cita_no_pasa) and tienda:
+        from mecanimovilapp.apps.ordenes.casas_especialistas import (
+            nota_consulta_especialista,
+            perfil_de,
+        )
+
+        if perfil_de(tienda):
+            nota_consulta = recortar_nota(nota_consulta_especialista(
+                tienda,
+                marca,
+                tienda=ref_tienda,
+                precio=ref_precio,
+            ))
+            linea['motivo_seleccion'] = nota_consulta
+            if ref_tienda and ref_precio > 0:
+                linea['referencia_tienda'] = ref_tienda
+                linea['precio_referencia_clp'] = ref_precio
+            else:
+                linea.pop('referencia_tienda', None)
+                linea.pop('precio_referencia_clp', None)
+            if (
+                not comentario_previo.strip()
+                or _es_nota_mecanico(comentario_previo)
+                or _nota_reclama_stock_sin_verificar(comentario_previo)
+                or _nota_consulta_vieja(comentario_previo)
+                or cita_no_pasa
+            ):
+                linea['comentario'] = nota_consulta
+            motivo = nota_consulta
+    if not _motivo_ya_es_corto(motivo, tienda=tienda, hay_tienda=hay):
+        linea['motivo_seleccion'] = _nota_corta_para_linea(
+            linea,
+            marca=marca,
+            modelo=modelo,
+            anio=anio,
+            tipo_motor=tipo_motor,
+            cilindraje=cilindraje,
+            motivo_interno=motivo,
+        )
+    comentario = str(linea.get('comentario') or '')
+    nota_con_slug = (
+        hay and tienda and _es_nota_mecanico(comentario)
+        and not _nota_empieza_con_tienda(comentario, tienda)
+    )
+    if nota_visible_debe_reemplazarse(comentario) or nota_con_slug:
+        linea['comentario'] = str(linea.get('motivo_seleccion') or '') or _nota_corta_para_linea(
+            linea,
+            marca=marca,
+            modelo=modelo,
+            anio=anio,
+            tipo_motor=tipo_motor,
+            cilindraje=cilindraje,
+        )
+    nota = str(linea.get('motivo_seleccion') or linea.get('comentario') or '')
+    if nota:
+        for clave, valor in list(linea.items()):
+            if clave in _CLAVES_INTOCABLES:
+                continue
+            linea[clave] = _reemplazar_frases_prohibidas(valor, nota)
+    return linea
+
+
+def contexto_nota_cotizacion(cot: Any) -> dict[str, Any]:
+    """Marca, modelo y motor de la cotización, para armar la nota al leer o al guardar."""
+    tipo = ' '.join(
+        parte for parte in (
+            str(getattr(cot, 'tipo_motor', '') or ''),
+            str(getattr(cot, 'tipo_motor_label', '') or ''),
+        ) if parte
+    )
+    return {
+        'marca': getattr(cot, 'vehiculo_marca', '') or '',
+        'modelo': getattr(cot, 'vehiculo_modelo', '') or '',
+        'anio': getattr(cot, 'vehiculo_anio', None),
+        'tipo_motor': tipo,
+        'cilindraje': getattr(cot, 'vehiculo_cilindraje', '') or '',
+    }
+
+
+_STOP_PIEZA = frozenset({
+    'de', 'del', 'la', 'el', 'los', 'las', 'un', 'una', 'y', 'para', 'con',
+    'motor', 'delantero', 'delantera', 'delanteros', 'delanteras',
+    'trasero', 'trasera', 'traseros', 'traseras', 'juego', 'kit', 'par',
+    'original', 'alternativo', 'sintetico', 'mineral',
+})
+
+
+def _stem_pieza(token: str) -> str:
+    t = _norm(token)
+    if len(t) > 4 and t.endswith('es'):
+        return t[:-2]
+    if len(t) > 3 and t.endswith('s'):
+        return t[:-1]
+    return t
+
+
+def _keywords_pieza(nombre: str) -> list[str]:
+    """Sustantivos que la ficha tiene que nombrar. 'Repuestos Fiat Bravo' no califica."""
+    from .familias_sensibles import FAMILIAS_SENSIBLES, detectar_familia_sensible
+
+    claves: list[str] = []
+    fam = detectar_familia_sensible(nombre)
+    if fam:
+        for key in FAMILIAS_SENSIBLES[fam].get('keywords') or ():
+            stem = _stem_pieza(str(key))
+            if stem and stem not in claves:
+                claves.append(stem)
+        return claves
+    for tok in _norm(nombre).split():
+        if len(tok) < 4 or tok in _STOP_PIEZA:
+            continue
+        stem = _stem_pieza(tok)
+        if stem and stem not in claves:
+            claves.append(stem)
+    return claves[:3]
+
+
+def _producto_menciona_pieza(nombre_repuesto: str, producto_matched: str) -> bool:
+    """True si el título nombra la pieza pedida.
+
+    Un listado genérico ('Repuestos Fiat Bravo | Mundo Repuestos Chile') no
+    trae 'pastilla' ni 'filtro' y no puede cotizar esa línea.
+    """
+    producto = str(producto_matched or '').strip()
+    if not producto:
+        return True
+    if _norm(producto) == _norm(nombre_repuesto):
+        return True
+    keywords = _keywords_pieza(nombre_repuesto)
+    if not keywords:
+        return True
+    prod = _norm(producto)
+    return any(k in prod for k in keywords)
+
+
+def _familia_de(nombre: str) -> str:
+    """Familia de la pieza. Vacío si el texto no nombra una familia conocida."""
+    from .familias_sensibles import detectar_familia_sensible
+
+    fam = detectar_familia_sensible(nombre) or ''
+    if fam:
+        return fam
+    if 'filtro' in _norm(nombre):
+        return 'filtro'
+    return ''
+
+
+def _familia_distinta(linea: str, otro: str) -> bool:
+    """True si los dos textos son piezas distintas (pastillas contra aceite)."""
+    a = _familia_de(linea)
+    b = _familia_de(otro)
+    return bool(a and b and a != b)
+
+
+def _producto_es_la_pieza(nombre_repuesto: str, producto_matched: str, *, fuente: str = '') -> bool:
+    """Tipo de parte + keyword. Rechaza enfriador-por-aceite y listados genéricos."""
+    producto = str(producto_matched or '').strip()
+    if not _validar_tipo_parte(nombre_repuesto, producto):
+        logger.warning(
+            'ordenes[enrich] mismatch_tipo_rechazado repuesto=%s producto=%s fuente=%s',
+            (nombre_repuesto or '')[:50],
+            producto[:50],
+            (fuente or '')[:15],
+        )
+        return False
+    if (
+        producto
+        and _es_linea_aceite_motor(nombre_repuesto)
+        and not _ficha_es_aceite_de_motor(producto)
+    ):
+        logger.warning(
+            'ordenes[enrich] ficha_aceite_rechazada repuesto=%s producto=%s fuente=%s',
+            (nombre_repuesto or '')[:50],
+            producto[:50],
+            (fuente or '')[:15],
+        )
+        return False
+    if fuente in ('web', 'historial', '') and not _producto_menciona_pieza(nombre_repuesto, producto):
+        logger.warning(
+            'ordenes[enrich] listado_generico_rechazado repuesto=%s producto=%s fuente=%s',
+            (nombre_repuesto or '')[:50],
+            producto[:50],
+            (fuente or '')[:15],
+        )
+        return False
+    return True
 
 
 def _mejor_hit(nombre: str, candidatos: list[dict[str, Any]], *, min_score: int = 50) -> dict[str, Any] | None:
@@ -353,20 +1544,20 @@ def _mejor_hit(nombre: str, candidatos: list[dict[str, Any]], *, min_score: int 
     best_score = 0
     best_conf = -1.0
     for cand in candidatos:
-        # Apply part-type validation before scoring
-        titulo = str(cand.get('nombre_producto') or cand.get('nombre') or '')
-        if titulo and not _validar_tipo_parte(nombre, titulo):
-            logger.debug(
-                'Candidato rechazado por tipo de parte: linea=%r titulo=%r',
-                nombre[:60],
-                titulo[:80],
-            )
-            continue
-        
         score = _match_score(q, cand.get('clave') or '')
-        conf = float(cand.get('confianza') or 0)
         if score < min_score:
             continue
+        producto_nombre = str(cand.get('nombre_producto') or cand.get('nombre') or '')
+        # El aceite de la línea de al lado no se prueba contra las pastillas:
+        # ese intento logueaba listado_generico y no puede ganar el match.
+        if _familia_distinta(nombre, producto_nombre) or _familia_distinta(
+            nombre, str(cand.get('clave') or ''),
+        ):
+            continue
+        fuente = str(cand.get('fuente_marketplace') or '')
+        if not _producto_es_la_pieza(nombre, producto_nombre, fuente=fuente):
+            continue
+        conf = float(cand.get('confianza') or 0)
         if score > best_score or (score == best_score and conf > best_conf):
             best_score = score
             best_conf = conf
@@ -604,6 +1795,18 @@ def _candidatos_historial_taller(
                 clave = _clave_fuzzy(nombre)
                 if not clave:
                     continue
+                # Un borrador no llega aquí (solo enviada/aceptada). Si la línea
+                # guardó una ficha web de otra pieza, no se reaprende.
+                nombre_producto = str(raw.get('nombre_producto') or '').strip()
+                fuente_linea = str(
+                    raw.get('fuente_marketplace') or raw.get('fuente_repuesto') or '',
+                ).strip()
+                if nombre_producto and _familia_distinta(nombre, nombre_producto):
+                    continue
+                if nombre_producto and not _producto_es_la_pieza(
+                    nombre, nombre_producto, fuente=fuente_linea or 'historial',
+                ):
+                    continue
                 precio = _to_int_clp(raw.get('precio_unitario_clp'))
                 marca = _marca_repuesto_valida(raw.get('marca_repuesto'))
                 prov = str(
@@ -622,6 +1825,8 @@ def _candidatos_historial_taller(
                     b['proveedores'].append(prov)
                 if url:
                     b['urls'].append(url)
+                if nombre_producto:
+                    b.setdefault('nombres_producto', []).append(nombre_producto)
                 b['nombre'] = nombre
                 b['match_modelo'] = b['match_modelo'] or match_modelo
 
@@ -642,6 +1847,11 @@ def _candidatos_historial_taller(
             url_moda = (
                 Counter(data['urls']).most_common(1)[0][0] if data['urls'] else ''
             )
+            # NUEVO: Preservar nombre_producto más común para validación
+            nombre_prod_moda = ''
+            if data.get('nombres_producto'):
+                nombre_prod_moda = Counter(data['nombres_producto']).most_common(1)[0][0]
+            
             conf = _CONF_HISTORIAL + (0.05 if data.get('match_modelo') else 0.0)
             hit = _hit(
                 nombre=data.get('nombre') or clave,
@@ -653,6 +1863,9 @@ def _candidatos_historial_taller(
                 confianza=min(0.88, conf),
                 clave=clave,
             )
+            # CRÍTICO: Agregar nombre_producto para validación
+            if nombre_prod_moda:
+                hit['nombre_producto'] = nombre_prod_moda
             out.append(hit)
         return out
     except Exception as exc:
@@ -807,28 +2020,42 @@ def _candidatos_web_cache(
     tipo_motor: str = '',
     cilindraje: str = '',
     nombres: list[str] | None = None,
+    bandas_min: dict[str, int] | None = None,
+    bandas_max: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
     """Hits vigentes desde PrecioRepuestoWeb (rellenado por Celery/Gemini URL Context)."""
     try:
         from mecanimovilapp.apps.ordenes.models import PrecioRepuestoWeb
-        from .busqueda_web_repuestos import _es_listado_sin_vendedor, clave_cache_repuesto
+        from .busqueda_web_repuestos import (
+            _CACHE_RELECTURA_CUPO,
+            _banda_min_de,
+            _es_listado_sin_vendedor,
+            _expirar_fila_cache,
+            _fila_cache_utilizable,
+            clave_cache_repuesto,
+        )
 
         now = timezone.now()
         qs = PrecioRepuestoWeb.objects.filter(expira_en__gt=now)
+        clave_a_nombre: dict[str, str] = {}
         if nombres:
             claves: list[str] = []
             for nom in nombres:
                 if not str(nom or '').strip():
                     continue
-                claves.append(clave_cache_repuesto(
+                clave_nom = clave_cache_repuesto(
                     nom,
                     marca_vehiculo=marca_vehiculo,
                     modelo_vehiculo=modelo_vehiculo,
                     anio=anio_vehiculo,
                     tipo_motor=tipo_motor,
                     cilindraje=cilindraje,
-                ))
-            qs = qs.filter(clave__in=[c for c in claves if c])
+                )
+                if not clave_nom:
+                    continue
+                claves.append(clave_nom)
+                clave_a_nombre[clave_nom] = str(nom)
+            qs = qs.filter(clave__in=claves)
         qs = qs.order_by('-confianza')[:400]
         out: list[dict[str, Any]] = []
         from .vehiculo_exacto import clave_historial_cubre_vehiculo
@@ -836,6 +2063,7 @@ def _candidatos_web_cache(
         veh_norm = _norm(
             ' '.join(str(p) for p in (marca_vehiculo, modelo_vehiculo, anio_vehiculo or '') if p),
         )
+        cupo = [_CACHE_RELECTURA_CUPO]
         for row in qs:
             clave = str(row.clave or '')
             dominio = str(row.dominio or '').strip().lower()
@@ -851,40 +2079,56 @@ def _candidatos_web_cache(
             elif _es_listado_sin_vendedor(str(row.url or '') or f'https://{dominio}/'):
                 # Fila cacheada de un listado: no dice de qué tienda es el precio.
                 continue
-            
-            # Apply part-type validation before adding to candidates
-            clave_nombre = clave.split('|', 1)[0] if '|' in clave else clave
-            titulo_producto = str(row.nombre_producto or '')
-            if clave_nombre and titulo_producto:
-                if not _validar_tipo_parte(clave_nombre, titulo_producto):
-                    logger.debug(
-                        'Web cache hit rechazado por tipo de parte: clave=%r titulo=%r dominio=%s',
-                        clave_nombre[:60],
-                        titulo_producto[:80],
-                        dominio,
+            linea_cache = clave_a_nombre.get(clave, '')
+            producto_cache = str(row.nombre_producto or '').strip()
+            if dominio in ('historial-taller', 'historial_taller'):
+                if linea_cache and producto_cache and not _producto_es_la_pieza(
+                    linea_cache, producto_cache, fuente='web',
+                ):
+                    _expirar_fila_cache(
+                        row, now, linea=linea_cache, producto=producto_cache, motivo='otra_pieza',
                     )
                     continue
-            
+                precio_usar = int(row.precio_clp or 0)
+            else:
+                precio_usar = _fila_cache_utilizable(
+                    row,
+                    linea_cache,
+                    modelo=modelo_vehiculo,
+                    tipo_motor=tipo_motor,
+                    banda_min=_banda_min_de(bandas_min, linea_cache),
+                    banda_max=_banda_min_de(bandas_max, linea_cache),
+                    anio=anio_vehiculo,
+                    cilindraje=cilindraje,
+                    now=now,
+                    cupo=cupo,
+                )
+                if precio_usar is None:
+                    continue
             marca = _marca_repuesto_valida(row.marca_repuesto)
+            clave_nombre = clave.split('|', 1)[0] if '|' in clave else clave
             dominio = str(row.dominio or '').strip().lower()
             # Semilla post-envío (aprendizaje) → historial del taller, no marketplace web.
             if dominio in ('historial-taller', 'historial_taller'):
                 fuente = 'historial'
                 conf = float(row.confianza or _CONF_HISTORIAL)
-                proveedor = str(row.tienda or 'Historial del taller')[:200]
+                proveedor = (
+                    nombre_tienda_visible(str(row.tienda or ''))
+                    or 'Historial del taller'
+                )[:200]
             else:
                 fuente = 'web'
                 conf = float(row.confianza or _CONF_WEB)
-                proveedor = str(row.tienda or '')[:200]
+                proveedor = (nombre_tienda_visible(str(row.tienda or '')) or str(row.tienda or ''))[:200]
             hit = _hit(
-                nombre=titulo_producto[:200],
+                nombre=str(row.nombre_producto or '')[:200],
                 marca_repuesto=marca,
-                precio_unitario_clp=int(row.precio_clp or 0),
+                precio_unitario_clp=int(precio_usar or 0),
                 fuente_marketplace=fuente,
                 proveedor_nombre=proveedor,
                 url_producto=str(row.url or '')[:500],
                 confianza=conf if conf > 0 else (_CONF_HISTORIAL if fuente == 'historial' else _CONF_WEB),
-                clave=clave_nombre or _clave_fuzzy(titulo_producto),
+                clave=clave_nombre or _clave_fuzzy(str(row.nombre_producto or '')),
                 calidad=str(getattr(row, 'calidad', '') or ''),
             )
             out.append(hit)
@@ -916,12 +2160,17 @@ def _aplicar_hit_campos(next_rep: dict[str, Any], hit: dict[str, Any]) -> None:
     puede_reemplazar = hit_grounded and not actual_grounded
 
     marca_actual = str(next_rep.get('marca_repuesto') or '').strip()
-    if hit.get('marca_repuesto') and (not marca_actual or puede_reemplazar):
-        next_rep['marca_repuesto'] = hit['marca_repuesto']
+    marca_hit = _marca_canonica(
+        str(hit.get('marca_repuesto') or ''),
+        f"{hit.get('nombre_producto') or ''} {hit.get('marca_repuesto') or ''}",
+    )
+    if marca_hit and (not marca_actual or puede_reemplazar):
+        next_rep['marca_repuesto'] = marca_hit
         # El cliente ve el nombre del ítem: la marca debe ir ahí, no solo en un tag.
         next_rep['nombre'] = _nombre_con_marca(
             str(next_rep.get('nombre') or ''),
-            hit['marca_repuesto'],
+            marca_hit,
+            str(hit.get('nombre_producto') or ''),
         )
 
     if hit.get('fuente_marketplace') and (not fuente_actual or puede_reemplazar):
@@ -930,13 +2179,15 @@ def _aplicar_hit_campos(next_rep: dict[str, Any], hit: dict[str, Any]) -> None:
 
     proveedor_actual = str(next_rep.get('proveedor_nombre') or '').strip()
     if hit.get('proveedor_nombre') and (not proveedor_actual or puede_reemplazar):
-        next_rep['proveedor_nombre'] = hit['proveedor_nombre']
+        crudo = str(hit['proveedor_nombre'])
+        next_rep['proveedor_nombre'] = (nombre_tienda_visible(crudo) or crudo)[:200]
 
     tienda_actual = str(next_rep.get('tienda_ml') or '').strip()
     if hit.get('tienda_ml') and (not tienda_actual or puede_reemplazar):
         next_rep['tienda_ml'] = hit['tienda_ml']
         if not str(next_rep.get('proveedor_nombre') or '').strip():
-            next_rep['proveedor_nombre'] = hit['tienda_ml']
+            crudo_ml = str(hit['tienda_ml'])
+            next_rep['proveedor_nombre'] = (nombre_tienda_visible(crudo_ml) or crudo_ml)[:200]
 
     url_actual = str(next_rep.get('url_producto') or '').strip()
     if hit.get('url_producto') and (not url_actual or puede_reemplazar):
@@ -973,119 +2224,6 @@ def _aplicar_precio(next_rep: dict[str, Any], hits: list[dict[str, Any]]) -> Non
     resolver_precio_linea(next_rep, hits)
 
 
-def _aplicar_seleccion_casa_repuestos(
-    repuestos: list[dict[str, Any]],
-    hits_by_part: dict[str, list[dict[str, Any]]],
-) -> list[dict[str, Any]]:
-    """Aplica selección de casa de repuestos a cada línea con trazabilidad de decisiones.
-    
-    Mapea hits de catálogo/historial (proveedor_nombre) y web (tienda/dominio) a
-    OpcionCasa, aplica seleccionar_casa_optima y consolidar_si_posible.
-    """
-    try:
-        from ..seleccion_casa_repuestos import (
-            OpcionCasa,
-            seleccionar_casa_optima,
-            consolidar_si_posible,
-        )
-    except ImportError:
-        logger.warning('seleccion_casa_repuestos no disponible; sin motivo_seleccion')
-        return repuestos
-    
-    todas_las_opciones: dict[str, list[OpcionCasa]] = {}
-    nombre_to_index: dict[str, int] = {}
-    
-    for i, rep in enumerate(repuestos):
-        if not isinstance(rep, dict):
-            continue
-        nombre = str(rep.get('nombre') or '').strip()
-        if not nombre:
-            continue
-        
-        nombre_to_index[nombre] = i
-        hits = hits_by_part.get(nombre, [])
-        opciones: list[OpcionCasa] = []
-        
-        for hit in hits:
-            if not isinstance(hit, dict):
-                continue
-            
-            # Map both catalog/historial (proveedor_nombre) and web hits (tienda)
-            casa = str(hit.get('proveedor_nombre') or hit.get('tienda') or '').strip()
-            if not casa:
-                continue
-            
-            precio = _to_int_clp(hit.get('precio_unitario_clp'))
-            if precio <= 0:
-                continue
-            
-            # Create stable proveedor_id from casa name
-            proveedor_id = abs(hash(casa)) % 1_000_000
-            
-            opciones.append(OpcionCasa(
-                casa=casa,
-                proveedor_id=proveedor_id,
-                precio_clp=precio,
-                stock_disponible=True,  # Assume available if listed
-                compatibilidad_score=float(hit.get('confianza') or 0.5),
-            ))
-        
-        if opciones:
-            todas_las_opciones[nombre] = opciones
-    
-    # Try consolidation first (single store within 110% of optimal)
-    consolidado = None
-    if len(todas_las_opciones) >= 2:
-        try:
-            consolidado = consolidar_si_posible(repuestos, todas_las_opciones)
-        except Exception as exc:
-            logger.warning('consolidar_si_posible falló: %s', exc, exc_info=True)
-    
-    if consolidado:
-        logger.info(
-            'Consolidación aplicada: %d repuestos en una sola casa',
-            len(consolidado),
-        )
-        for nombre, res in consolidado.items():
-            idx = nombre_to_index.get(nombre)
-            if idx is not None and idx < len(repuestos):
-                repuestos[idx]['motivo_seleccion'] = res.motivo_seleccion
-                repuestos[idx]['alternativas_descartadas'] = res.alternativas_descartadas
-                repuestos[idx]['consolidacion_aplicada'] = res.consolidacion_aplicada
-        return repuestos
-    
-    # Individual selection per part
-    for i, rep in enumerate(repuestos):
-        if not isinstance(rep, dict):
-            continue
-        nombre = str(rep.get('nombre') or '').strip()
-        opciones = todas_las_opciones.get(nombre, [])
-        
-        if not opciones:
-            rep['motivo_seleccion'] = 'No se encontraron proveedores para esta pieza'
-            rep['alternativas_descartadas'] = []
-            rep['consolidacion_aplicada'] = False
-            continue
-        
-        try:
-            res = seleccionar_casa_optima(opciones)
-            rep['motivo_seleccion'] = res.motivo_seleccion
-            rep['alternativas_descartadas'] = res.alternativas_descartadas
-            rep['consolidacion_aplicada'] = False
-        except Exception as exc:
-            logger.warning(
-                'seleccionar_casa_optima falló para %r: %s',
-                nombre[:40],
-                exc,
-                exc_info=True,
-            )
-            rep['motivo_seleccion'] = 'Error al seleccionar proveedor'
-            rep['alternativas_descartadas'] = []
-            rep['consolidacion_aplicada'] = False
-    
-    return repuestos
-
-
 def enriquecer_repuestos_cotizacion(
     repuestos: list[dict[str, Any]],
     *,
@@ -1098,6 +2236,7 @@ def enriquecer_repuestos_cotizacion(
     taller=None,
     usar_ml: bool = True,
     usar_web: bool = True,
+    urls_rechazadas: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Devuelve nueva lista de repuestos enriquecida multi-fuente.
 
@@ -1137,6 +2276,30 @@ def enriquecer_repuestos_cotizacion(
     nombres_lineas = [
         str(r.get('nombre') or '') for r in repuestos if isinstance(r, dict)
     ]
+    from .busqueda_web_repuestos import _monto_banda_por_unidad
+
+    bandas_min: dict[str, int] = {}
+    bandas_max: dict[str, int] = {}
+    for r in repuestos:
+        if not isinstance(r, dict):
+            continue
+        nombre_banda = str(r.get('nombre') or '').strip()
+        if not nombre_banda:
+            continue
+        try:
+            piso = int(r.get('precio_min_clp') or 0)
+        except (TypeError, ValueError):
+            piso = 0
+        try:
+            techo = int(r.get('precio_max_clp') or 0)
+        except (TypeError, ValueError):
+            techo = 0
+        piso = _monto_banda_por_unidad(nombre_banda, piso, r.get('cantidad'))
+        techo = _monto_banda_por_unidad(nombre_banda, techo, r.get('cantidad'))
+        if piso > 0:
+            bandas_min[nombre_banda] = piso
+        if techo > 0:
+            bandas_max[nombre_banda] = techo
     web_cands = (
         _candidatos_web_cache(
             marca_vehiculo=marca_vehiculo,
@@ -1145,18 +2308,25 @@ def enriquecer_repuestos_cotizacion(
             tipo_motor=tipo_motor,
             cilindraje=cilindraje,
             nombres=nombres_lineas,
+            bandas_min=bandas_min,
+            bandas_max=bandas_max,
         )
         if usar_web
         else []
     )
 
     out: list[dict[str, Any]] = []
-    hits_by_part: dict[str, list[dict[str, Any]]] = {}
-    
     for rep in repuestos:
         if not isinstance(rep, dict):
             continue
         next_rep = dict(rep)
+        aplicar_cantidad_aceite_motor(
+            next_rep,
+            marca=marca_vehiculo,
+            modelo=modelo_vehiculo,
+            cilindraje=cilindraje,
+            tipo_motor=tipo_motor,
+        )
         # Descarta proveedor falso del maestro global (nunca es fuente del taller).
         if _norm(str(next_rep.get('proveedor_nombre') or '')) in (
             'catalogo mecanimovil', 'catálogo mecanimovil',
@@ -1192,20 +2362,45 @@ def enriquecer_repuestos_cotizacion(
 
         web_hit = None
         if usar_web and not grounded_taller and web_cands:
-            from .busqueda_web_repuestos import _candidato_sirve_linea
+            from .busqueda_web_repuestos import (
+                _candidato_sirve_linea,
+                _monto_banda_por_unidad,
+            )
 
+            try:
+                piso_linea = int(next_rep.get('precio_min_clp') or 0)
+            except (TypeError, ValueError):
+                piso_linea = 0
+            try:
+                techo_linea = int(next_rep.get('precio_max_clp') or 0)
+            except (TypeError, ValueError):
+                techo_linea = 0
+            piso_linea = _monto_banda_por_unidad(nombre, piso_linea, next_rep.get('cantidad'))
+            techo_linea = _monto_banda_por_unidad(nombre, techo_linea, next_rep.get('cantidad'))
+            prohibidas = urls_rechazadas or set()
             web_ok = [
                 c for c in web_cands
-                if _candidato_sirve_linea(
+                if str(c.get('url_producto') or '') not in prohibidas
+                and not _familia_distinta(nombre, str(c.get('clave') or ''))
+                and not _familia_distinta(
+                    nombre, str(c.get('nombre_producto') or c.get('nombre') or ''),
+                )
+                and _candidato_sirve_linea(
                     nombre,
                     {
                         'title': str(c.get('nombre_producto') or c.get('nombre') or ''),
                         'content': '',
                         'url': str(c.get('url_producto') or ''),
+                        # La caché no trae el cuerpo. Un título sin el auto no pasa.
+                        'ficha_leida': True,
+                        'precio_snippet': int(c.get('precio_unitario_clp') or 0),
                     },
                     anio=anio_vehiculo,
                     cilindraje=cilindraje,
                     modelo=modelo_vehiculo,
+                    tipo_motor=tipo_motor,
+                    banda_min=piso_linea,
+                    banda_max=techo_linea,
                 )
             ]
             web_hit = _mejor_hit(nombre, web_ok, min_score=min_score_web_para(nombre))
@@ -1250,6 +2445,27 @@ def enriquecer_repuestos_cotizacion(
             _aplicar_hit_campos(next_rep, hit)
         next_rep.pop('precio_referencia_mercado', None)
         _aplicar_precio(next_rep, hits)
+        if str(next_rep.get('fuente_marketplace') or '') == 'web':
+            from .busqueda_web_repuestos import (
+                precio_unitario_desde_envase,
+                precio_unitario_desde_pack,
+            )
+
+            unit, nota_envase = precio_unitario_desde_envase(
+                nombre,
+                _to_int_clp(next_rep.get('precio_unitario_clp')),
+                str(next_rep.get('nombre_producto') or ''),
+            )
+            if not nota_envase:
+                unit, nota_envase = precio_unitario_desde_pack(
+                    nombre,
+                    unit,
+                    str(next_rep.get('nombre_producto') or ''),
+                    next_rep.get('cantidad'),
+                )
+            if nota_envase and unit > 0:
+                next_rep['precio_unitario_clp'] = unit
+                next_rep['comentario'] = nota_envase[:300]
         from .calidad_repuesto import anotar_calidad_en_linea
         from .opciones_repuesto import poblar_opciones_en_linea
 
@@ -1296,13 +2512,5 @@ def enriquecer_repuestos_cotizacion(
         ):
             next_rep.pop('proveedor_nombre', None)
 
-        # Track hits for house selection
-        if nombre and hits:
-            hits_by_part[nombre] = hits
-        
         out.append(next_rep)
-    
-    # Apply house selection with consolidation
-    out = _aplicar_seleccion_casa_repuestos(out, hits_by_part)
-    
     return out

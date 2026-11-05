@@ -84,15 +84,52 @@ def aplicar_derivados_certeza(rep: dict[str, Any]) -> None:
         rep.pop('precio_referencia_mercado', None)
 
 
+def _partir_bujia_asumida(next_rep: dict[str, Any]) -> dict[str, Any]:
+    """$32.000 × 4 sin tienda es el juego de bujías, no cada una. La banda queda."""
+    from .busqueda_web_repuestos import precio_unitario_bujia_asumido
+
+    tiene_ficha = bool(
+        str(next_rep.get('url_producto') or '').strip()
+        or str(next_rep.get('proveedor_nombre') or '').strip()
+    )
+    unit = _to_int_clp(next_rep.get('precio_unitario_clp'))
+    nuevo, nota = precio_unitario_bujia_asumido(
+        str(next_rep.get('nombre') or ''),
+        unit,
+        next_rep.get('cantidad'),
+        tiene_ficha=tiene_ficha,
+    )
+    if not nota or nuevo == unit:
+        nuevo = unit
+    else:
+        next_rep['precio_unitario_clp'] = nuevo
+        if not str(next_rep.get('comentario') or '').strip():
+            next_rep['comentario'] = nota[:300]
+    if tiene_ficha:
+        return next_rep
+    from .busqueda_web_repuestos import _monto_banda_por_unidad
+
+    techo = _monto_banda_por_unidad(
+        str(next_rep.get('nombre') or ''),
+        _to_int_clp(next_rep.get('precio_max_clp')),
+        next_rep.get('cantidad'),
+    )
+    unitario = _to_int_clp(next_rep.get('precio_unitario_clp'))
+    if techo > 0 and unitario > techo:
+        next_rep['precio_unitario_clp'] = techo
+    return next_rep
+
+
 def aplicar_techo_ia_si_falta_unitario(rep: dict[str, Any]) -> dict[str, Any]:
     """Si no hay ficha, cobra el techo del rango que Gemini ya entregó.
 
     Un techo fuera de la banda de esa pieza (aceite a $300.000, rodamiento
     piloto al precio de un volante) no se usa: queda sin precio para buscarlo.
+    En bujías, un techo de $32.000 con cantidad 4 es el juego, no cada NGK.
     """
     next_rep = dict(rep)
     if _to_int_clp(next_rep.get('precio_unitario_clp')) > 0:
-        return next_rep
+        return _partir_bujia_asumida(next_rep)
     techo = _to_int_clp(next_rep.get('precio_max_clp'))
     piso = _to_int_clp(next_rep.get('precio_min_clp'))
     if techo <= 0 and piso <= 0:
@@ -121,7 +158,7 @@ def aplicar_techo_ia_si_falta_unitario(rep: dict[str, Any]) -> dict[str, Any]:
     next_rep['certeza'] = CERTEZA_ASUMIDO
     next_rep.pop('motivo_sin_precio', None)
     aplicar_derivados_certeza(next_rep)
-    return next_rep
+    return _partir_bujia_asumida(next_rep)
 
 
 def _monto_en_banda_de_pieza(nombre: str, precio: int) -> bool:
@@ -167,7 +204,12 @@ def _detalle_fuentes(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for hit in hits[:_MAX_FUENTES_DETALLE]:
         fuente = str(hit.get('fuente_marketplace') or '').strip()
-        tienda = str(hit.get('proveedor_nombre') or hit.get('tienda_ml') or '').strip()
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            nombre_tienda_visible,
+        )
+
+        cruda = str(hit.get('proveedor_nombre') or hit.get('tienda_ml') or hit.get('tienda') or '').strip()
+        tienda = nombre_tienda_visible(cruda) or cruda
         url = str(hit.get('url_producto') or hit.get('url') or '').strip()[:500]
         nombre = str(hit.get('nombre_producto') or hit.get('nombre') or '').strip()[:200]
         row = {
@@ -191,7 +233,12 @@ def _anotar_ficha_en_linea(next_rep: dict[str, Any], hit: dict[str, Any]) -> Non
     nombre_prod = str(hit.get('nombre_producto') or hit.get('nombre') or '').strip()[:200]
     if nombre_prod:
         next_rep['nombre_producto'] = nombre_prod
-    tienda = str(hit.get('proveedor_nombre') or hit.get('tienda') or hit.get('tienda_ml') or '').strip()[:200]
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+        nombre_tienda_visible,
+    )
+
+    cruda = str(hit.get('proveedor_nombre') or hit.get('tienda') or hit.get('tienda_ml') or '').strip()
+    tienda = (nombre_tienda_visible(cruda) or cruda)[:200]
     if tienda and not str(next_rep.get('proveedor_nombre') or '').strip():
         next_rep['proveedor_nombre'] = tienda
 

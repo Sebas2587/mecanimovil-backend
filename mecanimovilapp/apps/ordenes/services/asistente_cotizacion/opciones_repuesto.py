@@ -84,7 +84,12 @@ def opcion_desde_hit(hit: dict[str, Any], linea: dict[str, Any] | None = None) -
     precio = _to_int_clp(hit.get('precio_unitario_clp') or hit.get('precio_clp'))
     url = str(hit.get('url_producto') or hit.get('url') or '')[:500]
     dominio = str(hit.get('dominio') or _dominio_de_url(url))[:200]
-    tienda = str(hit.get('proveedor_nombre') or hit.get('tienda') or hit.get('tienda_ml') or '')[:200]
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+        nombre_tienda_visible,
+    )
+
+    cruda = str(hit.get('proveedor_nombre') or hit.get('tienda') or hit.get('tienda_ml') or '')
+    tienda = (nombre_tienda_visible(cruda) or cruda)[:200]
     nombre = str(
         hit.get('nombre_producto') or hit.get('nombre') or (linea or {}).get('nombre') or '',
     )[:200]
@@ -373,7 +378,12 @@ def aplicar_usar_opcion(
     linea['certeza'] = CERTEZA_ASUMIDO
     linea['precio_estimado'] = True
     linea['fuente_marketplace'] = str(op.get('fuente') or 'web')
-    linea['proveedor_nombre'] = str(op.get('tienda') or '')
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+        nombre_tienda_visible,
+    )
+
+    cruda = str(op.get('tienda') or '').strip()
+    linea['proveedor_nombre'] = (nombre_tienda_visible(cruda) or cruda)[:200]
     linea['url_producto'] = str(op.get('url') or '')
     linea['marca_repuesto'] = str(op.get('marca_repuesto') or linea.get('marca_repuesto') or '')
     if op.get('calidad'):
