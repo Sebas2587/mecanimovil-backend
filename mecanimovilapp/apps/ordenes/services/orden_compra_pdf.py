@@ -8,6 +8,7 @@ la línea está a consultar.
 from __future__ import annotations
 
 import os
+import re
 from datetime import date
 from io import BytesIO
 from pathlib import Path
@@ -275,6 +276,76 @@ def _leer_logo(foto) -> str | BytesIO | None:
     return None
 
 
+_DIRECCION_VACIA = frozenset({
+    '',
+    'chile',
+    's/n',
+    'sn',
+    'sin comuna',
+    'sin ciudad',
+    'sin numero',
+    'sin número',
+})
+
+
+def _norm_parte(texto: str) -> str:
+    return ' '.join(str(texto or '').casefold().split())
+
+
+def _contiene_numero(texto: str, numero: str) -> bool:
+    if not numero:
+        return False
+    return re.search(
+        rf'(?<!\d){re.escape(numero)}(?!\d)',
+        texto,
+        flags=re.IGNORECASE,
+    ) is not None
+
+
+def _direccion_encabezado(*fuentes: str, numero: str = '', extras: tuple[str, ...] = ()) -> str:
+    """Calle, número, comuna y ciudad, sin repetir un trozo."""
+    vistos: set[str] = set()
+    trozos: list[str] = []
+    numero_limpio = ' '.join(str(numero or '').split())
+    numero_clave = _norm_parte(numero_limpio)
+
+    def agregar(valor: str, *, es_numero: bool = False) -> None:
+        texto = ' '.join(str(valor or '').split())
+        clave = _norm_parte(texto)
+        if not clave or clave in _DIRECCION_VACIA or clave in vistos:
+            return
+        if es_numero and any(_contiene_numero(pieza, texto) for pieza in trozos):
+            vistos.add(clave)
+            return
+        vistos.add(clave)
+        trozos.append(texto)
+
+    for fuente in fuentes:
+        for trozo in str(fuente or '').split(','):
+            agregar(trozo)
+    if numero_clave not in _DIRECCION_VACIA:
+        agregar(numero_limpio, es_numero=True)
+    for extra in extras:
+        agregar(extra)
+    if not trozos:
+        return ''
+
+    calle = trozos[0]
+    resto: list[str] = []
+    numero_puesto = (
+        numero_clave not in _DIRECCION_VACIA and (
+            _norm_parte(calle) == numero_clave or _contiene_numero(calle, numero_limpio)
+        )
+    )
+    for trozo in trozos[1:]:
+        if numero_clave not in _DIRECCION_VACIA and not numero_puesto and _norm_parte(trozo) == numero_clave:
+            calle = f'{calle} {trozo}'.strip()
+            numero_puesto = True
+            continue
+        resto.append(trozo)
+    return ', '.join([calle, *resto])
+
+
 def _identidad(cotizacion) -> dict[str, Any]:
     taller = getattr(cotizacion, 'taller', None)
     nombre = _txt(getattr(taller, 'nombre', '')) or 'Taller'
@@ -289,19 +360,17 @@ def _identidad(cotizacion) -> dict[str, Any]:
     except Exception:
         fisica = None
     if fisica is not None:
-        completa = getattr(fisica, 'direccion_completa', '')
-        direccion = _txt(completa)
-        if not direccion:
-            direccion = ', '.join(
-                parte for parte in (
-                    _txt(getattr(fisica, 'calle', '')),
-                    _txt(getattr(fisica, 'numero', '')),
-                    _txt(getattr(fisica, 'comuna', '')),
-                    _txt(getattr(fisica, 'ciudad', '')),
-                ) if parte
-            )
+        direccion = _direccion_encabezado(
+            _txt(getattr(fisica, 'calle', '')),
+            numero=_txt(getattr(fisica, 'numero', '')),
+            extras=(
+                _txt(getattr(fisica, 'comuna', '')),
+                _txt(getattr(fisica, 'ciudad', '')),
+                _txt(getattr(fisica, 'region', '')),
+            ),
+        )
     if not direccion and usuario is not None:
-        direccion = _txt(getattr(usuario, 'direccion', ''))
+        direccion = _direccion_encabezado(_txt(getattr(usuario, 'direccion', '')))
     folio = _txt(getattr(cotizacion, 'numero_publico', ''))
     if not folio and getattr(cotizacion, 'pk', None):
         folio = str(cotizacion.pk)
