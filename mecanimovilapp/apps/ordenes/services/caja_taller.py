@@ -713,19 +713,24 @@ def persistir_evidencia_reembolso_mp(pago, datos_mp: dict | None) -> None:
     """
     if pago is None or not getattr(pago, 'pk', None) or not isinstance(datos_mp, dict):
         return
-    if datos_mp.get('transaction_amount_refunded') is None:
+    status = str(datos_mp.get('status') or getattr(pago, 'status', '') or '')
+    es_contracargo = status == 'charged_back'
+    if datos_mp.get('transaction_amount_refunded') is None and not es_contracargo:
         return
-    nuevo = Decimal(str(datos_mp.get('transaction_amount_refunded')))
     with transaction.atomic():
         bloqueado = pago.__class__.objects.select_for_update().get(pk=pago.pk)
         meta = dict(bloqueado.metadata or {})
-        previo = meta.get('transaction_amount_refunded')
-        if previo is not None and Decimal(str(previo)) > nuevo:
-            vistos = list(meta.get('reembolsos_observados') or [])
-            vistos.append(str(nuevo))
-            meta['reembolsos_observados'] = vistos[-20:]
-        else:
-            meta['transaction_amount_refunded'] = format(nuevo, 'f')
+        if datos_mp.get('transaction_amount_refunded') is not None:
+            nuevo = Decimal(str(datos_mp.get('transaction_amount_refunded')))
+            previo = meta.get('transaction_amount_refunded')
+            if previo is not None and Decimal(str(previo)) > nuevo:
+                vistos = list(meta.get('reembolsos_observados') or [])
+                vistos.append(str(nuevo))
+                meta['reembolsos_observados'] = vistos[-20:]
+            else:
+                meta['transaction_amount_refunded'] = format(nuevo, 'f')
+        if es_contracargo:
+            meta['contracargo_observado'] = True
         meta['caja_reconciliacion'] = 'pendiente'
         bloqueado.metadata = meta
         bloqueado.save(update_fields=['metadata'])
@@ -877,6 +882,8 @@ def contabilizar_desde_pago(pago, oferta, tipo_pago: str) -> None:
     objetivo = _objetivo_reembolso_acumulado(pago, estado_mp, monto)
     if objetivo is None or objetivo <= 0 or entrada.estado != CobroTaller.ESTADO_CONFIRMADO:
         return
+    meta_pago = getattr(pago, 'metadata', None) or {}
+    es_contracargo = estado_mp == 'charged_back' or bool(meta_pago.get('contracargo_observado'))
     _aplicar_reembolso_acumulado(
         taller=taller,
         entrada=entrada,
@@ -884,7 +891,7 @@ def contabilizar_desde_pago(pago, oferta, tipo_pago: str) -> None:
         objetivo=objetivo,
         tipo_salida=(
             CobroTaller.TIPO_CONTRACARGO
-            if estado_mp == 'charged_back'
+            if es_contracargo
             else CobroTaller.TIPO_REEMBOLSO
         ),
         momento=_como_datetime(getattr(pago, 'date_last_updated_mp', None), momento),
@@ -909,16 +916,20 @@ def _estado_desde_mp(status: str) -> str:
 
 
 def _objetivo_reembolso_acumulado(pago, status: str, monto_entrada: int) -> int | None:
-    """`transaction_amount_refunded` de Mercado Pago es acumulado, no un delta."""
+    """`transaction_amount_refunded` es acumulado de devoluciones, no del contracargo.
+
+    Un `charged_back` cierra la entrada completa. El reembolso ya contabilizado
+    no se vuelve a sumar: el incremento es solo el resto.
+    """
     meta = getattr(pago, 'metadata', None) or {}
+    if status == 'charged_back' or meta.get('contracargo_observado'):
+        return monto_entrada
     bruto = meta.get('transaction_amount_refunded')
     if bruto is None:
-        if status in {'refunded', 'charged_back'}:
+        if status == 'refunded':
             return monto_entrada
         return None
     entero, _dec, _redondeado = _clp_desde_decimal(bruto)
-    if status == 'charged_back' and entero <= 0:
-        return monto_entrada
     return min(entero, monto_entrada)
 
 

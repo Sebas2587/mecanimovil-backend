@@ -640,6 +640,108 @@ class LegacyPagoSinLibroTest(TestCase):
         )
         self.assertEqual(CobroTaller.objects.filter(tipo='reembolso').count(), 1)
 
+    def test_contracargo_despues_del_reembolso_parcial_cierra_sin_duplicar(self):
+        from mecanimovilapp.apps.ordenes.services.caja_taller import contabilizar_desde_pago
+
+        pago = self._pago_mp(880010, 'approved')
+        contabilizar_desde_pago(pago, self.oferta, 'total')
+        pago.status = 'refunded'
+        pago.metadata = {'transaction_amount_refunded': '30'}
+        pago.save()
+        contabilizar_desde_pago(pago, self.oferta, 'total')
+        pago.status = 'charged_back'
+        pago.save()
+        intentar_contabilizar_pago_mp(
+            pago,
+            self.oferta,
+            'total',
+            {'status': 'charged_back', 'transaction_amount_refunded': '30'},
+        )
+        intentar_contabilizar_pago_mp(
+            Pago.objects.get(pk=pago.pk),
+            self.oferta,
+            'total',
+            {'status': 'charged_back', 'transaction_amount_refunded': '30'},
+        )
+        self._assert_reversa_cerrada(30, 70)
+        for acumulado in ('10', '30'):
+            pago.status = 'refunded'
+            pago.save(update_fields=['status'])
+            intentar_contabilizar_pago_mp(
+                Pago.objects.get(pk=pago.pk),
+                self.oferta,
+                'total',
+                {'status': 'refunded', 'transaction_amount_refunded': acumulado},
+            )
+        pago.refresh_from_db()
+        self.assertTrue(pago.metadata.get('contracargo_observado'))
+        self.assertEqual(pago.metadata.get('transaction_amount_refunded'), '30')
+        self._assert_reversa_cerrada(30, 70)
+
+    def test_fallo_de_contracargo_conserva_la_evidencia_y_cierra_al_reintentar(self):
+        from mecanimovilapp.apps.ordenes.services import caja_taller as caja_mod
+        from mecanimovilapp.apps.ordenes.services.caja_taller import contabilizar_desde_pago
+
+        pago = self._pago_mp(880011, 'approved')
+        contabilizar_desde_pago(pago, self.oferta, 'total')
+        pago.status = 'refunded'
+        pago.metadata = {'transaction_amount_refunded': '30'}
+        pago.save()
+        contabilizar_desde_pago(pago, self.oferta, 'total')
+        pago.status = 'charged_back'
+        pago.save()
+        real = caja_mod.registrar_movimiento
+
+        def _cae(**kwargs):
+            if kwargs.get('tipo') == 'contracargo':
+                raise RuntimeError('caja caida')
+            return real(**kwargs)
+
+        with patch.object(caja_mod, 'registrar_movimiento', side_effect=_cae):
+            intentar_contabilizar_pago_mp(
+                pago,
+                self.oferta,
+                'total',
+                {'status': 'charged_back', 'transaction_amount_refunded': '30'},
+            )
+        pago.refresh_from_db()
+        self.assertTrue(pago.metadata.get('contracargo_observado'))
+        self.assertEqual(pago.metadata.get('transaction_amount_refunded'), '30')
+        self.assertEqual(self._suma_reversos(), 30)
+        fresco = Pago.objects.get(pk=pago.pk)
+        fresco.status = 'refunded'
+        fresco.save(update_fields=['status'])
+        intentar_contabilizar_pago_mp(
+            fresco,
+            self.oferta,
+            'total',
+            {'status': 'refunded', 'transaction_amount_refunded': '10'},
+        )
+        guardado = Pago.objects.get(pk=pago.pk)
+        self.assertTrue(guardado.metadata.get('contracargo_observado'))
+        self.assertEqual(guardado.metadata.get('transaction_amount_refunded'), '30')
+        contabilizar_desde_pago(guardado, self.oferta, 'total')
+        self._assert_reversa_cerrada(30, 70)
+
+    def _suma_reversos(self):
+        return sum(
+            CobroTaller.objects.filter(tipo__in=['reembolso', 'contracargo'])
+            .values_list('monto_clp', flat=True)
+        )
+
+    def _assert_reversa_cerrada(self, reembolso, contracargo):
+        self.assertEqual(
+            sum(CobroTaller.objects.filter(tipo='reembolso').values_list('monto_clp', flat=True)),
+            reembolso,
+        )
+        self.assertEqual(
+            sum(CobroTaller.objects.filter(tipo='contracargo').values_list('monto_clp', flat=True)),
+            contracargo,
+        )
+        self.assertEqual(self._suma_reversos(), 100)
+        self.assertEqual(CobroTaller.objects.filter(tipo='contracargo').count(), 1)
+        self.assertEqual(CobroTaller.objects.filter(tipo='entrada').get().monto_clp, 100)
+
     def test_webhook_atrasado_no_saca_la_entrada_de_la_caja(self):
         from mecanimovilapp.apps.ordenes.services.caja_taller import contabilizar_desde_pago
 
@@ -974,4 +1076,68 @@ class CajaConcurrenciaPostgresTest(TransactionTestCase):
         self.assertEqual(
             sum(m.monto_clp for m in CobroTaller.objects.filter(tipo='reembolso')),
             60,
+        )
+
+    def test_dos_contracargos_concurrentes_no_duplican_el_resto(self):
+        from mecanimovilapp.apps.ordenes.services.caja_taller import (
+            _aplicar_reembolso_acumulado,
+            registrar_movimiento,
+        )
+
+        ahora = timezone.now()
+        entrada, _creado = registrar_movimiento(
+            taller=self.taller,
+            ancla_tipo='oferta',
+            ancla_id='oferta-race',
+            origen='mercadopago',
+            ref_externa='mp:race-cb',
+            tipo='entrada',
+            estado='confirmado',
+            monto_clp=100,
+            fecha_efectiva=ahora,
+            fecha_local=date(2026, 6, 1),
+            cuerpo={'payment_id': 'race-cb', 'tipo': 'entrada', 'monto_clp': 100},
+        )
+        registrar_movimiento(
+            taller=self.taller,
+            ancla_tipo='oferta',
+            ancla_id='oferta-race',
+            origen='mercadopago',
+            ref_externa='mp-refund:race-cb:acum:30',
+            tipo='reembolso',
+            estado='confirmado',
+            monto_clp=30,
+            fecha_efectiva=ahora,
+            fecha_local=date(2026, 6, 1),
+            movimiento_origen=entrada,
+            cuerpo={'payment_id': 'race-cb', 'acumulado_clp': 30, 'incremento_clp': 30},
+        )
+
+        def golpe():
+            _aplicar_reembolso_acumulado(
+                taller=self.taller,
+                entrada=entrada,
+                payment_id='race-cb',
+                objetivo=100,
+                tipo_salida='contracargo',
+                momento=ahora,
+                componente='total',
+                pago=None,
+                metadata={'status_mp': 'charged_back'},
+            )
+            return 'ok'
+
+        salida = self._correr([golpe, golpe])
+        self.assertEqual(salida, ['ok', 'ok'], salida)
+        self.assertEqual(
+            sum(CobroTaller.objects.filter(tipo='contracargo').values_list('monto_clp', flat=True)),
+            70,
+        )
+        self.assertEqual(CobroTaller.objects.filter(tipo='contracargo').count(), 1)
+        self.assertEqual(
+            sum(
+                CobroTaller.objects.filter(tipo__in=['reembolso', 'contracargo'])
+                .values_list('monto_clp', flat=True)
+            ),
+            100,
         )

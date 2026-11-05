@@ -67,7 +67,9 @@ El monto es CLP entero. La misma clave y el mismo cuerpo devuelven la misma fila
 
 Una fila `pendiente`, `rechazada`, `cancelada` o en otra moneda no abre el libro. El flag pagado sigue siendo `pagado_segun_oferta` (o la fuente que corresponda), el saldo queda null y `aviso_libro` es `sin_efecto_contable`. `pendientes_no_sumados_clp` informa ese monto sin tratarlo como deuda. Un webhook que pide bajar una entrada ya `confirmado` a `pending` o `in_mediation` no la saca de la caja: queda en `metadata.eventos_ignorados`. El reembolso es otra fila.
 
-`transaction_amount_refunded` de Mercado Pago es acumulado. La caja guarda solo el incremento. 10, luego 30, luego 100 dejan reembolsos que suman 100, nunca 140. Un 10 que llega después de un 30 no resta. El acumulado se persiste en `Pago.metadata` antes de contabilizar. Si la caja falla, el reintento reconstruye ese parcial sin el cuerpo del webhook.
+`transaction_amount_refunded` de Mercado Pago es el acumulado de devoluciones, no el contracargo. La caja guarda solo el incremento. 10, luego 30, luego 100 dejan reembolsos que suman 100, nunca 140. Un 10 que llega después de un 30 no resta. El acumulado se persiste en `Pago.metadata` antes de contabilizar. Si la caja falla, el reintento reconstruye ese parcial sin el cuerpo del webhook.
+
+Un pago en `charged_back` cierra la entrada completa. Si ya había una devolución de 30 sobre 100, el contracargo agrega 70 y el neto queda 0. No se vuelve a restar esos 30. La marca `contracargo_observado` queda en el `Pago` antes de contabilizar y no la borra un webhook de reembolso posterior, aunque traiga un acumulado menor. Repetir el contracargo no crea otra fila. Ese dato es interno del pago: la caja lo muestra como movimiento `contracargo`, sin un campo nuevo en la respuesta.
 
 `POST /api/ordenes/caja/costos/` guarda `tipo` `registrado` o `estimado` para `repuestos` o `servicio`. El precio de tienda no es costo real.
 
