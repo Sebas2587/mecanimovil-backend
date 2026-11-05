@@ -9,6 +9,7 @@ from django.contrib.auth import get_user_model
 from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TestCase, TransactionTestCase
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -30,6 +31,7 @@ from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repues
 from mecanimovilapp.apps.ordenes.services.caja_taller import (
     CajaError,
     fecha_local_de,
+    identidades_anclas,
     intentar_contabilizar_pago_mp,
     monto_exigible,
     registrar_manual,
@@ -296,6 +298,157 @@ class CajaTallerAPITest(TestCase):
         self.assertEqual(lectura.status_code, 404)
         escritura = self._post(ajeno, idempotency_key='ajeno')
         self.assertEqual(escritura.status_code, 404)
+
+    def test_identidad_legible_sin_inventar_ni_salir_del_taller(self):
+        self.cita.numero_publico = 'TC-000007'
+        self.cita.save(update_fields=['numero_publico'])
+        self.cot.numero_publico = 'TC-000001'
+        self.cot.vehiculo_patente = 'NOUSAR'
+        self.cot.save(update_fields=['numero_publico', 'vehiculo_patente'])
+        detalle = self.cita.detalle
+        detalle.cliente_nombre = 'Ana Soto'
+        detalle.vehiculo_patente = 'ABCD12'
+        detalle.cliente_telefono = '+56911112222'
+        detalle.save()
+        alta = self._post(self.client)
+        self.assertEqual(alta.status_code, 201, alta.data)
+        self.assertEqual(alta.data['cliente_nombre'], 'Ana Soto')
+        self.assertEqual(alta.data['vehiculo_patente'], 'ABCD12')
+        self.assertEqual(alta.data['folio'], 'TC-000007')
+
+        cot_misma = CotizacionCanal.objects.create(
+            es_libre=True,
+            taller=self.taller,
+            creado_por=self.user,
+            estado='aceptada',
+            cliente_nombre='Desde Cotizacion',
+            vehiculo_patente='BBCD12',
+            numero_publico='TC-000008',
+            servicio_nombre='Sin detalle',
+            mano_obra_clp=20,
+            total_clp=20,
+            token='tok-caja-identidad',
+        )
+        cita_cot = CitaAgendaPersonal.objects.create(
+            taller=self.taller,
+            cotizacion_canal_origen=cot_misma,
+            fecha_servicio=date(2026, 3, 4),
+            hora_servicio=time(11, 0),
+            tipo_servicio='taller',
+            creado_por=self.user,
+        )
+        self._post(
+            self.client,
+            ancla_tipo='cita',
+            ancla_id=str(cita_cot.id),
+            monto_clp=20,
+            fecha_efectiva='2026-03-04',
+            idempotency_key='abono-cot',
+        )
+        cot_ajena = CotizacionCanal.objects.create(
+            es_libre=True,
+            taller=self.taller_otro,
+            creado_por=self.otro,
+            estado='aceptada',
+            cliente_nombre='Secreto Ajeno',
+            vehiculo_patente='ZZZZ99',
+            numero_publico='AJ-000009',
+            servicio_nombre='Ajena',
+            mano_obra_clp=10,
+            total_clp=10,
+            token='tok-caja-ajena',
+        )
+        cita_ajena = CitaAgendaPersonal.objects.create(
+            taller=self.taller,
+            cotizacion_canal_origen=cot_ajena,
+            miembro_taller=self.mecanico,
+            fecha_servicio=date(2026, 3, 5),
+            hora_servicio=time(12, 0),
+            tipo_servicio='taller',
+            creado_por=self.user,
+        )
+        self._post(
+            self.client,
+            ancla_tipo='cita',
+            ancla_id=str(cita_ajena.id),
+            monto_clp=10,
+            fecha_efectiva='2026-03-05',
+            idempotency_key='abono-ajena',
+        )
+        otro_user = User.objects.create_user(username='caja_mec_2', password='x')
+        otro_miembro = MiembroTaller.objects.create(
+            taller=self.taller,
+            usuario=otro_user,
+            rol='mecanico',
+            nombre='Otro Mecánico',
+            modalidad_tecnico='ambas',
+            activo=True,
+        )
+        cita_oculta = CitaAgendaPersonal.objects.create(
+            taller=self.taller,
+            miembro_taller=otro_miembro,
+            fecha_servicio=date(2026, 3, 6),
+            hora_servicio=time(13, 0),
+            tipo_servicio='taller',
+            creado_por=self.user,
+        )
+        CitaAgendaPersonalDetalle.objects.create(
+            cita=cita_oculta,
+            cliente_nombre='Nombre Oculto',
+            vehiculo_patente='OCUL99',
+            servicio_nombre='Oculto',
+        )
+        self._post(
+            self.client,
+            ancla_tipo='cita',
+            ancla_id=str(cita_oculta.id),
+            monto_clp=5,
+            fecha_efectiva='2026-03-06',
+            idempotency_key='abono-oculto',
+        )
+
+        data = self.client.get('/api/ordenes/caja/', {
+            'desde': '2026-03-01', 'hasta': '2026-03-31', 'page_size': 50,
+        }).data
+        por_ancla = {fila['ancla_id']: fila for fila in data['casos']['results']}
+        propia = por_ancla[str(self.cita.id)]
+        self.assertEqual(propia['cliente_nombre'], 'Ana Soto')
+        self.assertEqual(propia['vehiculo_patente'], 'ABCD12')
+        self.assertEqual(propia['folio'], 'TC-000007')
+        desde_cot = por_ancla[str(cita_cot.id)]
+        self.assertEqual(desde_cot['cliente_nombre'], 'Desde Cotizacion')
+        self.assertEqual(desde_cot['vehiculo_patente'], 'BBCD12')
+        self.assertEqual(desde_cot['folio'], 'TC-000008')
+        ajena = por_ancla[str(cita_ajena.id)]
+        self.assertIsNone(ajena['cliente_nombre'])
+        self.assertIsNone(ajena['vehiculo_patente'])
+        self.assertIsNone(ajena['folio'])
+        texto = str(data)
+        self.assertNotIn('+56911112222', texto)
+        self.assertNotIn('Secreto Ajeno', texto)
+        self.assertNotIn('AJ-000009', texto)
+        self.assertNotIn('ZZZZ99', texto)
+
+        mec = APIClient()
+        mec.force_authenticate(user=self.mecanico_user)
+        visto = mec.get('/api/ordenes/caja/', {
+            'desde': '2026-03-01', 'hasta': '2026-03-31', 'page_size': 50,
+        })
+        self.assertEqual(visto.status_code, 200)
+        ids = {fila['ancla_id'] for fila in visto.data['casos']['results']}
+        self.assertIn(str(self.cita.id), ids)
+        self.assertIn(str(cita_ajena.id), ids)
+        self.assertNotIn(str(cita_oculta.id), ids)
+        self.assertNotIn('Nombre Oculto', str(visto.data))
+        self.assertNotIn('costo_registrado_clp', str(visto.data))
+        self.assertNotIn('+56911112222', str(visto.data))
+        anon = APIClient()
+        self.assertNotEqual(
+            anon.get('/api/ordenes/caja/', {
+                'desde': '2026-03-01', 'hasta': '2026-03-31',
+            }).status_code,
+            200,
+        )
 
     def test_dedup_misma_visita_y_nueva_fecha(self):
         CotizacionCanal.objects.create(
@@ -932,6 +1085,232 @@ class TotalesMismaRespuestaTest(TestCase):
         self.assertNotIn('costo_registrado_clp', pubs[0])
         self.assertNotIn('margen_real_clp', pubs[0])
         self.assertNotIn('margen_estimado_clp', pubs[0])
+
+
+class IdentidadCajaLoteTest(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='ident_dueno', password='x')
+        self.taller = Taller.objects.create(
+            usuario=self.user,
+            nombre='Taller Ident',
+            telefono='900000014',
+            estado_verificacion='aprobado',
+        )
+        self.otro = User.objects.create_user(username='ident_otro', password='x')
+        self.taller_otro = Taller.objects.create(
+            usuario=self.otro,
+            nombre='Taller Ident Otro',
+            telefono='900000015',
+            estado_verificacion='aprobado',
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def _cita(self, n, *, folio=''):
+        cot = CotizacionCanal.objects.create(
+            es_libre=True,
+            taller=self.taller,
+            creado_por=self.user,
+            estado='aceptada',
+            cliente_nombre=f'Cliente {n}',
+            servicio_nombre='Servicio',
+            mano_obra_clp=10,
+            total_clp=10,
+            token=f'tok-ident-{n}',
+        )
+        cita = CitaAgendaPersonal.objects.create(
+            taller=self.taller,
+            cotizacion_canal_origen=cot,
+            numero_publico=folio,
+            fecha_servicio=date(2026, 7, 1),
+            hora_servicio=time(10, n % 50),
+            tipo_servicio='taller',
+            creado_por=self.user,
+        )
+        CitaAgendaPersonalDetalle.objects.create(
+            cita=cita,
+            cliente_nombre=f'Cliente {n}',
+            vehiculo_patente=f'ID{n:04d}',
+            servicio_nombre='Servicio',
+        )
+        registrar_manual(
+            taller=self.taller,
+            usuario=self.user,
+            ancla_tipo='cita',
+            ancla_id=str(cita.id),
+            tipo='entrada',
+            monto_clp=10,
+            fecha_valor='2026-07-01',
+            idempotency_key=f'ident-{n}',
+        )
+        return cita
+
+    def _solicitud_publica(self, cliente, vehiculo, token):
+        return SolicitudServicioPublica.objects.create(
+            cliente=cliente,
+            vehiculo=vehiculo,
+            descripcion_problema=token,
+            fecha_preferida=date(2026, 7, 2),
+            fecha_expiracion=timezone.now() + timedelta(days=7),
+            ubicacion_servicio='POINT(-70.6 -33.4)',
+            direccion_servicio_texto='Test',
+            estado='publicada',
+        )
+
+    def _oferta(self, solicitud, proveedor, precio='40'):
+        return OfertaProveedor.objects.create(
+            solicitud=solicitud,
+            proveedor=proveedor,
+            tipo_proveedor='taller',
+            precio_total_ofrecido=Decimal(precio),
+            tiempo_estimado_total=timedelta(hours=1),
+            descripcion_oferta='Oferta',
+            fecha_disponible=date(2026, 7, 3),
+            hora_disponible=time(10, 0),
+            estado='aceptada',
+        )
+
+    def test_lote_de_identidad_no_crece_y_no_escribe_folio(self):
+        citas = [self._cita(n, folio=f'TC-{n:06d}') for n in range(8)]
+        pares = [('cita', str(cita.id)) for cita in citas]
+        with self.assertNumQueries(1):
+            una = identidades_anclas(self.taller, pares[:1])
+        with self.assertNumQueries(1):
+            todas = identidades_anclas(self.taller, pares)
+        self.assertEqual(una[('cita', str(citas[0].id))]['folio'], 'TC-000000')
+        self.assertEqual(len(todas), 8)
+
+        cliente_user = User.objects.create_user(username='ident_cli', password='x')
+        cliente = Cliente.objects.create(
+            usuario=cliente_user,
+            nombre='Nora',
+            apellido='Campos',
+            email='ident_cli@test.com',
+            telefono='+56900001111',
+        )
+        marca = Marca.objects.create(nombre='IdentMarca')
+        modelo = Modelo.objects.create(nombre='IdentModelo', marca=marca)
+        vehiculo = Vehiculo.objects.create(
+            cliente=cliente, marca=marca, modelo=modelo, year=2019, patente='IDNT01',
+        )
+        publica = self._solicitud_publica(cliente, vehiculo, 'propia')
+        oferta = self._oferta(publica, self.user)
+        orden = SolicitudServicio.objects.create(
+            cliente=cliente,
+            vehiculo=vehiculo,
+            taller=self.taller,
+            tipo_servicio='taller',
+            fecha_servicio=date(2026, 7, 4),
+            hora_servicio=time(9, 0),
+            metodo_pago='efectivo',
+            total=Decimal('40'),
+            estado='confirmado',
+            oferta_proveedor=oferta,
+        )
+        SolicitudServicio.objects.filter(pk=orden.pk).update(numero_publico='')
+        orden.refresh_from_db()
+        self.assertEqual(orden.numero_publico, '')
+        publica_vacia = self._solicitud_publica(cliente, vehiculo, 'sin-orden')
+        oferta_sin_orden = self._oferta(publica_vacia, self.user, '15')
+        ajeno_user = User.objects.create_user(username='ident_cli_2', password='x')
+        ajeno = Cliente.objects.create(
+            usuario=ajeno_user,
+            nombre='Secreto',
+            apellido='Ajeno',
+            email='ident_ajeno@test.com',
+        )
+        vehiculo_ajeno = Vehiculo.objects.create(
+            cliente=ajeno, marca=marca, modelo=modelo, year=2018, patente='AJEN01',
+        )
+        publica_ajena = self._solicitud_publica(ajeno, vehiculo_ajeno, 'ajena')
+        oferta_ajena = self._oferta(publica_ajena, self.otro, '15')
+        mixtos = pares + [
+            ('solicitud', str(orden.id)),
+            ('oferta', str(oferta.id)),
+            ('oferta', str(oferta_sin_orden.id)),
+            ('oferta', str(oferta_ajena.id)),
+        ]
+        with self.assertNumQueries(4):
+            encontradas = identidades_anclas(self.taller, mixtos)
+        with self.assertNumQueries(4):
+            identidades_anclas(self.taller, mixtos * 3)
+        with self.assertNumQueries(0):
+            self.assertEqual(identidades_anclas(self.taller, []), {})
+        self.assertEqual(
+            encontradas[('oferta', str(oferta.id))],
+            {
+                'cliente_nombre': 'Nora Campos',
+                'vehiculo_patente': 'IDNT01',
+                'folio': None,
+            },
+        )
+        self.assertEqual(
+            encontradas[('oferta', str(oferta_sin_orden.id))]['cliente_nombre'],
+            'Nora Campos',
+        )
+        self.assertIsNone(encontradas[('oferta', str(oferta_sin_orden.id))]['folio'])
+        self.assertNotIn(('oferta', str(oferta_ajena.id)), encontradas)
+        self.assertNotIn('Secreto Ajeno', str(encontradas))
+        self.assertNotIn('+56900001111', str(encontradas))
+        orden.refresh_from_db()
+        self.assertEqual(orden.numero_publico, '')
+
+        registrar_manual(
+            taller=self.taller,
+            usuario=self.user,
+            ancla_tipo='oferta',
+            ancla_id=str(oferta.id),
+            tipo='entrada',
+            monto_clp=15,
+            fecha_valor='2026-07-04',
+            idempotency_key='ident-oferta',
+            confirmar_sobrepago=True,
+        )
+        visto = self.client.get('/api/ordenes/caja/', {
+            'desde': '2026-07-04', 'hasta': '2026-07-04',
+        }).data
+        caso = visto['casos']['results'][0]
+        self.assertEqual(caso['ancla_tipo'], 'oferta')
+        self.assertEqual(caso['cliente_nombre'], 'Nora Campos')
+        self.assertEqual(caso['vehiculo_patente'], 'IDNT01')
+        self.assertIsNone(caso['folio'])
+        self.assertIsNone(visto['movimientos']['results'][0]['folio'])
+        self.assertNotIn('+56900001111', str(visto))
+        orden.refresh_from_db()
+        self.assertEqual(orden.numero_publico, '')
+
+        with CaptureQueriesContext(connection) as ctx:
+            pagina = self.client.get('/api/ordenes/caja/', {
+                'desde': '2026-07-01', 'hasta': '2026-07-01',
+                'page': 1, 'page_size': 2, 'casos_page': 1,
+            })
+        self.assertEqual(pagina.status_code, 200)
+        self.assertEqual(len(pagina.data['casos']['results']), 2)
+        identidad = [
+            q['sql'] for q in ctx.captured_queries
+            if 'citaagendapersonaldetalle' in q['sql'].lower() and ' in (' in q['sql'].lower()
+        ]
+        self.assertEqual(len(identidad), 1)
+
+    def test_pagina_siguiente_no_repite_la_identidad_de_toda_la_lista(self):
+        citas = [self._cita(n + 20, folio='') for n in range(4)]
+        with CaptureQueriesContext(connection) as ctx:
+            pagina = self.client.get('/api/ordenes/caja/', {
+                'desde': '2026-07-01', 'hasta': '2026-07-01',
+                'page': 2, 'page_size': 2, 'casos_page': 2,
+            })
+        self.assertEqual(pagina.status_code, 200)
+        self.assertEqual({fila['folio'] for fila in pagina.data['casos']['results']}, {None})
+        self.assertEqual(
+            {fila['cliente_nombre'] for fila in pagina.data['movimientos']['results']},
+            {fila['cliente_nombre'] for fila in pagina.data['casos']['results']},
+        )
+        identidad = [
+            q['sql'] for q in ctx.captured_queries
+            if 'citaagendapersonaldetalle' in q['sql'].lower() and ' in (' in q['sql'].lower()
+        ]
+        self.assertEqual(len(identidad), 1)
+        self.assertEqual(len(citas), 4)
 
 
 class CajaMigracionTest(TransactionTestCase):

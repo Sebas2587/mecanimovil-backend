@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import uuid
 from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from zoneinfo import ZoneInfo
@@ -1123,7 +1124,7 @@ def consultar_periodo(
         })
     ver_costos = rol in {'mandante', 'supervisor'}
     casos = _casos_periodo(taller, movimientos, ver_costos=ver_costos)
-    return {
+    data = {
         'zona': 'America/Santiago',
         'desde': desde.isoformat(),
         'hasta': hasta.isoformat(),
@@ -1140,13 +1141,17 @@ def consultar_periodo(
             'legacy_no_contabilizado': legacy,
         },
         'serie': serie,
-        'movimientos': _paginar(
-            [_movimiento_json(m) for m in movimientos],
-            page,
-            page_size,
-        ),
-        'casos': _paginar(casos, casos_page, page_size),
     }
+    movimientos_pagina = _paginar(
+        [_movimiento_json(m) for m in movimientos],
+        page,
+        page_size,
+    )
+    casos_pagina = _paginar(casos, casos_page, page_size)
+    _anotar_identidad(taller, movimientos_pagina['results'], casos_pagina['results'])
+    data['movimientos'] = movimientos_pagina
+    data['casos'] = casos_pagina
+    return data
 
 
 def _paginar(filas: list, page: int, page_size: int) -> dict:
@@ -1354,7 +1359,160 @@ def models_q_pagado():
     return Q(estado_pago_repuestos='pagado') | Q(estado_pago_servicio='pagado')
 
 
+IDENTIDAD_VACIA = {
+    'cliente_nombre': None,
+    'vehiculo_patente': None,
+    'folio': None,
+}
+
+
+def _texto_real(valor) -> str | None:
+    texto = str(valor or '').strip()
+    return texto or None
+
+
+def _nombre_cliente(cliente) -> str | None:
+    if cliente is None:
+        return None
+    partes = [
+        texto for texto in (
+            _texto_real(getattr(cliente, 'nombre', None)),
+            _texto_real(getattr(cliente, 'apellido', None)),
+        ) if texto
+    ]
+    return ' '.join(partes) or None
+
+
+def _pks_enteros(ids: set[str]) -> list[int]:
+    salida = []
+    for raw in ids:
+        try:
+            salida.append(int(raw))
+        except (TypeError, ValueError):
+            continue
+    return salida
+
+
+def _pks_uuid(ids: set[str]) -> list[uuid.UUID]:
+    salida = []
+    for raw in ids:
+        try:
+            salida.append(uuid.UUID(str(raw)))
+        except (TypeError, ValueError, AttributeError):
+            continue
+    return salida
+
+
+def _identidad_cita(cita, taller_id) -> dict:
+    from django.core.exceptions import ObjectDoesNotExist
+
+    detalle = None
+    try:
+        detalle = cita.detalle
+    except ObjectDoesNotExist:
+        detalle = None
+    cot = cita.cotizacion_canal_origen if cita.cotizacion_canal_origen_id else None
+    if cot is not None and cot.taller_id != taller_id:
+        cot = None
+    nombre = _texto_real(getattr(detalle, 'cliente_nombre', None))
+    patente = _texto_real(getattr(detalle, 'vehiculo_patente', None))
+    folio = _texto_real(cita.numero_publico)
+    if cot is not None:
+        nombre = nombre or _texto_real(cot.cliente_nombre)
+        patente = patente or _texto_real(cot.vehiculo_patente)
+        folio = folio or _texto_real(cot.numero_publico)
+    return {
+        'cliente_nombre': nombre,
+        'vehiculo_patente': patente,
+        'folio': folio,
+    }
+
+
+def _identidad_solicitud(orden) -> dict:
+    return {
+        'cliente_nombre': _nombre_cliente(orden.cliente),
+        'vehiculo_patente': _texto_real(getattr(orden.vehiculo, 'patente', None)),
+        'folio': _texto_real(orden.numero_publico),
+    }
+
+
+def identidades_anclas(taller, pares) -> dict[tuple[str, str], dict]:
+    """Nombre, patente y folio ya guardados. Una consulta por tipo, solo de este taller.
+
+    No crea folios ni rellena un nombre ausente. Una ancla de otro taller queda en null.
+    """
+    grupos = {
+        CobroTaller.ANCLA_CITA: set(),
+        CobroTaller.ANCLA_SOLICITUD: set(),
+        CobroTaller.ANCLA_OFERTA: set(),
+    }
+    for tipo, ancla_id in pares:
+        if tipo in grupos and ancla_id:
+            grupos[tipo].add(str(ancla_id))
+    salida: dict[tuple[str, str], dict] = {}
+    cita_ids = _pks_enteros(grupos[CobroTaller.ANCLA_CITA])
+    if cita_ids:
+        citas = CitaAgendaPersonal.objects.filter(
+            taller=taller, pk__in=cita_ids,
+        ).select_related('detalle', 'cotizacion_canal_origen')
+        for cita in citas:
+            salida[(CobroTaller.ANCLA_CITA, str(cita.pk))] = _identidad_cita(cita, taller.id)
+    solicitud_ids = _pks_enteros(grupos[CobroTaller.ANCLA_SOLICITUD])
+    if solicitud_ids:
+        ordenes = SolicitudServicio.objects.filter(
+            taller=taller, pk__in=solicitud_ids,
+        ).select_related('cliente', 'vehiculo')
+        for orden in ordenes:
+            salida[(CobroTaller.ANCLA_SOLICITUD, str(orden.pk))] = _identidad_solicitud(orden)
+    oferta_ids = _pks_uuid(grupos[CobroTaller.ANCLA_OFERTA])
+    if oferta_ids:
+        ofertas = OfertaProveedor.objects.filter(
+            proveedor_id=taller.usuario_id, pk__in=oferta_ids,
+        ).select_related('solicitud__cliente', 'solicitud__vehiculo')
+        ordenes_oferta = SolicitudServicio.objects.filter(
+            taller=taller, oferta_proveedor_id__in=oferta_ids,
+        ).select_related('cliente', 'vehiculo').order_by('pk')
+        por_oferta: dict[str, SolicitudServicio] = {}
+        for orden in ordenes_oferta:
+            clave = str(orden.oferta_proveedor_id)
+            previa = por_oferta.get(clave)
+            if previa is None or (
+                not _texto_real(previa.numero_publico) and _texto_real(orden.numero_publico)
+            ):
+                por_oferta[clave] = orden
+        for oferta in ofertas:
+            orden = por_oferta.get(str(oferta.pk))
+            publica = oferta.solicitud
+            nombre = _nombre_cliente(orden.cliente) if orden is not None else None
+            patente = (
+                _texto_real(getattr(orden.vehiculo, 'patente', None))
+                if orden is not None else None
+            )
+            folio = _texto_real(orden.numero_publico) if orden is not None else None
+            if publica is not None:
+                nombre = nombre or _nombre_cliente(publica.cliente)
+                patente = patente or _texto_real(getattr(publica.vehiculo, 'patente', None))
+            salida[(CobroTaller.ANCLA_OFERTA, str(oferta.pk))] = {
+                'cliente_nombre': nombre,
+                'vehiculo_patente': patente,
+                'folio': folio,
+            }
+    return salida
+
+
+def _anotar_identidad(taller, movimientos: list[dict], casos: list[dict]) -> None:
+    pares = [(fila['ancla_tipo'], fila['ancla_id']) for fila in movimientos]
+    pares.extend((fila['ancla_tipo'], fila['ancla_id']) for fila in casos)
+    encontradas = identidades_anclas(taller, pares)
+    for fila in [*movimientos, *casos]:
+        ident = encontradas.get((fila['ancla_tipo'], str(fila['ancla_id'])), IDENTIDAD_VACIA)
+        fila['cliente_nombre'] = ident['cliente_nombre']
+        fila['vehiculo_patente'] = ident['vehiculo_patente']
+        fila['folio'] = ident['folio']
+
+
 def movimiento_response(mov: CobroTaller, *, creado: bool) -> dict:
     data = _movimiento_json(mov)
     data['creado'] = creado
+    _anotar_identidad(mov.taller, [data], [])
     return data

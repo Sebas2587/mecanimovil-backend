@@ -21,6 +21,8 @@ Fechas inclusive, zona `America/Santiago`. Máximo 366 días. `page` y `casos_pa
 | `movimientos` | Página. Sumar todas las páginas reconstruye el resumen |
 | `casos` | Exigible, neto acumulado y saldo del caso, no del día |
 
+Cada fila de `movimientos.results` y de `casos.results` trae `cliente_nombre`, `vehiculo_patente` y `folio`. Son el dato ya guardado de una ancla de este taller: el detalle de la cita, y si falta, la cotización del mismo taller; en una orden, el cliente y la patente; en una oferta, la orden del taller o, si no hay, la solicitud de esa oferta. Un texto vacío queda null. No se inventa el nombre "Cliente" ni un folio. Un GET no asigna `numero_publico`. El mecánico los ve solo en anclas que ya puede leer. No vienen teléfono, correo ni dirección. Una ancla de otro taller no aporta esos datos.
+
 Ejemplo sintético, exigible 100: abono 30 un día y devolución 10 al día siguiente. El 100 no entra a la caja. Neto del período 20. Saldo del caso 80. La entrada de 30 permanece; la devolución es otra fila.
 
 `saldo_clp` null y `saldo_conocido` false significan que no hay obligación conocida o que el caso solo tiene evidencia vieja. No es saldo 0 y no es deuda nueva.
@@ -88,7 +90,7 @@ Mandante y supervisor escriben y ven costos. El mecánico lee solo sus anclas y 
 
 ## Totales de cotización del taller
 
-En lista y detalle, `total_clp` sale de las líneas de esa misma respuesta: precio unitario por cantidad, más la suma de `mano_obra_lineas`, menos el descuento. Los precios ya incluyen IVA. `total_persistido_clp` es el número guardado. `total_alineado` dice si coinciden. Si falta un precio, `total_clp` es null, `totales_completos` es false y `totales_faltantes` nombra la línea. `total_conocido_parcial_clp` es la parte que sí se pudo sumar. Leer la cotización no la guarda.
+En lista y detalle, `total_clp` sale de las líneas de esa misma respuesta: precio unitario por cantidad, más la suma de `mano_obra_lineas`, menos el descuento. Los precios ya incluyen IVA. `total_persistido_clp` es el número guardado. `total_alineado` dice si coinciden. Si falta un precio, `total_clp` es null, `totales_completos` es false y `totales_faltantes` nombra la línea. Ese null no es $0. `total_conocido_parcial_clp` es la parte que sí se pudo sumar. Leer la cotización no la guarda.
 
 La obligación de caja de una cita usa esa misma cuenta, no un total viejo distinto:
 
