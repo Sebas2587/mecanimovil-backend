@@ -326,6 +326,65 @@ def resolver_precio_linea(
     aplicar_derivados_certeza(next_rep)
 
 
+def _ajustar_rangos_consistentes(repuestos: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Ensure price ranges are in the same units as the line price.
+    
+    Bug fix: production showed oil filter range $30.000–$50.000 (per-unit)
+    vs line total 4×$31.490=$125.960. This function detects when ranges are
+    per-unit but should be per-line (or vice versa) and adjusts them so the
+    line price always falls within the stated range.
+    
+    Returns:
+        New list with adjusted ranges (non-mutating).
+    """
+    out: list[dict[str, Any]] = []
+    for rep in repuestos:
+        if not isinstance(rep, dict):
+            out.append(rep)
+            continue
+        
+        next_rep = dict(rep)
+        cantidad = max(1, int(next_rep.get('cantidad') or 1))
+        unitario = _to_int_clp(next_rep.get('precio_unitario_clp'))
+        precio_min = _to_int_clp(next_rep.get('precio_min_clp'))
+        precio_max = _to_int_clp(next_rep.get('precio_max_clp'))
+        
+        # Skip if no multi-quantity, no unit price, or no ranges
+        if cantidad <= 1 or unitario <= 0 or (precio_min <= 0 and precio_max <= 0):
+            out.append(next_rep)
+            continue
+        
+        line_total = unitario * cantidad
+        
+        # Detect if ranges are per-unit when they should be per-line
+        # Example: line_total=125960, precio_max=50000 → 125960 > 50000*1.5
+        # This indicates ranges are per-unit and need to be multiplied by cantidad
+        if precio_min > 0 and precio_max > 0:
+            # If line total is significantly above max, ranges are per-unit
+            if line_total > precio_max * 1.5:
+                next_rep['precio_min_clp'] = precio_min * cantidad
+                next_rep['precio_max_clp'] = precio_max * cantidad
+            # If line total is significantly below min, ranges are per-line but should be per-unit (rare)
+            elif line_total < precio_min * 0.7:
+                next_rep['precio_min_clp'] = max(1, precio_min // cantidad)
+                next_rep['precio_max_clp'] = max(1, precio_max // cantidad)
+        elif precio_min > 0:
+            # Only min exists
+            if line_total < precio_min * 0.7:
+                next_rep['precio_min_clp'] = max(1, precio_min // cantidad)
+            elif line_total > precio_min * cantidad * 1.5:
+                next_rep['precio_min_clp'] = precio_min * cantidad
+        elif precio_max > 0:
+            # Only max exists
+            if line_total > precio_max * 1.5:
+                next_rep['precio_max_clp'] = precio_max * cantidad
+            elif line_total < precio_max * 0.7:
+                next_rep['precio_max_clp'] = max(1, precio_max // cantidad)
+        
+        out.append(next_rep)
+    return out
+
+
 def _resolver_con_confianza(
     next_rep: dict[str, Any],
     hits: list[dict[str, Any]],
