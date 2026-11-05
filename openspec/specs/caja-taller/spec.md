@@ -46,7 +46,7 @@ Un flag `pagado`, una anotación o un `Pago` sin fila en `CobroTaller` MUST segu
 
 ### Requirement: Idempotencia, reversos y permisos
 
-Un POST manual MUST exigir `Idempotency-Key`. La misma clave y el mismo cuerpo MUST devolver el mismo movimiento. La misma clave con otro cuerpo MUST responder 409. Un reverso MUST ser otra fila, MUST NOT borrar la entrada y MUST NOT superar el monto original. Un POST manual MUST NOT modificar una fila `mercadopago`. Solo el mandante o el supervisor del taller dueño de la ancla pueden escribir. Otro taller MUST recibir 404. El mecánico MUST poder leer solo anclas asignadas y la respuesta MUST NOT incluir claves de costo ni margen. Un sobrepago sin confirmación explícita MUST rechazarse. Si el exigible es desconocido, el saldo MUST ser null y el abono MAY registrarse.
+Un POST manual MUST exigir `Idempotency-Key`. La misma clave y el mismo cuerpo MUST devolver el mismo movimiento. La misma clave con otro cuerpo MUST responder 409. Un reverso MUST ser otra fila, MUST NOT borrar la entrada y MUST NOT superar el monto original. Un POST manual MUST NOT modificar una fila `mercadopago`. Solo el mandante o el supervisor del taller dueño de la ancla pueden escribir. Otro taller MUST recibir 404. El mecánico MUST poder leer solo anclas asignadas y la respuesta MUST NOT incluir claves de costo ni margen. Un sobrepago sin confirmación explícita MUST rechazarse. Si el exigible es desconocido, el saldo MUST ser null y el abono MAY registrarse. Una `fecha_efectiva` que no existe en el calendario MUST responder 400 `fecha_invalida` y MUST NOT crear un movimiento.
 
 #### Scenario: Reintento idéntico y cuerpo distinto
 
