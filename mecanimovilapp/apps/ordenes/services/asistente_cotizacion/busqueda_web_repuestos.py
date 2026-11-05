@@ -3847,9 +3847,36 @@ def _buscar_repuestos_web_tavily(
         n_consultas = 0
         corto_mal = False
         ya_sirve = False
+        # Primero el catálogo de la casa especialista. Otra tienda solo si ahí no hay ficha.
+        for consulta_sitio in _consultas_sitio_especialista(
+            nombre,
+            marca=marca,
+            modelo=modelo,
+            cilindraje=cilindraje,
+            tipo_motor=tipo_motor,
+            especificacion=spec,
+        ):
+            _cortar()
+            n_consultas += 1
+            crudos += _candidatos_validos(consulta_sitio, whitelist)
+            dominio_sitio = consulta_sitio.rsplit('site:', 1)[-1].strip().lower()
+            sirven_casa = [
+                c for c in crudos
+                if dominio_sitio and dominio_sitio in str(c.get('url') or '').lower()
+                and _candidato_sirve_linea(
+                    nombre, c, anio=anio, cilindraje=cilindraje, modelo=modelo,
+                    tipo_motor=tipo_motor, banda_min=_piso(nombre),
+                    banda_max=_techo(nombre),
+                )
+                and _titulo_nombra_pieza(nombre, str(c.get('title') or ''))
+                and _precio_desde_texto(c.get('content') or '', nombre) > 0
+            ]
+            if sirven_casa:
+                ya_sirve = True
+                break
         for i_query, query in enumerate(consultas):
             _cortar()
-            if i_query >= max_q:
+            if ya_sirve or i_query >= max_q:
                 break
             n_consultas += 1
             crudos += _candidatos_validos(query, whitelist)
@@ -3885,8 +3912,19 @@ def _buscar_repuestos_web_tavily(
             if crudos and not sirven and len(otra_pieza) == len(crudos) and not pieza_de_spec:
                 corto_mal = True
                 break
-        # El site: de la especialista no roba el cupo ni alarga un corte temprano.
-        if not ya_sirve and not corto_mal:
+        # Respaldo si la consulta al sitio no corrió (no hay catálogo).
+        if not ya_sirve and not corto_mal and not any(
+            'site:' in str(q) for q in (
+                _consultas_sitio_especialista(
+                    nombre,
+                    marca=marca,
+                    modelo=modelo,
+                    cilindraje=cilindraje,
+                    tipo_motor=tipo_motor,
+                    especificacion=spec,
+                )
+            )
+        ):
             for consulta_sitio in _consultas_sitio_especialista(
                 nombre,
                 marca=marca,

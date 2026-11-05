@@ -1852,6 +1852,12 @@ class FuenteWebEnrichTestCase(SimpleTestCase):
                 'url_referencia': 'https://www.autoplanet.cl/p/9',
                 'tienda_referencia': 'AutoPlanet',
                 'precio_verificado_clp': 120000,
+                'casa_sugerida': 'Adriazola',
+                'nota_referencia': 'Precio referencial de AutoPlanet, no verificado en Adriazola.',
+                'costo_unitario_clp': 90000,
+                'precio_cobrado_clp': 120000,
+                'margen_clp': 30000,
+                'margen_pct': 25.0,
             },
         ])
         self.assertEqual(len(pubs), 1)
@@ -1859,6 +1865,12 @@ class FuenteWebEnrichTestCase(SimpleTestCase):
         self.assertNotIn('url_referencia', pubs[0])
         self.assertNotIn('tienda_referencia', pubs[0])
         self.assertNotIn('precio_verificado_clp', pubs[0])
+        self.assertNotIn('casa_sugerida', pubs[0])
+        self.assertNotIn('nota_referencia', pubs[0])
+        self.assertNotIn('costo_unitario_clp', pubs[0])
+        self.assertNotIn('precio_cobrado_clp', pubs[0])
+        self.assertNotIn('margen_clp', pubs[0])
+        self.assertNotIn('margen_pct', pubs[0])
         self.assertNotIn('tienda_ml', pubs[0])
         self.assertNotIn('proveedor_nombre', pubs[0])
         self.assertEqual(pubs[0].get('marca_repuesto'), 'Sachs')

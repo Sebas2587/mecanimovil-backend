@@ -181,16 +181,27 @@ def _lineas_referencia(rep: dict, ficha: dict) -> list[tuple[str, str]]:
         lineas = [('A consultar', '')]
         if monto > 0:
             lineas.append((f'historial del taller {_pesos(monto)}', ''))
+        casa = _txt(ficha.get('casa_sugerida'))
+        if casa:
+            lineas.append((f'no verificado en {casa}', ''))
         return lineas
+    aviso = ''
+    casa = _txt(ficha.get('casa_sugerida'))
+    if casa and tienda and casa.casefold() != tienda.casefold():
+        aviso = f'no verificado en {casa}'
     if rep.get('precio_a_consultar'):
         lineas = [('A consultar', '')]
         if tienda and precio > 0:
-            lineas.append((f'{tienda} {_pesos(precio)}', url))
+            lineas.append((f'{tienda} {_pesos(precio)}', ''))
+        if aviso:
+            lineas.append((aviso, ''))
         if url:
             lineas.append(('Ver ficha', url))
         return lineas
     if tienda and precio > 0:
-        lineas = [(f'{tienda} {_pesos(precio)}', url)]
+        lineas = [(f'{tienda} {_pesos(precio)}', '')]
+        if aviso:
+            lineas.append((aviso, ''))
         if url:
             lineas.append(('Ver ficha', url))
         return lineas

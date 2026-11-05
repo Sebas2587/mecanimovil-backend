@@ -331,9 +331,17 @@ def especialistas_de_marca(marca: str) -> list[dict[str, Any]]:
 
 
 def especialista_de_la_ficha(nombre: str, url: str, marca: str) -> dict[str, Any] | None:
-    perfil = perfil_de(nombre, url)
+    """La ficha es de la especialista solo si el enlace es de su sitio."""
+    url = str(url or '').strip()
+    if not url:
+        return None
+    perfil = perfil_de('', url)
     if not perfil or perfil.get('fisica') is not True:
         return None
+    if nombre:
+        otro = perfil_de(nombre, '')
+        if otro and _host(str(otro.get('dominio') or '')) != _host(str(perfil.get('dominio') or '')):
+            return None
     if not _marca_calza(marca, perfil.get('marcas') or []):
         return None
     return perfil
