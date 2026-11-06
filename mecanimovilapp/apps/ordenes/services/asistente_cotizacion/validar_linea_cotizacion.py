@@ -243,7 +243,7 @@ def _codigo_rechazo(
     cant = _cantidad(rep)
     piso = _monto_banda_por_unidad(nombre, _entero(rep.get('precio_min_clp')), cant)
     techo = _monto_banda_por_unidad(nombre, _entero(rep.get('precio_max_clp')), cant)
-    resultado_motivo = _motivo_calidad_pastilla(
+    motivo = _motivo_calidad_pastilla(
         cand,
         nombre=nombre,
         modelo=modelo,
@@ -252,13 +252,7 @@ def _codigo_rechazo(
         banda_max=techo,
         anio=anio,
         cilindraje=cilindraje,
-    )
-    # _motivo_calidad_pastilla puede retornar str o tuple[str, str]
-    if isinstance(resultado_motivo, tuple):
-        motivo, mensaje_especifico = resultado_motivo
-    else:
-        motivo = resultado_motivo or ''
-        mensaje_especifico = ''
+    ) or ''
     
     if motivo in ('sin_modelo', 'listado') and not (_es_pastillas_freno(nombre) or _es_balatas_freno(nombre)):
         return ''
@@ -269,9 +263,14 @@ def _codigo_rechazo(
     if motivo == 'precio_alto_banda' and techo > 0 and unit <= int(techo * 1.03) + 1:
         return ''
     
-    # Si hay mensaje específico, retornar tuple
-    if mensaje_especifico:
+    # Si es tipo_freno_incompatible, obtener mensaje específico
+    if motivo == 'tipo_freno_incompatible':
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+            _validar_tipo_familia_freno,
+        )
+        _es_valido, mensaje_especifico = _validar_tipo_familia_freno(nombre, titulo)
         return (motivo, mensaje_especifico)
+    
     return motivo
 
 

@@ -173,7 +173,9 @@ class ValidarTipoFrenoTestCase(SimpleTestCase):
             cilindraje='2.2',
         )
 
+        # Debe retornar solo el código string, no tuple
         self.assertEqual(motivo, 'tipo_freno_incompatible')
+        self.assertIsInstance(motivo, str)
 
     def test_motivo_calidad_pastilla_acepta_tipo_correcto(self):
         """_motivo_calidad_pastilla debe aceptar cuando el tipo de freno coincide."""
@@ -241,8 +243,10 @@ class ValidarTipoFrenoTestCase(SimpleTestCase):
         # Debe estar en estado 'sin_referencia_valida' porque la ficha es incompatible
         self.assertEqual(resultado['validacion_estado'], 'sin_referencia_valida')
         self.assertIn('validacion_motivo', resultado)
-        # El motivo debe indicar que la ficha no corresponde
-        self.assertTrue(len(resultado['validacion_motivo']) > 0)
+        # El motivo debe contener el mensaje específico sobre el mismatch
+        motivo = resultado['validacion_motivo']
+        self.assertIn('pastillas', motivo.lower())
+        self.assertIn('balatas', motivo.lower())
 
     def test_validar_repuesto_acepta_tipo_compatible(self):
         """validar_repuesto debe aceptar cuando el tipo coincide."""
@@ -281,3 +285,67 @@ class ValidarTipoFrenoTestCase(SimpleTestCase):
         # Debe estar en estado 'ok' porque la ficha coincide
         self.assertEqual(resultado['validacion_estado'], 'ok')
         self.assertTrue(resultado['precio_verificado_clp'] > 0)
+
+    def test_validar_repuesto_rechaza_titulo_generico(self):
+        """Debe rechazar cuando el producto tiene título genérico sin especificar familia."""
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.validar_linea_cotizacion import (
+            validar_repuesto,
+        )
+
+        # Se piden balatas traseras pero el producto dice solo "frenos traseros"
+        rep = {
+            'nombre': 'balatas traseras',
+            'cantidad': 1,
+            'precio_unitario_clp': 32000,
+            'precio_min_clp': 25000,
+            'precio_max_clp': 50000,
+            'fuentes_detalle': [
+                {
+                    'fuente': 'web',
+                    'tienda': 'Auto Repuestos',
+                    'dominio': 'autorepuestos.cl',
+                    'precio_clp': 32000,
+                    'url': 'https://autorepuestos.cl/frenos-peugeot-boxer',
+                    'nombre': 'Frenos traseros Peugeot Boxer',
+                }
+            ],
+        }
+
+        resultado = validar_repuesto(
+            rep,
+            marca='Peugeot',
+            modelo='Boxer',
+            anio=2015,
+            tipo_motor='Diesel',
+            cilindraje='2.2',
+        )
+
+        # Debe estar en estado 'sin_referencia_valida' porque es ambiguo
+        self.assertEqual(resultado['validacion_estado'], 'sin_referencia_valida')
+        motivo = resultado['validacion_motivo']
+        self.assertIn('ambiguo', motivo.lower())
+
+    def test_consultas_balatas_no_contiene_pastillas(self):
+        """_consultas_balatas debe buscar balatas/zapatas, nunca pastillas."""
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+            _consultas_balatas,
+        )
+
+        # Caso: balatas traseras
+        consultas = _consultas_balatas(
+            'balatas traseras',
+            marca='Peugeot',
+            modelo='Boxer',
+            cilindraje='2.2',
+            tipo_motor='Diesel',
+        )
+
+        self.assertTrue(len(consultas) > 0)
+        for consulta in consultas:
+            consulta_lower = consulta.lower()
+            # Debe contener balatas o zapatas
+            self.assertTrue('balata' in consulta_lower or 'zapata' in consulta_lower,
+                          f"Query '{consulta}' should contain 'balatas' or 'zapatas'")
+            # Nunca debe contener pastillas
+            self.assertNotIn('pastilla', consulta_lower,
+                           f"Query '{consulta}' should NOT contain 'pastillas'")

@@ -1558,7 +1558,7 @@ def _motivo_calidad_pastilla(
     banda_max: int = 0,
     anio: Any = None,
     cilindraje: Any = None,
-) -> str | tuple[str, str]:
+) -> str:
     """Por qué una ficha no se cotiza. '' si todavía puede servir.
 
     La compuerta vale para cualquier pieza, no solo pastillas. El aceite de
@@ -1586,10 +1586,11 @@ def _motivo_calidad_pastilla(
         return 'anio_incompatible'
     
     # CRÍTICO: Validar que tipo de freno (pastillas vs balatas) y posición coincidan
-    if _es_pastillas_freno(nombre) or _es_balatas_freno(nombre):
-        es_valido, motivo_especifico = _validar_tipo_familia_freno(nombre, titulo_ficha)
+    # Solo validar si tanto el pedido como el candidato son frenos
+    if (_es_pastillas_freno(nombre) or _es_balatas_freno(nombre)) and ('freno' in _norm(titulo_ficha) or 'balata' in _norm(titulo_ficha) or 'pastilla' in _norm(titulo_ficha)):
+        es_valido, _motivo_especifico = _validar_tipo_familia_freno(nombre, titulo_ficha)
         if not es_valido:
-            return ('tipo_freno_incompatible', motivo_especifico)
+            return 'tipo_freno_incompatible'
     
     if _es_linea_aceite_motor(nombre):
         return ''
