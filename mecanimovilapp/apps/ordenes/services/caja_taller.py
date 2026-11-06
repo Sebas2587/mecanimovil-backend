@@ -1532,6 +1532,22 @@ def _casos_periodo(taller, movimientos, *, ver_costos: bool) -> list[dict]:
     if ver_costos:
         costos_batch = _costos_vigentes_batch(taller, vistos, mapa_canon)
     
+    # Batch 5: Prefetch cotizaciones for parts/labor breakdown
+    cotizaciones_batch = {}
+    citas_ids = [_ancla_id(aid) for tipo, aid in vistos if tipo == CobroTaller.ANCLA_CITA]
+    if citas_ids:
+        citas_to_cot = {
+            str(c.id): c.cotizacion_canal_origen
+            for c in CitaAgendaPersonal.objects.filter(
+                id__in=citas_ids, taller=taller
+            ).select_related('cotizacion_canal_origen')
+        }
+        for ancla_tipo, ancla_id in vistos:
+            if ancla_tipo == CobroTaller.ANCLA_CITA:
+                cot = citas_to_cot.get(_ancla_id(ancla_id))
+                if cot:
+                    cotizaciones_batch[(ancla_tipo, ancla_id)] = cot
+    
     salida = []
     for ancla_tipo, ancla_id in vistos:
         key = (ancla_tipo, ancla_id)
@@ -1576,8 +1592,63 @@ def _casos_periodo(taller, movimientos, *, ver_costos: bool) -> list[dict]:
                 exigible=exigible if conocido else None,
                 neto=neto_out,
             ))
+        # Add parts/labor breakdown for all roles (not just ver_costos)
+        cotizacion = cotizaciones_batch.get(key)
+        fila.update(_desglose_partes_labor(cotizacion))
         salida.append(fila)
     return salida
+
+
+def _desglose_partes_labor(cotizacion: CotizacionCanal | None) -> dict:
+    """
+    Extract parts/labor breakdown from a cotizacion for caja display.
+    Returns dict with: repuestos_cobrados_clp, repuestos_costo_clp, repuestos_margen_clp, mano_obra_cobrada_clp.
+    All fields are int or null (never invent $0 for unknown data).
+    """
+    if cotizacion is None:
+        return {
+            'repuestos_cobrados_clp': None,
+            'repuestos_costo_clp': None,
+            'repuestos_margen_clp': None,
+            'mano_obra_cobrada_clp': None,
+        }
+    
+    repuestos = cotizacion.repuestos if isinstance(cotizacion.repuestos, list) else []
+    
+    partes_cobrado = 0
+    partes_costo = 0
+    costo_conocido = True
+    
+    for rep in repuestos:
+        if not isinstance(rep, dict):
+            continue
+        cantidad = max(1, int(rep.get('cantidad') or 1))
+        cobrado = int(rep.get('precio_cobrado_clp') or rep.get('precio_unitario_clp') or 0)
+        costo = rep.get('costo_unitario_clp')
+        
+        partes_cobrado += cobrado * cantidad
+        if costo and costo > 0:
+            partes_costo += int(costo) * cantidad
+        else:
+            costo_conocido = False
+    
+    # If any part has unknown cost, report total cost as null
+    # If no parts at all, known zero (not null)
+    if not repuestos:
+        partes_costo_final = 0
+    elif costo_conocido:
+        partes_costo_final = partes_costo
+    else:
+        partes_costo_final = None
+    
+    partes_margen = (partes_cobrado - partes_costo) if partes_costo_final is not None else None
+    
+    return {
+        'repuestos_cobrados_clp': partes_cobrado,
+        'repuestos_costo_clp': partes_costo_final,
+        'repuestos_margen_clp': partes_margen,
+        'mano_obra_cobrada_clp': int(cotizacion.mano_obra_clp or 0),
+    }
 
 
 def _margenes_caso(taller, ancla_tipo, ancla_id, *, exigible, neto) -> dict:

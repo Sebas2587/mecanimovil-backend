@@ -1178,6 +1178,38 @@ def congelar_costo(rep: dict) -> None:
         rep['costo_estimado_clp'] = estimado
 
 
+def aplicar_margen_taller(rep: dict, taller) -> None:
+    """
+    Apply taller's markup to a part's sale price if cost is known and margin is set.
+    Modifies rep dict in place. This is a thin layer: does not change any quote logic.
+    
+    Args:
+        rep: Part dict with costo_unitario_clp
+        taller: Taller instance with margen_ganancia_pct field
+    """
+    if not isinstance(rep, dict):
+        return
+    
+    # Only apply if taller has configured margin
+    margen = getattr(taller, 'margen_ganancia_pct', None) if taller else None
+    if margen is None:
+        return
+    
+    # Only apply if cost is known
+    costo = costo_estimado_linea(rep)
+    if not costo or costo <= 0:
+        return
+    
+    # Only apply if price not already set (don't override manual pricing)
+    if rep.get('precio_unitario_clp'):
+        return
+    
+    # Apply markup: sale = cost × (1 + margin%)
+    from decimal import Decimal
+    precio_calculado = round(float(costo) * (1 + float(margen) / 100))
+    rep['precio_unitario_clp'] = precio_calculado
+
+
 def economia_repuesto(rep: dict) -> dict[str, Any]:
     """Registrado y estimado van separados. Sin evidencia, el margen real es null."""
     cobrado = _entero(rep.get('precio_unitario_clp'))
@@ -1190,7 +1222,8 @@ def economia_repuesto(rep: dict) -> dict[str, Any]:
         if costo is None or cobrado <= 0:
             return None, None
         unit = cobrado - costo
-        pct = round((unit / cobrado) * 100, 1)
+        # Margen % OF COST (markup): profit/cost×100, not profit/sale
+        pct = round((unit / costo) * 100, 1) if costo > 0 else None
         return unit * cantidad, pct
 
     margen_clp, margen_pct = _margen(base)
@@ -2783,6 +2816,9 @@ def enriquecer_repuestos_cotizacion(
             'catalogo mecanimovil', 'catálogo mecanimovil',
         ):
             next_rep.pop('proveedor_nombre', None)
+
+        # Thin layer: apply taller's configured margin if cost is known and margin is set
+        aplicar_margen_taller(next_rep, taller)
 
         out.append(next_rep)
     return out
