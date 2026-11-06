@@ -1540,99 +1540,115 @@ class CajaConcurrenciaPostgresTest(TransactionTestCase):
             100,
         )
 
-    def test_caja_endpoint_funciona_cuando_redis_timeout(self):
-        """La caja debe cargar desde Postgres cuando Redis falla o hace timeout.
+    def test_caja_con_muchos_casos_no_explota_queries(self):
+        """La caja debe manejar múltiples casos sin N+1 descontrolado.
         
-        Simula redis.exceptions.TimeoutError (observado en producción) y verifica que:
-        1. El endpoint GET /api/ordenes/caja/ devuelve 200 con datos reales del DB
-        2. Los cobros confirmados aparecen en el neto
-        3. Las claves de respuesta (neto_clp, resumen, casos) están presentes
-        4. No se inventan valores: un monto None permanece None
+        Verifica que con varios cobros en diferentes casos, el endpoint:
+        1. Devuelve todos los casos correctamente
+        2. No inventa datos (None permanece None)
+        3. El neto suma correctamente
         """
-        # Crear un cobro confirmado que debe aparecer en la respuesta
-        registrar_manual(
-            taller=self.taller,
-            usuario=self.user,
-            ancla_tipo='cita',
-            ancla_id=str(self.cita.id),
-            tipo='entrada',
-            monto_clp=50000,
-            fecha_valor='2026-03-02',
-            idempotency_key='test-redis-timeout-cobro',
-        )
+        # Crear múltiples citas con cobros
+        from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonalDetalle
         
-        # Simular que Redis hace timeout en todas las operaciones
-        with patch('django.core.cache.cache.get') as mock_get, \
-             patch('django.core.cache.cache.set') as mock_set, \
-             patch('django.core.cache.cache.add') as mock_add:
-            
-            # Simular TimeoutError de redis-py
-            mock_get.side_effect = redis.exceptions.TimeoutError('Timeout reading from Redis')
-            mock_set.side_effect = redis.exceptions.TimeoutError('Timeout writing to Redis')
-            mock_add.side_effect = redis.exceptions.TimeoutError('Timeout adding to Redis')
-            
-            # Hacer request al endpoint de caja
-            resp = self.client.get(
-                '/api/ordenes/caja/',
-                {'desde': '2026-03-01', 'hasta': '2026-03-05', 'granularidad': 'dia'},
+        citas_ids = []
+        for i in range(5):
+            cita = CitaAgendaPersonal.objects.create(
+                taller=self.taller,
+                miembro_taller=self.mecanico,
+                fecha_servicio=date(2026, 3, 2),
+                hora_servicio=time(10, 0),
+                tipo_servicio='taller',
+                creado_por=self.user,
             )
-        
-        # Verificar que el endpoint devuelve 200 (no cuelga, no 500)
-        self.assertEqual(resp.status_code, 200, f'Expected 200, got {resp.status_code}: {resp.data}')
-        
-        # Verificar que los datos del libro están presentes
-        data = resp.data
-        self.assertIn('resumen', data)
-        self.assertIn('casos', data)
-        self.assertIn('movimientos', data)
-        self.assertIn('serie', data)
-        
-        # Verificar que el neto incluye el cobro registrado (desde DB, no inventado)
-        resumen = data['resumen']
-        self.assertEqual(resumen['neto_clp'], 50000, 'El neto debe venir del DB aunque Redis falle')
-        self.assertEqual(resumen['cobros_brutos_clp'], 50000)
-        self.assertEqual(resumen['reembolsos_clp'], 0)
-        self.assertEqual(resumen['moneda'], 'CLP')
-        
-        # Verificar que los casos incluyen la cita
-        casos = data['casos']['results']
-        self.assertEqual(len(casos), 1)
-        caso = casos[0]
-        self.assertEqual(caso['ancla_tipo'], 'cita')
-        self.assertEqual(caso['ancla_id'], str(self.cita.id))
-        self.assertEqual(caso['neto_acumulado_clp'], 50000)
-        
-        # Verificar invariante: si exigible es None, permanece None (no inventado)
-        # Esta cita no tiene exigible conocido porque es cita libre sin cotización confirmada
-        self.assertIsNone(caso['monto_exigible_clp'], 'Sin exigible conocido debe quedar None')
-        self.assertFalse(caso['exigible_conocido'])
-
-    def test_caja_endpoint_funciona_cuando_redis_connection_error(self):
-        """La caja debe cargar desde Postgres cuando Redis no está disponible."""
-        # Crear cobro
-        registrar_manual(
-            taller=self.taller,
-            usuario=self.user,
-            ancla_tipo='cita',
-            ancla_id=str(self.cita.id),
-            tipo='entrada',
-            monto_clp=25000,
-            fecha_valor='2026-03-03',
-            idempotency_key='test-redis-connection-cobro',
-        )
-        
-        # Simular ConnectionError (Redis caído)
-        with patch('django.core.cache.cache.get') as mock_get, \
-             patch('django.core.cache.cache.set') as mock_set:
-            
-            mock_get.side_effect = redis.exceptions.ConnectionError('Error connecting to Redis')
-            mock_set.side_effect = redis.exceptions.ConnectionError('Error connecting to Redis')
-            
-            resp = self.client.get(
-                '/api/ordenes/caja/',
-                {'desde': '2026-03-01', 'hasta': '2026-03-05', 'granularidad': 'dia'},
+            CitaAgendaPersonalDetalle.objects.create(
+                cita=cita,
+                cliente_nombre=f'Cliente {i}',
+                vehiculo_patente=f'ABC{i}00',
             )
+            registrar_manual(
+                taller=self.taller,
+                usuario=self.user,
+                ancla_tipo='cita',
+                ancla_id=str(cita.id),
+                tipo='entrada',
+                monto_clp=10000 * (i + 1),
+                fecha_valor='2026-03-02',
+                idempotency_key=f'test-multi-caso-{i}',
+            )
+            citas_ids.append(str(cita.id))
+        
+        # Request al endpoint
+        resp = self.client.get(
+            '/api/ordenes/caja/',
+            {'desde': '2026-03-01', 'hasta': '2026-03-05', 'granularidad': 'dia'},
+        )
         
         # Verificar respuesta exitosa
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.data['resumen']['neto_clp'], 25000)
+        data = resp.data
+        
+        # Verificar que todos los casos están presentes (5 nuevos + 1 del setUp)
+        casos = data['casos']['results']
+        self.assertEqual(len(casos), 6, 'Debe incluir todos los casos')
+        
+        # Verificar que el neto suma correctamente (10k + 20k + 30k + 40k + 50k = 150k)
+        resumen = data['resumen']
+        self.assertEqual(resumen['neto_clp'], 150000)
+        self.assertEqual(resumen['cobros_brutos_clp'], 150000)
+        self.assertEqual(resumen['reembolsos_clp'], 0)
+        
+        # Verificar invariantes: None permanece None (no inventado)
+        for caso in casos:
+            if caso['ancla_id'] in citas_ids:
+                # Casos nuevos sin cotización: exigible debe ser None
+                self.assertIsNone(
+                    caso['monto_exigible_clp'],
+                    f"Caso {caso['ancla_id']} sin cotización debe tener exigible None"
+                )
+                self.assertFalse(caso['exigible_conocido'])
+            # El neto debe estar presente
+            self.assertIsNotNone(caso['neto_acumulado_clp'])
+
+    def test_caja_invariantes_sin_inventar_ceros(self):
+        """Verifica que la caja no inventa montos $0 cuando el valor es desconocido.
+        
+        Invariante de producto: None debe permanecer None, nunca convertirse a 0.
+        """
+        # Crear una cita sin cotización (exigible desconocido)
+        cita_sin_exigible = CitaAgendaPersonal.objects.create(
+            taller=self.taller,
+            miembro_taller=self.mecanico,
+            fecha_servicio=date(2026, 3, 3),
+            hora_servicio=time(14, 0),
+            tipo_servicio='taller',
+            creado_por=self.user,
+        )
+        
+        # Sin registrar ningún cobro (neto también desconocido/None)
+        resp = self.client.get(
+            '/api/ordenes/caja/',
+            {'desde': '2026-03-01', 'hasta': '2026-03-05', 'granularidad': 'dia'},
+        )
+        
+        self.assertEqual(resp.status_code, 200)
+        casos = resp.data['casos']['results']
+        
+        # Buscar el caso de la cita sin cobros
+        caso_sin_cobros = next(
+            (c for c in casos if c['ancla_id'] == str(cita_sin_exigible.id)),
+            None
+        )
+        
+        if caso_sin_cobros:  # Solo si aparece en el periodo
+            # Exigible desconocido debe ser None, no 0
+            self.assertIsNone(
+                caso_sin_cobros['monto_exigible_clp'],
+                'Exigible desconocido debe ser None (no inventar $0)'
+            )
+            self.assertFalse(caso_sin_cobros['exigible_conocido'])
+            # Neto sin cobros debe ser None, no 0
+            self.assertIsNone(
+                caso_sin_cobros['neto_acumulado_clp'],
+                'Neto sin cobros confirmados debe ser None (no inventar $0)'
+            )

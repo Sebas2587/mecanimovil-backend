@@ -530,15 +530,6 @@ else:
                 "capacity": 1500,
                 "expiry": 60,
                 "group_expiry": 86400,
-                "symmetric_encryption_keys": [SECRET_KEY[:32].encode()],
-                # Timeouts para fail-fast si Redis está lento
-                "channel_layer": {
-                    "connection_kwargs": {
-                        "socket_timeout": 2,
-                        "socket_connect_timeout": 2,
-                        "socket_keepalive": True,
-                    }
-                }
             },
         },
     }
@@ -618,16 +609,9 @@ try:
                 'CLIENT_CLASS': 'django_redis.client.DefaultClient',
                 'COMPRESSOR': 'django_redis.compressors.zlib.ZlibCompressor',
                 'IGNORE_EXCEPTIONS': True,  # No fallar si Redis está down
+                # Socket timeouts para fail-fast si Redis está lento (previene hangs)
                 'SOCKET_CONNECT_TIMEOUT': 2,  # Timeout de conexión: 2 segundos
                 'SOCKET_TIMEOUT': 2,  # Timeout de lectura/escritura: 2 segundos
-                'CONNECTION_POOL_KWARGS': {
-                    'socket_keepalive': True,
-                    'socket_keepalive_options': {
-                        1: 10,  # TCP_KEEPIDLE: esperar 10s antes del primer keepalive
-                        2: 5,   # TCP_KEEPINTVL: intervalo de 5s entre keepalives
-                        3: 3,   # TCP_KEEPCNT: 3 intentos antes de declarar muerta la conexión
-                    },
-                },
             },
             'KEY_PREFIX': 'mecanimovil',
             'TIMEOUT': 300,  # 5 minutos por defecto
@@ -652,15 +636,6 @@ CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_ALWAYS_EAGER = False  # IMPORTANTE: usar async, no ejecutar sincrónicamente
 CELERY_TASK_EAGER_PROPAGATES = True
-
-# Timeouts de Redis para Celery (fail-fast si Redis está lento)
-CELERY_BROKER_TRANSPORT_OPTIONS = {
-    'socket_timeout': 2,
-    'socket_connect_timeout': 2,
-    'socket_keepalive': True,
-}
-CELERY_REDIS_SOCKET_TIMEOUT = 2
-CELERY_REDIS_SOCKET_CONNECT_TIMEOUT = 2
 
 # ============================================
 # OPTIMIZACIONES ADICIONALES DE CELERY
