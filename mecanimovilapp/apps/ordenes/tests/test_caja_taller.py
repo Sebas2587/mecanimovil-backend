@@ -662,9 +662,9 @@ class CajaTallerAPITest(TestCase):
             citas_pequeno.append(str(cita.id))
         
         with CaptureQueriesContext(connection) as ctx_pequeno:
-            resp_pequeno = self.client.get(
-                '/api/ordenes/caja/?desde=2026-03-01&hasta=2026-03-05&granularidad=dia'
-            )
+            resp_pequeno = self.client.get('/api/ordenes/caja/', {
+                'desde': '2026-03-01', 'hasta': '2026-03-05', 'granularidad': 'dia',
+            })
         
         self.assertEqual(resp_pequeno.status_code, 200)
         queries_pequeno = len(ctx_pequeno.captured_queries)
@@ -700,9 +700,9 @@ class CajaTallerAPITest(TestCase):
             citas_grande.append(str(cita.id))
         
         with CaptureQueriesContext(connection) as ctx_grande:
-            resp_grande = self.client.get(
-                '/api/ordenes/caja/?desde=2026-03-01&hasta=2026-03-05&granularidad=dia'
-            )
+            resp_grande = self.client.get('/api/ordenes/caja/', {
+                'desde': '2026-03-01', 'hasta': '2026-03-05', 'granularidad': 'dia',
+            })
         
         self.assertEqual(resp_grande.status_code, 200)
         queries_grande = len(ctx_grande.captured_queries)
@@ -759,9 +759,9 @@ class CajaTallerAPITest(TestCase):
             idempotency_key='test-invariantes-cobro',
         )
         
-        resp = self.client.get(
-            '/api/ordenes/caja/?desde=2026-03-01&hasta=2026-03-05&granularidad=dia'
-        )
+        resp = self.client.get('/api/ordenes/caja/', {
+            'desde': '2026-03-01', 'hasta': '2026-03-05', 'granularidad': 'dia',
+        })
         
         self.assertEqual(resp.status_code, 200)
         casos = resp.data['casos']['results']
