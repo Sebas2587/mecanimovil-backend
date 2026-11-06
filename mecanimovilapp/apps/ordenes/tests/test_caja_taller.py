@@ -2,7 +2,7 @@
 import threading
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 from zoneinfo import ZoneInfo
 
 from django.contrib.auth import get_user_model
@@ -12,6 +12,7 @@ from django.test import TestCase, TransactionTestCase
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework.test import APIClient
+import redis
 
 from mecanimovilapp.apps.ordenes.models import (
     AnclaCaja,
@@ -1538,3 +1539,100 @@ class CajaConcurrenciaPostgresTest(TransactionTestCase):
             ),
             100,
         )
+
+    def test_caja_endpoint_funciona_cuando_redis_timeout(self):
+        """La caja debe cargar desde Postgres cuando Redis falla o hace timeout.
+        
+        Simula redis.exceptions.TimeoutError (observado en producción) y verifica que:
+        1. El endpoint GET /api/ordenes/caja/ devuelve 200 con datos reales del DB
+        2. Los cobros confirmados aparecen en el neto
+        3. Las claves de respuesta (neto_clp, resumen, casos) están presentes
+        4. No se inventan valores: un monto None permanece None
+        """
+        # Crear un cobro confirmado que debe aparecer en la respuesta
+        registrar_manual(
+            taller=self.taller,
+            usuario=self.user,
+            ancla_tipo='cita',
+            ancla_id=str(self.cita.id),
+            tipo='entrada',
+            monto_clp=50000,
+            fecha_valor='2026-03-02',
+            idempotency_key='test-redis-timeout-cobro',
+        )
+        
+        # Simular que Redis hace timeout en todas las operaciones
+        with patch('django.core.cache.cache.get') as mock_get, \
+             patch('django.core.cache.cache.set') as mock_set, \
+             patch('django.core.cache.cache.add') as mock_add:
+            
+            # Simular TimeoutError de redis-py
+            mock_get.side_effect = redis.exceptions.TimeoutError('Timeout reading from Redis')
+            mock_set.side_effect = redis.exceptions.TimeoutError('Timeout writing to Redis')
+            mock_add.side_effect = redis.exceptions.TimeoutError('Timeout adding to Redis')
+            
+            # Hacer request al endpoint de caja
+            resp = self.client.get(
+                '/api/ordenes/caja/',
+                {'desde': '2026-03-01', 'hasta': '2026-03-05', 'granularidad': 'dia'},
+            )
+        
+        # Verificar que el endpoint devuelve 200 (no cuelga, no 500)
+        self.assertEqual(resp.status_code, 200, f'Expected 200, got {resp.status_code}: {resp.data}')
+        
+        # Verificar que los datos del libro están presentes
+        data = resp.data
+        self.assertIn('resumen', data)
+        self.assertIn('casos', data)
+        self.assertIn('movimientos', data)
+        self.assertIn('serie', data)
+        
+        # Verificar que el neto incluye el cobro registrado (desde DB, no inventado)
+        resumen = data['resumen']
+        self.assertEqual(resumen['neto_clp'], 50000, 'El neto debe venir del DB aunque Redis falle')
+        self.assertEqual(resumen['cobros_brutos_clp'], 50000)
+        self.assertEqual(resumen['reembolsos_clp'], 0)
+        self.assertEqual(resumen['moneda'], 'CLP')
+        
+        # Verificar que los casos incluyen la cita
+        casos = data['casos']['results']
+        self.assertEqual(len(casos), 1)
+        caso = casos[0]
+        self.assertEqual(caso['ancla_tipo'], 'cita')
+        self.assertEqual(caso['ancla_id'], str(self.cita.id))
+        self.assertEqual(caso['neto_acumulado_clp'], 50000)
+        
+        # Verificar invariante: si exigible es None, permanece None (no inventado)
+        # Esta cita no tiene exigible conocido porque es cita libre sin cotización confirmada
+        self.assertIsNone(caso['monto_exigible_clp'], 'Sin exigible conocido debe quedar None')
+        self.assertFalse(caso['exigible_conocido'])
+
+    def test_caja_endpoint_funciona_cuando_redis_connection_error(self):
+        """La caja debe cargar desde Postgres cuando Redis no está disponible."""
+        # Crear cobro
+        registrar_manual(
+            taller=self.taller,
+            usuario=self.user,
+            ancla_tipo='cita',
+            ancla_id=str(self.cita.id),
+            tipo='entrada',
+            monto_clp=25000,
+            fecha_valor='2026-03-03',
+            idempotency_key='test-redis-connection-cobro',
+        )
+        
+        # Simular ConnectionError (Redis caído)
+        with patch('django.core.cache.cache.get') as mock_get, \
+             patch('django.core.cache.cache.set') as mock_set:
+            
+            mock_get.side_effect = redis.exceptions.ConnectionError('Error connecting to Redis')
+            mock_set.side_effect = redis.exceptions.ConnectionError('Error connecting to Redis')
+            
+            resp = self.client.get(
+                '/api/ordenes/caja/',
+                {'desde': '2026-03-01', 'hasta': '2026-03-05', 'granularidad': 'dia'},
+            )
+        
+        # Verificar respuesta exitosa
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data['resumen']['neto_clp'], 25000)
