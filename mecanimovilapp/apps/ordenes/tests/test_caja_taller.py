@@ -708,8 +708,13 @@ class CajaTallerAPITest(TestCase):
         queries_grande = len(ctx_grande.captured_queries)
         casos_grande = len(resp_grande.data['casos']['results'])
         
+        # Print actual query counts for review
+        print(f'\n📊 Query counts: queries_pequeno={queries_pequeno} (for {casos_pequeno} cases), '
+              f'queries_grande={queries_grande} (for {casos_grande} cases), '
+              f'diff={queries_grande - queries_pequeno}')
+        
         # Verificar que query count no escala linealmente con casos
-        # Con batching: queries deben ser similares (diff < 10) independiente de # casos
+        # Con batching: queries deben ser similares (diff < 15) independiente de # casos
         # Sin batching: queries_grande sería ~10x queries_pequeno (N+1 pattern)
         self.assertLess(
             queries_grande - queries_pequeno, 15,
