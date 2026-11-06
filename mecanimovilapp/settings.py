@@ -609,6 +609,9 @@ try:
                 'CLIENT_CLASS': 'django_redis.client.DefaultClient',
                 'COMPRESSOR': 'django_redis.compressors.zlib.ZlibCompressor',
                 'IGNORE_EXCEPTIONS': True,  # No fallar si Redis está down
+                # Socket timeouts para fail-fast si Redis está lento (previene hangs)
+                'SOCKET_CONNECT_TIMEOUT': 2,  # Timeout de conexión: 2 segundos
+                'SOCKET_TIMEOUT': 2,  # Timeout de lectura/escritura: 2 segundos
             },
             'KEY_PREFIX': 'mecanimovil',
             'TIMEOUT': 300,  # 5 minutos por defecto
