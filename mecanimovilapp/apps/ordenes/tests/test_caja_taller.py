@@ -647,6 +647,7 @@ class CajaTallerAPITest(TestCase):
                 cita=cita,
                 cliente_nombre=f'Cliente Small {i}',
                 vehiculo_patente=f'SML{i}00',
+                servicio_nombre='Servicio Test',
             )
             registrar_manual(
                 taller=self.taller,
@@ -662,8 +663,7 @@ class CajaTallerAPITest(TestCase):
         
         with CaptureQueriesContext(connection) as ctx_pequeno:
             resp_pequeno = self.client.get(
-                '/api/ordenes/caja/',
-                {'desde': '2026-03-01', 'hasta': '2026-03-05', 'granularidad': 'dia'},
+                '/api/ordenes/caja/?desde=2026-03-01&hasta=2026-03-05&granularidad=dia'
             )
         
         self.assertEqual(resp_pequeno.status_code, 200)
@@ -685,6 +685,7 @@ class CajaTallerAPITest(TestCase):
                 cita=cita,
                 cliente_nombre=f'Cliente Big {i}',
                 vehiculo_patente=f'BIG{i:02d}0',
+                servicio_nombre='Servicio Test',
             )
             registrar_manual(
                 taller=self.taller,
@@ -700,8 +701,7 @@ class CajaTallerAPITest(TestCase):
         
         with CaptureQueriesContext(connection) as ctx_grande:
             resp_grande = self.client.get(
-                '/api/ordenes/caja/',
-                {'desde': '2026-03-01', 'hasta': '2026-03-05', 'granularidad': 'dia'},
+                '/api/ordenes/caja/?desde=2026-03-01&hasta=2026-03-05&granularidad=dia'
             )
         
         self.assertEqual(resp_grande.status_code, 200)
@@ -760,8 +760,7 @@ class CajaTallerAPITest(TestCase):
         )
         
         resp = self.client.get(
-            '/api/ordenes/caja/',
-            {'desde': '2026-03-01', 'hasta': '2026-03-05', 'granularidad': 'dia'},
+            '/api/ordenes/caja/?desde=2026-03-01&hasta=2026-03-05&granularidad=dia'
         )
         
         self.assertEqual(resp.status_code, 200)
