@@ -1197,7 +1197,12 @@ def aplicar_margen_taller(rep: dict, taller) -> None:
     margen = getattr(taller, 'margen_ganancia_pct', None) if taller else None
     if margen is None:
         return
-    # Validate margen is actually a number (not a Mock or other invalid value)
+    
+    # Validate margen is actually a number from the database (Decimal/int/float), not a Mock
+    from decimal import Decimal
+    if not isinstance(margen, (Decimal, int, float)):
+        return
+    
     try:
         margen = float(margen)
         if margen <= 0:
