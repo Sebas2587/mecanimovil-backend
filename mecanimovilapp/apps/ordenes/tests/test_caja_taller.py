@@ -621,6 +621,174 @@ class CajaTallerAPITest(TestCase):
         self.assertIsNone(caso['saldo_clp'])
         self.assertEqual(caso['exigible_fuente'], 'discrepancia')
 
+    def test_caja_con_muchos_casos_no_explota_queries(self):
+        """La caja debe manejar múltiples casos sin N+1 descontrolado.
+        
+        Verifica que con varios cobros en diferentes casos:
+        1. Query count se mantiene bajo control (crece logarítmicamente, no linealmente)
+        2. Todos los casos aparecen correctamente
+        3. None permanece None (no inventado)
+        4. El neto suma correctamente
+        """
+        from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonalDetalle
+        
+        # Set 1: pocos casos (baseline)
+        citas_pequeno = []
+        for i in range(3):
+            cita = CitaAgendaPersonal.objects.create(
+                taller=self.taller,
+                miembro_taller=self.mecanico,
+                fecha_servicio=date(2026, 3, 2),
+                hora_servicio=time(10, 0),
+                tipo_servicio='taller',
+                creado_por=self.user,
+            )
+            CitaAgendaPersonalDetalle.objects.create(
+                cita=cita,
+                cliente_nombre=f'Cliente Small {i}',
+                vehiculo_patente=f'SML{i}00',
+            )
+            registrar_manual(
+                taller=self.taller,
+                usuario=self.user,
+                ancla_tipo='cita',
+                ancla_id=str(cita.id),
+                tipo='entrada',
+                monto_clp=5000,
+                fecha_valor='2026-03-02',
+                idempotency_key=f'test-small-{i}',
+            )
+            citas_pequeno.append(str(cita.id))
+        
+        with CaptureQueriesContext(connection) as ctx_pequeno:
+            resp_pequeno = self.client.get(
+                '/api/ordenes/caja/',
+                {'desde': '2026-03-01', 'hasta': '2026-03-05', 'granularidad': 'dia'},
+            )
+        
+        self.assertEqual(resp_pequeno.status_code, 200)
+        queries_pequeno = len(ctx_pequeno.captured_queries)
+        casos_pequeno = len(resp_pequeno.data['casos']['results'])
+        
+        # Set 2: muchos casos (10x más)
+        citas_grande = []
+        for i in range(30):
+            cita = CitaAgendaPersonal.objects.create(
+                taller=self.taller,
+                miembro_taller=self.mecanico,
+                fecha_servicio=date(2026, 3, 2),
+                hora_servicio=time(10, 0),
+                tipo_servicio='taller',
+                creado_por=self.user,
+            )
+            CitaAgendaPersonalDetalle.objects.create(
+                cita=cita,
+                cliente_nombre=f'Cliente Big {i}',
+                vehiculo_patente=f'BIG{i:02d}0',
+            )
+            registrar_manual(
+                taller=self.taller,
+                usuario=self.user,
+                ancla_tipo='cita',
+                ancla_id=str(cita.id),
+                tipo='entrada',
+                monto_clp=1000,
+                fecha_valor='2026-03-02',
+                idempotency_key=f'test-big-{i}',
+            )
+            citas_grande.append(str(cita.id))
+        
+        with CaptureQueriesContext(connection) as ctx_grande:
+            resp_grande = self.client.get(
+                '/api/ordenes/caja/',
+                {'desde': '2026-03-01', 'hasta': '2026-03-05', 'granularidad': 'dia'},
+            )
+        
+        self.assertEqual(resp_grande.status_code, 200)
+        queries_grande = len(ctx_grande.captured_queries)
+        casos_grande = len(resp_grande.data['casos']['results'])
+        
+        # Verificar que query count no escala linealmente con casos
+        # Con batching: queries deben ser similares (diff < 10) independiente de # casos
+        # Sin batching: queries_grande sería ~10x queries_pequeno (N+1 pattern)
+        self.assertLess(
+            queries_grande - queries_pequeno, 15,
+            f'Query explosion: {queries_pequeno} queries para {casos_pequeno} casos, '
+            f'pero {queries_grande} queries para {casos_grande} casos. '
+            f'Debe crecer logarítmicamente, no linealmente (N+1).'
+        )
+        
+        # Verificar que el neto suma correctamente
+        resumen = resp_grande.data['resumen']
+        self.assertEqual(resumen['neto_clp'], 45000)  # 3*5000 + 30*1000
+        
+        # Verificar invariantes en algunos casos
+        casos = resp_grande.data['casos']['results']
+        casos_sin_exigible = [c for c in casos if c['ancla_id'] in citas_grande[:5]]
+        for caso in casos_sin_exigible:
+            # Sin cotización: exigible debe ser None
+            self.assertIsNone(caso['monto_exigible_clp'])
+            self.assertFalse(caso['exigible_conocido'])
+            # Pero neto debe estar presente
+            self.assertIsNotNone(caso['neto_acumulado_clp'])
+
+    def test_caja_invariantes_sin_inventar_ceros(self):
+        """Verifica que la caja no inventa montos $0 cuando el valor es desconocido.
+        
+        Invariante de producto: None debe permanecer None, nunca convertirse a 0.
+        """
+        # Crear una cita CON cobro pero sin cotización (exigible desconocido)
+        cita_sin_exigible = CitaAgendaPersonal.objects.create(
+            taller=self.taller,
+            miembro_taller=self.mecanico,
+            fecha_servicio=date(2026, 3, 3),
+            hora_servicio=time(14, 0),
+            tipo_servicio='taller',
+            creado_por=self.user,
+        )
+        
+        # Registrar UN cobro para que la cita aparezca en casos
+        registrar_manual(
+            taller=self.taller,
+            usuario=self.user,
+            ancla_tipo='cita',
+            ancla_id=str(cita_sin_exigible.id),
+            tipo='entrada',
+            monto_clp=12345,
+            fecha_valor='2026-03-03',
+            idempotency_key='test-invariantes-cobro',
+        )
+        
+        resp = self.client.get(
+            '/api/ordenes/caja/',
+            {'desde': '2026-03-01', 'hasta': '2026-03-05', 'granularidad': 'dia'},
+        )
+        
+        self.assertEqual(resp.status_code, 200)
+        casos = resp.data['casos']['results']
+        
+        # Buscar el caso de la cita sin cotización
+        caso_sin_exigible = next(
+            (c for c in casos if c['ancla_id'] == str(cita_sin_exigible.id)),
+            None
+        )
+        
+        # Debe aparecer porque tiene cobros en el periodo
+        self.assertIsNotNone(caso_sin_exigible, 'Caso con cobro debe aparecer en la lista')
+        
+        # Exigible desconocido debe ser None, no 0
+        self.assertIsNone(
+            caso_sin_exigible['monto_exigible_clp'],
+            'Exigible desconocido debe ser None (no inventar $0)'
+        )
+        self.assertFalse(caso_sin_exigible['exigible_conocido'])
+        
+        # Neto debe ser el cobro registrado, no None
+        self.assertEqual(
+            caso_sin_exigible['neto_acumulado_clp'], 12345,
+            'Neto debe ser el cobro confirmado'
+        )
+
 
 class LegacyPagoSinLibroTest(TestCase):
     def setUp(self):
@@ -1539,170 +1707,3 @@ class CajaConcurrenciaPostgresTest(TransactionTestCase):
             100,
         )
 
-    def test_caja_con_muchos_casos_no_explota_queries(self):
-        """La caja debe manejar múltiples casos sin N+1 descontrolado.
-        
-        Verifica que con varios cobros en diferentes casos:
-        1. Query count se mantiene bajo control (crece logarítmicamente, no linealmente)
-        2. Todos los casos aparecen correctamente
-        3. None permanece None (no inventado)
-        4. El neto suma correctamente
-        """
-        from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonalDetalle
-        
-        # Set 1: pocos casos (baseline)
-        citas_pequeno = []
-        for i in range(3):
-            cita = CitaAgendaPersonal.objects.create(
-                taller=self.taller,
-                miembro_taller=self.mecanico,
-                fecha_servicio=date(2026, 3, 2),
-                hora_servicio=time(10, 0),
-                tipo_servicio='taller',
-                creado_por=self.user,
-            )
-            CitaAgendaPersonalDetalle.objects.create(
-                cita=cita,
-                cliente_nombre=f'Cliente Small {i}',
-                vehiculo_patente=f'SML{i}00',
-            )
-            registrar_manual(
-                taller=self.taller,
-                usuario=self.user,
-                ancla_tipo='cita',
-                ancla_id=str(cita.id),
-                tipo='entrada',
-                monto_clp=5000,
-                fecha_valor='2026-03-02',
-                idempotency_key=f'test-small-{i}',
-            )
-            citas_pequeno.append(str(cita.id))
-        
-        with CaptureQueriesContext(connection) as ctx_pequeno:
-            resp_pequeno = self.client.get(
-                '/api/ordenes/caja/',
-                {'desde': '2026-03-01', 'hasta': '2026-03-05', 'granularidad': 'dia'},
-            )
-        
-        self.assertEqual(resp_pequeno.status_code, 200)
-        queries_pequeno = len(ctx_pequeno.captured_queries)
-        casos_pequeno = len(resp_pequeno.data['casos']['results'])
-        
-        # Set 2: muchos casos (10x más)
-        citas_grande = []
-        for i in range(30):
-            cita = CitaAgendaPersonal.objects.create(
-                taller=self.taller,
-                miembro_taller=self.mecanico,
-                fecha_servicio=date(2026, 3, 2),
-                hora_servicio=time(10, 0),
-                tipo_servicio='taller',
-                creado_por=self.user,
-            )
-            CitaAgendaPersonalDetalle.objects.create(
-                cita=cita,
-                cliente_nombre=f'Cliente Big {i}',
-                vehiculo_patente=f'BIG{i:02d}0',
-            )
-            registrar_manual(
-                taller=self.taller,
-                usuario=self.user,
-                ancla_tipo='cita',
-                ancla_id=str(cita.id),
-                tipo='entrada',
-                monto_clp=1000,
-                fecha_valor='2026-03-02',
-                idempotency_key=f'test-big-{i}',
-            )
-            citas_grande.append(str(cita.id))
-        
-        with CaptureQueriesContext(connection) as ctx_grande:
-            resp_grande = self.client.get(
-                '/api/ordenes/caja/',
-                {'desde': '2026-03-01', 'hasta': '2026-03-05', 'granularidad': 'dia'},
-            )
-        
-        self.assertEqual(resp_grande.status_code, 200)
-        queries_grande = len(ctx_grande.captured_queries)
-        casos_grande = len(resp_grande.data['casos']['results'])
-        
-        # Verificar que query count no escala linealmente con casos
-        # Con batching: queries deben ser similares (diff < 10) independiente de # casos
-        # Sin batching: queries_grande sería ~10x queries_pequeno (N+1 pattern)
-        self.assertLess(
-            queries_grande - queries_pequeno, 15,
-            f'Query explosion: {queries_pequeno} queries para {casos_pequeno} casos, '
-            f'pero {queries_grande} queries para {casos_grande} casos. '
-            f'Debe crecer logarítmicamente, no linealmente (N+1).'
-        )
-        
-        # Verificar que el neto suma correctamente
-        resumen = resp_grande.data['resumen']
-        self.assertEqual(resumen['neto_clp'], 45000)  # 3*5000 + 30*1000
-        
-        # Verificar invariantes en algunos casos
-        casos = resp_grande.data['casos']['results']
-        casos_sin_exigible = [c for c in casos if c['ancla_id'] in citas_grande[:5]]
-        for caso in casos_sin_exigible:
-            # Sin cotización: exigible debe ser None
-            self.assertIsNone(caso['monto_exigible_clp'])
-            self.assertFalse(caso['exigible_conocido'])
-            # Pero neto debe estar presente
-            self.assertIsNotNone(caso['neto_acumulado_clp'])
-
-    def test_caja_invariantes_sin_inventar_ceros(self):
-        """Verifica que la caja no inventa montos $0 cuando el valor es desconocido.
-        
-        Invariante de producto: None debe permanecer None, nunca convertirse a 0.
-        """
-        # Crear una cita CON cobro pero sin cotización (exigible desconocido)
-        cita_sin_exigible = CitaAgendaPersonal.objects.create(
-            taller=self.taller,
-            miembro_taller=self.mecanico,
-            fecha_servicio=date(2026, 3, 3),
-            hora_servicio=time(14, 0),
-            tipo_servicio='taller',
-            creado_por=self.user,
-        )
-        
-        # Registrar UN cobro para que la cita aparezca en casos
-        registrar_manual(
-            taller=self.taller,
-            usuario=self.user,
-            ancla_tipo='cita',
-            ancla_id=str(cita_sin_exigible.id),
-            tipo='entrada',
-            monto_clp=12345,
-            fecha_valor='2026-03-03',
-            idempotency_key='test-invariantes-cobro',
-        )
-        
-        resp = self.client.get(
-            '/api/ordenes/caja/',
-            {'desde': '2026-03-01', 'hasta': '2026-03-05', 'granularidad': 'dia'},
-        )
-        
-        self.assertEqual(resp.status_code, 200)
-        casos = resp.data['casos']['results']
-        
-        # Buscar el caso de la cita sin cotización
-        caso_sin_exigible = next(
-            (c for c in casos if c['ancla_id'] == str(cita_sin_exigible.id)),
-            None
-        )
-        
-        # Debe aparecer porque tiene cobros en el periodo
-        self.assertIsNotNone(caso_sin_exigible, 'Caso con cobro debe aparecer en la lista')
-        
-        # Exigible desconocido debe ser None, no 0
-        self.assertIsNone(
-            caso_sin_exigible['monto_exigible_clp'],
-            'Exigible desconocido debe ser None (no inventar $0)'
-        )
-        self.assertFalse(caso_sin_exigible['exigible_conocido'])
-        
-        # Neto debe ser el cobro registrado, no None
-        self.assertEqual(
-            caso_sin_exigible['neto_acumulado_clp'], 12345,
-            'Neto debe ser el cobro confirmado'
-        )
