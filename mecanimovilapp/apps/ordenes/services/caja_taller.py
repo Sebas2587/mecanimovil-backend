@@ -1206,22 +1206,255 @@ def _efecto_contable(mov: CobroTaller) -> bool:
     )
 
 
+def _explicar_exigible_batch(taller, vistos: list[tuple[str, str]]) -> dict[tuple[str, str], dict]:
+    """Batch fetch exigible for multiple anclas. Returns dict keyed by (ancla_tipo, ancla_id)."""
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
+        resolver_obligacion_cotizacion,
+    )
+    
+    resultado = {}
+    
+    # Group by type
+    citas_ids = []
+    ofertas_ids = []
+    for ancla_tipo, ancla_id in vistos:
+        try:
+            ancla_tipo_canon, ancla_id_canon = canonizar_ancla(taller, ancla_tipo, ancla_id)
+        except CajaError:
+            resultado[(ancla_tipo, ancla_id)] = _exigible_vacio('ancla_ajena')
+            continue
+        
+        if ancla_tipo_canon == CobroTaller.ANCLA_CITA:
+            citas_ids.append(ancla_id_canon)
+        elif ancla_tipo_canon == CobroTaller.ANCLA_OFERTA:
+            ofertas_ids.append(ancla_id_canon)
+        else:
+            resultado[(ancla_tipo, ancla_id)] = _exigible_vacio('sin_aceptacion')
+    
+    # Batch fetch citas with related cotizaciones
+    if citas_ids:
+        citas = CitaAgendaPersonal.objects.filter(
+            pk__in=citas_ids, taller=taller
+        ).select_related('cotizacion_canal_origen')
+        citas_dict = {str(c.pk): c for c in citas}
+        
+        # Fetch adicionales extras for all citas at once
+        extras_por_cita = {}
+        extras = CotizacionCanal.objects.filter(
+            cita_origen_id__in=citas_ids,
+            estado='aceptada',
+            es_cotizacion_adicional=True,
+        ).exclude(ejecucion_adicional='nueva_fecha')
+        for extra in extras:
+            cita_id = str(extra.cita_origen_id)
+            if cita_id not in extras_por_cita:
+                extras_por_cita[cita_id] = []
+            extras_por_cita[cita_id].append(extra)
+        
+        # Process each cita
+        for ancla_tipo, ancla_id in vistos:
+            try:
+                ancla_tipo_canon, ancla_id_canon = canonizar_ancla(taller, ancla_tipo, ancla_id)
+            except CajaError:
+                continue
+            
+            if ancla_tipo_canon != CobroTaller.ANCLA_CITA:
+                continue
+            
+            cita = citas_dict.get(ancla_id_canon)
+            if cita is None:
+                resultado[(ancla_tipo, ancla_id)] = _exigible_vacio('ancla_ajena')
+                continue
+            
+            cotizaciones = []
+            principal = getattr(cita, 'cotizacion_canal_origen', None)
+            if principal is not None and principal.estado == 'aceptada':
+                cotizaciones.append(principal)
+            cotizaciones.extend(extras_por_cita.get(ancla_id_canon, []))
+            
+            if not cotizaciones:
+                resultado[(ancla_tipo, ancla_id)] = _exigible_vacio('sin_aceptacion')
+                continue
+            
+            total = 0
+            fuentes = []
+            for cot in cotizaciones:
+                info = resolver_obligacion_cotizacion(cot)
+                if not info['obligacion_conocida']:
+                    resultado[(ancla_tipo, ancla_id)] = _exigible_vacio(
+                        info['obligacion_fuente'], info['obligacion_faltantes']
+                    )
+                    break
+                total += int(info['obligacion_clp'])
+                fuentes.append(info['obligacion_fuente'])
+            else:
+                fuente = fuentes[0] if len(set(fuentes)) == 1 else 'mixta'
+                resultado[(ancla_tipo, ancla_id)] = {
+                    'monto_exigible_clp': total,
+                    'exigible_conocido': True,
+                    'exigible_fuente': fuente,
+                    'exigible_faltantes': [],
+                }
+    
+    # Batch fetch ofertas
+    if ofertas_ids:
+        ofertas = OfertaProveedor.objects.filter(
+            pk__in=ofertas_ids, proveedor=taller.usuario
+        )
+        ofertas_dict = {str(o.pk): o for o in ofertas}
+        
+        for ancla_tipo, ancla_id in vistos:
+            try:
+                ancla_tipo_canon, ancla_id_canon = canonizar_ancla(taller, ancla_tipo, ancla_id)
+            except CajaError:
+                continue
+            
+            if ancla_tipo_canon != CobroTaller.ANCLA_OFERTA:
+                continue
+            
+            oferta = ofertas_dict.get(ancla_id_canon)
+            resultado[(ancla_tipo, ancla_id)] = _exigible_oferta(oferta)
+    
+    return resultado
+
+
+def _costos_vigentes_batch(taller, vistos: list[tuple[str, str]]) -> dict[tuple[str, str], dict]:
+    """Batch fetch costos for multiple anclas."""
+    # Canonize all anclas first
+    anclas_canon = []
+    ancla_map = {}  # original -> canonical
+    for ancla_tipo, ancla_id in vistos:
+        try:
+            ancla_tipo_canon, ancla_id_canon = canonizar_ancla(taller, ancla_tipo, ancla_id)
+            anclas_canon.append((ancla_tipo_canon, ancla_id_canon))
+            ancla_map[(ancla_tipo, ancla_id)] = (ancla_tipo_canon, ancla_id_canon)
+        except CajaError:
+            ancla_map[(ancla_tipo, ancla_id)] = None
+    
+    # Fetch all costos at once
+    from django.db.models import Q
+    filtro = Q()
+    for ancla_tipo_canon, ancla_id_canon in anclas_canon:
+        filtro |= Q(ancla_tipo=ancla_tipo_canon, ancla_id=ancla_id_canon)
+    
+    costos = CostoTaller.objects.filter(
+        filtro,
+        taller=taller,
+        vigente=True,
+    ) if anclas_canon else []
+    
+    # Group by ancla
+    costos_por_ancla: dict[tuple[str, str], list] = {}
+    for costo in costos:
+        key = (costo.ancla_tipo, costo.ancla_id)
+        if key not in costos_por_ancla:
+            costos_por_ancla[key] = []
+        costos_por_ancla[key].append(costo)
+    
+    # Calculate for each ancla
+    resultado = {}
+    for ancla_tipo_orig, ancla_id_orig in vistos:
+        ancla_canon = ancla_map.get((ancla_tipo_orig, ancla_id_orig))
+        if ancla_canon is None:
+            resultado[(ancla_tipo_orig, ancla_id_orig)] = {
+                'costo_registrado_clp': None,
+                'costo_estimado_clp': None,
+            }
+            continue
+        
+        filas = costos_por_ancla.get(ancla_canon, [])
+        registrado = 0
+        estimado = 0
+        hay_reg = False
+        hay_est = False
+        for fila in filas:
+            if fila.tipo == CostoTaller.TIPO_REGISTRADO:
+                registrado += int(fila.monto_clp)
+                hay_reg = True
+            elif fila.tipo == CostoTaller.TIPO_ESTIMADO:
+                estimado += int(fila.monto_clp)
+                hay_est = True
+        
+        resultado[(ancla_tipo_orig, ancla_id_orig)] = {
+            'costo_registrado_clp': registrado if hay_reg else None,
+            'costo_estimado_clp': estimado if hay_est else None,
+        }
+    
+    return resultado
+
+
+def _margenes_caso_from_costos(*, costos: dict, exigible, neto) -> dict:
+    """`margen_real_clp` es caja cobrada menos costo registrado, no la obligación."""
+    reg = costos['costo_registrado_clp']
+    est = costos['costo_estimado_clp']
+    faltantes = []
+    if reg is None:
+        faltantes.append('costo_registrado')
+    if neto is None:
+        faltantes.append('neto_no_confirmado')
+    if exigible is None:
+        faltantes.append('exigible_desconocido')
+    resultado = (neto - reg) if neto is not None and reg is not None else None
+    contratado = (exigible - reg) if exigible is not None and reg is not None else None
+    estimado = (exigible - est) if exigible is not None and est is not None else None
+    return {
+        'costo_registrado_clp': reg,
+        'costo_estimado_clp': est,
+        'resultado_caja_clp': resultado,
+        'margen_real_clp': resultado,
+        'margen_contratado_clp': contratado,
+        'margen_estimado_clp': estimado,
+        'margen_faltantes': faltantes,
+    }
+
+
 def _casos_periodo(taller, movimientos, *, ver_costos: bool) -> list[dict]:
     vistos: list[tuple[str, str]] = []
     for mov in movimientos:
         clave = (mov.ancla_tipo, mov.ancla_id)
         if clave not in vistos:
             vistos.append(clave)
+    
+    # Batch 1: Fetch ALL-TIME cobros per ancla (not just period) grouped by type
+    # Critical: neto_acumulado_clp must be all-time for the case, not period-filtered
+    anclas_por_tipo: dict[str, list[str]] = {}
+    for ancla_tipo, ancla_id in vistos:
+        if ancla_tipo not in anclas_por_tipo:
+            anclas_por_tipo[ancla_tipo] = []
+        anclas_por_tipo[ancla_tipo].append(ancla_id)
+    
+    # One query per ancla type with ancla_id__in (3 queries max: cita, solicitud, oferta)
+    cobros_por_ancla: dict[tuple[str, str], list] = {}
+    for ancla_tipo, ids in anclas_por_tipo.items():
+        cobros = CobroTaller.objects.filter(
+            taller=taller,
+            ancla_tipo=ancla_tipo,
+            ancla_id__in=ids,
+        )
+        for cobro in cobros:
+            key = (cobro.ancla_tipo, cobro.ancla_id)
+            if key not in cobros_por_ancla:
+                cobros_por_ancla[key] = []
+            cobros_por_ancla[key].append(cobro)
+    
+    # Batch 2: Prefetch exigible data (citas, ofertas, cotizaciones)
+    exigibles = _explicar_exigible_batch(taller, vistos)
+    
+    # Batch 3: Prefetch costos if ver_costos
+    costos_batch = {}
+    if ver_costos:
+        costos_batch = _costos_vigentes_batch(taller, vistos)
+    
     salida = []
     for ancla_tipo, ancla_id in vistos:
-        todos = list(CobroTaller.objects.filter(
-            taller=taller, ancla_tipo=ancla_tipo, ancla_id=ancla_id,
-        ))
+        key = (ancla_tipo, ancla_id)
+        todos = cobros_por_ancla.get(key, [])
         contables = [m for m in todos if _efecto_contable(m)]
         sin_efecto = [m for m in todos if not _efecto_contable(m)]
         hay = bool(contables)
         _b, _r, neto = _neto_movimientos(contables) if hay else (0, 0, 0)
-        explicacion = explicar_exigible(taller, ancla_tipo, ancla_id)
+        
+        explicacion = exigibles.get(key, _exigible_vacio('sin_aceptacion'))
         exigible = explicacion['monto_exigible_clp']
         conocido = explicacion['exigible_conocido']
         saldo = None
@@ -1250,8 +1483,9 @@ def _casos_periodo(taller, movimientos, *, ver_costos: bool) -> list[dict]:
             'pendientes_no_sumados_clp': pendientes,
         }
         if ver_costos:
-            fila.update(_margenes_caso(
-                taller, ancla_tipo, ancla_id,
+            costos = costos_batch.get(key, {'costo_registrado_clp': None, 'costo_estimado_clp': None})
+            fila.update(_margenes_caso_from_costos(
+                costos=costos,
                 exigible=exigible if conocido else None,
                 neto=neto_out,
             ))
@@ -1344,22 +1578,27 @@ def _contar_legacy(taller, *, miembro=None, rol=None) -> int:
             monto_clp__gt=0,
         ).values_list('ancla_id', flat=True))
         total += sum(1 for pk in ids if pk not in con_libro)
+    
+    # Batch citas check: one query with ancla_id__in instead of exists() per cita
     citas = CitaAgendaPersonal.objects.filter(taller=taller, cobro_estado='anotado')
     if rol == 'mecanico' and miembro is not None:
         citas = citas.filter(miembro_taller=miembro)
     elif rol == 'mecanico':
         citas = citas.none()
-    for cita in citas.only('id', 'cobro_monto_clp', 'cobro_anotado_en'):
-        tiene = CobroTaller.objects.filter(
+    
+    cita_ids = [str(cita.id) for cita in citas.only('id')]
+    if cita_ids:
+        # One query to check which citas have libro entries
+        con_libro_citas = set(CobroTaller.objects.filter(
             taller=taller,
             ancla_tipo=CobroTaller.ANCLA_CITA,
-            ancla_id=str(cita.id),
+            ancla_id__in=cita_ids,
             estado=CobroTaller.ESTADO_CONFIRMADO,
             contabiliza_clp=True,
             monto_clp__gt=0,
-        ).exists()
-        if not tiene:
-            total += 1
+        ).values_list('ancla_id', flat=True))
+        total += sum(1 for cita_id in cita_ids if cita_id not in con_libro_citas)
+    
     return total
 
 
