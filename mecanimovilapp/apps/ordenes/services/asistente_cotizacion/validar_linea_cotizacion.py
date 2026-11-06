@@ -15,6 +15,7 @@ _INCOMPATIBLE = frozenset({
     'modelo_incompatible',
     'sin_modelo',
     'listado',
+    'tipo_freno_incompatible',
 })
 _FRASE = {
     'anio_incompatible': 'La ficha es de otros años.',
@@ -22,6 +23,7 @@ _FRASE = {
     'modelo_incompatible': 'La ficha es de otro modelo.',
     'sin_modelo': 'La ficha no nombra este modelo.',
     'listado': 'La ficha es un listado, no el producto.',
+    'tipo_freno_incompatible': 'El tipo de freno no coincide (pastillas vs balatas, o posición delantero/trasero).',
     'precio_alto_banda': 'El precio de la ficha queda por encima del rango de esta pieza.',
     'precio_bajo_banda': 'El precio de la ficha queda por debajo del rango de esta pieza.',
 }
@@ -211,9 +213,11 @@ def _codigo_rechazo(
         _compat_pastilla_candidato,
         _holgura_anio_titulo,
         _es_pastillas_freno,
+        _es_balatas_freno,
         _monto_banda_por_unidad,
         _motivo_calidad_pastilla,
         _titulo_contradice_motor,
+        _validar_tipo_familia_freno,
     )
 
     titulo = str(item.get('titulo') or '')
@@ -250,7 +254,7 @@ def _codigo_rechazo(
         anio=anio,
         cilindraje=cilindraje,
     ) or ''
-    if motivo in ('sin_modelo', 'listado') and not _es_pastillas_freno(nombre):
+    if motivo in ('sin_modelo', 'listado') and not (_es_pastillas_freno(nombre) or _es_balatas_freno(nombre)):
         return ''
     if motivo in ('precio_bajo_banda', 'precio_alto_banda'):
         cobrado = _entero(rep.get('precio_unitario_clp'))

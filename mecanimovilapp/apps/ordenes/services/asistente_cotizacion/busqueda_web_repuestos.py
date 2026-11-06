@@ -312,8 +312,8 @@ _CATEGORY_SLUG_ML = {
     'inyectores': 'inyectores',
     'zapata': 'zapatas-freno',
     'zapatas': 'zapatas-freno',
-    'balata': 'pastillas-de-freno',
-    'balatas': 'pastillas-de-freno',
+    'balata': 'zapatas-freno',
+    'balatas': 'zapatas-freno',
     'rotula': 'rotula-suspension',
     'rotulas': 'rotula-suspension',
     'homocinetica': 'homocinetica',
@@ -1584,6 +1584,13 @@ def _motivo_calidad_pastilla(
         ),
     ):
         return 'anio_incompatible'
+    
+    # CRÍTICO: Validar que tipo de freno (pastillas vs balatas) y posición coincidan
+    if _es_pastillas_freno(nombre) or _es_balatas_freno(nombre):
+        es_valido, motivo = _validar_tipo_familia_freno(nombre, titulo_ficha)
+        if not es_valido:
+            return 'tipo_freno_incompatible'
+    
     if _es_linea_aceite_motor(nombre):
         return ''
     if _es_pastillas_freno(nombre):
@@ -3053,11 +3060,65 @@ def _gemini_generar(prompt: str, *, timeout: int, use_url_context: bool) -> dict
 
 
 def _es_pastillas_freno(nombre: str) -> bool:
-    """Pastilla o balata. Un disco de freno no entra."""
+    """Pastillas de freno (disco). Balatas/zapatas (tambor) NO entran aquí."""
     n = _norm(nombre)
-    if 'freno' not in n and 'balata' not in n:
+    if 'freno' not in n and 'pastilla' not in n:
         return False
-    return 'pastilla' in n or 'balata' in n
+    return 'pastilla' in n
+
+
+def _es_balatas_freno(nombre: str) -> bool:
+    """Balatas/zapatas de freno (tambor). Pastillas (disco) NO entran aquí."""
+    n = _norm(nombre)
+    return 'balata' in n or 'zapata' in n
+
+
+def _posicion_freno(texto: str) -> str | None:
+    """Extrae posición del freno: 'delantero', 'trasero' o None."""
+    n = _norm(texto)
+    if 'delanter' in n:
+        return 'delantero'
+    if 'traser' in n:
+        return 'trasero'
+    return None
+
+
+def _validar_tipo_familia_freno(nombre_pedido: str, titulo_producto: str) -> tuple[bool, str]:
+    """Valida que el tipo de freno (pastillas vs balatas) y posición coincidan.
+    
+    Returns:
+        (es_valido, motivo_rechazo): (True, '') si es válido, (False, motivo) si no.
+    """
+    n_pedido = _norm(nombre_pedido)
+    n_producto = _norm(titulo_producto)
+    
+    # Verificar tipo de familia (pastillas vs balatas)
+    pedido_es_pastillas = _es_pastillas_freno(nombre_pedido)
+    pedido_es_balatas = _es_balatas_freno(nombre_pedido)
+    producto_es_pastillas = _es_pastillas_freno(titulo_producto)
+    producto_es_balatas = _es_balatas_freno(titulo_producto)
+    
+    # Si el pedido es pastillas pero el producto es balatas/zapatas
+    if pedido_es_pastillas and producto_es_balatas:
+        return False, 'El enlace apunta a balatas/zapatas (tambor), no a pastillas (disco).'
+    
+    # Si el pedido es balatas pero el producto es pastillas
+    if pedido_es_balatas and producto_es_pastillas:
+        return False, 'El enlace apunta a pastillas (disco), no a balatas/zapatas (tambor).'
+    
+    # Verificar posición (delantero/trasero)
+    posicion_pedido = _posicion_freno(nombre_pedido)
+    posicion_producto = _posicion_freno(titulo_producto)
+    
+    # Si ambos especifican posición y no coinciden
+    if posicion_pedido and posicion_producto and posicion_pedido != posicion_producto:
+        return False, f'El enlace apunta a frenos {posicion_producto}s, no {posicion_pedido}s.'
+    
+    # Si el pedido especifica posición pero el producto no la menciona (ambiguo)
+    if posicion_pedido and not posicion_producto and (producto_es_pastillas or producto_es_balatas):
+        return False, f'El enlace no especifica si es {posicion_pedido} (ambiguo).'
+    
+    return True, ''
 
 
 def _viscosidad_aceite(texto: str) -> str:
