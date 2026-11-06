@@ -1641,6 +1641,8 @@ def _desglose_partes_labor(cotizacion: CotizacionCanal | None) -> dict:
     Extract parts/labor breakdown from a cotizacion for caja display.
     Returns dict with: repuestos_cobrados_clp, repuestos_costo_clp, repuestos_margen_clp, mano_obra_cobrada_clp.
     All fields are int or null (never invent $0 for unknown data).
+    
+    Cost resolution matches economia_repuesto: costo_registrado, else costo_estimado, else costo_unitario_clp.
     """
     if cotizacion is None:
         return {
@@ -1649,6 +1651,12 @@ def _desglose_partes_labor(cotizacion: CotizacionCanal | None) -> dict:
             'repuestos_margen_clp': None,
             'mano_obra_cobrada_clp': None,
         }
+    
+    # Import cost resolution helpers
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+        costo_registrado_linea,
+        costo_estimado_linea,
+    )
     
     repuestos = cotizacion.repuestos if isinstance(cotizacion.repuestos, list) else []
     
@@ -1661,7 +1669,14 @@ def _desglose_partes_labor(cotizacion: CotizacionCanal | None) -> dict:
             continue
         cantidad = max(1, int(rep.get('cantidad') or 1))
         cobrado = int(rep.get('precio_cobrado_clp') or rep.get('precio_unitario_clp') or 0)
-        costo = rep.get('costo_unitario_clp')
+        
+        # Resolve cost: costo_registrado > costo_estimado > costo_unitario_clp (same as economia_repuesto)
+        costo = costo_registrado_linea(rep)
+        if costo is None or costo <= 0:
+            costo = costo_estimado_linea(rep)
+        if costo is None or costo <= 0:
+            raw_costo = rep.get('costo_unitario_clp')
+            costo = int(raw_costo) if raw_costo and raw_costo > 0 else None
         
         partes_cobrado += cobrado * cantidad
         if costo and costo > 0:

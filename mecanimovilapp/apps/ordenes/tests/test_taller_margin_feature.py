@@ -276,6 +276,27 @@ class DesglosePartesLaborTest(TestCase):
         # Labor: 50000
         self.assertEqual(desglose['mano_obra_cobrada_clp'], 50000)
     
+    def test_case_with_frozen_ai_cost(self):
+        """Caja should see frozen AI cost (costo_estimado_clp) from margin application."""
+        cot = MagicMock(spec=CotizacionCanal)
+        cot.mano_obra_clp = 30000
+        cot.repuestos = [
+            {
+                'nombre': 'Filtro descubierto por AI',
+                'cantidad': 1,
+                'costo_estimado_clp': 10000,  # Frozen AI cost
+                'precio_unitario_clp': 13000,  # Marked up (30% margin applied)
+            },
+        ]
+        
+        desglose = _desglose_partes_labor(cot)
+        
+        # Should resolve cost from costo_estimado_clp
+        self.assertEqual(desglose['repuestos_cobrados_clp'], 13000)
+        self.assertEqual(desglose['repuestos_costo_clp'], 10000)
+        self.assertEqual(desglose['repuestos_margen_clp'], 3000)
+        self.assertEqual(desglose['mano_obra_cobrada_clp'], 30000)
+    
     def test_case_with_unknown_part_cost(self):
         """Case with any unknown cost should return null for cost/margin."""
         cot = MagicMock(spec=CotizacionCanal)

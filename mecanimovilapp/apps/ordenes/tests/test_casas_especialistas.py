@@ -657,11 +657,11 @@ class OrdenCompraPdfTests(TestCase):
         self.assertEqual(linea['costo_unitario_clp'], 5000)
         self.assertEqual(linea['precio_cobrado_clp'], 8000)
         self.assertEqual(linea['margen_clp'], 6000)
-        self.assertEqual(linea['margen_pct'], 37.5)
+        self.assertEqual(linea['margen_pct'], 60.0)  # profit/cost: 6000/10000 = 60%
         self.assertEqual(data['costo_total_repuestos_clp'], 10000)
         self.assertEqual(data['cobrado_total_repuestos_clp'], 16000)
         self.assertEqual(data['ganancia_repuestos_clp'], 6000)
-        self.assertEqual(data['margen_repuestos_pct'], 37.5)
+        self.assertEqual(data['margen_repuestos_pct'], 60.0)  # profit/cost: 6000/10000 = 60%
 
     def test_el_pack_de_bujias_champion_se_cotiza_por_unidad(self):
         from mecanimovilapp.apps.ordenes.serializers_cotizacion_canal import (
@@ -805,7 +805,7 @@ class OrdenCompraPdfTests(TestCase):
         self.assertEqual(linea['url_referencia'], '')
         self.assertIsNone(linea['precio_verificado_clp'])
         self.assertIn('otros años', linea['validacion_motivo'].lower())
-        self.assertGreaterEqual(linea['margen_pct'], -100)
+        self.assertIsNone(linea['margen_pct'])  # No valid frozen cost (other-year price must not become cost)
         self.assertNotEqual(linea['costo_unitario_clp'], 15826)
 
     def test_el_filtro_asumido_sin_casa_sugiere_indra(self):

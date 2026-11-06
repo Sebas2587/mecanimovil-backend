@@ -1307,7 +1307,8 @@ def economia_cotizacion(repuestos: list) -> dict[str, Any]:
     completo = faltantes == 0
     real_completo = faltan_reg == 0
     ganancia = (cobrado - costo) if completo else None
-    pct = round((ganancia / cobrado) * 100, 1) if completo and cobrado > 0 and ganancia is not None else None
+    # margen_repuestos_pct is profit/cost (markup), not profit/sale
+    pct = round((ganancia / costo) * 100, 1) if completo and costo > 0 and ganancia is not None else None
     ganancia_real = (cobrado - costo_reg) if real_completo and lineas else None
     if lineas == 0:
         ganancia_real = 0
