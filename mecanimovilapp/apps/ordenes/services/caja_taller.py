@@ -1206,40 +1206,120 @@ def _efecto_contable(mov: CobroTaller) -> bool:
     )
 
 
-def _explicar_exigible_batch(taller, vistos: list[tuple[str, str]]) -> dict[tuple[str, str], dict]:
-    """Batch fetch exigible for multiple anclas. Returns dict keyed by (ancla_tipo, ancla_id)."""
+def _canonizar_anclas_batch(taller, vistos: list[tuple[str, str]]) -> dict[tuple[str, str], tuple[str, str] | None]:
+    """Build canonical ancla map in memory without DB calls per row.
+    
+    Returns dict: (ancla_tipo, ancla_id) -> (canonical_tipo, canonical_id) or None if invalid.
+    Solicitud→Oferta mapping applied in memory after batch fetch.
+    """
+    # Group by type
+    citas_set = set()
+    solicitudes_set = set()
+    ofertas_set = set()
+    
+    for ancla_tipo, ancla_id in vistos:
+        if ancla_tipo == CobroTaller.ANCLA_CITA:
+            citas_set.add(_ancla_id(ancla_id))
+        elif ancla_tipo == CobroTaller.ANCLA_SOLICITUD:
+            solicitudes_set.add(_ancla_id(ancla_id))
+        elif ancla_tipo == CobroTaller.ANCLA_OFERTA:
+            ofertas_set.add(_ancla_id(ancla_id))
+    
+    mapa = {}
+    
+    # Citas: already taller-scoped from movements, just verify existence
+    if citas_set:
+        citas_existentes = set(
+            str(pk) for pk in CitaAgendaPersonal.objects.filter(
+                pk__in=citas_set, taller=taller
+            ).values_list('pk', flat=True)
+        )
+        for ancla_tipo, ancla_id in vistos:
+            if ancla_tipo == CobroTaller.ANCLA_CITA:
+                aid = _ancla_id(ancla_id)
+                if aid in citas_existentes:
+                    mapa[(ancla_tipo, ancla_id)] = (CobroTaller.ANCLA_CITA, aid)
+                else:
+                    mapa[(ancla_tipo, ancla_id)] = None
+    
+    # Solicitudes: batch fetch with oferta relation, canonize to oferta if exists
+    if solicitudes_set:
+        solicitudes = SolicitudServicio.objects.filter(
+            pk__in=solicitudes_set, taller=taller
+        ).select_related('oferta_proveedor')
+        
+        for sol in solicitudes:
+            sol_id = str(sol.pk)
+            # Apply canonizar logic: if has oferta from this taller, use oferta
+            if sol.oferta_proveedor_id and sol.oferta_proveedor.proveedor_id == taller.usuario_id:
+                mapa[(CobroTaller.ANCLA_SOLICITUD, sol_id)] = (
+                    CobroTaller.ANCLA_OFERTA, str(sol.oferta_proveedor_id)
+                )
+            else:
+                mapa[(CobroTaller.ANCLA_SOLICITUD, sol_id)] = (
+                    CobroTaller.ANCLA_SOLICITUD, sol_id
+                )
+        
+        # Mark missing solicitudes
+        for ancla_tipo, ancla_id in vistos:
+            if ancla_tipo == CobroTaller.ANCLA_SOLICITUD:
+                if (ancla_tipo, ancla_id) not in mapa:
+                    mapa[(ancla_tipo, ancla_id)] = None
+    
+    # Ofertas: verify they belong to this taller
+    if ofertas_set:
+        ofertas_existentes = set(
+            str(pk) for pk in OfertaProveedor.objects.filter(
+                pk__in=ofertas_set, proveedor=taller.usuario
+            ).values_list('pk', flat=True)
+        )
+        for ancla_tipo, ancla_id in vistos:
+            if ancla_tipo == CobroTaller.ANCLA_OFERTA:
+                aid = _ancla_id(ancla_id)
+                if aid in ofertas_existentes:
+                    mapa[(ancla_tipo, ancla_id)] = (CobroTaller.ANCLA_OFERTA, aid)
+                else:
+                    mapa[(ancla_tipo, ancla_id)] = None
+    
+    return mapa
+
+
+def _explicar_exigible_batch(taller, vistos: list[tuple[str, str]], mapa_canon: dict) -> dict[tuple[str, str], dict]:
+    """Batch fetch exigible for multiple anclas using pre-built canonical map."""
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
         resolver_obligacion_cotizacion,
     )
     
     resultado = {}
     
-    # Group by type
-    citas_ids = []
-    ofertas_ids = []
+    # Group canonical anclas by type
+    citas_ids = set()
+    ofertas_ids = set()
+    
     for ancla_tipo, ancla_id in vistos:
-        try:
-            ancla_tipo_canon, ancla_id_canon = canonizar_ancla(taller, ancla_tipo, ancla_id)
-        except CajaError:
+        canon = mapa_canon.get((ancla_tipo, ancla_id))
+        if canon is None:
             resultado[(ancla_tipo, ancla_id)] = _exigible_vacio('ancla_ajena')
             continue
         
-        if ancla_tipo_canon == CobroTaller.ANCLA_CITA:
-            citas_ids.append(ancla_id_canon)
-        elif ancla_tipo_canon == CobroTaller.ANCLA_OFERTA:
-            ofertas_ids.append(ancla_id_canon)
+        canon_tipo, canon_id = canon
+        if canon_tipo == CobroTaller.ANCLA_CITA:
+            citas_ids.add(canon_id)
+        elif canon_tipo == CobroTaller.ANCLA_OFERTA:
+            ofertas_ids.add(canon_id)
         else:
             resultado[(ancla_tipo, ancla_id)] = _exigible_vacio('sin_aceptacion')
     
     # Batch fetch citas with related cotizaciones
+    citas_dict = {}
+    extras_por_cita = {}
     if citas_ids:
         citas = CitaAgendaPersonal.objects.filter(
             pk__in=citas_ids, taller=taller
         ).select_related('cotizacion_canal_origen')
         citas_dict = {str(c.pk): c for c in citas}
         
-        # Fetch adicionales extras for all citas at once
-        extras_por_cita = {}
+        # Fetch adicionales for all citas at once
         extras = CotizacionCanal.objects.filter(
             cita_origen_id__in=citas_ids,
             estado='aceptada',
@@ -1250,86 +1330,90 @@ def _explicar_exigible_batch(taller, vistos: list[tuple[str, str]]) -> dict[tupl
             if cita_id not in extras_por_cita:
                 extras_por_cita[cita_id] = []
             extras_por_cita[cita_id].append(extra)
+    
+    # Process citas
+    for ancla_tipo, ancla_id in vistos:
+        if (ancla_tipo, ancla_id) in resultado:
+            continue
         
-        # Process each cita
-        for ancla_tipo, ancla_id in vistos:
-            try:
-                ancla_tipo_canon, ancla_id_canon = canonizar_ancla(taller, ancla_tipo, ancla_id)
-            except CajaError:
-                continue
-            
-            if ancla_tipo_canon != CobroTaller.ANCLA_CITA:
-                continue
-            
-            cita = citas_dict.get(ancla_id_canon)
-            if cita is None:
-                resultado[(ancla_tipo, ancla_id)] = _exigible_vacio('ancla_ajena')
-                continue
-            
-            cotizaciones = []
-            principal = getattr(cita, 'cotizacion_canal_origen', None)
-            if principal is not None and principal.estado == 'aceptada':
-                cotizaciones.append(principal)
-            cotizaciones.extend(extras_por_cita.get(ancla_id_canon, []))
-            
-            if not cotizaciones:
-                resultado[(ancla_tipo, ancla_id)] = _exigible_vacio('sin_aceptacion')
-                continue
-            
-            total = 0
-            fuentes = []
-            for cot in cotizaciones:
-                info = resolver_obligacion_cotizacion(cot)
-                if not info['obligacion_conocida']:
-                    resultado[(ancla_tipo, ancla_id)] = _exigible_vacio(
-                        info['obligacion_fuente'], info['obligacion_faltantes']
-                    )
-                    break
-                total += int(info['obligacion_clp'])
-                fuentes.append(info['obligacion_fuente'])
-            else:
-                fuente = fuentes[0] if len(set(fuentes)) == 1 else 'mixta'
-                resultado[(ancla_tipo, ancla_id)] = {
-                    'monto_exigible_clp': total,
-                    'exigible_conocido': True,
-                    'exigible_fuente': fuente,
-                    'exigible_faltantes': [],
-                }
+        canon = mapa_canon.get((ancla_tipo, ancla_id))
+        if canon is None:
+            continue
+        
+        canon_tipo, canon_id = canon
+        if canon_tipo != CobroTaller.ANCLA_CITA:
+            continue
+        
+        cita = citas_dict.get(canon_id)
+        if cita is None:
+            resultado[(ancla_tipo, ancla_id)] = _exigible_vacio('ancla_ajena')
+            continue
+        
+        cotizaciones = []
+        principal = getattr(cita, 'cotizacion_canal_origen', None)
+        if principal is not None and principal.estado == 'aceptada':
+            cotizaciones.append(principal)
+        cotizaciones.extend(extras_por_cita.get(canon_id, []))
+        
+        if not cotizaciones:
+            resultado[(ancla_tipo, ancla_id)] = _exigible_vacio('sin_aceptacion')
+            continue
+        
+        total = 0
+        fuentes = []
+        for cot in cotizaciones:
+            info = resolver_obligacion_cotizacion(cot)
+            if not info['obligacion_conocida']:
+                resultado[(ancla_tipo, ancla_id)] = _exigible_vacio(
+                    info['obligacion_fuente'], info['obligacion_faltantes']
+                )
+                break
+            total += int(info['obligacion_clp'])
+            fuentes.append(info['obligacion_fuente'])
+        else:
+            fuente = fuentes[0] if len(set(fuentes)) == 1 else 'mixta'
+            resultado[(ancla_tipo, ancla_id)] = {
+                'monto_exigible_clp': total,
+                'exigible_conocido': True,
+                'exigible_fuente': fuente,
+                'exigible_faltantes': [],
+            }
     
     # Batch fetch ofertas
+    ofertas_dict = {}
     if ofertas_ids:
         ofertas = OfertaProveedor.objects.filter(
             pk__in=ofertas_ids, proveedor=taller.usuario
         )
         ofertas_dict = {str(o.pk): o for o in ofertas}
+    
+    # Process ofertas
+    for ancla_tipo, ancla_id in vistos:
+        if (ancla_tipo, ancla_id) in resultado:
+            continue
         
-        for ancla_tipo, ancla_id in vistos:
-            try:
-                ancla_tipo_canon, ancla_id_canon = canonizar_ancla(taller, ancla_tipo, ancla_id)
-            except CajaError:
-                continue
-            
-            if ancla_tipo_canon != CobroTaller.ANCLA_OFERTA:
-                continue
-            
-            oferta = ofertas_dict.get(ancla_id_canon)
-            resultado[(ancla_tipo, ancla_id)] = _exigible_oferta(oferta)
+        canon = mapa_canon.get((ancla_tipo, ancla_id))
+        if canon is None:
+            continue
+        
+        canon_tipo, canon_id = canon
+        if canon_tipo != CobroTaller.ANCLA_OFERTA:
+            continue
+        
+        oferta = ofertas_dict.get(canon_id)
+        resultado[(ancla_tipo, ancla_id)] = _exigible_oferta(oferta)
     
     return resultado
 
 
-def _costos_vigentes_batch(taller, vistos: list[tuple[str, str]]) -> dict[tuple[str, str], dict]:
-    """Batch fetch costos for multiple anclas."""
-    # Canonize all anclas first
-    anclas_canon = []
-    ancla_map = {}  # original -> canonical
+def _costos_vigentes_batch(taller, vistos: list[tuple[str, str]], mapa_canon: dict) -> dict[tuple[str, str], dict]:
+    """Batch fetch costos for multiple anclas using pre-built canonical map."""
+    # Collect unique canonical anclas
+    anclas_canon = set()
     for ancla_tipo, ancla_id in vistos:
-        try:
-            ancla_tipo_canon, ancla_id_canon = canonizar_ancla(taller, ancla_tipo, ancla_id)
-            anclas_canon.append((ancla_tipo_canon, ancla_id_canon))
-            ancla_map[(ancla_tipo, ancla_id)] = (ancla_tipo_canon, ancla_id_canon)
-        except CajaError:
-            ancla_map[(ancla_tipo, ancla_id)] = None
+        canon = mapa_canon.get((ancla_tipo, ancla_id))
+        if canon is not None:
+            anclas_canon.add(canon)
     
     # Fetch all costos at once
     from django.db.models import Q
@@ -1354,7 +1438,7 @@ def _costos_vigentes_batch(taller, vistos: list[tuple[str, str]]) -> dict[tuple[
     # Calculate for each ancla
     resultado = {}
     for ancla_tipo_orig, ancla_id_orig in vistos:
-        ancla_canon = ancla_map.get((ancla_tipo_orig, ancla_id_orig))
+        ancla_canon = mapa_canon.get((ancla_tipo_orig, ancla_id_orig))
         if ancla_canon is None:
             resultado[(ancla_tipo_orig, ancla_id_orig)] = {
                 'costo_registrado_clp': None,
@@ -1437,13 +1521,16 @@ def _casos_periodo(taller, movimientos, *, ver_costos: bool) -> list[dict]:
                 cobros_por_ancla[key] = []
             cobros_por_ancla[key].append(cobro)
     
-    # Batch 2: Prefetch exigible data (citas, ofertas, cotizaciones)
-    exigibles = _explicar_exigible_batch(taller, vistos)
+    # Batch 2: Build canonical ancla map once (no DB calls per row)
+    mapa_canon = _canonizar_anclas_batch(taller, vistos)
     
-    # Batch 3: Prefetch costos if ver_costos
+    # Batch 3: Prefetch exigible data (citas, ofertas, cotizaciones) using canonical map
+    exigibles = _explicar_exigible_batch(taller, vistos, mapa_canon)
+    
+    # Batch 4: Prefetch costos if ver_costos, reusing canonical map
     costos_batch = {}
     if ver_costos:
-        costos_batch = _costos_vigentes_batch(taller, vistos)
+        costos_batch = _costos_vigentes_batch(taller, vistos, mapa_canon)
     
     salida = []
     for ancla_tipo, ancla_id in vistos:
