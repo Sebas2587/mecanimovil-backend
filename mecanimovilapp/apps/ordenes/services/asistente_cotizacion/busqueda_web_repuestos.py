@@ -3063,8 +3063,7 @@ def _gemini_generar(prompt: str, *, timeout: int, use_url_context: bool) -> dict
 def _es_pastillas_freno(nombre: str) -> bool:
     """Pastillas de freno (disco). Balatas/zapatas (tambor) NO entran aquí."""
     n = _norm(nombre)
-    if 'freno' not in n and 'pastilla' not in n:
-        return False
+    # For product titles, just 'pastilla' is enough. For line items, we need brake context.
     return 'pastilla' in n
 
 
@@ -3122,10 +3121,6 @@ def _validar_tipo_familia_freno(nombre_pedido: str, titulo_producto: str) -> tup
     # Si ambos especifican posición y no coinciden
     if posicion_pedido and posicion_producto and posicion_pedido != posicion_producto:
         return False, f'El enlace apunta a frenos {posicion_producto}s, no {posicion_pedido}s.'
-    
-    # Si el pedido especifica posición pero el producto no la menciona (ambiguo)
-    if posicion_pedido and not posicion_producto and (producto_es_pastillas or producto_es_balatas):
-        return False, f'El enlace no especifica si es {posicion_pedido} (ambiguo).'
     
     return True, ''
 
@@ -3365,9 +3360,14 @@ def _escalera_consultas(
     """
     from .enriquecer_repuestos import _es_linea_aceite_motor
 
+    n = _norm(nombre)
+    # For line items, require brake context (freno or position) to route to specialized queries
+    es_pastillas_linea = _es_pastillas_freno(nombre) and ('freno' in n or 'delanter' in n or 'traser' in n)
+    es_balatas_linea = _es_balatas_freno(nombre)
+    
     if _es_linea_aceite_motor(nombre):
         consultas = _consultas_aceite_motor(nombre, especificacion)
-    elif _es_pastillas_freno(nombre):
+    elif es_pastillas_linea:
         consultas = _consultas_pastillas(
             nombre,
             marca=marca,
@@ -3375,7 +3375,7 @@ def _escalera_consultas(
             cilindraje=cilindraje,
             tipo_motor=tipo_motor,
         )
-    elif _es_balatas_freno(nombre):
+    elif es_balatas_linea:
         consultas = _consultas_balatas(
             nombre,
             marca=marca,

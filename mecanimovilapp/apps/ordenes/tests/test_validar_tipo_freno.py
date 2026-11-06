@@ -112,19 +112,18 @@ class ValidarTipoFrenoTestCase(SimpleTestCase):
         self.assertIn('trasero', motivo.lower())
 
     def test_validar_tipo_familia_freno_posicion_ambigua(self):
-        """Debe rechazar cuando se especifica posición pero el producto no la menciona."""
+        """Debe aceptar cuando la familia coincide aunque el producto no mencione la posición."""
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
             _validar_tipo_familia_freno,
         )
 
-        # Se piden pastillas delanteras pero el producto solo dice "Pastillas de freno": Rechazar
+        # Se piden pastillas delanteras y el producto dice "Pastillas de freno": OK (family matches)
         es_valido, motivo = _validar_tipo_familia_freno(
             'pastillas delanteras',
             'Pastillas de freno Peugeot Boxer'
         )
-        self.assertFalse(es_valido)
-        self.assertIn('ambiguo', motivo.lower())
-        self.assertIn('delantero', motivo.lower())
+        self.assertTrue(es_valido)
+        self.assertEqual(motivo, '')
 
     def test_posicion_freno_extraccion(self):
         """Debe extraer correctamente la posición del freno."""
