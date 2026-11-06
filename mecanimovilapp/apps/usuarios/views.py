@@ -4033,6 +4033,12 @@ class EstadoProveedorView(APIView):
             'radio_cobertura': float(getattr(proveedor, 'radio_cobertura', 10.0) or 10.0),
         }
         
+        # For talleres, include profit margin setting
+        if taller and hasattr(taller, 'margen_ganancia_pct'):
+            margen = taller.margen_ganancia_pct
+            # Return as number | null (frontend expects 30 for 30%, null for unset)
+            datos_proveedor['margen_ganancia_pct'] = float(margen) if margen is not None else None
+        
         # Si es un taller, agregar información de dirección física
         if taller and hasattr(taller, 'direccion_fisica'):
             datos_proveedor['direccion_fisica'] = {

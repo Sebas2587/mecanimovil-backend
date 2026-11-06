@@ -1133,6 +1133,38 @@ def consultar_periodo(
         })
     ver_costos = rol in {'mandante', 'supervisor'}
     casos = _casos_periodo(taller, movimientos, ver_costos=ver_costos)
+    
+    # Aggregate parts/labor breakdown across all casos for resumen
+    repuestos_cobrados_sum = 0
+    repuestos_costo_sum = 0
+    repuestos_margen_sum = 0
+    mano_obra_sum = 0
+    has_repuestos_cobrados = False
+    has_repuestos_costo = False
+    has_repuestos_margen = False
+    has_mano_obra = False
+    
+    for caso in casos:
+        val = caso.get('repuestos_cobrados_clp')
+        if val is not None:
+            repuestos_cobrados_sum += val
+            has_repuestos_cobrados = True
+        
+        val = caso.get('repuestos_costo_clp')
+        if val is not None:
+            repuestos_costo_sum += val
+            has_repuestos_costo = True
+        
+        val = caso.get('repuestos_margen_clp')
+        if val is not None:
+            repuestos_margen_sum += val
+            has_repuestos_margen = True
+        
+        val = caso.get('mano_obra_cobrada_clp')
+        if val is not None:
+            mano_obra_sum += val
+            has_mano_obra = True
+    
     data = {
         'zona': 'America/Santiago',
         'desde': desde.isoformat(),
@@ -1148,6 +1180,11 @@ def consultar_periodo(
             'conocido_parcial': bool(faltantes),
             'faltantes': faltantes,
             'legacy_no_contabilizado': legacy,
+            # Aggregate parts/labor breakdown
+            'repuestos_cobrados_clp': repuestos_cobrados_sum if has_repuestos_cobrados else None,
+            'repuestos_costo_clp': repuestos_costo_sum if has_repuestos_costo else None,
+            'repuestos_margen_clp': repuestos_margen_sum if has_repuestos_margen else None,
+            'mano_obra_cobrada_clp': mano_obra_sum if has_mano_obra else None,
         },
         'serie': serie,
     }
@@ -1643,11 +1680,14 @@ def _desglose_partes_labor(cotizacion: CotizacionCanal | None) -> dict:
     
     partes_margen = (partes_cobrado - partes_costo) if partes_costo_final is not None else None
     
+    # Labor: null if mano_obra_clp is None (don't invent $0)
+    mano_obra = int(cotizacion.mano_obra_clp) if cotizacion.mano_obra_clp is not None else None
+    
     return {
         'repuestos_cobrados_clp': partes_cobrado,
         'repuestos_costo_clp': partes_costo_final,
         'repuestos_margen_clp': partes_margen,
-        'mano_obra_cobrada_clp': int(cotizacion.mano_obra_clp or 0),
+        'mano_obra_cobrada_clp': mano_obra,
     }
 
 

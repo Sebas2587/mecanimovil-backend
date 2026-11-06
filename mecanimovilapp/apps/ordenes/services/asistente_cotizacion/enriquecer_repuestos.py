@@ -1180,34 +1180,61 @@ def congelar_costo(rep: dict) -> None:
 
 def aplicar_margen_taller(rep: dict, taller) -> None:
     """
-    Apply taller's markup to a part's sale price if cost is known and margin is set.
-    Modifies rep dict in place. This is a thin layer: does not change any quote logic.
+    Apply taller's markup ONCE when AI agent first discovers a part.
+    
+    At the moment _aplicar_precio sets precio_unitario_clp to the discovered web/store
+    price, that IS the cost. We freeze it and compute sale = cost × (1 + margin%) in
+    one operation. Do not re-apply if the line already has frozen cost + different sale.
     
     Args:
-        rep: Part dict with costo_unitario_clp
+        rep: Part dict after enrichment (precio_unitario_clp = discovered price = cost)
         taller: Taller instance with margen_ganancia_pct field
     """
     if not isinstance(rep, dict):
         return
     
-    # Only apply if taller has configured margin
+    # Only apply if taller has configured margin (must be a valid number, not Mock)
     margen = getattr(taller, 'margen_ganancia_pct', None) if taller else None
     if margen is None:
         return
-    
-    # Only apply if cost is known
-    costo = costo_estimado_linea(rep)
-    if not costo or costo <= 0:
+    # Validate margen is actually a number (not a Mock or other invalid value)
+    try:
+        margen = float(margen)
+        if margen <= 0:
+            return
+    except (TypeError, ValueError):
         return
     
-    # Only apply if price not already set (don't override manual pricing)
-    if rep.get('precio_unitario_clp'):
-        return
+    # Check if already has frozen cost
+    has_frozen_cost = bool(rep.get('costo_estimado_clp') or rep.get('costo_registrado_clp'))
     
-    # Apply markup: sale = cost × (1 + margin%)
-    from decimal import Decimal
-    precio_calculado = round(float(costo) * (1 + float(margen) / 100))
-    rep['precio_unitario_clp'] = precio_calculado
+    if not has_frozen_cost:
+        # FIRST APPLICATION: precio_unitario_clp is the newly discovered web price = COST
+        precio = _monto_o_none(rep.get('precio_unitario_clp'))
+        if not precio or precio <= 0:
+            return
+        
+        # Freeze the cost at this discovered price (set costo_estimado_clp explicitly)
+        rep['costo_estimado_clp'] = precio
+        
+        # Apply margin to compute customer sale price
+        sale = round(float(precio) * (1 + float(margen) / 100))
+        rep['precio_unitario_clp'] = sale
+    else:
+        # Already has frozen cost - only apply if sale still equals cost (not manually edited)
+        costo = costo_registrado_linea(rep) or costo_estimado_linea(rep)
+        if not costo or costo <= 0:
+            return
+        
+        sale = _monto_o_none(rep.get('precio_unitario_clp')) or 0
+        
+        # Don't touch if sale already differs from cost (manual edit or previous markup)
+        if sale > 0 and abs(sale - costo) > 1:  # Allow 1 CLP rounding tolerance
+            return
+        
+        # Sale is missing or still at cost, apply margin
+        new_sale = round(float(costo) * (1 + float(margen) / 100))
+        rep['precio_unitario_clp'] = new_sale
 
 
 def economia_repuesto(rep: dict) -> dict[str, Any]:

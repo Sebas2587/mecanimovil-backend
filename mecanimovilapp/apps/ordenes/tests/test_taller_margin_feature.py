@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from mecanimovilapp.apps.ordenes.models import CitaAgendaPersonal, CitaAgendaPersonalDetalle, CotizacionCanal
@@ -90,85 +91,111 @@ class TallerMarginSerializerTest(TestCase):
 class AplicarMargenTallerTest(TestCase):
     """Test the aplicar_margen_taller function."""
     
-    def test_margin_applied_when_cost_and_margin_known(self):
-        """When cost is known and taller has margin, compute sale price."""
+    def test_margin_applied_post_enrichment_store_price(self):
+        """Post-enrichment: precio_unitario_clp is store price, apply margin."""
         taller = MagicMock()
         taller.margen_ganancia_pct = Decimal('30.00')
         
-        rep = {'nombre': 'Filtro', 'cantidad': 1}
-        # Simulate cost determination
-        rep['costo_unitario_clp'] = 10000
+        # Post-enrichment state: precio_unitario_clp = discovered store price (cost)
+        rep = {
+            'nombre': 'Filtro',
+            'cantidad': 1,
+            'precio_unitario_clp': 10000,  # Discovered store price = cost
+        }
         
         aplicar_margen_taller(rep, taller)
         
-        # price = cost × (1 + 30/100) = 10000 × 1.30 = 13000
+        # Cost frozen at 10000, sale = 10000 × 1.30 = 13000
         self.assertEqual(rep['precio_unitario_clp'], 13000)
-        # Cost should remain unchanged
-        self.assertEqual(rep['costo_unitario_clp'], 10000)
+        # Cost should be frozen
+        self.assertIn('costo_estimado_clp', rep)
     
     def test_no_margin_application_when_margin_null(self):
         """When margin is null, don't compute price."""
         taller = MagicMock()
         taller.margen_ganancia_pct = None
         
-        rep = {'nombre': 'Filtro', 'cantidad': 1, 'costo_unitario_clp': 10000}
+        rep = {'nombre': 'Filtro', 'cantidad': 1, 'precio_unitario_clp': 10000}
         
         aplicar_margen_taller(rep, taller)
         
-        # Price should NOT be set
-        self.assertNotIn('precio_unitario_clp', rep)
+        # Price should stay unchanged
+        self.assertEqual(rep['precio_unitario_clp'], 10000)
     
     def test_no_margin_application_when_cost_unknown(self):
         """When cost is unknown, don't compute price from margin."""
         taller = MagicMock()
         taller.margen_ganancia_pct = Decimal('30.00')
         
-        rep = {'nombre': 'Filtro', 'cantidad': 1}  # No cost
+        rep = {'nombre': 'Filtro', 'cantidad': 1}  # No cost, no price
         
         aplicar_margen_taller(rep, taller)
         
         # Price should NOT be set
         self.assertNotIn('precio_unitario_clp', rep)
     
-    def test_no_override_existing_price(self):
-        """Don't override manually set price."""
+    def test_no_override_when_sale_differs_from_cost(self):
+        """Don't override when sale already differs from cost (manual edit)."""
         taller = MagicMock()
         taller.margen_ganancia_pct = Decimal('30.00')
         
         rep = {
             'nombre': 'Filtro',
             'cantidad': 1,
-            'costo_unitario_clp': 10000,
-            'precio_unitario_clp': 15000,  # Already set
+            'costo_estimado_clp': 10000,  # Frozen cost
+            'precio_unitario_clp': 15000,  # Manually edited (differs from cost)
         }
         
         aplicar_margen_taller(rep, taller)
         
-        # Should keep existing price
+        # Should keep existing price (manual edit)
         self.assertEqual(rep['precio_unitario_clp'], 15000)
     
-    def test_margin_with_decimal_percentage(self):
-        """Margin with decimal percentage should work."""
+    def test_margin_with_registered_cost(self):
+        """Use registered cost when available."""
         taller = MagicMock()
-        taller.margen_ganancia_pct = Decimal('25.50')
+        taller.margen_ganancia_pct = Decimal('25.00')
         
-        rep = {'nombre': 'Filtro', 'cantidad': 1, 'costo_unitario_clp': 10000}
+        rep = {
+            'nombre': 'Filtro',
+            'cantidad': 1,
+            'costo_registrado_clp': 8000,  # Registered cost takes priority
+            'precio_unitario_clp': 8000,
+        }
         
         aplicar_margen_taller(rep, taller)
         
-        # price = 10000 × 1.255 = 12550
-        self.assertEqual(rep['precio_unitario_clp'], 12550)
+        # price = 8000 × 1.25 = 10000
+        self.assertEqual(rep['precio_unitario_clp'], 10000)
+    
+    def test_apply_when_sale_equals_cost(self):
+        """Apply margin when sale still equals cost (not yet marked up)."""
+        taller = MagicMock()
+        taller.margen_ganancia_pct = Decimal('30.00')
+        
+        rep = {
+            'nombre': 'Filtro',
+            'cantidad': 1,
+            'costo_estimado_clp': 10000,
+            'precio_unitario_clp': 10000,  # Still at cost
+        }
+        
+        aplicar_margen_taller(rep, taller)
+        
+        # Should apply margin
+        self.assertEqual(rep['precio_unitario_clp'], 13000)
 
 
 class EconomiaRepuestoMarginTest(TestCase):
     """Test that margin calculation is profit/cost, not profit/sale."""
     
-    def test_margin_pct_is_profit_over_cost(self):
+    def test_margin_pct_is_profit_over_cost_registered(self):
         """margen_pct should be (profit/cost)*100, not (profit/sale)*100."""
         rep = {
             'nombre': 'Filtro',
             'cantidad': 1,
-            'costo_unitario_clp': 8000,
+            'costo_registrado_clp': 8000,  # Use registered cost
+            'costo_origen': 'registrado',
             'precio_unitario_clp': 10000,
         }
         
@@ -179,12 +206,30 @@ class EconomiaRepuestoMarginTest(TestCase):
         self.assertEqual(economia['margen_clp'], 2000)
         self.assertEqual(economia['margen_pct'], 25.0)
     
+    def test_margin_with_estimated_cost(self):
+        """Margin with estimated cost."""
+        rep = {
+            'nombre': 'Filtro',
+            'cantidad': 1,
+            'costo_estimado_clp': 8000,  # Estimated cost
+            'precio_unitario_clp': 10000,
+        }
+        
+        economia = economia_repuesto(rep)
+        
+        # Base cost = 8000 (estimated)
+        self.assertEqual(economia['costo_unitario_clp'], 8000)
+        # Profit = 10000 - 8000 = 2000
+        self.assertEqual(economia['margen_clp'], 2000)
+        # margen_pct = (2000 / 8000) * 100 = 25.0%
+        self.assertEqual(economia['margen_pct'], 25.0)
+    
     def test_manual_edit_recalculates_profit(self):
         """Editing price should recalculate profit, keeping cost unchanged."""
         rep = {
             'nombre': 'Filtro',
             'cantidad': 1,
-            'costo_unitario_clp': 8000,
+            'costo_estimado_clp': 8000,
             'precio_unitario_clp': 12000,  # Edited from 10000 to 12000
         }
         
@@ -341,6 +386,23 @@ class CajaPartesLaborIntegrationTest(TestCase):
             servicio_nombre='Cambio filtros',
             precio_referencia=Decimal('73400'),
         )
+        
+        # Create payment record so cita shows in caja
+        from mecanimovilapp.apps.ordenes.models_caja import CobroTaller
+        from datetime import date
+        CobroTaller.objects.create(
+            taller=self.taller,
+            ancla_tipo='cita',
+            ancla_id=str(self.cita.id),
+            origen='manual',
+            ref_externa='test-payment',
+            tipo='entrada',
+            estado='confirmado',
+            monto_clp=73400,
+            fecha_efectiva=timezone.datetime(2026, 11, 10, 10, 0, tzinfo=timezone.get_current_timezone()),
+            fecha_local=date(2026, 11, 10),
+        )
+        
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
     
@@ -372,3 +434,10 @@ class CajaPartesLaborIntegrationTest(TestCase):
         self.assertEqual(caso['repuestos_margen_clp'], 5400)
         # Labor: 50000
         self.assertEqual(caso['mano_obra_cobrada_clp'], 50000)
+        
+        # Resumen should aggregate across all casos
+        resumen = data['resumen']
+        self.assertEqual(resumen['repuestos_cobrados_clp'], 23400)
+        self.assertEqual(resumen['repuestos_costo_clp'], 18000)
+        self.assertEqual(resumen['repuestos_margen_clp'], 5400)
+        self.assertEqual(resumen['mano_obra_cobrada_clp'], 50000)
