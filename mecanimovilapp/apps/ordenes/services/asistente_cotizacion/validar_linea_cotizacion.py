@@ -15,6 +15,7 @@ _INCOMPATIBLE = frozenset({
     'modelo_incompatible',
     'sin_modelo',
     'listado',
+    'tipo_freno_incompatible',
 })
 _FRASE = {
     'anio_incompatible': 'La ficha es de otros años.',
@@ -22,6 +23,7 @@ _FRASE = {
     'modelo_incompatible': 'La ficha es de otro modelo.',
     'sin_modelo': 'La ficha no nombra este modelo.',
     'listado': 'La ficha es un listado, no el producto.',
+    'tipo_freno_incompatible': 'El tipo de freno no coincide (pastillas vs balatas, o posición delantero/trasero).',
     'precio_alto_banda': 'El precio de la ficha queda por encima del rango de esta pieza.',
     'precio_bajo_banda': 'El precio de la ficha queda por debajo del rango de esta pieza.',
 }
@@ -204,13 +206,14 @@ def _codigo_rechazo(
     anio: Any,
     tipo_motor: str,
     cilindraje: Any,
-) -> str:
+) -> str | tuple[str, str]:
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
         _RE_PACK,
         _anio_fuera_de_rango,
         _compat_pastilla_candidato,
         _holgura_anio_titulo,
         _es_pastillas_freno,
+        _es_balatas_freno,
         _monto_banda_por_unidad,
         _motivo_calidad_pastilla,
         _titulo_contradice_motor,
@@ -250,7 +253,8 @@ def _codigo_rechazo(
         anio=anio,
         cilindraje=cilindraje,
     ) or ''
-    if motivo in ('sin_modelo', 'listado') and not _es_pastillas_freno(nombre):
+    
+    if motivo in ('sin_modelo', 'listado') and not (_es_pastillas_freno(nombre) or _es_balatas_freno(nombre)):
         return ''
     if motivo in ('precio_bajo_banda', 'precio_alto_banda'):
         cobrado = _entero(rep.get('precio_unitario_clp'))
@@ -258,6 +262,15 @@ def _codigo_rechazo(
             return ''
     if motivo == 'precio_alto_banda' and techo > 0 and unit <= int(techo * 1.03) + 1:
         return ''
+    
+    # Si es tipo_freno_incompatible, obtener mensaje específico
+    if motivo == 'tipo_freno_incompatible':
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+            _validar_tipo_familia_freno,
+        )
+        _es_valido, mensaje_especifico = _validar_tipo_familia_freno(nombre, titulo)
+        return (motivo, mensaje_especifico)
+    
     return motivo
 
 
@@ -313,10 +326,10 @@ def validar_repuesto(
         return _cerrar(out, cobrado, alertas)
 
     aceptados: list[dict[str, Any]] = []
-    rechazos: list[tuple[str, str]] = []
+    rechazos: list[tuple[str, str, str]] = []  # (codigo, tienda, mensaje_especifico)
     for item in _listados(rep):
         unit, nota = _precio_en_unidad(rep, item['precio'], item['titulo'])
-        codigo = _codigo_rechazo(
+        resultado_rechazo = _codigo_rechazo(
             rep,
             item,
             unit,
@@ -325,8 +338,13 @@ def validar_repuesto(
             tipo_motor=tipo_motor,
             cilindraje=cilindraje,
         )
-        if codigo:
-            rechazos.append((codigo, item['tienda']))
+        # _codigo_rechazo puede retornar str o tuple[str, str]
+        if isinstance(resultado_rechazo, tuple):
+            codigo, mensaje_especifico = resultado_rechazo
+            rechazos.append((codigo, item['tienda'], mensaje_especifico))
+            continue
+        elif resultado_rechazo:
+            rechazos.append((resultado_rechazo, item['tienda'], ''))
             continue
         aceptados.append({**item, 'unit': unit, 'nota': nota})
 
@@ -356,14 +374,17 @@ def validar_repuesto(
         out['validacion_motivo'] = ''
     else:
         out['costo_unitario_clp'] = cobrado or None
-        incompatible = [codigo for codigo, _tienda in rechazos if codigo in _INCOMPATIBLE]
+        incompatible = [(codigo, tienda, msg) for codigo, tienda, msg in rechazos if codigo in _INCOMPATIBLE]
         if incompatible:
-            frase = _FRASE.get(incompatible[0], 'La ficha no corresponde a este auto.')
+            codigo_inc, _tienda_inc, mensaje_inc = incompatible[0]
+            # Usar mensaje específico si está disponible, sino el genérico
+            frase = mensaje_inc if mensaje_inc else _FRASE.get(codigo_inc, 'La ficha no corresponde a este auto.')
             out['validacion_estado'] = 'sin_referencia_valida'
             out['validacion_motivo'] = f'{frase} No hay otra referencia válida.'
             alertas.append(out['validacion_motivo'])
         elif rechazos:
-            frase = _FRASE.get(rechazos[0][0], 'El precio de la ficha no calza con esta pieza.')
+            codigo_req, _tienda_req, mensaje_req = rechazos[0]
+            frase = mensaje_req if mensaje_req else _FRASE.get(codigo_req, 'El precio de la ficha no calza con esta pieza.')
             out['validacion_estado'] = 'requiere_revision'
             out['validacion_motivo'] = frase
             alertas.append(frase)

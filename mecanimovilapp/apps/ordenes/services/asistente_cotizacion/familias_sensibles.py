@@ -19,7 +19,16 @@ FAMILIAS_SENSIBLES: dict[str, dict[str, Any]] = {
         'categoria': 'frenos',
         'label': 'Tipo de pastilla',
         'opciones': ['Orgánica', 'Semi-metálica', 'Cerámica'],
-        'keywords': ('pastilla', 'pastillas', 'balata', 'balatas'),
+        'keywords': ('pastilla', 'pastillas'),
+        'excluye': ('balata', 'zapata'),
+        'eje_calidad': True,
+    },
+    'balata_freno': {
+        'categoria': 'frenos',
+        'label': 'Tipo de balata',
+        'opciones': ['Orgánica', 'Semi-metálica', 'Cerámica'],
+        'keywords': ('balata', 'balatas', 'zapata', 'zapatas'),
+        'excluye': ('pastilla',),
         'eje_calidad': True,
     },
     'aceite_motor': {
