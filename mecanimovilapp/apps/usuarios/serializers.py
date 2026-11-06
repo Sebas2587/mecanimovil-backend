@@ -771,7 +771,7 @@ class TallerSerializer(PanelServiciosSerializerMixin, serializers.ModelSerialize
                   'especialidades', 'especialidades_nombres',
                   'marcas_atendidas', 'marcas_atendidas_nombres',
                   'tipo_cobertura_marca',
-                  'descripcion', 'politicas_cotizacion', 'dias_validez_cotizacion', 'calificacion_promedio', 'rating_average', 'rating_reviews_count', 'numero_de_calificaciones', 'activo',
+                  'descripcion', 'politicas_cotizacion', 'dias_validez_cotizacion', 'margen_ganancia_pct', 'calificacion_promedio', 'rating_average', 'rating_reviews_count', 'numero_de_calificaciones', 'activo',
                   'foto_perfil', 'foto_perfil_url',  # NUEVO: foto de perfil
                   'estado_verificacion', 'estado_verificacion_display', 
                   'verificado', 'kpi_badge', 'onboarding_completado', 'onboarding_iniciado', 'fecha_verificacion',

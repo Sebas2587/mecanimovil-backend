@@ -315,6 +315,15 @@ class Taller(ProveedorServicio):
         blank=True,
         help_text=_('Marcas de vehículos que atiende el taller')
     )
+    margen_ganancia_pct = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        blank=True,
+        null=True,
+        validators=[MinValueValidator(0), MaxValueValidator(999.99)],
+        help_text='Margen de ganancia sobre costo de repuestos (%). Ejemplo: 30 significa vender a costo × 1.30',
+        verbose_name='Margen de ganancia (%)',
+    )
     
     class Meta:
         verbose_name = _('taller')

@@ -1178,6 +1178,70 @@ def congelar_costo(rep: dict) -> None:
         rep['costo_estimado_clp'] = estimado
 
 
+def aplicar_margen_taller(rep: dict, taller) -> None:
+    """
+    Apply taller's markup ONCE when AI agent first discovers a part.
+    
+    At the moment _aplicar_precio sets precio_unitario_clp to the discovered web/store
+    price, that IS the cost. We freeze it and compute sale = cost × (1 + margin%) in
+    one operation. Do not re-apply if the line already has frozen cost + different sale.
+    
+    Args:
+        rep: Part dict after enrichment (precio_unitario_clp = discovered price = cost)
+        taller: Taller instance with margen_ganancia_pct field
+    """
+    if not isinstance(rep, dict):
+        return
+    
+    # Only apply if taller has configured margin (must be a valid number, not Mock)
+    margen = getattr(taller, 'margen_ganancia_pct', None) if taller else None
+    if margen is None:
+        return
+    
+    # Validate margen is actually a number from the database (Decimal/int/float), not a Mock
+    from decimal import Decimal
+    if not isinstance(margen, (Decimal, int, float)):
+        return
+    
+    try:
+        margen = float(margen)
+        if margen <= 0:
+            return
+    except (TypeError, ValueError):
+        return
+    
+    # Check if already has frozen cost
+    has_frozen_cost = bool(rep.get('costo_estimado_clp') or rep.get('costo_registrado_clp'))
+    
+    if not has_frozen_cost:
+        # FIRST APPLICATION: precio_unitario_clp is the newly discovered web price = COST
+        precio = _monto_o_none(rep.get('precio_unitario_clp'))
+        if not precio or precio <= 0:
+            return
+        
+        # Freeze the cost at this discovered price (set costo_estimado_clp explicitly)
+        rep['costo_estimado_clp'] = precio
+        
+        # Apply margin to compute customer sale price
+        sale = round(float(precio) * (1 + float(margen) / 100))
+        rep['precio_unitario_clp'] = sale
+    else:
+        # Already has frozen cost - only apply if sale still equals cost (not manually edited)
+        costo = costo_registrado_linea(rep) or costo_estimado_linea(rep)
+        if not costo or costo <= 0:
+            return
+        
+        sale = _monto_o_none(rep.get('precio_unitario_clp')) or 0
+        
+        # Don't touch if sale already differs from cost (manual edit or previous markup)
+        if sale > 0 and abs(sale - costo) > 1:  # Allow 1 CLP rounding tolerance
+            return
+        
+        # Sale is missing or still at cost, apply margin
+        new_sale = round(float(costo) * (1 + float(margen) / 100))
+        rep['precio_unitario_clp'] = new_sale
+
+
 def economia_repuesto(rep: dict) -> dict[str, Any]:
     """Registrado y estimado van separados. Sin evidencia, el margen real es null."""
     cobrado = _entero(rep.get('precio_unitario_clp'))
@@ -1190,7 +1254,8 @@ def economia_repuesto(rep: dict) -> dict[str, Any]:
         if costo is None or cobrado <= 0:
             return None, None
         unit = cobrado - costo
-        pct = round((unit / cobrado) * 100, 1)
+        # Margen % OF COST (markup): profit/cost×100, not profit/sale
+        pct = round((unit / costo) * 100, 1) if costo > 0 else None
         return unit * cantidad, pct
 
     margen_clp, margen_pct = _margen(base)
@@ -1242,7 +1307,8 @@ def economia_cotizacion(repuestos: list) -> dict[str, Any]:
     completo = faltantes == 0
     real_completo = faltan_reg == 0
     ganancia = (cobrado - costo) if completo else None
-    pct = round((ganancia / cobrado) * 100, 1) if completo and cobrado > 0 and ganancia is not None else None
+    # margen_repuestos_pct is profit/cost (markup), not profit/sale
+    pct = round((ganancia / costo) * 100, 1) if completo and costo > 0 and ganancia is not None else None
     ganancia_real = (cobrado - costo_reg) if real_completo and lineas else None
     if lineas == 0:
         ganancia_real = 0
@@ -2783,6 +2849,9 @@ def enriquecer_repuestos_cotizacion(
             'catalogo mecanimovil', 'catálogo mecanimovil',
         ):
             next_rep.pop('proveedor_nombre', None)
+
+        # Thin layer: apply taller's configured margin if cost is known and margin is set
+        aplicar_margen_taller(next_rep, taller)
 
         out.append(next_rep)
     return out
