@@ -206,7 +206,7 @@ def _codigo_rechazo(
     anio: Any,
     tipo_motor: str,
     cilindraje: Any,
-) -> str:
+) -> str | tuple[str, str]:
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
         _RE_PACK,
         _anio_fuera_de_rango,
@@ -217,7 +217,6 @@ def _codigo_rechazo(
         _monto_banda_por_unidad,
         _motivo_calidad_pastilla,
         _titulo_contradice_motor,
-        _validar_tipo_familia_freno,
     )
 
     titulo = str(item.get('titulo') or '')
@@ -244,7 +243,7 @@ def _codigo_rechazo(
     cant = _cantidad(rep)
     piso = _monto_banda_por_unidad(nombre, _entero(rep.get('precio_min_clp')), cant)
     techo = _monto_banda_por_unidad(nombre, _entero(rep.get('precio_max_clp')), cant)
-    motivo = _motivo_calidad_pastilla(
+    resultado_motivo = _motivo_calidad_pastilla(
         cand,
         nombre=nombre,
         modelo=modelo,
@@ -253,7 +252,14 @@ def _codigo_rechazo(
         banda_max=techo,
         anio=anio,
         cilindraje=cilindraje,
-    ) or ''
+    )
+    # _motivo_calidad_pastilla puede retornar str o tuple[str, str]
+    if isinstance(resultado_motivo, tuple):
+        motivo, mensaje_especifico = resultado_motivo
+    else:
+        motivo = resultado_motivo or ''
+        mensaje_especifico = ''
+    
     if motivo in ('sin_modelo', 'listado') and not (_es_pastillas_freno(nombre) or _es_balatas_freno(nombre)):
         return ''
     if motivo in ('precio_bajo_banda', 'precio_alto_banda'):
@@ -262,6 +268,10 @@ def _codigo_rechazo(
             return ''
     if motivo == 'precio_alto_banda' and techo > 0 and unit <= int(techo * 1.03) + 1:
         return ''
+    
+    # Si hay mensaje específico, retornar tuple
+    if mensaje_especifico:
+        return (motivo, mensaje_especifico)
     return motivo
 
 
@@ -317,10 +327,10 @@ def validar_repuesto(
         return _cerrar(out, cobrado, alertas)
 
     aceptados: list[dict[str, Any]] = []
-    rechazos: list[tuple[str, str]] = []
+    rechazos: list[tuple[str, str, str]] = []  # (codigo, tienda, mensaje_especifico)
     for item in _listados(rep):
         unit, nota = _precio_en_unidad(rep, item['precio'], item['titulo'])
-        codigo = _codigo_rechazo(
+        resultado_rechazo = _codigo_rechazo(
             rep,
             item,
             unit,
@@ -329,8 +339,13 @@ def validar_repuesto(
             tipo_motor=tipo_motor,
             cilindraje=cilindraje,
         )
-        if codigo:
-            rechazos.append((codigo, item['tienda']))
+        # _codigo_rechazo puede retornar str o tuple[str, str]
+        if isinstance(resultado_rechazo, tuple):
+            codigo, mensaje_especifico = resultado_rechazo
+            rechazos.append((codigo, item['tienda'], mensaje_especifico))
+            continue
+        elif resultado_rechazo:
+            rechazos.append((resultado_rechazo, item['tienda'], ''))
             continue
         aceptados.append({**item, 'unit': unit, 'nota': nota})
 
@@ -360,14 +375,17 @@ def validar_repuesto(
         out['validacion_motivo'] = ''
     else:
         out['costo_unitario_clp'] = cobrado or None
-        incompatible = [codigo for codigo, _tienda in rechazos if codigo in _INCOMPATIBLE]
+        incompatible = [(codigo, tienda, msg) for codigo, tienda, msg in rechazos if codigo in _INCOMPATIBLE]
         if incompatible:
-            frase = _FRASE.get(incompatible[0], 'La ficha no corresponde a este auto.')
+            codigo_inc, _tienda_inc, mensaje_inc = incompatible[0]
+            # Usar mensaje específico si está disponible, sino el genérico
+            frase = mensaje_inc if mensaje_inc else _FRASE.get(codigo_inc, 'La ficha no corresponde a este auto.')
             out['validacion_estado'] = 'sin_referencia_valida'
             out['validacion_motivo'] = f'{frase} No hay otra referencia válida.'
             alertas.append(out['validacion_motivo'])
         elif rechazos:
-            frase = _FRASE.get(rechazos[0][0], 'El precio de la ficha no calza con esta pieza.')
+            codigo_req, _tienda_req, mensaje_req = rechazos[0]
+            frase = mensaje_req if mensaje_req else _FRASE.get(codigo_req, 'El precio de la ficha no calza con esta pieza.')
             out['validacion_estado'] = 'requiere_revision'
             out['validacion_motivo'] = frase
             alertas.append(frase)

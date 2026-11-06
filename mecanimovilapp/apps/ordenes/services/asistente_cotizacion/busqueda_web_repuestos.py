@@ -1558,7 +1558,7 @@ def _motivo_calidad_pastilla(
     banda_max: int = 0,
     anio: Any = None,
     cilindraje: Any = None,
-) -> str:
+) -> str | tuple[str, str]:
     """Por qué una ficha no se cotiza. '' si todavía puede servir.
 
     La compuerta vale para cualquier pieza, no solo pastillas. El aceite de
@@ -1587,9 +1587,9 @@ def _motivo_calidad_pastilla(
     
     # CRÍTICO: Validar que tipo de freno (pastillas vs balatas) y posición coincidan
     if _es_pastillas_freno(nombre) or _es_balatas_freno(nombre):
-        es_valido, motivo = _validar_tipo_familia_freno(nombre, titulo_ficha)
+        es_valido, motivo_especifico = _validar_tipo_familia_freno(nombre, titulo_ficha)
         if not es_valido:
-            return 'tipo_freno_incompatible'
+            return ('tipo_freno_incompatible', motivo_especifico)
     
     if _es_linea_aceite_motor(nombre):
         return ''
@@ -3106,6 +3106,14 @@ def _validar_tipo_familia_freno(nombre_pedido: str, titulo_producto: str) -> tup
     if pedido_es_balatas and producto_es_pastillas:
         return False, 'El enlace apunta a pastillas (disco), no a balatas/zapatas (tambor).'
     
+    # Si el pedido especifica pastillas o balatas pero el producto no nombra ninguna familia
+    # (ej: pedido "pastillas delanteras", producto "frenos delanteros" - ambiguo)
+    if (pedido_es_pastillas or pedido_es_balatas) and not (producto_es_pastillas or producto_es_balatas):
+        if pedido_es_pastillas:
+            return False, 'El producto no especifica si son pastillas o balatas (ambiguo).'
+        else:
+            return False, 'El producto no especifica si son balatas o pastillas (ambiguo).'
+    
     # Verificar posición (delantero/trasero)
     posicion_pedido = _posicion_freno(nombre_pedido)
     posicion_producto = _posicion_freno(titulo_producto)
@@ -3198,6 +3206,53 @@ def _consultas_pastillas(
     consultas = [especifica, corta]
     if posicion != 'traseras' and _bravo_tjet(modelo, tipo_motor):
         consultas.append('pastillas freno fiat linea t-jet')
+    return consultas
+
+
+def _consultas_balatas(
+    nombre: str,
+    *,
+    marca: str,
+    modelo: str,
+    cilindraje: str,
+    tipo_motor: str = '',
+) -> list[str]:
+    """Consultas para balatas/zapatas de freno (tambor), sin mezclar con pastillas.
+
+    'balatas freno traseras peugeot boxer 2.2', 'balatas freno peugeot boxer'
+    y 'zapatas de freno peugeot boxer'. Las balatas casi siempre son traseras,
+    pero algunos vehículos tienen tambor delantero también.
+    """
+    n = _norm(nombre)
+    # Determinar si es balata o zapata según el nombre pedido
+    if 'zapata' in n:
+        termino = 'zapatas de freno'
+    else:
+        termino = 'balatas freno'
+    
+    if 'traser' in n:
+        posicion = 'traseras'
+    elif 'delanter' in n:
+        posicion = 'delanteras'
+    else:
+        posicion = ''
+    
+    modelo_corto = _modelo_busqueda(modelo).lower()
+    marca_q = str(marca or '').strip().lower()
+    cil = str(cilindraje or '').strip()
+    
+    especifica = ' '.join(
+        p for p in [termino, posicion, marca_q, modelo_corto, cil] if p
+    )
+    corta = ' '.join(p for p in [termino, marca_q, modelo_corto] if p)
+    consultas = [especifica, corta]
+    
+    # Variación con el otro término (balatas/zapatas son sinónimos entre sí)
+    if 'zapata' in n:
+        consultas.append(' '.join(p for p in ['balatas freno', marca_q, modelo_corto] if p))
+    else:
+        consultas.append(' '.join(p for p in ['zapatas de freno', marca_q, modelo_corto] if p))
+    
     return consultas
 
 
@@ -3313,6 +3368,14 @@ def _escalera_consultas(
         consultas = _consultas_aceite_motor(nombre, especificacion)
     elif _es_pastillas_freno(nombre):
         consultas = _consultas_pastillas(
+            nombre,
+            marca=marca,
+            modelo=modelo,
+            cilindraje=cilindraje,
+            tipo_motor=tipo_motor,
+        )
+    elif _es_balatas_freno(nombre):
+        consultas = _consultas_balatas(
             nombre,
             marca=marca,
             modelo=modelo,
@@ -3468,10 +3531,10 @@ def _ordenar_candidatos(
         precio = _precio_desde_texto(c.get('content') or '', nombre_linea)
         sin_precio = 0 if precio else 1
         no_esp = 0 if _es_de_especialista(c) else 1
-        # Pastillas: un título que dice Bravo entra al cupo antes que un
+        # Pastillas y balatas: un título que dice Bravo entra al cupo antes que un
         # listado con precio. Sin esto, GMAK y Repuestos del Sol quedan
         # fuera_del_cupo (no están entre las 5 URLs que se abren).
-        if _es_pastillas_freno(nombre_linea) or _es_consumible_corto(nombre_linea):
+        if _es_pastillas_freno(nombre_linea) or _es_balatas_freno(nombre_linea) or _es_consumible_corto(nombre_linea):
             titulo_c = str(c.get('title') or '')
             if _titulo_es_del_auto(titulo_c, modelo, tipo_motor):
                 rango_modelo = 0
@@ -3513,7 +3576,7 @@ def _seleccionar_cupo(
         )
         and _titulo_nombra_pieza(nombre, str(c.get('title') or ''))
     ]
-    if not (_es_pastillas_freno(nombre) or _es_consumible_corto(nombre)):
+    if not (_es_pastillas_freno(nombre) or _es_balatas_freno(nombre) or _es_consumible_corto(nombre)):
         return sirven[:_FICHA_HTML_MAX]
     con_precio: list[dict[str, Any]] = []
     sin_precio: list[dict[str, Any]] = []
@@ -3873,12 +3936,13 @@ def _buscar_repuestos_web_tavily(
         from .enriquecer_repuestos import _es_linea_aceite_motor
 
         spec = str((especificaciones or {}).get(nombre) or '')
-        # Aceite, pastillas, bujías y filtros no usan la frase del plan
+        # Aceite, pastillas, balatas, bujías y filtros no usan la frase del plan
         # (NGK + año + trim) ni el tope de "escasa": esa frase es la que
         # llegó a producción como única consulta.
         pieza_de_spec = (
             _es_linea_aceite_motor(nombre)
             or _es_pastillas_freno(nombre)
+            or _es_balatas_freno(nombre)
             or _es_consumible_corto(nombre)
         )
         consultas = _escalera_consultas(
@@ -3950,10 +4014,10 @@ def _buscar_repuestos_web_tavily(
                 )
                 and _titulo_nombra_pieza(nombre, str(c.get('title') or ''))
             ]
-            # Ficha de LA MISMA pieza con monto: listo, salvo pastillas,
+            # Ficha de LA MISMA pieza con monto: listo, salvo pastillas, balatas,
             # bujías y filtros. La primera consulta puede traer un snippet
             # con precio que no es la ficha, y ahí se cortaba el resto.
-            if not (_es_pastillas_freno(nombre) or _es_consumible_corto(nombre)):
+            if not (_es_pastillas_freno(nombre) or _es_balatas_freno(nombre) or _es_consumible_corto(nombre)):
                 if any(_precio_desde_texto(c.get('content') or '', nombre) > 0 for c in sirven):
                     ya_sirve = True
                     break
