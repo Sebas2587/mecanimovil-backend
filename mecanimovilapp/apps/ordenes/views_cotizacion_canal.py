@@ -993,7 +993,7 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
         if mo_err:
             raise ValidationError({'mano_obra_lineas': mo_err})
 
-        if cotizacion.es_libre or cotizacion.conversation_id is None:
+        if cotizacion.conversation_id is None:
             try:
                 cotizacion = enviar_cotizacion_libre(cotizacion)
             except ValueError as exc:
