@@ -206,3 +206,38 @@ class PuedeGestionarCapabilityTestCase(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.data['puede_gestionar'],
                        "servicio_iniciado should have puede_gestionar=true")
+    
+    def test_mechanic_cannot_access_privileged_actions(self):
+        """Mechanic with puede_gestionar=true cannot access privileged owner actions.
+        
+        puede_gestionar enables checklist execution, but should NOT grant:
+        - Assignment changes
+        - Cancellation
+        - Financial operations
+        Frontend must gate each action by role, not just puede_gestionar flag.
+        """
+        self.orden.estado = 'servicio_iniciado'
+        self.orden.save()
+        
+        self.client.force_authenticate(user=self.user_mec_assigned)
+        
+        # Verify mechanic has puede_gestionar
+        response = self.client.get(f'/api/ordenes/proveedor-ordenes/{self.orden.id}/')
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data['puede_gestionar'])
+        
+        # Try to reassign (privileged action)
+        response = self.client.post(
+            f'/api/ordenes/proveedor-ordenes/{self.orden.id}/asignar_tecnico/',
+            data={'mecanico_id': self.mec_unassigned.id, 'fecha': str(date.today()), 'hora': '10:00'}
+        )
+        self.assertIn(response.status_code, [403, 404], 
+                     "Mechanic should not reassign orders even with puede_gestionar=true")
+        
+        # Try to cancel (privileged action)
+        response = self.client.post(
+            f'/api/ordenes/proveedor-ordenes/{self.orden.id}/rechazar/',
+            data={'motivo_rechazo': 'Test'}
+        )
+        self.assertIn(response.status_code, [403, 404, 400],
+                     "Mechanic should not cancel orders even with puede_gestionar=true")

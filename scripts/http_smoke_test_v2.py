@@ -16,6 +16,7 @@ from decimal import Decimal
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'mecanimovilapp.settings')
+os.environ['CELERY_TASK_ALWAYS_EAGER'] = 'True'  # Run tasks synchronously in tests
 django.setup()
 
 from django.contrib.auth import get_user_model
@@ -28,7 +29,7 @@ User = get_user_model()
 BASE_URL = "http://localhost:8000"
 
 def setup_test_data():
-    """Create test data for workflow."""
+    """Create test data for workflow including catalog fixtures."""
     print("=== Setup Test Data ===\n")
     
     # Taller A
@@ -43,6 +44,37 @@ def setup_test_data():
         usuario=user_a,
         defaults={'nombre': 'HTTP V2 Taller A', 'rut': '33333333-3'}
     )
+    
+    # Create catalog fixtures (disable signals to avoid Celery errors)
+    from mecanimovilapp.apps.servicios.models import OfertaServicio
+    from django.db.models.signals import post_save
+    import mecanimovilapp.apps.agente_ia.signals
+    
+    servicio, _ = Servicio.objects.get_or_create(
+        nombre='Cambio de aceite',
+        defaults={'descripcion': 'Servicio de cambio de aceite'}
+    )
+    
+    # Temporarily disconnect signal
+    post_save.disconnect(mecanimovilapp.apps.agente_ia.signals.sync_oferta_servicio_chunk, sender=OfertaServicio)
+    
+    try:
+        oferta_servicio, _ = OfertaServicio.objects.get_or_create(
+            taller=taller_a,
+            servicio=servicio,
+            defaults={
+                'tipo_proveedor': 'taller',
+                'precio_con_repuestos': Decimal('15000'),
+                'precio_sin_repuestos': Decimal('10000'),
+                'duracion_minima_minutos': 20,
+                'duracion_maxima_minutos': 40
+            }
+        )
+    finally:
+        # Reconnect signal
+        post_save.connect(mecanimovilapp.apps.agente_ia.signals.sync_oferta_servicio_chunk, sender=OfertaServicio)
+    
+    print(f"✅ Catalog: OfertaServicio ID {oferta_servicio.id}\n")
     
     owner_a, _ = MiembroTaller.objects.get_or_create(
         taller=taller_a,
@@ -183,7 +215,8 @@ def setup_test_data():
     print(f"✅ Taller B ID: {taller_b.id}")
     print(f"✅ Order 1 ID: {orden1.id}")
     print(f"✅ Order 2 ID: {orden2.id}")
-    print(f"✅ Order 3 ID: {orden3.id}\n")
+    print(f"✅ Order 3 ID: {orden3.id}")
+    print(f"✅ OfertaServicio ID: {oferta_servicio.id}\n")
     
     return {
         'taller_a_username': 'http_v2_taller_a',
@@ -198,6 +231,7 @@ def setup_test_data():
         'cot_base1': cot_base1,
         'cot_base2': cot_base2,
         'cot_base3': cot_base3,
+        'oferta_servicio_id': oferta_servicio.id,
     }
 
 def login(username, password):
@@ -279,24 +313,8 @@ def test_extra_quote_workflow(data):
         creado_por=data['taller_a'].usuario
     )
     
-    # 4. Create extra quote via ACTUAL API
+    # 4. Create extra quote via ACTUAL API with catalog
     print("4️⃣  Create Extra Quote via API")
-    
-    # Get an actual OfertaServicio for valid catalog item
-    from mecanimovilapp.apps.servicios.models import OfertaServicio
-    oferta_servicio = OfertaServicio.objects.filter(taller=data['taller_a']).first()
-    if not oferta_servicio:
-        # Create a minimal oferta_servicio
-        from mecanimovilapp.apps.servicios.models import Servicio
-        servicio = Servicio.objects.first()
-        if servicio:
-            oferta_servicio = OfertaServicio.objects.create(
-                taller=data['taller_a'],
-                servicio=servicio,
-                precio_ofrecido=Decimal('15000'),
-                tiempo_estimado_minutos=30
-            )
-    
     resp = requests.post(
         f"{BASE_URL}/api/ordenes/cotizaciones-canal/crear-adicional/",
         headers={"Authorization": f"Token {owner_token}"},
@@ -307,7 +325,7 @@ def test_extra_quote_workflow(data):
             "modo": "catalogo",
             "servicios_catalogo": [
                 {
-                    "oferta_servicio_id": oferta_servicio.id if oferta_servicio else 1,
+                    "oferta_servicio_id": data['oferta_servicio_id'],
                     "cantidad": 1
                 }
             ],
@@ -318,7 +336,7 @@ def test_extra_quote_workflow(data):
     assert resp.status_code == 201, f"Create extra failed: {resp.status_code} - {resp.text[:200]}"
     extra_data = resp.json()
     extra_id = extra_data['cotizacion']['id']
-    print(f"   ✅ Extra created: ID {extra_id}\n")
+    print(f"   ✅ Extra created via API: ID {extra_id}\n")
     
     # Get the created quote to get token
     from mecanimovilapp.apps.ordenes.models import CotizacionCanal
@@ -383,7 +401,7 @@ def test_cross_tenant_creation(data):
         print("   ⚠️  No cita available, skipping\n")
         return
     
-    # Try to create extra as Taller B
+    # Try to create extra as Taller B (cross-tenant POST)
     resp = requests.post(
         f"{BASE_URL}/api/ordenes/cotizaciones-canal/crear-adicional/",
         headers={"Authorization": f"Token {b_token}"},
@@ -391,14 +409,16 @@ def test_cross_tenant_creation(data):
             "cita_id": cita_a.id,
             "cotizacion_original_id": data['cot_base1'].id,
             "motivo_servicio_adicional": "Cross-tenant attempt",
-            "modo": "ia",
-            "servicio_nombre": "Cross-tenant service",
-            "ejecucion_adicional": "misma_visita"
+            "modo": "catalogo",
+            "servicios_catalogo": [{"oferta_servicio_id": data['oferta_servicio_id'], "cantidad": 1}]
         },
         timeout=5
     )
-    assert resp.status_code in [400, 404], f"Expected 400/404, got {resp.status_code}"
-    print(f"   ✅ Cross-tenant creation blocked ({resp.status_code})\n")
+    assert resp.status_code in [400, 404], f"Expected 400/404 for cross-tenant POST, got {resp.status_code}"
+    error_data = resp.json()
+    assert 'cita_id' in error_data or 'cotizacion_original_id' in error_data or 'error' in str(error_data), \
+        f"Expected tenant validation error, got: {error_data}"
+    print(f"   ✅ Cross-tenant POST denied ({resp.status_code}): {list(error_data.keys())}\n")
 
 def test_base_order_with_pending_extra(data):
     """Test base order closure with pending extra."""
@@ -460,8 +480,8 @@ def test_base_order_with_pending_extra(data):
             "cita_id": cita.id,
             "cotizacion_original_id": cot_base.id,
             "motivo_servicio_adicional": "Extra work - pending",
-            "modo": "ia",
-            "servicio_nombre": "Trabajo adicional pendiente"
+            "modo": "catalogo",
+            "servicios_catalogo": [{"oferta_servicio_id": data['oferta_servicio_id'], "cantidad": 1}]
         },
         timeout=5
     )
@@ -559,8 +579,8 @@ def test_base_order_with_rejected_extra(data):
             "cita_id": cita.id,
             "cotizacion_original_id": cot_base.id,
             "motivo_servicio_adicional": "Extra work - to reject",
-            "modo": "ia",
-            "servicio_nombre": "Trabajo a rechazar"
+            "modo": "catalogo",
+            "servicios_catalogo": [{"oferta_servicio_id": data['oferta_servicio_id'], "cantidad": 1}]
         },
         timeout=5
     )
