@@ -9,7 +9,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
-        ('usuarios', '0028_alter_taller_margen_ganancia_pct'),
+        ('usuarios', '0027_add_margen_ganancia_pct_to_taller'),
         ('ordenes', '0051_ancla_caja'),
     ]
 
