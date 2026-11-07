@@ -16,7 +16,7 @@ from mecanimovilapp.apps.vehiculos.models import Vehiculo, MarcaVehiculo, Modelo
 from mecanimovilapp.apps.servicios.models import Servicio
 from mecanimovilapp.apps.checklists.models import (
     ChecklistInstance, ChecklistTemplate, ChecklistItemTemplate,
-    ChecklistItemResponse
+    ChecklistItemResponse, ChecklistItemCatalog
 )
 from mecanimovilapp.apps.ordenes.services.cotizacion_adicional import crear_cotizacion_adicional_desde_catalogo
 
@@ -100,17 +100,36 @@ class ChecklistWorkflowTestCase(TestCase):
             nombre='Template Test',
             activo=True
         )
+        
+        # Create catalog items
+        self.catalog_item1 = ChecklistItemCatalog.objects.create(
+            nombre='Revisar frenos',
+            categoria='SISTEMA_FRENOS',
+            tipo_pregunta='SELECT',
+            pregunta_texto='¿Cuál es el estado de los frenos?',
+            es_obligatorio_por_defecto=True,
+            opciones_seleccion=['bueno', 'regular', 'malo'],
+            activo=True
+        )
+        self.catalog_item2 = ChecklistItemCatalog.objects.create(
+            nombre='Nivel aceite',
+            categoria='FLUIDOS_NIVELES',
+            tipo_pregunta='NUMBER',
+            pregunta_texto='Nivel de aceite (mm)',
+            es_obligatorio_por_defecto=True,
+            activo=True
+        )
+        
+        # Create template items
         self.item1 = ChecklistItemTemplate.objects.create(
-            template=self.template,
-            titulo='Revisar frenos',
-            orden=1,
-            tipo_respuesta='ESTADO'
+            checklist_template=self.template,
+            catalog_item=self.catalog_item1,
+            orden_visual=1
         )
         self.item2 = ChecklistItemTemplate.objects.create(
-            template=self.template,
-            titulo='Nivel aceite',
-            orden=2,
-            tipo_respuesta='MEDICION'
+            checklist_template=self.template,
+            catalog_item=self.catalog_item2,
+            orden_visual=2
         )
         
         # APIClient
@@ -138,13 +157,13 @@ class ChecklistWorkflowTestCase(TestCase):
             estado='EN_PROGRESO'
         )
         
-        # Responder solo item1
+        # Responder solo item1 (SELECT type)
         url = '/api/checklists/responses/'
         response = self.client.post(url, {
             'checklist_instance': instance.id,
             'item_template': self.item1.id,
-            'valor_estado': 'bueno',
-            'observaciones': 'Frenos en buen estado'
+            'respuesta_seleccion': 'bueno',
+            'respuesta_texto': 'Frenos en buen estado'
         }, format='json')
         
         self.assertEqual(response.status_code, 201)
@@ -212,8 +231,9 @@ class ChecklistWorkflowTestCase(TestCase):
         ChecklistItemResponse.objects.create(
             checklist_instance=instance,
             item_template=self.item1,
-            valor_estado='bueno',
-            observaciones='Primera respuesta'
+            respuesta_seleccion='bueno',
+            respuesta_texto='Primera respuesta',
+            completado=True
         )
         
         # Pausar
@@ -244,8 +264,8 @@ class ChecklistWorkflowTestCase(TestCase):
         response1 = self.client.post(url, {
             'checklist_instance': instance.id,
             'item_template': self.item1.id,
-            'valor_estado': 'bueno',
-            'observaciones': 'Primer check'
+            'respuesta_seleccion': 'bueno',
+            'respuesta_texto': 'Primer check'
         }, format='json')
         self.assertEqual(response1.status_code, 201)
         resp_id = response1.data['id']
@@ -254,8 +274,8 @@ class ChecklistWorkflowTestCase(TestCase):
         response2 = self.client.post(url, {
             'checklist_instance': instance.id,
             'item_template': self.item1.id,
-            'valor_estado': 'regular',
-            'observaciones': 'Actualizado'
+            'respuesta_seleccion': 'regular',
+            'respuesta_texto': 'Actualizado'
         }, format='json')
         
         # Debe retornar 200 (update) no 201 (create)
@@ -268,8 +288,8 @@ class ChecklistWorkflowTestCase(TestCase):
         
         # Verificar actualización
         resp = ChecklistItemResponse.objects.get(id=resp_id)
-        self.assertEqual(resp.valor_estado, 'regular')
-        self.assertEqual(resp.observaciones, 'Actualizado')
+        self.assertEqual(resp.respuesta_seleccion, 'regular')
+        self.assertEqual(resp.respuesta_texto, 'Actualizado')
 
 
 @override_settings(

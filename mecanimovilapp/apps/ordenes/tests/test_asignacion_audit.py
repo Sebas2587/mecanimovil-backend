@@ -4,9 +4,10 @@ Verifies atomic guarantees, rollback behavior, and accurate old/new capture.
 """
 from django.test import TestCase, TransactionTestCase
 from django.contrib.auth import get_user_model
+from django.test.utils import CaptureQueriesContext
 from decimal import Decimal
 from datetime import date, time
-from django.db import transaction
+from django.db import transaction, connection
 
 from mecanimovilapp.apps.usuarios.models import Taller, MiembroTaller, Cliente
 from mecanimovilapp.apps.ordenes.models import SolicitudServicio, AsignacionTecnicoLog
@@ -83,7 +84,10 @@ class AsignacionAuditTestCase(TestCase):
         self.orden._old_mecanico_asignado_id = self.orden.mecanico_asignado_id
         self.orden._asignado_por_user = self.user_mandante
         self.orden.mecanico_asignado = self.mecanico
-        self.orden.save()
+        
+        # Capture and execute on_commit callbacks
+        with self.captureOnCommitCallbacks(execute=True):
+            self.orden.save()
         
         logs = AsignacionTecnicoLog.objects.filter(orden=self.orden)
         self.assertEqual(logs.count(), 1)
@@ -98,7 +102,8 @@ class AsignacionAuditTestCase(TestCase):
         # Primera asignación
         self.orden._old_mecanico_asignado_id = None
         self.orden.mecanico_asignado = self.mecanico
-        self.orden.save()
+        with self.captureOnCommitCallbacks(execute=True):
+            self.orden.save()
         
         # Segundo técnico
         user_mec2 = User.objects.create_user(username='mec2_audit', password='test', email='mec2@test.com')
@@ -114,7 +119,8 @@ class AsignacionAuditTestCase(TestCase):
         self.orden.refresh_from_db()
         self.orden._old_mecanico_asignado_id = self.orden.mecanico_asignado_id
         self.orden.mecanico_asignado = mec2
-        self.orden.save()
+        with self.captureOnCommitCallbacks(execute=True):
+            self.orden.save()
         
         logs = AsignacionTecnicoLog.objects.filter(orden=self.orden).order_by('fecha_cambio')
         self.assertEqual(logs.count(), 2)
@@ -128,11 +134,14 @@ class AsignacionAuditTestCase(TestCase):
         # Asignar
         self.orden._old_mecanico_asignado_id = None
         self.orden.mecanico_asignado = self.mecanico
-        self.orden.save()
+        with self.captureOnCommitCallbacks(execute=True):
+            self.orden.save()
         
-        # Save sin cambio (no _old attribute)
+        # Save sin cambio (con _old igual a current)
         self.orden.refresh_from_db()
-        self.orden.save()
+        self.orden._old_mecanico_asignado_id = self.orden.mecanico_asignado_id
+        with self.captureOnCommitCallbacks(execute=True):
+            self.orden.save()
         
         logs = AsignacionTecnicoLog.objects.filter(orden=self.orden)
         self.assertEqual(logs.count(), 1)
@@ -142,13 +151,15 @@ class AsignacionAuditTestCase(TestCase):
         # Asignar
         self.orden._old_mecanico_asignado_id = None
         self.orden.mecanico_asignado = self.mecanico
-        self.orden.save()
+        with self.captureOnCommitCallbacks(execute=True):
+            self.orden.save()
         
         # Desasignar
         self.orden.refresh_from_db()
         self.orden._old_mecanico_asignado_id = self.orden.mecanico_asignado_id
         self.orden.mecanico_asignado = None
-        self.orden.save()
+        with self.captureOnCommitCallbacks(execute=True):
+            self.orden.save()
         
         logs = AsignacionTecnicoLog.objects.filter(orden=self.orden).order_by('fecha_cambio')
         self.assertEqual(logs.count(), 2)
@@ -162,7 +173,8 @@ class AsignacionAuditTestCase(TestCase):
         self.orden._old_mecanico_asignado_id = None
         self.orden.mecanico_asignado = self.mecanico
         # No _asignado_por_user
-        self.orden.save()
+        with self.captureOnCommitCallbacks(execute=True):
+            self.orden.save()
         
         log = AsignacionTecnicoLog.objects.get(orden=self.orden)
         self.assertIsNone(log.asignado_por)
