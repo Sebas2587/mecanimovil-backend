@@ -892,7 +892,7 @@ def _confirmar_enviar(taller, pendiente, user, correcciones) -> dict:
     cotizacion = CotizacionCanal.objects.filter(taller=taller, id=pendiente.get('cotizacion_id')).first()
     if cotizacion is None:
         raise ValueError('Esa cotización ya no está en el taller.')
-    if cotizacion.es_libre or cotizacion.conversation_id is None:
+    if cotizacion.conversation_id is None:
         enviar_cotizacion_libre(cotizacion)
     else:
         if user is None:

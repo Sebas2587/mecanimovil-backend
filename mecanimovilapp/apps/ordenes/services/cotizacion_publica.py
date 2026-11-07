@@ -609,10 +609,15 @@ def _serializar_cotizacion_publica_live(cotizacion: CotizacionCanal, request=Non
 
 @transaction.atomic
 def enviar_cotizacion_libre(cotizacion: CotizacionCanal) -> CotizacionCanal:
-    """Marca cotización libre como enviada y garantiza link público."""
+    """Publica link público cuando la cotización no tiene conversación.
+
+    Cubre la cotización libre y el adicional copiado de una base sin canal
+    (`es_libre=False`, `conversation_id` nulo). Si hay conversación, el envío
+    debe quedar en el canal de esa conversación.
+    """
     if cotizacion.estado != 'borrador':
         raise ValueError('Solo se pueden enviar cotizaciones en borrador.')
-    if not cotizacion.es_libre:
+    if cotizacion.conversation_id:
         raise ValueError('Use enviar_cotizacion_canal para cotizaciones con conversación.')
     from mecanimovilapp.apps.ordenes.services.cotizacion_adicional import (
         validar_adicional_listo_para_enviar,

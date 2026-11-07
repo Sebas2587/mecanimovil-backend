@@ -8,3 +8,4 @@ class OrdenesConfig(AppConfig):
 
     def ready(self):
         import mecanimovilapp.apps.ordenes.signals_agendamiento_ia  # noqa: F401
+        import mecanimovilapp.apps.ordenes.signals  # noqa: F401
