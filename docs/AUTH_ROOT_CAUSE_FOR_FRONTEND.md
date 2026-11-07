@@ -246,13 +246,9 @@ headers: { 'Authorization': `Token ${token}` }
 
 ## Test Credentials (Development Only)
 
-```
-Username: test_taller_http
-Password: test123
-Endpoint: POST /api/usuarios/login-proveedor/
-```
+Test users created by `scripts/login_and_test.py` for localhost verification.
 
-**⚠️ These credentials are for localhost testing only. Never use in production.**
+**⚠️ Development environment only. Not for production.**
 
 ## Summary for Frontend Team
 
