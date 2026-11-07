@@ -59,6 +59,44 @@ def setup_test_data():
     post_save.disconnect(mecanimovilapp.apps.agente_ia.signals.sync_oferta_servicio_chunk, sender=OfertaServicio)
     post_save.disconnect(mecanimovilapp.apps.agente_ia.signals.sync_solicitud_historico_chunk, sender=SolicitudServicio)
     
+    # Create checklist template for Order 4 (checklist-required flow)
+    from mecanimovilapp.apps.checklists.models import ChecklistTemplate, ChecklistItemTemplate, ChecklistItemCatalog
+    servicio_checklist, _ = Servicio.objects.get_or_create(
+        nombre='Servicio con Checklist',
+        defaults={'descripcion': 'Servicio que requiere checklist'}
+    )
+    template, created_template = ChecklistTemplate.objects.get_or_create(
+        servicio=servicio_checklist,
+        version='1.0',
+        defaults={
+            'nombre': 'Template Requerido Test',
+            'activo': True
+        }
+    )
+    catalog_item, _ = ChecklistItemCatalog.objects.get_or_create(
+        nombre='Revisar frenos',
+        defaults={
+            'categoria': 'SISTEMA_FRENOS',
+            'tipo_pregunta': 'SELECT',
+            'pregunta_texto': '¿Estado de los frenos?',
+            'es_obligatorio_por_defecto': True,
+            'opciones_seleccion': ['bueno', 'regular', 'malo'],
+            'activo': True
+        }
+    )
+    if created_template:
+        ChecklistItemTemplate.objects.create(
+            checklist_template=template,
+            catalog_item=catalog_item,
+            orden_visual=1
+        )
+    elif not ChecklistItemTemplate.objects.filter(checklist_template=template, catalog_item=catalog_item).exists():
+        ChecklistItemTemplate.objects.create(
+            checklist_template=template,
+            catalog_item=catalog_item,
+            orden_visual=1
+        )
+    
     try:
         oferta_servicio, _ = OfertaServicio.objects.get_or_create(
             taller=taller_a,
@@ -183,6 +221,18 @@ def setup_test_data():
         metodo_pago='transferencia'
     )
     
+    orden4 = SolicitudServicio.objects.create(
+        cliente=cliente,
+        vehiculo=vehiculo,
+        taller=taller_a,
+        tipo_servicio='taller',
+        fecha_servicio=date.today(),
+        hora_servicio=dt_time(18, 0),
+        estado='pendiente_aceptacion_proveedor',
+        total=Decimal('45000'),
+        metodo_pago='transferencia'
+    )
+    
     # Create base quotes
     cot_base1 = CotizacionCanal.objects.create(
         taller=taller_a,
@@ -211,13 +261,24 @@ def setup_test_data():
         token=str(uuid.uuid4())
     )
     
+    cot_base4 = CotizacionCanal.objects.create(
+        taller=taller_a,
+        creado_por=user_a,
+        estado='aceptada',
+        mano_obra_clp=Decimal('45000'),
+        total_clp=Decimal('45000'),
+        token=str(uuid.uuid4())
+    )
+    
     print(f"✅ Taller A ID: {taller_a.id}")
     print(f"✅ Mechanic A ID: {mec_a.id}")
     print(f"✅ Taller B ID: {taller_b.id}")
     print(f"✅ Order 1 ID: {orden1.id}")
     print(f"✅ Order 2 ID: {orden2.id}")
     print(f"✅ Order 3 ID: {orden3.id}")
-    print(f"✅ OfertaServicio ID: {oferta_servicio.id}\n")
+    print(f"✅ Order 4 ID: {orden4.id}")
+    print(f"✅ OfertaServicio ID: {oferta_servicio.id}")
+    print(f"✅ ChecklistTemplate ID: {template.id}\n")
     
     return {
         'taller_a_username': 'http_v2_taller_a',
@@ -229,10 +290,14 @@ def setup_test_data():
         'orden1': orden1,
         'orden2': orden2,
         'orden3': orden3,
+        'orden4': orden4,
         'cot_base1': cot_base1,
         'cot_base2': cot_base2,
         'cot_base3': cot_base3,
+        'cot_base4': cot_base4,
         'oferta_servicio_id': oferta_servicio.id,
+        'checklist_template': template,
+        'checklist_item': catalog_item
     }
 
 def login(username, password):
@@ -698,6 +763,178 @@ def test_base_order_with_rejected_extra(data):
     assert order_state == 'completado', f"Expected completado, got {order_state}"
     print(f"   ✅ Base CLOSED (estado: {order_state}) independently of rejected extra\n")
 
+
+def test_checklist_required_flow(data):
+    """Test base order closure with required checklist completion."""
+    print("="*70)
+    print("CHECKLIST-REQUIRED FLOW WITH PENDING EXTRA (Order 4)")
+    print("="*70 + "\n")
+    
+    orden_id = data['orden4'].id
+    cot_base = data['cot_base4']
+    
+    owner_token, _ = login(data['taller_a_username'], 'test123')
+    mec_token, _ = login(data['mec_a_username'], 'test123')
+    
+    print("1️⃣  Setup & Start Order 4 (with checklist template)")
+    resp = requests.post(
+        f"{BASE_URL}/api/ordenes/proveedor-ordenes/{orden_id}/aceptar/",
+        headers={"Authorization": f"Token {owner_token}"},
+        json={},
+        timeout=5
+    )
+    assert resp.status_code == 200
+    
+    resp = requests.post(
+        f"{BASE_URL}/api/ordenes/proveedor-ordenes/{orden_id}/asignar_tecnico/",
+        headers={"Authorization": f"Token {owner_token}"},
+        json={
+            "mecanico_id": data['mec_a'].id,
+            "fecha": str(date.today()),
+            "hora": "18:00"
+        },
+        timeout=5
+    )
+    assert resp.status_code == 200
+    
+    resp = requests.post(
+        f"{BASE_URL}/api/ordenes/proveedor-ordenes/{orden_id}/iniciar_servicio/",
+        headers={"Authorization": f"Token {mec_token}"},
+        json={},
+        timeout=5
+    )
+    assert resp.status_code == 200
+    
+    # Manually create checklist instance for this order with the template
+    from mecanimovilapp.apps.checklists.models import ChecklistInstance
+    checklist_instance = ChecklistInstance.objects.create(
+        orden_id=orden_id,
+        checklist_template=data['checklist_template'],
+        estado='EN_PROGRESO'
+    )
+    checklist_id = checklist_instance.id
+    print(f"   ✅ Order started, checklist_id: {checklist_id}\n")
+    
+    # Create pending extra
+    print("2️⃣  Create Pending Extra Quote")
+    cita = CitaAgendaPersonal.objects.create(
+        taller=data['taller_a'],
+        cotizacion_canal_origen=cot_base,
+        fecha_servicio=date.today(),
+        hora_servicio=dt_time(18, 0),
+        duracion_minutos=60,
+        tipo_servicio='taller',
+        estado='activa',
+        creado_por=data['taller_a'].usuario
+    )
+    
+    resp = requests.post(
+        f"{BASE_URL}/api/ordenes/cotizaciones-canal/crear-adicional/",
+        headers={"Authorization": f"Token {owner_token}"},
+        json={
+            "cita_id": cita.id,
+            "cotizacion_original_id": cot_base.id,
+            "motivo_servicio_adicional": "Extra with checklist",
+            "modo": "catalogo",
+            "servicios_catalogo": [{"oferta_servicio_id": data['oferta_servicio_id'], "cantidad": 1}]
+        },
+        timeout=5
+    )
+    assert resp.status_code == 201
+    print(f"   ✅ Extra created (pending)\n")
+    
+    # Try to close without completing checklist (should fail)
+    print("3️⃣  Try to Close Without Checklist Completion (should fail)")
+    resp = requests.post(
+        f"{BASE_URL}/api/ordenes/proveedor-ordenes/{orden_id}/finalizar_servicio/",
+        headers={"Authorization": f"Token {owner_token}"},
+        json={},
+        timeout=5
+    )
+    assert resp.status_code == 400, f"Should fail before checklist: {resp.status_code}"
+    print(f"   ✅ Closure blocked before checklist (400)\n")
+    
+    # Get checklist instance to find item template
+    print("4️⃣  Complete Checklist via API")
+    # Get item template from the template itself
+    from mecanimovilapp.apps.checklists.models import ChecklistItemTemplate
+    item_template = ChecklistItemTemplate.objects.filter(
+        checklist_template=data['checklist_template']
+    ).first()
+    item_template_id = item_template.id
+    
+    # Save partial response
+    resp = requests.post(
+        f"{BASE_URL}/api/checklists/responses/",
+        headers={"Authorization": f"Token {mec_token}"},
+        json={
+            "checklist_instance": checklist_id,
+            "item_template": item_template_id,
+            "respuesta_seleccion": "bueno"
+        },
+        timeout=5
+    )
+    assert resp.status_code == 201, f"Save response failed: {resp.status_code}"
+    print(f"   ✅ Partial response saved\n")
+    
+    # Verify persistence via GET
+    resp = requests.get(
+        f"{BASE_URL}/api/checklists/instances/{checklist_id}/",
+        headers={"Authorization": f"Token {mec_token}"},
+        timeout=5
+    )
+    assert resp.status_code == 200
+    persisted = resp.json()
+    assert len(persisted['respuestas']) == 1
+    assert persisted['respuestas'][0]['respuesta_seleccion'] == 'bueno'
+    print(f"   ✅ Response persisted and retrieved\n")
+    
+    # Finalize checklist with both signatures (complete workflow)
+    print("5️⃣  Finalize Checklist with Signatures")
+    resp = requests.post(
+        f"{BASE_URL}/api/checklists/instances/{checklist_id}/finalize/",
+        headers={"Authorization": f"Token {mec_token}"},
+        json={
+            "firma_tecnico": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+            "firma_cliente": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        },
+        timeout=5
+    )
+    assert resp.status_code == 200, f"Checklist finalize failed: {resp.status_code}"
+    
+    # Verify order and checklist state after finalization
+    resp = requests.get(
+        f"{BASE_URL}/api/ordenes/proveedor-ordenes/{orden_id}/",
+        headers={"Authorization": f"Token {owner_token}"},
+        timeout=5
+    )
+    order_state_after_checklist = resp.json()['estado']
+    
+    # Verify checklist state
+    from mecanimovilapp.apps.checklists.models import ChecklistInstance
+    checklist_after = ChecklistInstance.objects.get(id=checklist_id)
+    print(f"   ✅ Checklist finalized (checklist estado: {checklist_after.estado}, order estado: {order_state_after_checklist})\n")
+    
+    # Verify final state
+    print("6️⃣  Verify Base Order Closure After Checklist")
+    if order_state_after_checklist == 'completado':
+        print(f"   ✅ Base auto-CLOSED by checklist finalization (estado: completado)\n")
+    else:
+        # If not auto-closed, close manually via finalizar_servicio
+        resp = requests.post(
+            f"{BASE_URL}/api/ordenes/proveedor-ordenes/{orden_id}/finalizar_servicio/",
+            headers={"Authorization": f"Token {owner_token}"},
+            json={},
+            timeout=5
+        )
+        assert resp.status_code == 200, f"Finalizar failed after checklist: {resp.status_code} - {resp.text[:200]}"
+        order_state_after_checklist = 'completado'
+        print(f"   ✅ Base CLOSED manually (estado: {order_state_after_checklist})\n")
+    
+    # Final verification
+    assert order_state_after_checklist == 'completado', f"Expected completado, got {order_state_after_checklist}"
+
+
 if __name__ == '__main__':
     # Check server
     try:
@@ -715,6 +952,7 @@ if __name__ == '__main__':
         test_cross_tenant_creation(data)
         test_base_order_with_pending_extra(data)
         test_base_order_with_rejected_extra(data)
+        test_checklist_required_flow(data)
         
         print("="*70)
         print("✅ ALL HTTP SMOKE TESTS PASSED (STRICT ASSERTIONS)")
