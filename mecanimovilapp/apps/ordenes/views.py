@@ -3225,10 +3225,14 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
         conflictos = []
         for orden_conflicto in ordenes_misma_fecha:
             if orden_conflicto.hora_servicio:
-                diff_minutos = abs(
-                    (orden_conflicto.hora_servicio.hour * 60 + orden_conflicto.hora_servicio.minute) -
-                    (hora.hour * 60 + hora.minute)
-                )
+                # Build datetime for proper comparison (handles date boundaries)
+                from datetime import datetime, timedelta
+                dt_orden = datetime.combine(fecha, hora)
+                dt_conflicto = datetime.combine(orden_conflicto.fecha_servicio, orden_conflicto.hora_servicio)
+                
+                # Fixed 60-minute overlap heuristic (SolicitudServicio has no duration field)
+                diff_minutos = abs((dt_conflicto - dt_orden).total_seconds() / 60)
+                
                 if diff_minutos < 60:
                     conflictos.append({
                         'orden_id': orden_conflicto.id,
