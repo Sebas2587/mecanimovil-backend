@@ -764,6 +764,63 @@ def test_base_order_with_rejected_extra(data):
     print(f"   ✅ Base CLOSED (estado: {order_state}) independently of rejected extra\n")
 
 
+def _get_checklist(token, checklist_id):
+    resp = requests.get(
+        f"{BASE_URL}/api/checklists/instances/{checklist_id}/",
+        headers={"Authorization": f"Token {token}"},
+        timeout=5,
+    )
+    assert resp.status_code == 200, f"Checklist GET failed: {resp.status_code} - {resp.text[:300]}"
+    return resp.json()
+
+
+def _respuesta_seleccion(checklist):
+    respuestas = checklist.get('respuestas') or []
+    assert len(respuestas) == 1, f"Expected 1 saved response, got {respuestas}"
+    return respuestas[0].get('respuesta_seleccion')
+
+
+def _get_orden_estado(token, orden_id):
+    resp = requests.get(
+        f"{BASE_URL}/api/ordenes/proveedor-ordenes/{orden_id}/",
+        headers={"Authorization": f"Token {token}"},
+        timeout=5,
+    )
+    assert resp.status_code == 200, f"Order GET failed: {resp.status_code} - {resp.text[:300]}"
+    return resp.json()['estado']
+
+
+def _ids_ordenes(token):
+    ids = set()
+    url = f"{BASE_URL}/api/ordenes/proveedor-ordenes/"
+    while url:
+        resp = requests.get(
+            url,
+            headers={"Authorization": f"Token {token}"},
+            timeout=5,
+        )
+        assert resp.status_code == 200, f"Order list failed: {resp.status_code}"
+        body = resp.json()
+        if isinstance(body, list):
+            ids.update(row['id'] for row in body)
+            break
+        ids.update(row['id'] for row in body.get('results', []))
+        url = body.get('next')
+    return ids
+
+
+def _ids_citas(token):
+    resp = requests.get(
+        f"{BASE_URL}/api/ordenes/citas-agenda-personal/",
+        headers={"Authorization": f"Token {token}"},
+        timeout=5,
+    )
+    assert resp.status_code == 200, f"Cita list failed: {resp.status_code} - {resp.text[:200]}"
+    body = resp.json()
+    rows = body if isinstance(body, list) else body.get('results', [])
+    return {row['id'] for row in rows}
+
+
 def test_checklist_required_flow(data):
     """Test base order closure with required checklist completion."""
     print("="*70)
@@ -835,30 +892,22 @@ def test_checklist_required_flow(data):
     )
     assert resp.status_code == 200, f"iniciar_servicio failed: {resp.status_code} - {resp.text[:300]}"
     result = resp.json()
+    assert result.get('checklist_creado') is True, f"iniciar_servicio did not create a checklist: {result}"
     checklist_id = result.get('checklist_id')
+    assert checklist_id, f"iniciar_servicio response missing checklist_id: {result}"
     
-    # If not created automatically, create manually and document
-    if not checklist_id:
-        print(f"   ⚠️  Checklist not auto-created (response: {result})")
-        print(f"   🔸 Creating checklist manually for testing")
-        from mecanimovilapp.apps.checklists.models import ChecklistInstance
-        checklist_instance = ChecklistInstance.objects.create(
-            orden_id=orden_id,
-            checklist_template=data['checklist_template'],
-            estado='EN_PROGRESO'
-        )
-        checklist_id = checklist_instance.id
-    
-    # Verify via GET that checklist was created by API
     resp = requests.get(
         f"{BASE_URL}/api/checklists/instances/{checklist_id}/",
         headers={"Authorization": f"Token {mec_token}"},
         timeout=5
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 200, f"Checklist GET failed: {resp.status_code} - {resp.text[:200]}"
     checklist_data = resp.json()
-    assert checklist_data['estado'] in ['EN_PROGRESO', 'PENDIENTE'], f"Expected EN_PROGRESO or PENDIENTE, got {checklist_data['estado']}"
-    print(f"   ✅ Order started, checklist auto-created by API: {checklist_id} (estado: {checklist_data['estado']})\n")
+    assert checklist_data['id'] == checklist_id
+    assert checklist_data['estado'] == 'PENDIENTE', (
+        f"API-created checklist must start PENDIENTE, got {checklist_data['estado']}"
+    )
+    print(f"   ✅ iniciar_servicio created checklist {checklist_id} (PENDIENTE)\n")
     
     # Create pending extra
     print("2️⃣  Create Pending Extra Quote")
@@ -885,8 +934,18 @@ def test_checklist_required_flow(data):
         },
         timeout=5
     )
-    assert resp.status_code == 201
-    print(f"   ✅ Extra created (pending)\n")
+    assert resp.status_code == 201, f"Create extra failed: {resp.status_code} - {resp.text[:300]}"
+    extra_body = resp.json()['cotizacion']
+    extra_id = extra_body['id']
+    extra_estado_inicial = extra_body['estado']
+    assert extra_estado_inicial in ('borrador', 'enviada'), (
+        f"Unexpected extra estado at creation: {extra_estado_inicial}"
+    )
+    extra_cita_ultima_id = extra_body.get('cita_ultima_id')
+    extra_cita_ultima_estado = extra_body.get('cita_ultima_estado')
+    citas_antes = _ids_citas(owner_token)
+    ordenes_antes = _ids_ordenes(owner_token)
+    print(f"   ✅ Extra {extra_id} created (estado: {extra_estado_inicial})\n")
     
     # Try to close from checklist_en_progreso (state machine guard)
     print("3️⃣  Try to Close from checklist_en_progreso (state guard)")
@@ -904,15 +963,14 @@ def test_checklist_required_flow(data):
     # Checklist gate will be tested after completing checklist but before finalization
     # (finalizar_servicio checks checklist estado == 'COMPLETADO')
     
-    # Get checklist instance to find item template
-    print("4️⃣  Save, Pause, Resume Checklist via API")
+    print("4️⃣  Partial save, start, pause, resume")
     from mecanimovilapp.apps.checklists.models import ChecklistItemTemplate
     item_template = ChecklistItemTemplate.objects.filter(
         checklist_template=data['checklist_template']
     ).first()
+    assert item_template, "Fixture template has no item"
     item_template_id = item_template.id
     
-    # Save partial response
     resp = requests.post(
         f"{BASE_URL}/api/checklists/responses/",
         headers={"Authorization": f"Token {mec_token}"},
@@ -923,89 +981,103 @@ def test_checklist_required_flow(data):
         },
         timeout=5
     )
-    assert resp.status_code == 201, f"Save response failed: {resp.status_code}"
-    response_id = resp.json()['id']
-    print(f"   ✅ Partial response saved (id: {response_id})\n")
+    assert resp.status_code == 201, f"Save response failed: {resp.status_code} - {resp.text[:300]}"
     
-    # Verify persistence via GET
-    resp = requests.get(
-        f"{BASE_URL}/api/checklists/instances/{checklist_id}/",
+    persisted = _get_checklist(mec_token, checklist_id)
+    assert persisted['estado'] == 'PENDIENTE', f"Partial save must leave PENDIENTE, got {persisted['estado']}"
+    assert _respuesta_seleccion(persisted) == 'bueno'
+    print("   ✅ Partial save kept PENDIENTE and respuesta=bueno\n")
+    
+    resp = requests.post(
+        f"{BASE_URL}/api/checklists/instances/{checklist_id}/start/",
         headers={"Authorization": f"Token {mec_token}"},
+        json={},
         timeout=5
     )
-    assert resp.status_code == 200
-    persisted = resp.json()
-    initial_estado = persisted['estado']
-    assert len(persisted['respuestas']) == 1
-    assert persisted['respuestas'][0]['respuesta_seleccion'] == 'bueno'
-    print(f"   ✅ Response persisted ({initial_estado})\n")
+    assert resp.status_code == 200, f"Checklist start failed: {resp.status_code} - {resp.text[:300]}"
+    started = _get_checklist(mec_token, checklist_id)
+    assert started['estado'] == 'EN_PROGRESO', f"start must set EN_PROGRESO, got {started['estado']}"
+    assert _respuesta_seleccion(started) == 'bueno'
+    print("   ✅ POST /start/ → EN_PROGRESO, respuesta unchanged\n")
     
-    # Pause checklist (if in pauseable estado)
-    print("   🔸 Pause checklist")
-    if initial_estado in ['EN_PROGRESO', 'PAUSADO']:
-        resp = requests.post(
-            f"{BASE_URL}/api/checklists/instances/{checklist_id}/pause/",
-            headers={"Authorization": f"Token {mec_token}"},
-            json={},
-            timeout=5
-        )
-        assert resp.status_code == 200, f"Pause failed: {resp.status_code}"
-    else:
-        # Manually set to EN_PROGRESO for pause/resume flow
-        from mecanimovilapp.apps.checklists.models import ChecklistInstance
-        checklist_inst = ChecklistInstance.objects.get(id=checklist_id)
-        checklist_inst.estado = 'EN_PROGRESO'
-        checklist_inst.save()
-        resp = requests.post(
-            f"{BASE_URL}/api/checklists/instances/{checklist_id}/pause/",
-            headers={"Authorization": f"Token {mec_token}"},
-            json={},
-            timeout=5
-        )
-        assert resp.status_code == 200, f"Pause failed: {resp.status_code}"
-    
-    # GET paused state
-    resp = requests.get(
-        f"{BASE_URL}/api/checklists/instances/{checklist_id}/",
+    resp = requests.post(
+        f"{BASE_URL}/api/checklists/instances/{checklist_id}/pause/",
         headers={"Authorization": f"Token {mec_token}"},
+        json={},
         timeout=5
     )
-    assert resp.status_code == 200
-    paused = resp.json()
+    assert resp.status_code == 200, f"Pause failed: {resp.status_code} - {resp.text[:300]}"
+    paused = _get_checklist(mec_token, checklist_id)
     assert paused['estado'] == 'PAUSADO', f"Expected PAUSADO, got {paused['estado']}"
-    assert len(paused['respuestas']) == 1
-    assert paused['respuestas'][0]['respuesta_seleccion'] == 'bueno'
-    print(f"   ✅ Paused (PAUSADO, response unchanged)\n")
+    assert _respuesta_seleccion(paused) == 'bueno'
+    print("   ✅ POST /pause/ → PAUSADO, respuesta unchanged\n")
     
-    # Resume checklist
-    print("   🔸 Resume checklist")
     resp = requests.post(
         f"{BASE_URL}/api/checklists/instances/{checklist_id}/resume/",
         headers={"Authorization": f"Token {mec_token}"},
         json={},
         timeout=5
     )
-    assert resp.status_code == 200, f"Resume failed: {resp.status_code}"
+    assert resp.status_code == 200, f"Resume failed: {resp.status_code} - {resp.text[:300]}"
+    resumed = _get_checklist(mec_token, checklist_id)
+    assert resumed['estado'] == 'EN_PROGRESO', f"Expected EN_PROGRESO, got {resumed['estado']}"
+    assert _respuesta_seleccion(resumed) == 'bueno'
+    print("   ✅ POST /resume/ → EN_PROGRESO, respuesta unchanged\n")
     
-    # GET active state after resume
-    resp = requests.get(
-        f"{BASE_URL}/api/checklists/instances/{checklist_id}/",
-        headers={"Authorization": f"Token {mec_token}"},
+    print("5️⃣  en_proceso with unfinished checklist, then finalizar_servicio gate")
+    orden_estado = _get_orden_estado(owner_token, orden_id)
+    assert orden_estado == 'checklist_en_progreso', (
+        f"Expected checklist_en_progreso before transition, got {orden_estado}"
+    )
+    resp = requests.post(
+        f"{BASE_URL}/api/ordenes/proveedor-ordenes/{orden_id}/actualizar_estado/",
+        headers={"Authorization": f"Token {owner_token}"},
+        json={"estado": "en_proceso"},
         timeout=5
     )
-    assert resp.status_code == 200
-    resumed = resp.json()
-    assert resumed['estado'] == 'EN_PROGRESO', f"Expected EN_PROGRESO after resume, got {resumed['estado']}"
-    assert len(resumed['respuestas']) == 1
-    assert resumed['respuestas'][0]['respuesta_seleccion'] == 'bueno'
-    print(f"   ✅ Resumed (EN_PROGRESO, response unchanged)\n")
+    assert resp.status_code == 400, f"Direct en_proceso must be rejected: {resp.status_code} - {resp.text[:300]}"
+    blocked = resp.json()
+    assert blocked.get('error', '').startswith('Transición inválida'), blocked
+    assert 'en_proceso' not in blocked.get('estados_validos', []), blocked
+    assert _get_orden_estado(owner_token, orden_id) == 'checklist_en_progreso'
+    print(f"   ✅ Direct en_proceso blocked: {blocked['error']}\n")
     
-    # Checklist gate already tested: finalizar_servicio checks checklist.estado == 'COMPLETADO'
-    # (view code at views.py:3016-3020 requires completed checklist before allowing close)
-    print("5️⃣  Checklist Gate Verified")
-    print(f"   ✅ Gate enforced: finalizar_servicio requires checklist.estado=='COMPLETADO'\n")
+    # Valid map: checklist_en_progreso → checklist_completado → en_proceso.
+    # actualizar_estado does not require the checklist instance to be COMPLETADO.
+    resp = requests.post(
+        f"{BASE_URL}/api/ordenes/proveedor-ordenes/{orden_id}/actualizar_estado/",
+        headers={"Authorization": f"Token {owner_token}"},
+        json={"estado": "checklist_completado"},
+        timeout=5
+    )
+    assert resp.status_code == 200, f"checklist_completado transition failed: {resp.status_code} - {resp.text[:300]}"
+    assert _get_orden_estado(owner_token, orden_id) == 'checklist_completado'
     
-    # Finalize checklist with both signatures (complete workflow)
+    resp = requests.post(
+        f"{BASE_URL}/api/ordenes/proveedor-ordenes/{orden_id}/actualizar_estado/",
+        headers={"Authorization": f"Token {owner_token}"},
+        json={"estado": "en_proceso"},
+        timeout=5
+    )
+    assert resp.status_code == 200, f"en_proceso transition failed: {resp.status_code} - {resp.text[:300]}"
+    assert _get_orden_estado(owner_token, orden_id) == 'en_proceso'
+    unfinished = _get_checklist(mec_token, checklist_id)
+    assert unfinished['estado'] != 'COMPLETADO', unfinished['estado']
+    assert _respuesta_seleccion(unfinished) == 'bueno'
+    print("   ✅ Order persisted en_proceso while checklist still unfinished\n")
+    
+    resp = requests.post(
+        f"{BASE_URL}/api/ordenes/proveedor-ordenes/{orden_id}/finalizar_servicio/",
+        headers={"Authorization": f"Token {owner_token}"},
+        json={},
+        timeout=5
+    )
+    assert resp.status_code == 400, f"Expected checklist gate 400, got {resp.status_code} - {resp.text[:300]}"
+    gate_error = resp.json().get('error')
+    assert gate_error == 'No se puede finalizar el servicio sin completar el checklist', gate_error
+    assert _get_orden_estado(owner_token, orden_id) == 'en_proceso'
+    print(f"   ✅ finalizar_servicio 400: {gate_error}\n")
+    
     print("6️⃣  Finalize Checklist with Signatures")
     resp = requests.post(
         f"{BASE_URL}/api/checklists/instances/{checklist_id}/finalize/",
@@ -1016,58 +1088,34 @@ def test_checklist_required_flow(data):
         },
         timeout=5
     )
-    assert resp.status_code == 200, f"Checklist finalize failed: {resp.status_code}"
-    
-    # Verify order and checklist state after finalization
-    resp = requests.get(
-        f"{BASE_URL}/api/ordenes/proveedor-ordenes/{orden_id}/",
-        headers={"Authorization": f"Token {owner_token}"},
-        timeout=5
+    assert resp.status_code == 200, f"Checklist finalize failed: {resp.status_code} - {resp.text[:300]}"
+    checklist_after = _get_checklist(mec_token, checklist_id)
+    assert checklist_after['estado'] == 'COMPLETADO', checklist_after['estado']
+    order_state_after = _get_orden_estado(owner_token, orden_id)
+    assert order_state_after == 'completado', (
+        f"finalize with both signatures must close the order, got {order_state_after}"
     )
-    order_state_after_checklist = resp.json()['estado']
+    print("   ✅ Checklist COMPLETADO and base order completado\n")
     
-    # Verify checklist state
-    from mecanimovilapp.apps.checklists.models import ChecklistInstance
-    checklist_after = ChecklistInstance.objects.get(id=checklist_id)
-    print(f"   ✅ Checklist finalized (checklist estado: {checklist_after.estado}, order estado: {order_state_after_checklist})\n")
-    
-    # Verify final state
-    print("7️⃣  Verify Base Order Closure After Checklist")
-    if order_state_after_checklist == 'completado':
-        print(f"   ✅ Base auto-CLOSED by checklist finalization (estado: completado)\n")
-    else:
-        # If not auto-closed, close manually via finalizar_servicio
-        resp = requests.post(
-            f"{BASE_URL}/api/ordenes/proveedor-ordenes/{orden_id}/finalizar_servicio/",
-            headers={"Authorization": f"Token {owner_token}"},
-            json={},
-            timeout=5
-        )
-        assert resp.status_code == 200, f"Finalizar failed after checklist: {resp.status_code} - {resp.text[:200]}"
-        order_state_after_checklist = 'completado'
-        print(f"   ✅ Base CLOSED manually (estado: {order_state_after_checklist})\n")
-    
-    # Final verification
-    assert order_state_after_checklist == 'completado', f"Expected completado, got {order_state_after_checklist}"
-    
-    # Verify pending extra remains unchanged (not executed)
-    print("8️⃣  Verify Pending Extra Unchanged After Base Close")
-    from mecanimovilapp.apps.ordenes.models import CotizacionCanal
-    extra_quote = CotizacionCanal.objects.filter(
-        cotizacion_original_id=cot_base.id,
-        es_cotizacion_adicional=True
-    ).first()
-    assert extra_quote, "Extra quote should exist"
-    assert extra_quote.estado != 'aceptada', f"Extra should not be aceptada, got: {extra_quote.estado}"
-    
-    # Verify no orden created for unapproved extra (check via all orders for same taller/cliente)
-    extra_orders_count = SolicitudServicio.objects.filter(
-        taller=data['taller_a'],
-        cliente=data['orden4'].cliente
-    ).count()
-    # Should only have the 4 base orders we created, no extra order
-    assert extra_orders_count == 4, f"Expected 4 base orders only, found {extra_orders_count}"
-    print(f"   ✅ Pending extra unchanged (estado: {extra_quote.estado}, no execution created)\n")
+    print("7️⃣  GET pending extra after base close")
+    resp = requests.get(
+        f"{BASE_URL}/api/ordenes/cotizaciones-canal/{extra_id}/",
+        headers={"Authorization": f"Token {owner_token}"},
+        params={"sin_retry": "1"},
+        timeout=5,
+    )
+    assert resp.status_code == 200, f"Extra GET failed: {resp.status_code} - {resp.text[:300]}"
+    extra_after = resp.json()
+    assert extra_after['estado'] == extra_estado_inicial, (
+        f"Extra estado changed: {extra_estado_inicial} → {extra_after['estado']}"
+    )
+    assert extra_after.get('cita_ultima_id') == extra_cita_ultima_id
+    assert extra_after.get('cita_ultima_estado') == extra_cita_ultima_estado
+    assert _ids_ordenes(owner_token) == ordenes_antes, "A new order was created for the unapproved extra"
+    assert _ids_citas(owner_token) == citas_antes, "A new cita was created for the unapproved extra"
+    print(
+        f"   ✅ Extra still {extra_estado_inicial}; no new order or cita\n"
+    )
 
 
 if __name__ == '__main__':
