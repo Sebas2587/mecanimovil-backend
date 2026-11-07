@@ -149,7 +149,12 @@ class CustomerConsentExtrasTestCase(TestCase):
         self.assertEqual(cot_adicional.estado, 'borrador')
     
     def test_base_order_completes_with_rejected_extra(self):
-        """Base order can complete even if extra was rejected by customer."""
+        """Base order can complete even if extra was rejected by customer.
+        
+        Note: This test verifies the independence of base and extra quote states.
+        In real workflow, order completion would happen via finalizar_servicio API
+        after checklist completion. Here we verify state independence directly.
+        """
         cot_adicional = crear_cotizacion_adicional_desde_catalogo(
             cotizacion_original=self.cot_base,
             cita=self.cita,
@@ -162,7 +167,8 @@ class CustomerConsentExtrasTestCase(TestCase):
         cot_adicional.estado = 'rechazada'
         cot_adicional.save()
         
-        # Complete base
+        # Complete base (in real workflow via API after checklist complete)
+        # Here testing state independence directly
         self.cot_base.estado = 'completada'
         self.cot_base.save()
         
@@ -171,36 +177,43 @@ class CustomerConsentExtrasTestCase(TestCase):
         self.assertEqual(cot_adicional.estado, 'rechazada')
     
     @patch('mecanimovilapp.apps.ordenes.views_cotizacion_publica.CotizacionPublicaThrottle.allow_request', return_value=True)
-    def test_workshop_cannot_approve_own_extra_as_customer(self, mock_throttle):
-        """Workshop cannot directly approve their own additional quote (customer-only action)."""
+    def test_public_token_endpoint_allows_any_bearer(self, mock_throttle):
+        """Public token endpoint uses AllowAny - possession of token authorizes action.
+        
+        WARNING: Current design allows anyone with the token URL (including workshop)
+        to accept/reject. No additional identity verification is performed beyond 
+        possessing the unguessable token. Workshop that sees customer's WhatsApp 
+        link can technically execute the action.
+        
+        This test documents the actual behavior - bearer token grants authorization.
+        """
         cot_adicional = crear_cotizacion_adicional_desde_catalogo(
             cotizacion_original=self.cot_base,
             cita=self.cita,
             taller=self.taller,
             creado_por=self.user_taller,
-            motivo_servicio_adicional='Workshop trying to self-approve',
+            motivo_servicio_adicional='Testing bearer token auth',
             servicios_catalogo=[],
             ejecucion_adicional='misma_visita'
         )
         cot_adicional.estado = 'enviada'
-        cot_adicional.token = 'workshop-attempt-22222'
+        cot_adicional.token = 'bearer-token-test-12345'
         cot_adicional.save()
         
-        # Workshop authenticates and tries to accept via workshop endpoints
-        # (should not be allowed - only customer via public endpoint can accept)
+        # Public endpoint allows anyone with token (AllowAny permission)
+        # Even if workshop is authenticated, the public endpoint doesn't check
         self.client.force_authenticate(user=self.user_taller)
         
-        # Trying to directly mutate state through workshop API should be prevented
-        # The actual accept must go through public customer endpoint
         response = self.client.post(
             f'/api/ordenes/cotizaciones-publicas/{cot_adicional.token}/aceptar/',
             data={}
         )
         
-        # Public endpoint allows it (token-based, not checking who calls)
-        # This is by design - customer approval is token-based for convenience
-        # Real-world: customer receives WhatsApp link, clicks to approve
+        # Token possession authorizes - this is current design
+        # Not customer-identity-verified, just token-based
         self.assertEqual(response.status_code, 200)
+        cot_adicional.refresh_from_db()
+        self.assertEqual(cot_adicional.estado, 'aceptada')
 
 
 @override_settings(
@@ -263,8 +276,8 @@ class CrossTenantExtraPermissionsTestCase(TestCase):
     def test_workshop_cannot_create_extra_for_another_workshop_appointment(self):
         """Workshop B cannot create additional quote for Workshop A's appointment."""
         # Taller B tries to create extra for Taller A's appointment
-        with self.assertRaises(Exception):
-            # Should fail validation - cita belongs to taller_a, not taller_b
+        with self.assertRaisesMessage(ValueError, 'La cotización original no pertenece a este taller'):
+            # Should fail validation - base quote belongs to taller_a, not taller_b
             crear_cotizacion_adicional_desde_catalogo(
                 cotizacion_original=self.cot_a,
                 cita=self.cita_a,
