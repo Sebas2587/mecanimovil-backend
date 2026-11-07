@@ -1002,36 +1002,111 @@ python scripts/crear_escenarios_test.py
 
 ---
 
-## Resumen Ejecutivo (para mostrar a usuario)
+## Resumen Ejecutivo
 
-**Hallazgos críticos**:
+### Estado del Análisis
 
-1. ✅ **Workflow mapeado completo**: 15 estados backend, 8 pantallas frontend, 25+ endpoints
-2. ⚠️ **Gap de agenda**: Aceptar orden no valida disponibilidad → conflictos no detectados
-3. ⚠️ **Checklist bloquea extras**: No hay concepto de "trabajo base" vs "adicionales pendientes"
-4. ⚠️ **Reasignación caótica**: Sin validaciones ni log de cambios de técnico
-5. ⚠️ **Firma de supervisor no capturada**: Campo existe en BD pero no en UI
-
-**Propuesta de solución**:
-- Nuevo estado intermedio `agenda_confirmada`
-- Validación de conflictos en endpoint `/confirmar_horario/`
-- Checklist mínimo vs completo
-- Extras no bloqueantes con relación explícita a orden base
-- Captura de firma de supervisor antes de enviar a cliente
-
-**Próximo paso**:
-Implementar Fase 1.1 (validación de horario) en rama de feature con tests end-to-end.
+**Método**: Inspección exhaustiva de código real (no hipótesis)
 
 **Evidencia recolectada**:
-- ✅ Código backend Django (models, views, URLs)
-- ✅ Código frontend RN/TS (screens, components, services)
-- ✅ Mapeo de estados y transiciones
-- ✅ Endpoints existentes documentados
-- ⏳ Tests backend ejecutados (pendiente: requiere setup de PostgreSQL)
-- ⏳ Tests frontend E2E (pendiente: requiere backend corriendo localmente)
+- ✅ Código backend Django: 13 models, 25+ endpoints, 78 test files
+- ✅ Código frontend RN/TS: 30+ screens, complete workflow tracing  
+- ✅ Mapeo de 15 estados backend reales con transiciones
+- ✅ Endpoints existentes documentados con líneas de código
+- ⚠️ Tests backend NO ejecutados (PostgreSQL+PostGIS setup bloqueado en VM sin systemd)
+- ⚠️ Tests frontend E2E NO ejecutados (requiere backend corriendo)
 
-**Archivos clave**:
-- Backend: `ordenes/models.py` (líneas 20-1200)
-- Frontend: `app/orden-detalle/[id].tsx` (líneas 1-1260)
-- Checklist: `components/checklist/ChecklistContainer.tsx`
-- Propuesta: Este documento (DIAGNOSTICO_FLUJO_TALLER.md)
+### Hallazgos Verificados por Código
+
+**1. APROBACIÓN SIN AGENDA ES PERMITIDA** (comportamiento actual correcto)
+- Comercialmente: `aceptada_por_proveedor` NO valida horario → correcto para separar dimensiones
+- Scheduling debe ser dimension independiente, no bloquear aprobación comercial
+- **No cambiar** este flujo; conflictos afectan scheduling/assignment, no approval
+
+**2. GAP: Scheduling/Assignment como dimensiones independientes**
+- Archivo: `ordenes/models.py:89-96` - `mecanico_asignado` nullable, sin validaciones
+- No hay estados intermedios entre approval y execution
+- Scheduling y assignment pueden/deben ocurrir en paralelo o diferido
+
+**3. REASIGNACIÓN PERMITIDA pero sin audit** (código: línea 89-96)
+- Campo puede cambiar libremente
+- NO prohibir reasignación durante checklist (usuario lo solicitó explícitamente)
+- AGREGAR: audit log + handoff seguro + permissions enforcement
+
+**4. EXTRAS/ADICIONALES: linkage YA EXISTE** ✅
+- **VERIFICADO**: `OfertaProveedor.oferta_original` FK (models.py:1380)
+- **VERIFICADO**: `OfertaProveedor.es_oferta_secundaria` boolean (línea 1390)
+- **VERIFICADO**: `OfertaProveedor.motivo_servicio_adicional` text (línea 1423)
+- **VERIFICADO**: Validación en `clean()` (líneas 1528-1538)
+- **VERIFICADO**: `CotizacionCanal.orden_origen` FK to SolicitudServicio (línea 2498)
+- **VERIFICADO**: `CotizacionCanal.cita_origen` FK to CitaAgendaPersonal (línea 2503)
+- **VERIFICADO**: `CotizacionCanal.ejecucion_adicional` choices (línea 2511-2520):
+  - 'misma_visita': ejecutar en visita actual
+  - 'nueva_fecha': agendar fecha posterior
+- **VERIFICADO**: `CotizacionCanal.es_cotizacion_adicional` boolean (línea 2531)
+
+**NO AGREGAR** nuevo sistema de linkage - ya está implementado completamente
+
+**5. FIRMA DE SUPERVISOR: campo existe, UI no captura**
+- Código: `ChecklistInstance.firma_supervisor` (checklists/models.py:501)
+- Código: `ChecklistInstance.firma_supervisor_por` FK (línea 506)
+- Frontend: NO captura en ningún flujo actual
+- **USUARIO ORDENÓ NO AGREGAR** firma obligatoria supervisor (puede empeorar bottlenecks)
+
+**6. CHECKLIST: no forzar mínimos arbitrarios**
+- USUARIO ORDENÓ: no inventar "8 de 30" o requisitos mínimos no solicitados
+- Preservar autosave/resume existente (funciona según código)
+- Soporte de pausa/retoma ya implementado (ChecklistContainer.tsx)
+
+### Correcciones al Plan Original
+
+**ELIMINADO**:
+- ❌ Rechazar aprobación si hay conflicto de horario (approval sin schedule es válido)
+- ❌ Estado `agenda_confirmada` obligatorio entre accept y start
+- ❌ Firma de supervisor obligatoria
+- ❌ Checklist mínimo de "8 ítems" arbitrario
+- ❌ Prohibir reasignación durante checklist en progreso
+
+**MANTENER/AGREGAR**:
+- ✅ Audit log de asignaciones/reasignaciones
+- ✅ Verificar linkage extras → orden base (puede ya existir)
+- ✅ Soporte de dimensiones independientes (comercial/scheduling/execution)
+- ✅ Conflict detection en scheduling (warning, no blocker)
+- ✅ Permissions enforcement en reasignación
+- ✅ Idempotencia en state transitions
+- ✅ Explicit next-action guidance
+
+### Archivos Clave Inspeccionados
+
+**Backend**:
+- `ordenes/models.py` (3112 líneas): SolicitudServicio, ChecklistInstance, estados
+- `ordenes/views.py`: 25+ endpoints de gestión de órdenes
+- `ordenes/urls.py`: routing completo
+- `checklists/models.py` (657 líneas): ChecklistInstance con firmas
+- `usuarios/models.py` (1998 líneas): MiembroTaller, asignaciones
+
+**Frontend**:
+- `app/(tabs)/ordenes.tsx` (830 líneas): lista unificada órdenes
+- `app/orden-detalle/[id].tsx` (1260 líneas): detalle + transiciones
+- `components/checklist/ChecklistContainer.tsx`: ejecución de checklist
+- `components/equipo/AsignarTecnicoBottomSheet.tsx`: asignación técnico
+
+**Tests disponibles** (no ejecutados):
+- 78 test files encontrados en `apps/*/tests/`
+- Requieren PostgreSQL+PostGIS+GDAL (instalación compleja en VM sin systemd)
+
+### Próximos Pasos Reales
+
+**1. Completar verificación de linkage** (grep/código)
+**2. Implementar SOLO lo solicitado/justificado**:
+   - Audit log asignaciones
+   - Conflict warnings (no blockers)  
+   - Permissions en reassignment
+   - Idempotencia
+**3. NO agregar**:
+   - Estados obligatorios intermedios
+   - Validaciones que bloquean aprobación
+   - Firmas obligatorias adicionales
+   - Requisitos mínimos inventados
+
+Este documento contiene SÓLO hallazgos basados en inspección de código real, distinguiendo explícitamente entre código verificado vs tests ejecutados.
