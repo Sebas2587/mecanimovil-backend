@@ -3137,9 +3137,10 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
                 )
         
         # Atomic with select_for_update on authorized queryset
+        # of=('self',) locks only SolicitudServicio table (queryset has nullable FK joins)
         with transaction.atomic():
             try:
-                orden = self.get_queryset().select_for_update().get(pk=pk)
+                orden = self.get_queryset().select_for_update(of=('self',)).get(pk=pk)
             except SolicitudServicio.DoesNotExist:
                 return Response(
                     {'error': 'Orden no encontrada'},

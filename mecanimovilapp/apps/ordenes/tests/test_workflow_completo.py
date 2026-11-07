@@ -349,12 +349,13 @@ class WorkflowCompletoTestCase(TestCase):
             activo=True
         )
         
-        # Reasignar
+        # Reasignar (capture on_commit callbacks for audit log)
         url_asignar = f'/api/ordenes/proveedor-ordenes/{orden.id}/asignar_tecnico/'
-        response = self.client_mandante.post(url_asignar, {
-            'mecanico_id': mec2.id,
-            'motivo': 'Reasignación por carga de trabajo'
-        }, format='json')
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client_mandante.post(url_asignar, {
+                'mecanico_id': mec2.id,
+                'motivo': 'Reasignación por carga de trabajo'
+            }, format='json')
         
         self.assertEqual(response.status_code, 200)
         orden.refresh_from_db()
