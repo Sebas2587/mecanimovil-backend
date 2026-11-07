@@ -9,22 +9,23 @@
 
 ## Test Results
 
-### New Tests: 22/22 PASSED ✓
+### New Tests: 28/28 PASSED ✓
 
 | Test Suite | Tests | Status | Coverage |
 |------------|-------|--------|----------|
 | `test_idempotencia.py` | 4/4 | ✓ PASS | Idempotency, concurrency, state validation |
 | `test_asignacion_audit.py` | 5/5 | ✓ PASS | Assignment audit logging |
 | `test_workflow_completo.py` | 13/13 | ✓ PASS | Full workflow integration |
+| `test_checklist_y_extras.py` | 6/6 | ✓ PASS | Additional quotes, base independence, concurrent transactions |
 
 ### Existing Regression: 60/60 PASSED ✓
 
 | Test Suite | Tests | Status | Coverage |
 |------------|-------|--------|----------|
-| `test_taller_margin_feature.py` | 45/45 | ✓ PASS | Quote margin calculations (PR #44) |
-| `test_caja_taller.py` | 15/15 | ✓ PASS | Cash register operations |
+| `test_taller_margin_feature.py` | 21/21 | ✓ PASS | Quote margin calculations (PR #44) |
+| `test_caja_taller.py` | 39/39 | ✓ PASS | Cash register operations |
 
-### **Total: 82/82 PASSED ✓**
+### **Total: 88/88 PASSED ✓**
 
 ---
 
