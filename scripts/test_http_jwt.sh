@@ -10,11 +10,11 @@ echo ""
 
 # Seed data and capture tokens
 echo "1. Seeding test data..."
-SEED_OUTPUT=$(cd /agent/repos/mecanimovil-backend && ./run_django.sh scripts/seed_test_users.py 2>&1)
+SEED_OUTPUT=$(cd /agent/repos/mecanimovil-backend && source venv/bin/activate && python scripts/seed_test_users.py 2>&1)
 echo "$SEED_OUTPUT" | tail -20
 
-# Extract token (simplified - in production use jq)
-MANDANTE_TOKEN=$(echo "$SEED_OUTPUT" | grep -A2 "MANDANTE:" | grep "Access Token:" | awk '{print $3}' | cut -d'.' -f1-3)
+# Extract token (get everything after "Access Token: ")
+MANDANTE_TOKEN=$(echo "$SEED_OUTPUT" | grep "Access Token:" | head -1 | awk -F': ' '{print $2}' | tr -d ' \n')
 
 if [ -z "$MANDANTE_TOKEN" ]; then
     echo "ERROR: Failed to extract JWT token"

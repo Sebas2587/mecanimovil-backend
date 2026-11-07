@@ -202,7 +202,7 @@ def get_or_create_test_data():
         print(f"{role.upper()}:")
         print(f"  Username: {user.username}")
         print(f"  Password: test123")
-        print(f"  Access Token: {tokens[role]['access'][:50]}...")
+        print(f"  Access Token: {tokens[role]['access']}")
         print()
     
     return {
