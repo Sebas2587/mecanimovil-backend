@@ -3067,6 +3067,78 @@ class VehiculoPreferenciaRepuesto(models.Model):
         return f'{self.patente} → {self.calidad_preferida or "—"}'
 
 
+class AsignacionTecnicoLog(models.Model):
+    """
+    Log inmutable de cambios de asignación de técnico.
+    Preserva historial completo para auditoría y análisis de reasignaciones.
+    
+    Registrado automáticamente por signal pre_save de SolicitudServicio.
+    Preserva contexto de checklist si había progreso en curso.
+    """
+    orden = models.ForeignKey(
+        'SolicitudServicio',
+        on_delete=models.CASCADE,
+        related_name='asignaciones_log',
+        help_text='Orden cuyo técnico fue asignado o reasignado'
+    )
+    tecnico_anterior = models.ForeignKey(
+        'usuarios.MiembroTaller',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='asignaciones_anteriores',
+        help_text='Técnico antes del cambio (null en primera asignación)'
+    )
+    tecnico_nuevo = models.ForeignKey(
+        'usuarios.MiembroTaller',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='asignaciones_nuevas',
+        help_text='Técnico después del cambio (null si se desasignó)'
+    )
+    asignado_por = models.ForeignKey(
+        'usuarios.Usuario',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='asignaciones_realizadas',
+        help_text='Usuario que realizó el cambio'
+    )
+    fecha_cambio = models.DateTimeField(
+        auto_now_add=True,
+        help_text='Timestamp del cambio'
+    )
+    motivo = models.CharField(
+        max_length=200,
+        blank=True,
+        help_text='Motivo del cambio (opcional, ej: "Técnico original no disponible")'
+    )
+    checklist_en_progreso = models.BooleanField(
+        default=False,
+        help_text='Si había checklist en progreso al momento del cambio'
+    )
+    checklist_progreso_pct = models.PositiveIntegerField(
+        default=0,
+        help_text='Porcentaje de progreso del checklist al momento del cambio'
+    )
+    
+    class Meta:
+        ordering = ['-fecha_cambio']
+        indexes = [
+            models.Index(fields=['orden', '-fecha_cambio']),
+            models.Index(fields=['tecnico_nuevo', '-fecha_cambio']),
+            models.Index(fields=['fecha_cambio']),
+        ]
+        verbose_name = 'Log de Asignación de Técnico'
+        verbose_name_plural = 'Logs de Asignación de Técnicos'
+    
+    def __str__(self):
+        anterior = self.tecnico_anterior.nombre if self.tecnico_anterior else 'Sin asignar'
+        nuevo = self.tecnico_nuevo.nombre if self.tecnico_nuevo else 'Desasignado'
+        return f'Orden {self.orden_id}: {anterior} → {nuevo} ({self.fecha_cambio:%Y-%m-%d %H:%M})'
+
+
 class VistaTallerOculta(models.Model):
     """Marca una ficha como fuera de las listas del taller.
 
