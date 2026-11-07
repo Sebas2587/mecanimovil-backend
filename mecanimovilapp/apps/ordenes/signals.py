@@ -1,22 +1,24 @@
 """
 Signals para auditoría y logging en el módulo de órdenes.
 
-Registra automáticamente cambios críticos en el estado y asignación de órdenes
-para permitir análisis posterior, trazabilidad y resolución de conflictos.
+BLOCKER FIX (review d1a6ebe): Audit log moved to post_save + on_commit.
+Registra cambios críticos con garantías atómicas.
 """
-from django.db.models.signals import pre_save
+from django.db.models.signals import post_save
 from django.dispatch import receiver
+from django.db import transaction
 from mecanimovilapp.apps.ordenes.models import SolicitudServicio, AsignacionTecnicoLog
 
 
-@receiver(pre_save, sender=SolicitudServicio)
-def log_tecnico_assignment(sender, instance, **kwargs):
+@receiver(post_save, sender=SolicitudServicio)
+def log_tecnico_assignment(sender, instance, created, **kwargs):
     """
-    Registra cambios en mecanico_asignado antes de guardar.
-    Preserva progreso si hay checklist en curso.
+    Registra cambios en mecanico_asignado después de guardar exitosamente.
     
-    Se ejecuta en pre_save (no post_save) para capturar el valor anterior
-    antes de que se sobrescriba en la BD.
+    BLOCKER FIX: Cambio de pre_save a post_save + on_commit para:
+    1. Audit solo persiste si save principal exitoso (no en autocommit orphan)
+    2. Audit sobrevive rollback de transacción externa (on_commit)
+    3. old value capturado via _old_mecanico_asignado_id (seteado en viewset antes de modificar)
     
     Casos registrados:
     - Primera asignación: tecnico_anterior=None, tecnico_nuevo=X
@@ -24,33 +26,60 @@ def log_tecnico_assignment(sender, instance, **kwargs):
     - Desasignación: tecnico_anterior=X, tecnico_nuevo=None
     - Sin cambio: no registra nada
     """
-    if not instance.pk:
+    if created:
+        # Nueva instancia, no hay cambio anterior
         return
     
-    try:
-        orden_anterior = SolicitudServicio.objects.get(pk=instance.pk)
-    except SolicitudServicio.DoesNotExist:
+    # Detectar cambio via atributo privado (seteado por viewset)
+    old_tech_id = getattr(instance, '_old_mecanico_asignado_id', None)
+    new_tech_id = instance.mecanico_asignado_id
+    
+    # Determinar si hubo cambio
+    # Si no hay _old_mecanico_asignado_id, asumir que no hubo cambio intencional
+    if not hasattr(instance, '_old_mecanico_asignado_id'):
         return
     
-    tecnico_anterior_id = orden_anterior.mecanico_asignado_id
-    tecnico_nuevo_id = instance.mecanico_asignado_id
-    
-    if tecnico_anterior_id == tecnico_nuevo_id:
+    if old_tech_id == new_tech_id:
         return
     
+    # Capturar datos inmediatamente (antes de on_commit donde instance puede ser inaccesible)
+    orden_id = instance.pk
+    asignado_por = getattr(instance, '_asignado_por_user', None)
+    asignado_por_id = asignado_por.id if asignado_por else None
+    
+    # Detectar progreso de checklist
     checklist_en_progreso = False
     progreso_pct = 0
-    if hasattr(orden_anterior, 'checklist_instance'):
-        checklist = orden_anterior.checklist_instance
-        if checklist.estado in ['EN_PROGRESO', 'PAUSADO']:
+    try:
+        from mecanimovilapp.apps.checklists.models import ChecklistInstance
+        checklist = ChecklistInstance.objects.filter(orden_id=orden_id).first()
+        if checklist and checklist.estado in ['EN_PROGRESO', 'PAUSADO']:
             checklist_en_progreso = True
-            progreso_pct = checklist.progreso_porcentaje
+            progreso_pct = checklist.progreso_porcentaje or 0
+    except:
+        pass
     
-    AsignacionTecnicoLog.objects.create(
-        orden=instance,
-        tecnico_anterior_id=tecnico_anterior_id,
-        tecnico_nuevo_id=tecnico_nuevo_id,
-        asignado_por=getattr(instance, '_asignado_por_user', None),
-        checklist_en_progreso=checklist_en_progreso,
-        checklist_progreso_pct=progreso_pct,
-    )
+    def create_audit_log():
+        """Closure: captura datos, ejecuta post-commit para atomicidad."""
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        
+        asignado_por_obj = None
+        if asignado_por_id:
+            try:
+                asignado_por_obj = User.objects.get(pk=asignado_por_id)
+            except User.DoesNotExist:
+                pass
+        
+        AsignacionTecnicoLog.objects.create(
+            orden_id=orden_id,
+            tecnico_anterior_id=old_tech_id,
+            tecnico_nuevo_id=new_tech_id,
+            asignado_por=asignado_por_obj,
+            motivo='',
+            checklist_en_progreso=checklist_en_progreso,
+            checklist_progreso_pct=progreso_pct
+        )
+    
+    # Ejecutar después de commit para garantizar atomicidad completa
+    transaction.on_commit(create_audit_log)

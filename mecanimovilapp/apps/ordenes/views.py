@@ -3083,12 +3083,14 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
           "mecanico_id": 42,  // null para desasignar
           "motivo": "Técnico original no disponible"  // opcional
         }
+        
+        BLOCKER FIX: select_for_update() previene race conditions en asignación concurrente.
+        Lock ocurre dentro de queryset autorizado (scoped por taller context).
         """
         from mecanimovilapp.apps.usuarios.models import MiembroTaller
         from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
         from django.shortcuts import get_object_or_404
         
-        orden = self.get_object()
         mecanico_id = request.data.get('mecanico_id')
         motivo = request.data.get('motivo', '')
         
@@ -3114,31 +3116,48 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
                     status=status.HTTP_403_FORBIDDEN
                 )
         
+        # Validar técnico antes de lock
+        tecnico = None
         if mecanico_id:
-            tecnico = get_object_or_404(
-                MiembroTaller,
-                id=mecanico_id,
-                taller=orden.taller,
-                rol='mecanico'
-            )
-            if not tecnico.activo:
-                return Response(
-                    {'error': 'El técnico seleccionado no está activo'},
-                    status=status.HTTP_400_BAD_REQUEST
+            try:
+                tecnico = MiembroTaller.objects.get(
+                    id=mecanico_id,
+                    taller=taller,
+                    rol='mecanico'
                 )
-        else:
-            tecnico = None
+                if not tecnico.activo:
+                    return Response(
+                        {'error': 'El técnico seleccionado no está activo'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+            except MiembroTaller.DoesNotExist:
+                return Response(
+                    {'error': 'Técnico no encontrado en este taller'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
         
-        orden.mecanico_asignado = tecnico
-        orden._asignado_por_user = request.user
-        orden.save(update_fields=['mecanico_asignado'])
-        
-        if motivo:
-            from mecanimovilapp.apps.ordenes.models import AsignacionTecnicoLog
-            log_entry = AsignacionTecnicoLog.objects.filter(orden=orden).first()
-            if log_entry:
-                log_entry.motivo = motivo
-                log_entry.save(update_fields=['motivo'])
+        # Atomic with select_for_update on authorized queryset
+        with transaction.atomic():
+            try:
+                orden = self.get_queryset().select_for_update().get(pk=pk)
+            except SolicitudServicio.DoesNotExist:
+                return Response(
+                    {'error': 'Orden no encontrada'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
+            # Capturar old value ANTES de modificar (para signal post_save)
+            orden._old_mecanico_asignado_id = orden.mecanico_asignado_id
+            orden.mecanico_asignado = tecnico
+            orden._asignado_por_user = request.user
+            orden.save(update_fields=['mecanico_asignado'])
+            
+            if motivo:
+                from mecanimovilapp.apps.ordenes.models import AsignacionTecnicoLog
+                log_entry = AsignacionTecnicoLog.objects.filter(orden=orden).order_by('-fecha_cambio').first()
+                if log_entry:
+                    log_entry.motivo = motivo
+                    log_entry.save(update_fields=['motivo'])
         
         return Response({
             'success': True,
