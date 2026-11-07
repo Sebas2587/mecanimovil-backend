@@ -784,12 +784,13 @@ class SolicitudServicioProveedorSeguroSerializer(serializers.ModelSerializer):
     def get_puede_gestionar(self, obj):
         """Determina si el proveedor puede gestionar esta orden"""
         # Un proveedor puede gestionar la orden si:
-        # 1. La orden est? asignada a su taller/perfil
-        # 2. El estado permite gesti?n
+        # 1. La orden está asignada a su taller/perfil
+        # 2. El estado permite gestión
         estados_gestionables = [
             'pendiente_aceptacion_proveedor',
             'aceptada_por_proveedor',
             'confirmado',  # Puede abrir e iniciar checklist
+            'servicio_iniciado',  # Puede ejecutar checklist activo
             'checklist_en_progreso',
             'checklist_completado',
             'en_proceso'
@@ -1043,6 +1044,7 @@ class SolicitudServicioProveedorLegacySerializer(serializers.ModelSerializer):
             'pendiente_aceptacion_proveedor',
             'aceptada_por_proveedor',
             'confirmado',  # Puede abrir e iniciar checklist
+            'servicio_iniciado',  # Puede ejecutar checklist activo
             'checklist_en_progreso',
             'checklist_completado',
             'en_proceso'
