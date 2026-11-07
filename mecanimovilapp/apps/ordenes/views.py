@@ -2432,7 +2432,9 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=True, methods=['post'])
     def aceptar(self, request, pk=None):
         """
-        Permite al proveedor aceptar una orden
+        Permite al proveedor aceptar una orden.
+        Idempotente: múltiples llamadas no duplican efectos.
+        
         NOTA: La inicialización del servicio es manual, se debe llamar a iniciar_servicio después
         """
         from mecanimovilapp.apps.usuarios.services.taller_contexto import exigir_no_mecanico_equipo
@@ -2440,27 +2442,51 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
         exigir_no_mecanico_equipo(request.user, 'aceptar órdenes')
         orden = self.get_object()
         
-        # Verificar que la orden puede ser aceptada
-        if orden.estado != 'pendiente_aceptacion_proveedor':
+        if orden.estado not in ['pendiente_aceptacion_proveedor', 'aceptada_por_proveedor']:
             return Response(
-                {'error': 'Esta orden no puede ser aceptada en su estado actual'}, 
+                {
+                    'error': f'La orden está en estado {orden.estado}, no puede ser aceptada',
+                    'estado_actual': orden.estado
+                }, 
                 status=status.HTTP_400_BAD_REQUEST
             )
+        
+        if orden.estado == 'aceptada_por_proveedor':
+            response_serializer = self.get_serializer(orden)
+            return Response({
+                'success': True,
+                'message': 'La orden ya estaba aceptada',
+                'orden': response_serializer.data
+            })
         
         serializer = AcceptOrderSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         
         with transaction.atomic():
-            # Actualizar estado y notas
+            orden = SolicitudServicio.objects.select_for_update().get(pk=orden.pk)
+            
+            if orden.estado != 'pendiente_aceptacion_proveedor':
+                if orden.estado == 'aceptada_por_proveedor':
+                    response_serializer = self.get_serializer(orden)
+                    return Response({
+                        'success': True,
+                        'message': 'La orden ya estaba aceptada (race evitado)',
+                        'orden': response_serializer.data
+                    })
+                return Response(
+                    {'error': 'El estado cambió durante la operación'},
+                    status=status.HTTP_409_CONFLICT
+                )
+            
             orden.estado = 'aceptada_por_proveedor'
             orden.fecha_respuesta_proveedor = timezone.now()
             orden.notas_proveedor = serializer.validated_data.get('notas', '')
             orden.save()
         
-        # Retornar orden actualizada
         response_serializer = self.get_serializer(orden)
         return Response({
+            'success': True,
             'message': 'Orden aceptada exitosamente',
             'orden': response_serializer.data
         })
@@ -2770,8 +2796,10 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=True, methods=['post'])
     def iniciar_servicio(self, request, pk=None):
         """
-        Permite al proveedor iniciar el servicio después de aceptar la orden
-        Al inicializar, se crea automáticamente el checklist asociado al servicio
+        Permite al proveedor iniciar el servicio después de aceptar la orden.
+        Idempotente: si ya está iniciado, retorna éxito con checklist existente.
+        
+        Al inicializar, se crea automáticamente el checklist asociado al servicio.
         """
         from mecanimovilapp.apps.usuarios.services.taller_contexto import exigir_puede_ejecutar_servicio
 
@@ -2782,22 +2810,65 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
             accion='iniciar este servicio',
         )
 
-        # Verificar que la orden puede iniciarse
-        if orden.estado != 'aceptada_por_proveedor':
+        if orden.estado not in ['aceptada_por_proveedor', 'servicio_iniciado', 'checklist_en_progreso']:
             return Response(
                 {'error': f'El servicio no puede iniciarse desde el estado actual: {orden.estado}'}, 
                 status=status.HTTP_400_BAD_REQUEST
             )
+        
+        if orden.estado in ['servicio_iniciado', 'checklist_en_progreso']:
+            try:
+                from mecanimovilapp.apps.checklists.models import ChecklistInstance
+                checklist_instance = ChecklistInstance.objects.filter(orden=orden).first()
+            except ImportError:
+                checklist_instance = None
+            
+            response_serializer = self.get_serializer(orden)
+            response_data = {
+                'success': True,
+                'message': 'El servicio ya estaba iniciado',
+                'orden': response_serializer.data,
+                'checklist_creado': False,
+                'tiene_checklist': checklist_instance is not None,
+            }
+            if checklist_instance:
+                response_data['checklist_id'] = checklist_instance.id
+            return Response(response_data)
         
         checklist_creado = False
         checklist_id = None
         tiene_checklist = False
         
         with transaction.atomic():
-            # Usar la función auxiliar para inicializar y crear checklist
+            orden = SolicitudServicio.objects.select_for_update().get(pk=orden.pk)
+            
+            if orden.estado != 'aceptada_por_proveedor':
+                if orden.estado in ['servicio_iniciado', 'checklist_en_progreso']:
+                    try:
+                        from mecanimovilapp.apps.checklists.models import ChecklistInstance
+                        checklist_instance = ChecklistInstance.objects.filter(orden=orden).first()
+                    except ImportError:
+                        checklist_instance = None
+                    
+                    response_serializer = self.get_serializer(orden)
+                    response_data = {
+                        'success': True,
+                        'message': 'Servicio ya iniciado (race evitado)',
+                        'orden': response_serializer.data,
+                        'checklist_creado': False,
+                        'tiene_checklist': checklist_instance is not None,
+                    }
+                    if checklist_instance:
+                        response_data['checklist_id'] = checklist_instance.id
+                    return Response(response_data)
+                
+                return Response(
+                    {'error': 'El estado cambió durante la operación'},
+                    status=status.HTTP_409_CONFLICT
+                )
+            
             resultado = self._inicializar_servicio_y_crear_checklist(orden)
             
-            # Verificar si se creó un checklist
             try:
                 from mecanimovilapp.apps.checklists.models import ChecklistInstance
                 checklist_instance = ChecklistInstance.objects.filter(orden=orden).first()
@@ -2808,9 +2879,9 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
             except ImportError:
                 pass
         
-        # Retornar orden actualizada con información del checklist
         response_serializer = self.get_serializer(orden)
         response_data = {
+            'success': True,
             'message': 'Servicio iniciado exitosamente',
             'orden': response_serializer.data,
             'checklist_creado': checklist_creado,
@@ -2995,6 +3066,223 @@ class ProveedorOrdenesViewSet(viewsets.ReadOnlyModelViewSet):
         return Response({
             'message': 'Servicio finalizado exitosamente',
             'orden': response_serializer.data
+        })
+    
+    @action(detail=True, methods=['post'])
+    def asignar_tecnico(self, request, pk=None):
+        """
+        Asigna o reasigna técnico a una orden.
+        
+        Permisos:
+        - Mandante: siempre puede
+        - Supervisor: solo si tiene permiso 'servicios'
+        - Mecánico: no puede
+        
+        Body:
+        {
+          "mecanico_id": 42,  // null para desasignar
+          "motivo": "Técnico original no disponible"  // opcional
+        }
+        """
+        from mecanimovilapp.apps.usuarios.models import MiembroTaller
+        from mecanimovilapp.apps.usuarios.services.taller_contexto import resolver_contexto_taller
+        from django.shortcuts import get_object_or_404
+        
+        orden = self.get_object()
+        mecanico_id = request.data.get('mecanico_id')
+        motivo = request.data.get('motivo', '')
+        
+        taller, miembro, rol = resolver_contexto_taller(request.user)
+        
+        if not miembro:
+            return Response(
+                {'error': 'Usuario no es miembro de ningún taller'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        if rol not in ['mandante', 'supervisor']:
+            return Response(
+                {'error': 'Solo mandantes y supervisores pueden asignar técnicos'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        if rol == 'supervisor':
+            permisos = miembro.permisos or {}
+            if not permisos.get('servicios', False):
+                return Response(
+                    {'error': 'No tienes permiso para gestionar servicios'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+        
+        if mecanico_id:
+            tecnico = get_object_or_404(
+                MiembroTaller,
+                id=mecanico_id,
+                taller=orden.taller,
+                rol='mecanico'
+            )
+            if not tecnico.activo:
+                return Response(
+                    {'error': 'El técnico seleccionado no está activo'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        else:
+            tecnico = None
+        
+        orden.mecanico_asignado = tecnico
+        orden._asignado_por_user = request.user
+        orden.save(update_fields=['mecanico_asignado'])
+        
+        if motivo:
+            from mecanimovilapp.apps.ordenes.models import AsignacionTecnicoLog
+            log_entry = AsignacionTecnicoLog.objects.filter(orden=orden).first()
+            if log_entry:
+                log_entry.motivo = motivo
+                log_entry.save(update_fields=['motivo'])
+        
+        return Response({
+            'success': True,
+            'tecnico': {
+                'id': tecnico.id if tecnico else None,
+                'nombre': tecnico.nombre if tecnico else None,
+            },
+            'mensaje': f'Técnico {"asignado" if tecnico else "desasignado"} correctamente'
+        })
+    
+    @action(detail=True, methods=['get'])
+    def conflictos_horario(self, request, pk=None):
+        """
+        Detecta posibles conflictos de horario para esta orden.
+        NO bloquea aprobación, solo retorna warnings.
+        
+        Query params:
+        - mecanico_id: opcional, para verificar técnico específico
+        
+        Response:
+        {
+          "tiene_conflictos": true,
+          "conflictos": [
+            {
+              "orden_id": 120,
+              "fecha": "2026-11-08",
+              "hora_inicio": "09:30",
+              "mecanico": "Juan Pérez",
+              "estado": "aceptada_por_proveedor"
+            }
+          ],
+          "capacidad_disponible": 2,
+          "capacidad_total": 5
+        }
+        """
+        orden = self.get_object()
+        mecanico_id = request.query_params.get('mecanico_id')
+        
+        if not orden.fecha_servicio or not orden.hora_servicio:
+            return Response({
+                'tiene_conflictos': False,
+                'conflictos': [],
+                'mensaje': 'Orden sin horario asignado'
+            })
+        
+        fecha = orden.fecha_servicio
+        hora = orden.hora_servicio
+        
+        ordenes_misma_fecha = SolicitudServicio.objects.filter(
+            taller=orden.taller,
+            fecha_servicio=fecha,
+            estado__in=[
+                'aceptada_por_proveedor',
+                'servicio_iniciado',
+                'checklist_en_progreso',
+                'en_proceso'
+            ]
+        ).exclude(id=orden.id)
+        
+        if mecanico_id:
+            ordenes_misma_fecha = ordenes_misma_fecha.filter(
+                mecanico_asignado_id=mecanico_id
+            )
+        
+        conflictos = []
+        for orden_conflicto in ordenes_misma_fecha:
+            if orden_conflicto.hora_servicio:
+                diff_minutos = abs(
+                    (orden_conflicto.hora_servicio.hour * 60 + orden_conflicto.hora_servicio.minute) -
+                    (hora.hour * 60 + hora.minute)
+                )
+                if diff_minutos < 60:
+                    conflictos.append({
+                        'orden_id': orden_conflicto.id,
+                        'fecha': str(orden_conflicto.fecha_servicio),
+                        'hora_inicio': str(orden_conflicto.hora_servicio),
+                        'mecanico': (
+                            orden_conflicto.mecanico_asignado.nombre 
+                            if orden_conflicto.mecanico_asignado 
+                            else 'Sin asignar'
+                        ),
+                        'estado': orden_conflicto.estado,
+                    })
+        
+        capacidad_total = 5
+        capacidad_disponible = max(0, capacidad_total - len(conflictos))
+        
+        return Response({
+            'tiene_conflictos': len(conflictos) > 0,
+            'conflictos': conflictos,
+            'capacidad_disponible': capacidad_disponible,
+            'capacidad_total': capacidad_total,
+        })
+    
+    @action(detail=True, methods=['get'])
+    def historial_asignaciones(self, request, pk=None):
+        """
+        Retorna el historial completo de asignaciones de técnico para esta orden.
+        Útil para auditoría y análisis de reasignaciones.
+        
+        Response:
+        {
+          "asignaciones": [
+            {
+              "id": 1,
+              "tecnico_anterior": {"id": 1, "nombre": "Juan"},
+              "tecnico_nuevo": {"id": 2, "nombre": "Pedro"},
+              "asignado_por": "admin@taller.com",
+              "fecha_cambio": "2026-11-07T10:30:00Z",
+              "motivo": "Técnico original no disponible",
+              "checklist_en_progreso": true,
+              "checklist_progreso_pct": 45
+            }
+          ]
+        }
+        """
+        from mecanimovilapp.apps.ordenes.models import AsignacionTecnicoLog
+        
+        orden = self.get_object()
+        logs = AsignacionTecnicoLog.objects.filter(orden=orden).select_related(
+            'tecnico_anterior', 'tecnico_nuevo', 'asignado_por'
+        )
+        
+        asignaciones = []
+        for log in logs:
+            asignaciones.append({
+                'id': log.id,
+                'tecnico_anterior': {
+                    'id': log.tecnico_anterior.id if log.tecnico_anterior else None,
+                    'nombre': log.tecnico_anterior.nombre if log.tecnico_anterior else None
+                } if log.tecnico_anterior else None,
+                'tecnico_nuevo': {
+                    'id': log.tecnico_nuevo.id if log.tecnico_nuevo else None,
+                    'nombre': log.tecnico_nuevo.nombre if log.tecnico_nuevo else None
+                } if log.tecnico_nuevo else None,
+                'asignado_por': log.asignado_por.email if log.asignado_por else 'Sistema',
+                'fecha_cambio': log.fecha_cambio.isoformat(),
+                'motivo': log.motivo,
+                'checklist_en_progreso': log.checklist_en_progreso,
+                'checklist_progreso_pct': log.checklist_progreso_pct
+            })
+        
+        return Response({
+            'asignaciones': asignaciones
         })
 
 # ============================================================================
