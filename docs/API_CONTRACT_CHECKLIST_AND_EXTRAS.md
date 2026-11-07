@@ -1,6 +1,6 @@
 # API Contract: Checklist & Additional Quotes (Extras)
 
-**Latest Commit**: TBD (will be updated on push)  
+**Commit**: c32b3e9  
 **Date**: 2026-11-07  
 **Auth**: DRF Token (`Authorization: Token <40-hex>`) - Login via `POST /api/usuarios/login-proveedor/`
 
