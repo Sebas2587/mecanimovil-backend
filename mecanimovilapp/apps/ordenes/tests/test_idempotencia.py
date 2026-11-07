@@ -1,7 +1,8 @@
 """
 Tests for idempotency in critical state transitions.
 """
-from rest_framework.test import APITestCase
+from django.test import TestCase, override_settings
+from rest_framework.test import APIClient
 from rest_framework import status as http_status
 from django.contrib.auth import get_user_model
 from decimal import Decimal
@@ -14,30 +15,30 @@ from datetime import date, time
 User = get_user_model()
 
 
-class IdempotenciaTestCase(APITestCase):
+@override_settings(
+    CELERY_TASK_ALWAYS_EAGER=True,
+    CELERY_TASK_EAGER_PROPAGATES=True,
+    CELERY_RESULT_BACKEND='cache+memory://'
+)
+class IdempotenciaTestCase(TestCase):
     """Test idempotency of accept and start_service endpoints."""
     
     def setUp(self):
         """Create test fixtures."""
-        # Taller
-        user_taller = User.objects.create_user(
-            username='taller1',
-            password='test',
-            email='taller@test.com'
-        )
-        self.taller = Taller.objects.create(
-            usuario=user_taller,
-            nombre='Taller Test',
-            rut='12345678-9',
-            telefono='+56912345678'
-        )
-        
-        # Mandante
+        # Taller owner (mandante)
         user_mandante = User.objects.create_user(
             username='mandante1',
             password='test',
             email='mandante@test.com'
         )
+        self.taller = Taller.objects.create(
+            usuario=user_mandante,
+            nombre='Taller Test',
+            rut='12345678-9',
+            telefono='+56912345678',
+            estado_verificacion='aprobado'
+        )
+        # Create MiembroTaller for mandante
         self.mandante = MiembroTaller.objects.create(
             taller=self.taller,
             usuario=user_mandante,
@@ -75,7 +76,8 @@ class IdempotenciaTestCase(APITestCase):
             patente='AB1234'
         )
         
-        # Authenticate
+        # APIClient with force_authenticate
+        self.client = APIClient()
         self.client.force_authenticate(user=user_mandante)
     
     def test_aceptar_idempotente(self):
