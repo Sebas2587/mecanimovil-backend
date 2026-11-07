@@ -55,8 +55,9 @@ def setup_test_data():
         defaults={'descripcion': 'Servicio de cambio de aceite'}
     )
     
-    # Temporarily disconnect signal
+    # Temporarily disconnect signals that trigger Celery
     post_save.disconnect(mecanimovilapp.apps.agente_ia.signals.sync_oferta_servicio_chunk, sender=OfertaServicio)
+    post_save.disconnect(mecanimovilapp.apps.agente_ia.signals.sync_solicitud_historico_chunk, sender=SolicitudServicio)
     
     try:
         oferta_servicio, _ = OfertaServicio.objects.get_or_create(
@@ -385,43 +386,67 @@ def test_extra_quote_workflow(data):
     return cita
 
 def test_cross_tenant_creation(data):
-    """Test cross-tenant isolation via POST to creation API."""
+    """Test cross-tenant isolation with structurally valid payload."""
     print("="*70)
     print("CROSS-TENANT CREATION TEST")
     print("="*70 + "\n")
     
-    # Taller B tries to create extra for Taller A's cita
-    print("1️⃣  Taller B Tries to Create Extra for A's Order")
-    b_token, err = login(data['taller_b_username'], 'test123')
-    assert not err, f"Taller B login failed: {err}"
+    owner_token, _ = login(data['taller_a_username'], 'test123')
+    b_token, _ = login(data['taller_b_username'], 'test123')
     
-    # Get a cita from Taller A
-    cita_a = CitaAgendaPersonal.objects.filter(taller=data['taller_a']).first()
-    if not cita_a:
-        print("   ⚠️  No cita available, skipping\n")
-        return
+    # Create fresh cita for Taller A
+    cita_a = CitaAgendaPersonal.objects.create(
+        taller=data['taller_a'],
+        cotizacion_canal_origen=data['cot_base1'],
+        fecha_servicio=date.today(),
+        hora_servicio=dt_time(10, 0),
+        duracion_minutos=60,
+        tipo_servicio='taller',
+        estado='activa',
+        creado_por=data['taller_a'].usuario
+    )
     
-    # Try to create extra as Taller B (cross-tenant POST)
+    # Valid payload structure
+    payload = {
+        "cita_id": cita_a.id,  # Taller A's cita
+        "cotizacion_original_id": data['cot_base1'].id,  # Taller A's quote
+        "motivo_servicio_adicional": "Test cross-tenant",
+        "modo": "catalogo",
+        "servicios_catalogo": [{"oferta_servicio_id": data['oferta_servicio_id'], "cantidad": 1}]
+    }
+    
+    # 1. Verify owner succeeds with this exact payload
+    print("1️⃣  Owner Creates Extra (Baseline)")
+    resp = requests.post(
+        f"{BASE_URL}/api/ordenes/cotizaciones-canal/crear-adicional/",
+        headers={"Authorization": f"Token {owner_token}"},
+        json=payload,
+        timeout=5
+    )
+    assert resp.status_code == 201, f"Owner should succeed: {resp.status_code} - {resp.text[:200]}"
+    print(f"   ✅ Owner succeeds with same payload (201)\n")
+    
+    # 2. Taller B tries identical payload (cross-tenant denial)
+    print("2️⃣  Taller B Tries Identical Payload")
     resp = requests.post(
         f"{BASE_URL}/api/ordenes/cotizaciones-canal/crear-adicional/",
         headers={"Authorization": f"Token {b_token}"},
-        json={
-            "cita_id": cita_a.id,
-            "cotizacion_original_id": data['cot_base1'].id,
-            "motivo_servicio_adicional": "Cross-tenant attempt",
-            "modo": "catalogo",
-            "servicios_catalogo": [{"oferta_servicio_id": data['oferta_servicio_id'], "cantidad": 1}]
-        },
+        json=payload,
         timeout=5
     )
-    assert resp.status_code in [400, 404], f"Expected 400/404 for cross-tenant POST, got {resp.status_code}"
+    assert resp.status_code == 400, f"Expected 400 ownership error, got {resp.status_code}"
     error_data = resp.json()
-    assert 'cita_id' in error_data or 'cotizacion_original_id' in error_data or 'error' in str(error_data), \
-        f"Expected tenant validation error, got: {error_data}"
-    print(f"   ✅ Cross-tenant POST denied ({resp.status_code}): {list(error_data.keys())}\n")
+    # Should get tenant/ownership validation error on cita_id or cotizacion_original_id
+    has_ownership_error = (
+        'cita_id' in error_data or 
+        'cotizacion_original_id' in error_data or
+        ('detail' in error_data and 'encontrad' in str(error_data['detail']).lower())
+    )
+    assert has_ownership_error, f"Expected ownership error, got: {error_data}"
+    print(f"   ✅ Cross-tenant POST denied (400): {error_data}\n")
 
 def test_base_order_with_pending_extra(data):
-    """Test base order closure with pending extra."""
+    """Test base order closure with pending extra through actual workflow."""
     print("="*70)
     print("BASE ORDER CLOSURE WITH PENDING EXTRA (Order 2)")
     print("="*70 + "\n")
@@ -429,17 +454,19 @@ def test_base_order_with_pending_extra(data):
     orden_id = data['orden2'].id
     cot_base = data['cot_base2']
     
-    # Setup order
     owner_token, _ = login(data['taller_a_username'], 'test123')
+    mec_token, _ = login(data['mec_a_username'], 'test123')
     
-    print("1️⃣  Setup Order 2")
-    requests.post(
+    print("1️⃣  Setup & Start Order 2")
+    resp = requests.post(
         f"{BASE_URL}/api/ordenes/proveedor-ordenes/{orden_id}/aceptar/",
         headers={"Authorization": f"Token {owner_token}"},
         json={},
         timeout=5
     )
-    requests.post(
+    assert resp.status_code == 200, f"Accept failed: {resp.status_code}"
+    
+    resp = requests.post(
         f"{BASE_URL}/api/ordenes/proveedor-ordenes/{orden_id}/asignar_tecnico/",
         headers={"Authorization": f"Token {owner_token}"},
         json={
@@ -449,18 +476,20 @@ def test_base_order_with_pending_extra(data):
         },
         timeout=5
     )
+    assert resp.status_code == 200, f"Assign failed: {resp.status_code}"
     
-    mec_token, _ = login(data['mec_a_username'], 'test123')
     resp = requests.post(
         f"{BASE_URL}/api/ordenes/proveedor-ordenes/{orden_id}/iniciar_servicio/",
         headers={"Authorization": f"Token {mec_token}"},
         json={},
         timeout=5
     )
-    assert resp.status_code == 200
-    print(f"   ✅ Order setup complete\n")
+    assert resp.status_code == 200, f"Start failed: {resp.status_code}"
+    result = resp.json()
+    checklist_id = result.get('checklist_id')
+    print(f"   ✅ Order started, checklist_id: {checklist_id}\n")
     
-    # Create cita and extra (leave pending)
+    # Create pending extra
     print("2️⃣  Create Pending Extra Quote")
     cita = CitaAgendaPersonal.objects.create(
         taller=data['taller_a'],
@@ -479,48 +508,62 @@ def test_base_order_with_pending_extra(data):
         json={
             "cita_id": cita.id,
             "cotizacion_original_id": cot_base.id,
-            "motivo_servicio_adicional": "Extra work - pending",
+            "motivo_servicio_adicional": "Extra pending",
             "modo": "catalogo",
             "servicios_catalogo": [{"oferta_servicio_id": data['oferta_servicio_id'], "cantidad": 1}]
         },
         timeout=5
     )
-    assert resp.status_code == 201
-    print(f"   ✅ Extra created (pending state)\n")
+    assert resp.status_code == 201, f"Create extra failed: {resp.status_code}"
+    print(f"   ✅ Extra created (pending)\n")
     
-    # Try to close base order
-    print("3️⃣  Try to Close Base Order")
-    resp = requests.post(
-        f"{BASE_URL}/api/ordenes/proveedor-ordenes/{orden_id}/actualizar_estado/",
-        headers={"Authorization": f"Token {owner_token}"},
-        json={"nuevo_estado": "en_proceso"},
-        timeout=5
-    )
-    if resp.status_code == 200:
-        # Now try finalizar
+    # Complete checklist if exists, or transition to en_proceso
+    if checklist_id:
+        print("3️⃣  Complete Checklist Prerequisites")
         resp = requests.post(
-            f"{BASE_URL}/api/ordenes/proveedor-ordenes/{orden_id}/finalizar_servicio/",
-            headers={"Authorization": f"Token {owner_token}"},
-            json={},
+            f"{BASE_URL}/api/checklists/instances/{checklist_id}/finalize/",
+            headers={"Authorization": f"Token {mec_token}"},
+            json={
+                "firma_tecnico": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+            },
             timeout=5
         )
-        if resp.status_code == 200:
-            # Verify final state
-            resp = requests.get(
-                f"{BASE_URL}/api/ordenes/proveedor-ordenes/{orden_id}/",
-                headers={"Authorization": f"Token {owner_token}"},
-                timeout=5
-            )
-            order_state = resp.json()['estado']
-            assert order_state == 'completado', f"Expected completado, got {order_state}"
-            print(f"   ✅ Base closed (estado: {order_state}) with pending extra\n")
-        else:
-            print(f"   ⚠️  Finalizar returned {resp.status_code}, requires checklist\n")
+        assert resp.status_code == 200, f"Checklist finalize failed: {resp.status_code}"
+        print(f"   ✅ Checklist finalized\n")
     else:
-        print(f"   ⚠️  Cannot close yet: {resp.status_code}\n")
+        print("3️⃣  Transition to en_proceso (no checklist)")
+        resp = requests.post(
+            f"{BASE_URL}/api/ordenes/proveedor-ordenes/{orden_id}/actualizar_estado/",
+            headers={"Authorization": f"Token {owner_token}"},
+            json={"estado": "en_proceso"},
+            timeout=5
+        )
+        assert resp.status_code == 200, f"Transition to en_proceso failed: {resp.status_code} - {resp.text[:200]}"
+        print(f"   ✅ Transitioned to en_proceso\n")
+    
+    # Close base order
+    print("4️⃣  Close Base Order")
+    resp = requests.post(
+        f"{BASE_URL}/api/ordenes/proveedor-ordenes/{orden_id}/finalizar_servicio/",
+        headers={"Authorization": f"Token {owner_token}"},
+        json={},
+        timeout=5
+    )
+    assert resp.status_code == 200, f"Finalizar failed: {resp.status_code} - {resp.text[:200]}"
+    
+    # Verify final state
+    resp = requests.get(
+        f"{BASE_URL}/api/ordenes/proveedor-ordenes/{orden_id}/",
+        headers={"Authorization": f"Token {owner_token}"},
+        timeout=5
+    )
+    assert resp.status_code == 200
+    order_state = resp.json()['estado']
+    assert order_state == 'completado', f"Expected completado, got {order_state}"
+    print(f"   ✅ Base CLOSED (estado: {order_state}) independently of pending extra\n")
 
 def test_base_order_with_rejected_extra(data):
-    """Test base order closure with rejected extra."""
+    """Test base order closure with rejected extra through actual workflow."""
     print("="*70)
     print("BASE ORDER CLOSURE WITH REJECTED EXTRA (Order 3)")
     print("="*70 + "\n")
@@ -528,17 +571,19 @@ def test_base_order_with_rejected_extra(data):
     orden_id = data['orden3'].id
     cot_base = data['cot_base3']
     
-    # Setup order
     owner_token, _ = login(data['taller_a_username'], 'test123')
+    mec_token, _ = login(data['mec_a_username'], 'test123')
     
-    print("1️⃣  Setup Order 3")
-    requests.post(
+    print("1️⃣  Setup & Start Order 3")
+    resp = requests.post(
         f"{BASE_URL}/api/ordenes/proveedor-ordenes/{orden_id}/aceptar/",
         headers={"Authorization": f"Token {owner_token}"},
         json={},
         timeout=5
     )
-    requests.post(
+    assert resp.status_code == 200
+    
+    resp = requests.post(
         f"{BASE_URL}/api/ordenes/proveedor-ordenes/{orden_id}/asignar_tecnico/",
         headers={"Authorization": f"Token {owner_token}"},
         json={
@@ -548,8 +593,8 @@ def test_base_order_with_rejected_extra(data):
         },
         timeout=5
     )
+    assert resp.status_code == 200
     
-    mec_token, _ = login(data['mec_a_username'], 'test123')
     resp = requests.post(
         f"{BASE_URL}/api/ordenes/proveedor-ordenes/{orden_id}/iniciar_servicio/",
         headers={"Authorization": f"Token {mec_token}"},
@@ -557,10 +602,12 @@ def test_base_order_with_rejected_extra(data):
         timeout=5
     )
     assert resp.status_code == 200
-    print(f"   ✅ Order setup complete\n")
+    result = resp.json()
+    checklist_id = result.get('checklist_id')
+    print(f"   ✅ Order started, checklist_id: {checklist_id}\n")
     
     # Create and reject extra
-    print("2️⃣  Create and Reject Extra Quote")
+    print("2️⃣  Create & Reject Extra Quote")
     cita = CitaAgendaPersonal.objects.create(
         taller=data['taller_a'],
         cotizacion_canal_origen=cot_base,
@@ -578,7 +625,7 @@ def test_base_order_with_rejected_extra(data):
         json={
             "cita_id": cita.id,
             "cotizacion_original_id": cot_base.id,
-            "motivo_servicio_adicional": "Extra work - to reject",
+            "motivo_servicio_adicional": "Extra to reject",
             "modo": "catalogo",
             "servicios_catalogo": [{"oferta_servicio_id": data['oferta_servicio_id'], "cantidad": 1}]
         },
@@ -588,7 +635,7 @@ def test_base_order_with_rejected_extra(data):
     extra_data = resp.json()
     extra_id = extra_data['cotizacion']['id']
     
-    # Get and prepare quote
+    # Prepare and reject
     from mecanimovilapp.apps.ordenes.models import CotizacionCanal
     cot_extra = CotizacionCanal.objects.get(id=extra_id)
     if not cot_extra.token:
@@ -596,7 +643,6 @@ def test_base_order_with_rejected_extra(data):
     cot_extra.estado = 'enviada'
     cot_extra.save()
     
-    # Customer rejects
     resp = requests.post(
         f"{BASE_URL}/api/ordenes/cotizaciones-publicas/{cot_extra.token}/rechazar/",
         json={},
@@ -605,36 +651,52 @@ def test_base_order_with_rejected_extra(data):
     assert resp.status_code == 200
     cot_extra.refresh_from_db()
     assert cot_extra.estado == 'rechazada'
-    print(f"   ✅ Extra rejected\n")
+    print(f"   ✅ Extra rejected (estado: rechazada)\n")
     
-    # Try to close base order
-    print("3️⃣  Try to Close Base Order")
-    resp = requests.post(
-        f"{BASE_URL}/api/ordenes/proveedor-ordenes/{orden_id}/actualizar_estado/",
-        headers={"Authorization": f"Token {owner_token}"},
-        json={"nuevo_estado": "en_proceso"},
-        timeout=5
-    )
-    if resp.status_code == 200:
+    # Complete checklist if exists, or transition to en_proceso
+    if checklist_id:
+        print("3️⃣  Complete Checklist Prerequisites")
         resp = requests.post(
-            f"{BASE_URL}/api/ordenes/proveedor-ordenes/{orden_id}/finalizar_servicio/",
-            headers={"Authorization": f"Token {owner_token}"},
-            json={},
+            f"{BASE_URL}/api/checklists/instances/{checklist_id}/finalize/",
+            headers={"Authorization": f"Token {mec_token}"},
+            json={
+                "firma_tecnico": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+            },
             timeout=5
         )
-        if resp.status_code == 200:
-            resp = requests.get(
-                f"{BASE_URL}/api/ordenes/proveedor-ordenes/{orden_id}/",
-                headers={"Authorization": f"Token {owner_token}"},
-                timeout=5
-            )
-            order_state = resp.json()['estado']
-            assert order_state == 'completado', f"Expected completado, got {order_state}"
-            print(f"   ✅ Base closed (estado: {order_state}) with rejected extra\n")
-        else:
-            print(f"   ⚠️  Finalizar returned {resp.status_code}, requires checklist\n")
+        assert resp.status_code == 200, f"Checklist finalize failed: {resp.status_code}"
+        print(f"   ✅ Checklist finalized\n")
     else:
-        print(f"   ⚠️  Cannot close yet: {resp.status_code}\n")
+        print("3️⃣  Transition to en_proceso (no checklist)")
+        resp = requests.post(
+            f"{BASE_URL}/api/ordenes/proveedor-ordenes/{orden_id}/actualizar_estado/",
+            headers={"Authorization": f"Token {owner_token}"},
+            json={"estado": "en_proceso"},
+            timeout=5
+        )
+        assert resp.status_code == 200, f"Transition to en_proceso failed: {resp.status_code} - {resp.text[:200]}"
+        print(f"   ✅ Transitioned to en_proceso\n")
+    
+    # Close base order
+    print("4️⃣  Close Base Order")
+    resp = requests.post(
+        f"{BASE_URL}/api/ordenes/proveedor-ordenes/{orden_id}/finalizar_servicio/",
+        headers={"Authorization": f"Token {owner_token}"},
+        json={},
+        timeout=5
+    )
+    assert resp.status_code == 200, f"Finalizar failed: {resp.status_code} - {resp.text[:200]}"
+    
+    # Verify final state
+    resp = requests.get(
+        f"{BASE_URL}/api/ordenes/proveedor-ordenes/{orden_id}/",
+        headers={"Authorization": f"Token {owner_token}"},
+        timeout=5
+    )
+    assert resp.status_code == 200
+    order_state = resp.json()['estado']
+    assert order_state == 'completado', f"Expected completado, got {order_state}"
+    print(f"   ✅ Base CLOSED (estado: {order_state}) independently of rejected extra\n")
 
 if __name__ == '__main__':
     # Check server
