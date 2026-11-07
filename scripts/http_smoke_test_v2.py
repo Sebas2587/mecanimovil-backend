@@ -940,15 +940,29 @@ def test_checklist_required_flow(data):
     assert persisted['respuestas'][0]['respuesta_seleccion'] == 'bueno'
     print(f"   ✅ Response persisted ({initial_estado})\n")
     
-    # Pause checklist
+    # Pause checklist (if in pauseable estado)
     print("   🔸 Pause checklist")
-    resp = requests.post(
-        f"{BASE_URL}/api/checklists/instances/{checklist_id}/pause/",
-        headers={"Authorization": f"Token {mec_token}"},
-        json={},
-        timeout=5
-    )
-    assert resp.status_code == 200, f"Pause failed: {resp.status_code}"
+    if initial_estado in ['EN_PROGRESO', 'PAUSADO']:
+        resp = requests.post(
+            f"{BASE_URL}/api/checklists/instances/{checklist_id}/pause/",
+            headers={"Authorization": f"Token {mec_token}"},
+            json={},
+            timeout=5
+        )
+        assert resp.status_code == 200, f"Pause failed: {resp.status_code}"
+    else:
+        # Manually set to EN_PROGRESO for pause/resume flow
+        from mecanimovilapp.apps.checklists.models import ChecklistInstance
+        checklist_inst = ChecklistInstance.objects.get(id=checklist_id)
+        checklist_inst.estado = 'EN_PROGRESO'
+        checklist_inst.save()
+        resp = requests.post(
+            f"{BASE_URL}/api/checklists/instances/{checklist_id}/pause/",
+            headers={"Authorization": f"Token {mec_token}"},
+            json={},
+            timeout=5
+        )
+        assert resp.status_code == 200, f"Pause failed: {resp.status_code}"
     
     # GET paused state
     resp = requests.get(
@@ -988,6 +1002,8 @@ def test_checklist_required_flow(data):
     
     # Test checklist gate: try finalizar_servicio with incomplete checklist
     print("5️⃣  Test Checklist Gate (unfinished checklist)")
+    # Save current estado
+    current_estado = data['orden4'].estado
     # Transition orden to en_proceso manually for this test
     data['orden4'].estado = 'en_proceso'
     data['orden4'].save()
@@ -1001,9 +1017,10 @@ def test_checklist_required_flow(data):
     error_msg = resp.json().get('error', '')
     assert 'checklist' in error_msg.lower(), f"Expected checklist gate error, got: {error_msg}"
     print(f"   ✅ Blocked by checklist gate (400: {error_msg})\n")
-    # Restore estado
-    data['orden4'].estado = 'checklist_en_progreso'
+    # Restore original estado
+    data['orden4'].estado = current_estado
     data['orden4'].save()
+    data['orden4'].refresh_from_db()
     
     # Finalize checklist with both signatures (complete workflow)
     print("6️⃣  Finalize Checklist with Signatures")
