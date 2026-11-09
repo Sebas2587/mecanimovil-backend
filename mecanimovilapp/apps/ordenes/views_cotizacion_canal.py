@@ -85,6 +85,16 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
         if getattr(self, 'action', None) == 'list':
             from mecanimovilapp.apps.ordenes.services.vista_taller import excluir_ocultos
             qs = excluir_ocultos(qs, taller.id, 'cotizacion')
+            q = (
+                self.request.query_params.get('q')
+                or self.request.query_params.get('search')
+                or ''
+            ).strip()
+            if q:
+                from mecanimovilapp.apps.ordenes.services.pipeline_comercial import (
+                    _filtrar_cotizaciones_queryset,
+                )
+                qs = _filtrar_cotizaciones_queryset(qs, q)
         return qs
 
     def retrieve(self, request, *args, **kwargs):

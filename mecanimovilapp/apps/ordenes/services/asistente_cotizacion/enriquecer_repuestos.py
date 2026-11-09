@@ -1249,6 +1249,12 @@ def economia_repuesto(rep: dict) -> dict[str, Any]:
     registrado = costo_registrado_linea(rep)
     estimado = costo_estimado_linea(rep)
     base = registrado if registrado is not None else estimado
+    # Línea manual: el taller ya guardó costo_unitario_clp y no hay costo congelado.
+    # El precio cobrado no se usa como costo.
+    if base is None:
+        explicito = _monto_o_none(rep.get('costo_unitario_clp'))
+        if explicito is not None and explicito > 0:
+            base = explicito
 
     def _margen(costo: int | None):
         if costo is None or cobrado <= 0:

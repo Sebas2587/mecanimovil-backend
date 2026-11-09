@@ -8,8 +8,8 @@ from datetime import timedelta
 from decimal import Decimal
 from typing import Any
 
-from django.db.models import Q, Value
-from django.db.models.functions import Replace, Upper
+from django.db.models import Q, TextField, Value
+from django.db.models.functions import Lower, Replace, Upper
 from django.utils import timezone
 
 from mecanimovilapp.apps.chat.models import Conversation
@@ -548,12 +548,34 @@ def _slot_agendado(fecha, hora, *, por_confirmar: bool = False) -> tuple[str, st
     return fecha_s, hora_s
 
 
+_FOLDO_ACENTOS = (
+    ('á', 'a'), ('é', 'e'), ('í', 'i'), ('ó', 'o'), ('ú', 'u'),
+    ('ä', 'a'), ('ë', 'e'), ('ï', 'i'), ('ö', 'o'), ('ü', 'u'),
+    ('ñ', 'n'),
+)
+
+
 def _normalizar_busqueda(q: str | None) -> str:
     return ' '.join((q or '').strip().lower().split())
 
 
+def _plegar_acentos(texto: str | None) -> str:
+    """Minúsculas sin tildes. No requiere la extensión unaccent."""
+    plano = _normalizar_busqueda(texto)
+    for origen, destino in _FOLDO_ACENTOS:
+        plano = plano.replace(origen, destino)
+    return plano
+
+
+def _expr_plegada(campo: str):
+    expr = Lower(campo, output_field=TextField())
+    for origen, destino in _FOLDO_ACENTOS:
+        expr = Replace(expr, Value(origen), Value(destino), output_field=TextField())
+    return expr
+
+
 def _compactar_alfanum(q: str | None) -> str:
-    return ''.join(c for c in (q or '').lower() if c.isalnum())
+    return ''.join(c for c in _plegar_acentos(q) if c.isalnum())
 
 
 def _digitos_busqueda(q: str) -> str:
@@ -573,31 +595,52 @@ def _patente_compact_expr(field: str):
 
 
 def _filtrar_cotizaciones_queryset(qs, q: str):
-    """Filtra CotizacionCanal por folio MM, id, cliente, vehículo o servicio."""
+    """Filtra CotizacionCanal por folio, cliente, patente o marca y modelo.
+
+    Cada palabra debe aparecer en algún campo (coincidencia parcial). Así
+    «Fiat Bravo» encuentra marca Fiat y modelo Bravo. Mayúsculas y tildes
+    no importan. La patente ignora guiones y espacios.
+    """
     needle = _normalizar_busqueda(q)
     if not needle:
         return qs
-    compact = _compactar_alfanum(needle).upper()
-    qs = qs.annotate(_patente_compact=_patente_compact_expr('vehiculo_patente'))
-    filtros = (
-        Q(numero_publico__icontains=needle)
-        | Q(cliente_nombre__icontains=needle)
-        | Q(cliente_telefono__icontains=needle)
-        | Q(vehiculo_marca__icontains=needle)
-        | Q(vehiculo_modelo__icontains=needle)
-        | Q(vehiculo_patente__icontains=needle)
-        | Q(servicio_nombre__icontains=needle)
-        | Q(descripcion_problema__icontains=needle)
+    tokens = [t for t in _plegar_acentos(needle).split() if t]
+    qs = qs.annotate(
+        _patente_compact=_patente_compact_expr('vehiculo_patente'),
+        _cliente_fold=_expr_plegada('cliente_nombre'),
+        _telefono_fold=_expr_plegada('cliente_telefono'),
+        _marca_fold=_expr_plegada('vehiculo_marca'),
+        _modelo_fold=_expr_plegada('vehiculo_modelo'),
+        _patente_fold=_expr_plegada('vehiculo_patente'),
+        _servicio_fold=_expr_plegada('servicio_nombre'),
+        _desc_fold=_expr_plegada('descripcion_problema'),
+        _folio_fold=_expr_plegada('numero_publico'),
+        _contacto_fold=_expr_plegada('conversation__external_contact__display_name'),
     )
-    if compact:
-        filtros |= Q(_patente_compact__contains=compact)
+    filtros = Q()
+    for token in tokens:
+        uno = (
+            Q(_cliente_fold__contains=token)
+            | Q(_telefono_fold__contains=token)
+            | Q(_marca_fold__contains=token)
+            | Q(_modelo_fold__contains=token)
+            | Q(_patente_fold__contains=token)
+            | Q(_servicio_fold__contains=token)
+            | Q(_desc_fold__contains=token)
+            | Q(_folio_fold__contains=token)
+            | Q(_contacto_fold__contains=token)
+        )
+        compacto = _compactar_alfanum(token).upper()
+        if compacto:
+            uno |= Q(_patente_compact__contains=compacto)
+        filtros &= uno
     folio = needle.upper().replace(' ', '')
-    if folio.startswith('MM-') or folio.startswith('MM'):
+    if folio.startswith('MM-') or (folio.startswith('MM') and len(folio) > 2):
         filtros |= Q(numero_publico__iexact=folio if folio.startswith('MM-') else f'MM-{folio[2:].zfill(6)}')
-        filtros |= Q(numero_publico__icontains=folio)
+        filtros |= Q(_folio_fold__contains=_plegar_acentos(folio))
     digits = _digitos_busqueda(needle)
     if digits and _es_consulta_numerica(needle):
-        filtros |= Q(numero_publico__icontains=digits)
+        filtros |= Q(_folio_fold__contains=digits)
         filtros |= Q(numero_publico__iendswith=digits.zfill(6))
         try:
             filtros |= Q(pk=int(digits))
@@ -607,28 +650,33 @@ def _filtrar_cotizaciones_queryset(qs, q: str):
 
 
 def _fila_coincide_busqueda(fila: dict[str, Any], q: str) -> bool:
-    needle = _normalizar_busqueda(q)
+    needle = _plegar_acentos(q)
     if not needle:
         return True
-    haystack = ' '.join(
+    haystack = _plegar_acentos(' '.join(
         str(fila.get(k) or '')
         for k in (
             'numero_publico',
             'cliente_nombre',
             'cliente_telefono',
             'vehiculo_resumen',
+            'vehiculo_marca',
+            'vehiculo_modelo',
             'vehiculo_patente',
             'servicio_resumen',
             'cotizacion_id',
             'entidad_id',
             'fecha_agendada',
         )
-    ).lower()
-    if needle in haystack:
-        return True
-    compact = _compactar_alfanum(needle)
-    hay_c = _compactar_alfanum(haystack)
-    if compact and compact in hay_c:
+    ))
+    tokens = [t for t in needle.split() if t]
+    compacto_hay = _compactar_alfanum(haystack)
+    if tokens and all(
+        token in haystack or (
+            _compactar_alfanum(token) and _compactar_alfanum(token) in compacto_hay
+        )
+        for token in tokens
+    ):
         return True
     if _es_consulta_numerica(needle):
         digits = _digitos_busqueda(needle)

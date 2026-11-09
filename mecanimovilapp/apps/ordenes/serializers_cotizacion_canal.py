@@ -76,6 +76,9 @@ class RepuestoCotizacionSerializer(serializers.Serializer):
     precio_verificado_en_casa = serializers.BooleanField(required=False, default=False)
     nota_referencia = serializers.CharField(required=False, allow_blank=True, default='')
     costo_unitario_clp = serializers.IntegerField(required=False, allow_null=True, min_value=0)
+    costo_estimado_clp = serializers.IntegerField(required=False, allow_null=True, min_value=0)
+    costo_registrado_clp = serializers.IntegerField(required=False, allow_null=True, min_value=0)
+    costo_origen = serializers.CharField(required=False, allow_blank=True, default='')
     precio_cobrado_clp = serializers.IntegerField(required=False, allow_null=True, min_value=0)
     margen_clp = serializers.IntegerField(required=False, allow_null=True)
     margen_pct = serializers.FloatField(required=False, allow_null=True)
@@ -158,6 +161,45 @@ class RepuestoCotizacionSerializer(serializers.Serializer):
         default=False,
         help_text='Si este repuesto fue consolidado con otros en la misma casa'
     )
+
+
+def _monto_guardado(valor):
+    if valor is None or valor == '':
+        return None
+    try:
+        numero = int(valor)
+    except (TypeError, ValueError):
+        return None
+    return numero if numero > 0 else None
+
+
+def _costo_guardado_linea(rep: dict) -> dict:
+    """Costo que el taller ya persistió, antes de que la validación de ficha lo pise."""
+    return {
+        'costo_registrado_clp': _monto_guardado(rep.get('costo_registrado_clp')),
+        'costo_estimado_clp': _monto_guardado(rep.get('costo_estimado_clp')),
+        'costo_unitario_clp': _monto_guardado(rep.get('costo_unitario_clp')),
+        'costo_origen': str(rep.get('costo_origen') or ''),
+    }
+
+
+def _restaurar_costo_taller(rep: dict, guardado: dict) -> None:
+    """La validación de ficha copia el precio cobrado al costo cuando no hay tienda.
+
+    Si la línea no traía costo, ese valor no es un costo. Si lo traía, se conserva.
+    """
+    tiene = any(guardado.get(clave) for clave in (
+        'costo_registrado_clp', 'costo_estimado_clp', 'costo_unitario_clp',
+    ))
+    if not tiene:
+        if not rep.get('precio_verificado_clp'):
+            rep['costo_unitario_clp'] = None
+        return
+    for clave in ('costo_registrado_clp', 'costo_estimado_clp', 'costo_unitario_clp'):
+        if guardado.get(clave):
+            rep[clave] = guardado[clave]
+    if guardado.get('costo_origen'):
+        rep['costo_origen'] = guardado['costo_origen']
 
 
 class CotizacionCanalSerializer(serializers.ModelSerializer):
@@ -473,6 +515,7 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
             if not isinstance(rep, dict):
                 saneados.append(rep)
                 continue
+            costo_guardado = _costo_guardado_linea(rep)
             rep = sanear_notas_linea(rep, **nota_kw)
             rep.update(validar_repuesto(rep, **{
                 'marca': nota_kw.get('marca') or '',
@@ -481,6 +524,7 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
                 'tipo_motor': nota_kw.get('tipo_motor') or '',
                 'cilindraje': nota_kw.get('cilindraje') or '',
             }))
+            _restaurar_costo_taller(rep, costo_guardado)
             rep.update(economia_repuesto(rep))
             saneados.append(rep)
             if rep.get('precio_unitario_clp') is not None:
