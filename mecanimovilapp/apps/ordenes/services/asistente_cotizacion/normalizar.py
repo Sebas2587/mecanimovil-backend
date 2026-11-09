@@ -116,6 +116,15 @@ def normalizar_repuesto(item: Any, idx: int) -> dict[str, Any]:
         out['calidad_pendiente'] = True
     if item.get('seleccion_cliente') is True:
         out['seleccion_cliente'] = True
+    origen = str(item.get('origen') or '').strip()
+    if origen in ('pedido', 'sugerencia'):
+        out['origen'] = origen
+    motivo = str(item.get('motivo_sugerencia') or '').strip()
+    if motivo:
+        out['motivo_sugerencia'] = motivo[:300]
+    estado_sug = str(item.get('estado_sugerencia') or '').strip()
+    if estado_sug in ('pendiente', 'aceptada', 'descartada'):
+        out['estado_sugerencia'] = estado_sug
     alts = item.get('alternativas')
     if isinstance(alts, list) and alts:
         out['alternativas'] = alts[:6]
@@ -144,8 +153,14 @@ def recalcular_totales(
     repuestos: list[dict[str, Any]],
     mano_obra_clp: int,
 ) -> tuple[int, int, int]:
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+        linea_cuenta_en_total,
+    )
+
     costo_rep = 0
     for rep in repuestos:
+        if not linea_cuenta_en_total(rep):
+            continue
         cant = max(1, int(rep.get('cantidad') or 1))
         precio = _to_int_clp(rep.get('precio_unitario_clp'))
         costo_rep += cant * precio
@@ -247,11 +262,17 @@ def totales_desde_lineas_respuesta(
     total_persistido=0,
 ) -> dict[str, Any]:
     """Total de la respuesta. No persiste. IVA ya va dentro de los montos."""
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+        linea_cuenta_en_total,
+    )
+
     faltantes: list[str] = []
     costo_rep = 0
     for i, rep in enumerate(repuestos or []):
         if not isinstance(rep, dict):
             faltantes.append(str(i))
+            continue
+        if not linea_cuenta_en_total(rep):
             continue
         precio = rep.get('precio_unitario_clp')
         if precio is None or (isinstance(precio, str) and not precio.strip()):

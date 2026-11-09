@@ -79,6 +79,9 @@ class RepuestoCotizacionSerializer(serializers.Serializer):
     costo_estimado_clp = serializers.IntegerField(required=False, allow_null=True, min_value=0)
     costo_registrado_clp = serializers.IntegerField(required=False, allow_null=True, min_value=0)
     costo_origen = serializers.CharField(required=False, allow_blank=True, default='')
+    origen = serializers.CharField(required=False, allow_blank=True, default='')
+    motivo_sugerencia = serializers.CharField(required=False, allow_blank=True, default='')
+    estado_sugerencia = serializers.CharField(required=False, allow_blank=True, default='')
     precio_cobrado_clp = serializers.IntegerField(required=False, allow_null=True, min_value=0)
     margen_clp = serializers.IntegerField(required=False, allow_null=True)
     margen_pct = serializers.FloatField(required=False, allow_null=True)
@@ -525,6 +528,10 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
                 'cilindraje': nota_kw.get('cilindraje') or '',
             }))
             _restaurar_costo_taller(rep, costo_guardado)
+            if rep.get('origen') not in ('pedido', 'sugerencia'):
+                rep['origen'] = 'pedido'
+                rep['estado_sugerencia'] = rep.get('estado_sugerencia') or 'aceptada'
+                rep['motivo_sugerencia'] = rep.get('motivo_sugerencia') or ''
             rep.update(economia_repuesto(rep))
             saneados.append(rep)
             if rep.get('precio_unitario_clp') is not None:
@@ -539,7 +546,16 @@ class CotizacionCanalSerializer(serializers.ModelSerializer):
                     except (TypeError, ValueError):
                         pass
         data['repuestos'] = saneados
-        data.update(economia_cotizacion(saneados))
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+            linea_cuenta_en_total,
+        )
+
+        data.update(economia_cotizacion([
+            rep for rep in saneados if linea_cuenta_en_total(rep)
+        ]))
+        meta = instance.metadata if isinstance(getattr(instance, 'metadata', None), dict) else {}
+        data['dudas'] = list(meta.get('dudas') or [])
+        data['revision_sugerencias'] = dict(meta.get('revision_sugerencias') or {})
         data['alertas_validacion'] = [
             {
                 'repuesto': rep.get('nombre') or '',

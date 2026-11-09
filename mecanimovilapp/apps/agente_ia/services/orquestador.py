@@ -131,6 +131,23 @@ def _cotizaciones_de_la_conversacion(conversation_id: int) -> str:
         folio_txt = f' [{folio}]' if folio else ''
         servicio = (row.get('servicio_nombre') or 'servicio').strip()
         lineas.append(f'- {row.get("estado")}{extra}: {servicio}{monto_txt}{folio_txt}')
+    from mecanimovilapp.apps.ordenes.models import CotizacionCanal as _CotizacionCanal
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+        decision_taller_para_agente,
+        resumen_para_cliente,
+    )
+
+    ultima = (
+        _CotizacionCanal.objects.filter(conversation_id=conversation_id)
+        .exclude(estado='cancelada')
+        .order_by('-actualizado_en', '-id')
+        .first()
+    )
+    if ultima is not None:
+        lineas.append(resumen_para_cliente(ultima))
+        decision = decision_taller_para_agente(ultima)
+        if decision:
+            lineas.append(decision)
     if nota_casas:
         lineas.append(nota_casas)
     if rol == 'solo_consulta':
@@ -1442,6 +1459,7 @@ Tu prioridad en este orden:
 3) Pedir SOLO el siguiente dato faltante más útil (una pregunta por turno).
 4) Pedir PATENTE cuando ya hay síntoma o el cliente quiere precio/agenda (obligatoria antes de cotizar/agendar, NO en el primer "hola").
 5) Cotizar SOLO cuando el cliente quiera precio/presupuesto Y ya haya patente + contexto suficiente.
+6) Cotiza exactamente lo que el cliente pidió. Si ves un complemento útil, NO se lo prometas ni lo sumes: queda como sugerencia pendiente para que el taller lo acepte o lo descarte. Si tienes duda de compatibilidad o de precio, dile que el taller lo confirma. No inventes. Cuando el contexto traiga una decisión del taller, sigue esa decisión.
 
 Estado de contacto (OBLIGATORIO):
 {flag_contacto}

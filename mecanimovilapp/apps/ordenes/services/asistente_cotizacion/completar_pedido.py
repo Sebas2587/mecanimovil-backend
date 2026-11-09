@@ -43,30 +43,12 @@ _FAENA = 'Cambio de embrague'
 
 
 def completar_pedido_con_faena(contenido: dict[str, Any] | None, servicio_nombre: str = '') -> dict[str, Any]:
-    """Un cambio de embrague incluye la faena única y cada pieza de ese trabajo."""
-    data = dict(contenido or {})
-    pedido = ' '.join(
-        parte for parte in (
-            servicio_nombre,
-            str(data.get('servicio_nombre') or ''),
-            str(data.get('descripcion_problema') or ''),
-        ) if parte
+    """Lo que pidieron se cotiza. El complemento queda pendiente de revisión."""
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+        aplicar_pedido_y_sugerencias,
     )
-    if not _es_embrague(pedido) and not _es_embrague(_nombres(data)):
-        return data
-    reps = [rep for rep in (data.get('repuestos') or []) if isinstance(rep, dict)]
-    reps = [rep for rep in reps if not _es_pieza_suelta_del_kit(str(rep.get('nombre') or ''))]
-    reps = [rep for rep in reps if not _es_embrague_vago(str(rep.get('nombre') or ''))]
-    for nombre, claves, comentario in _piezas_del_trabajo(pedido):
-        if _ya_tiene(reps, claves):
-            continue
-        reps.append(_linea(nombre, comentario))
-    data['repuestos'] = reps
-    data['servicios_lineas'] = _faena_unica(data)
-    data['mano_obra_clp'] = sum(
-        int(lin.get('monto_clp') or 0) for lin in data['servicios_lineas']
-    )
-    return data
+
+    return aplicar_pedido_y_sugerencias(contenido, servicio_nombre)
 
 
 def _piezas_del_trabajo(pedido: str) -> tuple[tuple[str, tuple[str, ...], str], ...]:

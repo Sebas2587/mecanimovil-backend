@@ -407,7 +407,7 @@ Contexto del chat reciente (NO son líneas de cotización; ignora servicios de o
 {rag_bloque}
 REGLAS:
 0. ALCANCE (CRÍTICO): cotiza SOLO el servicio pedido para ESTE vehículo ({ctx.get('marca', '')} {ctx.get('modelo', '')}). PROHIBIDO agregar servicios no solicitados (frenos si solo pidió aceite, distribución si solo pidió embrague, diagnóstico no pedido, otro auto). El campo servicio_nombre de salida DEBE ser exactamente "{pedido}".
-0b. EMBRAGUE - QUÉ INCLUIR: Si piden "cambio de embrague" o "kit de embrague", incluye SOLO: Kit de embrague (disco+prensa+collarin), Rodamiento de volante (piloto), Aceite de caja (cantidad según capacidad), Retén trasero cigüeñal. SOLO agrega "Piola de embrague" si el pedido la menciona explícitamente O si sabes con certeza que este modelo usa embrague a cable. NUNCA agregues volante bimasa/motor/dual mass flywheel salvo que el pedido lo pida.
+0b. LEE EL PEDIDO: cotiza cada ítem que pidieron, con su repuesto y su faena. Si piden kit de embrague, bomba de embrague y líquido de frenos, van los tres. No los reemplaces por una lista fija (rodamiento, retén, aceite de caja). Un complementario que el taller no pidió va en repuestos con "origen":"sugerencia", "estado_sugerencia":"pendiente" y "motivo_sugerencia" en una frase. No lo presentes como pedido. Si no sabes compatibilidad o qué incluye el kit, dilo en advertencias y deja el precio en 0. NUNCA agregues volante bimasa salvo que lo pidan. La piola solo si la nombran.
 0c. PRECIOS POR VEHÍCULO (CRÍTICO): NUNCA copies mano de obra ni precios de piezas de otro marca/modelo (Toyota ≠ BAIC; Yaris ≠ Yaris Cross) aunque el servicio se llame igual. Si el bloque de historial no es de este marca+modelo exacto, ignóralo.
 1. Analiza el SERVICIO pedido + el VEHÍCULO concreto ({ctx.get('marca', '')} {ctx.get('modelo', '')} {ctx.get('anio', '')}, motor {efectivo}). Cada marca/modelo/año tiene piezas y cantidades distintas: no copies listas genéricas de otro auto.
 2. Precios en CLP enteros: son ESTIMADOS de mercado Chile (taller) para que el proveedor los revise. NO digas que vienen de un catálogo o tienda.
@@ -426,7 +426,7 @@ REGLAS:
    - Líquido refrigerante: ~5-7 litros típico (depende del vehículo)
    - Aceite de caja: cantidad según capacidad de transmisión (ej. 2-3 litros manual, 4-6 litros automática)
 6. REPUESTOS POR VEHÍCULO (CRÍTICO): SOLO piezas compatibles con marca/modelo/año/cilindrada/motor. Nombra la pieza con precisión (posición: delantero/trasero, lado).
-6c. TRABAJO DE EMBRAGUE (CRÍTICO): si piden kit, cambio de embrague o clutch, es UN trabajo. servicios_lineas trae una sola faena "Cambio de embrague" cuyo monto cubre bajar la caja, el kit, el rodamiento piloto, la piola si va y el aceite: no partas la mano de obra en una línea por cada pieza. Repuestos, cada uno con su precio de ESA pieza para este auto: "Kit de embrague" (disco + prensa + rodamiento de empuje, un solo precio de kit; una ficha de solo disco, prensa o rodamiento no es el kit). "Rodamiento de volante" (piloto; no viene en el kit; no es el volante bimasa ni el volante de motor). "Aceite de caja de cambios" (el llenado, litros de valvulina, no un tambor ni la caja completa). "Retén trasero de cigüeñal" (queda a la vista al sacar la caja). Si el taller nombra piola, cable o guaya, la línea es "Piola de embrague": es un repuesto, nunca solo mano de obra. El precio del kit, del volante o de la caja no se copia al aceite ni al rodamiento.
+6c. TRABAJO DE EMBRAGUE: cada faena pedida es su propia línea de mano de obra (cambio de kit, cambio de bomba, cambio de líquido). El kit es disco + prensa + rodamiento de empuje en un solo precio; disco, prensa o collarín sueltos no se suman aparte. El piloto, el aceite de caja y el retén de cigüeñal solo van si los pidieron o como sugerencia pendiente con motivo. No copies el precio del kit a otra pieza.
 6b. ESPECIFICACIÓN ANTES DE PRECIO (CRÍTICO): si la pieza tiene variantes que cambian el precio (bujía cobre/platino/iridio; pastilla orgánica/semi-metálica/cerámica; aceite mineral/sintético + viscosidad; batería convencional/EFB/AGM; amortiguador hidráulico/gas), declara "especificacion" con UNA sola variante para ESTE vehículo (ej. "Iridio", "Cerámica", "5W30 sintético"). PROHIBIDO ofrecer dos ("cerámica o semi-metálica"), separar con "/" o describir medidas en vez de la variante. Si no puedes determinarla con certeza, deja especificacion="" y precio_unitario_clp=0. PROHIBIDO inventar un monto para una variante que no sabes.
 7. Volante bimasa: inclúyelo SOLO si el SERVICIO SOLICITADO es de embrague/clutch (no porque el chat mencionó vibración u otro auto).
 8. marca_repuesto, fuente_marketplace y tienda_ml: SIEMPRE "". NUNCA inventes marca (ni "GENÉRICO", ni Bosch/Mann "por costumbre"), ni tienda, ni "catálogo". El backend solo completa marca/proveedor si hay match real del taller o listing verificable.
@@ -1240,7 +1240,14 @@ def generar_cotizacion_ia(
                 servicio_prompt=servicio_ctx,
             )
             if solo_cat and solo_cat.get('disponible') and solo_cat.get('contenido'):
-                contenido = solo_cat['contenido']
+                from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.completar_pedido import (
+                    completar_pedido_con_faena,
+                )
+
+                contenido = completar_pedido_con_faena(
+                    solo_cat['contenido'],
+                    servicio_nombre=servicio_nombre or servicio_ctx,
+                )
                 logger.info(
                     'generar_cotizacion_ia: catálogo completo %s %s / %s — sin Gemini/web',
                     ctx.get('marca'),

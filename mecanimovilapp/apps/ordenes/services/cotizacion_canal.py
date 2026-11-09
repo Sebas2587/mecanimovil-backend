@@ -642,11 +642,30 @@ def aplicar_edicion_cotizacion(cotizacion: CotizacionCanal, data: dict) -> Cotiz
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.familias_sensibles import (
             anotar_familia_en_linea,
         )
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+            anotar_revision_metadata,
+            notificar_revision_al_taller,
+            proponer_complementos,
+        )
 
+        anteriores = list(cotizacion.repuestos or [])
         fusionadas = fusionar_repuestos_edicion(
-            list(cotizacion.repuestos or []),
+            anteriores,
             data['repuestos'],
         )
+        por_id = {
+            str(rep.get('id')): rep
+            for rep in anteriores
+            if isinstance(rep, dict) and rep.get('id')
+        }
+        for rep in fusionadas:
+            if not isinstance(rep, dict):
+                continue
+            previo = por_id.get(str(rep.get('id') or ''))
+            if previo and not rep.get('origen') and previo.get('origen'):
+                rep['origen'] = previo.get('origen')
+                rep['estado_sugerencia'] = previo.get('estado_sugerencia') or ''
+                rep['motivo_sugerencia'] = previo.get('motivo_sugerencia') or ''
         # El editor no reenvía especificacion_pendiente y el serializer la
         # completa en False: sin reanotar, la variante pendiente se pierde.
         cotizacion.repuestos = [
@@ -654,6 +673,21 @@ def aplicar_edicion_cotizacion(cotizacion: CotizacionCanal, data: dict) -> Cotiz
             if isinstance(rep, dict) else rep
             for rep in fusionadas
         ]
+        pedido_edicion = ' '.join(
+            parte for parte in (
+                cotizacion.servicio_nombre,
+                cotizacion.descripcion_problema,
+            ) if parte
+        )
+        meta_ed = dict(cotizacion.metadata or {})
+        reps_ed, dudas_ed = proponer_complementos(
+            cotizacion.repuestos,
+            pedido_edicion,
+            descartadas=list(meta_ed.get('sugerencias_descartadas') or []),
+        )
+        cotizacion.repuestos = reps_ed
+        cotizacion.metadata = anotar_revision_metadata(meta_ed, reps_ed, dudas_ed)
+        notificar_revision_al_taller(cotizacion)
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.mano_obra_lineas import (
         aplicar_mano_obra_en_edicion,
     )

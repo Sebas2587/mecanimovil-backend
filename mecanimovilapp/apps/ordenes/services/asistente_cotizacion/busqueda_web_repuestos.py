@@ -423,6 +423,10 @@ def precio_unitario_desde_envase(nombre: str, precio_ficha: int, titulo: str) ->
     n = _norm(nombre)
     if 'aceite' not in n or 'filtro' in n:
         return precio, ''
+    # El aceite de caja se cotiza por el envase de la ficha. Partirlo a
+    # precio por litro con cantidad 1 cobraba una fracción del bidón.
+    if any(k in n for k in ('caja', 'transmision', 'diferencial', 'direccion', 'hidraulic', 'bomba')):
+        return precio, ''
     litros = litros_envase(titulo)
     if litros < 1.5:
         return precio, ''

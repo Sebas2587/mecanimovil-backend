@@ -1295,8 +1295,12 @@ def economia_cotizacion(repuestos: list) -> dict[str, Any]:
     faltantes = 0
     faltan_reg = 0
     lineas = 0
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+        linea_cuenta_en_total,
+    )
+
     for rep in repuestos or []:
-        if not isinstance(rep, dict):
+        if not isinstance(rep, dict) or not linea_cuenta_en_total(rep):
             continue
         lineas += 1
         cantidad = max(1, _entero(rep.get('cantidad') or 1))

@@ -201,8 +201,12 @@ def _banda_totales_publica(cotizacion: CotizacionCanal) -> tuple[int, int]:
     desc = int(cotizacion.descuento_clp or 0)
     tmin = 0
     tmax = 0
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+        linea_visible_cliente,
+    )
+
     for r in cotizacion.repuestos or []:
-        if not isinstance(r, dict):
+        if not isinstance(r, dict) or not linea_visible_cliente(r):
             continue
         cant = max(1, int(r.get('cantidad') or 1))
         lo, hi = rango_publico_repuesto(r)
@@ -226,9 +230,13 @@ def _repuestos_publicos(
         sanear_notas_linea,
     )
 
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+        linea_visible_cliente,
+    )
+
     out: list[dict] = []
     for item in repuestos or []:
-        if not isinstance(item, dict):
+        if not isinstance(item, dict) or not linea_visible_cliente(item):
             continue
         item = sanear_notas_linea(
             item,

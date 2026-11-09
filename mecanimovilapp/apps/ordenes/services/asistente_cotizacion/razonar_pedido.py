@@ -67,55 +67,12 @@ def _plan_determinista(servicio: str, descripcion: str, veh: dict[str, Any]) -> 
 
 
 def _plan_embrague(texto: str, auto: str, veh: dict[str, Any]) -> dict[str, Any]:
-    pide_piola = _menciona_piola(texto)
-    piezas = [
-        _item(
-            'Kit de embrague',
-            f'kit embrague {auto}',
-            'Disco, prensa y rodamiento de empuje de este auto. No es la piola ni una prensa suelta.',
-            escasa=False,
-        ),
-        _item(
-            'Rodamiento de volante',
-            f'rodamiento piloto {auto}',
-            'Es el rulemán piloto. Un rodamiento de rueda o un volante bimasa no sirven.',
-            escasa=True,
-        ),
-        _item(
-            'Aceite de caja de cambios',
-            f'aceite caja cambios {auto}',
-            'El llenado de la caja de este auto, no el aceite de motor.',
-            escasa=False,
-        ),
-        _item(
-            'Retén trasero de cigüeñal',
-            f'reten cigueñal {auto}',
-            'Queda a la vista al bajar la caja. En autos chicos a veces no hay ficha publicada.',
-            escasa=True,
-            sugerida=True,
-        ),
-    ]
-    if pide_piola:
-        piezas.insert(1, _item(
-            'Piola de embrague',
-            f'piola embrague {auto}',
-            'Cable de este auto. No es el kit.',
-            escasa=False,
-        ))
-    razon = (
-        f'{auto} : cambio de embrague en un solo trabajo. '
-        'El kit es disco, prensa y rodamiento de empuje. '
-        'El rodamiento de volante es el piloto, no un rodamiento genérico de la marca. '
+    del veh
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+        piezas_para_busqueda,
     )
-    if pide_piola:
-        razon += 'La piola va en su propia línea porque este pedido la nombra y no viene dentro del kit. '
-    razon += 'Si una tienda no publica la pieza para este modelo, la línea queda sin precio y con la fuente de lo que sí apareció.'
-    return {
-        'trabajo': 'cambio_embrague',
-        'faena': 'Cambio de embrague',
-        'razonamiento': razon.strip(),
-        'piezas': piezas,
-    }
+
+    return piezas_para_busqueda(texto, auto)
 
 
 def _plan_desde_frases(texto: str, auto: str, veh: dict[str, Any]) -> dict[str, Any]:
