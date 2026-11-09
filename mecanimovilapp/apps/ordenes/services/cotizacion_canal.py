@@ -68,9 +68,20 @@ def _linea_vehiculo_cotizacion(cotizacion: CotizacionCanal) -> list[str]:
     return lineas
 
 
+def _repuestos_para_cliente(cotizacion: CotizacionCanal) -> list:
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+        linea_visible_cliente,
+    )
+
+    return [
+        rep for rep in (cotizacion.repuestos or [])
+        if isinstance(rep, dict) and linea_visible_cliente(rep)
+    ]
+
+
 def metadata_cotizacion_mensaje(cotizacion: CotizacionCanal, *, estado: str = 'enviada') -> dict:
     repuestos_meta: list[dict] = []
-    for rep in cotizacion.repuestos or []:
+    for rep in _repuestos_para_cliente(cotizacion):
         cant = int(rep.get('cantidad') or 1)
         precio = int(rep.get('precio_unitario_clp') or 0)
         repuestos_meta.append({
@@ -123,16 +134,30 @@ def _nombres_items_para_cliente(cotizacion: CotizacionCanal, *, max_items: int =
         resolver_mano_obra_lineas,
     )
 
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+        linea_visible_cliente,
+    )
+
     nombres: list[str] = []
-    for lin in resolver_mano_obra_lineas(cotizacion):
-        if int(lin.get('monto_clp') or 0) <= 0:
-            continue
-        n = str(lin.get('nombre') or '').strip()
-        if n:
-            nombres.append(n)
-    for rep in cotizacion.repuestos or []:
-        if not isinstance(rep, dict):
-            continue
+    crudas = []
+    meta = getattr(cotizacion, 'metadata', None)
+    if isinstance(meta, dict) and isinstance(meta.get('servicios_lineas'), list):
+        crudas = [lin for lin in meta['servicios_lineas'] if isinstance(lin, dict)]
+    if crudas:
+        for lin in crudas:
+            if int(lin.get('monto_clp') or 0) <= 0 or not linea_visible_cliente(lin):
+                continue
+            n = str(lin.get('nombre') or '').strip()
+            if n:
+                nombres.append(n)
+    else:
+        for lin in resolver_mano_obra_lineas(cotizacion):
+            if int(lin.get('monto_clp') or 0) <= 0:
+                continue
+            n = str(lin.get('nombre') or '').strip()
+            if n:
+                nombres.append(n)
+    for rep in _repuestos_para_cliente(cotizacion):
         n = str(rep.get('nombre') or '').strip()
         if n:
             nombres.append(n)
@@ -268,7 +293,7 @@ def formatear_resumen_cotizacion(cotizacion: CotizacionCanal) -> str:
     if cotizacion.descripcion_problema:
         lineas.extend(['', f'*Detalle del servicio:*', cotizacion.descripcion_problema[:400]])
 
-    repuestos = cotizacion.repuestos or []
+    repuestos = _repuestos_para_cliente(cotizacion)
     es_est = str(getattr(cotizacion, 'tipo_documento', '') or '').strip() == 'estimacion'
     if repuestos:
         lineas.extend(['', '*Repuestos estimados:*'])
@@ -298,12 +323,9 @@ def formatear_resumen_cotizacion(cotizacion: CotizacionCanal) -> str:
         lineas.append(f'Subtotal repuestos: {formatear_moneda_clp(cotizacion.costo_repuestos_clp)}')
 
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.mano_obra_lineas import (
-        resolver_mano_obra_lineas,
+        mano_obra_lineas_publicas,
     )
-    mo_lineas = [
-        lin for lin in resolver_mano_obra_lineas(cotizacion)
-        if lin.get('monto_clp', 0) > 0
-    ]
+    mo_lineas = mano_obra_lineas_publicas(cotizacion)
     if mo_lineas:
         lineas.extend(['', '*Mano de obra (IVA incl.):*'])
         for lin in mo_lineas:
@@ -642,11 +664,30 @@ def aplicar_edicion_cotizacion(cotizacion: CotizacionCanal, data: dict) -> Cotiz
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.familias_sensibles import (
             anotar_familia_en_linea,
         )
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+            anotar_revision_metadata,
+            notificar_revision_al_taller,
+            proponer_complementos,
+        )
 
+        anteriores = list(cotizacion.repuestos or [])
         fusionadas = fusionar_repuestos_edicion(
-            list(cotizacion.repuestos or []),
+            anteriores,
             data['repuestos'],
         )
+        por_id = {
+            str(rep.get('id')): rep
+            for rep in anteriores
+            if isinstance(rep, dict) and rep.get('id')
+        }
+        for rep in fusionadas:
+            if not isinstance(rep, dict):
+                continue
+            previo = por_id.get(str(rep.get('id') or ''))
+            if previo and not rep.get('origen') and previo.get('origen'):
+                rep['origen'] = previo.get('origen')
+                rep['estado_sugerencia'] = previo.get('estado_sugerencia') or ''
+                rep['motivo_sugerencia'] = previo.get('motivo_sugerencia') or ''
         # El editor no reenvía especificacion_pendiente y el serializer la
         # completa en False: sin reanotar, la variante pendiente se pierde.
         cotizacion.repuestos = [
@@ -654,6 +695,21 @@ def aplicar_edicion_cotizacion(cotizacion: CotizacionCanal, data: dict) -> Cotiz
             if isinstance(rep, dict) else rep
             for rep in fusionadas
         ]
+        pedido_edicion = ' '.join(
+            parte for parte in (
+                cotizacion.servicio_nombre,
+                cotizacion.descripcion_problema,
+            ) if parte
+        )
+        meta_ed = dict(cotizacion.metadata or {})
+        reps_ed, dudas_ed = proponer_complementos(
+            cotizacion.repuestos,
+            pedido_edicion,
+            descartadas=list(meta_ed.get('sugerencias_descartadas') or []),
+        )
+        cotizacion.repuestos = reps_ed
+        cotizacion.metadata = anotar_revision_metadata(meta_ed, reps_ed, dudas_ed)
+        notificar_revision_al_taller(cotizacion)
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.mano_obra_lineas import (
         aplicar_mano_obra_en_edicion,
     )

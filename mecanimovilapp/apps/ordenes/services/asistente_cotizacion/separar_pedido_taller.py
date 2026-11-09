@@ -45,7 +45,7 @@ _DISTINTIVOS_PIEZA = {
     'piola', 'cable', 'guaya', 'volante', 'piloto', 'empuje', 'collarin',
     'prensa', 'plato', 'disco', 'caja', 'motor', 'aire', 'polen',
     'gasolina', 'bencina', 'reten', 'sello', 'ciguenal', 'bimasa',
-    'bombin', 'hidraulico', 'delantero', 'trasero', 'izquierdo', 'derecho',
+    'bombin', 'hidraulico', 'bomba', 'liquido', 'delantero', 'trasero', 'izquierdo', 'derecho',
 }
 _LADO = re.compile(
     r'^(?:delanter[oa]s?|traser[oa]s?|izquierd[oa]s?|derech[oa]s?|'

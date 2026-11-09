@@ -97,6 +97,23 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
                 qs = _filtrar_cotizaciones_queryset(qs, q)
         return qs
 
+    def destroy(self, request, *args, **kwargs):
+        """Quita la cotización de las listas del taller en un solo paso."""
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+            EliminacionBloqueada,
+            eliminar_cotizacion_taller,
+        )
+
+        cotizacion = self.get_object()
+        try:
+            resultado = eliminar_cotizacion_taller(cotizacion)
+        except EliminacionBloqueada as exc:
+            return Response(
+                {'detail': str(exc), 'codigo': exc.codigo},
+                status=status.HTTP_409_CONFLICT,
+            )
+        return Response(resultado)
+
     def retrieve(self, request, *args, **kwargs):
         """Detalle; reintenta búsqueda web si el borrador quedó pendiente/sin marca."""
         instance = self.get_object()
@@ -379,6 +396,18 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             meta['busqueda_web_en'] = timezone.now().isoformat()
             cotizacion.metadata = meta
             cotizacion.save(update_fields=['metadata', 'actualizado_en'])
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+            anotar_revision_metadata,
+            notificar_revision_al_taller,
+        )
+
+        cotizacion.metadata = anotar_revision_metadata(
+            cotizacion.metadata,
+            cotizacion.repuestos or [],
+            (contenido or {}).get('dudas') or [],
+        )
+        cotizacion.save(update_fields=['metadata', 'actualizado_en'])
+        notificar_revision_al_taller(cotizacion)
         cache.delete(lock_key)
         return Response({
             **resultado,
@@ -1047,6 +1076,40 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             'entrega_via': getattr(plan, 'via', None),
             'entrega_mensaje': getattr(plan, 'message', None),
         })
+
+    @action(detail=True, methods=['post'], url_path='sugerencias')
+    def decidir_sugerencia_linea(self, request, pk=None):
+        """El taller acepta o descarta una sugerencia. Nada se cobra antes."""
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+            decidir_sugerencia,
+        )
+
+        cotizacion = self.get_object()
+        linea_id = str(request.data.get('linea_id') or '').strip()
+        accion = str(request.data.get('accion') or '').strip()
+        if not linea_id:
+            raise ValidationError({'linea_id': 'Indica la línea.'})
+        try:
+            cotizacion = decidir_sugerencia(cotizacion, linea_id=linea_id, accion=accion)
+        except ValueError as exc:
+            raise ValidationError({'accion': str(exc)}) from exc
+        return Response({'cotizacion': CotizacionCanalSerializer(cotizacion).data})
+
+    @action(detail=True, methods=['post'], url_path='dudas/confirmar')
+    def confirmar_duda_linea(self, request, pk=None):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+            confirmar_duda,
+        )
+
+        cotizacion = self.get_object()
+        duda_id = str(request.data.get('duda_id') or request.data.get('id') or '').strip()
+        if not duda_id:
+            raise ValidationError({'duda_id': 'Indica la duda.'})
+        try:
+            cotizacion = confirmar_duda(cotizacion, duda_id)
+        except ValueError as exc:
+            raise ValidationError({'duda_id': str(exc)}) from exc
+        return Response({'cotizacion': CotizacionCanalSerializer(cotizacion).data})
 
     @action(detail=True, methods=['post'], url_path='cancelar-busqueda')
     def cancelar_busqueda(self, request, pk=None):

@@ -1385,6 +1385,21 @@ def crear_cotizacion_borrador_desde_agente(
                 and plantilla_es_mismo_trabajo(plantilla, servicio_prompt)
             ):
                 snap = plantilla.snapshot if isinstance(plantilla.snapshot, dict) else {}
+                from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.completar_pedido import (
+                    completar_pedido_con_faena,
+                )
+
+                snap_contenido = completar_pedido_con_faena(
+                    {
+                        'servicio_nombre': snap.get('servicio_nombre') or servicio_prompt,
+                        'descripcion_problema': snap.get('descripcion_problema') or descripcion_ia,
+                        'repuestos': list(snap.get('repuestos') or []),
+                        'mano_obra_clp': int(snap.get('mano_obra_clp') or 0),
+                        'servicios_lineas': list(snap.get('servicios_lineas') or []),
+                        'advertencias': list(snap.get('advertencias') or []),
+                    },
+                    servicio_nombre=servicio_prompt,
+                )
                 CotizacionCanalPlantilla.objects.filter(pk=plantilla.pk).update(
                     uso_count=F('uso_count') + 1,
                 )
@@ -1392,14 +1407,16 @@ def crear_cotizacion_borrador_desde_agente(
                 resultado = {
                     'disponible': True,
                     'contenido': {
-                        'servicio_nombre': snap.get('servicio_nombre') or servicio_prompt,
-                        'descripcion_problema': snap.get('descripcion_problema') or descripcion_ia,
-                        'repuestos': list(snap.get('repuestos') or []),
-                        'mano_obra_clp': int(snap.get('mano_obra_clp') or 0),
-                        'costo_repuestos_clp': int(snap.get('costo_repuestos_clp') or 0),
-                        'total_clp': int(snap.get('total_clp') or 0),
+                        'servicio_nombre': snap_contenido.get('servicio_nombre') or servicio_prompt,
+                        'descripcion_problema': snap_contenido.get('descripcion_problema') or descripcion_ia,
+                        'repuestos': list(snap_contenido.get('repuestos') or []),
+                        'mano_obra_clp': int(snap_contenido.get('mano_obra_clp') or 0),
+                        'costo_repuestos_clp': int(snap_contenido.get('costo_repuestos_clp') or 0),
+                        'total_clp': int(snap_contenido.get('total_clp') or 0),
+                        'servicios_lineas': list(snap_contenido.get('servicios_lineas') or []),
+                        'dudas': list(snap_contenido.get('dudas') or []),
                         'duracion_minutos_estimada': snap.get('duracion_minutos_estimada'),
-                        'advertencias': list(snap.get('advertencias') or []),
+                        'advertencias': list(snap_contenido.get('advertencias') or []),
                         'tipo_motor': snap.get('tipo_motor') or tipo_motor,
                         'tipo_motor_label': snap.get('tipo_motor_label') or '',
                         'valores_estimativos': False,
@@ -1673,7 +1690,8 @@ def crear_cotizacion_borrador_desde_agente(
     ref_reps = [
         r
         for r in ref_reps
-        if repuesto_compatible_con_servicios(str(r.get('nombre') or ''), servicios_turno)
+        if r.get('origen') in ('pedido', 'sugerencia')
+        or repuesto_compatible_con_servicios(str(r.get('nombre') or ''), servicios_turno)
     ]
     for r in ref_reps:
         r['comentario'] = (r.get('comentario') or '') or 'Estimación de mercado (IA, IVA incl.)'
@@ -1835,6 +1853,15 @@ def crear_cotizacion_borrador_desde_agente(
             mano_obra += recargo_aplicado
 
     lineas = _aplicar_montos_contenido_ia(lineas, contenido)
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+        anotar_revision_metadata,
+    )
+
+    metadata_revision = anotar_revision_metadata(
+        {},
+        repuestos,
+        list((contenido or {}).get('dudas') or []),
+    )
     costo_rep, mano_obra, total = recalcular_totales(repuestos, mano_obra)
     lineas = _asegurar_montos_en_lineas(lineas, mano_obra)
 
@@ -1956,6 +1983,8 @@ def crear_cotizacion_borrador_desde_agente(
             or ''
         ),
         **meta_notas,
+        'dudas': metadata_revision.get('dudas') or [],
+        'revision_sugerencias': metadata_revision.get('revision_sugerencias') or {},
     }
 
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.disparar_busqueda_web import (
@@ -2166,6 +2195,11 @@ def crear_cotizacion_borrador_desde_agente(
         cotizacion = disparar_y_refrescar_cotizacion(cotizacion, sync=True)
     cotizacion = _finalizar_precios_borrador_agente(cotizacion)
 
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+        notificar_revision_al_taller,
+    )
+
+    notificar_revision_al_taller(cotizacion)
     notificar_cotizacion_borrador_agente(
         proveedor_user_id=proveedor_user_id,
         cotizacion=cotizacion,

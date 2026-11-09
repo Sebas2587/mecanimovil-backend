@@ -172,10 +172,29 @@ def cotizar_items_faltantes(
         ]
     else:
         enriquecidos = aplicar_techo_ia_en_repuestos(enriquecidos)
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+        anotar_revision_metadata,
+        notificar_revision_al_taller,
+        proponer_complementos,
+    )
+
+    pedido_items = ' '.join(
+        parte for parte in (
+            cotizacion.servicio_nombre or '',
+            cotizacion.descripcion_problema or '',
+            ' '.join(agregados),
+        ) if parte
+    )
+    meta_previa = dict(cotizacion.metadata or {})
+    enriquecidos, dudas_items = proponer_complementos(
+        enriquecidos,
+        pedido_items,
+        descartadas=list(meta_previa.get('sugerencias_descartadas') or []),
+    )
     cotizacion.repuestos = enriquecidos
     aplicar_totales_cotizacion(cotizacion)
 
-    meta = dict(cotizacion.metadata or {})
+    meta = anotar_revision_metadata(dict(cotizacion.metadata or {}), enriquecidos, dudas_items)
     valores_estimativos = any(
         isinstance(r, dict) and r.get('precio_estimado') is not False
         for r in enriquecidos
@@ -221,6 +240,7 @@ def cotizar_items_faltantes(
             'actualizado_en',
         ])
 
+    notificar_revision_al_taller(cotizacion)
     return {
         'agregados': agregados,
         'busqueda_web': disparo_web,

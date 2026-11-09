@@ -100,9 +100,17 @@ class PedidoEmbragueCompletoTests(SimpleTestCase):
         self.assertIn('Aceite de caja de cambios', nombres)
         self.assertIn('Retén trasero de cigüeñal', nombres)
         self.assertNotIn('Embrague completo', nombres)
+        piola = next(rep for rep in out['repuestos'] if rep['nombre'] == 'Piola de embrague')
+        self.assertEqual(piola['origen'], 'pedido')
+        aceite = next(rep for rep in out['repuestos'] if 'aceite' in rep['nombre'].lower())
+        self.assertEqual(aceite['origen'], 'sugerencia')
+        self.assertEqual(aceite['estado_sugerencia'], 'pendiente')
         self.assertEqual(
             [(lin['nombre'], lin['monto_clp']) for lin in out['servicios_lineas']],
-            [('Cambio de embrague', 160000)],
+            [
+                ('Cambio de embrague', 120000),
+                ('Cambio de piola de embrague', 40000),
+            ],
         )
         self.assertEqual(out['mano_obra_clp'], 160000)
 
