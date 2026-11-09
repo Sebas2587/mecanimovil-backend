@@ -115,7 +115,11 @@ def proponer_complementos(
     *,
     descartadas: list[str] | None = None,
 ) -> tuple[list[dict], list[dict]]:
-    """En una edición, no reescribe lo que el taller ya puso. Solo agrega pendientes."""
+    """En una edición, no reescribe lo que el taller ya puso.
+
+    Lo que el pedido nombra entra como línea cobrable. Si todavía no tiene
+    precio, la duda lo dice. Solo el complemento no pedido queda pendiente.
+    """
     reps = [dict(rep) if isinstance(rep, dict) else rep for rep in (repuestos or [])]
     for rep in reps:
         if isinstance(rep, dict) and not rep.get('origen'):
@@ -125,16 +129,10 @@ def proponer_complementos(
     pedidos = _piezas_pedidas(pedido)
     bloqueadas = {_norm(n) for n in (descartadas or [])}
     for nombre in pedidos:
-        if nombre in {n for n, _m in _SUGERENCIAS_CAJA}:
+        if _ya(reps, nombre):
+            _forzar_pedido(reps, nombre)
             continue
-        if _norm(nombre) in bloqueadas or _ya(reps, nombre):
-            continue
-        reps.append(_linea(
-            nombre,
-            origen=ORIGEN_SUGERENCIA,
-            motivo=f'El pedido nombra {nombre} y todavía no está entre las líneas confirmadas.',
-            estado=ESTADO_PENDIENTE,
-        ))
+        reps.append(_linea(nombre, origen=ORIGEN_PEDIDO, motivo='', estado=ESTADO_ACEPTADA))
     if _baja_la_caja(pedido, pedidos):
         kit = _linea_kit(reps)
         if _kit_declara_piloto(kit):
@@ -681,6 +679,30 @@ def _marcar_pedido(rep: dict) -> None:
     rep['origen'] = ORIGEN_PEDIDO
     rep['estado_sugerencia'] = ESTADO_ACEPTADA
     rep.setdefault('motivo_sugerencia', '')
+
+
+def _forzar_pedido(reps: list, nombre: str) -> None:
+    """Lo pedido no puede seguir como sugerencia, aunque antes se haya etiquetado así."""
+    clave = _norm(_canon(nombre) or nombre)
+    canon = _canon(nombre) or nombre
+    for rep in reps:
+        if not isinstance(rep, dict):
+            continue
+        if _norm(_canon(str(rep.get('nombre') or ''))) != clave:
+            continue
+        rep['origen'] = ORIGEN_PEDIDO
+        rep['estado_sugerencia'] = ESTADO_ACEPTADA
+        rep['motivo_sugerencia'] = ''
+        if canon in (
+            'Kit de embrague',
+            'Bomba de embrague',
+            'Líquido de frenos',
+            'Piola de embrague',
+            'Aceite de caja de cambios',
+            'Rodamiento de volante',
+            'Retén trasero de cigüeñal',
+        ):
+            rep['nombre'] = canon
 
 
 def _canon(nombre: str) -> str:

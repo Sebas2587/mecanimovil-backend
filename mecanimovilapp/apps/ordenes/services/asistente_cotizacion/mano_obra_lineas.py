@@ -81,6 +81,23 @@ def resolver_mano_obra_lineas(cotizacion, *, backfill: bool = True) -> list[dict
 
 
 def mano_obra_lineas_publicas(cotizacion) -> list[dict[str, Any]]:
+    """Solo faenas cobrables. Una sugerencia pendiente no sale en el mensaje al cliente."""
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+        linea_visible_cliente,
+    )
+
+    crudas = _lineas_crudas(cotizacion)
+    if crudas:
+        return [
+            {
+                'nombre': str(lin.get('nombre') or '').strip(),
+                'monto_clp': monto_linea_mo(lin),
+            }
+            for lin in crudas
+            if monto_linea_mo(lin) > 0
+            and str(lin.get('nombre') or '').strip()
+            and linea_visible_cliente(lin)
+        ]
     return [
         {'nombre': lin['nombre'], 'monto_clp': lin['monto_clp']}
         for lin in resolver_mano_obra_lineas(cotizacion)

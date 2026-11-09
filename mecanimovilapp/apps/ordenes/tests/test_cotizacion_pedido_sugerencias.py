@@ -6,7 +6,7 @@ from datetime import date, time
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 
 _CACHE_LOCAL = {
     'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'},
@@ -89,6 +89,71 @@ class PedidoClutchLCKS17Tests(TestCase):
         self.assertIn('kit-composicion', ids)
         self.assertIn('liquido-especificacion', ids)
         self.assertTrue(any(i.startswith('precio-') for i in ids))
+
+    def test_los_tres_caminos_clasifican_lcks17_igual(self):
+        """Agente, cotización IA y edición manual dejan lo pedido cobrable."""
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+            proponer_complementos,
+        )
+
+        generado = completar_pedido_con_faena(
+            {**PLANTILLA_VIEJA, 'descripcion_problema': PEDIDO},
+            servicio_nombre=PEDIDO,
+        )
+        # El agente conserva las líneas con origen; no reclasifica lo pedido.
+        agente = [
+            rep for rep in generado['repuestos']
+            if rep.get('origen') in ('pedido', 'sugerencia')
+        ]
+        manual, dudas = proponer_complementos(
+            [{
+                'id': 'kit-1',
+                'nombre': 'Kit de embrague',
+                'cantidad': 1,
+                'precio_unitario_clp': 89000,
+            }],
+            PEDIDO,
+        )
+        # Una bomba que quedó mal etiquetada se corrige al editar.
+        corregido, _ = proponer_complementos(
+            [{
+                'id': 'bomba-vieja',
+                'nombre': 'Bomba de embrague',
+                'origen': 'sugerencia',
+                'estado_sugerencia': 'pendiente',
+                'motivo_sugerencia': 'El pedido nombra Bomba de embrague.',
+                'cantidad': 1,
+                'precio_unitario_clp': 28000,
+            }],
+            PEDIDO,
+        )
+
+        def clases(reps):
+            return {
+                rep['nombre']: (rep.get('origen'), rep.get('estado_sugerencia'))
+                for rep in reps
+            }
+
+        esperadas = {nombre: ('pedido', 'aceptada') for nombre in PEDIDOS}
+        esperadas.update({nombre: ('sugerencia', 'pendiente') for nombre in SUGERIDOS})
+        for camino in (generado['repuestos'], agente, manual, corregido):
+            vistos = clases(camino)
+            for nombre, marca in esperadas.items():
+                self.assertEqual(vistos[nombre], marca, nombre)
+        self.assertEqual(
+            {nombre: clases(generado['repuestos'])[nombre] for nombre in esperadas},
+            {nombre: clases(manual)[nombre] for nombre in esperadas},
+        )
+        self.assertEqual(
+            {nombre: clases(agente)[nombre] for nombre in esperadas},
+            {nombre: clases(manual)[nombre] for nombre in esperadas},
+        )
+        ids = {duda['id'] for duda in dudas}
+        self.assertIn('precio-bomba-de-embrague', ids)
+        self.assertIn('precio-liquido-de-frenos', ids)
+        bomba = next(rep for rep in corregido if rep['nombre'] == 'Bomba de embrague')
+        self.assertEqual(bomba['origen'], 'pedido')
+        self.assertEqual(bomba['motivo_sugerencia'], '')
 
     def test_aceite_de_caja_no_se_parte_por_litro(self):
         precio, nota = precio_unitario_desde_envase(
@@ -305,9 +370,14 @@ class TresCaminosCotizacionTests(TestCase):
         self.assertEqual(alta.status_code, 200, alta.content)
         lineas = _por_nombre(alta.json()['cotizacion']['repuestos'])
         self.assertEqual(lineas['Kit de embrague']['origen'], 'pedido')
-        self.assertEqual(lineas['Bomba de embrague']['estado_sugerencia'], 'pendiente')
-        self.assertIn('pedido', lineas['Bomba de embrague']['motivo_sugerencia'].lower())
+        self.assertEqual(lineas['Bomba de embrague']['origen'], 'pedido')
+        self.assertEqual(lineas['Bomba de embrague']['estado_sugerencia'], 'aceptada')
+        self.assertEqual(lineas['Bomba de embrague']['motivo_sugerencia'], '')
+        self.assertEqual(lineas['Líquido de frenos']['origen'], 'pedido')
+        self.assertEqual(lineas['Aceite de caja de cambios']['origen'], 'sugerencia')
         self.assertEqual(lineas['Aceite de caja de cambios']['estado_sugerencia'], 'pendiente')
+        dudas_alta = {d['id'] for d in alta.json()['cotizacion']['dudas']}
+        self.assertIn('precio-bomba-de-embrague', dudas_alta)
         self.assertEqual(alta.json()['cotizacion']['total_clp'], 0)
 
         con_precio = []
@@ -338,25 +408,23 @@ class TresCaminosCotizacionTests(TestCase):
                 format='json',
             )
         self.assertEqual(precios.status_code, 200, precios.content)
-        # El aceite y la bomba siguen pendientes: el total es solo el kit.
-        self.assertEqual(precios.json()['total_clp'], 45000)
-        self.assertEqual(precios.json()['cobrado_total_repuestos_clp'], 45000)
+        # La bomba se pidió: se cobra. El aceite sigue pendiente y no entra.
+        self.assertEqual(precios.json()['total_clp'], 45000 + 28000)
+        self.assertEqual(precios.json()['cobrado_total_repuestos_clp'], 45000 + 28000)
+        self.assertEqual(
+            _por_nombre(precios.json()['repuestos'])['Bomba de embrague']['origen'],
+            'pedido',
+        )
 
         lineas = _por_nombre(precios.json()['repuestos'])
         bomba_id = lineas['Bomba de embrague']['id']
         aceite_id = lineas['Aceite de caja de cambios']['id']
-        with patch(
-            'mecanimovilapp.apps.agente_ia.services.ws_broadcast.emitir_evento_ws_agente_ia',
-        ):
-            acepta = self.client.post(
-                f'/api/ordenes/cotizaciones-canal/{cot.id}/sugerencias/',
-                {'linea_id': bomba_id, 'accion': 'aceptar'},
-                format='json',
-            )
-        self.assertEqual(acepta.status_code, 200, acepta.content)
-        aceptadas = _por_nombre(acepta.json()['cotizacion']['repuestos'])
-        self.assertEqual(aceptadas['Bomba de embrague']['estado_sugerencia'], 'aceptada')
-        self.assertEqual(acepta.json()['cotizacion']['total_clp'], 45000 + 28000)
+        rechaza_pedido = self.client.post(
+            f'/api/ordenes/cotizaciones-canal/{cot.id}/sugerencias/',
+            {'linea_id': bomba_id, 'accion': 'descartar'},
+            format='json',
+        )
+        self.assertEqual(rechaza_pedido.status_code, 400, rechaza_pedido.content)
 
         with patch(
             'mecanimovilapp.apps.agente_ia.services.ws_broadcast.emitir_evento_ws_agente_ia',
@@ -502,3 +570,132 @@ class TresCaminosCotizacionTests(TestCase):
         self.assertEqual(con_caja.status_code, 409, con_caja.content)
         cot.refresh_from_db()
         self.assertEqual(cot.estado, 'enviada')
+
+
+class MensajeClienteSinPendientesTests(SimpleTestCase):
+    """Teaser, metadata y resumen no nombran sugerencias pendientes ni descartadas."""
+
+    def _cot(self):
+        class Fake:
+            id = 41
+            servicio_nombre = 'kit de embrague, bomba de embrague y cambio de líquido de frenos'
+            descripcion_problema = ''
+            modalidad = 'taller'
+            tipo_documento = 'cotizacion'
+            vehiculo_marca = 'Suzuki'
+            vehiculo_modelo = 'Celerio'
+            vehiculo_anio = 2018
+            vehiculo_cilindraje = ''
+            vehiculo_patente = 'LCKS17'
+            tipo_motor_label = ''
+            mano_obra_clp = 180000
+            costo_repuestos_clp = 89000
+            total_clp = 269000
+            descuento_clp = 0
+            descuento_tipo = ''
+            descuento_alcance = 'mano_obra'
+            descuento_valor = 0
+            duracion_minutos_estimada = 180
+            url_publica = 'https://ejemplo.cl/c/lcks17'
+            numero_publico = 'MM-000317'
+            es_cotizacion_adicional = False
+            cotizacion_original = None
+            cita_origen = None
+            advertencias = []
+            metadata = {
+                'servicios_lineas': [
+                    {
+                        'nombre': 'Cambio de embrague',
+                        'monto_clp': 180000,
+                        'origen': 'pedido',
+                        'estado_sugerencia': 'aceptada',
+                    },
+                    {
+                        'nombre': 'Cambio de rodamiento de volante',
+                        'monto_clp': 15000,
+                        'origen': 'sugerencia',
+                        'estado_sugerencia': 'pendiente',
+                    },
+                ],
+            }
+            repuestos = [
+                {
+                    'nombre': 'Kit de embrague',
+                    'cantidad': 1,
+                    'precio_unitario_clp': 89000,
+                    'origen': 'pedido',
+                    'estado_sugerencia': 'aceptada',
+                },
+                {
+                    'nombre': 'Rodamiento de volante',
+                    'cantidad': 1,
+                    'precio_unitario_clp': 12000,
+                    'origen': 'sugerencia',
+                    'estado_sugerencia': 'pendiente',
+                    'motivo_sugerencia': 'No viene en el kit.',
+                },
+                {
+                    'nombre': 'Aceite de caja de cambios',
+                    'cantidad': 1,
+                    'precio_unitario_clp': 32000,
+                    'origen': 'sugerencia',
+                    'estado_sugerencia': 'descartada',
+                },
+            ]
+
+        return Fake()
+
+    def test_teaser_metadata_y_resumen_omiten_lo_no_aceptado(self):
+        from mecanimovilapp.apps.ordenes.services.cotizacion_canal import (
+            formatear_resumen_cotizacion,
+            formatear_teaser_cotizacion,
+            metadata_cotizacion_mensaje,
+        )
+
+        cot = self._cot()
+        teaser = formatear_teaser_cotizacion(cot, actualizada=True)
+        self.assertIn('Incluye:', teaser)
+        self.assertIn('Kit de embrague', teaser)
+        self.assertIn('Cambio de embrague', teaser)
+        self.assertNotIn('Rodamiento de volante', teaser)
+        self.assertNotIn('Aceite de caja', teaser)
+        self.assertNotIn('rodamiento de volante', teaser.lower())
+
+        meta = metadata_cotizacion_mensaje(cot)
+        nombres = [rep['nombre'] for rep in meta['repuestos']]
+        self.assertEqual(nombres, ['Kit de embrague'])
+        faenas = [lin['nombre'] for lin in meta['mano_obra_lineas']]
+        self.assertEqual(faenas, ['Cambio de embrague'])
+
+        resumen = formatear_resumen_cotizacion(cot)
+        self.assertIn('Kit de embrague', resumen)
+        self.assertNotIn('Rodamiento de volante', resumen)
+        self.assertNotIn('Aceite de caja', resumen)
+        self.assertNotIn('Cambio de rodamiento', resumen)
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+            resumen_para_cliente,
+        )
+
+        texto_agente = resumen_para_cliente(cot)
+        self.assertIn('Kit de embrague', texto_agente)
+        self.assertNotIn('Rodamiento de volante', texto_agente)
+        self.assertNotIn('Aceite de caja', texto_agente)
+
+
+class AlertaAsumidaSinDuplicarTests(SimpleTestCase):
+    def test_el_motivo_asumido_no_se_repite_en_alertas(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.validar_linea_cotizacion import (
+            validar_repuesto,
+        )
+
+        linea = validar_repuesto({
+            'nombre': 'Filtro de aire',
+            'cantidad': 1,
+            'precio_unitario_clp': 8990,
+            'certeza': 'asumido',
+            'comentario': 'Precio asumido',
+        })
+        self.assertEqual(linea['validacion_estado'], 'asumido')
+        self.assertIn('No hay ficha de tienda', linea['validacion_motivo'])
+        self.assertNotIn(linea['validacion_motivo'], linea['alertas'])

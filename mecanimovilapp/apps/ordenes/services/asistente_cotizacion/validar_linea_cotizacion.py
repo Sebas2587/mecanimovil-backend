@@ -394,7 +394,6 @@ def validar_repuesto(
                 motivo = f'{motivo} Casa sugerida: {casa}.'
             out['validacion_estado'] = 'asumido'
             out['validacion_motivo'] = motivo
-            alertas.append(motivo)
         if casa and not out['nota_referencia']:
             out['nota_referencia'] = _nota_referencia(casa, '', en_casa=False, historial=False)
 
