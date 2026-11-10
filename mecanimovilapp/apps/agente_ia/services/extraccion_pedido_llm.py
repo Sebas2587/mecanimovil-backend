@@ -118,8 +118,11 @@ def generation_config_extraccion(modelo: str) -> dict:
 
 
 def _body_sin_secreto(texto: str) -> str:
-    limpio = re.sub(r'AIza[\w\-]+', '***', texto or '')
-    return re.sub(r'(key=)[^&\s"\']+', r'\1***', limpio)[:800]
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador import (
+        texto_sin_secreto,
+    )
+
+    return texto_sin_secreto(texto)
 
 
 def leer_pedido_llm(texto_cliente: str, vehiculo_context: dict | None = None) -> PedidoExtraido | None:
@@ -311,7 +314,11 @@ Responde SOLO JSON válido sin markdown:
             logger.warning('agente_ia[extraccion] gemini_timeout model=%s', modelo)
             continue
         except Exception as exc:
-            logger.warning('agente_ia[extraccion] gemini_error model=%s error=%s', modelo, exc)
+            logger.warning(
+                'agente_ia[extraccion] gemini_error model=%s error=%s',
+                modelo,
+                _body_sin_secreto(exc),
+            )
             return None
         if resp.status_code != 200:
             logger.warning(

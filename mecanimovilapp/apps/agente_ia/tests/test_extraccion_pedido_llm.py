@@ -269,6 +269,35 @@ class GenerationConfigExtraccionTests(TestCase):
         self.assertIn('thinkingConfig required', aviso)
         self.assertNotIn('AIza', aviso)
 
+    def test_un_error_de_red_no_loguea_la_clave(self):
+        import requests
+
+        def boom(*_args, **_kwargs):
+            raise requests.ConnectionError(
+                'Max retries exceeded with url: '
+                'https://generativelanguage.googleapis.com/v1beta/models/'
+                'gemini-3.1-flash-lite:generateContent?key=AIzaSY-super-secreta'
+            )
+
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador.modelos_gemini_cotizacion',
+            return_value=['gemini-3.1-flash-lite'],
+        ), patch('requests.post', side_effect=boom), self.assertLogs(
+            'mecanimovilapp.apps.agente_ia.services.extraccion_pedido_llm',
+            'WARNING',
+        ) as logs:
+            from django.test import override_settings
+            from mecanimovilapp.apps.agente_ia.services.extraccion_pedido_llm import (
+                _llamar_gemini_extraccion,
+            )
+            with override_settings(GEMINI_API_KEY='AIzaSY-super-secreta'):
+                self.assertIsNone(_llamar_gemini_extraccion('pastillas traseras de un golf', {}))
+        aviso = '\n'.join(logs.output)
+        self.assertIn('gemini_error', aviso)
+        self.assertNotIn('AIza', aviso)
+        self.assertNotIn('super-secreta', aviso)
+        self.assertIn('key=***', aviso)
+
     def test_la_misma_frase_no_llama_dos_veces(self):
         pedido = PedidoExtraido(
             vehiculo=VehiculoExtraido(marca='Mazda', modelo='3', anio=2016),

@@ -279,7 +279,16 @@ def analizar_adjunto_mensaje(
             try:
                 resp = requests.post(url, json=payload, timeout=timeout_http_gemini(timeout))
             except requests.RequestException as exc:
-                logger.warning('Error multimodal Gemini msg=%s model=%s: %s', message.id, modelo, exc)
+                from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador import (
+                    texto_sin_secreto,
+                )
+
+                logger.warning(
+                    'Error multimodal Gemini msg=%s model=%s: %s',
+                    message.id,
+                    modelo,
+                    texto_sin_secreto(exc),
+                )
                 ultimo_error = 'conexion_gemini'
                 break
 
@@ -289,12 +298,16 @@ def analizar_adjunto_mensaje(
                 continue
 
             if resp.status_code != 200:
+                from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador import (
+                    texto_sin_secreto,
+                )
+
                 logger.warning(
                     'Gemini multimodal HTTP %s msg=%s model=%s: %s',
                     resp.status_code,
                     message.id,
                     modelo,
-                    (resp.text or '')[:300],
+                    texto_sin_secreto(resp.text),
                 )
                 ultimo_error = f'http_{resp.status_code}'
                 break

@@ -30,6 +30,12 @@ MSG_GEMINI_TOKENS = (
 )
 
 
+def texto_sin_secreto(texto: str) -> str:
+    """Quita la clave de un error o un body. Un ConnectionError trae el URL con ?key=."""
+    limpio = re.sub(r'AIza[\w\-]+', '***', str(texto or ''))
+    return re.sub(r'(key=)[^&\s"\']+', r'\1***', limpio)[:800]
+
+
 def asistente_cotizacion_habilitado() -> bool:
     return bool(getattr(settings, 'ASISTENTE_COTIZACION_IA_ENABLED', False)) or bool(
         getattr(settings, 'AGENTE_IA_CHAT_ENABLED', False)
@@ -215,7 +221,7 @@ def _llamar_gemini(prompt: str) -> tuple[dict[str, Any] | None, dict[str, int | 
                         modelo_actual,
                         intento + 1,
                         intentos_modelo + 1,
-                        exc,
+                        texto_sin_secreto(exc),
                     )
                     time.sleep(min(4, max(1, 2 ** intento)))
                     continue
@@ -228,7 +234,7 @@ def _llamar_gemini(prompt: str) -> tuple[dict[str, Any] | None, dict[str, int | 
                     modelo_actual,
                     intento + 1,
                     intentos_modelo + 1,
-                    exc,
+                    texto_sin_secreto(exc),
                 )
                 ultimo_error = MSG_GEMINI_TIMEOUT
                 break
@@ -239,7 +245,7 @@ def _llamar_gemini(prompt: str) -> tuple[dict[str, Any] | None, dict[str, int | 
                         modelo_actual,
                         intento + 1,
                         intentos_modelo + 1,
-                        exc,
+                        texto_sin_secreto(exc),
                     )
                     time.sleep(min(4, max(1, 2 ** intento)))
                     continue
@@ -287,7 +293,7 @@ def _llamar_gemini(prompt: str) -> tuple[dict[str, Any] | None, dict[str, int | 
                 'Gemini cotización HTTP %s model=%s body=%s',
                 resp.status_code,
                 modelo_actual,
-                (resp.text or '')[:400],
+                texto_sin_secreto(resp.text),
             )
             if resp.status_code == 400 and usar_thinking:
                 usar_thinking = False

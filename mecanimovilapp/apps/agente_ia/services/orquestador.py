@@ -1297,11 +1297,15 @@ def _llamar_gemini_agente(prompt: str) -> tuple[dict[str, Any] | None, str | Non
                 continue
 
             ultimo_error = f'Gemini HTTP {resp.status_code}'
+            from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador import (
+                texto_sin_secreto,
+            )
+
             logger.warning(
                 'Gemini agente HTTP %s model=%s body=%s',
                 resp.status_code,
                 modelo,
-                (resp.text or '')[:300],
+                texto_sin_secreto(resp.text),
             )
             if resp.status_code in (429, 503) and mi < len(modelos) - 1:
                 logger.warning(

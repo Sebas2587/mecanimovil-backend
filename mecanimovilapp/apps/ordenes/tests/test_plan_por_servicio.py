@@ -461,6 +461,124 @@ class CatalogoYLlmTests(SimpleTestCase):
         self.assertIn('Diagnóstico', humo['servicios'][0]['nombre'])
         self.assertTrue(any(d['id'] == 'humo-diagnostico' for d in humo['dudas']))
 
+    def test_ejes_marcas_y_piezas_fuera_del_catalogo(self):
+        casos = (
+            'cambio de discos y pastillas traseras a un golf 2017',
+            'cambiar la manguera superior a un versa 2016',
+            'homocinética delantera izq, cerato 2012',
+            'la camioneta tira hacia la derecha',
+            'revision pre viaje',
+            'cambiar rodamiento de rueda trasero izquierdo a una frontier 2014',
+            'terminales de dirección delanteras, polo 2015',
+            'bobinas y bujías de un onix 2019',
+            'se va hacia la izquierda el volante de un duster 2017',
+            'inspección antes de un viaje, hilux 2018',
+            'cremallera de dirección, sentra 2013',
+            'soporte de motor derecho, accent 2014',
+        )
+        for frase in casos:
+            with self.subTest(frase=frase, modo='catalogo'):
+                out = cotizar_por_servicio(frase, buscar=_buscar_casa)
+                self.assertTrue(out['servicios'], frase)
+                self.assertGreater(out['mano_obra_clp'], 0, frase)
+                self.assertTrue(out['verificacion']['ok'], frase)
+                marca = (out['vehiculo'].get('marca') or '').lower()
+                modelo = (out['vehiculo'].get('modelo') or '').lower()
+                self.assertNotIn('disco', marca)
+                self.assertNotIn('manguera', marca)
+                self.assertNotIn('superior', modelo)
+
+        golf = cotizar_por_servicio(
+            'cambio de discos y pastillas traseras a un golf 2017', buscar=_buscar_casa,
+        )
+        self.assertEqual(golf['vehiculo']['marca'], 'Volkswagen')
+        self.assertEqual(golf['vehiculo']['modelo'], 'Golf')
+        self.assertEqual(golf['vehiculo']['anio'], 2017)
+        self.assertTrue(all('delanter' not in s['nombre'].lower() for s in golf['servicios']))
+        nombres = [r['nombre'].lower() for r in golf['repuestos'] if r['origen'] != 'sugerencia']
+        self.assertTrue(any('pastilla' in n and 'traser' in n for n in nombres))
+        self.assertTrue(any('disco' in n and 'traser' in n for n in nombres))
+
+        manguera = cotizar_por_servicio('cambiar la manguera superior a un versa 2016', buscar=_buscar_casa)
+        self.assertEqual(manguera['vehiculo']['marca'], 'Nissan')
+        self.assertEqual(manguera['vehiculo']['modelo'], 'Versa')
+        self.assertTrue(any('manguera superior' in r['nombre'].lower() for r in manguera['repuestos']))
+
+        homo = cotizar_por_servicio('homocinética delantera izq, cerato 2012', buscar=_buscar_casa)
+        self.assertEqual(homo['vehiculo']['marca'], 'Kia')
+        self.assertEqual(homo['vehiculo']['modelo'], 'Cerato')
+        self.assertIn('homocinética delantera izquierda', homo['servicios'][0]['nombre'].lower())
+        self.assertTrue(any(d['id'].startswith('horas-estimadas') for d in homo['dudas']))
+
+        tira = cotizar_por_servicio('la camioneta tira hacia la derecha', buscar=_buscar_casa)
+        self.assertIn('alineación', tira['servicios'][0]['nombre'].lower())
+        self.assertTrue(tira['servicios'][0]['solo_mano'])
+        self.assertTrue(any(r['origen'] == 'sugerencia' for r in tira['repuestos']))
+        self.assertTrue(any(d['id'] == 'tira-de-lado' for d in tira['dudas']))
+
+        viaje = cotizar_por_servicio('revision pre viaje', buscar=_buscar_casa)
+        self.assertIn('pre viaje', viaje['servicios'][0]['nombre'].lower())
+        self.assertTrue(viaje['servicios'][0]['solo_mano'])
+        self.assertTrue(any(r['origen'] == 'sugerencia' for r in viaje['repuestos']))
+        self.assertTrue(any(d['id'] == 'pre-viaje' for d in viaje['dudas']))
+
+        ruleman = cotizar_por_servicio(
+            'cambiar rodamiento de rueda trasero izquierdo a una frontier 2014', buscar=_buscar_casa,
+        )
+        self.assertEqual(ruleman['vehiculo']['marca'], 'Nissan')
+        self.assertIn('trasero', ruleman['repuestos'][0]['nombre'].lower())
+        self.assertIn('izquierdo', ruleman['repuestos'][0]['nombre'].lower())
+
+        polo = cotizar_por_servicio('terminales de dirección delanteras, polo 2015', buscar=_buscar_casa)
+        self.assertEqual(polo['vehiculo']['marca'], 'Volkswagen')
+        self.assertEqual(polo['vehiculo']['modelo'], 'Polo')
+        self.assertIn('delanter', polo['repuestos'][0]['nombre'].lower())
+
+        onix = cotizar_por_servicio('bobinas y bujías de un onix 2019', buscar=_buscar_casa)
+        self.assertEqual(onix['vehiculo']['marca'], 'Chevrolet')
+        self.assertTrue(any('bujía' in r['nombre'].lower() for r in onix['repuestos']))
+        self.assertTrue(any('bobina' in r['nombre'].lower() for r in onix['repuestos']))
+
+        duster = cotizar_por_servicio('se va hacia la izquierda el volante de un duster 2017', buscar=_buscar_casa)
+        self.assertEqual(duster['vehiculo']['marca'], 'Renault')
+        self.assertEqual(duster['vehiculo']['modelo'], 'Duster')
+        self.assertTrue(duster['servicios'][0]['solo_mano'])
+
+        hilux = cotizar_por_servicio('inspección antes de un viaje, hilux 2018', buscar=_buscar_casa)
+        self.assertEqual(hilux['vehiculo']['marca'], 'Toyota')
+        self.assertIn('pre viaje', hilux['servicios'][0]['nombre'].lower())
+
+        sentra = cotizar_por_servicio('cremallera de dirección, sentra 2013', buscar=_buscar_casa)
+        self.assertEqual(sentra['vehiculo']['marca'], 'Nissan')
+        self.assertIn('cremallera', sentra['servicios'][0]['nombre'].lower())
+
+        accent = cotizar_por_servicio('soporte de motor derecho, accent 2014', buscar=_buscar_casa)
+        self.assertEqual(accent['vehiculo']['marca'], 'Hyundai')
+        self.assertIn('derecho', accent['repuestos'][0]['nombre'].lower())
+        self.assertNotIn('delanter', accent['repuestos'][0]['nombre'].lower())
+
+    def test_las_frases_de_eje_con_llm_mockeado_no_caen_al_catalogo(self):
+        self.sin_llm.stop()
+        frase = 'cambio de discos y pastillas traseras a un golf 2017'
+        pedido = PedidoExtraido(
+            vehiculo=VehiculoExtraido(marca='Volkswagen', modelo='Golf', anio=2017),
+            servicios=[ServicioExtraido(
+                nombre='Trabajo leído: frenos traseros',
+                horas=2,
+                repuestos_requeridos=[PiezaPlan(nombre='Pastillas leídas', identidad='pastillas_freno')],
+            )],
+        )
+        try:
+            with patch(
+                'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.plan_por_servicio.interpretar_pedido',
+                return_value=pedido,
+            ) as llm:
+                out = cotizar_por_servicio(frase, buscar=_buscar_casa)
+            llm.assert_called()
+            self.assertEqual(out['servicios'][0]['nombre'], 'Trabajo leído: frenos traseros')
+        finally:
+            self.sin_llm.start()
+
     def test_frases_nuevas_con_llm_mockeado(self):
         self.sin_llm.stop()
         frases = (
