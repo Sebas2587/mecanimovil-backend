@@ -1151,6 +1151,75 @@ class SegundaRevisionTests(SimpleTestCase):
         self.assertEqual(reps[1]['precio_unitario_clp'], 0)
         self.assertFalse(reps[1]['url_producto'])
 
+    def test_la_conjuncion_no_esconde_la_otra_pieza(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
+            comprender_pedido,
+            norm,
+        )
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+            aplicar_pedido_y_sugerencias,
+        )
+
+        for texto, desconocida in (
+            ('sensor de abs y pastillas', 'sensor de abs'),
+            ('caliper y pastillas', 'caliper'),
+        ):
+            out = comprender_pedido(texto)
+            pastillas = [item for item in out['items'] if item['identidad'] == 'pastillas_freno']
+            sueltas = [item for item in out['items'] if item['identidad'] == 'sin_clasificar']
+            self.assertTrue(pastillas, texto)
+            self.assertTrue(
+                any(desconocida in norm(item['texto_original']) for item in sueltas),
+                out['items'],
+            )
+            self.assertTrue(
+                all(desconocida not in norm(item['texto_original']) for item in pastillas),
+                out['items'],
+            )
+            self.assertTrue(
+                any(desconocida in norm(duda['texto']) for duda in out['dudas']),
+                out['dudas'],
+            )
+            cotizado = aplicar_pedido_y_sugerencias(
+                {'repuestos': [], 'descripcion_problema': texto},
+                servicio_nombre=texto,
+            )
+            nombres = [norm(rep['nombre']) for rep in cotizado['repuestos']]
+            self.assertTrue(any('pastilla' in nombre for nombre in nombres), nombres)
+            self.assertFalse(any(desconocida in nombre for nombre in nombres), nombres)
+            self.assertTrue(
+                any(desconocida in norm(duda['texto']) for duda in cotizado['dudas']),
+                cotizado['dudas'],
+            )
+
+    def test_aceite_y_filtro_no_se_parte_en_la_pieza_filtro(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
+            norm,
+            piezas_del_pedido,
+        )
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+            aplicar_pedido_y_sugerencias,
+        )
+
+        for texto in ('aceite y filtro', 'cambio de aceite y filtro', 'Cambio de aceite y filtro'):
+            items = piezas_del_pedido(texto)
+            self.assertFalse(
+                any(norm(item['nombre']) == 'filtro' for item in items),
+                items,
+            )
+            self.assertFalse(
+                any(item.get('rol') == 'repuesto' and 'filtro' in norm(item['nombre']) for item in items),
+                items,
+            )
+            cotizado = aplicar_pedido_y_sugerencias(
+                {'repuestos': [], 'descripcion_problema': texto},
+                servicio_nombre=texto,
+            )
+            self.assertFalse(
+                any(norm(rep.get('nombre') or '') == 'filtro' for rep in cotizado['repuestos']),
+                cotizado['repuestos'],
+            )
+
     def test_abreviaturas_de_taller(self):
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
             comprender_pedido,

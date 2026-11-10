@@ -308,11 +308,74 @@ def _nombre_con_calificadores(nombre: str, n: str) -> str:
     return f"{nombre} {' '.join(extra)}".strip()
 
 
-def _lados_con_pieza(cuerpo: str) -> bool:
-    lados = re.split(r'\s+y\s+', cuerpo, flags=re.IGNORECASE)
-    if len(lados) < 2:
+_RUIDO_LADO = {
+    'de', 'del', 'la', 'el', 'los', 'las', 'y', 'e', 'un', 'una', 'unos', 'unas',
+    'para', 'con', 'sin', 'por', 'al', 'a', 'en', 'su', 'sus', 'que', 'se',
+    'cambio', 'cambiar', 'cambia', 'revision', 'revisar', 'servicio',
+    'diagnostico', 'diagnosticar', 'mantenimiento', 'mantencion',
+    'reemplazo', 'reemplazar', 'reparacion', 'reparar', 'purga', 'purgar',
+}
+_PREFIJO_POSICION = ('delanter', 'traser', 'izquierd', 'derech')
+
+
+def _parece_pieza(lado: str) -> bool:
+    """Un lado de «X y Y» nombra una pieza, conocida o no."""
+    n = norm(lado)
+    if not n:
         return False
-    return all(any(tallo in norm(lado) for tallo in _TALLOS_PIEZA) for lado in lados)
+    if any(tallo in n for tallo in _TALLOS_PIEZA):
+        return True
+    for token in n.split():
+        if token in _RUIDO_LADO or token in _RUIDO_VEHICULO or token.isdigit():
+            continue
+        if re.fullmatch(r'[a-z]{2,4}\d{2,4}', token):
+            continue
+        if any(token.startswith(prefijo) for prefijo in _PREFIJO_POSICION):
+            continue
+        return True
+    return False
+
+
+def _es_pack_aceite_filtro(izq: str, der: str) -> bool:
+    """«Aceite y filtro» es el cambio de aceite. No es la pieza «filtro»."""
+    a, b = norm(izq), norm(der)
+
+    def aceite_motor(texto: str) -> bool:
+        if 'aceite' not in texto or 'filtro' in texto:
+            return False
+        return not any(marca in texto for marca in ('caja', 'transmision', 'valvulina'))
+
+    def filtro_de_aceite(texto: str) -> bool:
+        if 'filtro' not in texto:
+            return False
+        if any(marca in texto for marca in (
+            'aire', 'polen', 'habitaculo', 'cabina', 'combustible', 'bencina', 'gasolina',
+        )):
+            return False
+        resto = texto
+        for ruido in ('filtro', 'filtros', 'aceite', 'motor', 'de', 'del', 'el', 'la', 'y'):
+            resto = re.sub(rf'\b{ruido}\b', ' ', resto)
+        resto = re.sub(r'\s+', ' ', resto).strip()
+        return not resto or not _parece_pieza(resto)
+
+    return (aceite_motor(a) and filtro_de_aceite(b)) or (aceite_motor(b) and filtro_de_aceite(a))
+
+
+def _partir_y_si_piezas(pedazo: str) -> list[str]:
+    """Parte «X y Y» solo cuando los dos lados nombran una pieza."""
+    lados = re.split(r'\s+y\s+', pedazo, flags=re.IGNORECASE)
+    if len(lados) < 2:
+        return [pedazo]
+    grupos = [lados[0]]
+    for lado in lados[1:]:
+        previo = grupos[-1]
+        if _es_pack_aceite_filtro(previo, lado) or not (
+            _parece_pieza(previo) and _parece_pieza(lado)
+        ):
+            grupos[-1] = f'{previo} y {lado}'
+        else:
+            grupos.append(lado)
+    return [grupo.strip() for grupo in grupos if grupo.strip()]
 
 
 def _tramos(texto: str) -> list[tuple[str, str]]:
@@ -614,8 +677,13 @@ def piezas_del_pedido(texto: str) -> list[dict[str, str]]:
     items: list[dict[str, str]] = []
     for cuerpo, etiqueta in _tramos(texto):
         sistema_tramo = _sistema_del_trozo(_expandir(norm(cuerpo)), etiqueta)
-        partir_y = sistema_tramo == 'embrague' or _lados_con_pieza(cuerpo)
-        for trozo in _trozos(cuerpo, partir_y=partir_y):
+        if sistema_tramo == 'embrague':
+            pedazos = _trozos(cuerpo, partir_y=True)
+        else:
+            pedazos = []
+            for pedazo in _trozos(cuerpo, partir_y=False):
+                pedazos.extend(_partir_y_si_piezas(pedazo))
+        for trozo in pedazos:
             if es_sistema(trozo) or _es_preambulo(trozo):
                 continue
             sistema = _sistema_del_trozo(_expandir(norm(trozo)), sistema_tramo or etiqueta)
