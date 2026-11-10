@@ -415,6 +415,113 @@ def litros_envase(titulo: str) -> float:
     return mejor
 
 
+def _respeta_especificacion(texto: str, spec: str) -> bool:
+    """75W-80 no acepta un 5W-30. DOT4 no acepta un DOT3."""
+    pedido = _norm(spec).replace(' ', '').replace('-', '')
+    ficha = _norm(texto).replace(' ', '').replace('-', '')
+    if not pedido:
+        return True
+    viscosidad = re.search(r'(\d{1,2})w(\d{2})', pedido)
+    if viscosidad:
+        token = f'{viscosidad.group(1)}w{viscosidad.group(2)}'
+        if token not in ficha:
+            return False
+    if 'dot4' in pedido and 'dot4' not in ficha:
+        return False
+    if 'dot3' in pedido and 'dot4' not in pedido and 'dot3' not in ficha:
+        return False
+    return True
+
+
+def aplicar_cantidad_envase(
+    rep: dict[str, Any],
+    *,
+    marca: str = '',
+    modelo: str = '',
+    anio: Any = None,
+    motor: str = '',
+) -> dict[str, Any]:
+    """Cuántos envases compran los litros pedidos. El precio queda por envase.
+
+    Aceite de caja 75W-80, 2.5 L, bidón de 1 L → cantidad 3 al precio del bidón.
+    Un envase de 4 L → cantidad 1, sin partir el precio. DOT4 igual.
+    """
+    import math
+
+    if not isinstance(rep, dict):
+        return rep
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
+        ficha_vehiculo,
+        identidad_de,
+    )
+
+    ident = str(rep.get('identidad') or '') or identidad_de(str(rep.get('nombre') or ''))
+    if ident not in ('aceite_caja', 'liquido_frenos'):
+        return rep
+    ficha = ficha_vehiculo({
+        'marca': marca,
+        'modelo': modelo,
+        'anio': anio,
+        'motor': motor,
+    }) or {}
+    if ident == 'aceite_caja':
+        necesarios = _litros_texto((ficha.get('aceite_caja') or {}).get('litros'))
+    else:
+        necesarios = _litros_texto((ficha.get('liquido_frenos') or {}).get('litros'))
+    if necesarios <= 0:
+        necesarios = _litros_texto(str(rep.get('especificacion') or ''))
+    candidatos = [
+        cand for cand in (rep.get('candidatos_envase') or [])
+        if isinstance(cand, dict)
+    ]
+    if not candidatos:
+        candidatos = [rep]
+    mejor = None
+    for cand in candidatos:
+        titulo = str(cand.get('nombre_producto') or rep.get('nombre_producto') or '').strip()
+        if not titulo:
+            titulo = str(cand.get('especificacion') or rep.get('especificacion') or '')
+        envase = litros_envase(titulo)
+        try:
+            precio = int(cand.get('precio_unitario_clp') or 0)
+        except (TypeError, ValueError):
+            precio = 0
+        if envase <= 0 or precio <= 0 or necesarios <= 0:
+            continue
+        cantidad = max(1, math.ceil(necesarios / envase - 1e-9))
+        total = cantidad * precio
+        if mejor is None or total < mejor[0]:
+            mejor = (total, cand, cantidad, precio, titulo)
+    if mejor is None:
+        return rep
+    _total, elegido, cantidad, precio, titulo = mejor
+    rep['cantidad'] = cantidad
+    rep['precio_unitario_clp'] = precio
+    if titulo:
+        rep['nombre_producto'] = titulo
+    if elegido.get('url'):
+        rep['url_producto'] = elegido['url']
+    rep['envases'] = cantidad
+    rep['costo_envases_clp'] = _total
+    return rep
+
+
+def _litros_texto(texto: Any) -> float:
+    crudo = str(texto or '').strip().replace(',', '.')
+    marcado = re.search(r'(\d+(?:\.\d+)?)\s*l\b', crudo, re.I)
+    if marcado:
+        try:
+            return float(marcado.group(1))
+        except ValueError:
+            return 0.0
+    if re.fullmatch(r'\d+(?:\.\d+)?', crudo):
+        try:
+            return float(crudo)
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
 def precio_unitario_desde_envase(nombre: str, precio_ficha: int, titulo: str) -> tuple[int, str]:
     """Un bidón de 4 L no es el precio de 1 L. El aceite se cotiza por litro."""
     precio = int(precio_ficha or 0)
@@ -1147,6 +1254,12 @@ def _ficha_es_rodamiento_piloto(titulo: str) -> bool:
 
 def _ficha_cubre_pieza(nombre_linea: str, titulo_ficha: str) -> bool:
     """La ficha tiene que ser la misma pieza. Una piola no cotiza el kit."""
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
+        identidades_distintas,
+    )
+
+    if identidades_distintas(nombre_linea, titulo_ficha):
+        return False
     linea = _norm(nombre_linea)
     ficha = _norm(titulo_ficha)
     if not linea or not ficha:
@@ -1164,6 +1277,8 @@ def _ficha_cubre_pieza(nombre_linea: str, titulo_ficha: str) -> bool:
         or ficha_piloto
         or ficha_piola
         or ('embrague' in ficha and 'aceite' not in ficha)
+        or ('motor' in ficha and 'caja' not in ficha and 'transmision' not in ficha)
+        or ('caja' not in ficha and 'transmision' not in ficha and 'cambios' not in ficha)
     ):
         return False
     if _es_piola_embrague(linea):
@@ -2436,6 +2551,14 @@ def _banda_precio_linea(nombre: str) -> tuple[int, int]:
         return _BANDA_PIOLA_EMBRAGUE
     if _es_aceite_caja(n):
         return _BANDAS_CATEGORIA['aceites']
+    if any(k in n for k in ('bomba', 'cilindro', 'bombin')) and any(
+        k in n for k in ('embrague', 'clutch')
+    ):
+        return (8_000, 90_000)
+    if 'flexible' in n or 'horquilla' in n:
+        return (4_000, 80_000)
+    if 'liquido' in n and 'freno' in n:
+        return (1_500, 40_000)
     if any(k in n for k in ('embrague', 'clutch')):
         if _linea_es_kit(nombre):
             return _BANDA_KIT_EMBRAGUE
@@ -3697,6 +3820,312 @@ def _candidatos_de_linea(
     return []
 
 
+def umbral_otra_tienda() -> float:
+    """Fracción de ahorro que justifica salir de la tienda principal.
+
+    0.25 significa que la otra ficha válida cuesta al menos un 25% menos.
+    """
+    try:
+        valor = float(getattr(settings, 'COTIZACION_UMBRAL_OTRA_TIENDA', 0.25))
+    except (TypeError, ValueError):
+        valor = 0.25
+    if valor < 0:
+        return 0.0
+    return min(valor, 1.0)
+
+
+def _opciones_validas_linea(
+    nombre: str,
+    candidatos: list[dict[str, Any]],
+    *,
+    anio: Any,
+    cilindraje: Any,
+    modelo: str,
+    tipo_motor: str,
+    piso: int,
+    techo: int,
+    especificacion: str,
+) -> list[tuple[dict[str, Any], int]]:
+    """Fichas ya leídas que sí son esta pieza, con precio y enlace."""
+    vistas: set[str] = set()
+    validas: list[tuple[dict[str, Any], int]] = []
+    for cand in candidatos or []:
+        if not isinstance(cand, dict):
+            continue
+        url = str(cand.get('url') or '').strip()
+        if not url or url in vistas:
+            continue
+        precio = _precio_de_candidato(cand, nombre)
+        if not _precio_plausible_para_linea(nombre, precio):
+            continue
+        if not _candidato_sirve_linea(
+            nombre, cand, anio=anio, cilindraje=cilindraje, modelo=modelo,
+            tipo_motor=tipo_motor, banda_min=piso, banda_max=techo,
+        ):
+            continue
+        if not _titulo_nombra_pieza(nombre, str(cand.get('title') or '')):
+            continue
+        ficha = f"{cand.get('title') or ''} {cand.get('content') or ''}"
+        if not _respeta_especificacion(ficha, especificacion):
+            continue
+        vistas.add(url)
+        validas.append((cand, precio))
+    return validas
+
+
+def consolidar_candidatos_por_tienda(
+    candidatos_por_nombre: dict[str, list[dict[str, Any]]],
+    *,
+    crudos_por_nombre: dict[str, list[dict[str, Any]]] | None = None,
+    anio: Any = None,
+    cilindraje: Any = None,
+    modelo: str = '',
+    tipo_motor: str = '',
+    bandas_min: dict[str, int] | None = None,
+    bandas_max: dict[str, int] | None = None,
+    especificaciones: dict[str, str] | None = None,
+) -> int:
+    """Deja el pedido en una tienda cuando esa tienda ya tiene las fichas.
+
+    No llama a Tavily ni a un modelo. Las fichas salen de la búsqueda que
+    cada pieza ya hizo. Si la tienda principal no aparece en esos resultados,
+    no se consulta su sitio: eso sería una búsqueda web de pago. Devuelve
+    cuántas consultas extra se evitaron (el costo nuevo es siempre 0).
+    """
+    if not candidatos_por_nombre:
+        return 0
+    especificaciones = especificaciones or {}
+    crudos_por_nombre = crudos_por_nombre or {}
+    opciones: dict[str, list[tuple[dict[str, Any], int]]] = {}
+    for nombre, candidatos in candidatos_por_nombre.items():
+        pool = list(candidatos or [])
+        pool.extend(crudos_por_nombre.get(nombre) or [])
+        validas = _opciones_validas_linea(
+            nombre,
+            pool,
+            anio=anio,
+            cilindraje=cilindraje,
+            modelo=modelo,
+            tipo_motor=tipo_motor,
+            piso=_banda_min_de(bandas_min, nombre),
+            techo=_banda_min_de(bandas_max, nombre),
+            especificacion=str(especificaciones.get(nombre) or ''),
+        )
+        if validas:
+            opciones[nombre] = validas
+    if len(opciones) < 2:
+        return 0
+
+    cobertura: dict[str, set[str]] = {}
+    mejor: dict[tuple[str, str], tuple[dict[str, Any], int]] = {}
+    for nombre, validas in opciones.items():
+        por_tienda: dict[str, tuple[dict[str, Any], int]] = {}
+        for cand, precio in validas:
+            tienda = _sld_host(_dominio_de_url(str(cand.get('url') or '')))
+            if not tienda:
+                continue
+            previa = por_tienda.get(tienda)
+            if previa is None or precio < previa[1]:
+                por_tienda[tienda] = (cand, precio)
+        for tienda, par in por_tienda.items():
+            cobertura.setdefault(tienda, set()).add(nombre)
+            mejor[(tienda, nombre)] = par
+
+    n = len(opciones)
+    mayoria = n // 2 + 1
+    elegibles = [tienda for tienda, lineas in cobertura.items() if len(lineas) >= mayoria]
+    if not elegibles:
+        logger.info(
+            'busqueda_web_repuestos[consolidar] sin_mayoria lineas=%s consultas_web_extra=0',
+            n,
+        )
+        return 0
+
+    def _rango(tienda: str) -> tuple[int, int, int]:
+        lineas = cobertura[tienda]
+        especialista = 0
+        for nombre in lineas:
+            if _es_de_especialista(mejor[(tienda, nombre)][0]):
+                especialista = 1
+                break
+        total = sum(mejor[(tienda, nombre)][1] for nombre in lineas)
+        return (-len(lineas), -especialista, total)
+
+    principal = min(elegibles, key=_rango)
+    muestra = next(iter(cobertura[principal]))
+    cand_muestra = mejor[(principal, muestra)][0]
+    nombre_principal = _tienda_de_ficha(
+        str(cand_muestra.get('url') or ''),
+        str(cand_muestra.get('title') or ''),
+    ) or principal
+    umbral = umbral_otra_tienda()
+    evitadas = 0
+
+    def _al_frente(nombre: str, cand: dict[str, Any]) -> None:
+        lista = list(candidatos_por_nombre.get(nombre) or [])
+        resto = [otro for otro in lista if otro is not cand and otro.get('url') != cand.get('url')]
+        candidatos_por_nombre[nombre] = [cand, *resto]
+
+    for nombre, validas in opciones.items():
+        for cand, _precio in validas:
+            cand.pop('motivo_tienda', None)
+        en_principal = mejor.get((principal, nombre))
+        otras = []
+        for cand, precio in validas:
+            tienda = _sld_host(_dominio_de_url(str(cand.get('url') or '')))
+            if not tienda or tienda == principal:
+                continue
+            visible = _tienda_de_ficha(str(cand.get('url') or ''), str(cand.get('title') or '')) or tienda
+            otras.append((precio, cand, visible))
+        otras.sort(key=lambda item: item[0])
+        if en_principal is None:
+            evitadas += 1
+            if not otras:
+                continue
+            _precio, cand, _visible = otras[0]
+            cand['motivo_tienda'] = f'no disponible en {nombre_principal}'
+            _al_frente(nombre, cand)
+            continue
+        cand_principal, precio_principal = en_principal
+        if otras and precio_principal > 0 and otras[0][0] > 0:
+            precio_otra, cand_otra, tienda_otra = otras[0]
+            if precio_otra < precio_principal:
+                baja = (precio_principal - precio_otra) / precio_principal
+                if baja + 1e-9 >= umbral:
+                    pct = int(round(baja * 100))
+                    cand_otra['motivo_tienda'] = f'{pct}% más barato en {tienda_otra}'
+                    _al_frente(nombre, cand_otra)
+                    continue
+        _al_frente(nombre, cand_principal)
+
+    logger.info(
+        'busqueda_web_repuestos[consolidar] tienda=%s lineas=%s umbral=%s '
+        'consultas_web_extra=0 evitadas=%s',
+        nombre_principal,
+        n,
+        umbral,
+        evitadas,
+    )
+    return evitadas
+
+
+def _linea_compara_envases(nombre: str) -> bool:
+    n = _norm(nombre)
+    return _es_aceite_caja(nombre) or ('liquido' in n and 'freno' in n)
+
+
+def _litros_para_linea(
+    nombre: str,
+    spec: str,
+    *,
+    marca: str,
+    modelo: str,
+    anio: Any,
+    motor: str,
+) -> float:
+    litros = _litros_texto(spec)
+    if litros > 0:
+        return litros
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
+        ficha_vehiculo,
+    )
+
+    ficha = ficha_vehiculo({
+        'marca': marca,
+        'modelo': modelo,
+        'anio': anio,
+        'motor': motor,
+    }) or {}
+    clave = 'aceite_caja' if _es_aceite_caja(nombre) else 'liquido_frenos'
+    return _litros_texto((ficha.get(clave) or {}).get('litros'))
+
+
+def _opciones_envase(
+    nombre: str,
+    candidatos: list[dict[str, Any]],
+    *,
+    anio: Any,
+    cilindraje: Any,
+    modelo: str,
+    tipo_motor: str,
+    piso: int,
+    techo: int,
+    spec: str,
+) -> list[dict[str, Any]]:
+    """Todas las fichas válidas de aceite o DOT, con el tamaño del envase."""
+    opciones: list[dict[str, Any]] = []
+    vistas: set[str] = set()
+    for cand in candidatos or []:
+        if not isinstance(cand, dict):
+            continue
+        url = str(cand.get('url') or '').strip()
+        if not url or url in vistas:
+            continue
+        if not _candidato_sirve_linea(
+            nombre, cand, anio=anio, cilindraje=cilindraje, modelo=modelo,
+            tipo_motor=tipo_motor, banda_min=piso, banda_max=techo,
+        ):
+            continue
+        titulo = str(cand.get('title') or '')
+        if not _titulo_nombra_pieza(nombre, titulo):
+            continue
+        ficha = f"{titulo} {cand.get('content') or ''}"
+        if not _respeta_especificacion(ficha, spec):
+            continue
+        precio = _precio_de_candidato(cand, nombre)
+        if precio <= 0:
+            continue
+        envase = litros_envase(titulo)
+        if envase <= 0:
+            continue
+        vistas.add(url)
+        opciones.append({
+            'nombre_producto': titulo[:200],
+            'precio_unitario_clp': precio,
+            'url': url,
+            'cand': cand,
+            'envase': envase,
+        })
+    return opciones
+
+
+def _envase_mas_barato(
+    opciones: list[dict[str, Any]],
+    litros: float,
+) -> tuple[dict[str, Any], int] | None:
+    """El total más bajo que cubre los litros. El precio sigue siendo el del envase.
+
+    La primera ficha es la que ya eligió la tienda. Otro tamaño de esa misma
+    tienda entra si el total baja. Otra tienda solo si el ahorro llega al umbral.
+    """
+    import math
+
+    puntuados: list[tuple[int, str, dict[str, Any]]] = []
+    for op in opciones:
+        envase = float(op.get('envase') or 0)
+        precio = int(op.get('precio_unitario_clp') or 0)
+        if envase <= 0 or precio <= 0 or litros <= 0:
+            continue
+        cantidad = max(1, math.ceil(litros / envase - 1e-9))
+        host = _sld_host(_dominio_de_url(str(op.get('url') or '')))
+        puntuados.append((cantidad * precio, host, op))
+    if not puntuados:
+        return None
+    _total_primero, host_primero, _op_primero = puntuados[0]
+    mismos = [item for item in puntuados if item[1] == host_primero]
+    mejor_mismo = min(mismos, key=lambda item: item[0])
+    otros = [item for item in puntuados if item[1] != host_primero]
+    if not otros:
+        return mejor_mismo[2], mejor_mismo[0]
+    mejor_otro = min(otros, key=lambda item: item[0])
+    if mejor_mismo[0] <= 0 or mejor_otro[0] >= mejor_mismo[0]:
+        return mejor_mismo[2], mejor_mismo[0]
+    baja = (mejor_mismo[0] - mejor_otro[0]) / mejor_mismo[0]
+    if baja + 1e-9 >= umbral_otra_tienda():
+        return mejor_otro[2], mejor_otro[0]
+    return mejor_mismo[2], mejor_mismo[0]
+
+
 def _hits_desde_candidatos(
     candidatos_por_nombre: dict[str, list[dict[str, str]]],
     tokens_veh,
@@ -3708,6 +4137,7 @@ def _hits_desde_candidatos(
     tipo_motor: str = '',
     bandas_min: dict[str, int] | None = None,
     bandas_max: dict[str, int] | None = None,
+    especificaciones: dict[str, str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Arma hits desde snippet/ficha Tavily cuando el monto ya es legible."""
     out: dict[str, dict[str, Any]] = {}
@@ -3717,7 +4147,28 @@ def _hits_desde_candidatos(
             continue
         piso = _banda_min_de(bandas_min, nombre)
         techo = _banda_min_de(bandas_max, nombre)
-        rescate = next(
+        spec = str((especificaciones or {}).get(nombre) or '')
+        envases: list[dict[str, Any]] = []
+        if _linea_compara_envases(nombre):
+            envases = _opciones_envase(
+                nombre, candidatos,
+                anio=anio, cilindraje=cilindraje, modelo=modelo,
+                tipo_motor=tipo_motor, piso=piso, techo=techo, spec=spec,
+            )
+            litros = _litros_para_linea(
+                nombre, spec,
+                marca=marca_vehiculo, modelo=modelo, anio=anio, motor=str(cilindraje or ''),
+            )
+            elegido = _envase_mas_barato(envases, litros) if litros > 0 else None
+            if elegido:
+                op, _total = elegido
+                rescate = (op['cand'], int(op['precio_unitario_clp']))
+            else:
+                rescate = None
+        else:
+            rescate = None
+        if rescate is None:
+            rescate = next(
             (
                 (c, precio)
                 for c, precio in (
@@ -3761,6 +4212,18 @@ def _hits_desde_candidatos(
             hit['calidad'] = attrs['calidad']
         if attrs['pais_origen']:
             hit['pais_origen'] = attrs['pais_origen']
+        motivo_tienda = str(candidato.get('motivo_tienda') or '').strip()
+        if motivo_tienda:
+            hit['motivo_tienda'] = motivo_tienda
+        if envases:
+            hit['candidatos_envase'] = [
+                {
+                    'nombre_producto': op['nombre_producto'],
+                    'precio_unitario_clp': op['precio_unitario_clp'],
+                    'url': op['url'],
+                }
+                for op in envases
+            ]
         out[clave] = hit
     return out
 
@@ -3999,6 +4462,9 @@ def _buscar_repuestos_web_tavily(
                     banda_max=_techo(nombre),
                 )
                 and _titulo_nombra_pieza(nombre, str(c.get('title') or ''))
+                and _respeta_especificacion(
+                    f"{c.get('title') or ''} {c.get('content') or ''}", spec,
+                )
                 and _precio_desde_texto(c.get('content') or '', nombre) > 0
             ]
             if sirven_casa:
@@ -4131,6 +4597,12 @@ def _buscar_repuestos_web_tavily(
             banda_min=_piso(nombre),
             banda_max=_techo(nombre),
         )
+        servir = [
+            cand for cand in servir
+            if _respeta_especificacion(
+                f"{cand.get('title') or ''} {cand.get('content') or ''}", spec,
+            )
+        ]
         cupo_por_nombre[nombre] = [str(c.get('url') or '') for c in servir if c.get('url')]
         if servir:
             for cand in servir:
@@ -4343,6 +4815,17 @@ def _buscar_repuestos_web_tavily(
 
     _sellar_lista_negra()
 
+    consolidar_candidatos_por_tienda(
+        candidatos_por_nombre,
+        crudos_por_nombre=crudos_por_nombre,
+        anio=anio,
+        cilindraje=cilindraje,
+        modelo=modelo,
+        tipo_motor=tipo_motor,
+        bandas_min=pisos_unidad,
+        bandas_max=techos_unidad,
+        especificaciones=especificaciones,
+    )
     preliminar = _hits_desde_candidatos(
         candidatos_por_nombre,
         tokens_veh,
@@ -4353,6 +4836,7 @@ def _buscar_repuestos_web_tavily(
         tipo_motor=tipo_motor,
         bandas_min=pisos_unidad,
         bandas_max=techos_unidad,
+        especificaciones=especificaciones,
     )
     if preliminar and all(
         _clave_fuzzy(nombre) in preliminar for nombre in candidatos_por_nombre
@@ -4571,6 +5055,7 @@ def _buscar_repuestos_web_tavily(
         tipo_motor=tipo_motor,
         bandas_min=pisos_unidad,
         bandas_max=techos_unidad,
+        especificaciones=especificaciones,
     ).items():
         if clave in out:
             continue

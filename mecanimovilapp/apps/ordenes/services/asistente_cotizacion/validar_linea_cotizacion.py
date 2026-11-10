@@ -289,6 +289,54 @@ def _base(casa: str) -> dict[str, Any]:
     }
 
 
+def _sellar_tienda_real(rep: dict) -> None:
+    """La tienda del precio es la del enlace. La casa sugerida no la reemplaza."""
+    from mecanimovilapp.apps.ordenes.casas_especialistas import _host
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+        _tienda_del_enlace,
+    )
+
+    url = str(rep.get('url_producto') or rep.get('url_referencia') or '').strip()
+    real = _tienda_del_enlace(url, '')
+    if not real:
+        return
+    host = _host(url)
+    rotulo = str(rep.get('proveedor_nombre') or rep.get('tienda_ml') or '').strip()
+    if _rotulo_es_el_dominio(rotulo, host):
+        return
+    rep['proveedor_nombre'] = real
+    if str(rep.get('tienda_ml') or '').strip() and not _rotulo_es_el_dominio(
+        str(rep.get('tienda_ml') or ''), host,
+    ):
+        rep['tienda_ml'] = real
+
+
+def _rotulo_es_el_dominio(rotulo: str, host: str) -> bool:
+    """El rótulo corresponde a esta ficha solo si su dominio registrado es el del enlace."""
+    from mecanimovilapp.apps.ordenes.casas_especialistas import PERFILES, _norm
+
+    objetivo = _norm(rotulo)
+    host_limpio = (host or '').lower().removeprefix('www.')
+    if not objetivo or not host_limpio:
+        return False
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+        _fuentes,
+    )
+
+    dominios = []
+    for perfil in PERFILES:
+        if objetivo in {_norm(perfil.get('nombre') or ''), _norm(perfil.get('alias') or '')}:
+            dominios.append(str(perfil.get('dominio') or ''))
+    for fuente in _fuentes():
+        if objetivo == _norm(fuente.get('nombre') or ''):
+            dominios.append(str(fuente.get('dominio') or ''))
+    for dominio in dominios:
+        registrado = dominio.lower().removeprefix('www.').split('/')[0]
+        if registrado and (host_limpio == registrado or host_limpio.endswith('.' + registrado)):
+            return True
+    return False
+
+
 def validar_repuesto(
     rep: dict,
     *,
@@ -307,6 +355,7 @@ def validar_repuesto(
 
     if not isinstance(rep, dict):
         return _base('')
+    _sellar_tienda_real(rep)
     casa = _casa_sugerida(rep, marca)
     titulo = _titulo_linea(rep)
     cobrado, nota_cobrado = _precio_en_unidad(rep, _entero(rep.get('precio_unitario_clp')), titulo)

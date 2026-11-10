@@ -109,40 +109,34 @@ def _cotizaciones_de_la_conversacion(conversation_id: int) -> str:
     """Resumen de cotizaciones de este chat para no reinventar al reactivar."""
     from mecanimovilapp.apps.ordenes.models import CotizacionCanal
 
-    rows = list(
+    cotizaciones = list(
         CotizacionCanal.objects.filter(conversation_id=conversation_id)
         .exclude(estado='cancelada')
         .order_by('-actualizado_en', '-id')[:8]
-        .values('estado', 'servicio_nombre', 'total_clp', 'numero_publico', 'es_cotizacion_adicional')
     )
     from mecanimovilapp.apps.ordenes.services.consulta_casas import nota_para_agente_comercial
 
     nota_casas = nota_para_agente_comercial(conversation_id)
     contacto = Conversation.objects.filter(pk=conversation_id).select_related('external_contact').first()
     rol = getattr(getattr(contacto, 'external_contact', None), 'rol', '') if contacto else ''
-    if not rows and not nota_casas and rol != 'solo_consulta':
-        return ''
-    lineas = ['Cotizaciones ya armadas en ESTE chat (no las anuncies de nuevo salvo que el cliente pregunte o pida cambio):'] if rows else []
-    for row in rows:
-        extra = ' adicional' if row.get('es_cotizacion_adicional') else ''
-        monto = row.get('total_clp')
-        monto_txt = f' ${int(monto)}' if monto else ''
-        folio = (row.get('numero_publico') or '').strip()
-        folio_txt = f' [{folio}]' if folio else ''
-        servicio = (row.get('servicio_nombre') or 'servicio').strip()
-        lineas.append(f'- {row.get("estado")}{extra}: {servicio}{monto_txt}{folio_txt}')
-    from mecanimovilapp.apps.ordenes.models import CotizacionCanal as _CotizacionCanal
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
         decision_taller_para_agente,
+        monto_para_agente,
         resumen_para_cliente,
     )
 
-    ultima = (
-        _CotizacionCanal.objects.filter(conversation_id=conversation_id)
-        .exclude(estado='cancelada')
-        .order_by('-actualizado_en', '-id')
-        .first()
-    )
+    ultima = cotizaciones[0] if cotizaciones else None
+    if not cotizaciones and not nota_casas and rol != 'solo_consulta':
+        return ''
+    lineas = ['Cotizaciones ya armadas en ESTE chat (no las anuncies de nuevo salvo que el cliente pregunte o pida cambio):'] if cotizaciones else []
+    for cot in cotizaciones:
+        extra = ' adicional' if cot.es_cotizacion_adicional else ''
+        monto_txt = monto_para_agente(cot)
+        monto_txt = f' {monto_txt}' if monto_txt else ''
+        folio = (cot.numero_publico or '').strip()
+        folio_txt = f' [{folio}]' if folio else ''
+        servicio = (cot.servicio_nombre or 'servicio').strip()
+        lineas.append(f'- {cot.estado}{extra}: {servicio}{monto_txt}{folio_txt}')
     if ultima is not None:
         lineas.append(resumen_para_cliente(ultima))
         decision = decision_taller_para_agente(ultima)

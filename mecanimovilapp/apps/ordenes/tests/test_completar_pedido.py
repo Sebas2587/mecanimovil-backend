@@ -25,10 +25,11 @@ class CompletarPedidoEmbragueTests(SimpleTestCase):
         self.assertIn('Kit de embrague', nombres)
         self.assertNotIn('Disco de embrague', nombres)
         self.assertNotIn('Prensa de embrague', nombres)
-        self.assertIn('Aceite de caja de cambios', nombres)
-        self.assertIn('Rodamiento de volante', nombres)
-        self.assertIn('Retén trasero de cigüeñal', nombres)
+        self.assertNotIn('Aceite de caja de cambios', nombres)
+        self.assertNotIn('Rodamiento de volante', nombres)
+        self.assertNotIn('Retén trasero de cigüeñal', nombres)
         self.assertNotIn('Piola de embrague', nombres)
+        self.assertIn('kit-composicion', {d['id'] for d in contenido['dudas']})
         self.assertIn('disco', contenido['repuestos'][0]['comentario'].lower())
         self.assertEqual(contenido['servicios_lineas'][0]['nombre'], 'Cambio de embrague')
         self.assertEqual(contenido['servicios_lineas'][0]['monto_clp'], 180000)
@@ -48,9 +49,9 @@ class CompletarPedidoEmbragueTests(SimpleTestCase):
         )
         nombres = [rep['nombre'] for rep in contenido['repuestos']]
         self.assertEqual(nombres.count('Kit de embrague'), 1)
-        self.assertEqual(sum(1 for n in nombres if 'aceite' in n.lower()), 1)
-        self.assertIn('Rodamiento de volante', nombres)
-        self.assertIn('Retén trasero de cigüeñal', nombres)
+        self.assertNotIn('Aceite de caja de cambios', nombres)
+        self.assertNotIn('Rodamiento de volante', nombres)
+        self.assertNotIn('Retén trasero de cigüeñal', nombres)
         self.assertEqual(len(contenido['servicios_lineas']), 1)
 
     def test_otro_servicio_no_se_parte(self):
@@ -97,14 +98,13 @@ class PedidoEmbragueCompletoTests(SimpleTestCase):
         self.assertIn('Kit de embrague', nombres)
         self.assertIn('Piola de embrague', nombres)
         self.assertIn('Rodamiento de volante', nombres)
-        self.assertIn('Aceite de caja de cambios', nombres)
-        self.assertIn('Retén trasero de cigüeñal', nombres)
+        self.assertNotIn('Aceite de caja de cambios', nombres)
+        self.assertNotIn('Retén trasero de cigüeñal', nombres)
         self.assertNotIn('Embrague completo', nombres)
         piola = next(rep for rep in out['repuestos'] if rep['nombre'] == 'Piola de embrague')
         self.assertEqual(piola['origen'], 'pedido')
-        aceite = next(rep for rep in out['repuestos'] if 'aceite' in rep['nombre'].lower())
-        self.assertEqual(aceite['origen'], 'sugerencia')
-        self.assertEqual(aceite['estado_sugerencia'], 'pendiente')
+        rodamiento = next(rep for rep in out['repuestos'] if rep['nombre'] == 'Rodamiento de volante')
+        self.assertEqual(rodamiento['origen'], 'pedido')
         self.assertEqual(
             [(lin['nombre'], lin['monto_clp']) for lin in out['servicios_lineas']],
             [

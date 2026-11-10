@@ -304,10 +304,19 @@ def formatear_resumen_cotizacion(cotizacion: CotizacionCanal) -> str:
             )
 
             rango_rep = rango_publico_repuesto
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+            _precio_es_estimado,
+        )
+
+        hay_por_confirmar = False
         for rep in repuestos:
             nombre = rep.get('nombre', 'Repuesto')
             cant = int(rep.get('cantidad') or 1)
             precio = int(rep.get('precio_unitario_clp') or 0)
+            if _precio_es_estimado(rep):
+                hay_por_confirmar = True
+                lineas.append(f'• {nombre} x{cant}: precio por confirmar')
+                continue
             if rango_rep:
                 lo, hi = rango_rep(rep)
                 if lo > 0 and hi > 0 and lo != hi:
@@ -320,7 +329,10 @@ def formatear_resumen_cotizacion(cotizacion: CotizacionCanal) -> str:
             lineas.append(
                 f'• {nombre} x{cant} ({formatear_moneda_clp(precio)} c/u): {formatear_moneda_clp(sub)}',
             )
-        lineas.append(f'Subtotal repuestos: {formatear_moneda_clp(cotizacion.costo_repuestos_clp)}')
+        if hay_por_confirmar:
+            lineas.append('Subtotal repuestos: por confirmar')
+        else:
+            lineas.append(f'Subtotal repuestos: {formatear_moneda_clp(cotizacion.costo_repuestos_clp)}')
 
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.mano_obra_lineas import (
         mano_obra_lineas_publicas,
@@ -364,9 +376,17 @@ def formatear_resumen_cotizacion(cotizacion: CotizacionCanal) -> str:
             total_txt = formatear_moneda_clp(cotizacion.total_clp)
         lineas.append(f'*Total estimado (IVA incluido): {total_txt}*')
     else:
-        lineas.append(
-            f'*Total estimado (IVA incluido): {formatear_moneda_clp(cotizacion.total_clp)}*',
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+            _hay_duda_abierta,
+            _hay_precio_no_firme,
         )
+
+        if _hay_precio_no_firme(cotizacion) or _hay_duda_abierta(cotizacion):
+            lineas.append('*Total por confirmar con el taller*')
+        else:
+            lineas.append(
+                f'*Total estimado (IVA incluido): {formatear_moneda_clp(cotizacion.total_clp)}*',
+            )
     if cotizacion.duracion_minutos_estimada:
         lineas.append(f'Duración estimada: {cotizacion.duracion_minutos_estimada} min')
 
@@ -706,6 +726,11 @@ def aplicar_edicion_cotizacion(cotizacion: CotizacionCanal, data: dict) -> Cotiz
             cotizacion.repuestos,
             pedido_edicion,
             descartadas=list(meta_ed.get('sugerencias_descartadas') or []),
+            vehiculo={
+                'marca': cotizacion.vehiculo_marca,
+                'modelo': cotizacion.vehiculo_modelo,
+                'anio': cotizacion.vehiculo_anio,
+            },
         )
         cotizacion.repuestos = reps_ed
         cotizacion.metadata = anotar_revision_metadata(meta_ed, reps_ed, dudas_ed)

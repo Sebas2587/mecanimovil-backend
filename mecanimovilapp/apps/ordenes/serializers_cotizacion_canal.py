@@ -80,6 +80,10 @@ class RepuestoCotizacionSerializer(serializers.Serializer):
     costo_registrado_clp = serializers.IntegerField(required=False, allow_null=True, min_value=0)
     costo_origen = serializers.CharField(required=False, allow_blank=True, default='')
     origen = serializers.CharField(required=False, allow_blank=True, default='')
+    identidad = serializers.CharField(required=False, allow_blank=True, default='')
+    rol = serializers.CharField(required=False, allow_blank=True, default='')
+    precio_estimado = serializers.BooleanField(required=False, default=False)
+    ganancia_estimada = serializers.BooleanField(required=False, default=False)
     motivo_sugerencia = serializers.CharField(required=False, allow_blank=True, default='')
     estado_sugerencia = serializers.CharField(required=False, allow_blank=True, default='')
     precio_cobrado_clp = serializers.IntegerField(required=False, allow_null=True, min_value=0)
@@ -93,12 +97,12 @@ class RepuestoCotizacionSerializer(serializers.Serializer):
         default=list,
     )
     nombre_producto = serializers.CharField(required=False, allow_blank=True, default='')
-    precio_estimado = serializers.BooleanField(required=False, default=True)
     precio_referencia_mercado = serializers.BooleanField(required=False, default=False)
     comentario = serializers.CharField(required=False, allow_blank=True, default='')
     # Campos de selección inteligente de casa (PR #7)
     casa_repuesto_nombre = serializers.CharField(required=False, allow_blank=True, default='')
     motivo_seleccion = serializers.CharField(required=False, allow_blank=True, default='')
+    motivo_tienda = serializers.CharField(required=False, allow_blank=True, default='')
     alternativas_descartadas = serializers.ListField(
         child=serializers.DictField(),
         required=False,

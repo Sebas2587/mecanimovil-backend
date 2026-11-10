@@ -1103,8 +1103,16 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                     )[:200]
                 if hit.get('url'):
                     next_rep['url_producto'] = str(hit['url'])[:500]
+                motivo_tienda = str(hit.get('motivo_tienda') or '').strip()
+                if motivo_tienda:
+                    next_rep['motivo_tienda'] = motivo_tienda[:300]
+                    next_rep['motivo_seleccion'] = motivo_tienda[:300]
                 if hit.get('nombre_producto'):
                     next_rep['nombre_producto'] = str(hit['nombre_producto'])[:200]
+                if isinstance(hit.get('candidatos_envase'), list) and hit['candidatos_envase']:
+                    next_rep['candidatos_envase'] = [
+                        cand for cand in hit['candidatos_envase'] if isinstance(cand, dict)
+                    ]
                 cal_hit = str(hit.get('calidad') or '').strip().lower()
                 if cal_hit in ('original', 'oem', 'alternativo'):
                     next_rep['calidad'] = cal_hit
@@ -1306,6 +1314,20 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                 modelo=cot.vehiculo_modelo or '',
                 cilindraje=cot.vehiculo_cilindraje or '',
                 tipo_motor=cot.tipo_motor or '',
+            ) if isinstance(r, dict) else r
+            for r in (cot.repuestos or [])
+        ]
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+            aplicar_cantidad_envase,
+        )
+
+        cot.repuestos = [
+            aplicar_cantidad_envase(
+                r,
+                marca=cot.vehiculo_marca or '',
+                modelo=cot.vehiculo_modelo or '',
+                anio=cot.vehiculo_anio,
+                motor=cot.vehiculo_cilindraje or '',
             ) if isinstance(r, dict) else r
             for r in (cot.repuestos or [])
         ]

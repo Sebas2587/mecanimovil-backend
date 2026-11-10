@@ -901,7 +901,9 @@ def _aplicar_seleccion_casa_repuestos(
             )
             rep['alternativas_descartadas'] = []
             rep['consolidacion_aplicada'] = False
-        
+
+        if str(rep.get('motivo_tienda') or '').strip():
+            rep['motivo_seleccion'] = str(rep['motivo_tienda']).strip()
         repuestos_finales.append(rep)
 
     _aplicar_prioridad_de_taller(
@@ -1203,6 +1205,12 @@ def generar_cotizacion_ia(
                 },
                 taller=taller,
             )
+            from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
+                comprension_desde_pedido,
+            )
+
+            # La misma llamada. Su salida se valida con ComprensionSchema.
+            ctx['comprension_llm'] = comprension_desde_pedido(pedido_extraido)
             logger.info(
                 'generar_cotizacion_ia: extraccion_llm servicios=%d repuestos_mencionados=%d',
                 len(pedido_extraido.servicios),
@@ -1245,8 +1253,9 @@ def generar_cotizacion_ia(
                 )
 
                 contenido = completar_pedido_con_faena(
-                    solo_cat['contenido'],
+                    {**solo_cat['contenido'], 'comprension_llm': ctx.get('comprension_llm')},
                     servicio_nombre=servicio_nombre or servicio_ctx,
+                    vehiculo=ctx,
                 )
                 logger.info(
                     'generar_cotizacion_ia: catálogo completo %s %s / %s — sin Gemini/web',
@@ -1362,7 +1371,13 @@ def generar_cotizacion_ia(
             completar_pedido_con_faena,
         )
 
-        contenido = completar_pedido_con_faena(contenido, servicio_nombre=servicio_nombre)
+        contenido = completar_pedido_con_faena(
+            {**(contenido or {}), 'comprension_llm': ctx.get('comprension_llm')}
+            if isinstance(contenido, dict)
+            else contenido,
+            servicio_nombre=servicio_nombre,
+            vehiculo=ctx,
+        )
         adv = list(contenido.get('advertencias') or [])
         return {
             'disponible': True,
@@ -1391,6 +1406,8 @@ def generar_cotizacion_ia(
     if taller is not None:
         ctx = {**ctx, 'taller': taller}
     contenido = normalizar_cotizacion_ia(crudo, ctx)
+    if ctx.get('comprension_llm'):
+        contenido['comprension_llm'] = ctx['comprension_llm']
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.completar_pedido import (
         completar_pedido_con_faena,
     )
@@ -1398,6 +1415,7 @@ def generar_cotizacion_ia(
     contenido = completar_pedido_con_faena(
         contenido,
         servicio_nombre=servicio_nombre or str(contenido.get('servicio_nombre') or ''),
+        vehiculo=ctx,
     )
     if enriquecer_marketplace:
         try:

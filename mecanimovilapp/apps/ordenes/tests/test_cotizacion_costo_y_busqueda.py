@@ -98,6 +98,16 @@ class CostoGananciaRepuestosTests(TestCase):
         self.assertEqual(linea['margen_clp'], 2000)
         self.assertEqual(data['ganancia_repuestos_clp'], 2000)
 
+    def test_linea_sin_precio_estimado_no_sale_como_estimada(self):
+        cot = self._cot(repuestos=[{
+            'nombre': 'Pastillas',
+            'cantidad': 1,
+            'precio_unitario_clp': 10000,
+        }], token='tok-sin-precio-estimado')
+        resp = self.client.get(f'/api/ordenes/cotizaciones-canal/{cot.id}/?sin_retry=1')
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertIs(resp.json()['repuestos'][0]['precio_estimado'], False)
+
     def test_linea_manual_sin_costo_no_inventa_ganancia(self):
         """Sin costo guardado, el precio cobrado no se trata como costo."""
         cot = self._cot(repuestos=[{
