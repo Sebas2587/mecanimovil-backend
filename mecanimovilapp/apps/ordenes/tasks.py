@@ -1309,6 +1309,20 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
             ) if isinstance(r, dict) else r
             for r in (cot.repuestos or [])
         ]
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+            aplicar_cantidad_envase,
+        )
+
+        cot.repuestos = [
+            aplicar_cantidad_envase(
+                r,
+                marca=cot.vehiculo_marca or '',
+                modelo=cot.vehiculo_modelo or '',
+                anio=cot.vehiculo_anio,
+                motor=cot.vehiculo_cilindraje or '',
+            ) if isinstance(r, dict) else r
+            for r in (cot.repuestos or [])
+        ]
 
         # Aplicar selección de casa y consolidación DESPUÉS del enriquecimiento web
         try:

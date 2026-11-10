@@ -45,6 +45,18 @@ _IDENTIDADES: tuple[dict[str, Any], ...] = (
         ),
     },
     {
+        'id': 'flexible_embrague',
+        'rol': ROL_REPUESTO,
+        'nombre': 'Flexible de embrague',
+        'marcadores': ('flexible de embrague', 'flexible embrague', 'manguera de embrague'),
+    },
+    {
+        'id': 'horquilla_embrague',
+        'rol': ROL_REPUESTO,
+        'nombre': 'Horquilla de embrague',
+        'marcadores': ('horquilla de embrague', 'horquilla embrague', 'horquilla'),
+    },
+    {
         'id': 'piola_embrague',
         'rol': ROL_REPUESTO,
         'nombre': 'Piola de embrague',
@@ -56,7 +68,7 @@ _IDENTIDADES: tuple[dict[str, Any], ...] = (
         'nombre': 'Rodamiento de volante',
         'marcadores': (
             'rodamiento de volante', 'rodamiento volante', 'rodamiento piloto',
-            'rodamiento de piloto', 'ruleman piloto', 'ruleman',
+            'rodamiento de piloto', 'ruleman piloto', 'ruleman', 'piloto',
         ),
     },
     {
@@ -96,7 +108,7 @@ _FICHAS = (
             'litros': '2.5',
             'origen': 'Referencia de caja manual Renault 1.6. Confirmar litros en la varilla.',
         },
-        'liquido_frenos': {'especificacion': 'DOT4'},
+        'liquido_frenos': {'especificacion': 'DOT4', 'litros': '1'},
     },
 )
 
@@ -137,6 +149,17 @@ def norm(texto: str) -> str:
     return re.sub(r'\s+', ' ', plano).strip()
 
 
+def _es_solo_el_kit(n: str) -> bool:
+    if 'sistema' in n or 'embrague' not in n and 'clutch' not in n:
+        return False
+    ruido = {
+        'de', 'del', 'la', 'el', 'y', 'cambio', 'cambios', 'repuesto', 'repuestos',
+        'embrague', 'clutch', 'kit',
+    }
+    resto = [t for t in n.split() if t not in ruido and not t.isdigit()]
+    return not resto
+
+
 def identidad_de(texto: str) -> str:
     """Id de la pieza, o vacío si el texto no nombra una pieza concreta."""
     if es_sistema(texto):
@@ -153,7 +176,9 @@ def identidad_de(texto: str) -> str:
                 largo = len(marca)
     if mejor:
         return mejor
-    if ('embrague' in n or 'clutch' in n) and 'sistema' not in n:
+    # Solo «embrague» o «cambio de embrague», sin otro sustantivo, es el kit.
+    # «Flexible de embrague» no cae aquí: ya tiene identidad propia.
+    if _es_solo_el_kit(n):
         return 'kit_embrague'
     return ''
 
@@ -274,18 +299,66 @@ def faenas_de(texto: str, identidades: list[str]) -> list[str]:
     return titulos
 
 
+_RUIDO_VEHICULO = {
+    'renault', 'oroch', 'suzuki', 'toyota', 'hyundai', 'kia', 'chevrolet',
+    'nissan', 'ford', 'volkswagen', 'mazda', 'peugeot', 'citroen', 'fiat',
+    'honda', 'mitsubishi', 'chery', 'jeep', 'bmw', 'mercedes', 'audi',
+    'volvo', 'subaru', 'patente', 'motor', 'ano', 'anio', 'modelo', 'marca',
+    'bencina', 'diesel', 'gasolina', 'manual', 'automatico', 'mecanico',
+}
+_SOLO_FAENA = {
+    'purgar', 'purga', 'revisar', 'revision', 'diagnostico', 'diagnosticar',
+    'de', 'del', 'el', 'la', 'y', 'sistema',
+}
+
+
+def _es_preambulo(texto: str) -> bool:
+    """Marca, modelo, año o patente. No es una pieza."""
+    n = norm(texto)
+    if not n:
+        return True
+    utiles = []
+    for token in n.split():
+        if token in _RUIDO_VEHICULO or token.isdigit() or re.fullmatch(r'[a-z]{2,4}\d{2,4}', token):
+            continue
+        utiles.append(token)
+    return not utiles
+
+
 def piezas_del_pedido(texto: str) -> list[dict[str, str]]:
-    """Ítems atómicos del texto. Cada uno con su identidad."""
+    """Ítems atómicos del texto. Cada uno con su identidad.
+
+    Lo que no entra en la taxonomía queda como pieza sin clasificar.
+    No se tira y no se fusiona con el kit.
+    """
     vistos: list[str] = []
+    libres: list[str] = []
     items: list[dict[str, str]] = []
     for trozo in _trozos(texto):
-        if es_sistema(trozo):
+        if es_sistema(trozo) or _es_preambulo(trozo):
             continue
         ident = identidad_de(trozo)
-        if not ident or ident in vistos:
-            continue
-        # «reten» suelto dentro de otra frase no debe robar el pedido.
         if ident == 'reten_ciguenal' and 'reten' not in norm(trozo):
+            continue
+        if not ident:
+            n = norm(trozo)
+            if not n or all(token in _SOLO_FAENA for token in n.split()):
+                continue
+            if re.match(
+                r'^(cambio|revision|servicio|diagnostico|mantenimiento|mantencion)\b',
+                n,
+            ):
+                continue
+            if n in libres:
+                continue
+            libres.append(n)
+            items.append({
+                'identidad': 'sin_clasificar',
+                'rol': ROL_REPUESTO,
+                'nombre': trozo.strip(),
+            })
+            continue
+        if ident in vistos:
             continue
         vistos.append(ident)
         items.append({
@@ -304,8 +377,10 @@ def validar_comprension(payload: dict | None) -> dict[str, Any]:
         raise ValueError(str(exc)) from exc
     vistos: set[str] = set()
     for item in data.items:
-        if item.identidad not in _POR_ID and item.rol != 'duda':
+        if item.identidad not in _POR_ID and item.identidad != 'sin_clasificar':
             raise ValueError(f'identidad desconocida: {item.identidad}')
+        if item.identidad == 'sin_clasificar':
+            continue
         if item.identidad in vistos:
             raise ValueError(f'identidad repetida: {item.identidad}')
         vistos.add(item.identidad)
@@ -330,11 +405,41 @@ def comprender_pedido(texto: str, vehiculo: dict | None = None, respuesta_llm: d
             'texto': 'Una frase de sistema no es un repuesto. Quedó como mano de obra o como duda.',
             'confirmada': False,
         })
+    for item in items:
+        if item.get('identidad') != 'sin_clasificar':
+            continue
+        dudas.append({
+            'id': f"pieza-{norm(item.get('nombre') or '').replace(' ', '-')}"[:48],
+            'texto': (
+                f"No clasifiqué «{item.get('nombre')}». Quedó como pieza aparte: "
+                'no se descartó ni se unió con otra.'
+            ),
+            'confirmada': False,
+        })
     return {
         'items': items,
         'faenas': faenas_de(texto, [item['identidad'] for item in items]),
         'dudas': dudas,
     }
+
+
+def comprension_desde_pedido(pedido) -> dict[str, Any]:
+    """La extracción que ya hace el generador, validada con el schema.
+
+    No llama al modelo. Toma PedidoExtraido (la llamada existente
+    extraer_pedido_con_llm) y lo pasa por validar_comprension.
+    """
+    nombres = []
+    for rep in getattr(pedido, 'repuestos_mencionados', None) or []:
+        nombre = str(getattr(rep, 'nombre', '') or '').strip()
+        if nombre:
+            nombres.append(nombre)
+    for servicio in getattr(pedido, 'servicios', None) or []:
+        nombre = str(getattr(servicio, 'nombre', '') or '').strip()
+        if nombre:
+            nombres.append(nombre)
+    base = comprender_pedido(', '.join(nombres))
+    return validar_comprension(base)
 
 
 def separar_precios_copiados(repuestos: list) -> list[dict]:

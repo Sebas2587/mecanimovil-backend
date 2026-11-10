@@ -120,19 +120,10 @@ def _cotizaciones_de_la_conversacion(conversation_id: int) -> str:
     nota_casas = nota_para_agente_comercial(conversation_id)
     contacto = Conversation.objects.filter(pk=conversation_id).select_related('external_contact').first()
     rol = getattr(getattr(contacto, 'external_contact', None), 'rol', '') if contacto else ''
-    if not rows and not nota_casas and rol != 'solo_consulta':
-        return ''
-    lineas = ['Cotizaciones ya armadas en ESTE chat (no las anuncies de nuevo salvo que el cliente pregunte o pida cambio):'] if rows else []
-    for row in rows:
-        extra = ' adicional' if row.get('es_cotizacion_adicional') else ''
-        monto = row.get('total_clp')
-        monto_txt = f' ${int(monto)}' if monto else ''
-        folio = (row.get('numero_publico') or '').strip()
-        folio_txt = f' [{folio}]' if folio else ''
-        servicio = (row.get('servicio_nombre') or 'servicio').strip()
-        lineas.append(f'- {row.get("estado")}{extra}: {servicio}{monto_txt}{folio_txt}')
     from mecanimovilapp.apps.ordenes.models import CotizacionCanal as _CotizacionCanal
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+        _hay_duda_abierta,
+        _hay_precio_no_firme,
         decision_taller_para_agente,
         resumen_para_cliente,
     )
@@ -143,6 +134,22 @@ def _cotizaciones_de_la_conversacion(conversation_id: int) -> str:
         .order_by('-actualizado_en', '-id')
         .first()
     )
+    ocultar_monto = bool(
+        ultima is not None and (
+            _hay_precio_no_firme(ultima) or _hay_duda_abierta(ultima)
+        )
+    )
+    if not rows and not nota_casas and rol != 'solo_consulta':
+        return ''
+    lineas = ['Cotizaciones ya armadas en ESTE chat (no las anuncies de nuevo salvo que el cliente pregunte o pida cambio):'] if rows else []
+    for row in rows:
+        extra = ' adicional' if row.get('es_cotizacion_adicional') else ''
+        monto = row.get('total_clp')
+        monto_txt = '' if ocultar_monto else (f' ${int(monto)}' if monto else '')
+        folio = (row.get('numero_publico') or '').strip()
+        folio_txt = f' [{folio}]' if folio else ''
+        servicio = (row.get('servicio_nombre') or 'servicio').strip()
+        lineas.append(f'- {row.get("estado")}{extra}: {servicio}{monto_txt}{folio_txt}')
     if ultima is not None:
         lineas.append(resumen_para_cliente(ultima))
         decision = decision_taller_para_agente(ultima)

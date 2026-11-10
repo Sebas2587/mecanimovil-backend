@@ -67,12 +67,32 @@ def _plan_determinista(servicio: str, descripcion: str, veh: dict[str, Any]) -> 
 
 
 def _plan_embrague(texto: str, auto: str, veh: dict[str, Any]) -> dict[str, Any]:
-    del veh
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
+        ficha_vehiculo,
+        norm,
+    )
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
         piezas_para_busqueda,
     )
 
-    return piezas_para_busqueda(texto, auto)
+    plan = piezas_para_busqueda(texto, auto)
+    ficha = ficha_vehiculo(veh) or {}
+    aceite = ficha.get('aceite_caja') or {}
+    liquido = ficha.get('liquido_frenos') or {}
+    for pieza in plan.get('piezas') or []:
+        nombre = str(pieza.get('nombre') or '')
+        clave = norm(nombre)
+        if 'aceite' in clave and 'caja' in clave and aceite:
+            pieza['consulta'] = (
+                f"aceite caja {aceite.get('especificacion') or ''} "
+                f"{aceite.get('litros') or ''} litros {auto}"
+            ).strip()[:180]
+        elif 'liquido' in clave and 'freno' in clave and liquido:
+            if liquido:
+                pieza['consulta'] = (
+                    f"liquido frenos {liquido.get('especificacion') or ''} {auto}"
+                ).strip()[:180]
+    return plan
 
 
 def _plan_desde_frases(texto: str, auto: str, veh: dict[str, Any]) -> dict[str, Any]:

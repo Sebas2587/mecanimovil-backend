@@ -415,6 +415,87 @@ def litros_envase(titulo: str) -> float:
     return mejor
 
 
+def _respeta_especificacion(texto: str, spec: str) -> bool:
+    """75W-80 no acepta un 5W-30. DOT4 no acepta un DOT3."""
+    pedido = _norm(spec).replace(' ', '').replace('-', '')
+    ficha = _norm(texto).replace(' ', '').replace('-', '')
+    if not pedido:
+        return True
+    viscosidad = re.search(r'(\d{1,2})w(\d{2})', pedido)
+    if viscosidad:
+        token = f'{viscosidad.group(1)}w{viscosidad.group(2)}'
+        if token not in ficha:
+            return False
+    if 'dot4' in pedido and 'dot4' not in ficha:
+        return False
+    if 'dot3' in pedido and 'dot4' not in pedido and 'dot3' not in ficha:
+        return False
+    return True
+
+
+def aplicar_cantidad_envase(
+    rep: dict[str, Any],
+    *,
+    marca: str = '',
+    modelo: str = '',
+    anio: Any = None,
+    motor: str = '',
+) -> dict[str, Any]:
+    """Cuántos envases compran los litros pedidos. El precio queda por envase.
+
+    Aceite de caja 75W-80, 2.5 L, bidón de 1 L → cantidad 3 al precio del bidón.
+    Un envase de 4 L → cantidad 1, sin partir el precio. DOT4 igual.
+    """
+    import math
+
+    if not isinstance(rep, dict):
+        return rep
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
+        ficha_vehiculo,
+        identidad_de,
+    )
+
+    ident = str(rep.get('identidad') or '') or identidad_de(str(rep.get('nombre') or ''))
+    if ident not in ('aceite_caja', 'liquido_frenos'):
+        return rep
+    ficha = ficha_vehiculo({
+        'marca': marca,
+        'modelo': modelo,
+        'anio': anio,
+        'motor': motor,
+    }) or {}
+    if ident == 'aceite_caja':
+        necesarios = _litros_texto((ficha.get('aceite_caja') or {}).get('litros'))
+    else:
+        necesarios = _litros_texto((ficha.get('liquido_frenos') or {}).get('litros'))
+    if necesarios <= 0:
+        necesarios = _litros_texto(str(rep.get('especificacion') or ''))
+    titulo = str(rep.get('nombre_producto') or '').strip()
+    if not titulo:
+        titulo = str(rep.get('especificacion') or '')
+    envase = litros_envase(titulo)
+    if envase <= 0 or necesarios <= 0:
+        return rep
+    rep['cantidad'] = max(1, math.ceil(necesarios / envase - 1e-9))
+    return rep
+
+
+def _litros_texto(texto: Any) -> float:
+    crudo = str(texto or '').strip().replace(',', '.')
+    marcado = re.search(r'(\d+(?:\.\d+)?)\s*l\b', crudo, re.I)
+    if marcado:
+        try:
+            return float(marcado.group(1))
+        except ValueError:
+            return 0.0
+    if re.fullmatch(r'\d+(?:\.\d+)?', crudo):
+        try:
+            return float(crudo)
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
 def precio_unitario_desde_envase(nombre: str, precio_ficha: int, titulo: str) -> tuple[int, str]:
     """Un bidón de 4 L no es el precio de 1 L. El aceite se cotiza por litro."""
     precio = int(precio_ficha or 0)
@@ -1170,6 +1251,8 @@ def _ficha_cubre_pieza(nombre_linea: str, titulo_ficha: str) -> bool:
         or ficha_piloto
         or ficha_piola
         or ('embrague' in ficha and 'aceite' not in ficha)
+        or ('motor' in ficha and 'caja' not in ficha and 'transmision' not in ficha)
+        or ('caja' not in ficha and 'transmision' not in ficha and 'cambios' not in ficha)
     ):
         return False
     if _es_piola_embrague(linea):
@@ -2442,6 +2525,14 @@ def _banda_precio_linea(nombre: str) -> tuple[int, int]:
         return _BANDA_PIOLA_EMBRAGUE
     if _es_aceite_caja(n):
         return _BANDAS_CATEGORIA['aceites']
+    if any(k in n for k in ('bomba', 'cilindro', 'bombin')) and any(
+        k in n for k in ('embrague', 'clutch')
+    ):
+        return (8_000, 90_000)
+    if 'flexible' in n or 'horquilla' in n:
+        return (4_000, 80_000)
+    if 'liquido' in n and 'freno' in n:
+        return (1_500, 40_000)
     if any(k in n for k in ('embrague', 'clutch')):
         if _linea_es_kit(nombre):
             return _BANDA_KIT_EMBRAGUE
@@ -4005,6 +4096,9 @@ def _buscar_repuestos_web_tavily(
                     banda_max=_techo(nombre),
                 )
                 and _titulo_nombra_pieza(nombre, str(c.get('title') or ''))
+                and _respeta_especificacion(
+                    f"{c.get('title') or ''} {c.get('content') or ''}", spec,
+                )
                 and _precio_desde_texto(c.get('content') or '', nombre) > 0
             ]
             if sirven_casa:
@@ -4137,6 +4231,12 @@ def _buscar_repuestos_web_tavily(
             banda_min=_piso(nombre),
             banda_max=_techo(nombre),
         )
+        servir = [
+            cand for cand in servir
+            if _respeta_especificacion(
+                f"{cand.get('title') or ''} {cand.get('content') or ''}", spec,
+            )
+        ]
         cupo_por_nombre[nombre] = [str(c.get('url') or '') for c in servir if c.get('url')]
         if servir:
             for cand in servir:

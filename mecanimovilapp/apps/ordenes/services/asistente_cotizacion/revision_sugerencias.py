@@ -64,10 +64,22 @@ def aplicar_pedido_y_sugerencias(
     if not _toca_embrague(pedido) and not _toca_embrague(_nombres(reps)):
         for rep in reps:
             _marcar_pedido(rep)
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
+            piezas_del_pedido,
+        )
+
+        for item in piezas_del_pedido(pedido):
+            nombre = item['nombre']
+            if _ya(reps, nombre):
+                continue
+            reps.append(_linea(nombre, origen=ORIGEN_PEDIDO, motivo='', estado=ESTADO_ACEPTADA))
         data['repuestos'] = reps
+        sueltas = _dudas_pieza_suelta(reps)
+        if sueltas:
+            data['dudas'] = sueltas
         return data
 
-    pedidos = _piezas_pedidas(pedido)
+    pedidos = _pedidos_con_llm(pedido, data)
     reps = _quedarse_con_pedidas(reps, pedidos)
     for nombre in pedidos:
         if _ya(reps, nombre):
@@ -116,7 +128,17 @@ def proponer_complementos(
         if isinstance(rep, dict) and not rep.get('origen'):
             _marcar_pedido(rep)
     if not _toca_embrague(pedido):
-        return reps, []
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
+            piezas_del_pedido,
+        )
+
+        for item in piezas_del_pedido(pedido):
+            nombre = item['nombre']
+            if _ya(reps, nombre):
+                _forzar_pedido(reps, nombre)
+                continue
+            reps.append(_linea(nombre, origen=ORIGEN_PEDIDO, motivo='', estado=ESTADO_ACEPTADA))
+        return reps, _dudas_pieza_suelta(reps)
     pedidos = _piezas_pedidas(pedido)
     bloqueadas = {_norm(n) for n in (descartadas or [])}
     for nombre in pedidos:
@@ -188,6 +210,11 @@ def resumen_para_cliente(cotizacion) -> str:
         texto += (
             ' Hay sugerencias en revisión del taller: no las menciones, '
             'no las prometas y no las sumes al precio.'
+        )
+    if _hay_precio_no_firme(cotizacion) or _hay_duda_abierta(cotizacion):
+        texto += (
+            ' No des un precio cerrado. Hay un precio estimado o una duda sin confirmar: '
+            'no lo presentes como firme y no comentes la duda al cliente.'
         )
     return texto
 
@@ -452,6 +479,58 @@ def _texto_pedido(*partes: str) -> str:
     return texto
 
 
+def _hay_precio_no_firme(cotizacion) -> bool:
+    for rep in getattr(cotizacion, 'repuestos', None) or []:
+        if not isinstance(rep, dict) or not linea_visible_cliente(rep):
+            continue
+        if int(rep.get('precio_unitario_clp') or 0) <= 0:
+            continue
+        if _precio_es_estimado(rep):
+            return True
+    return False
+
+
+def _hay_duda_abierta(cotizacion) -> bool:
+    meta = getattr(cotizacion, 'metadata', None) or {}
+    for duda in meta.get('dudas') or []:
+        if isinstance(duda, dict) and not duda.get('confirmada'):
+            return True
+    return False
+
+
+def _dudas_pieza_suelta(reps: list) -> list[dict]:
+    dudas = []
+    for rep in reps:
+        if not isinstance(rep, dict) or rep.get('identidad') != 'sin_clasificar':
+            continue
+        nombre = str(rep.get('nombre') or '')
+        dudas.append({
+            'id': f'pieza-{_norm(nombre).replace(" ", "-")}'[:48],
+            'texto': (
+                f'No clasifiqué «{nombre}». Quedó como pieza aparte: '
+                'no se descartó ni se unió con otra.'
+            ),
+            'confirmada': False,
+        })
+    return dudas
+
+
+def _pedidos_con_llm(pedido: str, data: dict | None) -> list[str]:
+    """Taxonomía del texto, más lo que la extracción ya validada nombró."""
+    pedidos = _piezas_pedidas(pedido)
+    comp = (data or {}).get('comprension_llm') if isinstance(data, dict) else None
+    for item in (comp or {}).get('items') or []:
+        if not isinstance(item, dict):
+            continue
+        nombre = str(item.get('nombre') or '').strip()
+        if not nombre:
+            continue
+        canon = nombre if item.get('identidad') == 'sin_clasificar' else (_canon(nombre) or nombre)
+        if not any(_norm(p) == _norm(canon) for p in pedidos):
+            pedidos.append(canon)
+    return pedidos
+
+
 def _piezas_pedidas(pedido: str) -> list[str]:
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
         es_sistema,
@@ -570,7 +649,10 @@ def _faena_de_pieza(nombre: str) -> str:
 
 def _es_faena_kit(mano: str) -> bool:
     n = _norm(mano)
-    if any(k in n for k in ('bomba', 'liquido', 'piola', 'guaya', 'cable')):
+    if any(k in n for k in (
+        'bomba', 'liquido', 'piola', 'guaya', 'cable', 'cilindro', 'bombin',
+        'aceite', 'flexible', 'horquilla', 'manguera',
+    )):
         return False
     return 'embrague' in n or 'clutch' in n or 'kit' in n
 
@@ -609,6 +691,15 @@ def _dudas(reps: list, pedido: str, *, kit_visto: dict | None) -> list[dict]:
                 'texto': (
                     f'El precio de {nombre} es estimado, sin ficha de tienda. '
                     'Confírmalo o ingrésalo antes de enviar.'
+                ),
+                'confirmada': False,
+            })
+        if rep.get('identidad') == 'sin_clasificar':
+            dudas.append({
+                'id': f'pieza-{_norm(nombre).replace(" ", "-")}'[:48],
+                'texto': (
+                    f'No clasifiqué «{nombre}». Quedó como pieza aparte: '
+                    'no se descartó ni se unió con otra.'
                 ),
                 'confirmada': False,
             })
@@ -683,10 +774,10 @@ def _linea(nombre: str, *, origen: str, motivo: str, estado: str) -> dict:
         rol_de,
     )
 
-    ident = identidad_de(nombre)
+    ident = identidad_de(nombre) or 'sin_clasificar'
     fila = {
         'identidad': ident,
-        'rol': rol_de(ident),
+        'rol': rol_de(ident) or 'repuesto',
         'nombre': nombre,
         'cantidad': 1,
         'precio_unitario_clp': 0,
@@ -830,6 +921,10 @@ def _canon(nombre: str) -> str:
         return 'Líquido de frenos'
     if 'aceite' in n and ('caja' in n or 'transmision' in n):
         return 'Aceite de caja de cambios'
+    if 'flexible' in n or ('manguera' in n and ('embrague' in n or 'clutch' in n)):
+        return 'Flexible de embrague'
+    if 'horquilla' in n:
+        return 'Horquilla de embrague'
     if 'piloto' in n or ('rodamiento' in n and 'volante' in n) or 'ruleman' in n:
         return 'Rodamiento de volante'
     if 'reten' in n or 'ciguenal' in n:
