@@ -901,7 +901,9 @@ def _aplicar_seleccion_casa_repuestos(
             )
             rep['alternativas_descartadas'] = []
             rep['consolidacion_aplicada'] = False
-        
+
+        if str(rep.get('motivo_tienda') or '').strip():
+            rep['motivo_seleccion'] = str(rep['motivo_tienda']).strip()
         repuestos_finales.append(rep)
 
     _aplicar_prioridad_de_taller(

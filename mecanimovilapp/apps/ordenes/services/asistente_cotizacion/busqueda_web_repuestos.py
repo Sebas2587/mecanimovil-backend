@@ -3794,6 +3794,195 @@ def _candidatos_de_linea(
     return []
 
 
+def umbral_otra_tienda() -> float:
+    """Fracción de ahorro que justifica salir de la tienda principal.
+
+    0.25 significa que la otra ficha válida cuesta al menos un 25% menos.
+    """
+    try:
+        valor = float(getattr(settings, 'COTIZACION_UMBRAL_OTRA_TIENDA', 0.25))
+    except (TypeError, ValueError):
+        valor = 0.25
+    if valor < 0:
+        return 0.0
+    return min(valor, 1.0)
+
+
+def _opciones_validas_linea(
+    nombre: str,
+    candidatos: list[dict[str, Any]],
+    *,
+    anio: Any,
+    cilindraje: Any,
+    modelo: str,
+    tipo_motor: str,
+    piso: int,
+    techo: int,
+    especificacion: str,
+) -> list[tuple[dict[str, Any], int]]:
+    """Fichas ya leídas que sí son esta pieza, con precio y enlace."""
+    vistas: set[str] = set()
+    validas: list[tuple[dict[str, Any], int]] = []
+    for cand in candidatos or []:
+        if not isinstance(cand, dict):
+            continue
+        url = str(cand.get('url') or '').strip()
+        if not url or url in vistas:
+            continue
+        precio = _precio_de_candidato(cand, nombre)
+        if not _precio_plausible_para_linea(nombre, precio):
+            continue
+        if not _candidato_sirve_linea(
+            nombre, cand, anio=anio, cilindraje=cilindraje, modelo=modelo,
+            tipo_motor=tipo_motor, banda_min=piso, banda_max=techo,
+        ):
+            continue
+        if not _titulo_nombra_pieza(nombre, str(cand.get('title') or '')):
+            continue
+        ficha = f"{cand.get('title') or ''} {cand.get('content') or ''}"
+        if not _respeta_especificacion(ficha, especificacion):
+            continue
+        vistas.add(url)
+        validas.append((cand, precio))
+    return validas
+
+
+def consolidar_candidatos_por_tienda(
+    candidatos_por_nombre: dict[str, list[dict[str, Any]]],
+    *,
+    crudos_por_nombre: dict[str, list[dict[str, Any]]] | None = None,
+    anio: Any = None,
+    cilindraje: Any = None,
+    modelo: str = '',
+    tipo_motor: str = '',
+    bandas_min: dict[str, int] | None = None,
+    bandas_max: dict[str, int] | None = None,
+    especificaciones: dict[str, str] | None = None,
+) -> int:
+    """Deja el pedido en una tienda cuando esa tienda ya tiene las fichas.
+
+    No llama a Tavily ni a un modelo. Las fichas salen de la búsqueda que
+    cada pieza ya hizo. Si la tienda principal no aparece en esos resultados,
+    no se consulta su sitio: eso sería una búsqueda web de pago. Devuelve
+    cuántas consultas extra se evitaron (el costo nuevo es siempre 0).
+    """
+    if not candidatos_por_nombre:
+        return 0
+    especificaciones = especificaciones or {}
+    crudos_por_nombre = crudos_por_nombre or {}
+    opciones: dict[str, list[tuple[dict[str, Any], int]]] = {}
+    for nombre, candidatos in candidatos_por_nombre.items():
+        pool = list(candidatos or [])
+        pool.extend(crudos_por_nombre.get(nombre) or [])
+        validas = _opciones_validas_linea(
+            nombre,
+            pool,
+            anio=anio,
+            cilindraje=cilindraje,
+            modelo=modelo,
+            tipo_motor=tipo_motor,
+            piso=_banda_min_de(bandas_min, nombre),
+            techo=_banda_min_de(bandas_max, nombre),
+            especificacion=str(especificaciones.get(nombre) or ''),
+        )
+        if validas:
+            opciones[nombre] = validas
+    if len(opciones) < 2:
+        return 0
+
+    cobertura: dict[str, set[str]] = {}
+    mejor: dict[tuple[str, str], tuple[dict[str, Any], int]] = {}
+    for nombre, validas in opciones.items():
+        por_tienda: dict[str, tuple[dict[str, Any], int]] = {}
+        for cand, precio in validas:
+            tienda = _sld_host(_dominio_de_url(str(cand.get('url') or '')))
+            if not tienda:
+                continue
+            previa = por_tienda.get(tienda)
+            if previa is None or precio < previa[1]:
+                por_tienda[tienda] = (cand, precio)
+        for tienda, par in por_tienda.items():
+            cobertura.setdefault(tienda, set()).add(nombre)
+            mejor[(tienda, nombre)] = par
+
+    n = len(opciones)
+    mayoria = n // 2 + 1
+    elegibles = [tienda for tienda, lineas in cobertura.items() if len(lineas) >= mayoria]
+    if not elegibles:
+        logger.info(
+            'busqueda_web_repuestos[consolidar] sin_mayoria lineas=%s consultas_web_extra=0',
+            n,
+        )
+        return 0
+
+    def _rango(tienda: str) -> tuple[int, int, int]:
+        lineas = cobertura[tienda]
+        especialista = 0
+        for nombre in lineas:
+            if _es_de_especialista(mejor[(tienda, nombre)][0]):
+                especialista = 1
+                break
+        total = sum(mejor[(tienda, nombre)][1] for nombre in lineas)
+        return (-len(lineas), -especialista, total)
+
+    principal = min(elegibles, key=_rango)
+    muestra = next(iter(cobertura[principal]))
+    cand_muestra = mejor[(principal, muestra)][0]
+    nombre_principal = _tienda_de_ficha(
+        str(cand_muestra.get('url') or ''),
+        str(cand_muestra.get('title') or ''),
+    ) or principal
+    umbral = umbral_otra_tienda()
+    evitadas = 0
+
+    def _al_frente(nombre: str, cand: dict[str, Any]) -> None:
+        lista = list(candidatos_por_nombre.get(nombre) or [])
+        resto = [otro for otro in lista if otro is not cand and otro.get('url') != cand.get('url')]
+        candidatos_por_nombre[nombre] = [cand, *resto]
+
+    for nombre, validas in opciones.items():
+        for cand, _precio in validas:
+            cand.pop('motivo_tienda', None)
+        en_principal = mejor.get((principal, nombre))
+        otras = []
+        for cand, precio in validas:
+            tienda = _sld_host(_dominio_de_url(str(cand.get('url') or '')))
+            if not tienda or tienda == principal:
+                continue
+            visible = _tienda_de_ficha(str(cand.get('url') or ''), str(cand.get('title') or '')) or tienda
+            otras.append((precio, cand, visible))
+        otras.sort(key=lambda item: item[0])
+        if en_principal is None:
+            evitadas += 1
+            if not otras:
+                continue
+            _precio, cand, _visible = otras[0]
+            cand['motivo_tienda'] = f'no disponible en {nombre_principal}'
+            _al_frente(nombre, cand)
+            continue
+        cand_principal, precio_principal = en_principal
+        if otras and precio_principal > 0 and otras[0][0] > 0:
+            precio_otra, cand_otra, tienda_otra = otras[0]
+            if precio_otra < precio_principal:
+                baja = (precio_principal - precio_otra) / precio_principal
+                if baja + 1e-9 >= umbral:
+                    pct = int(round(baja * 100))
+                    cand_otra['motivo_tienda'] = f'{pct}% más barato en {tienda_otra}'
+                    _al_frente(nombre, cand_otra)
+                    continue
+        _al_frente(nombre, cand_principal)
+
+    logger.info(
+        'busqueda_web_repuestos[consolidar] tienda=%s lineas=%s umbral=%s '
+        'consultas_web_extra=0 evitadas=%s',
+        nombre_principal,
+        n,
+        umbral,
+        evitadas,
+    )
+    return evitadas
+
+
 def _hits_desde_candidatos(
     candidatos_por_nombre: dict[str, list[dict[str, str]]],
     tokens_veh,
@@ -3858,6 +4047,9 @@ def _hits_desde_candidatos(
             hit['calidad'] = attrs['calidad']
         if attrs['pais_origen']:
             hit['pais_origen'] = attrs['pais_origen']
+        motivo_tienda = str(candidato.get('motivo_tienda') or '').strip()
+        if motivo_tienda:
+            hit['motivo_tienda'] = motivo_tienda
         out[clave] = hit
     return out
 
@@ -4449,6 +4641,17 @@ def _buscar_repuestos_web_tavily(
 
     _sellar_lista_negra()
 
+    consolidar_candidatos_por_tienda(
+        candidatos_por_nombre,
+        crudos_por_nombre=crudos_por_nombre,
+        anio=anio,
+        cilindraje=cilindraje,
+        modelo=modelo,
+        tipo_motor=tipo_motor,
+        bandas_min=pisos_unidad,
+        bandas_max=techos_unidad,
+        especificaciones=especificaciones,
+    )
     preliminar = _hits_desde_candidatos(
         candidatos_por_nombre,
         tokens_veh,

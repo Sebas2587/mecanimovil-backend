@@ -536,3 +536,219 @@ class PreciosPropiosTests(SimpleTestCase):
         self.assertIn('No des un precio cerrado', resumen)
         self.assertNotIn('10000', resumen)
         self.assertNotIn('secreto', resumen)
+
+
+class ConsolidacionTiendaTests(SimpleTestCase):
+    """Una tienda que tiene el pedido se queda con las piezas, salvo falta o precio."""
+
+    def _buscar(self, nombres, catalogo, especificaciones=None):
+        from unittest.mock import patch
+
+        from django.test.utils import override_settings
+
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion import (
+            busqueda_web_repuestos as bw,
+        )
+
+        def fake(_query, _whitelist):
+            return [dict(cand) for cand in catalogo]
+
+        with override_settings(TAVILY_API_KEY='tvly-test', GEMINI_API_KEY='k'), patch.object(
+            bw, '_candidatos_validos', side_effect=fake,
+        ), patch.object(
+            bw, '_leer_html_fichas', return_value={},
+        ), patch.object(
+            bw, '_tavily_extraer', return_value=[],
+        ), patch.object(
+            bw, '_gemini_generar', return_value=None,
+        ):
+            return bw._buscar_repuestos_web_tavily(
+                nombres,
+                marca='Renault',
+                modelo='Oroch',
+                anio=2019,
+                cilindraje='2.0',
+                tipo_motor='',
+                servicio_nombre='Cambio de kit de embrague',
+                timeout=5,
+                especificaciones=especificaciones or {},
+            )
+
+    def test_una_tienda_con_todo_se_queda_el_pedido(self):
+        catalogo = [
+            {
+                'url': 'https://www.tiendaunica.cl/kit-oroch',
+                'title': 'Kit de embrague Renault Oroch 2019',
+                'content': 'Precio: $89.000',
+            },
+            {
+                'url': 'https://www.barata.cl/bomba-oroch',
+                'title': 'Bomba de embrague Renault Oroch 2019',
+                'content': 'Precio: $27.500',
+            },
+            {
+                'url': 'https://www.tiendaunica.cl/bomba-oroch',
+                'title': 'Bomba de embrague Renault Oroch 2019',
+                'content': 'Precio: $28.990',
+            },
+            {
+                'url': 'https://www.tiendaunica.cl/cilindro-oroch',
+                'title': 'Cilindro receptor de embrague Renault Oroch 2019',
+                'content': 'Precio: $18.990',
+            },
+            {
+                'url': 'https://www.tiendaunica.cl/aceite-caja',
+                'title': 'Aceite de caja 75W-80 1 litro',
+                'content': 'Precio: $8.990',
+            },
+        ]
+        hits = self._buscar(
+            ['Kit de embrague', 'Bomba de embrague', 'Cilindro receptor de embrague', 'Aceite de caja'],
+            catalogo,
+            {'Aceite de caja': '75W-80'},
+        )
+        urls = [hits[clave]['url'] for clave in hits]
+        self.assertEqual(len(urls), 4)
+        self.assertTrue(all('tiendaunica.cl' in url for url in urls))
+        self.assertFalse(any(hit.get('motivo_tienda') for hit in hits.values()))
+
+    def test_la_pieza_que_falta_va_a_otra_tienda_con_motivo(self):
+        catalogo = [
+            {
+                'url': 'https://www.tiendaunica.cl/kit-oroch',
+                'title': 'Kit de embrague Renault Oroch 2019',
+                'content': 'Precio: $89.000',
+            },
+            {
+                'url': 'https://www.barata.cl/bomba-oroch',
+                'title': 'Bomba de embrague Renault Oroch 2019',
+                'content': 'Precio: $28.990',
+            },
+            {
+                'url': 'https://www.tiendaunica.cl/cilindro-oroch',
+                'title': 'Cilindro receptor de embrague Renault Oroch 2019',
+                'content': 'Precio: $18.990',
+            },
+            {
+                'url': 'https://www.tiendaunica.cl/aceite-caja',
+                'title': 'Aceite de caja 75W-80 1 litro',
+                'content': 'Precio: $8.990',
+            },
+        ]
+        hits = self._buscar(
+            ['Kit de embrague', 'Bomba de embrague', 'Cilindro receptor de embrague', 'Aceite de caja'],
+            catalogo,
+            {'Aceite de caja': '75W-80'},
+        )
+        bomba = next(hit for hit in hits.values() if 'bomba' in hit['url'])
+        self.assertIn('barata.cl', bomba['url'])
+        self.assertIn('no disponible en', bomba.get('motivo_tienda', '').lower())
+        self.assertIn('tiendaunica', bomba['motivo_tienda'].lower())
+
+    def test_una_pieza_mucho_mas_barata_cambia_de_tienda_con_motivo(self):
+        catalogo = [
+            {
+                'url': 'https://www.tiendaunica.cl/kit-oroch',
+                'title': 'Kit de embrague Renault Oroch 2019',
+                'content': 'Precio: $89.000',
+            },
+            {
+                'url': 'https://www.tiendaunica.cl/bomba-oroch',
+                'title': 'Bomba de embrague Renault Oroch 2019',
+                'content': 'Precio: $40.000',
+            },
+            {
+                'url': 'https://www.barata.cl/bomba-oroch',
+                'title': 'Bomba de embrague Renault Oroch 2019',
+                'content': 'Precio: $10.000',
+            },
+            {
+                'url': 'https://www.tiendaunica.cl/cilindro-oroch',
+                'title': 'Cilindro receptor de embrague Renault Oroch 2019',
+                'content': 'Precio: $18.990',
+            },
+            {
+                'url': 'https://www.tiendaunica.cl/aceite-caja',
+                'title': 'Aceite de caja 75W-80 1 litro',
+                'content': 'Precio: $8.990',
+            },
+        ]
+        hits = self._buscar(
+            ['Kit de embrague', 'Bomba de embrague', 'Cilindro receptor de embrague', 'Aceite de caja'],
+            catalogo,
+            {'Aceite de caja': '75W-80'},
+        )
+        bomba = next(hit for hit in hits.values() if 'bomba' in hit['nombre_producto'].lower())
+        self.assertIn('barata.cl', bomba['url'])
+        motivo = bomba.get('motivo_tienda', '')
+        self.assertIn('más barato', motivo.lower())
+        porcentaje = int(motivo.split('%', 1)[0])
+        self.assertGreaterEqual(porcentaje, 25)
+        resto = [hit for hit in hits.values() if hit is not bomba]
+        self.assertTrue(all('tiendaunica.cl' in hit['url'] for hit in resto))
+
+    def test_una_bomba_incompatible_no_se_consolida(self):
+        catalogo = [
+            {
+                'url': 'https://www.tiendaunica.cl/kit-oroch',
+                'title': 'Kit de embrague Renault Oroch 2019',
+                'content': 'Precio: $89.000',
+            },
+            {
+                'url': 'https://www.tiendaunica.cl/bomba-duster',
+                'title': 'Bomba de embrague Renault Duster 2019',
+                'content': 'Precio: $25.000',
+            },
+            {
+                'url': 'https://www.barata.cl/bomba-oroch',
+                'title': 'Bomba de embrague Renault Oroch 2019',
+                'content': 'Precio: $28.990',
+            },
+            {
+                'url': 'https://www.tiendaunica.cl/cilindro-oroch',
+                'title': 'Cilindro receptor de embrague Renault Oroch 2019',
+                'content': 'Precio: $18.990',
+            },
+            {
+                'url': 'https://www.tiendaunica.cl/aceite-caja',
+                'title': 'Aceite de caja 75W-80 1 litro',
+                'content': 'Precio: $8.990',
+            },
+        ]
+        hits = self._buscar(
+            ['Kit de embrague', 'Bomba de embrague', 'Cilindro receptor de embrague', 'Aceite de caja'],
+            catalogo,
+            {'Aceite de caja': '75W-80'},
+        )
+        bomba = next(hit for hit in hits.values() if 'bomba' in hit['nombre_producto'].lower())
+        self.assertNotIn('duster', bomba['url'])
+        self.assertIn('oroch', bomba['nombre_producto'].lower())
+        self.assertIn('no disponible en', bomba.get('motivo_tienda', '').lower())
+
+    def test_la_especialista_se_queda_el_pedido_si_la_diferencia_es_chica(self):
+        def ficha(host, slug, titulo, precio):
+            return {
+                'url': f'https://www.{host}/{slug}',
+                'title': titulo,
+                'content': f'Precio: ${precio}',
+            }
+
+        barata = [
+            ficha('tiendaunica.cl', 'kit-oroch', 'Kit de embrague Renault Oroch 2019', '85.000'),
+            ficha('tiendaunica.cl', 'bomba-oroch', 'Bomba de embrague Renault Oroch 2019', '27.000'),
+            ficha('tiendaunica.cl', 'cilindro-oroch', 'Cilindro receptor de embrague Renault Oroch 2019', '18.000'),
+            ficha('tiendaunica.cl', 'aceite-caja', 'Aceite de caja 75W-80 1 litro', '8.500'),
+        ]
+        especialista = [
+            ficha('adriazolarepuestos.com', 'kit-oroch', 'Kit de embrague Renault Oroch 2019', '89.000'),
+            ficha('adriazolarepuestos.com', 'bomba-oroch', 'Bomba de embrague Renault Oroch 2019', '28.990'),
+            ficha('adriazolarepuestos.com', 'cilindro-oroch', 'Cilindro receptor de embrague Renault Oroch 2019', '18.990'),
+            ficha('adriazolarepuestos.com', 'aceite-caja', 'Aceite de caja 75W-80 1 litro', '8.990'),
+        ]
+        hits = self._buscar(
+            ['Kit de embrague', 'Bomba de embrague', 'Cilindro receptor de embrague', 'Aceite de caja'],
+            barata + especialista,
+            {'Aceite de caja': '75W-80'},
+        )
+        self.assertEqual(len(hits), 4)
+        self.assertTrue(all('adriazolarepuestos.com' in hit['url'] for hit in hits.values()))

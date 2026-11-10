@@ -103,6 +103,7 @@ class RepuestoCotizacionSerializer(serializers.Serializer):
     # Campos de selección inteligente de casa (PR #7)
     casa_repuesto_nombre = serializers.CharField(required=False, allow_blank=True, default='')
     motivo_seleccion = serializers.CharField(required=False, allow_blank=True, default='')
+    motivo_tienda = serializers.CharField(required=False, allow_blank=True, default='')
     alternativas_descartadas = serializers.ListField(
         child=serializers.DictField(),
         required=False,

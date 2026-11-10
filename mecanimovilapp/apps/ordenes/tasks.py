@@ -1103,6 +1103,10 @@ def buscar_precios_web_cotizacion_task(self, cotizacion_id: int):
                     )[:200]
                 if hit.get('url'):
                     next_rep['url_producto'] = str(hit['url'])[:500]
+                motivo_tienda = str(hit.get('motivo_tienda') or '').strip()
+                if motivo_tienda:
+                    next_rep['motivo_tienda'] = motivo_tienda[:300]
+                    next_rep['motivo_seleccion'] = motivo_tienda[:300]
                 if hit.get('nombre_producto'):
                     next_rep['nombre_producto'] = str(hit['nombre_producto'])[:200]
                 cal_hit = str(hit.get('calidad') or '').strip().lower()

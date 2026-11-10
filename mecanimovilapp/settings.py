@@ -743,6 +743,11 @@ ASISTENTE_COTIZACION_GEMINI_FALLBACKS = config(
 ASISTENTE_COTIZACION_IA_ENABLED = config('ASISTENTE_COTIZACION_IA_ENABLED', default=False, cast=bool)
 # 45s: Gemini 3.x con prompt de catálogo/RAG supera los 15s y el cliente ve timeout.
 ASISTENTE_COTIZACION_IA_TIMEOUT = config('ASISTENTE_COTIZACION_IA_TIMEOUT', default=45, cast=int)
+# Otra tienda se usa para una pieza solo si está al menos este porcentaje más
+# barata que la tienda donde se concentra el pedido. 0.25 = 25% más barato.
+COTIZACION_UMBRAL_OTRA_TIENDA = config(
+    'COTIZACION_UMBRAL_OTRA_TIENDA', default=0.25, cast=float,
+)
 # Cuotas mensuales por plan (IA, patente, mensajería). Default False hasta activar en prod.
 PLAN_CUOTAS_ENFORCEMENT_ENABLED = config('PLAN_CUOTAS_ENFORCEMENT_ENABLED', default=False, cast=bool)
 # Agente IA conversacional en chats (captura + cotización borrador). Default False hasta activar.
