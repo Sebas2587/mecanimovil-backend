@@ -706,6 +706,11 @@ def aplicar_edicion_cotizacion(cotizacion: CotizacionCanal, data: dict) -> Cotiz
             cotizacion.repuestos,
             pedido_edicion,
             descartadas=list(meta_ed.get('sugerencias_descartadas') or []),
+            vehiculo={
+                'marca': cotizacion.vehiculo_marca,
+                'modelo': cotizacion.vehiculo_modelo,
+                'anio': cotizacion.vehiculo_anio,
+            },
         )
         cotizacion.repuestos = reps_ed
         cotizacion.metadata = anotar_revision_metadata(meta_ed, reps_ed, dudas_ed)

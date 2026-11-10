@@ -18,8 +18,8 @@ _VERBO_PIEZA = re.compile(
 _SOLO_MANO = re.compile(
     r'^(?:revisi[oó]n|diagn[oó]stico|inspecci[oó]n|escaneo|scanner|chequeo|'
     r'alineaci[oó]n|balanceo|rectificado|limpieza|regulaci[oó]n|ajuste|'
-    r'mantenci[oó]n|reparaci[oó]n|'
-    r'revisar|diagnosticar|inspeccionar|limpiar|alinear|rectificar|reparar|mantener)\b',
+    r'mantenci[oó]n|reparaci[oó]n|purga|'
+    r'revisar|diagnosticar|inspeccionar|limpiar|alinear|rectificar|reparar|mantener|purgar)\b',
     re.IGNORECASE,
 )
 _PREFIJO_SOLO_MANO = re.compile(
@@ -45,7 +45,8 @@ _DISTINTIVOS_PIEZA = {
     'piola', 'cable', 'guaya', 'volante', 'piloto', 'empuje', 'collarin',
     'prensa', 'plato', 'disco', 'caja', 'motor', 'aire', 'polen',
     'gasolina', 'bencina', 'reten', 'sello', 'ciguenal', 'bimasa',
-    'bombin', 'hidraulico', 'bomba', 'liquido', 'delantero', 'trasero', 'izquierdo', 'derecho',
+    'bombin', 'hidraulico', 'bomba', 'liquido', 'cilindro', 'maestro', 'receptor',
+    'delantero', 'trasero', 'izquierdo', 'derecho',
 }
 _LADO = re.compile(
     r'^(?:delanter[oa]s?|traser[oa]s?|izquierd[oa]s?|derech[oa]s?|'

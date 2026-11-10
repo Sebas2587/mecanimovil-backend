@@ -289,6 +289,27 @@ def _base(casa: str) -> dict[str, Any]:
     }
 
 
+def _sellar_tienda_real(rep: dict) -> None:
+    """La tienda del precio es la del enlace. La casa sugerida no la reemplaza."""
+    from mecanimovilapp.apps.ordenes.casas_especialistas import _host
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+        _tienda_del_enlace,
+    )
+
+    url = str(rep.get('url_producto') or rep.get('url_referencia') or '').strip()
+    real = _tienda_del_enlace(url, '')
+    if not real:
+        return
+    host = _host(url)
+    rotulo = str(rep.get('proveedor_nombre') or rep.get('tienda_ml') or '').strip()
+    token = rotulo.casefold().split()[0] if rotulo else ''
+    if token and token in host:
+        return
+    rep['proveedor_nombre'] = real
+    if str(rep.get('tienda_ml') or '').strip() and token and token not in host:
+        rep['tienda_ml'] = real
+
+
 def validar_repuesto(
     rep: dict,
     *,
@@ -307,6 +328,7 @@ def validar_repuesto(
 
     if not isinstance(rep, dict):
         return _base('')
+    _sellar_tienda_real(rep)
     casa = _casa_sugerida(rep, marca)
     titulo = _titulo_linea(rep)
     cobrado, nota_cobrado = _precio_en_unidad(rep, _entero(rep.get('precio_unitario_clp')), titulo)

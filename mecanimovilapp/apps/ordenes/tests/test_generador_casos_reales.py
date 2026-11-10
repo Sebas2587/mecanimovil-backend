@@ -302,11 +302,12 @@ class GeneradorCasosRealesTestCase(TestCase):
 
         nombres = [r['nombre'].lower() for r in repuestos]
 
-        # Debe incluir
+        # Debe incluir lo pedido. Sin ficha del kit no se agregan el piloto, el aceite ni el retén.
         self.assertTrue(any('kit' in n and 'embrague' in n for n in nombres), 'Debe incluir kit de embrague')
-        self.assertTrue(any('rodamiento' in n for n in nombres), 'Debe incluir rodamiento piloto')
-        self.assertTrue(any('aceite' in n and 'caja' in n for n in nombres), 'Debe incluir aceite de caja')
-        self.assertTrue(any('reten' in n or 'retén' in n for n in nombres), 'Debe incluir retén cigüeñal')
+        self.assertFalse(any('rodamiento' in n for n in nombres), 'Sin ficha no se agrega el rodamiento')
+        self.assertFalse(any('aceite' in n and 'caja' in n for n in nombres))
+        self.assertFalse(any('reten' in n or 'retén' in n for n in nombres))
+        self.assertIn('kit-composicion', {d['id'] for d in resultado['contenido']['dudas']})
 
         # NO debe incluir extras no solicitados
         self.assertFalse(

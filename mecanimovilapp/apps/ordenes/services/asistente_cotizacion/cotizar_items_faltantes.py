@@ -190,6 +190,11 @@ def cotizar_items_faltantes(
         enriquecidos,
         pedido_items,
         descartadas=list(meta_previa.get('sugerencias_descartadas') or []),
+        vehiculo={
+            'marca': cotizacion.vehiculo_marca,
+            'modelo': cotizacion.vehiculo_modelo,
+            'anio': cotizacion.vehiculo_anio,
+        },
     )
     cotizacion.repuestos = enriquecidos
     aplicar_totales_cotizacion(cotizacion)

@@ -51,6 +51,7 @@ def linea_visible_cliente(rep: dict | None) -> bool:
 def aplicar_pedido_y_sugerencias(
     contenido: dict[str, Any] | None,
     servicio_nombre: str = '',
+    vehiculo: dict | None = None,
 ) -> dict[str, Any]:
     """Reescribe el borrador de la IA: lo pedido entra; el complemento queda pendiente."""
     data = dict(contenido or {})
@@ -67,29 +68,13 @@ def aplicar_pedido_y_sugerencias(
         return data
 
     pedidos = _piezas_pedidas(pedido)
-    descartadas = set(_norm(n) for n in (data.get('sugerencias_descartadas') or []))
     reps = _quedarse_con_pedidas(reps, pedidos)
     for nombre in pedidos:
         if _ya(reps, nombre):
             continue
         reps.append(_linea(nombre, origen=ORIGEN_PEDIDO, motivo='', estado=ESTADO_ACEPTADA))
-    if _baja_la_caja(pedido, pedidos):
-        kit = _linea_kit(reps)
-        incluye_piloto = _kit_declara_piloto(kit)
-        for nombre, motivo in _SUGERENCIAS_CAJA:
-            if nombre == 'Rodamiento de volante' and incluye_piloto:
-                continue
-            if _norm(nombre) in descartadas or _pedida(nombre, pedidos):
-                continue
-            if _ya(reps, nombre):
-                _retag_si_no_pedida(reps, nombre, motivo)
-                continue
-            reps.append(_linea(
-                nombre,
-                origen=ORIGEN_SUGERENCIA,
-                motivo=motivo,
-                estado=ESTADO_PENDIENTE,
-            ))
+    reps = _aplicar_composicion_kit(reps, pedidos, quitar_no_pedidos=True)
+    reps = _sellar_lineas(reps, vehiculo or data.get('vehiculo'))
     data['repuestos'] = reps
     data['servicios_lineas'] = _faenas(data, pedido, pedidos)
     data['mano_obra_clp'] = sum(
@@ -97,7 +82,12 @@ def aplicar_pedido_y_sugerencias(
         for lin in data['servicios_lineas']
         if linea_cuenta_en_total(lin)
     )
-    data['dudas'] = _dudas(reps, pedido, kit_visto=_linea_kit(reps))
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
+        separar_precios_copiados,
+    )
+
+    copiadas = separar_precios_copiados(reps)
+    data['dudas'] = _dudas(reps, pedido, kit_visto=_linea_kit(reps)) + copiadas
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.normalizar import (
         recalcular_totales,
     )
@@ -114,6 +104,7 @@ def proponer_complementos(
     pedido: str,
     *,
     descartadas: list[str] | None = None,
+    vehiculo: dict | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """En una edición, no reescribe lo que el taller ya puso.
 
@@ -133,20 +124,22 @@ def proponer_complementos(
             _forzar_pedido(reps, nombre)
             continue
         reps.append(_linea(nombre, origen=ORIGEN_PEDIDO, motivo='', estado=ESTADO_ACEPTADA))
-    if _baja_la_caja(pedido, pedidos):
-        kit = _linea_kit(reps)
-        if _kit_declara_piloto(kit):
-            bloqueadas.add(_norm('Rodamiento de volante'))
-        for nombre, motivo in _SUGERENCIAS_CAJA:
-            if _norm(nombre) in bloqueadas or _ya(reps, nombre) or _pedida(nombre, pedidos):
-                continue
-            reps.append(_linea(
-                nombre,
-                origen=ORIGEN_SUGERENCIA,
-                motivo=motivo,
-                estado=ESTADO_PENDIENTE,
-            ))
-    dudas = _dudas(reps, pedido, kit_visto=_linea_kit(reps))
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
+        es_sistema,
+    )
+
+    reps = [
+        rep for rep in reps
+        if not (isinstance(rep, dict) and es_sistema(str(rep.get('nombre') or '')))
+    ]
+    reps = _aplicar_composicion_kit(reps, pedidos, bloqueadas=bloqueadas)
+    reps = _sellar_lineas(reps, vehiculo)
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
+        separar_precios_copiados,
+    )
+
+    dudas = separar_precios_copiados(reps)
+    dudas = _dudas(reps, pedido, kit_visto=_linea_kit(reps)) + dudas
     return reps, dudas
 
 
@@ -162,17 +155,6 @@ def piezas_para_busqueda(texto: str, auto: str) -> dict[str, Any]:
             'escasa': _escasa(nombre),
             'sugerida': False,
         })
-    if _baja_la_caja(texto, pedidos):
-        for nombre, motivo in _SUGERENCIAS_CAJA:
-            if _pedida(nombre, pedidos):
-                continue
-            piezas.append({
-                'nombre': nombre,
-                'consulta': _consulta(nombre, auto),
-                'porque': motivo,
-                'escasa': _escasa(nombre),
-                'sugerida': True,
-            })
     return {
         'trabajo': 'cambio_embrague' if _toca_embrague(texto) else 'pedido_taller',
         'faena': 'Cambio de embrague' if _baja_la_caja(texto, pedidos) else (pedidos[0] if pedidos else 'Mano de obra'),
@@ -471,10 +453,17 @@ def _texto_pedido(*partes: str) -> str:
 
 
 def _piezas_pedidas(pedido: str) -> list[str]:
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
+        es_sistema,
+        piezas_del_pedido,
+    )
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.separar_pedido_taller import (
         interpretar_pedido_taller,
     )
 
+    comprendidas = [item['nombre'] for item in piezas_del_pedido(pedido or '')]
+    if comprendidas:
+        return comprendidas
     interp = interpretar_pedido_taller(pedido or '')
     crudos = list(interp.get('repuestos') or [])
     if not crudos:
@@ -482,6 +471,8 @@ def _piezas_pedidas(pedido: str) -> list[str]:
             crudos.append(faena)
     canonicos: list[str] = []
     for nombre in crudos:
+        if es_sistema(nombre):
+            continue
         canon = _canon(nombre)
         if canon and canon not in canonicos:
             canonicos.append(canon)
@@ -527,17 +518,33 @@ def _faenas(data: dict, pedido: str, pedidos: list[str]) -> list[dict]:
         lump = int(data.get('mano_obra_clp') or 0) or sum(int(lin.get('monto_clp') or 0) for lin in previas)
         if lump:
             salida[0]['monto_clp'] = lump
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
+        faenas_de,
+    )
+
+    for titulo in faenas_de(pedido, []):
+        if titulo not in [fila['nombre'] for fila in salida]:
+            salida.append({
+                'nombre': titulo,
+                'monto_clp': 0,
+                'origen': ORIGEN_PEDIDO,
+                'estado_sugerencia': ESTADO_ACEPTADA,
+                'motivo_sugerencia': '',
+            })
     return salida or previas
 
 
 def _titulos_faena(manos: list[str], pedidos: list[str]) -> list[str]:
     titulos = []
     for mano in manos:
-        titulo = 'Cambio de embrague' if _es_faena_kit(mano) else mano
+        if 'purg' in _norm(mano) or 'sistema hidraulico' in _norm(mano):
+            titulo = 'Purga del sistema hidráulico'
+        else:
+            titulo = 'Cambio de embrague' if _es_faena_kit(mano) else mano
         if titulo not in titulos:
             titulos.append(titulo)
     for nombre in pedidos:
-        if nombre in ('Rodamiento de volante', 'Aceite de caja de cambios', 'Retén trasero de cigüeñal'):
+        if nombre in ('Rodamiento de volante', 'Retén trasero de cigüeñal'):
             continue
         esperado = _faena_de_pieza(nombre)
         if not any(_norm(esperado) in _norm(t) or _norm(nombre) in _norm(t) for t in titulos):
@@ -552,6 +559,10 @@ def _faena_de_pieza(nombre: str) -> str:
         return 'Cambio de bomba de embrague'
     if nombre == 'Líquido de frenos':
         return 'Cambio de líquido de frenos'
+    if nombre == 'Cilindro de embrague':
+        return 'Cambio de cilindro de embrague'
+    if nombre == 'Aceite de caja de cambios':
+        return 'Cambio de aceite de caja'
     if nombre == 'Piola de embrague':
         return 'Cambio de piola de embrague'
     return f'Cambio de {nombre[:1].lower() + nombre[1:]}' if nombre else 'Mano de obra'
@@ -573,12 +584,12 @@ def _solo_faena_de_embrague(manos: list[str], pedidos: list[str]) -> bool:
 
 def _dudas(reps: list, pedido: str, *, kit_visto: dict | None) -> list[dict]:
     dudas = []
-    if _baja_la_caja(pedido, _piezas_pedidas(pedido)) and not _kit_declara_piloto(kit_visto):
+    if _baja_la_caja(pedido, _piezas_pedidas(pedido)) and not _kit_tiene_ficha(kit_visto):
         dudas.append({
             'id': 'kit-composicion',
             'texto': (
-                'No confirmé la composición del kit en una ficha. '
-                'El rodamiento de empuje suele venir dentro; el piloto no, y quedó como sugerencia.'
+                'No confirmé en una ficha si el kit trae disco, prensa y rodamiento. '
+                'No agregué el rodamiento de volante aparte.'
             ),
             'confirmada': False,
         })
@@ -590,6 +601,15 @@ def _dudas(reps: list, pedido: str, *, kit_visto: dict | None) -> list[dict]:
             dudas.append({
                 'id': f'precio-{_norm(nombre).replace(" ", "-")}'[:48],
                 'texto': f'No hay precio de tienda para {nombre}. Confírmalo: no lo inventé.',
+                'confirmada': False,
+            })
+        elif _precio_es_estimado(rep):
+            dudas.append({
+                'id': f'precio-estimado-{_norm(nombre).replace(" ", "-")}'[:48],
+                'texto': (
+                    f'El precio de {nombre} es estimado, sin ficha de tienda. '
+                    'Confírmalo o ingrésalo antes de enviar.'
+                ),
                 'confirmada': False,
             })
         if 'liquido' in _norm(nombre) and not str(rep.get('especificacion') or '').strip():
@@ -609,18 +629,25 @@ def _dudas(reps: list, pedido: str, *, kit_visto: dict | None) -> list[dict]:
 
 
 def _quedarse_con_pedidas(reps: list[dict], pedidos: list[str]) -> list[dict]:
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
+        es_sistema as _es_sistema,
+    )
+
     kit_pedido = 'Kit de embrague' in pedidos
     salida = []
     for rep in reps:
         nombre = str(rep.get('nombre') or '')
         if kit_pedido and _es_suelta_del_kit(nombre):
             continue
-        if _es_vago(nombre):
+        if _es_vago(nombre) or _es_sistema(nombre):
             continue
         canon = _canon(nombre)
         if _pedida(canon, pedidos) or _pedida(nombre, pedidos):
             _marcar_pedido(rep)
-            if canon in ('Kit de embrague', 'Bomba de embrague', 'Líquido de frenos', 'Piola de embrague'):
+            if canon in (
+                'Kit de embrague', 'Bomba de embrague', 'Cilindro de embrague',
+                'Líquido de frenos', 'Piola de embrague', 'Aceite de caja de cambios',
+            ):
                 rep['nombre'] = canon
             salida.append(rep)
             continue
@@ -651,7 +678,15 @@ def _marcada_pedido_explicita(rep: dict) -> bool:
 
 
 def _linea(nombre: str, *, origen: str, motivo: str, estado: str) -> dict:
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
+        identidad_de,
+        rol_de,
+    )
+
+    ident = identidad_de(nombre)
     fila = {
+        'identidad': ident,
+        'rol': rol_de(ident),
         'nombre': nombre,
         'cantidad': 1,
         'precio_unitario_clp': 0,
@@ -705,13 +740,91 @@ def _forzar_pedido(reps: list, nombre: str) -> None:
             rep['nombre'] = canon
 
 
+_COMPLEMENTOS = (
+    'Rodamiento de volante',
+    'Aceite de caja de cambios',
+    'Retén trasero de cigüeñal',
+)
+
+
+def _aplicar_composicion_kit(
+    reps: list[dict],
+    pedidos: list[str],
+    bloqueadas: set[str] | None = None,
+    *,
+    quitar_no_pedidos: bool = False,
+) -> list[dict]:
+    """Sin ficha no se agrega el rodamiento. Con ficha, solo lo que ella dice que falta.
+
+    quitar_no_pedidos solo en la generación: ahí el modelo a veces mete el
+    piloto, el aceite y el retén sin que nadie los pidiera. En una edición
+    se conserva lo que el taller ya puso.
+    """
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
+        kit_pide_piloto_aparte,
+    )
+
+    bloqueadas = bloqueadas or set()
+    kit = _linea_kit(reps)
+    titulo = str((kit or {}).get('nombre_producto') or '')
+    salida = []
+    for rep in reps:
+        nombre = _canon(str(rep.get('nombre') or ''))
+        if not quitar_no_pedidos or nombre not in _COMPLEMENTOS or _pedida(nombre, pedidos):
+            salida.append(rep)
+            continue
+        if rep.get('origen') == ORIGEN_SUGERENCIA and rep.get('estado_sugerencia') == ESTADO_ACEPTADA:
+            salida.append(rep)
+    if kit_pide_piloto_aparte(titulo) and not _pedida('Rodamiento de volante', pedidos):
+        if _norm('Rodamiento de volante') not in bloqueadas and not _ya(salida, 'Rodamiento de volante'):
+            salida.append(_linea(
+                'Rodamiento de volante',
+                origen=ORIGEN_SUGERENCIA,
+                motivo='La ficha del kit dice que no incluye el rodamiento piloto.',
+                estado=ESTADO_PENDIENTE,
+            ))
+    return salida
+
+
+def _sellar_lineas(reps: list[dict], vehiculo: dict | None) -> list[dict]:
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
+        anotar_especificacion,
+    )
+
+    for rep in reps:
+        if isinstance(rep, dict):
+            anotar_especificacion(rep, vehiculo)
+    return reps
+
+
+def _kit_tiene_ficha(rep: dict | None) -> bool:
+    if not isinstance(rep, dict):
+        return False
+    return bool(str(rep.get('nombre_producto') or '').strip())
+
+
+def _precio_es_estimado(rep: dict) -> bool:
+    if str(rep.get('url_producto') or rep.get('url_referencia') or '').strip():
+        return False
+    if rep.get('precio_estimado') is True:
+        return True
+    return str(rep.get('certeza') or '').strip().lower() == 'asumido'
+
+
 def _canon(nombre: str) -> str:
     n = _norm(nombre)
     if not n:
         return ''
     if 'piola' in n or 'guaya' in n or ('cable' in n and ('embrague' in n or 'clutch' in n)):
         return 'Piola de embrague'
-    if 'bomba' in n or 'bombin' in n:
+    if (
+        'bombin' in n
+        or 'cilindro receptor' in n
+        or 'cilindro esclavo' in n
+        or ('cilindro' in n and 'embrague' in n and 'maestro' not in n)
+    ):
+        return 'Cilindro de embrague'
+    if ('bomba' in n and ('embrague' in n or 'clutch' in n)) or 'cilindro maestro' in n:
         return 'Bomba de embrague'
     if 'liquido' in n and ('freno' in n or 'embrague' in n):
         return 'Líquido de frenos'

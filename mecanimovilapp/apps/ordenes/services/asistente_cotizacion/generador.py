@@ -1247,6 +1247,7 @@ def generar_cotizacion_ia(
                 contenido = completar_pedido_con_faena(
                     solo_cat['contenido'],
                     servicio_nombre=servicio_nombre or servicio_ctx,
+                    vehiculo=ctx,
                 )
                 logger.info(
                     'generar_cotizacion_ia: catálogo completo %s %s / %s — sin Gemini/web',
@@ -1362,7 +1363,9 @@ def generar_cotizacion_ia(
             completar_pedido_con_faena,
         )
 
-        contenido = completar_pedido_con_faena(contenido, servicio_nombre=servicio_nombre)
+        contenido = completar_pedido_con_faena(
+            contenido, servicio_nombre=servicio_nombre, vehiculo=ctx,
+        )
         adv = list(contenido.get('advertencias') or [])
         return {
             'disponible': True,
@@ -1398,6 +1401,7 @@ def generar_cotizacion_ia(
     contenido = completar_pedido_con_faena(
         contenido,
         servicio_nombre=servicio_nombre or str(contenido.get('servicio_nombre') or ''),
+        vehiculo=ctx,
     )
     if enriquecer_marketplace:
         try:

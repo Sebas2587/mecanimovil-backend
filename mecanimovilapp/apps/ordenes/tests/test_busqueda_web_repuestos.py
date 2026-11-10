@@ -1772,13 +1772,10 @@ class RazonarYCortarBusquedaTests(SimpleTestCase):
         nombres = [p['nombre'] for p in plan['piezas']]
         self.assertIn('Kit de embrague', nombres)
         self.assertIn('Piola de embrague', nombres)
-        self.assertIn('Rodamiento de volante', nombres)
+        self.assertNotIn('Rodamiento de volante', nombres)
         kit = next(p for p in plan['piezas'] if p['nombre'] == 'Kit de embrague')
         self.assertIn('kit', kit['consulta'])
         self.assertNotIn('piola', kit['consulta'])
-        piloto = next(p for p in plan['piezas'] if 'volante' in p['nombre'])
-        self.assertTrue(piloto['escasa'])
-        self.assertIn('piloto', piloto['consulta'])
         self.assertIn('CELERIO', plan['razonamiento'])
 
     def test_ficha_ajena_corta_la_busqueda(self):

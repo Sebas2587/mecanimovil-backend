@@ -75,9 +75,7 @@ class PedidoClutchLCKS17Tests(TestCase):
             self.assertEqual(lineas[nombre]['origen'], 'pedido')
             self.assertEqual(lineas[nombre]['estado_sugerencia'], 'aceptada')
         for nombre in SUGERIDOS:
-            self.assertEqual(lineas[nombre]['origen'], 'sugerencia')
-            self.assertEqual(lineas[nombre]['estado_sugerencia'], 'pendiente')
-            self.assertTrue(lineas[nombre]['motivo_sugerencia'])
+            self.assertNotIn(nombre, lineas)
         faenas = [lin['nombre'] for lin in out['servicios_lineas']]
         self.assertIn('Cambio de embrague', faenas)
         self.assertIn('Cambio de bomba de embrague', faenas)
@@ -135,7 +133,6 @@ class PedidoClutchLCKS17Tests(TestCase):
             }
 
         esperadas = {nombre: ('pedido', 'aceptada') for nombre in PEDIDOS}
-        esperadas.update({nombre: ('sugerencia', 'pendiente') for nombre in SUGERIDOS})
         for camino in (generado['repuestos'], agente, manual, corregido):
             vistos = clases(camino)
             for nombre, marca in esperadas.items():
@@ -271,17 +268,11 @@ class TresCaminosCotizacionTests(TestCase):
         self.assertIsNotNone(cot)
         lineas = _por_nombre(cot.repuestos)
         self.assertEqual(lineas['Bomba de embrague']['origen'], 'pedido')
-        self.assertEqual(lineas['Rodamiento de volante']['estado_sugerencia'], 'pendiente')
+        self.assertNotIn('Rodamiento de volante', lineas)
         self.assertEqual(cot.total_clp, 269000)
-        self.assertEqual(cot.metadata['revision_sugerencias']['estado'], 'pendiente')
-        aviso = Notificacion.objects.filter(
-            usuario=self.user,
-            data__type='revision_sugerencias_pendiente',
-            data__cotizacion_id=cot.id,
-        )
-        self.assertTrue(aviso.exists())
+        self.assertEqual(cot.metadata['revision_sugerencias']['estado'], 'sin_sugerencias')
+        self.assertIn('kit-composicion', {d['id'] for d in cot.metadata['dudas']})
         texto = _cotizaciones_de_la_conversacion(self.conversation.id)
-        self.assertIn('no las menciones', texto)
         for nombre in SUGERIDOS:
             self.assertNotIn(nombre, texto)
         self.assertIn('Kit de embrague', resumen_para_cliente(cot))
@@ -334,11 +325,9 @@ class TresCaminosCotizacionTests(TestCase):
             self.assertEqual(lineas[nombre]['origen'], 'pedido', nombre)
             self.assertEqual(lineas[nombre]['estado_sugerencia'], 'aceptada', nombre)
         for nombre in SUGERIDOS:
-            self.assertEqual(lineas[nombre]['origen'], 'sugerencia', nombre)
-            self.assertEqual(lineas[nombre]['estado_sugerencia'], 'pendiente', nombre)
-            self.assertTrue(lineas[nombre]['motivo_sugerencia'])
-        self.assertEqual(cuerpo['revision_sugerencias']['estado'], 'pendiente')
-        self.assertGreater(cuerpo['revision_sugerencias']['pendientes'], 0)
+            self.assertNotIn(nombre, lineas)
+        self.assertEqual(cuerpo['revision_sugerencias']['estado'], 'sin_sugerencias')
+        self.assertEqual(cuerpo['revision_sugerencias']['pendientes'], 0)
         self.assertTrue(cuerpo['dudas'])
         faenas = [lin['nombre'] for lin in cuerpo['mano_obra_lineas']]
         self.assertIn('Cambio de embrague', faenas)
@@ -374,8 +363,8 @@ class TresCaminosCotizacionTests(TestCase):
         self.assertEqual(lineas['Bomba de embrague']['estado_sugerencia'], 'aceptada')
         self.assertEqual(lineas['Bomba de embrague']['motivo_sugerencia'], '')
         self.assertEqual(lineas['Líquido de frenos']['origen'], 'pedido')
-        self.assertEqual(lineas['Aceite de caja de cambios']['origen'], 'sugerencia')
-        self.assertEqual(lineas['Aceite de caja de cambios']['estado_sugerencia'], 'pendiente')
+        self.assertNotIn('Aceite de caja de cambios', lineas)
+        self.assertIn('kit-composicion', {d['id'] for d in alta.json()['cotizacion']['dudas']})
         dudas_alta = {d['id'] for d in alta.json()['cotizacion']['dudas']}
         self.assertIn('precio-bomba-de-embrague', dudas_alta)
         self.assertEqual(alta.json()['cotizacion']['total_clp'], 0)
@@ -394,10 +383,9 @@ class TresCaminosCotizacionTests(TestCase):
             if rep['nombre'] == 'Kit de embrague':
                 fila['precio_unitario_clp'] = 45000
                 fila['costo_estimado_clp'] = 30000
+                fila['nombre_producto'] = 'Kit embrague disco prensa collarín, sin piloto'
             if rep['nombre'] == 'Bomba de embrague':
                 fila['precio_unitario_clp'] = 28000
-            if rep['nombre'] == 'Aceite de caja de cambios':
-                fila['precio_unitario_clp'] = 32000
             con_precio.append(fila)
         with patch(
             'mecanimovilapp.apps.agente_ia.services.ws_broadcast.emitir_evento_ws_agente_ia',
@@ -418,7 +406,8 @@ class TresCaminosCotizacionTests(TestCase):
 
         lineas = _por_nombre(precios.json()['repuestos'])
         bomba_id = lineas['Bomba de embrague']['id']
-        aceite_id = lineas['Aceite de caja de cambios']['id']
+        piloto_id = lineas['Rodamiento de volante']['id']
+        self.assertEqual(lineas['Rodamiento de volante']['estado_sugerencia'], 'pendiente')
         rechaza_pedido = self.client.post(
             f'/api/ordenes/cotizaciones-canal/{cot.id}/sugerencias/',
             {'linea_id': bomba_id, 'accion': 'descartar'},
@@ -431,13 +420,13 @@ class TresCaminosCotizacionTests(TestCase):
         ):
             descarta = self.client.post(
                 f'/api/ordenes/cotizaciones-canal/{cot.id}/sugerencias/',
-                {'linea_id': aceite_id, 'accion': 'descartar'},
+                {'linea_id': piloto_id, 'accion': 'descartar'},
                 format='json',
             )
         self.assertEqual(descarta.status_code, 200, descarta.content)
         cuerpo = descarta.json()['cotizacion']
         self.assertEqual(
-            _por_nombre(cuerpo['repuestos'])['Aceite de caja de cambios']['estado_sugerencia'],
+            _por_nombre(cuerpo['repuestos'])['Rodamiento de volante']['estado_sugerencia'],
             'descartada',
         )
         self.assertEqual(cuerpo['total_clp'], 45000 + 28000)
@@ -462,7 +451,7 @@ class TresCaminosCotizacionTests(TestCase):
             )
         self.assertEqual(edit.status_code, 200, edit.content)
         nombres = [rep['nombre'] for rep in edit.json()['repuestos']]
-        self.assertNotIn('Aceite de caja de cambios', nombres)
+        self.assertNotIn('Rodamiento de volante', nombres)
         self.assertEqual(
             _por_nombre(edit.json()['repuestos'])['Kit de embrague']['origen'],
             'pedido',

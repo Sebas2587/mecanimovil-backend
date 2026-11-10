@@ -1147,6 +1147,12 @@ def _ficha_es_rodamiento_piloto(titulo: str) -> bool:
 
 def _ficha_cubre_pieza(nombre_linea: str, titulo_ficha: str) -> bool:
     """La ficha tiene que ser la misma pieza. Una piola no cotiza el kit."""
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
+        identidades_distintas,
+    )
+
+    if identidades_distintas(nombre_linea, titulo_ficha):
+        return False
     linea = _norm(nombre_linea)
     ficha = _norm(titulo_ficha)
     if not linea or not ficha:

@@ -42,13 +42,17 @@ _PIEZA_DEL_KIT = ('disco', 'prensa', 'plato', 'collarin', 'empuje')
 _FAENA = 'Cambio de embrague'
 
 
-def completar_pedido_con_faena(contenido: dict[str, Any] | None, servicio_nombre: str = '') -> dict[str, Any]:
+def completar_pedido_con_faena(
+    contenido: dict[str, Any] | None,
+    servicio_nombre: str = '',
+    vehiculo: dict | None = None,
+) -> dict[str, Any]:
     """Lo que pidieron se cotiza. El complemento queda pendiente de revisión."""
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
         aplicar_pedido_y_sugerencias,
     )
 
-    return aplicar_pedido_y_sugerencias(contenido, servicio_nombre)
+    return aplicar_pedido_y_sugerencias(contenido, servicio_nombre, vehiculo=vehiculo)
 
 
 def _piezas_del_trabajo(pedido: str) -> tuple[tuple[str, tuple[str, ...], str], ...]:

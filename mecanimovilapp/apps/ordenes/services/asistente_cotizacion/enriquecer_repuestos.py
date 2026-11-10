@@ -1178,6 +1178,18 @@ def congelar_costo(rep: dict) -> None:
         rep['costo_estimado_clp'] = estimado
 
 
+def _costo_sin_ficha(rep: dict) -> bool:
+    """Un monto sin enlace ni tienda es una estimación, no un costo verificado."""
+    if str(rep.get('url_producto') or rep.get('url_referencia') or '').strip():
+        return False
+    fuente = str(rep.get('fuente_marketplace') or rep.get('fuente_repuesto') or '').strip().lower()
+    if fuente in ('web', 'catalogo', 'historial', 'mercadolibre'):
+        return False
+    if str(rep.get('proveedor_nombre') or rep.get('tienda_referencia') or '').strip():
+        return False
+    return True
+
+
 def aplicar_margen_taller(rep: dict, taller) -> None:
     """
     Apply taller's markup ONCE when AI agent first discovers a part.
@@ -1221,6 +1233,10 @@ def aplicar_margen_taller(rep: dict, taller) -> None:
         
         # Freeze the cost at this discovered price (set costo_estimado_clp explicitly)
         rep['costo_estimado_clp'] = precio
+        if _costo_sin_ficha(rep):
+            rep['precio_estimado'] = True
+            rep['ganancia_estimada'] = True
+            rep['certeza'] = 'asumido'
         
         # Apply margin to compute customer sale price
         sale = round(float(precio) * (1 + float(margen) / 100))
@@ -1285,6 +1301,7 @@ def economia_repuesto(rep: dict) -> dict[str, Any]:
         'margen_real_pct': margen_real_pct,
         'margen_estimado_clp': margen_est,
         'margen_estimado_pct': margen_est_pct,
+        'ganancia_estimada': origen == 'estimado',
     }
 
 
@@ -1332,6 +1349,7 @@ def economia_cotizacion(repuestos: list) -> dict[str, Any]:
         'margen_repuestos_pct': pct,
         'costo_registrado_total_clp': costo_reg if real_completo else None,
         'margen_real_repuestos_clp': ganancia_real if real_completo else None,
+        'ganancia_estimada': bool(lineas) and faltan_reg == lineas and ganancia is not None,
     }
 
 
