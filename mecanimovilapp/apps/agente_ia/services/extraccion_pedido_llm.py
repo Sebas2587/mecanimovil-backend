@@ -43,11 +43,32 @@ class RepuestoMencionado(BaseModel):
     cantidad: int = Field(default=1, ge=1, le=20)
 
 
+class ItemPedido(BaseModel):
+    """Una pieza leída en la misma llamada, con el sistema del que viene."""
+    texto_original: str = ""
+    rol: str = "repuesto"  # repuesto, insumo, mano_obra, sistema, duda
+    sistema: str = ""
+    identidad: str = "otra"
+    nombre: str = ""
+    especificacion: str = ""
+    cantidad: str = ""
+    confianza: float = 0.0
+
+
+class FluidoVehiculo(BaseModel):
+    """Spec de un fluido para este auto. No es un precio."""
+    especificacion: str = ""
+    litros: str = ""
+    confianza: float = 0.0
+
+
 class PedidoExtraido(BaseModel):
     """Resultado completo de la extracción del pedido."""
     vehiculo: VehiculoExtraido
     servicios: list[ServicioExtraido] = Field(default_factory=list)
     repuestos_mencionados: list[RepuestoMencionado] = Field(default_factory=list)
+    items: list[ItemPedido] = Field(default_factory=list)
+    fluidos: dict[str, FluidoVehiculo] = Field(default_factory=dict)
     alcance_repuestos: str = "no_definido"  # con_repuestos/solo_mano_obra/no_definido
     calidad_preferida: str = ""  # original/oem/alternativo
     descripcion_problema: str = ""
@@ -144,6 +165,12 @@ REGLAS CRÍTICAS:
 6. Si dice "solo mano de obra" o "yo pongo los repuestos", alcance_repuestos = "solo_mano_obra"
 7. Si menciona repuestos específicos o no aclara, alcance_repuestos = "con_repuestos"
 8. tipo_motor: GASOLINA (o BENCINA), DIESEL, HIBRIDO, ELECTRICO
+9. Razona la frase, no la partas en palabras sueltas. En «kit de embrague, bomba y cilindro (bombín)» la bomba y el bombín heredan embrague. «cambiar kit bomba cilindro de embrague» son las tres piezas. Tolera typos: «embrage» es embrague.
+10. Sinónimos: collarín y crapodina son el rodamiento de empuje, no el piloto. Bombín de freno no es bombín de embrague. Cilindro maestro de frenos no es la bomba de embrague. Piloto automático, piola de acelerador, horquilla de suspensión, rulemán de rueda, retén de rueda y guaya de puerta no son piezas de embrague.
+11. Un sistema («sistema de frenos», «sistema hidráulico») no es un repuesto: rol sistema o duda, identidad otra.
+12. Si no estás seguro, identidad «otra», rol duda y confianza baja. Nunca cambies la pieza por otra para completar el JSON.
+13. En fluidos, la spec de aceite de caja y de líquido DOT de ESTE auto (marca, modelo, motor, año), con confianza de 0 a 1. Si no la sabes, confianza 0 y especificacion vacía. No inventes un precio.
+14. Cada ítem trae texto_original, rol (repuesto, insumo, mano_obra, sistema o duda), sistema (embrague, frenos, suspension, transmision u otro), identidad canónica o «otra», nombre normalizado, spec, cantidad si la dice y confianza.
 
 Mensaje del cliente:
 {texto_cliente}
@@ -167,6 +194,22 @@ Responde SOLO JSON válido sin markdown:
     {{"nombre": "Filtro de aceite", "especificacion": "", "cantidad": 1}},
     {{"nombre": "Aceite sintético", "especificacion": "5W30", "cantidad": 4}}
   ],
+  "items": [
+    {{
+      "texto_original": "Filtro de aceite",
+      "rol": "repuesto",
+      "sistema": "motor",
+      "identidad": "otra",
+      "nombre": "Filtro de aceite",
+      "especificacion": "",
+      "cantidad": "1",
+      "confianza": 0.9
+    }}
+  ],
+  "fluidos": {{
+    "aceite_caja": {{"especificacion": "", "litros": "", "confianza": 0}},
+    "liquido_frenos": {{"especificacion": "DOT4", "litros": "1", "confianza": 0.6}}
+  }},
   "alcance_repuestos": "con_repuestos",
   "calidad_preferida": "original",
   "descripcion_problema": "Cliente necesita cambio de aceite y filtro"

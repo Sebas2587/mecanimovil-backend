@@ -1183,10 +1183,9 @@ def _costo_sin_ficha(rep: dict) -> bool:
     if str(rep.get('url_producto') or rep.get('url_referencia') or '').strip():
         return False
     fuente = str(rep.get('fuente_marketplace') or rep.get('fuente_repuesto') or '').strip().lower()
-    if fuente in ('web', 'catalogo', 'historial', 'mercadolibre'):
+    if fuente in ('catalogo', 'historial'):
         return False
-    if str(rep.get('proveedor_nombre') or rep.get('tienda_referencia') or '').strip():
-        return False
+    # Un nombre de tienda sin enlace no verifica el costo.
     return True
 
 

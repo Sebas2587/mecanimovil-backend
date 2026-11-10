@@ -752,3 +752,279 @@ class ConsolidacionTiendaTests(SimpleTestCase):
         )
         self.assertEqual(len(hits), 4)
         self.assertTrue(all('adriazolarepuestos.com' in hit['url'] for hit in hits.values()))
+
+
+_EMBRAGUE = {
+    'kit_embrague', 'bomba_embrague', 'cilindro_receptor_embrague',
+    'flexible_embrague', 'horquilla_embrague', 'piola_embrague',
+    'rodamiento_piloto', 'rodamiento_empuje', 'reten_ciguenal',
+}
+
+_CASOS_B2 = (
+    'bombín de freno',
+    'cilindro maestro de frenos',
+    'piloto automático',
+    'piola de acelerador',
+    'horquilla de suspensión',
+    'ruleman de rueda',
+    'retén de rueda',
+    'guaya de puerta',
+)
+
+_CASOS_B3 = (
+    (
+        'kit de embrague, bomba y cilindro (bombín)',
+        {'kit_embrague', 'bomba_embrague', 'cilindro_receptor_embrague'},
+    ),
+    (
+        'cambiar kit bomba cilindro de embrague',
+        {'kit_embrague', 'bomba_embrague', 'cilindro_receptor_embrague'},
+    ),
+    ('kit de embrage', {'kit_embrague'}),
+    ('collarín', {'rodamiento_empuje'}),
+    ('crapodina', {'rodamiento_empuje'}),
+)
+
+
+def _item_llm(texto, identidad, rol='repuesto', sistema='embrague', confianza=0.9):
+    return {
+        'texto_original': texto,
+        'rol': rol,
+        'sistema': sistema,
+        'identidad': identidad,
+        'nombre': texto,
+        'especificacion': '',
+        'cantidad': '',
+        'confianza': confianza,
+    }
+
+
+class RevisionIdentidadTests(SimpleTestCase):
+    def test_marcadores_cortos_no_son_embrague_sin_el_modelo_y_con_fixture(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
+            comprender_pedido,
+        )
+
+        for texto in _CASOS_B2:
+            caido = comprender_pedido(texto)
+            ids = {item['identidad'] for item in caido['items']}
+            self.assertFalse(ids & _EMBRAGUE, texto)
+            self.assertTrue(caido['dudas'])
+            mal = comprender_pedido(texto, respuesta_llm={
+                'items': [_item_llm(texto, 'cilindro_receptor_embrague')],
+                'faenas': [],
+                'dudas': [],
+            })
+            self.assertFalse(
+                {item['identidad'] for item in mal['items']} & _EMBRAGUE,
+                texto,
+            )
+            self.assertTrue(mal['dudas'])
+
+    def test_la_enumeracion_hereda_embrague_sin_el_modelo_y_con_fixture(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
+            comprender_pedido,
+        )
+
+        for texto, esperadas in _CASOS_B3:
+            caido = {item['identidad'] for item in comprender_pedido(texto)['items']}
+            self.assertEqual(caido, esperadas, texto)
+            fixture = comprender_pedido(texto, respuesta_llm={
+                'items': [_item_llm(texto, ident) for ident in sorted(esperadas)],
+                'faenas': [],
+                'dudas': [],
+            })
+            self.assertEqual({item['identidad'] for item in fixture['items']}, esperadas, texto)
+
+    def test_una_lectura_vacia_no_inventa_otra_pieza(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
+            comprender_pedido,
+            validar_comprension,
+        )
+
+        with self.assertRaises(ValueError):
+            validar_comprension({})
+        out = comprender_pedido('kit de embrague', respuesta_llm={})
+        self.assertEqual([item['identidad'] for item in out['items']], ['kit_embrague'])
+        self.assertTrue(any(duda['id'] == 'lectura-no-usable' for duda in out['dudas']))
+        baja = comprender_pedido('kit de embrague', respuesta_llm={
+            'items': [_item_llm('kit de embrague', 'bomba_embrague', confianza=0.2)],
+            'faenas': [],
+            'dudas': [],
+        })
+        self.assertEqual(baja['items'], [])
+        self.assertTrue(baja['dudas'])
+
+    def test_aceite_y_filtro_no_crea_una_linea_fantasma(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+            aplicar_pedido_y_sugerencias,
+        )
+
+        out = aplicar_pedido_y_sugerencias(
+            {
+                'servicio_nombre': 'Cambio de aceite y filtro',
+                'repuestos': [
+                    {'nombre': 'Aceite de motor', 'cantidad': 4, 'precio_unitario_clp': 8000},
+                    {'nombre': 'Filtro de aceite', 'cantidad': 1, 'precio_unitario_clp': 5000},
+                ],
+            },
+            servicio_nombre='Cambio de aceite y filtro',
+        )
+        self.assertEqual(
+            [rep['nombre'] for rep in out['repuestos']],
+            ['Aceite de motor', 'Filtro de aceite'],
+        )
+
+    def test_elige_el_envase_mas_barato_para_cubrir_los_litros(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+            aplicar_cantidad_envase,
+        )
+
+        aceite = aplicar_cantidad_envase(
+            {
+                'nombre': 'Aceite de caja de cambios',
+                'identidad': 'aceite_caja',
+                'especificacion': '75W-80 · 2.5 L',
+                'nombre_producto': 'Aceite de caja 75W-80 1 litro',
+                'precio_unitario_clp': 8990,
+                'candidatos_envase': [
+                    {
+                        'nombre_producto': 'Aceite de caja 75W-80 1 litro',
+                        'precio_unitario_clp': 8990,
+                        'url': 'https://www.tienda.cl/1l',
+                    },
+                    {
+                        'nombre_producto': 'Aceite de caja 75W-80 4 litros',
+                        'precio_unitario_clp': 22000,
+                        'url': 'https://www.tienda.cl/4l',
+                    },
+                ],
+            },
+            marca='Renault',
+            modelo='Oroch',
+        )
+        self.assertEqual(aceite['cantidad'], 1)
+        self.assertEqual(aceite['precio_unitario_clp'], 22000)
+        self.assertIn('4 litro', aceite['nombre_producto'].lower())
+        self.assertEqual(aceite['costo_envases_clp'], 22000)
+        dot = aplicar_cantidad_envase(
+            {
+                'nombre': 'Líquido de frenos',
+                'identidad': 'liquido_frenos',
+                'especificacion': 'DOT4',
+                'nombre_producto': 'Liquido de frenos DOT4 500 ml',
+                'precio_unitario_clp': 6990,
+                'candidatos_envase': [
+                    {
+                        'nombre_producto': 'Liquido de frenos DOT4 500 ml',
+                        'precio_unitario_clp': 6990,
+                    },
+                    {
+                        'nombre_producto': 'Liquido de frenos DOT4 1 litro',
+                        'precio_unitario_clp': 9000,
+                    },
+                ],
+            },
+            marca='Renault',
+            modelo='Oroch',
+        )
+        self.assertEqual(dot['cantidad'], 1)
+        self.assertEqual(dot['precio_unitario_clp'], 9000)
+
+    def test_otro_auto_toma_la_spec_del_llm_y_la_tabla_queda_de_respaldo(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
+            comprender_pedido,
+        )
+
+        yaris = comprender_pedido(
+            'aceite de caja',
+            vehiculo={'marca': 'Toyota', 'modelo': 'Yaris', 'anio': 2018, 'motor': '1.5'},
+            respuesta_llm={
+                'items': [_item_llm('aceite de caja', 'aceite_caja', rol='insumo', sistema='transmision')],
+                'fluidos': {
+                    'aceite_caja': {
+                        'especificacion': '75W-90',
+                        'litros': '1.9',
+                        'confianza': 0.8,
+                    },
+                },
+                'faenas': [],
+                'dudas': [],
+            },
+        )
+        aceite = yaris['items'][0]
+        self.assertIn('75W-90', aceite['especificacion'])
+        self.assertIn('1.9', aceite['especificacion'])
+        self.assertNotIn('75W-80', aceite['especificacion'])
+        sin_modelo = comprender_pedido(
+            'aceite de caja',
+            vehiculo={'marca': 'Toyota', 'modelo': 'Yaris', 'anio': 2018},
+        )
+        self.assertNotIn('75W-80', sin_modelo['items'][0].get('especificacion', ''))
+        oroch = comprender_pedido(
+            'aceite de caja',
+            vehiculo={'marca': 'Renault', 'modelo': 'Oroch', 'motor': '1.6'},
+        )
+        self.assertIn('75W-80', oroch['items'][0]['especificacion'])
+
+    def test_sin_enlace_el_nombre_de_tienda_no_vuelve_el_costo_verificado(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.enriquecer_repuestos import (
+            _costo_sin_ficha,
+        )
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.validar_linea_cotizacion import (
+            _rotulo_es_el_dominio,
+            _sellar_tienda_real,
+        )
+
+        self.assertTrue(_costo_sin_ficha({
+            'proveedor_nombre': 'TodoAuto',
+            'precio_unitario_clp': 10000,
+        }))
+        self.assertFalse(_rotulo_es_el_dominio('todo', 'todoauto.cl'))
+        linea = {
+            'proveedor_nombre': 'todo',
+            'url_producto': 'https://www.todoauto.cl/aceite',
+        }
+        _sellar_tienda_real(linea)
+        self.assertNotEqual(linea['proveedor_nombre'].casefold(), 'todo')
+
+    def test_una_duda_no_esconde_el_monto_de_otra_cotizacion(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+            monto_para_agente,
+        )
+
+        firme = SimpleNamespace(total_clp=89000, repuestos=[], metadata={'dudas': []})
+        dudosa = SimpleNamespace(
+            total_clp=12000,
+            repuestos=[],
+            metadata={'dudas': [{'id': 'pieza-x', 'texto': 'duda', 'confirmada': False}]},
+        )
+        self.assertEqual(monto_para_agente(firme), '$89000')
+        self.assertEqual(monto_para_agente(dudosa), 'por confirmar')
+
+    def test_el_aceite_de_caja_queda_sugerido_si_el_kit_no_trae_piloto(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+            aplicar_pedido_y_sugerencias,
+        )
+
+        out = aplicar_pedido_y_sugerencias(
+            {
+                'servicio_nombre': 'Cambio de kit de embrague',
+                'repuestos': [{
+                    'nombre': 'Kit de embrague',
+                    'cantidad': 1,
+                    'precio_unitario_clp': 89000,
+                    'nombre_producto': 'Kit de embrague sin piloto',
+                    'origen': 'pedido',
+                    'estado_sugerencia': 'aceptada',
+                }],
+            },
+            servicio_nombre='Cambio de kit de embrague',
+        )
+        aceite = next(
+            rep for rep in out['repuestos']
+            if rep['nombre'] == 'Aceite de caja de cambios'
+        )
+        self.assertEqual(aceite['origen'], 'sugerencia')
+        self.assertEqual(aceite['estado_sugerencia'], 'pendiente')
+        self.assertIn('aceite', aceite['motivo_sugerencia'].lower())

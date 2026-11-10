@@ -302,12 +302,39 @@ def _sellar_tienda_real(rep: dict) -> None:
         return
     host = _host(url)
     rotulo = str(rep.get('proveedor_nombre') or rep.get('tienda_ml') or '').strip()
-    token = rotulo.casefold().split()[0] if rotulo else ''
-    if token and token in host:
+    if _rotulo_es_el_dominio(rotulo, host):
         return
     rep['proveedor_nombre'] = real
-    if str(rep.get('tienda_ml') or '').strip() and token and token not in host:
+    if str(rep.get('tienda_ml') or '').strip() and not _rotulo_es_el_dominio(
+        str(rep.get('tienda_ml') or ''), host,
+    ):
         rep['tienda_ml'] = real
+
+
+def _rotulo_es_el_dominio(rotulo: str, host: str) -> bool:
+    """El rótulo corresponde a esta ficha solo si su dominio registrado es el del enlace."""
+    from mecanimovilapp.apps.ordenes.casas_especialistas import PERFILES, _norm
+
+    objetivo = _norm(rotulo)
+    host_limpio = (host or '').lower().removeprefix('www.')
+    if not objetivo or not host_limpio:
+        return False
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.busqueda_web_repuestos import (
+        _fuentes,
+    )
+
+    dominios = []
+    for perfil in PERFILES:
+        if objetivo in {_norm(perfil.get('nombre') or ''), _norm(perfil.get('alias') or '')}:
+            dominios.append(str(perfil.get('dominio') or ''))
+    for fuente in _fuentes():
+        if objetivo == _norm(fuente.get('nombre') or ''):
+            dominios.append(str(fuente.get('dominio') or ''))
+    for dominio in dominios:
+        registrado = dominio.lower().removeprefix('www.').split('/')[0]
+        if registrado and (host_limpio == registrado or host_limpio.endswith('.' + registrado)):
+            return True
+    return False
 
 
 def validar_repuesto(

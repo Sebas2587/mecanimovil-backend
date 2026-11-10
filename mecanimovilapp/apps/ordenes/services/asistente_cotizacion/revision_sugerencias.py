@@ -34,14 +34,33 @@ _SUGERENCIAS_CAJA = (
 
 
 def linea_cuenta_en_total(rep: dict | None) -> bool:
-    """Pendiente o descartada no entra al cobro ni a la ganancia."""
+    """Pendiente, descartada o sin clasificar no entra al cobro ni a la ganancia."""
     if not isinstance(rep, dict):
+        return False
+    if str(rep.get('identidad') or '') in ('sin_clasificar', 'otra'):
+        return False
+    if str(rep.get('rol') or '') in ('duda', 'sistema', 'mano_obra'):
         return False
     origen = str(rep.get('origen') or ORIGEN_PEDIDO)
     estado = str(rep.get('estado_sugerencia') or '')
     if origen == ORIGEN_SUGERENCIA and estado != ESTADO_ACEPTADA:
         return False
     return True
+
+
+def monto_para_agente(cotizacion) -> str:
+    """Solo esta cotización. Una duda de otra no le esconde el monto."""
+    if cotizacion is None:
+        return ''
+    if _hay_precio_no_firme(cotizacion) or _hay_duda_abierta(cotizacion):
+        return 'por confirmar'
+    monto = getattr(cotizacion, 'total_clp', None)
+    try:
+        if monto:
+            return f'${int(monto)}'
+    except (TypeError, ValueError):
+        return ''
+    return ''
 
 
 def linea_visible_cliente(rep: dict | None) -> bool:
@@ -68,13 +87,24 @@ def aplicar_pedido_y_sugerencias(
             piezas_del_pedido,
         )
 
+        dudas_sueltas = []
         for item in piezas_del_pedido(pedido):
+            if item.get('identidad') in ('sin_clasificar', 'otra') or item.get('rol') in ('duda', 'sistema'):
+                dudas_sueltas.append({
+                    'id': f"pieza-{_norm(item.get('nombre') or '').replace(' ', '-')}"[:48],
+                    'texto': (
+                        f"No clasifiqué «{item.get('nombre')}». Quedó como duda: "
+                        'no se cobra y no se unió con otra pieza.'
+                    ),
+                    'confirmada': False,
+                })
+                continue
             nombre = item['nombre']
             if _ya(reps, nombre):
                 continue
             reps.append(_linea(nombre, origen=ORIGEN_PEDIDO, motivo='', estado=ESTADO_ACEPTADA))
         data['repuestos'] = reps
-        sueltas = _dudas_pieza_suelta(reps)
+        sueltas = _dudas_pieza_suelta(reps) + dudas_sueltas
         if sueltas:
             data['dudas'] = sueltas
         return data
@@ -132,13 +162,24 @@ def proponer_complementos(
             piezas_del_pedido,
         )
 
+        dudas_sueltas = []
         for item in piezas_del_pedido(pedido):
+            if item.get('identidad') in ('sin_clasificar', 'otra') or item.get('rol') in ('duda', 'sistema'):
+                dudas_sueltas.append({
+                    'id': f"pieza-{_norm(item.get('nombre') or '').replace(' ', '-')}"[:48],
+                    'texto': (
+                        f"No clasifiqué «{item.get('nombre')}». Quedó como duda: "
+                        'no se cobra y no se unió con otra pieza.'
+                    ),
+                    'confirmada': False,
+                })
+                continue
             nombre = item['nombre']
             if _ya(reps, nombre):
                 _forzar_pedido(reps, nombre)
                 continue
             reps.append(_linea(nombre, origen=ORIGEN_PEDIDO, motivo='', estado=ESTADO_ACEPTADA))
-        return reps, _dudas_pieza_suelta(reps)
+        return reps, _dudas_pieza_suelta(reps) + dudas_sueltas
     pedidos = _piezas_pedidas(pedido)
     bloqueadas = {_norm(n) for n in (descartadas or [])}
     for nombre in pedidos:
@@ -525,7 +566,9 @@ def _pedidos_con_llm(pedido: str, data: dict | None) -> list[str]:
         nombre = str(item.get('nombre') or '').strip()
         if not nombre:
             continue
-        canon = nombre if item.get('identidad') == 'sin_clasificar' else (_canon(nombre) or nombre)
+        if item.get('identidad') in ('sin_clasificar', 'otra') or item.get('rol') in ('duda', 'sistema'):
+            continue
+        canon = _canon(nombre) or nombre
         if not any(_norm(p) == _norm(canon) for p in pedidos):
             pedidos.append(canon)
     return pedidos
@@ -540,7 +583,11 @@ def _piezas_pedidas(pedido: str) -> list[str]:
         interpretar_pedido_taller,
     )
 
-    comprendidas = [item['nombre'] for item in piezas_del_pedido(pedido or '')]
+    comprendidas = [
+        item['nombre'] for item in piezas_del_pedido(pedido or '')
+        if item.get('identidad') not in ('sin_clasificar', 'otra')
+        and item.get('rol') not in ('duda', 'sistema')
+    ]
     if comprendidas:
         return comprendidas
     interp = interpretar_pedido_taller(pedido or '')
@@ -874,6 +921,17 @@ def _aplicar_composicion_kit(
                 motivo='La ficha del kit dice que no incluye el rodamiento piloto.',
                 estado=ESTADO_PENDIENTE,
             ))
+    if kit_pide_piloto_aparte(titulo) and not _pedida('Aceite de caja de cambios', pedidos):
+        motivo_aceite = (
+            'Al bajar la caja para el rodamiento piloto se pierde el aceite. Conviene reponerlo.'
+        )
+        if _norm('Aceite de caja de cambios') not in bloqueadas and not _ya(salida, 'Aceite de caja de cambios'):
+            salida.append(_linea(
+                'Aceite de caja de cambios',
+                origen=ORIGEN_SUGERENCIA,
+                motivo=motivo_aceite,
+                estado=ESTADO_PENDIENTE,
+            ))
     return salida
 
 
@@ -902,20 +960,33 @@ def _precio_es_estimado(rep: dict) -> bool:
     return str(rep.get('certeza') or '').strip().lower() == 'asumido'
 
 
+def _otro_sistema(n: str) -> bool:
+    return any(pieza in n for pieza in (
+        'freno', 'suspension', 'rueda', 'puerta', 'acelerador', 'automatico', 'direccion',
+    ))
+
+
 def _canon(nombre: str) -> str:
     n = _norm(nombre)
     if not n:
         return ''
-    if 'piola' in n or 'guaya' in n or ('cable' in n and ('embrague' in n or 'clutch' in n)):
+    embrague = 'embrague' in n or 'clutch' in n or 'embrage' in n
+    if _otro_sistema(n) and not embrague:
+        if 'aceite' in n and ('caja' in n or 'transmision' in n):
+            return 'Aceite de caja de cambios'
+        return str(nombre or '').strip()
+    if embrague and ('piola' in n or 'guaya' in n or 'cable' in n):
+        return 'Piola de embrague'
+    if 'piola de embrague' in n or 'piola embrague' in n or 'cable de embrague' in n:
         return 'Piola de embrague'
     if (
-        'bombin' in n
+        (embrague and 'bombin' in n)
         or 'cilindro receptor' in n
         or 'cilindro esclavo' in n
-        or ('cilindro' in n and 'embrague' in n and 'maestro' not in n)
+        or ('cilindro' in n and embrague and 'maestro' not in n)
     ):
         return 'Cilindro de embrague'
-    if ('bomba' in n and ('embrague' in n or 'clutch' in n)) or 'cilindro maestro' in n:
+    if ('bomba' in n and embrague) or (embrague and 'cilindro maestro' in n):
         return 'Bomba de embrague'
     if 'liquido' in n and ('freno' in n or 'embrague' in n):
         return 'Líquido de frenos'
@@ -923,12 +994,16 @@ def _canon(nombre: str) -> str:
         return 'Aceite de caja de cambios'
     if 'flexible' in n or ('manguera' in n and ('embrague' in n or 'clutch' in n)):
         return 'Flexible de embrague'
-    if 'horquilla' in n:
+    if 'horquilla' in n and embrague:
         return 'Horquilla de embrague'
-    if 'piloto' in n or ('rodamiento' in n and 'volante' in n) or 'ruleman' in n:
+    if 'rodamiento' in n and 'volante' in n:
         return 'Rodamiento de volante'
-    if 'reten' in n or 'ciguenal' in n:
+    if ('piloto' in n or 'ruleman' in n) and embrague:
+        return 'Rodamiento de volante'
+    if 'ciguenal' in n or (embrague and 'reten' in n) or 'reten trasero' in n:
         return 'Retén trasero de cigüeñal'
+    if n in ('collarin', 'crapodina', 'rodamiento de empuje') or 'crapodina' in n:
+        return 'Rodamiento de empuje'
     if 'kit' in n or n in ('embrague', 'embrague completo', 'clutch', 'cambio de embrague'):
         return 'Kit de embrague'
     if any(p in n for p in ('disco', 'prensa', 'plato', 'collarin', 'empuje')) and 'piloto' not in n:

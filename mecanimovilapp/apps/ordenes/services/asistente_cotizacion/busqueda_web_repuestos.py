@@ -470,13 +470,39 @@ def aplicar_cantidad_envase(
         necesarios = _litros_texto((ficha.get('liquido_frenos') or {}).get('litros'))
     if necesarios <= 0:
         necesarios = _litros_texto(str(rep.get('especificacion') or ''))
-    titulo = str(rep.get('nombre_producto') or '').strip()
-    if not titulo:
-        titulo = str(rep.get('especificacion') or '')
-    envase = litros_envase(titulo)
-    if envase <= 0 or necesarios <= 0:
+    candidatos = [
+        cand for cand in (rep.get('candidatos_envase') or [])
+        if isinstance(cand, dict)
+    ]
+    if not candidatos:
+        candidatos = [rep]
+    mejor = None
+    for cand in candidatos:
+        titulo = str(cand.get('nombre_producto') or rep.get('nombre_producto') or '').strip()
+        if not titulo:
+            titulo = str(cand.get('especificacion') or rep.get('especificacion') or '')
+        envase = litros_envase(titulo)
+        try:
+            precio = int(cand.get('precio_unitario_clp') or 0)
+        except (TypeError, ValueError):
+            precio = 0
+        if envase <= 0 or precio <= 0 or necesarios <= 0:
+            continue
+        cantidad = max(1, math.ceil(necesarios / envase - 1e-9))
+        total = cantidad * precio
+        if mejor is None or total < mejor[0]:
+            mejor = (total, cand, cantidad, precio, titulo)
+    if mejor is None:
         return rep
-    rep['cantidad'] = max(1, math.ceil(necesarios / envase - 1e-9))
+    _total, elegido, cantidad, precio, titulo = mejor
+    rep['cantidad'] = cantidad
+    rep['precio_unitario_clp'] = precio
+    if titulo:
+        rep['nombre_producto'] = titulo
+    if elegido.get('url'):
+        rep['url_producto'] = elegido['url']
+    rep['envases'] = cantidad
+    rep['costo_envases_clp'] = _total
     return rep
 
 
