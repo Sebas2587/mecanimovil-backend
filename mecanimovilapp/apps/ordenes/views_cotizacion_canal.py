@@ -369,6 +369,7 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
                 'precio_desde_catalogo': bool(contenido.get('precio_desde_catalogo')),
                 'precio_parcial_catalogo': bool(contenido.get('precio_parcial_catalogo')),
                 'servicios_lineas': contenido.get('servicios_lineas') or [],
+                'servicios': contenido.get('servicios') or [],
             },
         )
         from django.utils import timezone
@@ -407,7 +408,7 @@ class CotizacionCanalViewSet(viewsets.ModelViewSet):
             (contenido or {}).get('dudas') or [],
         )
         cotizacion.save(update_fields=['metadata', 'actualizado_en'])
-        notificar_revision_al_taller(cotizacion)
+        notificar_revision_al_taller(cotizacion, taller_presente=True)
         cache.delete(lock_key)
         return Response({
             **resultado,

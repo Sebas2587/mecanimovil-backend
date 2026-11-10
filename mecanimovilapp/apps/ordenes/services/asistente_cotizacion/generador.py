@@ -1155,6 +1155,26 @@ def _aplicar_prioridad_de_taller(
             rep['comentario'] = nota
 
 
+def _cerrar_con_plan(contenido, ctx, servicio_nombre, descripcion_problema, taller):
+    """Si el borrador vino sin precios, lo arma el plan del servicio."""
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.plan_por_servicio import (
+        completar_cotizacion_en_blanco,
+    )
+
+    texto = f'{servicio_nombre}. {descripcion_problema}'.strip(' .')
+    vehiculo = {
+        'marca': (ctx or {}).get('marca') or '',
+        'modelo': (ctx or {}).get('modelo') or '',
+        'anio': (ctx or {}).get('anio') or '',
+        'motor': (ctx or {}).get('cilindraje') or (ctx or {}).get('motor') or '',
+    }
+    try:
+        return completar_cotizacion_en_blanco(contenido, texto, vehiculo, taller)
+    except Exception:
+        logger.warning('plan de servicio no aplicado', exc_info=True)
+        return contenido
+
+
 def generar_cotizacion_ia(
     *,
     conversation=None,
@@ -1262,6 +1282,9 @@ def generar_cotizacion_ia(
                     ctx.get('marca'),
                     ctx.get('modelo'),
                     (servicio_ctx or '')[:80],
+                )
+                contenido = _cerrar_con_plan(
+                    contenido, ctx, servicio_nombre, descripcion_problema, taller,
                 )
                 return {
                     'disponible': True,
@@ -1379,6 +1402,9 @@ def generar_cotizacion_ia(
             vehiculo=ctx,
         )
         adv = list(contenido.get('advertencias') or [])
+        contenido = _cerrar_con_plan(
+            contenido, ctx, servicio_nombre, descripcion_problema, taller,
+        )
         return {
             'disponible': True,
             'contenido': contenido,
@@ -1501,6 +1527,9 @@ def generar_cotizacion_ia(
         except Exception as exc:
             logger.warning('fusionar_contenido_con_catalogo_taller falló: %s', exc, exc_info=True)
 
+    contenido = _cerrar_con_plan(
+        contenido, ctx, servicio_nombre, descripcion_problema, taller,
+    )
     if 'valores_estimativos' not in contenido:
         contenido['valores_estimativos'] = True
 

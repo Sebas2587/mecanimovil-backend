@@ -263,7 +263,8 @@ def resumen_para_cliente(cotizacion) -> str:
     if _hay_precio_no_firme(cotizacion) or _hay_duda_abierta(cotizacion):
         texto += (
             ' No des un precio cerrado. Hay un precio estimado o una duda sin confirmar: '
-            'no lo presentes como firme y no comentes la duda al cliente.'
+            'no lo presentes como firme y no comentes la duda al cliente. '
+            'Al cliente dile precio por confirmar.'
         )
     return texto
 
@@ -332,10 +333,17 @@ def registrar_evento(metadata: dict, tipo: str, *, nombre: str = '', linea_id: s
     return meta
 
 
-def notificar_revision_al_taller(cotizacion) -> None:
-    """Aviso interno al taller. No abre WhatsApp ni Meta."""
+def notificar_revision_al_taller(cotizacion, *, taller_presente: bool = False) -> None:
+    """Aviso interno al taller. Una push si no está en la cotización.
+
+    No abre WhatsApp ni Meta. La push es una por cotización, no por línea.
+    """
     pendientes = _contar_pendientes(cotizacion.repuestos or [])
-    if pendientes <= 0:
+    dudas = [
+        duda for duda in ((getattr(cotizacion, 'metadata', None) or {}).get('dudas') or [])
+        if isinstance(duda, dict) and not duda.get('confirmada')
+    ]
+    if pendientes <= 0 and not dudas:
         return
     usuario = getattr(cotizacion, 'creado_por', None)
     if usuario is None:
@@ -352,17 +360,25 @@ def notificar_revision_al_taller(cotizacion) -> None:
         and rep.get('origen') == ORIGEN_SUGERENCIA
         and rep.get('estado_sugerencia') == ESTADO_PENDIENTE
     ]
-    titulo = 'Revisa sugerencias de la cotización'
+    titulo = 'Revisa la cotización'
+    detalle = []
+    if pendientes:
+        detalle.append(
+            f'{pendientes} sugerencia(s) pendiente(s): {", ".join(nombres[:4])}'
+        )
+    if dudas:
+        detalle.append(f'{len(dudas)} duda(s)')
     mensaje = (
         f'La cotización "{cotizacion.servicio_nombre or "servicio"}" tiene '
-        f'{pendientes} sugerencia(s) pendiente(s): {", ".join(nombres[:4])}. '
-        'No se cobran ni se le prometen al cliente hasta que las aceptes o las descartes.'
+        + ' y '.join(detalle)
+        + '. No se cobran ni se le prometen al cliente hasta que las revises.'
     )
     data = {
         'type': 'revision_sugerencias_pendiente',
         'cotizacion_id': cotizacion.id,
         'conversation_id': cotizacion.conversation_id,
         'pendientes': pendientes,
+        'dudas': len(dudas),
     }
     Notificacion.crear_unica(
         usuario,
@@ -378,6 +394,26 @@ def notificar_revision_al_taller(cotizacion) -> None:
 
         if getattr(usuario, 'id', None):
             _emitir_ws_agente(usuario.id, 'revision_sugerencias_pendiente', **data)
+    except Exception:
+        pass
+    if taller_presente:
+        return
+    meta = dict(getattr(cotizacion, 'metadata', None) or {})
+    if meta.get('push_revision_enviada'):
+        return
+    try:
+        from mecanimovilapp.apps.usuarios.tasks import send_expo_push_notification
+
+        send_expo_push_notification.delay(
+            usuario.id,
+            titulo,
+            mensaje,
+            data,
+        )
+        meta['push_revision_enviada'] = True
+        cotizacion.metadata = meta
+        if getattr(cotizacion, 'pk', None) and hasattr(cotizacion, 'save'):
+            cotizacion.save(update_fields=['metadata', 'actualizado_en'])
     except Exception:
         pass
 

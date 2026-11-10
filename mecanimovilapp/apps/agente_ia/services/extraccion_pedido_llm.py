@@ -29,11 +29,22 @@ class VehiculoExtraido(BaseModel):
         return v.upper() if v else None
 
 
+class PiezaPlan(BaseModel):
+    """Pieza de un servicio: pedida o sugerida, con el motivo si es sugerida."""
+    nombre: str = ""
+    identidad: str = ""
+    motivo: str = ""
+
+
 class ServicioExtraido(BaseModel):
-    """Servicio de mano de obra solicitado."""
+    """Servicio de mano de obra solicitado, con lo que ese trabajo requiere."""
     nombre: str
     cantidad: int = Field(default=1, ge=1, le=10)
     incluye_repuestos: Optional[bool] = None
+    horas: Optional[float] = None
+    mano_obra_clp: Optional[int] = None
+    repuestos_requeridos: list[PiezaPlan] = Field(default_factory=list)
+    sugeridos: list[PiezaPlan] = Field(default_factory=list)
 
 
 class RepuestoMencionado(BaseModel):
@@ -172,6 +183,8 @@ REGLAS CRÍTICAS:
 12. Si no estás seguro, identidad «otra», rol duda y confianza baja. Nunca cambies la pieza por otra para completar el JSON.
 13. En fluidos, la spec de aceite de caja y de líquido DOT de ESTE auto (marca, modelo, motor, año), con confianza de 0 a 1. Si no la sabes, confianza 0 y especificacion vacía. No inventes un precio.
 14. Cada ítem trae texto_original, rol (repuesto, insumo, mano_obra, sistema o duda), sistema (embrague, frenos, suspension, transmision u otro), identidad canónica o «otra», nombre normalizado, spec, cantidad si la dice y confianza.
+15. Primero el SERVICIO, no la frase literal. «hace ruido y patina» no es un repuesto. «revisar el sistema hidráulico» es diagnóstico, no una pieza. Normaliza typos y abreviaturas (embrage, bba, cil. rec., acite, fltro).
+16. En cada servicio: horas de mano de obra, repuestos_requeridos (imprescindibles, nombre técnico) y sugeridos (con motivo). No pongas en sugeridos lo que ya trae el kit. Frenos traseros de tambor son balatas, no pastillas.
 
 Mensaje del cliente:
 {texto_cliente}
@@ -189,7 +202,20 @@ Responde SOLO JSON válido sin markdown:
     "tipo_motor": "GASOLINA"
   }},
   "servicios": [
-    {{"nombre": "Cambio de aceite y filtro", "cantidad": 1, "incluye_repuestos": true}}
+    {{
+      "nombre": "Cambio de aceite y filtros",
+      "cantidad": 1,
+      "incluye_repuestos": true,
+      "horas": 1,
+      "mano_obra_clp": null,
+      "repuestos_requeridos": [
+        {{"nombre": "Aceite de motor", "identidad": "aceite_motor", "motivo": ""}},
+        {{"nombre": "Filtro de aceite", "identidad": "filtro_aceite", "motivo": ""}}
+      ],
+      "sugeridos": [
+        {{"nombre": "Filtro de aire", "identidad": "filtro_aire", "motivo": "En el cambio de aceite conviene revisar el de aire."}}
+      ]
+    }}
   ],
   "repuestos_mencionados": [
     {{"nombre": "Filtro de aceite", "especificacion": "", "cantidad": 1}},
@@ -321,6 +347,7 @@ def _fallback_regex(
         tipo_motor=str(vehiculo_context.get('tipo_motor', '') or '').upper() or None,
     )
     
+    servicios = _servicios_del_plan(texto_cliente, vehiculo_context) or servicios
     return PedidoExtraido(
         vehiculo=vehiculo,
         servicios=servicios,
@@ -329,3 +356,29 @@ def _fallback_regex(
         calidad_preferida='',
         descripcion_problema=texto_cliente[:500],
     )
+
+
+def _servicios_del_plan(texto: str, vehiculo_context: dict) -> list[ServicioExtraido]:
+    """La misma lectura de servicio, sin una segunda llamada al modelo."""
+    try:
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.plan_por_servicio import (
+            planificar_pedido,
+        )
+    except Exception:
+        return []
+    plan = planificar_pedido(texto, vehiculo_context)
+    salida = []
+    for servicio in plan.get('servicios') or []:
+        mano = servicio.get('mano_obra') or {}
+        salida.append(ServicioExtraido(
+            nombre=servicio['nombre'],
+            cantidad=1,
+            incluye_repuestos=not servicio.get('solo_mano'),
+            horas=mano.get('horas'),
+            mano_obra_clp=mano.get('monto_clp'),
+            repuestos_requeridos=[
+                PiezaPlan(**pieza) for pieza in servicio.get('repuestos_requeridos') or []
+            ],
+            sugeridos=[PiezaPlan(**pieza) for pieza in servicio.get('sugeridos') or []],
+        ))
+    return salida

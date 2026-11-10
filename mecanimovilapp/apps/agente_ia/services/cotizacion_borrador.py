@@ -933,6 +933,14 @@ def _aplicar_montos_contenido_ia(
         if monto > 0:
             row['monto_clp'] = monto
             row['precio_mano_obra_clp'] = monto
+            if match and match.get('estimada') is True:
+                row['estimada'] = True
+            if match and match.get('horas') not in (None, ''):
+                row['horas'] = match.get('horas')
+            if match and str(match.get('motivo') or '').strip():
+                row['motivo'] = str(match.get('motivo')).strip()[:300]
+            if match and str(match.get('origen') or '').strip():
+                row['origen'] = str(match.get('origen')).strip()
         out.append(row)
     return out
 
@@ -1969,6 +1977,7 @@ def crear_cotizacion_borrador_desde_agente(
         'valores_estimativos': usa_estimativo and not precio_desde_catalogo,
         'precios_iva_incluido': True,
         'servicios_lineas': lineas,
+        'servicios': list((contenido or {}).get('servicios') or meta_prev.get('servicios') or []),
         'precios_referenciales_ia': precios_ref_ia[-5:],  # últimas 5 estimaciones
         'preferencias_agenda': preferencias_agenda,
         'requiere_revision_humana': True,

@@ -734,7 +734,7 @@ def aplicar_edicion_cotizacion(cotizacion: CotizacionCanal, data: dict) -> Cotiz
         )
         cotizacion.repuestos = reps_ed
         cotizacion.metadata = anotar_revision_metadata(meta_ed, reps_ed, dudas_ed)
-        notificar_revision_al_taller(cotizacion)
+        notificar_revision_al_taller(cotizacion, taller_presente=True)
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.mano_obra_lineas import (
         aplicar_mano_obra_en_edicion,
     )
