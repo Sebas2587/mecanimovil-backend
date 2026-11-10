@@ -39,6 +39,14 @@ def _por_identidad(repuestos):
 
 
 class PlanPorServicioTests(SimpleTestCase):
+    def setUp(self):
+        self.sin_llm = patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.plan_por_servicio.interpretar_pedido',
+            return_value=None,
+        )
+        self.sin_llm.start()
+        self.addCleanup(self.sin_llm.stop)
+
     def test_embrague_es_servicio_no_la_frase_del_ruido(self):
         out = cotizar_por_servicio(EMBRAGUE)
         self.assertEqual(out['servicios'][0]['nombre'], 'Cambio de embrague')
@@ -141,6 +149,12 @@ class PlanPorServicioTests(SimpleTestCase):
 @override_settings(ASISTENTE_COTIZACION_IA_ENABLED=True)
 class TresCaminosYPushTests(TestCase):
     def setUp(self):
+        self.sin_llm = patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.plan_por_servicio.interpretar_pedido',
+            return_value=None,
+        )
+        self.sin_llm.start()
+        self.addCleanup(self.sin_llm.stop)
         self.user = User.objects.create_user(username='taller_plan', password='test123')
         self.taller = Taller.objects.create(
             usuario=self.user,
@@ -306,6 +320,14 @@ _FRASES = (
 
 
 class CatalogoYLlmTests(SimpleTestCase):
+    def setUp(self):
+        self.sin_llm = patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.plan_por_servicio.interpretar_pedido',
+            return_value=None,
+        )
+        self.sin_llm.start()
+        self.addCleanup(self.sin_llm.stop)
+
     def test_el_fallback_cotiza_las_frases_que_el_revisor_dejo_vacias(self):
         for frase in _FRASES:
             with self.subTest(frase=frase):
@@ -369,10 +391,109 @@ class CatalogoYLlmTests(SimpleTestCase):
         self.assertFalse(out['verificacion']['ok'])
         self.assertTrue(any(d['id'] == 'servicio-no-identificado' for d in out['dudas']))
 
-    def test_un_modelo_desconocido_queda_como_duda(self):
+    def test_un_modelo_desconocido_se_usa_tal_cual(self):
         out = cotizar_por_servicio('del flibbert 2011 cambiar pastillas', buscar=_buscar_casa)
         self.assertEqual(out['servicios'][0]['vehiculo']['modelo'], 'Flibbert')
-        self.assertTrue(any(d['id'] == 'vehiculo-no-reconocido' for d in out['dudas']))
+        self.assertFalse(any(d['id'] == 'vehiculo-no-reconocido' for d in out['dudas']))
+        self.assertIn('Flibbert', out['repuestos'][0]['consulta'])
+
+    def test_frases_nuevas_sin_llm_no_salen_vacias(self):
+        frases = (
+            'ruido al frenar adelante, mazda 3 2016',
+            'hacer la de 10.000 km',
+            'hacer la de 10000 km',
+            'cambiar amortiguadores traseros y bieletas delanteras a una tucson 2018',
+            'cambio de bujias y cables kia rio 5 2015',
+            'alineacion y balanceo + rotacion',
+            'scaner porque se prende el check',
+            'rotacion de neumaticos',
+            'cambiar correa auxiliar',
+            'se traba la direccion hidraulica',
+            'humo blanco',
+        )
+        for frase in frases:
+            with self.subTest(frase=frase, modo='catalogo'):
+                out = cotizar_por_servicio(frase, buscar=_buscar_casa)
+                self.assertTrue(out['servicios'], frase)
+                self.assertGreater(out['mano_obra_clp'], 0, frase)
+                self.assertTrue(out['verificacion']['ok'], frase)
+                self.assertFalse(
+                    out['verificacion']['lineas'] == 0 and out['verificacion']['servicios'] == 0,
+                    frase,
+                )
+        ruido = cotizar_por_servicio('ruido al frenar adelante, mazda 3 2016', buscar=_buscar_casa)
+        self.assertIn('Frenos delanteros', [s['nombre'] for s in ruido['servicios']])
+        self.assertEqual(ruido['servicios'][0]['vehiculo']['marca'], 'Mazda')
+        self.assertEqual(ruido['servicios'][0]['vehiculo']['modelo'], '3')
+        ids = _por_identidad(ruido['repuestos'])
+        self.assertEqual(ids['pastillas_freno']['origen'], 'pedido')
+        self.assertEqual(ids['discos_freno']['origen'], 'sugerencia')
+        self.assertTrue(ids['discos_freno']['motivo_sugerencia'])
+        for frase in ('hacer la de 10.000 km', 'hacer la de 10000 km'):
+            out = cotizar_por_servicio(frase, buscar=_buscar_casa)
+            self.assertEqual(out['servicios'][0]['nombre'], 'Mantención de los 10 mil')
+        ejes = cotizar_por_servicio(
+            'cambiar amortiguadores traseros y bieletas delanteras a una tucson 2018',
+            buscar=_buscar_casa,
+        )
+        nombres = [r['nombre'] for r in ejes['repuestos'] if r['origen'] == 'pedido']
+        self.assertIn('Amortiguadores traseros', nombres)
+        self.assertIn('Bieletas delanteras', nombres)
+        self.assertEqual(ejes['servicios'][0]['vehiculo']['modelo'], 'Tucson')
+        bujias = cotizar_por_servicio('cambio de bujias y cables kia rio 5 2015', buscar=_buscar_casa)
+        piezas = _por_identidad(bujias['repuestos'])
+        self.assertGreaterEqual(piezas['bujia']['cantidad'], 4)
+        self.assertIn('cable_bujia', piezas)
+        self.assertEqual(bujias['servicios'][0]['vehiculo']['modelo'], 'Rio 5')
+        alineacion = cotizar_por_servicio('alineacion y balanceo + rotacion', buscar=_buscar_casa)
+        titulos = ' '.join(s['nombre'] for s in alineacion['servicios']).lower()
+        self.assertIn('alineación', titulos)
+        self.assertIn('rotación', titulos)
+        self.assertIn('escáner', cotizar_por_servicio('scaner porque se prende el check', buscar=_buscar_casa)['servicios'][0]['nombre'].lower())
+        self.assertIn('Rotación', cotizar_por_servicio('rotacion de neumaticos', buscar=_buscar_casa)['servicios'][0]['nombre'])
+        correa = cotizar_por_servicio('cambiar correa auxiliar', buscar=_buscar_casa)
+        self.assertEqual(correa['servicios'][0]['nombre'], 'Cambio de correa auxiliar')
+        self.assertNotIn('distribución', correa['servicios'][0]['nombre'].lower())
+        direccion = cotizar_por_servicio('se traba la direccion hidraulica', buscar=_buscar_casa)
+        self.assertIn('Dirección', direccion['servicios'][0]['nombre'])
+        self.assertNotIn('frenos', direccion['servicios'][0]['nombre'].lower())
+        humo = cotizar_por_servicio('humo blanco', buscar=_buscar_casa)
+        self.assertIn('Diagnóstico', humo['servicios'][0]['nombre'])
+        self.assertTrue(any(d['id'] == 'humo-diagnostico' for d in humo['dudas']))
+
+    def test_frases_nuevas_con_llm_mockeado(self):
+        self.sin_llm.stop()
+        frases = (
+            'ruido al frenar adelante, mazda 3 2016',
+            'hacer la de 10.000 km',
+            'cambiar amortiguadores traseros y bieletas delanteras a una tucson 2018',
+            'cambio de bujias y cables kia rio 5 2015',
+            'alineacion y balanceo + rotacion',
+            'scaner porque se prende el check',
+            'humo blanco',
+        )
+        try:
+            for frase in frases:
+                with self.subTest(frase=frase, modo='llm'):
+                    pedido = PedidoExtraido(
+                        vehiculo=VehiculoExtraido(marca='Mazda', modelo='3', anio=2016),
+                        servicios=[ServicioExtraido(
+                            nombre=f'Trabajo leído: {frase[:32]}',
+                            horas=1.5,
+                            repuestos_requeridos=[PiezaPlan(nombre='Pieza leída', identidad='pieza_leida')],
+                            sugeridos=[PiezaPlan(nombre='Sugerida leída', identidad='sugerida', motivo='La recomienda el modelo.')],
+                        )],
+                    )
+                    with patch(
+                        'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.plan_por_servicio.interpretar_pedido',
+                        return_value=pedido,
+                    ) as llm:
+                        out = cotizar_por_servicio(frase, buscar=_buscar_casa)
+                    llm.assert_called()
+                    self.assertTrue(out['servicios'][0]['nombre'].startswith('Trabajo leído:'))
+                    self.assertEqual(_por_identidad(out['repuestos'])['pieza_leida']['proveedor_nombre'], 'Casa Mock')
+        finally:
+            self.sin_llm.start()
 
     def test_el_aceite_elige_el_envase_mas_barato(self):
         out = cotizar_por_servicio(ACEITE, buscar=_buscar_casa)
@@ -421,6 +542,63 @@ class CatalogoYLlmTests(SimpleTestCase):
         texto = ' '.join(d['texto'] for d in out['dudas'])
         self.assertIn('32.000', texto)
         self.assertIn('41.600', texto)
+
+
+class EditorManualLlamaAlModeloTests(SimpleTestCase):
+    def test_una_frase_de_servicio_usa_la_extraccion(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.cotizar_items_faltantes import (
+            _absorber_frase_de_servicio,
+        )
+
+        pedido = PedidoExtraido(
+            vehiculo=VehiculoExtraido(marca='Mazda', modelo='3', anio=2016),
+            servicios=[ServicioExtraido(
+                nombre='Trabajo leído en el editor',
+                horas=1.5,
+                repuestos_requeridos=[PiezaPlan(nombre='Pastillas leídas', identidad='pastillas_freno')],
+                sugeridos=[PiezaPlan(nombre='Discos leídos', identidad='discos_freno', motivo='Por si están bajos.')],
+            )],
+        )
+        cot = SimpleNamespace(
+            vehiculo_marca='',
+            vehiculo_modelo='',
+            vehiculo_anio='',
+            vehiculo_cilindraje='',
+            taller=None,
+            mano_obra_clp=0,
+            metadata={},
+        )
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.plan_por_servicio.interpretar_pedido',
+            return_value=pedido,
+        ) as llm, patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.plan_por_servicio.buscar_lineas_en_casas',
+            return_value={},
+        ):
+            nombres, base = _absorber_frase_de_servicio(
+                cot, ['ruido al frenar adelante, mazda 3 2016'], [],
+            )
+        llm.assert_called()
+        self.assertEqual(nombres, [])
+        self.assertTrue(any(rep['nombre'] == 'Pastillas leídas' for rep in base))
+        self.assertGreater(cot.mano_obra_clp, 0)
+
+    def test_una_pieza_suelta_no_dispara_el_modelo(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.cotizar_items_faltantes import (
+            _absorber_frase_de_servicio,
+        )
+
+        cot = SimpleNamespace(
+            vehiculo_marca='', vehiculo_modelo='', vehiculo_anio='',
+            vehiculo_cilindraje='', taller=None, mano_obra_clp=0, metadata={},
+        )
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.plan_por_servicio.interpretar_pedido',
+        ) as llm:
+            nombres, base = _absorber_frase_de_servicio(cot, ['Filtro de aceite'], [])
+        llm.assert_not_called()
+        self.assertEqual(nombres, ['Filtro de aceite'])
+        self.assertEqual(base, [])
 
 
 class PushUnicaAgenteTests(TestCase):

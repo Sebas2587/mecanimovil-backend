@@ -57,11 +57,12 @@ def _absorber_frase_de_servicio(cotizacion, nombres: list[str], base: list) -> t
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.plan_por_servicio import (
         cotizar_por_servicio,
         es_pieza_suelta_de_item,
-        frase_de_servicio,
     )
 
     texto = nombres[0]
-    if es_pieza_suelta_de_item(texto) or not frase_de_servicio(texto):
+    # Una pieza de catálogo se cotiza sola. Cualquier otra frase pasa por el modelo
+    # (una llamada, con caché) y el catálogo solo si el modelo no responde.
+    if es_pieza_suelta_de_item(texto):
         return nombres, base
     armado = cotizar_por_servicio(
         texto,
@@ -73,6 +74,8 @@ def _absorber_frase_de_servicio(cotizacion, nombres: list[str], base: list) -> t
         },
         getattr(cotizacion, 'taller', None),
     )
+    if not armado.get('servicios'):
+        return nombres, base
     if not int(getattr(cotizacion, 'mano_obra_clp', 0) or 0):
         cotizacion.mano_obra_clp = armado.get('mano_obra_clp') or 0
         meta = dict(getattr(cotizacion, 'metadata', None) or {})

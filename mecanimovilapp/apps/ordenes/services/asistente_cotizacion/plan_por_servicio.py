@@ -57,7 +57,10 @@ _MODELOS = (
     ('sportage', 'Kia', 'Sportage'),
     ('sorento', 'Kia', 'Sorento'),
     ('cerato', 'Kia', 'Cerato'),
+    ('rio 5', 'Kia', 'Rio 5'),
     ('rio', 'Kia', 'Rio'),
+    ('morning', 'Kia', 'Morning'),
+    ('mazda 3', 'Mazda', '3'),
     ('frontier', 'Nissan', 'Frontier'),
     ('np300', 'Nissan', 'NP300'),
     ('navara', 'Nissan', 'Navara'),
@@ -154,8 +157,6 @@ def _norm(texto: str) -> str:
         ('amortigador', 'amortiguador'),
         ('aliniacion', 'alineacion'),
         ('alineasion', 'alineacion'),
-        ('escaner', 'escaner'),
-        ('scanner', 'escaner'),
         ('acite', 'aceite'),
         ('fltro', 'filtro'),
         ('revicion', 'revision'),
@@ -165,6 +166,7 @@ def _norm(texto: str) -> str:
         ('pastiyas', 'pastilla'),
     ):
         n = n.replace(malo, bueno)
+    n = re.sub(r'\bscan+er\b', 'escaner', n)
     n = re.sub(r'\bbba\b', 'bomba', n)
     n = re.sub(r'\bcil rec\b', 'cilindro receptor', n)
     return re.sub(r'\s+', ' ', n).strip()
@@ -211,29 +213,90 @@ def _tallo(n: str, tallo: str) -> bool:
     return re.search(rf'(?<![a-z0-9]){re.escape(tallo)}', n) is not None
 
 
+_MARCAS = {
+    'toyota': 'Toyota', 'chevrolet': 'Chevrolet', 'chevy': 'Chevrolet',
+    'mazda': 'Mazda', 'kia': 'Kia', 'hyundai': 'Hyundai', 'nissan': 'Nissan',
+    'suzuki': 'Suzuki', 'renault': 'Renault', 'peugeot': 'Peugeot', 'fiat': 'Fiat',
+    'ford': 'Ford', 'volkswagen': 'Volkswagen', 'vw': 'Volkswagen', 'honda': 'Honda',
+    'mitsubishi': 'Mitsubishi', 'subaru': 'Subaru', 'jeep': 'Jeep', 'chery': 'Chery',
+    'citroen': 'Citroën', 'bmw': 'BMW', 'audi': 'Audi', 'volvo': 'Volvo',
+    'ssangyong': 'SsangYong', 'changan': 'Changan', 'jac': 'JAC', 'mg': 'MG',
+}
+
+_RUIDO_AUTO = _RUIDO_MODELO | {
+    'adelante', 'atras', 'delante', 'ruido', 'frenar', 'hacer', 'cambio', 'cambiar',
+    'bujia', 'cable', 'cables', 'neumatico', 'neumaticos', 'rotacion', 'alineacion',
+    'balanceo', 'scaner', 'escaner', 'check', 'humo', 'blanco', 'correa', 'auxiliar',
+    'amortiguador', 'amortiguadores', 'bieleta', 'bieletas', 'traseros', 'traseras',
+    'delanteros', 'delanteras', 'direccion', 'hidraulica', 'hidraulico', 'traba',
+}
+
+
+def _titulo_auto(texto: str) -> str:
+    return ' '.join(parte[:1].upper() + parte[1:] for parte in str(texto or '').split())
+
+
+def _texto_auto(n: str) -> str:
+    """«mazda3» y «mazda 3» son el mismo auto. «morning» se busca tal cual."""
+    n = re.sub(r'\bmazda\s*3\b', 'mazda 3', n)
+    n = n.replace('mazda3', 'mazda 3')
+    return n
+
+
+def _tokens_de_auto(n: str) -> list[str]:
+    anio = re.search(r'\b(?:19|20)\d{2}\b', n)
+    if anio:
+        previo = n[:anio.start()]
+        tokens = [tok for tok in previo.split() if tok not in _RUIDO_AUTO and not re.fullmatch(r'\d\.\d', tok)]
+        if tokens:
+            return tokens[-3:]
+    marca = re.search(
+        r'\b(?:para|del|al|una|un|mi|a)\s+((?:[a-z0-9]+\s+){0,3}[a-z0-9]+)',
+        n,
+    )
+    if not marca:
+        return []
+    return [
+        tok for tok in marca.group(1).split()
+        if tok not in _RUIDO_AUTO and not re.fullmatch(r'\d\.\d', tok)
+    ][:3]
+
+
+def _aplicar_tokens(base: dict, tokens: list[str]) -> None:
+    if not tokens:
+        return
+    if tokens[0] in _MARCAS:
+        if not base.get('marca'):
+            base['marca'] = _MARCAS[tokens[0]]
+        if not base.get('modelo'):
+            resto = ' '.join(tokens[1:]).strip()
+            if resto:
+                base['modelo'] = _titulo_auto(resto)
+        return
+    frase = ' '.join(tokens)
+    for clave, marca, modelo in sorted(_MODELOS, key=lambda fila: len(fila[0]), reverse=True):
+        if frase == clave or frase.endswith(' ' + clave) or _contiene(frase, clave):
+            if not base.get('marca'):
+                base['marca'] = marca
+            if not base.get('modelo'):
+                base['modelo'] = modelo
+            return
+    if not base.get('modelo') and len(tokens) == 1:
+        base['modelo'] = _titulo_auto(tokens[0])
+    elif not base.get('modelo'):
+        if not base.get('marca'):
+            base['marca'] = _titulo_auto(tokens[0])
+        base['modelo'] = _titulo_auto(' '.join(tokens[1:]))
+
+
 def _vehiculo(texto: str, dado: dict | None) -> tuple[dict[str, Any], list[dict]]:
-    """Marca y modelo generales. Un modelo que no está en el catálogo no se pierde."""
+    """Usa la marca y el modelo como vienen escritos. El catálogo solo completa la marca."""
     crudo = str(texto or '')
-    n = _norm(crudo)
-    base = {
-        'marca': '',
-        'modelo': '',
-        'anio': '',
-        'motor': '',
-    }
+    n = _texto_auto(_norm(crudo))
+    base = {'marca': '', 'modelo': '', 'anio': '', 'motor': ''}
     for clave in ('marca', 'modelo', 'anio', 'motor'):
         if isinstance(dado, dict) and dado.get(clave) not in (None, ''):
             base[clave] = dado[clave]
-    dudas: list[dict] = []
-    if not base.get('marca') or not base.get('modelo'):
-        for clave, marca, modelo in sorted(_MODELOS, key=lambda fila: len(fila[0]), reverse=True):
-            if _contiene(n, clave):
-                base.setdefault('marca', marca) if False else None
-                if not base.get('marca'):
-                    base['marca'] = marca
-                if not base.get('modelo'):
-                    base['modelo'] = modelo
-                break
     if not base.get('anio'):
         anio = re.search(r'\b(19\d{2}|20\d{2})\b', crudo)
         if anio:
@@ -242,38 +305,45 @@ def _vehiculo(texto: str, dado: dict | None) -> tuple[dict[str, Any], list[dict]
         motor = re.search(r'\b(\d\.\d)\b', crudo)
         if motor:
             base['motor'] = motor.group(1)
+    if not base.get('marca') or not base.get('modelo'):
+        for clave, marca, modelo in sorted(_MODELOS, key=lambda fila: len(fila[0]), reverse=True):
+            if _contiene(n, clave):
+                if not base.get('marca'):
+                    base['marca'] = marca
+                if not base.get('modelo'):
+                    base['modelo'] = modelo
+                break
     if not base.get('modelo'):
-        suelto = re.search(
-            r'\b(?:del|al|para|un|mi)\s+([a-z]{3,})\s+(?:19|20)\d{2}\b',
-            n,
-        )
-        if suelto and suelto.group(1) not in _RUIDO_MODELO and not suelto.group(1).isdigit():
-            base['modelo'] = suelto.group(1).title()
-            dudas.append({
-                'id': 'vehiculo-no-reconocido',
-                'texto': (
-                    f'No reconocí el modelo «{base["modelo"]}». '
-                    'Quedó anotado para que el taller lo confirme. No se descartó el pedido.'
-                ),
-                'confirmada': False,
-            })
-        elif not base.get('marca'):
-            dudas.append({
-                'id': 'vehiculo-sin-identificar',
-                'texto': 'El pedido no dice marca ni modelo. Confirmá el vehículo antes de enviar.',
-                'confirmada': False,
-            })
+        _aplicar_tokens(base, _tokens_de_auto(n))
+    dudas: list[dict] = []
+    if not base.get('marca') and not base.get('modelo'):
+        dudas.append({
+            'id': 'vehiculo-sin-identificar',
+            'texto': 'El pedido no dice marca ni modelo. Confirmá el vehículo antes de enviar.',
+            'confirmada': False,
+        })
     return base, dudas
 
 
-def _pieza(identidad: str, nombre: str, motivo: str = '', *, requerido: bool = False, tallo: str = '') -> dict:
-    return {
+def _pieza(
+    identidad: str,
+    nombre: str,
+    motivo: str = '',
+    *,
+    requerido: bool = False,
+    tallo: str = '',
+    cantidad: int | None = None,
+) -> dict:
+    fila = {
         'identidad': identidad,
         'nombre': nombre,
         'motivo': motivo,
         'requerido': requerido,
         'tallo': tallo or _norm(nombre).split()[0],
     }
+    if cantidad:
+        fila['cantidad'] = cantidad
+    return fila
 
 
 def _mano(taller, nombre: str, vehiculo: dict, horas: float, motivo_horas: str) -> dict:
@@ -333,13 +403,68 @@ def _servicio(ident, nombre, horas, motivo_horas, piezas, vehiculo, taller, solo
 
 
 def _km(texto: str) -> int:
+    """10.000, 10 000, 10000, 10 mil o 10k. Un año (2016) no es un kilometraje."""
+    puntos = re.search(r'\b(\d{1,3})[.\s](\d{3})\b', texto)
+    if puntos and puntos.group(2) != puntos.group(1):
+        return int(puntos.group(1) + puntos.group(2)) // 1000
     mil = re.search(r'\b(\d{1,3})\s*mil\b', texto)
     if mil:
         return int(mil.group(1))
-    ceros = re.search(r'\b(\d{2,3})000\b', texto)
-    if ceros:
-        return int(ceros.group(1))
+    corto = re.search(r'\b(\d{1,3})\s*k\b', texto)
+    if corto:
+        return int(corto.group(1))
+    for plano in re.finditer(r'\b(\d{4,6})\b', texto):
+        numero = int(plano.group(1))
+        if 1980 <= numero <= 2035:
+            continue
+        if numero % 1000 == 0:
+            return numero // 1000
     return 0
+
+
+def _es_mantencion_km(n: str) -> bool:
+    km = _km(n)
+    if km not in (10, 15, 20, 30, 40, 50, 60, 80, 100):
+        return False
+    if any(frase in n for frase in ('mantencion', 'hacer la de', 'servicio de los', 'la de')):
+        return True
+    return bool(re.search(r'\b(km|mil|k)\b', n))
+
+
+def _eje_en(texto: str) -> str:
+    hallados = []
+    for marca, eje in (
+        ('traser', 'trasero'),
+        ('atras', 'trasero'),
+        ('delanter', 'delantero'),
+        ('adelante', 'delantero'),
+        ('delante', 'delantero'),
+    ):
+        lugar = texto.find(marca)
+        if lugar >= 0:
+            hallados.append((lugar, eje))
+    if not hallados:
+        return ''
+    return min(hallados)[1]
+
+
+def _ejes_de(n: str, tallo: str) -> set[str]:
+    """El eje es el que acompaña a la pieza, primero el que viene después."""
+    ejes: set[str] = set()
+    for match in re.finditer(rf'(?<![a-z0-9]){re.escape(tallo)}', n):
+        despues = _eje_en(n[match.end(): match.end() + 24])
+        antes = _eje_en(n[max(0, match.start() - 24): match.start()])
+        eje = despues or antes
+        if eje:
+            ejes.add(eje)
+    return ejes
+
+
+def _frenos_adelante(n: str) -> bool:
+    return 'embrague' not in n and (
+        (('freno' in n or 'frenar' in n) and any(eje in n for eje in ('delanter', 'adelante', 'delante')))
+        or _tallo(n, 'pastilla')
+    ) and not ('zapata' in n and not _tallo(n, 'pastilla') and 'delanter' not in n and 'adelante' not in n)
 
 
 def _aceite_de_motor(n: str) -> bool:
@@ -356,7 +481,7 @@ def _catalogo() -> tuple[dict, ...]:
     return (
         {
             'id': 'mantencion_km',
-            'calza': lambda n: _km(n) in (10, 20, 30, 40, 50, 60, 80, 100) and 'mantencion' in n,
+            'calza': _es_mantencion_km,
         },
         {
             'id': 'distribucion',
@@ -369,6 +494,7 @@ def _catalogo() -> tuple[dict, ...]:
             'calza': lambda n: (
                 ('suspension' in n and 'delanter' in n)
                 or 'tren delantero' in n
+                or any('delantero' in _ejes_de(n, t) for t in ('amortiguador', 'bieleta', 'bandeja', 'rotula'))
                 or (
                     any(_tallo(n, t) for t in ('amortiguador', 'bieleta', 'bandeja', 'rotula'))
                     and 'traser' not in n
@@ -377,22 +503,20 @@ def _catalogo() -> tuple[dict, ...]:
         },
         {
             'id': 'suspension_trasera',
-            'calza': lambda n: ('suspension' in n and 'traser' in n) or (
-                _tallo(n, 'amortiguador') and 'traser' in n
+            'calza': lambda n: ('suspension' in n and 'traser' in n) or any(
+                'trasero' in _ejes_de(n, t) for t in ('amortiguador', 'bieleta', 'bandeja', 'rotula')
             ),
         },
         {
             'id': 'frenos_traseros',
             'calza': lambda n: 'embrague' not in n and (
-                ('freno' in n and 'traser' in n)
+                (('freno' in n or 'frenar' in n) and 'traser' in n)
                 or any(_tallo(n, t) for t in ('balata', 'zapata', 'tambor'))
             ),
         },
         {
             'id': 'frenos_delanteros',
-            'calza': lambda n: 'embrague' not in n and (
-                ('freno' in n and 'delanter' in n) or _tallo(n, 'pastilla')
-            ) and not ('zapata' in n and not _tallo(n, 'pastilla') and 'delanter' not in n),
+            'calza': _frenos_adelante,
         },
         {
             'id': 'embrague',
@@ -405,10 +529,34 @@ def _catalogo() -> tuple[dict, ...]:
         {
             'id': 'revision_hidraulico',
             'calza': lambda n: (
-                ('hidraulico' in n and ('sistema' in n or 'freno' in n))
-                or 'diagnostico' in n
-                or _tallo(n, 'escaner')
-            ) and 'pastilla' not in n and 'balata' not in n,
+                ('hidraul' in n and ('sistema' in n or 'freno' in n) and 'direccion' not in n)
+                or ('diagnostico' in n and 'humo' not in n and 'escaner' not in n and 'check' not in n)
+            ) and 'pastilla' not in n and 'balata' not in n and 'direccion' not in n,
+        },
+        {
+            'id': 'direccion_hidraulica',
+            'calza': lambda n: 'direccion' in n and ('hidraul' in n or 'traba' in n),
+        },
+        {
+            'id': 'escaner',
+            'calza': lambda n: 'escaner' in n or ('check' in n and any(
+                verbo in n for verbo in ('prende', 'encend', 'luz', 'testigo')
+            )),
+        },
+        {
+            'id': 'humo',
+            'calza': lambda n: 'humo' in n,
+        },
+        {
+            'id': 'correa_auxiliar',
+            'calza': lambda n: 'distribucion' not in n and (
+                'correa auxiliar' in n or 'correa de accesorio' in n
+                or (_tallo(n, 'correa') and 'distribucion' not in n and 'cadena' not in n)
+            ),
+        },
+        {
+            'id': 'rotacion',
+            'calza': lambda n: 'rotacion' in n or _tallo(n, 'rotar'),
         },
         {
             'id': 'bateria',
@@ -471,23 +619,39 @@ def _piezas_de(ident: str, n: str, vehiculo: dict) -> tuple[list[dict], list[dic
     if ident == 'suspension_delantera':
         piezas = [
             _pieza('amortiguador', 'Amortiguadores delanteros', 'El ruido delantero suele ser el amortiguador.', requerido=True, tallo='amortiguador'),
-            _pieza('bieleta', 'Bieletas', 'Conviene revisarlas al bajar la suspensión.', tallo='bieleta'),
+            _pieza('bieleta', 'Bieletas delanteras', 'Conviene revisarlas al bajar la suspensión.', tallo='bieleta'),
             _pieza('bandeja', 'Bandejas', 'Si tienen juego, se cambian con la suspensión.', tallo='bandeja'),
             _pieza('rotula', 'Rótulas', 'Se revisan al intervenir el tren delantero.', tallo='rotula'),
             _pieza('cazoleta', 'Cazoletas', 'Se cambian junto con el amortiguador si están cortadas.', tallo='cazoleta'),
         ]
-        nombradas = [p for p in piezas if p['tallo'] in n]
-        if nombradas and 'suspension' not in n and 'tren delantero' not in n:
+        nombradas = [p for p in piezas if 'delantero' in _ejes_de(n, p['tallo'])]
+        if not nombradas and 'suspension' not in n and 'tren delantero' not in n:
+            nombradas = [
+                p for p in piezas
+                if p['tallo'] in n and 'trasero' not in _ejes_de(n, p['tallo'])
+            ]
+        if nombradas:
             req = nombradas
-            sug = [p for p in piezas if p not in nombradas]
+            sug = [p for p in piezas if p not in nombradas and 'trasero' not in _ejes_de(n, p['tallo'])]
         else:
             req = [piezas[0]]
             sug = piezas[1:]
         return req, sug, 'Mantención de suspensión delantera', 3, 'La suspensión delantera son unas 3 horas.', False
 
     if ident == 'suspension_trasera':
-        req = [_pieza('amortiguador', 'Amortiguadores traseros', requerido=True, tallo='amortiguador')]
-        sug = [_pieza('cazoleta', 'Cazoletas traseras', 'Se revisan junto con el amortiguador trasero.', tallo='cazoleta')]
+        piezas_tras = [
+            _pieza('amortiguador', 'Amortiguadores traseros', requerido=True, tallo='amortiguador'),
+            _pieza('bieleta', 'Bieletas traseras', requerido=True, tallo='bieleta'),
+            _pieza('bandeja', 'Bandejas traseras', requerido=True, tallo='bandeja'),
+            _pieza('rotula', 'Rótulas traseras', requerido=True, tallo='rotula'),
+        ]
+        nombradas = [p for p in piezas_tras if 'trasero' in _ejes_de(n, p['tallo'])]
+        if nombradas:
+            req = nombradas
+            sug = [_pieza('cazoleta', 'Cazoletas traseras', 'Se revisan junto con el amortiguador trasero.', tallo='cazoleta')]
+        else:
+            req = [piezas_tras[0]]
+            sug = [_pieza('cazoleta', 'Cazoletas traseras', 'Se revisan junto con el amortiguador trasero.', tallo='cazoleta')]
         return req, sug, 'Mantención de suspensión trasera', 2.5, 'La suspensión trasera son unas 2.5 horas.', False
 
     if ident == 'frenos_traseros':
@@ -499,9 +663,10 @@ def _piezas_de(ident: str, n: str, vehiculo: dict) -> tuple[list[dict], list[dic
     if ident == 'frenos_delanteros':
         req = [_pieza('pastillas_freno', 'Pastillas de freno delanteras', requerido=True, tallo='pastilla')]
         sug = [_pieza('discos_freno', 'Discos de freno delanteros', 'Si están bajo el mínimo, se cambian con las pastillas.', tallo='disco')]
-        if 'disco' in n and 'delanter' in n:
+        if 'disco' in n and ('delanter' in n or 'adelante' in n):
             req.append(sug.pop(0))
-        return req, sug, 'Cambio de pastillas delanteras', 1.5, 'Las pastillas delanteras son cerca de 1.5 horas.', False
+        nombre = 'Frenos delanteros' if 'pastilla' not in n else 'Cambio de pastillas delanteras'
+        return req, sug, nombre, 1.5, 'Los frenos delanteros son cerca de 1.5 horas.', False
 
     if ident == 'embrague':
         from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
@@ -559,16 +724,46 @@ def _piezas_de(ident: str, n: str, vehiculo: dict) -> tuple[list[dict], list[dic
         return req, sug, 'Refrigeración', 2, 'Radiador o termostato son unas 2 horas.', False
 
     if ident == 'bujias':
+        cilindros = re.search(r'\b([3-8])\s*cilindros?\b', n)
+        cantidad = int(cilindros.group(1)) if cilindros else 4
+        req = [_pieza('bujia', 'Bujías', requerido=True, tallo='bujia', cantidad=cantidad)]
+        if 'cable' in n:
+            req.append(_pieza('cable_bujia', 'Cables de bujía', requerido=True, tallo='cable'))
+        return req, [], 'Cambio de bujías', 1, 'Las bujías se cotizan como juego. Son cerca de 1 hora.', False
+
+    if ident == 'correa_auxiliar':
         return (
-            [_pieza('bujia', 'Bujías', requerido=True, tallo='bujia')],
-            [],
-            'Cambio de bujías',
-            1,
-            'Las bujías son cerca de 1 hora.',
+            [_pieza('correa_auxiliar', 'Correa auxiliar', requerido=True, tallo='correa')],
+            [_pieza('tensor', 'Tensor de correa auxiliar', 'Conviene cambiarlo si está ruidoso.', tallo='tensor')],
+            'Cambio de correa auxiliar',
+            1.5,
+            'La correa auxiliar no es la de distribución. Son cerca de 1.5 horas.',
             False,
         )
 
-    return [], [], 'Alineación y balanceo', 1, 'Alineación y balanceo son cerca de 1 hora.', True
+    if ident == 'direccion_hidraulica':
+        return (
+            [_pieza('liquido_direccion', 'Líquido de dirección hidráulica', requerido=True, tallo='liquido')],
+            [_pieza('bomba_direccion', 'Bomba de dirección hidráulica', 'Si se traba con el líquido nuevo, la bomba puede ser la causa.')],
+            'Dirección hidráulica',
+            2,
+            'Una dirección que se traba son unas 2 horas entre diagnóstico y reparación.',
+            False,
+        )
+
+    if ident == 'escaner':
+        return [], [], 'Diagnóstico con escáner', 1, 'Leer el check con el escáner es cerca de 1 hora.', True
+
+    if ident == 'humo':
+        return [], [], 'Diagnóstico de humo blanco', 1, 'El humo blanco se diagnostica antes de cotizar un repuesto. Es cerca de 1 hora.', True
+
+    if ident == 'rotacion':
+        return [], [], 'Rotación de neumáticos', 0.5, 'Rotar los neumáticos es cerca de media hora.', True
+
+    if ident == 'alineacion':
+        return [], [], 'Alineación y balanceo', 1, 'Alineación y balanceo son cerca de 1 hora.', True
+
+    return [], [], ident, 1, 'Servicio de taller.', False
 
 
 def _lista_explicita(texto: str) -> bool:
@@ -588,6 +783,48 @@ def es_pieza_suelta_de_item(texto: str) -> bool:
     return _norm(texto) in _PIEZA_DE_ITEM
 
 
+def _ya_nombrada(servicios: list[dict], tallo: str, ident: str) -> bool:
+    for servicio in servicios:
+        for pieza in (servicio.get('repuestos_requeridos') or []) + (servicio.get('sugeridos') or []):
+            if pieza.get('tallo') == tallo or pieza.get('identidad') == ident:
+                return True
+            if tallo and tallo in _norm(pieza.get('nombre') or ''):
+                return True
+    return False
+
+
+def _conservar_nombradas(n: str, servicios: list[dict], auto: dict, taller) -> None:
+    """Una pieza que el texto nombra no se tira. Si el plan no la usó, queda pedida."""
+    sueltas = (
+        ('cables de bujia', 'cable_bujia', 'Cables de bujía', 'cable'),
+        ('correa auxiliar', 'correa_auxiliar', 'Correa auxiliar', 'correa'),
+        ('pastilla', 'pastillas_freno', 'Pastillas de freno', 'pastilla'),
+        ('bieleta', 'bieleta', 'Bieletas', 'bieleta'),
+        ('amortiguador', 'amortiguador', 'Amortiguadores', 'amortiguador'),
+        ('bujia', 'bujia', 'Bujías', 'bujia'),
+        ('disco de freno', 'discos_freno', 'Discos de freno', 'disco'),
+        ('cable', 'cable_bujia', 'Cables de bujía', 'cable'),
+    )
+    for frase, ident, nombre, tallo in sueltas:
+        presente = frase in n or (tallo != 'correa' and _tallo(n, tallo))
+        if not presente or _ya_nombrada(servicios, tallo, ident):
+            continue
+        pieza = _pieza(ident, nombre, requerido=True, tallo=tallo)
+        pieza['origen'] = 'solicitada'
+        destino = next((servicio for servicio in servicios if not servicio.get('solo_mano')), None)
+        if destino is None:
+            destino = _servicio(
+                'piezas-pedidas', 'Piezas pedidas', 1,
+                'El pedido nombra piezas que no entraron en un servicio.',
+                [pieza], auto, taller,
+            )
+            destino['repuestos_requeridos'] = []
+            destino['sugeridos'] = []
+            servicios.append(destino)
+        destino.setdefault('repuestos_requeridos', []).append(pieza)
+        destino.setdefault('piezas', []).append(pieza)
+
+
 def planificar_pedido(texto: str, vehiculo: dict | None = None, taller=None) -> dict[str, Any]:
     """Servicios del pedido según el catálogo. Cualquier trabajo conocido, no cuatro frases."""
     n = _norm(texto)
@@ -596,7 +833,9 @@ def planificar_pedido(texto: str, vehiculo: dict | None = None, taller=None) -> 
     if 'mantencion_km' in ids:
         ids = [ident for ident in ids if ident not in ('aceite_filtros', 'bujias')]
     if 'distribucion' in ids:
-        ids = [ident for ident in ids if ident != 'refrigeracion']
+        ids = [ident for ident in ids if ident not in ('refrigeracion', 'correa_auxiliar')]
+    if any(ident in ids for ident in ('escaner', 'direccion_hidraulica', 'humo')):
+        ids = [ident for ident in ids if ident != 'revision_hidraulico']
     if 'revision_hidraulico' in ids and 'pastilla' not in n and 'balata' not in n and 'zapata' not in n:
         ids = [ident for ident in ids if ident not in ('frenos_delanteros', 'frenos_traseros')]
     if 'frenos_traseros' in ids and 'pastilla' not in n and 'delanter' not in n:
@@ -630,7 +869,23 @@ def planificar_pedido(texto: str, vehiculo: dict | None = None, taller=None) -> 
                 'texto': 'Revisar el sistema hidráulico es mano de obra o diagnóstico. No se cotizó como repuesto.',
                 'confirmada': False,
             })
+        if ident == 'humo':
+            dudas.append({
+                'id': 'humo-diagnostico',
+                'texto': (
+                    'Humo blanco puede ser refrigerante en la cámara o solo condensación. '
+                    'Quedó como diagnóstico, sin cotizar un repuesto hasta confirmar la causa.'
+                ),
+                'confirmada': False,
+            })
+        if ident == 'direccion_hidraulica':
+            dudas.append({
+                'id': 'direccion-causa',
+                'texto': 'La dirección que se traba puede ser el líquido o la bomba. Confirmá la causa antes de enviar.',
+                'confirmada': False,
+            })
         servicios.append(fila)
+    _conservar_nombradas(n, servicios, auto, taller)
     if not servicios:
         recorte = str(texto or '').strip()[:180]
         dudas.append({
@@ -709,8 +964,10 @@ def _linea(pieza: dict, *, vehiculo: dict, origen: str, estado: str, motivo: str
         'estado_sugerencia': estado,
         'motivo_sugerencia': motivo,
         'consulta': _consulta(nombre, vehiculo),
-        'rol': 'insumo' if ident in ('aceite_motor', 'aceite_caja', 'liquido_frenos', 'refrigerante') else 'repuesto',
+        'rol': 'insumo' if ident in ('aceite_motor', 'aceite_caja', 'liquido_frenos', 'refrigerante', 'liquido_direccion') else 'repuesto',
     }
+    if pieza.get('cantidad'):
+        fila['cantidad'] = int(pieza['cantidad'])
     if ident == 'aceite_motor':
         litros = capacidad_aceite_l(str(vehiculo.get('modelo') or ''))
         fila['especificacion_pendiente'] = True
@@ -908,7 +1165,19 @@ def _preciar(linea: dict, buscar: Buscador | None, vehiculo: dict) -> None:
     _marcar_estimado(linea)
 
 
+def interpretar_pedido(texto: str, vehiculo: dict | None = None):
+    """La misma lectura del modelo, una vez por frase y vehículo. None si no responde."""
+    from mecanimovilapp.apps.agente_ia.services.extraccion_pedido_llm import leer_pedido_llm
+
+    try:
+        return leer_pedido_llm(texto, vehiculo or {})
+    except Exception:
+        return None
+
+
 def _armar(texto, vehiculo, taller, pedido) -> dict:
+    if pedido is None:
+        pedido = interpretar_pedido(texto, vehiculo)
     desde_llm = plan_desde_pedido(pedido, vehiculo, taller) if pedido is not None else None
     if desde_llm and desde_llm.get('servicios'):
         return desde_llm
@@ -938,12 +1207,13 @@ def cotizar_por_servicio(
                 continue
             vistos.add(ident)
             es_req = pieza in servicio['repuestos_requeridos']
+            origen = pieza.get('origen') or ('pedido' if es_req else 'sugerencia')
             linea = _linea(
                 pieza,
                 vehiculo=auto,
-                origen='pedido' if es_req else 'sugerencia',
-                estado='aceptada' if es_req else 'pendiente',
-                motivo='' if es_req else (pieza.get('motivo') or ''),
+                origen=origen,
+                estado='pendiente' if origen == 'sugerencia' else 'aceptada',
+                motivo='' if origen != 'sugerencia' else (pieza.get('motivo') or ''),
             )
             _preciar(linea, buscar, auto)
             repuestos.append(linea)

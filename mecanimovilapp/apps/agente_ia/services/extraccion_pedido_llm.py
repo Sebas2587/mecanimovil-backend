@@ -98,6 +98,52 @@ class PedidoExtraido(BaseModel):
         return v if v in validos else ''
 
 
+_CACHE_PEDIDO: dict[tuple, PedidoExtraido] = {}
+_MAX_TOKENS_EXTRACCION = 8192
+
+
+def generation_config_extraccion(modelo: str) -> dict:
+    """La misma config que el resto del repo. Gemini 3 necesita thinkingConfig."""
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador import (
+        _modelo_admite_thinking_level,
+        generation_config_gemini,
+    )
+
+    return generation_config_gemini(
+        temperature=0.2,
+        max_output=_MAX_TOKENS_EXTRACCION,
+        response_json=True,
+        thinking=_modelo_admite_thinking_level(modelo),
+    )
+
+
+def _body_sin_secreto(texto: str) -> str:
+    limpio = re.sub(r'AIza[\w\-]+', '***', texto or '')
+    return re.sub(r'(key=)[^&\s"\']+', r'\1***', limpio)[:800]
+
+
+def leer_pedido_llm(texto_cliente: str, vehiculo_context: dict | None = None) -> PedidoExtraido | None:
+    """Una llamada por texto y vehículo. No arma el catálogo: si falla, devuelve None."""
+    vehiculo_context = vehiculo_context or {}
+    clave = (
+        re.sub(r'\s+', ' ', (texto_cliente or '').strip().lower()),
+        str(vehiculo_context.get('marca') or '').strip().lower(),
+        str(vehiculo_context.get('modelo') or '').strip().lower(),
+        str(vehiculo_context.get('anio') or ''),
+        str(vehiculo_context.get('motor') or vehiculo_context.get('cilindraje') or ''),
+    )
+    guardado = _CACHE_PEDIDO.get(clave)
+    if guardado is not None:
+        return guardado
+    pedido = _llamar_gemini_extraccion(texto_cliente, vehiculo_context)
+    if pedido and pedido.servicios:
+        if len(_CACHE_PEDIDO) > 128:
+            _CACHE_PEDIDO.clear()
+        _CACHE_PEDIDO[clave] = pedido
+        return pedido
+    return None
+
+
 def extraer_pedido_con_llm(
     texto_cliente: str,
     vehiculo_context: dict | None = None,
@@ -120,8 +166,8 @@ def extraer_pedido_con_llm(
     vehiculo_context = vehiculo_context or {}
     
     try:
-        # Intentar extracción con LLM
-        resultado_llm = _llamar_gemini_extraccion(texto_cliente, vehiculo_context)
+        # La misma llamada que el cotizador, con caché por texto y vehículo.
+        resultado_llm = leer_pedido_llm(texto_cliente, vehiculo_context)
         
         if resultado_llm:
             logger.info(
@@ -243,75 +289,69 @@ Responde SOLO JSON válido sin markdown:
   "descripcion_problema": "Cliente necesita cambio de aceite y filtro"
 }}"""
     
-    # Llamar a Gemini
-    modelo = getattr(settings, 'GEMINI_MODEL', 'gemini-2.5-flash-lite')
-    url = f'https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent?key={api_key}'
-    
-    payload = {
-        'contents': [{'parts': [{'text': prompt}]}],
-        'generationConfig': {
-            'temperature': 0.2,
-            'maxOutputTokens': 2048,
-            'responseMimeType': 'application/json',
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador import (
+        _url_generate_content,
+        finish_reason_gemini,
+        modelos_gemini_cotizacion,
+        texto_candidato_gemini,
+        timeout_http_gemini,
+    )
+
+    modelos = modelos_gemini_cotizacion()
+    texto_json = ''
+    for indice, modelo in enumerate(modelos):
+        url = _url_generate_content(modelo, api_key)
+        payload = {
+            'contents': [{'parts': [{'text': prompt}]}],
+            'generationConfig': generation_config_extraccion(modelo),
         }
-    }
-    
-    try:
-        resp = requests.post(url, json=payload, timeout=(8, 15))
-        
+        try:
+            resp = requests.post(url, json=payload, timeout=timeout_http_gemini(25))
+        except requests.Timeout:
+            logger.warning('agente_ia[extraccion] gemini_timeout model=%s', modelo)
+            continue
+        except Exception as exc:
+            logger.warning('agente_ia[extraccion] gemini_error model=%s error=%s', modelo, exc)
+            return None
         if resp.status_code != 200:
             logger.warning(
-                'agente_ia[extraccion] gemini_http_error status=%s body=%s',
+                'agente_ia[extraccion] gemini_http_error model=%s status=%s body=%s',
+                modelo,
                 resp.status_code,
-                resp.text[:200]
+                _body_sin_secreto(getattr(resp, 'text', '') or ''),
             )
+            if resp.status_code in (429, 503) and indice < len(modelos) - 1:
+                continue
             return None
-        
-        body = resp.json()
-        candidates = body.get('candidates', [])
-        if not candidates:
+        try:
+            body = resp.json()
+        except ValueError:
+            logger.warning('agente_ia[extraccion] json_error model=%s body=%s', modelo, _body_sin_secreto(resp.text))
             return None
-        
-        content = candidates[0].get('content', {})
-        parts = content.get('parts', [])
-        if not parts:
-            return None
-        
-        # Obtener texto JSON
-        texto_json = ''
-        for part in parts:
-            if part.get('thought'):
-                continue  # Skip thinking parts in Gemini 3.x
-            text = part.get('text', '')
-            if text:
-                texto_json += text
-        
-        if not texto_json:
-            return None
-        
-        # Limpiar markdown si existe
-        texto_json = texto_json.strip()
+        if finish_reason_gemini(body) == 'MAX_TOKENS':
+            logger.warning(
+                'agente_ia[extraccion] respuesta_truncada model=%s max_tokens=%s',
+                modelo,
+                _MAX_TOKENS_EXTRACCION,
+            )
+        texto_json = (texto_candidato_gemini(body) or '').strip()
         if texto_json.startswith('```'):
             texto_json = re.sub(r'^```(?:json)?\s*', '', texto_json)
             texto_json = re.sub(r'\s*```$', '', texto_json)
-        
-        # Parsear JSON
-        data = json.loads(texto_json)
-        
-        # Validar con Pydantic
-        resultado = PedidoExtraido(**data)
-        
-        return resultado
-        
-    except requests.Timeout:
-        logger.warning('agente_ia[extraccion] gemini_timeout')
-        return None
-    except (json.JSONDecodeError, ValueError) as exc:
-        logger.warning('agente_ia[extraccion] json_error=%s texto=%s', exc, texto_json[:200])
-        return None
-    except Exception as exc:
-        logger.warning('agente_ia[extraccion] gemini_error=%s', exc, exc_info=True)
-        return None
+        if not texto_json:
+            logger.warning('agente_ia[extraccion] gemini_vacio model=%s', modelo)
+            continue
+        try:
+            return PedidoExtraido(**json.loads(texto_json))
+        except (json.JSONDecodeError, ValueError) as exc:
+            logger.warning(
+                'agente_ia[extraccion] json_error model=%s error=%s texto=%s',
+                modelo,
+                exc,
+                _body_sin_secreto(texto_json),
+            )
+            return None
+    return None
 
 
 def _fallback_regex(
@@ -338,13 +378,25 @@ def _fallback_regex(
     # Inferir alcance
     alcance = inferir_alcance_repuestos(texto_cliente, decision=None)
     
-    # Construir vehículo desde contexto
+    plan_auto: dict = {}
+    try:
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.plan_por_servicio import (
+            planificar_pedido,
+        )
+        plan_auto = (planificar_pedido(texto_cliente, vehiculo_context).get('vehiculo') or {})
+    except Exception:
+        plan_auto = {}
+    anio = vehiculo_context.get('anio') or plan_auto.get('anio') or None
+    try:
+        anio = int(anio) if anio not in (None, '') else None
+    except (TypeError, ValueError):
+        anio = None
     vehiculo = VehiculoExtraido(
-        marca=str(vehiculo_context.get('marca', '')),
-        modelo=str(vehiculo_context.get('modelo', '')),
-        anio=vehiculo_context.get('anio'),
-        motor=str(vehiculo_context.get('motor', '')),
-        patente=str(vehiculo_context.get('patente', '')),
+        marca=str(vehiculo_context.get('marca') or plan_auto.get('marca') or ''),
+        modelo=str(vehiculo_context.get('modelo') or plan_auto.get('modelo') or ''),
+        anio=anio,
+        motor=str(vehiculo_context.get('motor') or plan_auto.get('motor') or ''),
+        patente=str(vehiculo_context.get('patente') or ''),
         tipo_motor=str(vehiculo_context.get('tipo_motor', '') or '').upper() or None,
     )
     

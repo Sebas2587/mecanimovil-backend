@@ -8,13 +8,19 @@ from mecanimovilapp.apps.agente_ia.services.extraccion_pedido_llm import (
     VehiculoExtraido,
     ServicioExtraido,
     RepuestoMencionado,
+    _CACHE_PEDIDO,
     _fallback_regex,
+    generation_config_extraccion,
+    leer_pedido_llm,
 )
 
 
 class ExtraicionPedidoLLMTestCase(TestCase):
     """Tests de extracción con LLM."""
-    
+
+    def setUp(self):
+        _CACHE_PEDIDO.clear()
+
     def test_extraccion_filtro_aire_simple(self):
         """Test: extraer pedido simple de filtro de aire."""
         texto = "Hola necesito cambio de filtro de aire para mi Yaris 2018"
@@ -227,3 +233,54 @@ class FallbackRegexTestCase(TestCase):
         self.assertEqual(resultado.vehiculo.modelo, 'Civic')
         self.assertEqual(resultado.vehiculo.anio, 2020)
         self.assertEqual(resultado.vehiculo.patente, 'XYZ123')
+
+
+class GenerationConfigExtraccionTests(TestCase):
+    def test_gemini_3_incluye_thinking_y_tokens_suficientes(self):
+        cfg = generation_config_extraccion('gemini-3.1-flash-lite')
+        self.assertIn('thinkingConfig', cfg)
+        self.assertGreaterEqual(cfg['maxOutputTokens'], 4096)
+        self.assertEqual(cfg['responseMimeType'], 'application/json')
+        anterior = generation_config_extraccion('gemini-2.5-flash')
+        self.assertNotIn('thinkingConfig', anterior)
+
+        resp = Mock()
+        resp.status_code = 400
+        resp.text = '{"error":{"message":"thinkingConfig required","key":"AIzaSY-no-loguear"}}'
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador.modelos_gemini_cotizacion',
+            return_value=['gemini-3.1-flash-lite'],
+        ), patch('requests.post', return_value=resp) as post, self.assertLogs(
+            'mecanimovilapp.apps.agente_ia.services.extraccion_pedido_llm',
+            'WARNING',
+        ) as logs:
+            from django.test import override_settings
+            from mecanimovilapp.apps.agente_ia.services.extraccion_pedido_llm import (
+                _llamar_gemini_extraccion,
+            )
+            with override_settings(GEMINI_API_KEY='AIza-test'):
+                self.assertIsNone(_llamar_gemini_extraccion('pastillas del yaris', {}))
+        enviado = post.call_args.kwargs['json']['generationConfig']
+        self.assertIn('thinkingConfig', enviado)
+        self.assertGreaterEqual(enviado['maxOutputTokens'], 4096)
+        self.assertNotIn('AIza', str(enviado))
+        aviso = '\n'.join(logs.output)
+        self.assertIn('400', aviso)
+        self.assertIn('thinkingConfig required', aviso)
+        self.assertNotIn('AIza', aviso)
+
+    def test_la_misma_frase_no_llama_dos_veces(self):
+        pedido = PedidoExtraido(
+            vehiculo=VehiculoExtraido(marca='Mazda', modelo='3', anio=2016),
+            servicios=[ServicioExtraido(nombre='Frenos delanteros', horas=1.5)],
+        )
+        _CACHE_PEDIDO.clear()
+        with patch(
+            'mecanimovilapp.apps.agente_ia.services.extraccion_pedido_llm._llamar_gemini_extraccion',
+            return_value=pedido,
+        ) as llamada:
+            primero = leer_pedido_llm('ruido al frenar', {'marca': 'Mazda', 'modelo': '3'})
+            segundo = leer_pedido_llm('ruido al frenar', {'marca': 'Mazda', 'modelo': '3'})
+        self.assertEqual(llamada.call_count, 1)
+        self.assertEqual(primero.servicios[0].nombre, segundo.servicios[0].nombre)
+        _CACHE_PEDIDO.clear()
