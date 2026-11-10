@@ -304,6 +304,16 @@ _CATALOGO_OROCH = [
         'https://www.sergioescobar.cl/liquido-dot4-500',
         '6.990',
     ),
+    _ficha(
+        'Aceite de caja 75W-80 4 litros',
+        'https://www.todoauto.cl/aceite-caja-75w80-4l',
+        '22.000',
+    ),
+    _ficha(
+        'Liquido de frenos DOT4 1 litro',
+        'https://www.sergioescobar.cl/liquido-dot4-1l',
+        '9.000',
+    ),
 ]
 
 
@@ -403,39 +413,49 @@ class PreciosPropiosTests(SimpleTestCase):
         aceite = hits['Aceite de caja de cambios']
         liquido = hits['Líquido de frenos']
         self.assertIn('75w-80', aceite['nombre_producto'].lower())
+        self.assertIn('4 litro', aceite['nombre_producto'].lower())
         self.assertIn('dot4', liquido['nombre_producto'].lower())
+        self.assertIn('1 litro', liquido['nombre_producto'].lower())
         self.assertNotEqual(aceite['url'], liquido['url'])
+        self.assertGreaterEqual(len(aceite['candidatos_envase']), 2)
+        self.assertGreaterEqual(len(liquido['candidatos_envase']), 2)
         unitario, nota = precio_unitario_desde_envase(
-            'Aceite de caja de cambios', 8990, aceite['nombre_producto'],
+            'Aceite de caja de cambios', aceite['precio_clp'], aceite['nombre_producto'],
         )
-        self.assertEqual(unitario, 8990)
+        self.assertEqual(unitario, 22000)
         self.assertEqual(nota, '')
         linea_aceite = aplicar_cantidad_envase(
             {
                 'nombre': 'Aceite de caja de cambios',
                 'identidad': 'aceite_caja',
                 'nombre_producto': aceite['nombre_producto'],
-                'precio_unitario_clp': unitario,
+                'precio_unitario_clp': aceite['precio_clp'],
+                'url': aceite['url'],
                 'especificacion': '75W-80 · 2.5 L',
+                'candidatos_envase': aceite['candidatos_envase'],
             },
             marca='Renault',
             modelo='Oroch',
         )
-        self.assertEqual(linea_aceite['cantidad'], 3)
-        self.assertEqual(linea_aceite['precio_unitario_clp'], 8990)
+        self.assertEqual(linea_aceite['cantidad'], 1)
+        self.assertEqual(linea_aceite['precio_unitario_clp'], 22000)
+        self.assertEqual(linea_aceite['costo_envases_clp'], 22000)
         linea_dot = aplicar_cantidad_envase(
             {
                 'nombre': 'Líquido de frenos',
                 'identidad': 'liquido_frenos',
                 'nombre_producto': liquido['nombre_producto'],
                 'precio_unitario_clp': liquido['precio_clp'],
+                'url': liquido['url'],
                 'especificacion': 'DOT4',
+                'candidatos_envase': liquido['candidatos_envase'],
             },
             marca='Renault',
             modelo='Oroch',
         )
-        self.assertEqual(linea_dot['cantidad'], 2)
-        self.assertEqual(linea_dot['precio_unitario_clp'], 6990)
+        self.assertEqual(linea_dot['cantidad'], 1)
+        self.assertEqual(linea_dot['precio_unitario_clp'], 9000)
+        self.assertEqual(linea_dot['costo_envases_clp'], 9000)
         bidon = aplicar_cantidad_envase(
             {
                 'nombre': 'Aceite de caja de cambios',
@@ -761,8 +781,6 @@ _EMBRAGUE = {
 }
 
 _CASOS_B2 = (
-    'bombín de freno',
-    'cilindro maestro de frenos',
     'piloto automático',
     'piola de acelerador',
     'horquilla de suspensión',
@@ -770,6 +788,13 @@ _CASOS_B2 = (
     'retén de rueda',
     'guaya de puerta',
 )
+_FRENOS_TAXONOMIA = {
+    'bombín de freno': 'bombin_rueda',
+    'cilindro maestro de frenos': 'cilindro_maestro_freno',
+    'pastillas delanteras': 'pastillas_freno',
+    'zapatas traseras': 'balatas_freno',
+    'cm de frenos': 'cilindro_maestro_freno',
+}
 
 _CASOS_B3 = (
     (
@@ -1028,3 +1053,165 @@ class RevisionIdentidadTests(SimpleTestCase):
         self.assertEqual(aceite['origen'], 'sugerencia')
         self.assertEqual(aceite['estado_sugerencia'], 'pendiente')
         self.assertIn('aceite', aceite['motivo_sugerencia'].lower())
+
+
+class SegundaRevisionTests(SimpleTestCase):
+    def test_el_sistema_se_resuelve_por_tramo(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
+            comprender_pedido,
+            piezas_del_pedido,
+        )
+
+        out = comprender_pedido('frenos: cilindro rueda trasero izq. embrague: kit')
+        ids = [item['identidad'] for item in out['items']]
+        self.assertIn('kit_embrague', ids)
+        self.assertIn('bombin_rueda', ids)
+        self.assertNotIn('cilindro_receptor_embrague', ids)
+
+        retenes = piezas_del_pedido('cambiar retén de rueda y retén de cigüeñal')
+        self.assertTrue(any(item['identidad'] == 'reten_ciguenal' for item in retenes))
+        self.assertTrue(any('rueda' in item['texto_original'].lower() for item in retenes))
+        self.assertEqual(len(retenes), 2)
+
+    def test_frenos_se_cotizan_con_y_sin_el_modelo(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
+            comprender_pedido,
+            separar_precios_copiados,
+        )
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+            aplicar_pedido_y_sugerencias,
+        )
+
+        for texto, ident in _FRENOS_TAXONOMIA.items():
+            caido = comprender_pedido(texto)
+            self.assertIn(ident, [item['identidad'] for item in caido['items']], texto)
+            self.assertFalse({item['identidad'] for item in caido['items']} & _EMBRAGUE, texto)
+            leido = comprender_pedido(texto, respuesta_llm={
+                'items': [_item_llm(texto, 'otra', sistema='frenos', confianza=0.92)],
+                'faenas': [],
+                'dudas': [],
+            })
+            self.assertTrue(leido['items'], texto)
+            self.assertTrue(
+                all(str(item['identidad']).startswith('otra:frenos:') for item in leido['items']),
+                leido['items'],
+            )
+            self.assertFalse({item['identidad'] for item in leido['items']} & _EMBRAGUE, texto)
+            baja = comprender_pedido(texto, respuesta_llm={
+                'items': [_item_llm(texto, 'otra', sistema='frenos', confianza=0.2)],
+                'faenas': [],
+                'dudas': [],
+            })
+            self.assertEqual(baja['items'], [], texto)
+            self.assertTrue(baja['dudas'], texto)
+
+        pedido = aplicar_pedido_y_sugerencias(
+            {'repuestos': [], 'descripcion_problema': 'pastillas delanteras'},
+            servicio_nombre='Cambio de pastillas',
+        )
+        self.assertTrue(any('pastilla' in rep['nombre'].lower() for rep in pedido['repuestos']))
+
+        sensor = comprender_pedido('sensor de abs', respuesta_llm={
+            'items': [_item_llm('sensor de abs', 'otra', sistema='frenos', confianza=0.92)],
+            'faenas': [],
+            'dudas': [],
+        })
+        self.assertTrue(sensor['items'][0]['identidad'].startswith('otra:frenos:'))
+        cotizado = aplicar_pedido_y_sugerencias(
+            {
+                'repuestos': [],
+                'descripcion_problema': 'sensor de abs',
+                'comprension_llm': sensor,
+            },
+            servicio_nombre='sensor de abs',
+        )
+        self.assertTrue(any(
+            str(rep.get('identidad') or '').startswith('otra:')
+            for rep in cotizado['repuestos']
+        ))
+
+        reps = [
+            {
+                'nombre': 'Pastillas delanteras de frenos',
+                'identidad': 'otra:frenos:pastillas-delanteras-de-frenos',
+                'url_producto': 'https://tienda.cl/pastillas',
+                'precio_unitario_clp': 24990,
+                'nombre_producto': 'Pastillas delanteras',
+            },
+            {
+                'nombre': 'Zapatas traseras de frenos',
+                'identidad': 'otra:frenos:zapatas-traseras-de-frenos',
+                'url_producto': 'https://tienda.cl/pastillas',
+                'precio_unitario_clp': 24990,
+                'nombre_producto': 'Pastillas delanteras',
+            },
+        ]
+        separar_precios_copiados(reps)
+        self.assertEqual(reps[0]['precio_unitario_clp'], 24990)
+        self.assertEqual(reps[1]['precio_unitario_clp'], 0)
+        self.assertFalse(reps[1]['url_producto'])
+
+    def test_abreviaturas_de_taller(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
+            comprender_pedido,
+        )
+
+        def ids(texto):
+            return {item['identidad'] for item in comprender_pedido(texto)['items']}
+
+        self.assertIn('bomba_embrague', ids('bba de embrague'))
+        self.assertIn('cilindro_receptor_embrague', ids('cil. rec. de embrague'))
+        self.assertEqual(ids('cm de frenos'), {'cilindro_maestro_freno'})
+        self.assertEqual(
+            ids('kit + bomba + receptor'),
+            {'kit_embrague', 'bomba_embrague', 'cilindro_receptor_embrague'},
+        )
+
+    def test_confianza_omitida_no_bota_el_item(self):
+        from mecanimovilapp.apps.agente_ia.services.extraccion_pedido_llm import ItemPedido
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
+            comprender_pedido,
+        )
+
+        item = ItemPedido(
+            texto_original='pastillas delanteras',
+            rol='repuesto',
+            sistema='frenos',
+            identidad='otra',
+            nombre='pastillas delanteras',
+        )
+        self.assertIsNone(item.confianza)
+        out = comprender_pedido('pastillas delanteras', respuesta_llm={
+            'items': [item.model_dump()],
+            'faenas': [],
+            'dudas': [],
+        })
+        self.assertTrue(out['items'])
+        self.assertGreaterEqual(out['items'][0]['confianza'], 0.6)
+
+    def test_kit_completo_sugiere_el_aceite_al_bajar_la_caja(self):
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
+            aplicar_pedido_y_sugerencias,
+        )
+
+        out = aplicar_pedido_y_sugerencias(
+            {
+                'servicio_nombre': 'Cambio de kit de embrague',
+                'repuestos': [{
+                    'nombre': 'Kit de embrague',
+                    'cantidad': 1,
+                    'precio_unitario_clp': 89000,
+                    'nombre_producto': 'Kit de embrague disco prensa y rodamiento',
+                    'origen': 'pedido',
+                    'estado_sugerencia': 'aceptada',
+                }],
+            },
+            servicio_nombre='Cambio de kit de embrague',
+        )
+        aceite = next(
+            rep for rep in out['repuestos']
+            if rep['nombre'] == 'Aceite de caja de cambios'
+        )
+        self.assertEqual(aceite['origen'], 'sugerencia')
+        self.assertEqual(aceite['estado_sugerencia'], 'pendiente')
+        self.assertIn('bajar la caja', aceite['motivo_sugerencia'].lower())

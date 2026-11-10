@@ -98,6 +98,56 @@ _IDENTIDADES: tuple[dict[str, Any], ...] = (
             'aceite transmision', 'valvulina',
         ),
     },
+    {
+        'id': 'pastillas_freno',
+        'rol': ROL_REPUESTO,
+        'nombre': 'Pastillas de freno',
+        'marcadores': ('pastilla',),
+    },
+    {
+        'id': 'balatas_freno',
+        'rol': ROL_REPUESTO,
+        'nombre': 'Balatas de freno',
+        'marcadores': ('balata', 'zapata'),
+    },
+    {
+        'id': 'discos_freno',
+        'rol': ROL_REPUESTO,
+        'nombre': 'Discos de freno',
+        'marcadores': (
+            'discos de freno', 'disco de freno', 'discos freno', 'disco freno',
+            'discos delanteros', 'discos traseros', 'disco delantero', 'disco trasero',
+        ),
+    },
+    {
+        'id': 'tambores_freno',
+        'rol': ROL_REPUESTO,
+        'nombre': 'Tambores de freno',
+        'marcadores': ('tambor de freno', 'tambor freno', 'tambor'),
+    },
+    {
+        'id': 'bombin_rueda',
+        'rol': ROL_REPUESTO,
+        'nombre': 'Bombín de rueda',
+        'marcadores': (
+            'bombin de freno', 'bombin de rueda', 'bombin freno',
+            'cilindro de rueda', 'cilindro rueda',
+        ),
+    },
+    {
+        'id': 'cilindro_maestro_freno',
+        'rol': ROL_REPUESTO,
+        'nombre': 'Cilindro maestro de freno',
+        'marcadores': (
+            'cilindro maestro de freno', 'cilindro maestro freno', 'bomba de freno',
+        ),
+    },
+    {
+        'id': 'flexible_freno',
+        'rol': ROL_REPUESTO,
+        'nombre': 'Flexible de freno',
+        'marcadores': ('flexible de freno', 'flexible freno', 'manguera de freno'),
+    },
 )
 
 _POR_ID = {fila['id']: fila for fila in _IDENTIDADES}
@@ -188,6 +238,109 @@ def _sistema_de(n: str) -> str:
     return ''
 
 
+def _expandir(n: str) -> str:
+    """Abreviaturas de taller. «cm» y «bba» solo como palabra."""
+    n = re.sub(r'\bbba\b', 'bomba', n)
+    n = re.sub(r'\bcil rec\b', 'cilindro receptor', n)
+    n = re.sub(r'\bcm\b', 'cilindro maestro', n)
+    return n
+
+
+def _sistema_del_trozo(n: str, etiqueta: str = '') -> str:
+    """El calificador de este tramo gana sobre una palabra de otro tramo."""
+    local_embrague = 'embrague' in n or 'clutch' in n
+    local_freno = 'freno' in n or ('rueda' in n and not local_embrague)
+    local_otro = any(
+        pieza in n for pieza in ('puerta', 'acelerador', 'suspension', 'automatico', 'direccion')
+    )
+    if local_freno and not local_embrague:
+        return 'frenos'
+    if local_otro and not local_embrague:
+        return 'otro'
+    if local_embrague or etiqueta == 'embrague':
+        return 'embrague'
+    if etiqueta == 'frenos':
+        return 'frenos'
+    if etiqueta == 'otro':
+        return 'otro'
+    return ''
+
+
+_TALLOS_PIEZA = (
+    'reten', 'kit', 'bomba', 'cilindro', 'bombin', 'pastilla', 'disco',
+    'tambor', 'zapata', 'balata', 'flexible', 'horquilla', 'piola',
+    'ruleman', 'piloto', 'collarin', 'crapodina', 'guaya', 'bba',
+)
+_RE_ETIQUETA = re.compile(
+    r'(frenos?|embrague|clutch|suspensi[oó]n|direcci[oó]n)\s*:',
+    re.IGNORECASE,
+)
+_CALIFICADORES = (
+    ('delanter', 'delanteras'),
+    ('traser', 'traseras'),
+    ('izquierd', 'izquierdo'),
+    ('derech', 'derecho'),
+)
+
+
+def _calificadores(n: str) -> tuple[str, ...]:
+    marcas = [token for token, _etiq in _CALIFICADORES if token in n]
+    marcas.extend(
+        extra for extra in ('rueda', 'ciguenal', 'puerta', 'acelerador') if extra in n
+    )
+    return tuple(marcas)
+
+
+def _nombre_con_calificadores(nombre: str, n: str) -> str:
+    plural = any(pieza in norm(nombre) for pieza in ('pastilla', 'balata', 'disco', 'tambor'))
+    etiquetas = {
+        'delanter': 'delanteras' if plural else 'delantero',
+        'traser': 'traseras' if plural else 'trasero',
+        'izquierd': 'izquierdo',
+        'derech': 'derecho',
+    }
+    extra = [
+        etiquetas[token] for token in etiquetas
+        if token in n and token not in norm(nombre)
+    ]
+    if not extra:
+        return nombre
+    return f"{nombre} {' '.join(extra)}".strip()
+
+
+def _lados_con_pieza(cuerpo: str) -> bool:
+    lados = re.split(r'\s+y\s+', cuerpo, flags=re.IGNORECASE)
+    if len(lados) < 2:
+        return False
+    return all(any(tallo in norm(lado) for tallo in _TALLOS_PIEZA) for lado in lados)
+
+
+def _tramos(texto: str) -> list[tuple[str, str]]:
+    """Cada etiqueta de sistema cubre solo el texto que le sigue."""
+    plano = str(texto or '')
+    marcas = list(_RE_ETIQUETA.finditer(plano))
+    if not marcas:
+        return [(plano, '')]
+    tramos: list[tuple[str, str]] = []
+    if marcas[0].start() > 0:
+        previo = plano[:marcas[0].start()].strip(' .')
+        if previo:
+            tramos.append((previo, ''))
+    for i, marca in enumerate(marcas):
+        fin = marcas[i + 1].start() if i + 1 < len(marcas) else len(plano)
+        etiqueta = norm(marca.group(1))
+        if etiqueta.startswith('freno'):
+            sistema = 'frenos'
+        elif etiqueta in ('embrague', 'clutch'):
+            sistema = 'embrague'
+        else:
+            sistema = 'otro'
+        cuerpo = plano[marca.end():fin].strip(' .')
+        if cuerpo:
+            tramos.append((cuerpo, sistema))
+    return tramos or [(plano, '')]
+
+
 def _marcador_permitido(marca: str, n: str, sistema: str) -> bool:
     if _sistema_de(n) in ('frenos', 'otro') and sistema != 'embrague':
         return marca not in _MARCADORES_CORTOS and 'embrague' not in marca and 'clutch' not in marca
@@ -215,15 +368,19 @@ def _texto_con_sistema(texto: str, sistema: str) -> str:
 
 
 def identidades_en(texto: str, sistema_heredado: str = '') -> list[str]:
-    """Todas las piezas de la frase. El sistema de la enumeración se hereda."""
-    n = norm(texto)
+    """Todas las piezas de la frase. El sistema se hereda solo dentro del tramo."""
+    n = _expandir(norm(texto))
     if not n or 'sistema' in n and not _sistema_de(n):
         return []
-    propio = _sistema_de(n)
-    if propio in ('frenos', 'otro'):
-        sistema = ''
-    else:
-        sistema = propio or sistema_heredado
+    sistema = _sistema_del_trozo(n, sistema_heredado)
+    if (
+        sistema not in ('frenos', 'otro')
+        and 'freno' not in n
+        and 'rueda' not in n
+        and re.search(r'\bkit\b', n)
+        and ('bomba' in n or 'receptor' in n)
+    ):
+        sistema = 'embrague'
     visto = _texto_con_sistema(n, sistema) if sistema == 'embrague' else n
     encontradas: list[str] = []
 
@@ -447,53 +604,62 @@ def _es_preambulo(texto: str) -> bool:
 
 
 def piezas_del_pedido(texto: str) -> list[dict[str, str]]:
-    """Ítems atómicos del texto. El sistema de la frase se hereda en la enumeración.
+    """Ítems atómicos. El sistema es el del tramo, no el de todo el texto.
 
-    Lo que no entra en la taxonomía queda sin clasificar. No se cobra: la duda
-    lo guarda. No se fusiona con otra pieza.
+    Cada mención queda como línea o como duda. Dos menciones de la misma
+    identidad con calificadores distintos no se funden.
     """
-    ntexto = norm(texto)
-    sistema = _sistema_de(ntexto)
-    vistos: list[str] = []
+    vistos: list[tuple[str, tuple[str, ...]]] = []
     libres: list[str] = []
     items: list[dict[str, str]] = []
-    for trozo in _trozos(texto, partir_y=sistema == 'embrague'):
-        if es_sistema(trozo) or _es_preambulo(trozo):
-            continue
-        encontradas = identidades_en(trozo, sistema_heredado=sistema)
-        if 'reten_ciguenal' in encontradas and 'reten' not in norm(trozo) and sistema != 'embrague':
-            encontradas = [ident for ident in encontradas if ident != 'reten_ciguenal']
-        if not encontradas:
-            n = norm(trozo)
-            if not n or all(token in _SOLO_FAENA for token in n.split()):
+    for cuerpo, etiqueta in _tramos(texto):
+        sistema_tramo = _sistema_del_trozo(_expandir(norm(cuerpo)), etiqueta)
+        partir_y = sistema_tramo == 'embrague' or _lados_con_pieza(cuerpo)
+        for trozo in _trozos(cuerpo, partir_y=partir_y):
+            if es_sistema(trozo) or _es_preambulo(trozo):
                 continue
-            if re.match(
-                r'^(cambio|revision|servicio|diagnostico|mantenimiento|mantencion)\b',
-                n,
-            ):
+            sistema = _sistema_del_trozo(_expandir(norm(trozo)), sistema_tramo or etiqueta)
+            encontradas = identidades_en(trozo, sistema_heredado=sistema)
+            if 'reten_ciguenal' in encontradas and 'reten' not in norm(trozo) and sistema != 'embrague':
+                encontradas = [ident for ident in encontradas if ident != 'reten_ciguenal']
+            if not encontradas:
+                n = norm(trozo)
+                if not n or all(token in _SOLO_FAENA for token in n.split()):
+                    continue
+                if re.match(
+                    r'^(cambio|revision|servicio|diagnostico|mantenimiento|mantencion)\b',
+                    n,
+                ):
+                    continue
+                if n in libres:
+                    continue
+                libres.append(n)
+                items.append({
+                    'identidad': 'sin_clasificar',
+                    'rol': 'duda',
+                    'nombre': trozo.strip(),
+                    'texto_original': trozo.strip(),
+                    'sistema': sistema,
+                })
                 continue
-            if n in libres:
-                continue
-            libres.append(n)
-            items.append({
-                'identidad': 'sin_clasificar',
-                'rol': 'duda',
-                'nombre': trozo.strip(),
-                'texto_original': trozo.strip(),
-                'sistema': sistema,
-            })
-            continue
-        for ident in encontradas:
-            if ident in vistos:
-                continue
-            vistos.append(ident)
-            items.append({
-                'identidad': ident,
-                'rol': rol_de(ident),
-                'nombre': nombre_de(ident),
-                'texto_original': trozo.strip(),
-                'sistema': 'embrague' if ident in _IDENTIDADES_EMBRAGUE else sistema,
-            })
+            califs = _calificadores(norm(trozo))
+            for ident in encontradas:
+                clave = (ident, califs)
+                if clave in vistos:
+                    continue
+                vistos.append(clave)
+                items.append({
+                    'identidad': ident,
+                    'rol': rol_de(ident),
+                    'nombre': _nombre_con_calificadores(nombre_de(ident), norm(trozo)),
+                    'texto_original': trozo.strip(),
+                    'sistema': 'embrague' if ident in _IDENTIDADES_EMBRAGUE else (
+                        'frenos' if ident.endswith('_freno') or ident in (
+                            'bombin_rueda', 'cilindro_maestro_freno', 'pastillas_freno',
+                            'balatas_freno', 'discos_freno', 'tambores_freno', 'flexible_freno',
+                        ) else sistema
+                    ),
+                })
     return items
 
 
@@ -550,7 +716,9 @@ def _reconciliar_llm(texto: str, vehiculo: dict | None, validado: dict[str, Any]
         frase = str(item.get('texto_original') or item.get('nombre') or '')
         ident_llm = str(item.get('identidad') or '')
         rol = str(item.get('rol') or '')
-        if rol in ('duda', 'sistema', 'mano_obra') or ident_llm in ('', 'otra', 'sin_clasificar'):
+        if item.get('confianza') is None:
+            item['confianza'] = 0.7
+        if rol in ('duda', 'sistema', 'mano_obra') or ident_llm in ('', 'sin_clasificar'):
             if rol == 'sistema' or es_sistema(frase):
                 dudas.append({
                     'id': 'sistema-no-repuesto',
@@ -562,6 +730,45 @@ def _reconciliar_llm(texto: str, vehiculo: dict | None, validado: dict[str, Any]
                     frase or item.get('nombre') or 'pieza',
                     f"No clasifiqué «{frase or item.get('nombre')}». Quedó como duda, no como otra pieza.",
                 ))
+            continue
+        if ident_llm == 'otra':
+            if _confianza_baja(item):
+                dudas.append(_duda_pieza(
+                    frase or item.get('nombre') or 'pieza',
+                    (
+                        f"La lectura de «{frase or item.get('nombre')}» no tiene confianza suficiente. "
+                        'Quedó como duda visible, no se cotizó.'
+                    ),
+                ))
+                continue
+            if rol not in ('repuesto', 'insumo', ''):
+                dudas.append(_duda_pieza(
+                    frase or item.get('nombre') or 'pieza',
+                    f"No clasifiqué «{frase or item.get('nombre')}». Quedó como duda, no como otra pieza.",
+                ))
+                continue
+            sistema_item = str(item.get('sistema') or '') or _sistema_del_trozo(_expandir(norm(frase)), '')
+            local = [
+                ident for ident in identidades_en(frase, sistema_heredado=sistema_item)
+                if not (sistema_item in ('frenos', 'otro') and ident in _IDENTIDADES_EMBRAGUE)
+            ]
+            nombre_llm = str(item.get('nombre') or frase).strip() or frase
+            if (
+                sistema_item
+                and sistema_item not in ('', 'otro')
+                and sistema_item not in norm(nombre_llm)
+            ):
+                nombre_llm = f'{nombre_llm} de {sistema_item}'
+            if len(local) == 1:
+                ident = local[0]
+                item['nombre'] = _nombre_con_calificadores(nombre_de(ident) or nombre_llm, norm(frase))
+            else:
+                item['nombre'] = nombre_llm
+            slug = norm(str(item['nombre'])).replace(' ', '-')[:40] or 'pieza'
+            item['identidad'] = f"otra:{norm(sistema_item) or 'otro'}:{slug}"
+            item['rol'] = ROL_REPUESTO if rol != 'insumo' else ROL_INSUMO
+            item['sistema'] = sistema_item or 'otro'
+            items.append(item)
             continue
         if _confianza_baja(item):
             dudas.append(_duda_pieza(
@@ -700,6 +907,25 @@ def comprension_desde_pedido(pedido) -> dict[str, Any]:
     return comprender_pedido(', '.join(nombres))
 
 
+def _ident_para_ficha(rep: dict) -> str:
+    """Dos «otra» o la misma pieza con otro calificador no son la misma ficha."""
+    if not isinstance(rep, dict):
+        return ''
+    guardada = str(rep.get('identidad') or '')
+    if guardada.startswith('otra:'):
+        return guardada
+    nombre = str(rep.get('nombre') or rep.get('nombre_producto') or '')
+    base = identidad_de(nombre)
+    if not base and guardada not in ('', 'sin_clasificar', 'otra'):
+        base = guardada
+    if not base:
+        return ''
+    cal = _calificadores(norm(nombre))
+    if cal:
+        return f'{base}|{"+".join(cal)}'
+    return base
+
+
 def separar_precios_copiados(repuestos: list) -> list[dict]:
     """La misma ficha no puede cotizar dos piezas distintas."""
     grupos: dict[str, list] = {}
@@ -711,14 +937,21 @@ def separar_precios_copiados(repuestos: list) -> list[dict]:
             grupos.setdefault(url, []).append(rep)
     dudas = []
     for url, grupo in grupos.items():
-        identidades = [identidad_de(str(rep.get('nombre') or '')) for rep in grupo]
+        identidades = [_ident_para_ficha(rep) for rep in grupo]
         distintas = {ident for ident in identidades if ident}
         if len(distintas) < 2:
             continue
         titulo = ' '.join(str(rep.get('nombre_producto') or '') for rep in grupo)
-        de_la_ficha = identidad_de(titulo)
+        de_la_ficha = _ident_para_ficha({'nombre': titulo, 'nombre_producto': titulo})
+        titulo_n = norm(titulo)
         for rep, ident in zip(grupo, identidades):
-            if de_la_ficha and ident == de_la_ficha:
+            if str(ident).startswith('otra:'):
+                nombre = norm(str(rep.get('nombre') or ''))
+                ruido = {'de', 'del', 'la', 'el', 'y', 'freno', 'frenos', 'para'}
+                tokens = [token for token in nombre.split() if token not in ruido]
+                if tokens and all(token in titulo_n for token in tokens):
+                    continue
+            elif de_la_ficha and ident == de_la_ficha:
                 continue
             rep['precio_unitario_clp'] = 0
             rep['url_producto'] = ''

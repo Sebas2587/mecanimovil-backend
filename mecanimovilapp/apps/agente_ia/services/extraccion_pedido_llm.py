@@ -52,7 +52,8 @@ class ItemPedido(BaseModel):
     nombre: str = ""
     especificacion: str = ""
     cantidad: str = ""
-    confianza: float = 0.0
+    # None: el modelo omitió el campo. No es confianza baja.
+    confianza: float | None = None
 
 
 class FluidoVehiculo(BaseModel):

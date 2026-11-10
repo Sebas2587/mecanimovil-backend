@@ -88,7 +88,7 @@ def aplicar_pedido_y_sugerencias(
         )
 
         dudas_sueltas = []
-        for item in piezas_del_pedido(pedido):
+        for item in _items_a_cotizar(pedido, data):
             if item.get('identidad') in ('sin_clasificar', 'otra') or item.get('rol') in ('duda', 'sistema'):
                 dudas_sueltas.append({
                     'id': f"pieza-{_norm(item.get('nombre') or '').replace(' ', '-')}"[:48],
@@ -102,7 +102,13 @@ def aplicar_pedido_y_sugerencias(
             nombre = item['nombre']
             if _ya(reps, nombre):
                 continue
-            reps.append(_linea(nombre, origen=ORIGEN_PEDIDO, motivo='', estado=ESTADO_ACEPTADA))
+            reps.append(_linea(
+                nombre,
+                origen=ORIGEN_PEDIDO,
+                motivo='',
+                estado=ESTADO_ACEPTADA,
+                identidad=str(item.get('identidad') or ''),
+            ))
         data['repuestos'] = reps
         sueltas = _dudas_pieza_suelta(reps) + dudas_sueltas
         if sueltas:
@@ -158,12 +164,8 @@ def proponer_complementos(
         if isinstance(rep, dict) and not rep.get('origen'):
             _marcar_pedido(rep)
     if not _toca_embrague(pedido):
-        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
-            piezas_del_pedido,
-        )
-
         dudas_sueltas = []
-        for item in piezas_del_pedido(pedido):
+        for item in _items_a_cotizar(pedido, {'comprension_llm': {}}):
             if item.get('identidad') in ('sin_clasificar', 'otra') or item.get('rol') in ('duda', 'sistema'):
                 dudas_sueltas.append({
                     'id': f"pieza-{_norm(item.get('nombre') or '').replace(' ', '-')}"[:48],
@@ -178,7 +180,13 @@ def proponer_complementos(
             if _ya(reps, nombre):
                 _forzar_pedido(reps, nombre)
                 continue
-            reps.append(_linea(nombre, origen=ORIGEN_PEDIDO, motivo='', estado=ESTADO_ACEPTADA))
+            reps.append(_linea(
+                nombre,
+                origen=ORIGEN_PEDIDO,
+                motivo='',
+                estado=ESTADO_ACEPTADA,
+                identidad=str(item.get('identidad') or ''),
+            ))
         return reps, _dudas_pieza_suelta(reps) + dudas_sueltas
     pedidos = _piezas_pedidas(pedido)
     bloqueadas = {_norm(n) for n in (descartadas or [])}
@@ -556,6 +564,50 @@ def _dudas_pieza_suelta(reps: list) -> list[dict]:
     return dudas
 
 
+def _items_a_cotizar(pedido: str, data: dict | None) -> list[dict]:
+    """Taxonomía del texto, más una «otra» con confianza que el modelo sí nombró."""
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
+        identidad_de,
+        piezas_del_pedido,
+    )
+
+    items = list(piezas_del_pedido(pedido or ''))
+    comp = (data or {}).get('comprension_llm') if isinstance(data, dict) else None
+    dinamicos = [
+        item for item in (comp or {}).get('items') or []
+        if isinstance(item, dict) and str(item.get('identidad') or '').startswith('otra:')
+        and item.get('rol') not in ('duda', 'sistema', 'mano_obra')
+    ]
+    citados = {
+        _norm(str(item.get('texto_original') or item.get('nombre') or ''))
+        for item in dinamicos
+    }
+    if citados:
+        items = [
+            item for item in items
+            if not (
+                item.get('identidad') == 'sin_clasificar'
+                and _norm(str(item.get('texto_original') or item.get('nombre') or '')) in citados
+            )
+        ]
+    conocidas = {
+        identidad_de(str(item.get('nombre') or ''))
+        for item in items
+        if item.get('identidad') not in ('sin_clasificar', 'otra', '')
+    }
+    ya = {_norm(str(item.get('nombre') or '')) for item in items}
+    for item in dinamicos:
+        nombre = str(item.get('nombre') or '').strip()
+        if not nombre or _norm(nombre) in ya:
+            continue
+        conocida = identidad_de(nombre)
+        if conocida and conocida in conocidas:
+            continue
+        ya.add(_norm(nombre))
+        items.append(item)
+    return items
+
+
 def _pedidos_con_llm(pedido: str, data: dict | None) -> list[str]:
     """Taxonomía del texto, más lo que la extracción ya validada nombró."""
     pedidos = _piezas_pedidas(pedido)
@@ -568,6 +620,14 @@ def _pedidos_con_llm(pedido: str, data: dict | None) -> list[str]:
             continue
         if item.get('identidad') in ('sin_clasificar', 'otra') or item.get('rol') in ('duda', 'sistema'):
             continue
+        if str(item.get('identidad') or '').startswith('otra:'):
+            from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
+                identidad_de,
+            )
+
+            conocida = identidad_de(nombre)
+            if conocida and any(identidad_de(pedido_ya) == conocida for pedido_ya in pedidos):
+                continue
         canon = _canon(nombre) or nombre
         if not any(_norm(p) == _norm(canon) for p in pedidos):
             pedidos.append(canon)
@@ -815,16 +875,19 @@ def _marcada_pedido_explicita(rep: dict) -> bool:
     return rep.get('origen') == ORIGEN_PEDIDO and rep.get('estado_sugerencia') == ESTADO_ACEPTADA
 
 
-def _linea(nombre: str, *, origen: str, motivo: str, estado: str) -> dict:
+def _linea(nombre: str, *, origen: str, motivo: str, estado: str, identidad: str = '') -> dict:
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
         identidad_de,
         rol_de,
     )
 
-    ident = identidad_de(nombre) or 'sin_clasificar'
+    ident = str(identidad or '').strip()
+    if not ident or ident in ('sin_clasificar', 'otra'):
+        ident = identidad_de(nombre) or ident or 'sin_clasificar'
+    rol = 'repuesto' if ident.startswith('otra:') else (rol_de(ident) or 'repuesto')
     fila = {
         'identidad': ident,
-        'rol': rol_de(ident) or 'repuesto',
+        'rol': rol,
         'nombre': nombre,
         'cantidad': 1,
         'precio_unitario_clp': 0,
@@ -899,6 +962,7 @@ def _aplicar_composicion_kit(
     se conserva lo que el taller ya puso.
     """
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.comprension_pedido import (
+        composicion_de_kit,
         kit_pide_piloto_aparte,
     )
 
@@ -921,10 +985,23 @@ def _aplicar_composicion_kit(
                 motivo='La ficha del kit dice que no incluye el rodamiento piloto.',
                 estado=ESTADO_PENDIENTE,
             ))
-    if kit_pide_piloto_aparte(titulo) and not _pedida('Aceite de caja de cambios', pedidos):
+    if kit_pide_piloto_aparte(titulo):
         motivo_aceite = (
             'Al bajar la caja para el rodamiento piloto se pierde el aceite. Conviene reponerlo.'
         )
+    else:
+        partes = composicion_de_kit(titulo) or {}
+        titulo_n = _norm(titulo)
+        motivo_aceite = (
+            'Al bajar la caja para el kit se pierde el aceite. Conviene reponerlo.'
+            if titulo and (
+                ('kit' in titulo_n and ('embrague' in titulo_n or 'clutch' in titulo_n))
+                or partes.get('disco')
+                or partes.get('prensa')
+            )
+            else ''
+        )
+    if motivo_aceite and not _pedida('Aceite de caja de cambios', pedidos):
         if _norm('Aceite de caja de cambios') not in bloqueadas and not _ya(salida, 'Aceite de caja de cambios'):
             salida.append(_linea(
                 'Aceite de caja de cambios',
