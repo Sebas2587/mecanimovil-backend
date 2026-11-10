@@ -185,6 +185,7 @@ REGLAS CRÍTICAS:
 14. Cada ítem trae texto_original, rol (repuesto, insumo, mano_obra, sistema o duda), sistema (embrague, frenos, suspension, transmision u otro), identidad canónica o «otra», nombre normalizado, spec, cantidad si la dice y confianza.
 15. Primero el SERVICIO, no la frase literal. «hace ruido y patina» no es un repuesto. «revisar el sistema hidráulico» es diagnóstico, no una pieza. Normaliza typos y abreviaturas (embrage, bba, cil. rec., acite, fltro).
 16. En cada servicio: horas de mano de obra, repuestos_requeridos (imprescindibles, nombre técnico) y sugeridos (con motivo). No pongas en sugeridos lo que ya trae el kit. Frenos traseros de tambor son balatas, no pastillas.
+17. Razona el trabajo, sea cual sea. No te limites a embrague, frenos, aceite o hidráulico. Suspensión, distribución, mantención por kilometraje, batería, refrigeración, bujías o alineación también son servicios, con sus horas y sus piezas. Una pieza suelta («pastillas») es el cambio de esa pieza, con mano de obra. Si no puedes decir qué trabajo es, deja servicios vacío. No inventes un repuesto para llenar el JSON.
 
 Mensaje del cliente:
 {texto_cliente}

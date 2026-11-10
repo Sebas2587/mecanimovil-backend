@@ -167,6 +167,10 @@ def notificar_cotizacion_borrador_agente(
         dedup_key={'type': 'agente_ia_cotizacion_borrador', 'cotizacion_id': cotizacion.id},
     )
 
+    meta = dict(getattr(cotizacion, 'metadata', None) or {})
+    if meta.get('push_revision_enviada'):
+        _emitir_ws_agente(proveedor_user_id, 'agente_ia_cotizacion_borrador', **data)
+        return
     try:
         send_expo_push_notification.delay(
             proveedor_user_id,
@@ -174,6 +178,10 @@ def notificar_cotizacion_borrador_agente(
             mensaje,
             data,
         )
+        meta['push_revision_enviada'] = True
+        cotizacion.metadata = meta
+        if getattr(cotizacion, 'pk', None) and hasattr(cotizacion, 'save'):
+            cotizacion.save(update_fields=['metadata', 'actualizado_en'])
     except Exception as exc:
         logger.warning('No se pudo encolar push cotización agente: %s', exc)
     _emitir_ws_agente(proveedor_user_id, 'agente_ia_cotizacion_borrador', **data)

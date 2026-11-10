@@ -6,7 +6,17 @@ from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase, override_settings
 
 from mecanimovilapp.apps.ordenes.models import CotizacionCanal
+from mecanimovilapp.apps.agente_ia.services.extraccion_pedido_llm import (
+    PedidoExtraido,
+    PiezaPlan,
+    ServicioExtraido,
+    VehiculoExtraido,
+)
+from mecanimovilapp.apps.agente_ia.services.notificaciones import (
+    notificar_cotizacion_borrador_agente,
+)
 from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.plan_por_servicio import (
+    completar_cotizacion_en_blanco,
     cotizar_por_servicio,
 )
 from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.revision_sugerencias import (
@@ -240,3 +250,213 @@ class TresCaminosYPushTests(TestCase):
         self.assertFalse(any('pastilla' in rep['nombre'].lower() for rep in base))
         self.assertGreater(cot.mano_obra_clp, 0)
         self.assertTrue(cot.metadata.get('servicios_lineas'))
+
+
+def _buscar_casa(linea):
+    """Precio que no está en la tabla fija. Prueba que se usó el buscador."""
+    if str(linea.get('consulta') or '').endswith('repuesto'):
+        return {
+            'precio_unitario_clp': 31000,
+            'url_producto': 'https://www.casafrenos.cl/balatas',
+            'proveedor_nombre': 'Casa Frenos',
+            'nombre_producto': 'Balatas traseras',
+        }
+    nombre = str(linea.get('nombre') or 'Pieza')
+    if nombre == 'Aceite de motor':
+        return {
+            'precio_unitario_clp': 8990,
+            'url_producto': 'https://www.casaaceite.cl/1l',
+            'proveedor_nombre': 'Casa Aceite',
+            'nombre_producto': 'Aceite 5W30 1L',
+            'candidatos_envase': [
+                {
+                    'nombre_producto': 'Aceite 5W30 1L',
+                    'precio_unitario_clp': 8990,
+                    'url': 'https://www.casaaceite.cl/1l',
+                },
+                {
+                    'nombre_producto': 'Aceite 5W30 4L',
+                    'precio_unitario_clp': 24990,
+                    'url': 'https://www.casaaceite.cl/4l',
+                },
+            ],
+        }
+    return {
+        'precio_unitario_clp': 11111,
+        'url_producto': 'https://www.casamock.cl/pieza',
+        'proveedor_nombre': 'Casa Mock',
+        'nombre_producto': nombre,
+    }
+
+
+_FRASES = (
+    'me suena la suspension delantera del yaris 2016',
+    'quiero hacer la mantencion de los 60 mil al corolla 2018',
+    'cambiar correa de distribucion y bomba de agua a un spark 2014',
+    'frenos delanteros y aceite para hilux 2.4 2020',
+    'pastillas',
+    'cambiar pastillas delanteras y zapatas traseras',
+    'kit de embrague, bomba y cilindro receptor',
+    EMBRAGUE,
+    FRENOS,
+    ACEITE,
+    HIDRAULICO,
+    TYPO,
+)
+
+
+class CatalogoYLlmTests(SimpleTestCase):
+    def test_el_fallback_cotiza_las_frases_que_el_revisor_dejo_vacias(self):
+        for frase in _FRASES:
+            with self.subTest(frase=frase):
+                out = cotizar_por_servicio(frase, buscar=_buscar_casa)
+                self.assertTrue(out['servicios'], frase)
+                self.assertGreater(out['mano_obra_clp'], 0, frase)
+                self.assertTrue(out['verificacion']['ok'], frase)
+                if frase != HIDRAULICO:
+                    pedidos = [r for r in out['repuestos'] if r['origen'] == 'pedido']
+                    self.assertTrue(pedidos, frase)
+                    for rep in pedidos:
+                        self.assertGreater(rep['precio_unitario_clp'], 0, rep['nombre'])
+                        self.assertTrue(rep.get('proveedor_nombre'), rep['nombre'])
+                        self.assertNotEqual(rep['precio_unitario_clp'], 0)
+                        self.assertIn(
+                            rep['proveedor_nombre'],
+                            {'Casa Mock', 'Casa Aceite', 'Casa Frenos'},
+                        )
+                for sug in (r for r in out['repuestos'] if r['origen'] == 'sugerencia'):
+                    self.assertTrue(sug['motivo_sugerencia'], sug['nombre'])
+
+    def test_el_llm_mockeado_manda_sobre_el_catalogo(self):
+        for frase in _FRASES:
+            with self.subTest(frase=frase):
+                pedido = PedidoExtraido(
+                    vehiculo=VehiculoExtraido(marca='Toyota', modelo='Yaris', anio=2016),
+                    servicios=[ServicioExtraido(
+                        nombre=f'Trabajo leído: {frase[:40]}',
+                        horas=2,
+                        repuestos_requeridos=[] if frase == HIDRAULICO else [
+                            PiezaPlan(nombre='Pieza leída', identidad='pieza_leida'),
+                        ],
+                        sugeridos=[] if frase == HIDRAULICO else [
+                            PiezaPlan(
+                                nombre='Sugerida leída',
+                                identidad='sugerida_leida',
+                                motivo='El modelo la recomienda para este trabajo.',
+                            ),
+                        ],
+                        incluye_repuestos=frase != HIDRAULICO,
+                    )],
+                )
+                out = cotizar_por_servicio(frase, buscar=_buscar_casa, pedido=pedido)
+                self.assertTrue(out['servicios'][0]['nombre'].startswith('Trabajo leído:'))
+                self.assertGreater(out['mano_obra_clp'], 0)
+                if frase != HIDRAULICO:
+                    self.assertIn('Pieza leída', [r['nombre'] for r in out['repuestos']])
+                    self.assertEqual(
+                        _por_identidad(out['repuestos'])['sugerida_leida']['motivo_sugerencia'],
+                        'El modelo la recomienda para este trabajo.',
+                    )
+                    self.assertEqual(
+                        _por_identidad(out['repuestos'])['pieza_leida']['proveedor_nombre'],
+                        'Casa Mock',
+                    )
+
+    def test_lo_que_no_se_entiende_no_sale_ok(self):
+        out = cotizar_por_servicio('asdf qwerty sin sentido', buscar=_buscar_casa)
+        self.assertEqual(out['servicios'], [])
+        self.assertEqual(out['repuestos'], [])
+        self.assertFalse(out['verificacion']['ok'])
+        self.assertTrue(any(d['id'] == 'servicio-no-identificado' for d in out['dudas']))
+
+    def test_un_modelo_desconocido_queda_como_duda(self):
+        out = cotizar_por_servicio('del flibbert 2011 cambiar pastillas', buscar=_buscar_casa)
+        self.assertEqual(out['servicios'][0]['vehiculo']['modelo'], 'Flibbert')
+        self.assertTrue(any(d['id'] == 'vehiculo-no-reconocido' for d in out['dudas']))
+
+    def test_el_aceite_elige_el_envase_mas_barato(self):
+        out = cotizar_por_servicio(ACEITE, buscar=_buscar_casa)
+        aceite = _por_identidad(out['repuestos'])['aceite_motor']
+        self.assertEqual(aceite['litros'], 3.5)
+        self.assertEqual(aceite['cantidad'], 1)
+        self.assertEqual(aceite['precio_unitario_clp'], 24990)
+        self.assertIn('4l', aceite['url_producto'])
+
+    def test_la_mano_de_obra_se_completa_aunque_el_repuesto_ya_tenga_precio(self):
+        out = completar_cotizacion_en_blanco(
+            {
+                'mano_obra_clp': 0,
+                'servicios_lineas': [],
+                'repuestos': [{
+                    'nombre': 'Pastillas de freno delanteras',
+                    'precio_unitario_clp': 24990,
+                    'url_producto': 'https://www.casamock.cl/pastillas',
+                    'proveedor_nombre': 'Casa Mock',
+                }],
+            },
+            'pastillas del yaris 2016',
+        )
+        self.assertGreater(out['mano_obra_clp'], 0)
+        self.assertEqual(out['repuestos'][0]['precio_unitario_clp'], 24990)
+
+    def test_sin_buscador_inyectado_consulta_las_casas(self):
+        with patch(
+            'mecanimovilapp.apps.ordenes.services.asistente_cotizacion.plan_por_servicio.buscar_lineas_en_casas',
+            return_value={'pastillas de freno delanteras': {
+                'precio_unitario_clp': 22222,
+                'url_producto': 'https://www.ciper.cl/pastillas-yaris',
+                'proveedor_nombre': 'Ciper',
+                'nombre_producto': 'Pastillas delanteras Yaris',
+            }},
+        ) as casas:
+            out = cotizar_por_servicio('pastillas del yaris 2016')
+        casas.assert_called()
+        linea = _por_identidad(out['repuestos'])['pastillas_freno']
+        self.assertEqual(linea['precio_unitario_clp'], 22222)
+        self.assertEqual(linea['proveedor_nombre'], 'Ciper')
+
+    def test_la_duda_del_estimado_muestra_el_monto_con_margen(self):
+        taller = SimpleNamespace(margen_ganancia_pct=30)
+        out = cotizar_por_servicio('pastillas', taller=taller)
+        texto = ' '.join(d['texto'] for d in out['dudas'])
+        self.assertIn('32.000', texto)
+        self.assertIn('41.600', texto)
+
+
+class PushUnicaAgenteTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='taller_push_unica', password='test123')
+        self.taller = Taller.objects.create(
+            usuario=self.user,
+            nombre='Taller Push',
+            telefono='900000089',
+            estado_verificacion='aprobado',
+        )
+
+    def test_revision_y_borrador_dejan_una_sola_push(self):
+        cot = CotizacionCanal.objects.create(
+            es_libre=True,
+            taller=self.taller,
+            creado_por=self.user,
+            estado='borrador',
+            servicio_nombre='Cambio de pastillas',
+            token='tok-push-unica',
+            repuestos=[{
+                'nombre': 'Discos de freno delanteros',
+                'origen': 'sugerencia',
+                'estado_sugerencia': 'pendiente',
+                'motivo_sugerencia': 'Si están bajo el mínimo.',
+                'precio_unitario_clp': 11111,
+            }],
+            metadata={'dudas': [{'id': 'vehiculo', 'texto': 'confirmar', 'confirmada': False}]},
+        )
+        with patch(
+            'mecanimovilapp.apps.usuarios.tasks.send_expo_push_notification.delay',
+        ) as push:
+            notificar_revision_al_taller(cot, taller_presente=False)
+            notificar_cotizacion_borrador_agente(
+                proveedor_user_id=self.user.id,
+                cotizacion=cot,
+                conversation_id=1,
+            )
+        self.assertEqual(push.call_count, 1)

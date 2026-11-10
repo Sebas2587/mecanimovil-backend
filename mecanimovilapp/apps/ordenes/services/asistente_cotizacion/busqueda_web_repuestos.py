@@ -5216,6 +5216,7 @@ def buscar_repuestos_web(
     bandas_min: dict[str, int] | None = None,
     bandas_max: dict[str, int] | None = None,
     cantidades: dict[str, Any] | None = None,
+    razonar: bool = True,
 ) -> dict[str, dict[str, Any]]:
     """Tavily si hay API key. url_context solo si Tavily no está configurada."""
     nombres_limpios = [str(n).strip()[:200] for n in nombres if str(n).strip()]
@@ -5242,7 +5243,7 @@ def buscar_repuestos_web(
 
     from .razonar_pedido import planificar
 
-    plan = planificar(servicio_nombre, veh, usar_llm=True)
+    plan = planificar(servicio_nombre, veh, usar_llm=razonar)
     if callable(on_progreso):
         on_progreso({
             'paso': 'pensando',

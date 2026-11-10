@@ -55,13 +55,13 @@ def _absorber_frase_de_servicio(cotizacion, nombres: list[str], base: list) -> t
     if len(nombres) != 1:
         return nombres, base
     from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.plan_por_servicio import (
-        _lista_explicita,
         cotizar_por_servicio,
+        es_pieza_suelta_de_item,
         frase_de_servicio,
     )
 
     texto = nombres[0]
-    if not frase_de_servicio(texto) or _lista_explicita(texto):
+    if es_pieza_suelta_de_item(texto) or not frase_de_servicio(texto):
         return nombres, base
     armado = cotizar_por_servicio(
         texto,
