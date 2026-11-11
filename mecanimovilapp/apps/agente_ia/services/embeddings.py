@@ -59,11 +59,19 @@ def generar_embedding(texto: str) -> list[float] | None:
     try:
         resp = requests.post(url, json=payload, timeout=timeout)
     except requests.RequestException as exc:
-        logger.warning('Error de conexión generando embedding: %s', exc)
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador import (
+            texto_sin_secreto,
+        )
+
+        logger.warning('Error de conexión generando embedding: %s', texto_sin_secreto(exc))
         return None
 
     if resp.status_code != 200:
-        logger.warning('Gemini embedding HTTP %s: %s', resp.status_code, resp.text[:300])
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador import (
+            texto_sin_secreto,
+        )
+
+        logger.warning('Gemini embedding HTTP %s: %s', resp.status_code, texto_sin_secreto(resp.text))
         return None
 
     try:

@@ -48,11 +48,22 @@ def resolver_mano_obra_lineas(cotizacion, *, backfill: bool = True) -> list[dict
         if not nombre and monto <= 0 and not str(lin.get('id') or '').strip():
             continue
         lid = str(lin.get('id') or '').strip() or f'mo-{idx + 1}'
-        out.append({
+        fila = {
             'id': lid,
             'nombre': nombre or NOMBRE_FALLBACK_MO,
             'monto_clp': monto,
-        })
+        }
+        if lin.get('horas') not in (None, ''):
+            fila['horas'] = lin.get('horas')
+        if lin.get('estimada') is True:
+            fila['estimada'] = True
+        origen = str(lin.get('origen') or '').strip()
+        if origen:
+            fila['origen'] = origen
+        motivo = str(lin.get('motivo') or '').strip()
+        if motivo:
+            fila['motivo'] = motivo[:300]
+        out.append(fila)
         if len(out) >= MAX_MANO_OBRA_LINEAS:
             break
     if out:

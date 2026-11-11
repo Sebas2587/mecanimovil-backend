@@ -29,11 +29,22 @@ class VehiculoExtraido(BaseModel):
         return v.upper() if v else None
 
 
+class PiezaPlan(BaseModel):
+    """Pieza de un servicio: pedida o sugerida, con el motivo si es sugerida."""
+    nombre: str = ""
+    identidad: str = ""
+    motivo: str = ""
+
+
 class ServicioExtraido(BaseModel):
-    """Servicio de mano de obra solicitado."""
+    """Servicio de mano de obra solicitado, con lo que ese trabajo requiere."""
     nombre: str
     cantidad: int = Field(default=1, ge=1, le=10)
     incluye_repuestos: Optional[bool] = None
+    horas: Optional[float] = None
+    mano_obra_clp: Optional[int] = None
+    repuestos_requeridos: list[PiezaPlan] = Field(default_factory=list)
+    sugeridos: list[PiezaPlan] = Field(default_factory=list)
 
 
 class RepuestoMencionado(BaseModel):
@@ -87,6 +98,55 @@ class PedidoExtraido(BaseModel):
         return v if v in validos else ''
 
 
+_CACHE_PEDIDO: dict[tuple, PedidoExtraido] = {}
+_MAX_TOKENS_EXTRACCION = 8192
+
+
+def generation_config_extraccion(modelo: str) -> dict:
+    """La misma config que el resto del repo. Gemini 3 necesita thinkingConfig."""
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador import (
+        _modelo_admite_thinking_level,
+        generation_config_gemini,
+    )
+
+    return generation_config_gemini(
+        temperature=0.2,
+        max_output=_MAX_TOKENS_EXTRACCION,
+        response_json=True,
+        thinking=_modelo_admite_thinking_level(modelo),
+    )
+
+
+def _body_sin_secreto(texto: str) -> str:
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador import (
+        texto_sin_secreto,
+    )
+
+    return texto_sin_secreto(texto)
+
+
+def leer_pedido_llm(texto_cliente: str, vehiculo_context: dict | None = None) -> PedidoExtraido | None:
+    """Una llamada por texto y vehículo. No arma el catálogo: si falla, devuelve None."""
+    vehiculo_context = vehiculo_context or {}
+    clave = (
+        re.sub(r'\s+', ' ', (texto_cliente or '').strip().lower()),
+        str(vehiculo_context.get('marca') or '').strip().lower(),
+        str(vehiculo_context.get('modelo') or '').strip().lower(),
+        str(vehiculo_context.get('anio') or ''),
+        str(vehiculo_context.get('motor') or vehiculo_context.get('cilindraje') or ''),
+    )
+    guardado = _CACHE_PEDIDO.get(clave)
+    if guardado is not None:
+        return guardado
+    pedido = _llamar_gemini_extraccion(texto_cliente, vehiculo_context)
+    if pedido and pedido.servicios:
+        if len(_CACHE_PEDIDO) > 128:
+            _CACHE_PEDIDO.clear()
+        _CACHE_PEDIDO[clave] = pedido
+        return pedido
+    return None
+
+
 def extraer_pedido_con_llm(
     texto_cliente: str,
     vehiculo_context: dict | None = None,
@@ -109,8 +169,8 @@ def extraer_pedido_con_llm(
     vehiculo_context = vehiculo_context or {}
     
     try:
-        # Intentar extracción con LLM
-        resultado_llm = _llamar_gemini_extraccion(texto_cliente, vehiculo_context)
+        # La misma llamada que el cotizador, con caché por texto y vehículo.
+        resultado_llm = leer_pedido_llm(texto_cliente, vehiculo_context)
         
         if resultado_llm:
             logger.info(
@@ -172,6 +232,9 @@ REGLAS CRÍTICAS:
 12. Si no estás seguro, identidad «otra», rol duda y confianza baja. Nunca cambies la pieza por otra para completar el JSON.
 13. En fluidos, la spec de aceite de caja y de líquido DOT de ESTE auto (marca, modelo, motor, año), con confianza de 0 a 1. Si no la sabes, confianza 0 y especificacion vacía. No inventes un precio.
 14. Cada ítem trae texto_original, rol (repuesto, insumo, mano_obra, sistema o duda), sistema (embrague, frenos, suspension, transmision u otro), identidad canónica o «otra», nombre normalizado, spec, cantidad si la dice y confianza.
+15. Primero el SERVICIO, no la frase literal. «hace ruido y patina» no es un repuesto. «revisar el sistema hidráulico» es diagnóstico, no una pieza. Normaliza typos y abreviaturas (embrage, bba, cil. rec., acite, fltro).
+16. En cada servicio: horas de mano de obra, repuestos_requeridos (imprescindibles, nombre técnico) y sugeridos (con motivo). No pongas en sugeridos lo que ya trae el kit. Frenos traseros de tambor son balatas, no pastillas.
+17. Razona el trabajo, sea cual sea. No te limites a embrague, frenos, aceite o hidráulico. Suspensión, distribución, mantención por kilometraje, batería, refrigeración, bujías o alineación también son servicios, con sus horas y sus piezas. Una pieza suelta («pastillas») es el cambio de esa pieza, con mano de obra. Si no puedes decir qué trabajo es, deja servicios vacío. No inventes un repuesto para llenar el JSON.
 
 Mensaje del cliente:
 {texto_cliente}
@@ -189,7 +252,20 @@ Responde SOLO JSON válido sin markdown:
     "tipo_motor": "GASOLINA"
   }},
   "servicios": [
-    {{"nombre": "Cambio de aceite y filtro", "cantidad": 1, "incluye_repuestos": true}}
+    {{
+      "nombre": "Cambio de aceite y filtros",
+      "cantidad": 1,
+      "incluye_repuestos": true,
+      "horas": 1,
+      "mano_obra_clp": null,
+      "repuestos_requeridos": [
+        {{"nombre": "Aceite de motor", "identidad": "aceite_motor", "motivo": ""}},
+        {{"nombre": "Filtro de aceite", "identidad": "filtro_aceite", "motivo": ""}}
+      ],
+      "sugeridos": [
+        {{"nombre": "Filtro de aire", "identidad": "filtro_aire", "motivo": "En el cambio de aceite conviene revisar el de aire."}}
+      ]
+    }}
   ],
   "repuestos_mencionados": [
     {{"nombre": "Filtro de aceite", "especificacion": "", "cantidad": 1}},
@@ -216,75 +292,73 @@ Responde SOLO JSON válido sin markdown:
   "descripcion_problema": "Cliente necesita cambio de aceite y filtro"
 }}"""
     
-    # Llamar a Gemini
-    modelo = getattr(settings, 'GEMINI_MODEL', 'gemini-2.5-flash-lite')
-    url = f'https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent?key={api_key}'
-    
-    payload = {
-        'contents': [{'parts': [{'text': prompt}]}],
-        'generationConfig': {
-            'temperature': 0.2,
-            'maxOutputTokens': 2048,
-            'responseMimeType': 'application/json',
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.generador import (
+        _url_generate_content,
+        finish_reason_gemini,
+        modelos_gemini_cotizacion,
+        texto_candidato_gemini,
+        timeout_http_gemini,
+    )
+
+    modelos = modelos_gemini_cotizacion()
+    texto_json = ''
+    for indice, modelo in enumerate(modelos):
+        url = _url_generate_content(modelo, api_key)
+        payload = {
+            'contents': [{'parts': [{'text': prompt}]}],
+            'generationConfig': generation_config_extraccion(modelo),
         }
-    }
-    
-    try:
-        resp = requests.post(url, json=payload, timeout=(8, 15))
-        
-        if resp.status_code != 200:
+        try:
+            resp = requests.post(url, json=payload, timeout=timeout_http_gemini(25))
+        except requests.Timeout:
+            logger.warning('agente_ia[extraccion] gemini_timeout model=%s', modelo)
+            continue
+        except Exception as exc:
             logger.warning(
-                'agente_ia[extraccion] gemini_http_error status=%s body=%s',
-                resp.status_code,
-                resp.text[:200]
+                'agente_ia[extraccion] gemini_error model=%s error=%s',
+                modelo,
+                _body_sin_secreto(exc),
             )
             return None
-        
-        body = resp.json()
-        candidates = body.get('candidates', [])
-        if not candidates:
+        if resp.status_code != 200:
+            logger.warning(
+                'agente_ia[extraccion] gemini_http_error model=%s status=%s body=%s',
+                modelo,
+                resp.status_code,
+                _body_sin_secreto(getattr(resp, 'text', '') or ''),
+            )
+            if resp.status_code in (429, 503) and indice < len(modelos) - 1:
+                continue
             return None
-        
-        content = candidates[0].get('content', {})
-        parts = content.get('parts', [])
-        if not parts:
+        try:
+            body = resp.json()
+        except ValueError:
+            logger.warning('agente_ia[extraccion] json_error model=%s body=%s', modelo, _body_sin_secreto(resp.text))
             return None
-        
-        # Obtener texto JSON
-        texto_json = ''
-        for part in parts:
-            if part.get('thought'):
-                continue  # Skip thinking parts in Gemini 3.x
-            text = part.get('text', '')
-            if text:
-                texto_json += text
-        
-        if not texto_json:
-            return None
-        
-        # Limpiar markdown si existe
-        texto_json = texto_json.strip()
+        if finish_reason_gemini(body) == 'MAX_TOKENS':
+            logger.warning(
+                'agente_ia[extraccion] respuesta_truncada model=%s max_tokens=%s',
+                modelo,
+                _MAX_TOKENS_EXTRACCION,
+            )
+        texto_json = (texto_candidato_gemini(body) or '').strip()
         if texto_json.startswith('```'):
             texto_json = re.sub(r'^```(?:json)?\s*', '', texto_json)
             texto_json = re.sub(r'\s*```$', '', texto_json)
-        
-        # Parsear JSON
-        data = json.loads(texto_json)
-        
-        # Validar con Pydantic
-        resultado = PedidoExtraido(**data)
-        
-        return resultado
-        
-    except requests.Timeout:
-        logger.warning('agente_ia[extraccion] gemini_timeout')
-        return None
-    except (json.JSONDecodeError, ValueError) as exc:
-        logger.warning('agente_ia[extraccion] json_error=%s texto=%s', exc, texto_json[:200])
-        return None
-    except Exception as exc:
-        logger.warning('agente_ia[extraccion] gemini_error=%s', exc, exc_info=True)
-        return None
+        if not texto_json:
+            logger.warning('agente_ia[extraccion] gemini_vacio model=%s', modelo)
+            continue
+        try:
+            return PedidoExtraido(**json.loads(texto_json))
+        except (json.JSONDecodeError, ValueError) as exc:
+            logger.warning(
+                'agente_ia[extraccion] json_error model=%s error=%s texto=%s',
+                modelo,
+                exc,
+                _body_sin_secreto(texto_json),
+            )
+            return None
+    return None
 
 
 def _fallback_regex(
@@ -311,16 +385,29 @@ def _fallback_regex(
     # Inferir alcance
     alcance = inferir_alcance_repuestos(texto_cliente, decision=None)
     
-    # Construir vehículo desde contexto
+    plan_auto: dict = {}
+    try:
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.plan_por_servicio import (
+            planificar_pedido,
+        )
+        plan_auto = (planificar_pedido(texto_cliente, vehiculo_context).get('vehiculo') or {})
+    except Exception:
+        plan_auto = {}
+    anio = vehiculo_context.get('anio') or plan_auto.get('anio') or None
+    try:
+        anio = int(anio) if anio not in (None, '') else None
+    except (TypeError, ValueError):
+        anio = None
     vehiculo = VehiculoExtraido(
-        marca=str(vehiculo_context.get('marca', '')),
-        modelo=str(vehiculo_context.get('modelo', '')),
-        anio=vehiculo_context.get('anio'),
-        motor=str(vehiculo_context.get('motor', '')),
-        patente=str(vehiculo_context.get('patente', '')),
+        marca=str(vehiculo_context.get('marca') or plan_auto.get('marca') or ''),
+        modelo=str(vehiculo_context.get('modelo') or plan_auto.get('modelo') or ''),
+        anio=anio,
+        motor=str(vehiculo_context.get('motor') or plan_auto.get('motor') or ''),
+        patente=str(vehiculo_context.get('patente') or ''),
         tipo_motor=str(vehiculo_context.get('tipo_motor', '') or '').upper() or None,
     )
     
+    servicios = _servicios_del_plan(texto_cliente, vehiculo_context) or servicios
     return PedidoExtraido(
         vehiculo=vehiculo,
         servicios=servicios,
@@ -329,3 +416,29 @@ def _fallback_regex(
         calidad_preferida='',
         descripcion_problema=texto_cliente[:500],
     )
+
+
+def _servicios_del_plan(texto: str, vehiculo_context: dict) -> list[ServicioExtraido]:
+    """La misma lectura de servicio, sin una segunda llamada al modelo."""
+    try:
+        from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.plan_por_servicio import (
+            planificar_pedido,
+        )
+    except Exception:
+        return []
+    plan = planificar_pedido(texto, vehiculo_context)
+    salida = []
+    for servicio in plan.get('servicios') or []:
+        mano = servicio.get('mano_obra') or {}
+        salida.append(ServicioExtraido(
+            nombre=servicio['nombre'],
+            cantidad=1,
+            incluye_repuestos=not servicio.get('solo_mano'),
+            horas=mano.get('horas'),
+            mano_obra_clp=mano.get('monto_clp'),
+            repuestos_requeridos=[
+                PiezaPlan(**pieza) for pieza in servicio.get('repuestos_requeridos') or []
+            ],
+            sugeridos=[PiezaPlan(**pieza) for pieza in servicio.get('sugeridos') or []],
+        ))
+    return salida

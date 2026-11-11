@@ -132,6 +132,7 @@ def _plan_llm(
         generation_config_gemini,
         modelos_gemini_cotizacion,
         texto_candidato_gemini,
+        texto_sin_secreto,
     )
 
     api_key = (getattr(settings, 'GEMINI_API_KEY', '') or '').strip()
@@ -179,7 +180,7 @@ Reglas:
             timeout=_TIMEOUT_RAZON,
         )
     except requests.RequestException as exc:
-        logger.info('razonar_pedido: sin LLM (%s); sigue el plan del trabajo', exc)
+        logger.info('razonar_pedido: sin LLM (%s); sigue el plan del trabajo', texto_sin_secreto(exc))
         return None
     if resp.status_code != 200:
         logger.info('razonar_pedido: Gemini %s; sigue el plan del trabajo', resp.status_code)

@@ -30,6 +30,12 @@ MSG_GEMINI_TOKENS = (
 )
 
 
+def texto_sin_secreto(texto: str) -> str:
+    """Quita la clave de un error o un body. Un ConnectionError trae el URL con ?key=."""
+    limpio = re.sub(r'AIza[\w\-]+', '***', str(texto or ''))
+    return re.sub(r'(key=)[^&\s"\']+', r'\1***', limpio)[:800]
+
+
 def asistente_cotizacion_habilitado() -> bool:
     return bool(getattr(settings, 'ASISTENTE_COTIZACION_IA_ENABLED', False)) or bool(
         getattr(settings, 'AGENTE_IA_CHAT_ENABLED', False)
@@ -215,7 +221,7 @@ def _llamar_gemini(prompt: str) -> tuple[dict[str, Any] | None, dict[str, int | 
                         modelo_actual,
                         intento + 1,
                         intentos_modelo + 1,
-                        exc,
+                        texto_sin_secreto(exc),
                     )
                     time.sleep(min(4, max(1, 2 ** intento)))
                     continue
@@ -228,7 +234,7 @@ def _llamar_gemini(prompt: str) -> tuple[dict[str, Any] | None, dict[str, int | 
                     modelo_actual,
                     intento + 1,
                     intentos_modelo + 1,
-                    exc,
+                    texto_sin_secreto(exc),
                 )
                 ultimo_error = MSG_GEMINI_TIMEOUT
                 break
@@ -239,7 +245,7 @@ def _llamar_gemini(prompt: str) -> tuple[dict[str, Any] | None, dict[str, int | 
                         modelo_actual,
                         intento + 1,
                         intentos_modelo + 1,
-                        exc,
+                        texto_sin_secreto(exc),
                     )
                     time.sleep(min(4, max(1, 2 ** intento)))
                     continue
@@ -287,7 +293,7 @@ def _llamar_gemini(prompt: str) -> tuple[dict[str, Any] | None, dict[str, int | 
                 'Gemini cotización HTTP %s model=%s body=%s',
                 resp.status_code,
                 modelo_actual,
-                (resp.text or '')[:400],
+                texto_sin_secreto(resp.text),
             )
             if resp.status_code == 400 and usar_thinking:
                 usar_thinking = False
@@ -470,7 +476,14 @@ def _ajustar_rangos_consistentes(repuestos: list[dict[str, Any]]) -> list[dict[s
     
     Esto previene inconsistencias UI donde se muestra "$8K–$15K" pero precio línea es $31K.
     """
+    from .resolver_precio import aplicar_derivados_certeza, linea_es_firme
+
     for rep in repuestos:
+        if not isinstance(rep, dict):
+            continue
+        if linea_es_firme(rep):
+            aplicar_derivados_certeza(rep)
+            continue
         precio_unit = rep.get('precio_unitario_clp', 0)
         precio_min = rep.get('precio_min_clp', 0)
         precio_max = rep.get('precio_max_clp', 0)
@@ -1155,6 +1168,26 @@ def _aplicar_prioridad_de_taller(
             rep['comentario'] = nota
 
 
+def _cerrar_con_plan(contenido, ctx, servicio_nombre, descripcion_problema, taller, pedido=None):
+    """Si el borrador vino sin precios, lo arma el plan del servicio."""
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.plan_por_servicio import (
+        completar_cotizacion_en_blanco,
+    )
+
+    texto = f'{servicio_nombre}. {descripcion_problema}'.strip(' .')
+    vehiculo = {
+        'marca': (ctx or {}).get('marca') or '',
+        'modelo': (ctx or {}).get('modelo') or '',
+        'anio': (ctx or {}).get('anio') or '',
+        'motor': (ctx or {}).get('cilindraje') or (ctx or {}).get('motor') or '',
+    }
+    try:
+        return completar_cotizacion_en_blanco(contenido, texto, vehiculo, taller, pedido=pedido)
+    except Exception:
+        logger.warning('plan de servicio no aplicado', exc_info=True)
+        return contenido
+
+
 def generar_cotizacion_ia(
     *,
     conversation=None,
@@ -1262,6 +1295,9 @@ def generar_cotizacion_ia(
                     ctx.get('marca'),
                     ctx.get('modelo'),
                     (servicio_ctx or '')[:80],
+                )
+                contenido = _cerrar_con_plan(
+                    contenido, ctx, servicio_nombre, descripcion_problema, taller, pedido_extraido,
                 )
                 return {
                     'disponible': True,
@@ -1379,6 +1415,9 @@ def generar_cotizacion_ia(
             vehiculo=ctx,
         )
         adv = list(contenido.get('advertencias') or [])
+        contenido = _cerrar_con_plan(
+            contenido, ctx, servicio_nombre, descripcion_problema, taller, pedido_extraido,
+        )
         return {
             'disponible': True,
             'contenido': contenido,
@@ -1501,6 +1540,9 @@ def generar_cotizacion_ia(
         except Exception as exc:
             logger.warning('fusionar_contenido_con_catalogo_taller falló: %s', exc, exc_info=True)
 
+    contenido = _cerrar_con_plan(
+        contenido, ctx, servicio_nombre, descripcion_problema, taller, pedido_extraido,
+    )
     if 'valores_estimativos' not in contenido:
         contenido['valores_estimativos'] = True
 

@@ -50,6 +50,46 @@ def _ya_existe(nombre: str, repuestos: list[dict[str, Any]]) -> bool:
     return False
 
 
+def _absorber_frase_de_servicio(cotizacion, nombres: list[str], base: list) -> tuple[list[str], list]:
+    """Si el taller pega el pedido completo, entra el servicio y no la frase."""
+    if len(nombres) != 1:
+        return nombres, base
+    from mecanimovilapp.apps.ordenes.services.asistente_cotizacion.plan_por_servicio import (
+        cotizar_por_servicio,
+        es_pieza_suelta_de_item,
+    )
+
+    texto = nombres[0]
+    # Una pieza de catálogo se cotiza sola. Cualquier otra frase pasa por el modelo
+    # (una llamada, con caché) y el catálogo solo si el modelo no responde.
+    if es_pieza_suelta_de_item(texto):
+        return nombres, base
+    armado = cotizar_por_servicio(
+        texto,
+        {
+            'marca': getattr(cotizacion, 'vehiculo_marca', '') or '',
+            'modelo': getattr(cotizacion, 'vehiculo_modelo', '') or '',
+            'anio': getattr(cotizacion, 'vehiculo_anio', '') or '',
+            'motor': getattr(cotizacion, 'vehiculo_cilindraje', '') or '',
+        },
+        getattr(cotizacion, 'taller', None),
+    )
+    if not armado.get('servicios'):
+        return nombres, base
+    if not int(getattr(cotizacion, 'mano_obra_clp', 0) or 0):
+        cotizacion.mano_obra_clp = armado.get('mano_obra_clp') or 0
+        meta = dict(getattr(cotizacion, 'metadata', None) or {})
+        meta['servicios_lineas'] = armado.get('servicios_lineas') or []
+        meta['servicios'] = armado.get('servicios') or []
+        previas = list(meta.get('dudas') or [])
+        meta['dudas'] = previas + list(armado.get('dudas') or [])
+        cotizacion.metadata = meta
+    for rep in armado.get('repuestos') or []:
+        if not _ya_existe(str(rep.get('nombre') or ''), base):
+            base.append(dict(rep))
+    return [], base
+
+
 def cotizar_items_faltantes(
     cotizacion,
     *,
@@ -74,6 +114,7 @@ def cotizar_items_faltantes(
         base = [normalizar_repuesto(r, i) for i, r in enumerate(base) if isinstance(r, dict)]
 
     nuevos_nombres = parsear_nombres_items(nombres)
+    nuevos_nombres, base = _absorber_frase_de_servicio(cotizacion, nuevos_nombres, base)
     agregados: list[str] = []
     for nombre in nuevos_nombres:
         if _ya_existe(nombre, base):
@@ -245,7 +286,7 @@ def cotizar_items_faltantes(
             'actualizado_en',
         ])
 
-    notificar_revision_al_taller(cotizacion)
+    notificar_revision_al_taller(cotizacion, taller_presente=True)
     return {
         'agregados': agregados,
         'busqueda_web': disparo_web,

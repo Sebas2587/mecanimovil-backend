@@ -748,6 +748,8 @@ ASISTENTE_COTIZACION_IA_TIMEOUT = config('ASISTENTE_COTIZACION_IA_TIMEOUT', defa
 COTIZACION_UMBRAL_OTRA_TIENDA = config(
     'COTIZACION_UMBRAL_OTRA_TIENDA', default=0.25, cast=float,
 )
+# Si el taller no publicó la faena, la mano de obra estimada es horas × esta tarifa.
+COTIZACION_TARIFA_HORA_CLP = config('COTIZACION_TARIFA_HORA_CLP', default=15000, cast=int)
 # Cuotas mensuales por plan (IA, patente, mensajería). Default False hasta activar en prod.
 PLAN_CUOTAS_ENFORCEMENT_ENABLED = config('PLAN_CUOTAS_ENFORCEMENT_ENABLED', default=False, cast=bool)
 # Agente IA conversacional en chats (captura + cotización borrador). Default False hasta activar.

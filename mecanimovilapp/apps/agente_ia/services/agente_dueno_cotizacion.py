@@ -890,7 +890,7 @@ def _extraer(texto: str) -> dict:
         
         # Servicios: tomar el primero si hay
         if pedido_llm.servicios and len(pedido_llm.servicios) > 0:
-            out['servicio'] = pedido_llm.servicios[0].nombre_servicio
+            out['servicio'] = pedido_llm.servicios[0].nombre
         
         # Cliente y canal (fallback a regex si LLM no los encuentra)
         patente = _leer_patente(texto)
@@ -898,6 +898,11 @@ def _extraer(texto: str) -> dict:
         
         if not out.get('patente') and patente:
             out['patente'] = patente
+        if not out.get('marca') or not out.get('modelo'):
+            leido = _extraer_marca_modelo(p, out.get('anio'))
+            for clave in ('marca', 'modelo', 'anio'):
+                if leido.get(clave) and not out.get(clave):
+                    out[clave] = leido[clave]
         
         cliente = re.search(r'\bcliente\s+([a-zñ]+(?:\s+[a-zñ]+)?)\b', p)
         if cliente:
