@@ -476,7 +476,14 @@ def _ajustar_rangos_consistentes(repuestos: list[dict[str, Any]]) -> list[dict[s
     
     Esto previene inconsistencias UI donde se muestra "$8K–$15K" pero precio línea es $31K.
     """
+    from .resolver_precio import aplicar_derivados_certeza, linea_es_firme
+
     for rep in repuestos:
+        if not isinstance(rep, dict):
+            continue
+        if linea_es_firme(rep):
+            aplicar_derivados_certeza(rep)
+            continue
         precio_unit = rep.get('precio_unitario_clp', 0)
         precio_min = rep.get('precio_min_clp', 0)
         precio_max = rep.get('precio_max_clp', 0)

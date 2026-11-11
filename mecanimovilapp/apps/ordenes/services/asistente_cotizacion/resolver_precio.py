@@ -55,8 +55,51 @@ def _confianza_habilitada() -> bool:
         return False
 
 
+def linea_es_firme(rep: dict[str, Any] | None) -> bool:
+    """True si la línea ya tiene precio firme confirmado o escrito por el taller."""
+    if not isinstance(rep, dict):
+        return False
+    precio = _to_int_clp(rep.get('precio_unitario_clp'))
+    if precio <= 0:
+        return False
+    if str(rep.get('origen_precio') or '').strip().lower() == 'taller':
+        return True
+    if str(rep.get('certeza') or '').strip().lower() == CERTEZA_CONFIRMADO:
+        return True
+    fuente = str(rep.get('fuente_marketplace') or rep.get('fuente_repuesto') or '').strip().lower()
+    if fuente in _FUENTES_TALLER and rep.get('precio_estimado') is False:
+        return True
+    return False
+
+
+def marcar_linea_firme_taller(
+    rep: dict[str, Any],
+    precio_clp: int | None = None,
+) -> dict[str, Any]:
+    """Fija una línea con monto escrito o aceptado por el taller."""
+    precio = _to_int_clp(
+        precio_clp if precio_clp is not None else rep.get('precio_unitario_clp'),
+    )
+    if precio <= 0:
+        return rep
+    rep['precio_unitario_clp'] = precio
+    rep['precio_min_clp'] = precio
+    rep['precio_max_clp'] = precio
+    rep['certeza'] = CERTEZA_CONFIRMADO
+    rep['origen_precio'] = 'taller'
+    rep['precio_estimado'] = False
+    rep.pop('precio_referencia_mercado', None)
+    rep.pop('motivo_sin_precio', None)
+    rep.pop('_estimado', None)
+    return rep
+
+
 def backfill_certeza(rep: dict[str, Any]) -> str:
     """Deriva certeza de fuente/monto (PRD §7.9). No pisa una certeza ya válida."""
+    if str(rep.get('origen_precio') or '').strip().lower() == 'taller' and _to_int_clp(
+        rep.get('precio_unitario_clp'),
+    ) > 0:
+        return CERTEZA_CONFIRMADO
     actual = str(rep.get('certeza') or '').strip()
     if actual in (
         CERTEZA_CONFIRMADO, CERTEZA_ASUMIDO, CERTEZA_REFERENCIAL, CERTEZA_SIN_PRECIO,
@@ -75,6 +118,18 @@ def backfill_certeza(rep: dict[str, Any]) -> str:
 
 def aplicar_derivados_certeza(rep: dict[str, Any]) -> None:
     """precio_estimado / precio_referencia_mercado se derivan de certeza."""
+    if linea_es_firme(rep):
+        precio = _to_int_clp(rep.get('precio_unitario_clp'))
+        rep['certeza'] = CERTEZA_CONFIRMADO
+        if not str(rep.get('origen_precio') or '').strip():
+            rep['origen_precio'] = 'taller'
+        rep['precio_estimado'] = False
+        rep['precio_min_clp'] = precio
+        rep['precio_max_clp'] = precio
+        rep.pop('precio_referencia_mercado', None)
+        rep.pop('motivo_sin_precio', None)
+        rep.pop('_estimado', None)
+        return
     certeza = backfill_certeza(rep)
     rep['certeza'] = certeza
     rep['precio_estimado'] = certeza != CERTEZA_CONFIRMADO
@@ -128,6 +183,9 @@ def aplicar_techo_ia_si_falta_unitario(rep: dict[str, Any]) -> dict[str, Any]:
     En bujías, un techo de $32.000 con cantidad 4 es el juego, no cada NGK.
     """
     next_rep = dict(rep)
+    if linea_es_firme(next_rep):
+        aplicar_derivados_certeza(next_rep)
+        return next_rep
     if _to_int_clp(next_rep.get('precio_unitario_clp')) > 0:
         return _partir_bujia_asumida(next_rep)
     techo = _to_int_clp(next_rep.get('precio_max_clp'))
@@ -266,7 +324,16 @@ def _aplicar_precio_legacy(next_rep: dict[str, Any], hits: list[dict[str, Any]])
             precio_hit = _to_int_clp(hit.get('precio_unitario_clp'))
             if precio_hit > 0 and _hit_sirve(hit, precio_hit):
                 next_rep['precio_unitario_clp'] = precio_hit
-                if fuente == 'web':
+                if fuente == 'historial' and (
+                    str(hit.get('origen_precio') or '').strip().lower() == 'taller'
+                    or str(hit.get('certeza') or '').strip().lower() == CERTEZA_CONFIRMADO
+                ):
+                    next_rep['certeza'] = CERTEZA_CONFIRMADO
+                    next_rep['origen_precio'] = 'taller'
+                    next_rep['precio_estimado'] = False
+                    next_rep['precio_min_clp'] = precio_hit
+                    next_rep['precio_max_clp'] = precio_hit
+                elif fuente == 'web':
                     next_rep['precio_referencia_mercado'] = True
                 return
     if precio_ia <= 0:
@@ -291,6 +358,10 @@ def resolver_precio_linea(
     certeza/banda. Con el flag encendido: jerarquía nueva, factor de mostrador
     y la IA no escribe monto.
     """
+    if linea_es_firme(next_rep):
+        aplicar_derivados_certeza(next_rep)
+        return
+
     enabled = _confianza_habilitada() if confianza_enabled is None else confianza_enabled
     categoria = categoria_de_repuesto(next_rep)
     next_rep['categoria'] = categoria
@@ -332,6 +403,9 @@ def _resolver_con_confianza(
     categoria: str,
 ) -> None:
     """Jerarquía proveedor → catalogo → historial → web/ML × factor → nada."""
+    if linea_es_firme(next_rep):
+        aplicar_derivados_certeza(next_rep)
+        return
     for fuente, certeza in (
         ('proveedor', CERTEZA_CONFIRMADO),
         ('catalogo', CERTEZA_CONFIRMADO),
@@ -350,6 +424,26 @@ def _resolver_con_confianza(
             _anotar_ficha_en_linea(next_rep, taller_hits[0])
             aplicar_derivados_certeza(next_rep)
             return
+
+    hist_taller_hits = [
+        h for h in _hits_con_precio(hits, ('historial',))
+        if str(h.get('origen_precio') or '').strip().lower() == 'taller'
+        or str(h.get('certeza') or '').strip().lower() == CERTEZA_CONFIRMADO
+    ]
+    if hist_taller_hits:
+        precio = _to_int_clp(hist_taller_hits[0].get('precio_unitario_clp'))
+        next_rep['precio_unitario_clp'] = precio
+        next_rep['precio_min_clp'] = precio
+        next_rep['precio_max_clp'] = precio
+        next_rep['fuentes_n'] = 1
+        next_rep['certeza'] = CERTEZA_CONFIRMADO
+        next_rep['origen_precio'] = 'taller'
+        next_rep['factor_mercado'] = 1.0
+        next_rep['fuentes_detalle'] = _detalle_fuentes(hist_taller_hits[:1])
+        next_rep.pop('motivo_sin_precio', None)
+        _anotar_ficha_en_linea(next_rep, hist_taller_hits[0])
+        aplicar_derivados_certeza(next_rep)
+        return
 
     hist_hits = _hits_con_precio(hits, ('historial',))
     mercado_hits = [
